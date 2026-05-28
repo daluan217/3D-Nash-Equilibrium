@@ -1,0 +1,6 @@
+{
+  "name": "Nash Equilibrium Simulator",
+  "description": "An interactive 3D visual simulator for pure and mixed strategy Nash Equilibria with best-response domain-shrinking trajectories.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

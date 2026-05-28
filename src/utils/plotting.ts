@@ -1,0 +1,489 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { GamePayoffs, SimState, NashEquilibrium } from '../types';
+import { EA, EB, r3 } from './gameEngine';
+
+export interface SurfaceData {
+  xs: number[];
+  ys: number[];
+  zA: number[][];
+  zB: number[][];
+}
+
+// ── Surface data generator ──────────────────────────────────────────────────
+export function buildSurfaces(g: GamePayoffs): SurfaceData {
+  const N = 28;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const zA: number[][] = [];
+  const zB: number[][] = [];
+  
+  for (let i = 0; i <= N; i++) xs.push(i / N);
+  for (let j = 0; j <= N; j++) ys.push(j / N);
+  
+  for (let yi = 0; yi <= N; yi++) {
+    const rA: number[] = [];
+    const rB: number[] = [];
+    for (let xi = 0; xi <= N; xi++) {
+      rA.push(EA(xi / N, yi / N, g));
+      rB.push(EB(xi / N, yi / N, g));
+    }
+    zA.push(rA);
+    zB.push(rB);
+  }
+  return { xs, ys, zA, zB };
+}
+
+// ── Trace builder for Plotly 3D graph ────────────────────────────────────────
+export function makeTraces(
+  surf: SurfaceData,
+  g: GamePayoffs,
+  s: SimState,
+  trackingMode: 'A' | 'B' | 'both',
+  allNE: NashEquilibrium[]
+): any[] {
+  const px = s.displayX ?? s.cx;
+  const py = s.displayY ?? s.cy;
+  const eA = r3(EA(px, py, g));
+  const eB = r3(EB(px, py, g));
+
+  let aMoveLegendShown = false;
+  let bMoveLegendShown = false;
+
+  const traces: any[] = [
+    {
+      type: 'surface',
+      name: 'E[A]',
+      x: surf.xs,
+      y: surf.ys,
+      z: surf.zA,
+      colorscale: 'Reds',
+      opacity: 0.6,
+      showscale: false
+    },
+    {
+      type: 'surface',
+      name: 'E[B]',
+      x: surf.xs,
+      y: surf.ys,
+      z: surf.zB,
+      colorscale: 'Blues',
+      opacity: 0.45,
+      showscale: false
+    },
+  ];
+
+  // ── Domain / search-corridor bounding box ─────────────────────────────────
+  {
+    const lo = s.domainLo;
+    const hi = s.domainHi;
+    const zC = [
+      EA(lo, lo, g), EA(lo, hi, g), EA(hi, lo, g), EA(hi, hi, g),
+      EB(lo, lo, g), EB(lo, hi, g), EB(hi, lo, g), EB(hi, hi, g)
+    ];
+    const zMax = Math.max(...zC) + 0.3;
+    const zMin = Math.min(...zC) - 0.3;
+
+    // XOR: exactly one coordinate discovered -> phase 2 (search corridor)
+    const oneFound = (s.discoveredMixedX !== null) !== (s.discoveredMixedY !== null);
+    const boxColor = oneFound ? '#e67e22' : '#27ae60';
+    const boxName  = oneFound ? 'Search corridor' : 'Domain boundary';
+
+    // Top and bottom 2D bounding boxes
+    [[lo, hi, hi, lo, lo], [lo, lo, hi, hi, lo]].forEach((xA, idx) => {
+      const yA = idx === 0 ? [lo, lo, hi, hi, lo] : [lo, hi, hi, lo, lo];
+      
+      // Bottom flat square
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines',
+        name: idx === 0 ? boxName : '_',
+        showlegend: idx === 0,
+        x: xA,
+        y: yA,
+        z: [zMin, zMin, zMin, zMin, zMin],
+        line: { color: boxColor, width: 3, dash: 'dot' }
+      });
+      
+      // Top flat square
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines',
+        name: '_',
+        showlegend: false,
+        x: xA,
+        y: yA,
+        z: [zMax, zMax, zMax, zMax, zMax],
+        line: { color: boxColor, width: 3, dash: 'dot' }
+      });
+    });
+
+    // Vertical pillars of the bounding box
+    [[lo, lo], [hi, lo], [hi, hi], [lo, hi]].forEach(c => {
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines',
+        name: '_',
+        showlegend: false,
+        x: [c[0], c[0]],
+        y: [c[1], c[1]],
+        z: [zMin, zMax],
+        line: { color: boxColor, width: 3, dash: 'dot' }
+      });
+    });
+
+    // ── Phase 2 extra graphics: ghost spheres + search-range surface line ──
+    if (oneFound) {
+      const xFound = s.discoveredMixedX !== null;
+      const gx = s.calcX ?? px;
+      const gy = s.calcY ?? py;
+
+      let ghostAMovesLegendShown = false;
+      let ghostBMovesLegendShown = false;
+
+      // --- Rendering on surface A ---
+      if (trackingMode === 'A' || trackingMode === 'both') {
+        const zCurrentA = r3(EA(gx, gy, g));
+
+        // Connecting lines for Ghost path segments on surface A
+        s.ghostPathSegmentsA.forEach(seg => {
+          const isMoverA = seg.mover === 'A';
+          const color = isMoverA ? 'rgba(231, 76, 60, 0.45)' : '#B6C7ED';
+          const legendName = isMoverA ? 'A moves (Ghost)' : 'B moves (Ghost)';
+          const showLegend = isMoverA ? !ghostAMovesLegendShown : !ghostBMovesLegendShown;
+          if (isMoverA) ghostAMovesLegendShown = true;
+          else ghostBMovesLegendShown = true;
+
+          traces.push({
+            type: 'scatter3d',
+            mode: 'lines',
+            name: showLegend ? legendName : '_',
+            showlegend: showLegend,
+            x: seg.xs,
+            y: seg.ys,
+            z: seg.zs,
+            line: { color, width: 3 }
+          });
+        });
+
+        // Current ghost position marker on Surface A (should represent A's ghost as a light red sphere)
+        const ghostName = 'Search position (Ghost A)';
+        const ghostColor = 'rgba(213,44,26,0.35)';
+        const ghostLineColor = 'rgba(213,44,26,0.6)';
+
+        traces.push({
+          type: 'scatter3d',
+          mode: 'markers',
+          name: ghostName,
+          showlegend: true,
+          x: [gx],
+          y: [gy],
+          z: [zCurrentA],
+          marker: {
+            size: 6.5,
+            color: ghostColor,
+            symbol: 'circle',
+            line: { color: ghostLineColor, width: 1.5 }
+          }
+        });
+      }
+
+      // --- Rendering on surface B ---
+      if (trackingMode === 'B' || trackingMode === 'both') {
+        const zCurrentB = r3(EB(gx, gy, g));
+
+        // Connecting lines for Ghost path segments on surface B
+        s.ghostPathSegmentsB.forEach(seg => {
+          const isMoverA = seg.mover === 'A';
+          const color = isMoverA ? 'rgba(231, 76, 60, 0.45)' : '#B6C7ED';
+          const legendName = isMoverA ? 'A moves (Ghost)' : 'B moves (Ghost)';
+          const showLegend = isMoverA ? !ghostAMovesLegendShown : !ghostBMovesLegendShown;
+          if (isMoverA) ghostAMovesLegendShown = true;
+          else ghostBMovesLegendShown = true;
+
+          traces.push({
+            type: 'scatter3d',
+            mode: 'lines',
+            name: showLegend ? legendName : '_',
+            showlegend: showLegend,
+            x: seg.xs,
+            y: seg.ys,
+            z: seg.zs,
+            line: { color, width: 3 }
+          });
+        });
+
+        // Current ghost position marker on Surface B (should represent B's ghost as a matte light blue sphere)
+        const ghostName = 'Search position (Ghost B)';
+        const ghostColor = '#B6C7ED';
+        const ghostLineColor = '#B6C7ED';
+
+        traces.push({
+          type: 'scatter3d',
+          mode: 'markers',
+          name: trackingMode === 'B' ? ghostName : '_',
+          showlegend: trackingMode === 'B',
+          x: [gx],
+          y: [gy],
+          z: [zCurrentB],
+          marker: {
+            size: 6.5,
+            color: ghostColor,
+            symbol: 'circle',
+            line: { color: ghostLineColor, width: 1.5 }
+          }
+        });
+      }
+
+      // Line swept along unfound axis showing search interval directly on surfaces (the green "Search range" lines)
+      const STEPS = 40;
+      const lineXa: number[] = [], lineYa: number[] = [], lineZa: number[] = [];
+      const lineXb: number[] = [], lineYb: number[] = [], lineZb: number[] = [];
+
+      if (xFound) {
+        // y is unfound - sweep from py to the farther y boundary
+        const yTo = (Math.abs(py - lo) >= Math.abs(py - hi)) ? lo : hi;
+        for (let i = 0; i <= STEPS; i++) {
+          const yi = py + (yTo - py) * (i / STEPS);
+          lineXa.push(px); lineYa.push(yi); lineZa.push(r3(EA(px, yi, g)));
+          lineXb.push(px); lineYb.push(yi); lineZb.push(r3(EB(px, yi, g)));
+        }
+      } else {
+        // x is unfound - sweep from px to the farther x boundary
+        const xTo = (Math.abs(px - lo) >= Math.abs(px - hi)) ? lo : hi;
+        for (let i = 0; i <= STEPS; i++) {
+          const xi = px + (xTo - px) * (i / STEPS);
+          lineXa.push(xi); lineYa.push(py); lineZa.push(r3(EA(xi, py, g)));
+          lineXb.push(xi); lineYb.push(py); lineZb.push(r3(EB(xi, py, g)));
+        }
+      }
+
+      let searchLineShown = false;
+      if (trackingMode === 'A' || trackingMode === 'both') {
+        traces.push({
+          type: 'scatter3d',
+          mode: 'lines',
+          name: 'Search range',
+          showlegend: true,
+          x: lineXa,
+          y: lineYa,
+          z: lineZa,
+          line: { color: '#27ae60', width: 18, dash: 'dot' }
+        });
+        searchLineShown = true;
+      }
+      if (trackingMode === 'B' || trackingMode === 'both') {
+        traces.push({
+          type: 'scatter3d',
+          mode: 'lines',
+          name: searchLineShown ? '_' : 'Search range',
+          showlegend: !searchLineShown,
+          x: lineXb,
+          y: lineYb,
+          z: lineZb,
+          line: { color: '#27ae60', width: 18, dash: 'dot' }
+        });
+      }
+    }
+  }
+
+  // ── Starting point marker ──────────────────────────────────────────────────
+  if (s.startX !== null && s.startY !== null) {
+    if (trackingMode === 'A' || trackingMode === 'both') {
+      traces.push({
+        type: 'scatter3d',
+        mode: 'markers',
+        name: 'Starting Point',
+        showlegend: true,
+        x: [s.startX],
+        y: [s.startY],
+        z: [EA(s.startX, s.startY, g)],
+        marker: { size: 7, color: '#7F8C8D', symbol: 'circle', line: { color: 'white', width: 1 } }
+      });
+    }
+    if (trackingMode === 'B' || trackingMode === 'both') {
+      traces.push({
+        type: 'scatter3d',
+        mode: 'markers',
+        name: 'Starting Point',
+        showlegend: trackingMode === 'B',
+        x: [s.startX],
+        y: [s.startY],
+        z: [EB(s.startX, s.startY, g)],
+        marker: { size: 7, color: '#7F8C8D', symbol: 'circle', line: { color: 'white', width: 1 } }
+      });
+    }
+  }
+
+  // ── Trajectory path segs ───────────────────────────────────────────────────
+  const drawPaths = (segments: any[], isA: boolean) => {
+    const drawable = segments.filter(seg => seg.xs.length >= 2);
+    const total = drawable.length;
+    drawable.forEach((seg, idx) => {
+      const t = total <= 1 ? 1 : idx / (total - 1);
+      const isMoverA = seg.mover === 'A';
+      let color;
+      if (isMoverA) {
+        // Red color gradient for Player A's moves (x changes)
+        const r = Math.round(245 + (192 - 245) * t);
+        const g2 = Math.round(184 + (57 - 184) * t);
+        const b = Math.round(184 + (43 - 184) * t);
+        color = `rgb(${r},${g2},${b})`;
+      } else {
+        // Blue color gradient for Player B's moves (y changes)
+        const r = Math.round(184 + (26 - 184) * t);
+        const g2 = Math.round(204 + (82 - 204) * t);
+        const b = Math.round(245 + (118 - 245) * t);
+        color = `rgb(${r},${g2},${b})`;
+      }
+
+      const legendName = isMoverA ? 'A moves' : 'B moves';
+      const showLegend = isMoverA ? !aMoveLegendShown : !bMoveLegendShown;
+      if (isMoverA) aMoveLegendShown = true;
+      else bMoveLegendShown = true;
+
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines',
+        name: showLegend ? legendName : '_',
+        showlegend: showLegend,
+        x: seg.xs,
+        y: seg.ys,
+        z: seg.zs,
+        line: { color, width: 4 }
+      });
+    });
+  };
+
+  if (trackingMode === 'A' || trackingMode === 'both') drawPaths(s.pathSegmentsA, true);
+  if (trackingMode === 'B' || trackingMode === 'both') drawPaths(s.pathSegmentsB, false);
+
+  // ── Tracking spheres (the large display balls) ────────────────────────────
+  if (trackingMode === 'A' || trackingMode === 'both') {
+    traces.push({
+      type: 'scatter3d',
+      mode: 'markers',
+      name: 'Current position (A)',
+      showlegend: trackingMode === 'A',
+      x: [px],
+      y: [py],
+      z: [eA],
+      marker: { size: 9, color: '#d52c1a', line: { color: 'white', width: 2 } }
+    });
+  }
+  if (trackingMode === 'B' || trackingMode === 'both') {
+    traces.push({
+      type: 'scatter3d',
+      mode: 'markers',
+      name: 'Current position (B)',
+      showlegend: trackingMode === 'B',
+      x: [px],
+      y: [py],
+      z: [eB],
+      marker: { size: 9, color: '#2980B9', line: { color: 'white', width: 2 } }
+    });
+  }
+
+  // ── Nash Equilibrium markers ───────────────────────────────────────────────
+  let pureShown = false;
+  let mixedShown = false;
+  allNE.forEach(ne => {
+    if (ne.type === 'pure') {
+      if (trackingMode === 'both') {
+        traces.push({
+          type: 'scatter3d',
+          mode: 'markers',
+          name: pureShown ? '_' : 'Pure NE',
+          showlegend: !pureShown,
+          x: [ne.x, ne.x],
+          y: [ne.y, ne.y],
+          z: [EA(ne.x, ne.y, g), EB(ne.x, ne.y, g)],
+          marker: { size: 10, color: '#222', symbol: 'diamond', line: { color: 'white', width: 1 } }
+        });
+      } else {
+        const zP = trackingMode === 'B' ? EB(ne.x, ne.y, g) : EA(ne.x, ne.y, g);
+        traces.push({
+          type: 'scatter3d',
+          mode: 'markers',
+          name: pureShown ? '_' : 'Pure NE',
+          showlegend: !pureShown,
+          x: [ne.x],
+          y: [ne.y],
+          z: [zP],
+          marker: { size: 10, color: '#222', symbol: 'diamond', line: { color: 'white', width: 1 } }
+        });
+      }
+      pureShown = true;
+    } else {
+      const zA = EA(ne.x, ne.y, g);
+      const zB = EB(ne.x, ne.y, g);
+      if (trackingMode === 'both') {
+        const zLo = Math.min(zA, zB);
+        const zHi = Math.max(zA, zB);
+        const COORD_STEPS = 15;
+        const lineZ: number[] = [], lineX: number[] = [], lineY: number[] = [];
+        for (let si = 0; si <= COORD_STEPS; si++) {
+          lineZ.push(zLo + (zHi - zLo) * si / COORD_STEPS);
+          lineX.push(ne.x);
+          lineY.push(ne.y);
+        }
+        // Vertical dashed line connecting payoff A and payoff B for mixed NE
+        traces.push({
+          type: 'scatter3d',
+          mode: 'lines',
+          name: mixedShown ? '_' : 'Mixed NE',
+          showlegend: !mixedShown,
+          x: lineX,
+          y: lineY,
+          z: lineZ,
+          line: { color: '#8E44AD', width: 6, dash: 'solid' }
+        });
+        traces.push({
+          type: 'scatter3d',
+          mode: 'markers',
+          name: '_',
+          showlegend: false,
+          x: [ne.x, ne.x],
+          y: [ne.y, ne.y],
+          z: [zA, zB],
+          marker: { size: 10, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+        });
+      } else {
+        const zVal = trackingMode === 'B' ? zB : zA;
+        traces.push({
+          type: 'scatter3d',
+          mode: 'markers',
+          name: mixedShown ? '_' : 'Mixed NE',
+          showlegend: !mixedShown,
+          x: [ne.x],
+          y: [ne.y],
+          z: [zVal],
+          marker: { size: 10, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+        });
+      }
+      mixedShown = true;
+    }
+  });
+
+  return traces;
+}
+
+// ── Layout (static) ──────────────────────────────────────────────────────────
+export const plotLayout = {
+  paper_bgcolor: 'rgba(0,0,0,0)',
+  plot_bgcolor: 'rgba(0,0,0,0)',
+  margin: { l: 0, r: 0, t: 10, b: 0 },
+  scene: {
+    xaxis: { title: { text: 'x: P(A plays Row 1)', font: { size: 10 } }, range: [0, 1] },
+    yaxis: { title: { text: 'y: P(B plays Col 1)', font: { size: 10 } }, range: [0, 1] },
+    zaxis: { title: { text: 'Expected Payoff', font: { size: 10 } } },
+    camera: { eye: { x: 1.6, y: -1.6, z: 1.1 } },
+    bgcolor: 'rgba(0,0,0,0)',
+    aspectmode: 'cube'
+  },
+  legend: { x: 0, y: 1, bgcolor: 'rgba(255,255,255,0.7)', font: { size: 10 } },
+  font: { family: 'Inter, system-ui, sans-serif', size: 11 }
+};
