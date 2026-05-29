@@ -206,7 +206,7 @@ View rendered message: ${previewUrl}
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || "3000", 10);
 
   // Parse JSON bodies
   app.use(express.json());
