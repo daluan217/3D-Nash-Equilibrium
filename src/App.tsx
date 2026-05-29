@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment } from './types';
 import {
   PRESETS,
@@ -28,10 +28,88 @@ import {
   Compass,
   CheckCircle2,
   Lock,
-  AlertTriangle
+  AlertTriangle,
+  User,
+  LogIn,
+  LogOut,
+  Plus,
+  Trash2,
+  Key,
+  Mail,
+  Info,
+  Check,
+  X,
+  UserCheck
 } from 'lucide-react';
 
 export default function App() {
+  // ── Authentication & Saved Games States ────────────────────────────────────
+  const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('nash_sim_token'));
+  const [user, setUser] = useState<{ id: string; username: string; email: string } | null>(null);
+  const [userCustomGames, setUserCustomGames] = useState<any[]>([]);
+  
+  // Auth Modal States
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'verify'>('login');
+  
+  // Save Game Modal States
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveDesc, setSaveDesc] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saveLoading, setSaveLoading] = useState(false);
+
+  // Auth Inputs
+  const [authUsername, setAuthUsername] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
+  const [authCode, setAuthCode] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authSuccess, setAuthSuccess] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [sandboxMailUrl, setSandboxMailUrl] = useState<string | null>(null);
+  const [simulatedCode, setSimulatedCode] = useState(''); // To help users login effortlessly in the frame without console checks
+  const [smtpWarning, setSmtpWarning] = useState('');
+
+  // Fetch Session User and Games
+  useEffect(() => {
+    if (authToken) {
+      fetch('/api/auth/me', {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      })
+      .then((res) => {
+        if (res.ok) return res.json();
+        throw new Error('Session invalid');
+      })
+      .then((data) => {
+        setUser(data);
+      })
+      .catch(() => {
+        localStorage.removeItem('nash_sim_token');
+        setAuthToken(null);
+        setUser(null);
+      });
+    } else {
+      setUser(null);
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    if (authToken && user) {
+      fetch('/api/games', {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      })
+      .then((res) => res.ok ? res.json() : [])
+      .then((data) => {
+        setUserCustomGames(data);
+      })
+      .catch((err) => console.error('Error fetching custom games:', err));
+    } else {
+      setUserCustomGames([]);
+    }
+  }, [authToken, user]);
+
   // ── Preset Selector State ──────────────────────────────────────────────────
   const [activePreset, setActivePreset] = useState<string>('bos');
 
@@ -286,24 +364,224 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [simState.running, simState.converged, simState.stepCount, speed]);
 
+  // ── Authentication & Custom Game Handlers ──────────────────────────────────
+  const handleLogout = () => {
+    localStorage.removeItem('nash_sim_token');
+    setAuthToken(null);
+    setUser(null);
+    setUserCustomGames([]);
+    setActivePreset('bos');
+    setLogEntries(['Logged out successfully.']);
+  };
+
+  const handleDeleteGame = async (gameId: string) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/games/${gameId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        setUserCustomGames(prev => prev.filter(g => g.id !== gameId));
+        if (activePreset === gameId) {
+          handleLoadPreset('bos');
+        }
+        setLogEntries(prev => [...prev, `🗑 Deleted custom game.`]);
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to delete game.');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleSaveGameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!saveName.trim()) {
+      setSaveError('Please enter a game name.');
+      return;
+    }
+    setSaveError('');
+    setSaveLoading(true);
+    try {
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          name: saveName.trim(),
+          description: saveDesc.trim(),
+          payoffs
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUserCustomGames(prev => [...prev, data.game]);
+        setActivePreset(data.game.id);
+        setIsSaveModalOpen(false);
+        setSaveName('');
+        setSaveDesc('');
+        setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
+      } else {
+        setSaveError(data.error || 'Failed to save game.');
+      }
+    } catch (err) {
+      setSaveError('Network error. Failed to save game.');
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    setAuthSuccess('');
+    setAuthLoading(true);
+
+    if (authMode === 'login') {
+      if (!authEmail || !authPassword) {
+        setAuthError('Email and password are required.');
+        setAuthLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authEmail, password: authPassword })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          localStorage.setItem('nash_sim_token', data.token);
+          setAuthToken(data.token);
+          setIsAuthModalOpen(false);
+          setAuthEmail('');
+          setAuthPassword('');
+          setLogEntries(prev => [...prev, `✓ Welcome back, @${data.user.username}! Connected to server database.`]);
+        } else if (data.needVerification) {
+          setAuthMode('verify');
+          setAuthSuccess('Please complete email verification first.');
+        } else {
+          setAuthError(data.error || 'Invalid credentials.');
+        }
+      } catch (err) {
+        setAuthError('Connection error.');
+      } finally {
+        setAuthLoading(false);
+      }
+    } else if (authMode === 'register') {
+      if (!authUsername || !authEmail || !authPassword || !authConfirmPassword) {
+        setAuthError('All registration fields are required.');
+        setAuthLoading(false);
+        return;
+      }
+      
+      // Client-side validations
+      if (authPassword !== authConfirmPassword) {
+        setAuthError('Passwords do not match. Please ensure both fields are identical.');
+        setAuthLoading(false);
+        return;
+      }
+
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z]).{8,}$/;
+      if (!passwordRegex.test(authPassword)) {
+        setAuthError('Password must be at least 8 characters long and contain at least one uppercase and one lowercase letter.');
+        setAuthLoading(false);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: authUsername, email: authEmail, password: authPassword })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setAuthMode('verify');
+          setSandboxMailUrl(data.previewUrl || null);
+          setSmtpWarning(data.smtpError || '');
+          if (data.via === 'ethereal' && data.previewUrl) {
+            setAuthSuccess('Registration successful! The server generated a sandbox verification code email. Click the preview button below to view it.');
+          } else {
+            setAuthSuccess('Registration successful! A 6-digit confirmation code has been sent to your email address.');
+          }
+        } else {
+          setAuthError(data.error || 'Registration failed.');
+        }
+      } catch (err) {
+        setAuthError('Connection error.');
+      } finally {
+        setAuthLoading(false);
+      }
+    } else if (authMode === 'verify') {
+      if (!authCode) {
+        setAuthError('Please enter the 6-digit confirmation code.');
+        setAuthLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authEmail, code: authCode })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setAuthMode('login');
+          setAuthSuccess('Account verified successfully! You can now log in.');
+          setAuthCode('');
+        } else {
+          setAuthError(data.error || 'Incorrect confirmation code.');
+        }
+      } catch (err) {
+        setAuthError('Connection error.');
+      } finally {
+        setAuthLoading(false);
+      }
+    }
+  };
+
+  // ── Dynamic Presets Mapping ────────────────────────────────────────────────
+  const mergedPresets = useMemo(() => {
+    const merged: Record<string, PresetGame> = { ...PRESETS };
+    userCustomGames.forEach((g) => {
+      merged[g.id] = {
+        key: g.id,
+        name: g.name,
+        a11: g.payoffs.a11, b11: g.payoffs.b11,
+        a12: g.payoffs.a12, b12: g.payoffs.b12,
+        a21: g.payoffs.a21, b21: g.payoffs.b21,
+        a22: g.payoffs.a22, b22: g.payoffs.b22,
+        desc: `<strong>Custom - ${g.name}:</strong> ${g.description}`
+      };
+    });
+    return merged;
+  }, [userCustomGames]);
+
   // ── Preset loader action ───────────────────────────────────────────────────
   const handleLoadPreset = (key: string) => {
     setActivePreset(key);
     if (key !== 'custom') {
-      const preset = PRESETS[key];
-      const payload: GamePayoffs = {
-        a11: preset.a11 ?? 0, b11: preset.b11 ?? 0,
-        a12: preset.a12 ?? 0, b12: preset.b12 ?? 0,
-        a21: preset.a21 ?? 0, b21: preset.b21 ?? 0,
-        a22: preset.a22 ?? 0, b22: preset.b22 ?? 0,
-      };
-      setPayoffs(payload);
-      setRawPayoffs({
-        a11: String(payload.a11), b11: String(payload.b11),
-        a12: String(payload.a12), b12: String(payload.b12),
-        a21: String(payload.a21), b21: String(payload.b21),
-        a22: String(payload.a22), b22: String(payload.b22),
-      });
+      const preset = mergedPresets[key];
+      if (preset) {
+        const payload: GamePayoffs = {
+          a11: preset.a11 ?? 0, b11: preset.b11 ?? 0,
+          a12: preset.a12 ?? 0, b12: preset.b12 ?? 0,
+          a21: preset.a21 ?? 0, b21: preset.b21 ?? 0,
+          a22: preset.a22 ?? 0, b22: preset.b22 ?? 0,
+        };
+        setPayoffs(payload);
+        setRawPayoffs({
+          a11: String(payload.a11), b11: String(payload.b11),
+          a12: String(payload.a12), b12: String(payload.b12),
+          a21: String(payload.a21), b21: String(payload.b21),
+          a22: String(payload.a22), b22: String(payload.b22),
+        });
+      }
     }
     handleReset();
   };
@@ -427,27 +705,51 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col antialiased">
       {/* ── Heading Banner ── */}
-      <header className="bg-white border-b border-slate-200 py-5 px-6 sticky top-0 z-30 shadow-xs">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <header className="bg-white border-b border-slate-200 py-4 px-6 sticky top-0 z-30 shadow-subtle">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5">
-              <span className="p-2 bg-red-50 text-red-600 rounded-lg">
-                <Compass className="w-6 h-6" />
+              <span className="p-2 bg-rose-50 text-rose-600 rounded-xl">
+                <Compass className="w-5.5 h-5.5" />
               </span>
-              <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">
+              <h1 className="text-lg md:text-xl font-bold text-slate-900 tracking-tight">
                 Nash Equilibrium Simulator
               </h1>
             </div>
-            <p className="text-xs md:text-sm text-slate-500 mt-1">
+            <p className="text-[11px] md:text-xs text-slate-500 mt-0.5">
               Visualise Best-Response dynamics, 3D expected payoff surfaces, and mixed strategy search corridor shrinkage algorithms.
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-mono text-slate-400 bg-slate-100 py-1 px-2.5 rounded-md">
-              Vite | TS
-            </span>
+          <div className="flex items-center flex-wrap gap-2.5">
+            {user ? (
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200/80 pl-2.5 pr-1 py-1 rounded-xl">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-semibold text-slate-700 truncate max-w-[120px]" title={user.email}>
+                  @{user.username}
+                </span>
+                <button
+                  onClick={handleLogout}
+                  className="text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                >
+                  Log out
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => {
+                  setAuthError('');
+                  setAuthSuccess('');
+                  setAuthMode('login');
+                  setIsAuthModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5" /> Sign In / Sign Up
+              </button>
+            )}
+            
             {simState.converged && (
-              <span className="flex items-center gap-1 text-xs font-medium bg-emerald-100 text-emerald-800 py-1 px-3 rounded-full border border-emerald-200">
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-emerald-100/90 text-emerald-800 py-1.5 px-3 rounded-full border border-emerald-200">
                 <CheckCircle2 className="w-3.5 h-3.5" /> Converged
               </span>
             )}
@@ -462,18 +764,18 @@ export default function App() {
           
           {/* Preset Buttons Block */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-4">
-            <div className="flex items-center gap-2 text-slate-800 font-semibold text-sm border-b border-slate-100 pb-2">
+            <div className="flex items-center gap-2 text-slate-800 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 pb-2">
               <BookOpen className="w-4 h-4 text-rose-500" />
-              Preset Game Scenarios
+              Standard Scenarios
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2">
-              {(['bos', 'pd', 'cnr', 'spy', 'custom'] as const).map((key) => {
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {(['bos', 'pd', 'cnr', 'spy'] as const).map((key) => {
                 const isSelected = activePreset === key;
                 return (
                   <button
                     key={key}
                     onClick={() => handleLoadPreset(key)}
-                    className={`py-2 px-3 text-xs font-medium rounded-xl border transition-all text-center ${
+                    className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all text-center cursor-pointer ${
                       isSelected
                         ? 'bg-rose-500 text-white border-rose-500 shadow-xs'
                         : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:text-slate-900'
@@ -485,11 +787,89 @@ export default function App() {
               })}
             </div>
 
+            {/* User Custom Saved Games Segment */}
+            <div className="flex items-center justify-between text-slate-800 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 pt-1.5 pb-2">
+              <div className="flex items-center gap-2">
+                <Award className="w-4 h-4 text-indigo-500" />
+                Custom Game presets
+              </div>
+              {user && (
+                <button
+                  onClick={() => {
+                    setSaveError('');
+                    setIsSaveModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/50 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" /> Save payoff
+                </button>
+              )}
+            </div>
+
+            {!user ? (
+              <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200/60 rounded-xl p-3 text-center">
+                <span>Want to name and save custom presets? </span>
+                <button
+                  onClick={() => {
+                    setAuthError('');
+                    setAuthSuccess('');
+                    setAuthMode('login');
+                    setIsAuthModalOpen(true);
+                  }}
+                  className="font-bold text-blue-600 hover:underline cursor-pointer"
+                >
+                  Sign in here
+                </button>
+              </div>
+            ) : userCustomGames.length === 0 ? (
+              <div className="text-xs text-slate-400 bg-slate-50/70 border border-dashed border-slate-200 rounded-xl p-4 text-center">
+                No saved custom games. Adapt payoffs and click <strong className="text-indigo-600">Save payoff</strong> to persist your first game!
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1">
+                {userCustomGames.map((game) => {
+                  const isSelected = activePreset === game.id;
+                  return (
+                    <div
+                      key={game.id}
+                      className={`group flex items-center justify-between p-2 pl-3 rounded-xl border transition-all ${
+                        isSelected
+                          ? 'bg-indigo-500 border-indigo-500 text-white shadow-xs'
+                          : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80 text-slate-700'
+                      }`}
+                    >
+                      <button
+                        onClick={() => handleLoadPreset(game.id)}
+                        className="flex-1 text-left text-xs font-semibold truncate cursor-pointer mr-1"
+                        title={`${game.name} - ${game.description}`}
+                      >
+                        {game.name}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteGame(game.id);
+                        }}
+                        className={`p-1 rounded-md transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'text-indigo-100 hover:text-white hover:bg-indigo-600'
+                            : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
+                        }`}
+                        title="Delete this game description"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Selected Preset Narrative Card */}
-            {PRESETS[activePreset]?.desc && (
+            {mergedPresets[activePreset]?.desc && (
               <div
                 className="text-xs text-slate-600 leading-relaxed bg-amber-50/50 border border-amber-200/50 rounded-xl p-3"
-                dangerouslySetInnerHTML={{ __html: PRESETS[activePreset].desc }}
+                dangerouslySetInnerHTML={{ __html: mergedPresets[activePreset].desc }}
               />
             )}
           </div>
@@ -1041,6 +1421,337 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* ── Auth Modal ── */}
+      {isAuthModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
+          <div className="bg-white w-full max-w-md rounded-2xl border border-slate-200 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                  <User className="w-4 h-4" />
+                </span>
+                <span className="font-bold text-slate-800 text-sm md:text-base">
+                  {authMode === 'login' ? 'Sign In' : authMode === 'register' ? 'Create Account' : 'Verify Email'}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setIsAuthModalOpen(false);
+                  setAuthError('');
+                  setAuthSuccess('');
+                  setSimulatedCode('');
+                  setSmtpWarning('');
+                  setSandboxMailUrl(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {authError && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            {authSuccess && (
+              <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs rounded-xl p-3 flex gap-3 font-medium">
+                <Check className="w-4 h-4 shrink-0 text-emerald-500" />
+                <span>{authSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3.5">
+              {authMode === 'register' && (
+                <div>
+                  <label className="block text-xs text-slate-500 font-bold mb-1">Username</label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300"
+                      placeholder="game_theorist"
+                      value={authUsername}
+                      onChange={(e) => setAuthUsername(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+              )}
+
+              {(authMode === 'login' || authMode === 'register') && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 font-bold mb-1">Email Address</label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="email"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300"
+                        placeholder="john@example.com"
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-500 font-bold mb-1">Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="password"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300"
+                        placeholder="••••••••"
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        required
+                      />
+                    </div>
+                    {authMode === 'register' && (
+                      <p className="text-[10px] text-slate-500 mt-1 leading-normal">
+                        Password requirement: <strong className="text-blue-600 font-semibold">Min 8 characters</strong> with at least <strong className="text-blue-600 font-semibold">one uppercase</strong> and <strong className="text-blue-600 font-semibold">one lowercase</strong> letter.
+                      </p>
+                    )}
+                  </div>
+
+                  {authMode === 'register' && (
+                    <div>
+                      <label className="block text-xs text-slate-500 font-bold mb-1">Retype Password</label>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                        <input
+                          type="password"
+                          className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-300 focus:border-slate-300"
+                          placeholder="••••••••"
+                          value={authConfirmPassword}
+                          onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                          required
+                        />
+                      </div>
+                      {authPassword && authConfirmPassword && (
+                        <div className="text-[10px] mt-1 font-semibold">
+                          {authPassword === authConfirmPassword ? (
+                            <span className="text-emerald-600 flex items-center gap-1">✓ Passwords match</span>
+                          ) : (
+                            <span className="text-rose-500 flex items-center gap-1">✗ Passwords do not match</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {authMode === 'verify' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-slate-500 font-bold mb-1">6-Digit Confirmation Code</label>
+                    <div className="relative">
+                      <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="text"
+                        maxLength={6}
+                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300 text-center"
+                        placeholder="123456"
+                        value={authCode}
+                        onChange={(e) => setAuthCode(e.target.value.replace(/\D/g, ''))}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  {sandboxMailUrl && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs rounded-xl p-3 flex flex-col gap-1.5 leading-relaxed">
+                      <div className="font-bold text-amber-800 flex items-center gap-1.5">
+                        <Mail className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        Sandbox Email Dispatched
+                      </div>
+                      <p className="text-[11px] text-amber-950/80">
+                        Since custom SMTP credentials are not yet set up, the server generated an ephemeral Ethereal test mailbox. You can view the live rendered email here:
+                      </p>
+                      <a
+                        href={sandboxMailUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 self-start text-[10px] font-bold text-white bg-amber-600 hover:bg-amber-700 px-3 py-1 rounded-lg transition-colors cursor-pointer mt-1"
+                      >
+                        View Sandbox Rendered Email ↗
+                      </a>
+                    </div>
+                  )}
+
+                  {smtpWarning && (
+                    <div className="bg-rose-50 border border-rose-200 text-rose-800 text-[11px] rounded-xl p-3 flex flex-col gap-1.5 leading-relaxed">
+                      <div className="font-bold flex items-center gap-1.5 text-rose-950">
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        Custom SMTP Connection Failed
+                      </div>
+                      <p className="text-[10px] text-rose-950/80">
+                        Your custom SMTP server rejected authorization:
+                      </p>
+                      <pre className="bg-white/80 p-2 rounded text-[10px] font-mono whitespace-pre-wrap break-all border border-rose-100 text-rose-950">
+                        {smtpWarning}
+                      </pre>
+                      <p className="text-[10px] text-rose-800 leading-normal">
+                        <strong>Troubleshooting:</strong> Please double-check your SMTP host, user name, and password in the app "Secrets" panel. For Gmail, you <strong>must</strong> generate and use an <strong>App Password</strong>.
+                      </p>
+                      <div className="mt-1 border-t border-rose-200/50 pt-1.5 text-[10px] text-emerald-800 font-medium">
+                        ✦ Resiliency fallback: We generated a sandbox backup link below where you can view the sent code!
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={authLoading}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm py-2.5 rounded-xl transition-all cursor-pointer shadow-xs disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+              >
+                {authLoading ? 'Please wait...' : authMode === 'login' ? 'Login' : authMode === 'register' ? 'Register Account' : 'Verify & Setup Account'}
+              </button>
+            </form>
+
+            <div className="border-t border-slate-100 pt-3.5 text-center text-[11px] text-slate-500 font-medium">
+              {authMode === 'login' ? (
+                <span>
+                  Don't have an account?{' '}
+                  <button
+                    onClick={() => {
+                      setAuthError('');
+                      setAuthSuccess('');
+                      setAuthMode('register');
+                    }}
+                    className="font-bold text-blue-600 hover:underline cursor-pointer"
+                  >
+                    Sign Up
+                  </button>
+                </span>
+              ) : authMode === 'register' ? (
+                <span>
+                  Already have an account?{' '}
+                  <button
+                    onClick={() => {
+                      setAuthError('');
+                      setAuthSuccess('');
+                      setAuthMode('login');
+                    }}
+                    className="font-bold text-blue-600 hover:underline cursor-pointer"
+                  >
+                    Log In
+                  </button>
+                </span>
+              ) : (
+                <span>
+                  Back to{' '}
+                  <button
+                    onClick={() => {
+                      setAuthError('');
+                      setAuthSuccess('');
+                      setAuthMode('register');
+                    }}
+                    className="font-bold text-blue-600 hover:underline cursor-pointer"
+                  >
+                    Registration
+                  </button>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Save Custom Game Modal ── */}
+      {isSaveModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
+          <div className="bg-white w-full max-w-md rounded-2xl border border-slate-200 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                  <Award className="w-4 h-4" />
+                </span>
+                <span className="font-bold text-slate-800 text-sm md:text-base">
+                  Save Custom Game payoffs
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setIsSaveModalOpen(false);
+                  setSaveError('');
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4 text-slate-400" />
+              </button>
+            </div>
+
+            {saveError && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+                <span>{saveError}</span>
+              </div>
+            )}
+
+            <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 text-[11px] leading-relaxed text-slate-600">
+              <span className="font-semibold text-slate-700">Payload to be saved:</span>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[10px] text-slate-500 mt-1.5">
+                <div>(Row 1, Col 1) = ({payoffs.a11}, {payoffs.b11})</div>
+                <div>(Row 1, Col 2) = ({payoffs.a12}, {payoffs.b12})</div>
+                <div>(Row 2, Col 1) = ({payoffs.a21}, {payoffs.b21})</div>
+                <div>(Row 2, Col 2) = ({payoffs.a22}, {payoffs.b22})</div>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveGameSubmit} className="flex flex-col gap-3.5">
+              <div>
+                <label className="block text-xs text-slate-500 font-bold mb-1">Game Name</label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300"
+                  placeholder="e.g. Battle of the Sexes 2.0"
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  maxLength={40}
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-500 font-bold mb-1">Game Description</label>
+                <textarea
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-24 resize-none"
+                  placeholder="Explain the background storyline or payoff choices of this strategic profile."
+                  value={saveDesc}
+                  onChange={(e) => setSaveDesc(e.target.value)}
+                  maxLength={250}
+                />
+              </div>
+
+              <div className="flex gap-2 justify-end border-t border-slate-100 pt-3.5">
+                <button
+                  type="button"
+                  onClick={() => setIsSaveModalOpen(false)}
+                  className="px-4 py-2 hover:bg-slate-105 border border-slate-200 text-slate-600 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saveLoading}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {saveLoading ? 'Saving...' : 'Save Game Profile'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
