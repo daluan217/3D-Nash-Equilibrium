@@ -68,9 +68,6 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authSuccess, setAuthSuccess] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
-  const [sandboxMailUrl, setSandboxMailUrl] = useState<string | null>(null);
-  const [simulatedCode, setSimulatedCode] = useState(''); // To help users login effortlessly in the frame without console checks
-  const [smtpWarning, setSmtpWarning] = useState('');
 
   // Fetch Session User and Games
   useEffect(() => {
@@ -502,13 +499,7 @@ export default function App() {
         const data = await res.json();
         if (res.ok) {
           setAuthMode('verify');
-          setSandboxMailUrl(data.previewUrl || null);
-          setSmtpWarning(data.smtpError || '');
-          if (data.via === 'ethereal' && data.previewUrl) {
-            setAuthSuccess('Registration successful! The server generated a sandbox verification code email. Click the preview button below to view it.');
-          } else {
-            setAuthSuccess('Registration successful! A 6-digit confirmation code has been sent to your email address.');
-          }
+          setAuthSuccess('Registration successful! A 6-digit confirmation code has been sent to your email address.');
         } else {
           setAuthError(data.error || 'Registration failed.');
         }
@@ -1440,9 +1431,6 @@ export default function App() {
                   setIsAuthModalOpen(false);
                   setAuthError('');
                   setAuthSuccess('');
-                  setSimulatedCode('');
-                  setSmtpWarning('');
-                  setSandboxMailUrl(null);
                 }}
                 className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
               >
@@ -1564,47 +1552,6 @@ export default function App() {
                       />
                     </div>
                   </div>
-
-                  {sandboxMailUrl && (
-                    <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs rounded-xl p-3 flex flex-col gap-1.5 leading-relaxed">
-                      <div className="font-bold text-amber-800 flex items-center gap-1.5">
-                        <Mail className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        Sandbox Email Dispatched
-                      </div>
-                      <p className="text-[11px] text-amber-950/80">
-                        Since custom SMTP credentials are not yet set up, the server generated an ephemeral Ethereal test mailbox. You can view the live rendered email here:
-                      </p>
-                      <a
-                        href={sandboxMailUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 self-start text-[10px] font-bold text-white bg-amber-600 hover:bg-amber-700 px-3 py-1 rounded-lg transition-colors cursor-pointer mt-1"
-                      >
-                        View Sandbox Rendered Email ↗
-                      </a>
-                    </div>
-                  )}
-
-                  {smtpWarning && (
-                    <div className="bg-rose-50 border border-rose-200 text-rose-800 text-[11px] rounded-xl p-3 flex flex-col gap-1.5 leading-relaxed">
-                      <div className="font-bold flex items-center gap-1.5 text-rose-950">
-                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                        Custom SMTP Connection Failed
-                      </div>
-                      <p className="text-[10px] text-rose-950/80">
-                        Your custom SMTP server rejected authorization:
-                      </p>
-                      <pre className="bg-white/80 p-2 rounded text-[10px] font-mono whitespace-pre-wrap break-all border border-rose-100 text-rose-950">
-                        {smtpWarning}
-                      </pre>
-                      <p className="text-[10px] text-rose-800 leading-normal">
-                        <strong>Troubleshooting:</strong> Please double-check your SMTP host, user name, and password in the app "Secrets" panel. For Gmail, you <strong>must</strong> generate and use an <strong>App Password</strong>.
-                      </p>
-                      <div className="mt-1 border-t border-rose-200/50 pt-1.5 text-[10px] text-emerald-800 font-medium">
-                        ✦ Resiliency fallback: We generated a sandbox backup link below where you can view the sent code!
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
 

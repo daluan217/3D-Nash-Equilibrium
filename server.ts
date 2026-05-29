@@ -13,6 +13,13 @@ import dotenv from "dotenv";
 // Load environment variables from .env file
 dotenv.config();
 
+// Fallback to loading from .env.example if key variables are not present in process.env
+const envExamplePath = path.join(process.cwd(), ".env.example");
+if (!process.env.SMTP_HOST && fs.existsSync(envExamplePath)) {
+  console.log("No SMTP configuration found in .env, falling back to loading from .env.example...");
+  dotenv.config({ path: envExamplePath });
+}
+
 interface GamePayoffs {
   a11: number; a12: number; a21: number; a22: number;
   b11: number; b12: number; b21: number; b22: number;
@@ -107,8 +114,8 @@ function getTransporter() {
   return null;
 }
 
-// Send real/sandbox email verification
-async function sendVerificationEmail(email: string, code: string, username: string) {
+// Send real email verification
+async function sendVerificationEmail(email: string, code: string, username: string): Promise<{ success: boolean; via: string; messageId?: string; previewUrl?: string | null; smtpError?: string | null; }> {
   const transporter = getTransporter();
   const from = process.env.SMTP_FROM || `"Nash Equilibrium Simulator" <noreply@example.com>`;
 
@@ -133,74 +140,23 @@ async function sendVerificationEmail(email: string, code: string, username: stri
     </div>
   `;
 
-  let smtpError: string | null = null;
-
-  if (transporter) {
-    try {
-      const info = await transporter.sendMail({
-        from,
-        to: email,
-        subject: `Your Nash Sim Verification Code: ${code}`,
-        text: `Your Nash Sim verification code is: ${code}. It expires in 10 minutes.`,
-        html: htmlContent,
-      });
-      console.log("Verification email sent successfully using custom SMTP:", info.messageId);
-      return { success: true, via: "smtp", messageId: info.messageId };
-    } catch (err: any) {
-      console.error("Failed to send email via custom SMTP, error details:", err);
-      smtpError = err.message;
-      // Do not throw! Fallback to ethereal so the user isn't blocked.
-    }
+  if (!transporter) {
+    throw new Error("SMTP configuration is incomplete/missing in .env. Please define SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS.");
   }
 
-  // Fallback to Ethereal-sandbox SMTP connection
   try {
-    console.log("No working custom SMTP connection. Spinning up an Ethereal-sandbox SMTP connection...");
-    const testAccount = await nodemailer.createTestAccount();
-    const etherealTransporter = nodemailer.createTransport({
-      host: "smtp.ethereal.email",
-      port: 587,
-      secure: false,
-      auth: {
-        user: testAccount.user,
-        pass: testAccount.pass,
-      },
-    });
-
-    const info = await etherealTransporter.sendMail({
-      from: '"Nash Equilibrium Simulator" <noreply@ethereal.email>',
+    const info = await transporter.sendMail({
+      from,
       to: email,
       subject: `Your Nash Sim Verification Code: ${code}`,
       text: `Your Nash Sim verification code is: ${code}. It expires in 10 minutes.`,
       html: htmlContent,
     });
-
-    const previewUrl = nodemailer.getTestMessageUrl(info);
-    console.log(`
-=============================================================
-[SANDBOX EMAIL DELIVERED via ETHEREAL]
-To: ${email}
-Subject: Nash Sim Verification Code
-Verification Code: ${code}
-View rendered message: ${previewUrl}
-=============================================================
-    `);
-
-    return {
-      success: true,
-      via: "ethereal",
-      smtpError: smtpError || undefined, // Include the SMTP error to show help in UI
-      previewUrl: previewUrl || undefined,
-      messageId: info.messageId,
-    };
+    console.log("Verification email sent successfully using custom SMTP:", info.messageId);
+    return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
-    console.error("Ethereal test mailbox auto-creation failed, using console logging fallback:", err);
-    return {
-      success: false,
-      via: "none",
-      smtpError: smtpError || undefined,
-      error: err.message
-    };
+    console.error("Failed to send email via custom SMTP, error details:", err);
+    throw new Error(`SMTP Mail delivery failed: ${err.message}`);
   }
 }
 
