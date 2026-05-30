@@ -30,14 +30,14 @@ export const PRESETS: Record<string, PresetGame> = {
   cnr: {
     key: 'cnr',
     name: 'Cops & Robbers',
-    a11: 2, b11: 3,  a12: 4, b12: 2,
-    a21: 3, b21: 3,  a22: 1, b22: 4,
-    desc: '<strong>Cops &amp; Robbers:</strong> A robber chooses to hit a Bank (Row 1) or a Jeweller (Row 2). '
-        + 'A cop simultaneously decides to patrol Downtown (Col 1) or Uptown (Col 2). '
-        + 'The robber wants to avoid the cop; the cop wants to intercept them. '
-        + '<span style="color:#C0392B;font-weight:600;">Robber\'s payoffs</span> are higher when the cop goes elsewhere; '
-        + '<span style="color:#1A5276;font-weight:600;">cop\'s payoffs</span> are higher when they match the robber\'s location. '
-        + 'Payoffs (clockwise from top-left): (2,3), (4,2), (1,4), (3,3).'
+    a11: 3, b11: 2,  a12: 3, b12: 3,
+    a21: 2, b21: 4,  a22: 4, b22: 1,
+    desc: '<strong>Cops &amp; Robbers:</strong> A robber chooses to Stay at Home (Row 1) or Commit a Crime (Row 2). '
+        + 'A cop simultaneously decides to Patrol (Col 1) or Eat Donuts (Col 2). '
+        + 'The robber wants to commit crime undetected, while the cop wants to patrol and catch them. '
+        + '<span style="color:#C0392B;font-weight:600;">Robber\'s payoff</span> is maximized (4) when they commit crime while the cop eats donuts; '
+        + '<span style="color:#1A5276;font-weight:600;">cop\'s payoff</span> is maximized (4) when patrolling while a crime is committed. '
+        + 'Payoffs (clockwise from top-left): (3,2), (3,3), (4,1), (2,4).'
   },
   spy: {
     key: 'spy',

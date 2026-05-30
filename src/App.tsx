@@ -39,10 +39,27 @@ import {
   Info,
   Check,
   X,
-  UserCheck
+  UserCheck,
+  Sun,
+  Moon
 } from 'lucide-react';
 
 export default function App() {
+  // ── Theme State ────────────────────────────────────────────────────────────
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    return localStorage.getItem('nash_sim_theme') === 'dark';
+  });
+
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('nash_sim_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('nash_sim_theme', 'light');
+    }
+  }, [darkMode]);
+
   // ── Authentication & Saved Games States ────────────────────────────────────
   const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('nash_sim_token'));
   const [user, setUser] = useState<{ id: string; username: string; email: string } | null>(null);
@@ -694,33 +711,42 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col antialiased">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col antialiased">
       {/* ── Heading Banner ── */}
-      <header className="bg-white border-b border-slate-200 py-4 px-6 sticky top-0 z-30 shadow-subtle">
+      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 py-4 px-6 sticky top-0 z-30 shadow-subtle">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5">
-              <span className="p-2 bg-rose-50 text-rose-600 rounded-xl">
+              <span className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl">
                 <Compass className="w-5.5 h-5.5" />
               </span>
-              <h1 className="text-lg md:text-xl font-bold text-slate-900 tracking-tight">
+              <h1 className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
                 Nash Equilibrium Simulator
               </h1>
             </div>
-            <p className="text-[11px] md:text-xs text-slate-500 mt-0.5">
+            <p className="text-[11px] md:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Visualise Best-Response dynamics, 3D expected payoff surfaces, and mixed strategy search corridor shrinkage algorithms.
             </p>
           </div>
           <div className="flex items-center flex-wrap gap-2.5">
+            {/* Theme Toggle Button */}
+            <button
+              onClick={() => setDarkMode(!darkMode)}
+              className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+            </button>
+
             {user ? (
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200/80 pl-2.5 pr-1 py-1 rounded-xl">
+              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-xs font-semibold text-slate-700 truncate max-w-[120px]" title={user.email}>
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[120px]" title={user.email}>
                   @{user.username}
                 </span>
                 <button
                   onClick={handleLogout}
-                  className="text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                  className="text-xs font-medium text-slate-400 dark:text-slate-400 hover:text-red-500 hover:bg-red-50/50 dark:hover:bg-red-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
                 >
                   Log out
                 </button>
@@ -740,7 +766,7 @@ export default function App() {
             )}
             
             {simState.converged && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-emerald-100/90 text-emerald-800 py-1.5 px-3 rounded-full border border-emerald-200">
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1.5 px-3 rounded-full border border-emerald-200 dark:border-emerald-800">
                 <CheckCircle2 className="w-3.5 h-3.5" /> Converged
               </span>
             )}
@@ -754,8 +780,8 @@ export default function App() {
         <div className="lg:col-span-5 flex flex-col gap-6">
           
           {/* Preset Buttons Block */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-4">
-            <div className="flex items-center gap-2 text-slate-800 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 pb-2">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
+            <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-2">
               <BookOpen className="w-4 h-4 text-rose-500" />
               Standard Scenarios
             </div>
@@ -769,7 +795,7 @@ export default function App() {
                     className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all text-center cursor-pointer ${
                       isSelected
                         ? 'bg-rose-500 text-white border-rose-500 shadow-xs'
-                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                        : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white'
                     }`}
                   >
                     {PRESETS[key].name}
@@ -779,7 +805,7 @@ export default function App() {
             </div>
 
             {/* User Custom Saved Games Segment */}
-            <div className="flex items-center justify-between text-slate-800 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 pt-1.5 pb-2">
+            <div className="flex items-center justify-between text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
               <div className="flex items-center gap-2">
                 <Award className="w-4 h-4 text-indigo-500" />
                 Custom Game presets
@@ -790,7 +816,7 @@ export default function App() {
                     setSaveError('');
                     setIsSaveModalOpen(true);
                   }}
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/50 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200/50 dark:border-indigo-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
                 >
                   <Plus className="w-3 h-3" /> Save payoff
                 </button>
@@ -798,7 +824,7 @@ export default function App() {
             </div>
 
             {!user ? (
-              <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200/60 rounded-xl p-3 text-center">
+              <div className="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-950/30 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 text-center">
                 <span>Want to name and save custom presets? </span>
                 <button
                   onClick={() => {
@@ -807,14 +833,14 @@ export default function App() {
                     setAuthMode('login');
                     setIsAuthModalOpen(true);
                   }}
-                  className="font-bold text-blue-600 hover:underline cursor-pointer"
+                  className="font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
                 >
                   Sign in here
                 </button>
               </div>
             ) : userCustomGames.length === 0 ? (
-              <div className="text-xs text-slate-400 bg-slate-50/70 border border-dashed border-slate-200 rounded-xl p-4 text-center">
-                No saved custom games. Adapt payoffs and click <strong className="text-indigo-600">Save payoff</strong> to persist your first game!
+              <div className="text-xs text-slate-400 dark:text-slate-500 bg-slate-50/70 dark:bg-slate-950/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-4 text-center">
+                No saved custom games. Adapt payoffs and click <strong className="text-indigo-600 dark:text-indigo-400">Save payoff</strong> to persist your first game!
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1">
@@ -826,7 +852,7 @@ export default function App() {
                       className={`group flex items-center justify-between p-2 pl-3 rounded-xl border transition-all ${
                         isSelected
                           ? 'bg-indigo-500 border-indigo-500 text-white shadow-xs'
-                          : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80 text-slate-700'
+                          : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-800 hover:bg-slate-100/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
                       }`}
                     >
                       <button
@@ -844,7 +870,7 @@ export default function App() {
                         className={`p-1 rounded-md transition-colors cursor-pointer ${
                           isSelected
                             ? 'text-indigo-100 hover:text-white hover:bg-indigo-600'
-                            : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
+                            : 'text-slate-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40'
                         }`}
                         title="Delete this game description"
                       >
@@ -859,34 +885,34 @@ export default function App() {
             {/* Selected Preset Narrative Card */}
             {mergedPresets[activePreset]?.desc && (
               <div
-                className="text-xs text-slate-600 leading-relaxed bg-amber-50/50 border border-amber-200/50 rounded-xl p-3"
+                className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3"
                 dangerouslySetInnerHTML={{ __html: mergedPresets[activePreset].desc }}
               />
             )}
           </div>
 
           {/* Payoff Matrix Editor Block */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <div className="flex items-center gap-2 text-slate-800 font-semibold text-sm">
+          <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+              <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-sm">
                 <Sliders className="w-4 h-4 text-blue-500" />
                 Payoff Settings Grid — (
                 <span className="text-red-500 font-semibold font-mono">A</span>,{' '}
-                <span className="text-blue-600 font-semibold font-mono">B</span>)
+                <span className="text-blue-600 dark:text-blue-400 font-semibold font-mono">B</span>)
               </div>
-              <span className="text-[10px] text-slate-400 font-mono">Range: [-100, 100]</span>
+              <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
             </div>
 
             <div className="grid grid-cols-[auto_1fr_1fr] gap-3 text-center items-center">
-              <div className="text-xs font-bold text-slate-400 pr-2 text-left">Tactics</div>
-              <div className="text-xs font-bold text-blue-600">B: Col 1</div>
-              <div className="text-xs font-bold text-blue-600">B: Col 2</div>
+              <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
+              <div className="text-xs font-bold text-blue-600 dark:text-blue-400">B: Col 1</div>
+              <div className="text-xs font-bold text-blue-600 dark:text-blue-400">B: Col 2</div>
 
               {/* Row 1 inputs */}
               <div className="text-xs font-bold text-red-500 text-left pr-2">A: Row 1</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 rounded-xl p-1.5 bg-slate-50 focus-within:ring-2 focus-within:ring-blue-100 focus-within:border-slate-300 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a11}
@@ -894,20 +920,20 @@ export default function App() {
                   onBlur={() => handlePayoffBlur('a11')}
                   className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
-                <span className="text-slate-300 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b11}
                   onChange={(e) => updatePayoffField('b11', e.target.value)}
                   onBlur={() => handlePayoffBlur('b11')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 rounded-xl p-1.5 bg-slate-50 focus-within:ring-2 focus-within:ring-blue-100 focus-within:border-slate-300 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a12}
@@ -915,23 +941,23 @@ export default function App() {
                   onBlur={() => handlePayoffBlur('a12')}
                   className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
-                <span className="text-slate-300 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b12}
                   onChange={(e) => updatePayoffField('b12', e.target.value)}
                   onBlur={() => handlePayoffBlur('b12')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
 
               {/* Row 2 inputs */}
               <div className="text-xs font-bold text-red-500 text-left pr-2">A: Row 2</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 rounded-xl p-1.5 bg-slate-50 focus-within:ring-2 focus-within:ring-blue-100 focus-within:border-slate-300 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a21}
@@ -939,20 +965,20 @@ export default function App() {
                   onBlur={() => handlePayoffBlur('a21')}
                   className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
-                <span className="text-slate-300 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b21}
                   onChange={(e) => updatePayoffField('b21', e.target.value)}
                   onBlur={() => handlePayoffBlur('b21')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 rounded-xl p-1.5 bg-slate-50 focus-within:ring-2 focus-within:ring-blue-100 focus-within:border-slate-300 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a22}
@@ -960,15 +986,15 @@ export default function App() {
                   onBlur={() => handlePayoffBlur('a22')}
                   className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
-                <span className="text-slate-300 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                  type="text"
+                   type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b22}
                   onChange={(e) => updatePayoffField('b22', e.target.value)}
                   onBlur={() => handlePayoffBlur('b22')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
             </div>
@@ -997,8 +1023,8 @@ export default function App() {
           </div>
 
           {/* Configuration Parameters Panel */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-4">
-            <div className="text-slate-800 font-semibold text-sm border-b border-slate-100 pb-2 pb-2">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
+            <div className="text-slate-800 dark:text-slate-200 font-semibold text-sm border-b border-slate-100 dark:border-slate-800 pb-2">
               Simulation Coordinates & Parameters
             </div>
 
@@ -1016,11 +1042,11 @@ export default function App() {
                     setX0(e.target.value);
                     setInitialized(false);
                   }}
-                  className="w-full font-mono text-sm bg-slate-50 border border-slate-200 p-2 rounded-xl focus:ring-rose-200 focus:outline-none"
+                  className="w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 rounded-xl focus:ring-rose-200 focus:outline-none"
                 />
               </div>
               <div>
-                <label className="block text-xs text-blue-600 font-semibold mb-1">Col Start Point (y₀)</label>
+                <label className="block text-xs text-blue-600 dark:text-blue-405 font-semibold mb-1">Col Start Point (y₀)</label>
                 <input
                   type="number"
                   min="0.0"
@@ -1031,14 +1057,14 @@ export default function App() {
                     setY0(e.target.value);
                     setInitialized(false);
                   }}
-                  className="w-full font-mono text-sm bg-slate-50 border border-slate-200 p-2 rounded-xl focus:ring-blue-100 focus:outline-none"
+                  className="w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 rounded-xl focus:ring-blue-105 focus:outline-none"
                 />
               </div>
             </div>
 
             {/* Who moves first choice */}
             <div>
-              <label className="block text-xs text-slate-600 font-medium mb-1.5">Who moves first?</label>
+              <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Who moves first?</label>
               <div className="grid grid-cols-2 gap-2">
                 {(['A', 'B'] as const).map((player) => {
                   const active = firstMover === player;
@@ -1054,7 +1080,7 @@ export default function App() {
                           ? player === 'A'
                             ? 'bg-red-500 text-white border-red-500'
                             : 'bg-blue-600 text-white border-blue-600'
-                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                          : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                       }`}
                     >
                       Player {player}
@@ -1066,7 +1092,7 @@ export default function App() {
 
             {/* visual tracking choice */}
             <div>
-              <label className="block text-xs text-slate-600 font-medium mb-1.5">Expected Payoff Surface Tracking</label>
+              <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Expected Payoff Surface Tracking</label>
               <div className="grid grid-cols-3 gap-1.5">
                 {(['A', 'B', 'both'] as const).map((m) => {
                   const active = trackingMode === m;
@@ -1081,7 +1107,7 @@ export default function App() {
                             : m === 'B'
                               ? 'bg-blue-600 text-white border-blue-600'
                               : 'bg-purple-600 text-white border-purple-600'
-                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                          : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                       }`}
                     >
                       {m === 'both' ? 'Both Plots' : `Player ${m}`}
@@ -1093,7 +1119,7 @@ export default function App() {
 
             {/* Domain Shrink Value */}
             <div>
-              <div className="flex items-center justify-between text-xs text-slate-600 font-medium mb-1">
+              <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 font-medium mb-1">
                 <span>Initial Domain Shrink Step Size</span>
                 <span className="font-mono font-semibold text-rose-500">{shrinkStep.toFixed(3)}</span>
               </div>
@@ -1104,9 +1130,9 @@ export default function App() {
                 step="0.001"
                 value={shrinkStep}
                 onChange={(e) => setShrinkStep(parseFloat(e.target.value))}
-                className="w-full accent-rose-500 h-1 bg-slate-100 rounded-lg appearance-none cursor-pointer"
+                className="w-full accent-rose-500 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
-              <span className="text-[10px] text-slate-400 mt-1 block">
+              <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 block">
                 Shrinking step near equilibrium converges automatically to 0.001.
               </span>
             </div>
@@ -1135,10 +1161,11 @@ export default function App() {
             simState={simState}
             trackingMode={trackingMode}
             allNE={allNE}
+            isDark={darkMode}
           />
 
           {/* Simulation Controls Dashboard */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-4">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
             
             {/* Play trigger buttons row */}
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -1165,7 +1192,7 @@ export default function App() {
                 <button
                   onClick={handleStep}
                   disabled={simState.running || simState.converged}
-                  className="flex items-center gap-1.5 py-2 px-4 text-sm font-semibold rounded-xl border border-slate-200 text-indigo-600 bg-indigo-50/50 hover:bg-indigo-50 transition-all disabled:opacity-50 disabled:bg-slate-50 disabled:text-slate-400 disabled:border-slate-200"
+                  className="flex items-center gap-1.5 py-2 px-4 text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-all disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-700"
                 >
                   <SkipForward className="w-4 h-4" /> Step
                 </button>
@@ -1173,14 +1200,14 @@ export default function App() {
                 <button
                   onClick={handleBackstep}
                   disabled={simState.running || simState.historyStack.length === 0}
-                  className="flex items-center gap-1 py-2 px-3 text-sm font-medium rounded-xl border border-slate-300 text-slate-600 hover:bg-slate-50 transition-all disabled:opacity-40"
+                  className="flex items-center gap-1 py-2 px-3 text-sm font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
                 >
                   <ChevronLeft className="w-4 h-4" /> Back
                 </button>
 
                 <button
                   onClick={handleReset}
-                  className="flex items-center gap-1 py-2 px-3 text-sm font-medium rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 transition-all"
+                  className="flex items-center gap-1 py-2 px-3 text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
                 >
                   <RotateCcw className="w-4 h-4" /> Reset
                 </button>
@@ -1188,14 +1215,14 @@ export default function App() {
 
               {/* Speed slider */}
               <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500 font-medium">Loop Speed</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Loop Speed</span>
                 <input
                   type="range"
                   min="1"
                   max="10"
                   value={speed}
                   onChange={(e) => setSpeed(parseInt(e.target.value))}
-                  className="w-20 accent-indigo-600 h-1 bg-slate-100 rounded-lg appearance-none cursor-pointer"
+                  className="w-20 accent-indigo-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
                 />
                 <span className="text-xs font-mono text-slate-400 font-semibold">{speed}x</span>
               </div>
@@ -1203,82 +1230,80 @@ export default function App() {
 
             {/* Realtime coordinates outputs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+              <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <span className="text-[10px] text-red-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
                 </span>
-                <span className="text-sm font-bold text-slate-800 font-mono">
+                <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
                   {simState.cx.toFixed(3)}
                 </span>
               </div>
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                <span className="text-[10px] text-blue-600 font-semibold uppercase block tracking-wider">
+              <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                <span className="text-[10px] text-blue-600 dark:text-blue-405 font-semibold uppercase block tracking-wider">
                   y: P(B playing Col 1)
                 </span>
-                <span className="text-sm font-bold text-slate-800 font-mono">
+                <span className="text-sm font-bold text-slate-805 dark:text-slate-200 font-mono">
                   {simState.cy.toFixed(3)}
                 </span>
               </div>
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                <span className="text-[10px] text-slate-500 uppercase block tracking-wider">
+              <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block tracking-wider">
                   Expected Payoff E[A]
                 </span>
                 <span className="text-sm font-bold text-red-500 font-mono">
                   {r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}
                 </span>
               </div>
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                <span className="text-[10px] text-slate-500 uppercase block tracking-wider">
+              <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block tracking-wider">
                   Expected Payoff E[B]
                 </span>
-                <span className="text-sm font-bold text-blue-600 font-mono">
+                <span className="text-sm font-bold text-blue-600 dark:text-blue-405 font-mono">
                   {r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}
                 </span>
               </div>
             </div>
           </div>
-
-          {/* Converged banner card */}
           {simState.converged && nearestNE && (
             <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${
               nearestNE.type === 'mixed'
-                ? 'bg-purple-50 border-purple-200'
-                : 'bg-emerald-50 border-emerald-200'
+                ? 'bg-purple-50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800/60'
+                : 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60'
             }`}>
               <div className="flex items-center gap-2">
                 <span className={`p-1.5 rounded-lg ${
-                  nearestNE.type === 'mixed' ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700'
+                  nearestNE.type === 'mixed' ? 'bg-purple-105 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300' : 'bg-emerald-105 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
                 }`}>
                   <Award className="w-5 h-5" />
                 </span>
                 <span className={`text-sm font-bold uppercase tracking-wider ${
-                  nearestNE.type === 'mixed' ? 'text-purple-900' : 'text-emerald-900'
+                  nearestNE.type === 'mixed' ? 'text-purple-900 dark:text-purple-200' : 'text-emerald-900 dark:text-emerald-200'
                 }`}>
                   {nearestNE.type === 'mixed' ? 'Mixed' : 'Pure'} Strategy Nash Equilibrium Reached
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 py-3 bg-white/75 px-4 rounded-xl border border-slate-100 text-xs shadow-3xs">
-                <span>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 py-3 bg-white/75 dark:bg-slate-900/65 px-4 rounded-xl border border-slate-100 dark:border-slate-800 text-xs shadow-3xs">
+                <span className="text-slate-600 dark:text-slate-350">
                   x* = <strong className="text-red-500 font-mono">{simState.cx.toFixed(3)}</strong>
                 </span>
-                <span>
-                  y* = <strong className="text-blue-600 font-mono">{simState.cy.toFixed(3)}</strong>
+                <span className="text-slate-600 dark:text-slate-350">
+                  y* = <strong className="text-blue-600 dark:text-blue-405 font-mono">{simState.cy.toFixed(3)}</strong>
                 </span>
-                <span>
-                  Payoff E[A] = <strong className="text-slate-800 font-mono">{r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}</strong>
+                <span className="text-slate-600 dark:text-slate-350">
+                  Payoff E[A] = <strong className="text-slate-800 dark:text-slate-200 font-mono">{r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}</strong>
                 </span>
-                <span>
-                  Payoff E[B] = <strong className="text-slate-800 font-mono">{r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}</strong>
+                <span className="text-slate-600 dark:text-slate-350">
+                  Payoff E[B] = <strong className="text-slate-800 dark:text-slate-200 font-mono">{r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}</strong>
                 </span>
               </div>
 
-              <div className="bg-white/50 p-3.5 rounded-xl border border-slate-100 text-xs font-mono text-slate-600 space-y-1">
+              <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-350 space-y-1">
                 {nearestNE.type === 'mixed' ? (
                   <>
                     <div>A Indifferent: E[Row1]={r3(simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12).toFixed(3)} &asymp; E[Row2]={r3(simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22).toFixed(3)}</div>
                     <div>B Indifferent: E[Col1]={r3(simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21).toFixed(3)} &asymp; E[Col2]={r3(simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22).toFixed(3)}</div>
-                    <div className="text-[10px] text-slate-400 mt-2 font-sans font-medium">
+                    <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
                       Resolved via {simState.cycleCount} contraction cycles of search corridors.
                     </div>
                   </>
@@ -1292,19 +1317,19 @@ export default function App() {
           )}
 
           {/* Game situation description box */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-3 text-xs leading-relaxed text-slate-600 h-fit">
-            <div className="text-slate-800 font-semibold text-sm border-b border-rose-100/50 pb-2 flex items-center gap-1.5">
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300 h-fit">
+            <div className="text-slate-800 dark:text-slate-105 font-semibold text-sm border-b border-rose-100/50 dark:border-slate-800 pb-2 flex items-center gap-1.5">
               <Compass className="w-4 h-4 text-emerald-500" />
               Game Theorist Situation Report
             </div>
             
             <div className="space-y-3">
               <div>
-                <strong className="text-slate-700">Calculated Nash Equilibria:</strong>
-                <ul className="list-disc pl-5 mt-1 text-slate-600 space-y-1">
+                <strong className="text-slate-700 dark:text-slate-200">Calculated Nash Equilibria:</strong>
+                <ul className="list-disc pl-5 mt-1 text-slate-600 dark:text-slate-300 space-y-1">
                   {allNE.map((ne, idx) => (
                     <li key={idx}>
-                      <span className={`font-semibold ${ne.type === 'mixed' ? 'text-purple-600' : 'text-slate-800'}`}>
+                      <span className={`font-semibold ${ne.type === 'mixed' ? 'text-purple-600 dark:text-purple-400' : 'text-slate-800 dark:text-slate-100'}`}>
                         {ne.label}
                       </span>{' '}
                       with values E[A]={ne.eA.toFixed(3)}, E[B]={ne.eB.toFixed(3)}
@@ -1317,9 +1342,9 @@ export default function App() {
               </div>
 
               {indifferenceStatus.any && (
-                <div className="bg-amber-50/70 border border-amber-200/50 rounded-xl p-3.5 text-[11px] text-amber-800 space-y-1.5 shadow-sm leading-relaxed">
-                  <div className="font-semibold flex items-center gap-1.5 text-amber-900">
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <div className="bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/30 rounded-xl p-3.5 text-[11px] text-amber-800 dark:text-amber-300 space-y-1.5 shadow-sm leading-relaxed">
+                  <div className="font-semibold flex items-center gap-1.5 text-amber-900 dark:text-amber-100">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-405 shrink-0" />
                     Flat Payoffs & Indifference Notice
                   </div>
                   {indifferenceStatus.both ? (
@@ -1338,10 +1363,10 @@ export default function App() {
                 </div>
               )}
 
-              <div className="text-slate-500">
+              <div className="text-slate-500 dark:text-slate-400">
                 {pureNEs.length === 0 && mixedNE ? (
                   <p>
-                    No pure strategy NE coordinates exist. The best-response trajectory forms stable cyclic loops, letting our domain-shrinking algorithm narrow down the search corridor boundaries until they safely contract and lock directly onto the <strong className="text-purple-600 font-bold">Mixed NE</strong>.
+                    No pure strategy NE coordinates exist. The best-response trajectory forms stable cyclic loops, letting our domain-shrinking algorithm narrow down the search corridor boundaries until they safely contract and lock directly onto the <strong className="text-purple-600 dark:text-purple-400 font-bold">Mixed NE</strong>.
                   </p>
                 ) : pureNEs.length === 1 && !mixedNE ? (
                   <p>
@@ -1353,7 +1378,7 @@ export default function App() {
                       Multiple pure equilibria exist as well as a mixed NE which is unstable under best-response dynamics.
                     </p>
                     {committedNE && (
-                      <p className="font-semibold text-emerald-700 bg-emerald-50/50 rounded-xl p-2.5 border border-emerald-100">
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
                         Player {firstMover} initiates and commits to: {committedNE.label} (payoff A = {committedNE.eA.toFixed(3)}, B = {committedNE.eB.toFixed(3)}).
                       </p>
                     )}
@@ -1364,13 +1389,14 @@ export default function App() {
                       Multiple pure equilibria coexist. The first-mover can secure a first-mover advantage, committing to play the target Row or Column that maximizes their own payoffs.
                     </p>
                     <p>
-                      Over time, any best-response steps from outer starting sectors migrate away from the mixed NE and lock into the <strong className="text-slate-800 font-medium">{pureNEs[0].label}</strong>.
+                      Over time, any best-response steps from outer starting sectors migrate away from the mixed NE and lock into the <strong className="text-slate-800 dark:text-slate-200 font-medium">{pureNEs[0].label}</strong>.
                     </p>
                   </div>
                 ) : null}
               </div>
             </div>
           </div>
+
 
           {/* Execution details logger browser */}
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-200">
@@ -1412,17 +1438,15 @@ export default function App() {
           </div>
         </div>
       </main>
-
-      {/* ── Auth Modal ── */}
       {isAuthModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white w-full max-w-md rounded-2xl border border-slate-200 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                <span className="p-1.5 bg-blue-50 dark:bg-blue-950/40 text-blue-600 rounded-lg">
                   <User className="w-4 h-4" />
                 </span>
-                <span className="font-bold text-slate-800 text-sm md:text-base">
+                <span className="font-bold text-slate-800 dark:text-slate-100 text-sm md:text-base">
                   {authMode === 'login' ? 'Sign In' : authMode === 'register' ? 'Create Account' : 'Verify Email'}
                 </span>
               </div>
@@ -1432,21 +1456,21 @@ export default function App() {
                   setAuthError('');
                   setAuthSuccess('');
                 }}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-350 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {authError && (
-              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl p-3 flex gap-2 font-medium">
+              <div className="bg-rose-50 dark:bg-rose-955/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
                 <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
                 <span>{authError}</span>
               </div>
             )}
 
             {authSuccess && (
-              <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs rounded-xl p-3 flex gap-3 font-medium">
+              <div className="bg-emerald-50 dark:bg-emerald-955/20 border border-emerald-200 dark:border-emerald-900/40 text-emerald-707 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-3 font-medium">
                 <Check className="w-4 h-4 shrink-0 text-emerald-500" />
                 <span>{authSuccess}</span>
               </div>
@@ -1455,12 +1479,12 @@ export default function App() {
             <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3.5">
               {authMode === 'register' && (
                 <div>
-                  <label className="block text-xs text-slate-500 font-bold mb-1">Username</label>
+                  <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Username</label>
                   <div className="relative">
                     <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                     <input
                       type="text"
-                      className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300"
+                      className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                       placeholder="game_theorist"
                       value={authUsername}
                       onChange={(e) => setAuthUsername(e.target.value)}
@@ -1473,12 +1497,12 @@ export default function App() {
               {(authMode === 'login' || authMode === 'register') && (
                 <>
                   <div>
-                    <label className="block text-xs text-slate-500 font-bold mb-1">Email Address</label>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email Address</label>
                     <div className="relative">
                       <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
                         type="email"
-                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder="john@example.com"
                         value={authEmail}
                         onChange={(e) => setAuthEmail(e.target.value)}
@@ -1488,12 +1512,12 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs text-slate-500 font-bold mb-1">Password</label>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Password</label>
                     <div className="relative">
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
                         type="password"
-                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder="••••••••"
                         value={authPassword}
                         onChange={(e) => setAuthPassword(e.target.value)}
@@ -1501,20 +1525,20 @@ export default function App() {
                       />
                     </div>
                     {authMode === 'register' && (
-                      <p className="text-[10px] text-slate-500 mt-1 leading-normal">
-                        Password requirement: <strong className="text-blue-600 font-semibold">Min 8 characters</strong> with at least <strong className="text-blue-600 font-semibold">one uppercase</strong> and <strong className="text-blue-600 font-semibold">one lowercase</strong> letter.
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-normal">
+                        Password requirement: <strong className="text-blue-600 dark:text-blue-400 font-semibold">Min 8 characters</strong> with at least <strong className="text-blue-600 dark:text-blue-400 font-semibold">one uppercase</strong> and <strong className="text-blue-600 dark:text-blue-400 font-semibold">one lowercase</strong> letter.
                       </p>
                     )}
                   </div>
 
                   {authMode === 'register' && (
                     <div>
-                      <label className="block text-xs text-slate-500 font-bold mb-1">Retype Password</label>
+                      <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Retype Password</label>
                       <div className="relative">
                         <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                         <input
                           type="password"
-                          className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-300 focus:border-slate-300"
+                          className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-300 dark:focus:ring-slate-700 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                           placeholder="••••••••"
                           value={authConfirmPassword}
                           onChange={(e) => setAuthConfirmPassword(e.target.value)}
@@ -1538,13 +1562,13 @@ export default function App() {
               {authMode === 'verify' && (
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-xs text-slate-500 font-bold mb-1">6-Digit Confirmation Code</label>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">6-Digit Confirmation Code</label>
                     <div className="relative">
                       <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
                         type="text"
                         maxLength={6}
-                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300 text-center"
+                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300 text-center text-slate-800 dark:text-slate-200"
                         placeholder="123456"
                         value={authCode}
                         onChange={(e) => setAuthCode(e.target.value.replace(/\D/g, ''))}
@@ -1564,7 +1588,7 @@ export default function App() {
               </button>
             </form>
 
-            <div className="border-t border-slate-100 pt-3.5 text-center text-[11px] text-slate-500 font-medium">
+            <div className="border-t border-slate-100 dark:border-slate-800 pt-3.5 text-center text-[11px] text-slate-500 dark:text-slate-400 font-medium">
               {authMode === 'login' ? (
                 <span>
                   Don't have an account?{' '}
@@ -1616,13 +1640,13 @@ export default function App() {
       {/* ── Save Custom Game Modal ── */}
       {isSaveModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white w-full max-w-md rounded-2xl border border-slate-200 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                <span className="p-1.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 rounded-lg">
                   <Award className="w-4 h-4" />
                 </span>
-                <span className="font-bold text-slate-800 text-sm md:text-base">
+                <span className="font-bold text-slate-801 dark:text-slate-100 text-sm md:text-base">
                   Save Custom Game payoffs
                 </span>
               </div>
@@ -1631,22 +1655,22 @@ export default function App() {
                   setIsSaveModalOpen(false);
                   setSaveError('');
                 }}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                className="text-slate-400 hover:text-slate-605 dark:hover:text-slate-350 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4 text-slate-400" />
               </button>
             </div>
 
             {saveError && (
-              <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl p-3 flex gap-2 font-medium">
+              <div className="bg-rose-50 dark:bg-rose-955/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
                 <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
                 <span>{saveError}</span>
               </div>
             )}
 
-            <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 text-[11px] leading-relaxed text-slate-600">
-              <span className="font-semibold text-slate-700">Payload to be saved:</span>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[10px] text-slate-500 mt-1.5">
+            <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
+              <span className="font-semibold text-slate-700 dark:text-slate-250">Payload to be saved:</span>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[10px] text-slate-500 dark:text-slate-400 mt-1.5">
                 <div>(Row 1, Col 1) = ({payoffs.a11}, {payoffs.b11})</div>
                 <div>(Row 1, Col 2) = ({payoffs.a12}, {payoffs.b12})</div>
                 <div>(Row 2, Col 1) = ({payoffs.a21}, {payoffs.b21})</div>
@@ -1656,10 +1680,10 @@ export default function App() {
 
             <form onSubmit={handleSaveGameSubmit} className="flex flex-col gap-3.5">
               <div>
-                <label className="block text-xs text-slate-500 font-bold mb-1">Game Name</label>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
                 <input
                   type="text"
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-955/20 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   placeholder="e.g. Battle of the Sexes 2.0"
                   value={saveName}
                   onChange={(e) => setSaveName(e.target.value)}
@@ -1669,9 +1693,9 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xs text-slate-500 font-bold mb-1">Game Description</label>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
                 <textarea
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-24 resize-none"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-955/20 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   value={saveDesc}
                   onChange={(e) => setSaveDesc(e.target.value)}
@@ -1679,11 +1703,11 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex gap-2 justify-end border-t border-slate-100 pt-3.5">
+              <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
                 <button
                   type="button"
                   onClick={() => setIsSaveModalOpen(false)}
-                  className="px-4 py-2 hover:bg-slate-105 border border-slate-200 text-slate-600 rounded-xl text-xs font-semibold cursor-pointer"
+                  className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -1702,4 +1726,3 @@ export default function App() {
     </div>
   );
 }
-

@@ -29,6 +29,7 @@
     "@types/node": "^22.14.0",
     "@types/nodemailer": "^8.0.0",
     "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
