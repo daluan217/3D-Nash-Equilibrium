@@ -152,11 +152,11 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   return (
     <div ref={containerRef} className={`w-full relative border rounded-xl p-2 md:p-4 shadow-sm h-[450px] ${isDark ? 'bg-black border-slate-800' : 'bg-white border-slate-200'}`}>
       {/* Floating 3D Navigation Controls */}
-      <div className={`absolute top-3 right-3 z-10 flex items-center gap-1 border p-1 rounded-xl shadow-xs ${isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
+      <div className={`absolute top-3 right-3 z-10 flex items-center gap-0.5 sm:gap-1 border p-1 rounded-xl shadow-xs ${isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
         <button
           type="button"
           onClick={() => setDragMode('turntable')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+          className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
             dragMode === 'turntable'
               ? isDark ? 'bg-blue-600/30 text-blue-400 border border-blue-500/30' : 'bg-blue-100 text-blue-700 border border-blue-200/50'
               : isDark ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent' : 'text-slate-500 hover:bg-slate-100 border border-transparent'
@@ -164,12 +164,12 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           title="Rotate view (Click & Drag)"
         >
           <Rotate3d className="w-3.5 h-3.5" />
-          <span>Rotate</span>
+          <span className="hidden sm:inline">Rotate</span>
         </button>
         <button
           type="button"
           onClick={() => setDragMode('pan')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+          className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
             dragMode === 'pan'
               ? isDark ? 'bg-blue-600/30 text-blue-400 border border-blue-500/30' : 'bg-blue-100 text-blue-700 border border-blue-200/50'
               : isDark ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent' : 'text-slate-500 hover:bg-slate-100 border border-transparent'
@@ -177,13 +177,13 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           title="Pan / Move view (Click & Drag)"
         >
           <Move className="w-3.5 h-3.5" />
-          <span>Pan</span>
+          <span className="hidden sm:inline">Pan</span>
         </button>
         <div className={`w-px h-5 mx-0.5 ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`} />
         <button
           type="button"
           onClick={() => setUiRevision(prev => prev + 1)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+          className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
             isDark
               ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent'
               : 'text-slate-500 hover:bg-slate-100 border border-transparent'
@@ -191,7 +191,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           title="Reset 3D camera to default perspective"
         >
           <RefreshCw className="w-3.5 h-3.5" />
-          <span>Reset View</span>
+          <span className="hidden sm:inline">Reset View</span>
         </button>
       </div>
 

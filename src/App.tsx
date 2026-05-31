@@ -910,9 +910,11 @@ export default function App() {
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-sm">
                 <Sliders className="w-4 h-4 text-blue-500" />
-                Payoff Settings Grid — (
-                <span className="text-red-500 font-semibold font-mono">A</span>,{' '}
-                <span className="text-blue-600 dark:text-blue-400 font-semibold font-mono">B</span>)
+                <span>
+                  Payoff Settings Grid — (
+                  <span className="text-red-500 font-semibold font-mono">A</span>,{' '}
+                  <span className="text-blue-600 dark:text-blue-400 font-semibold font-mono">B</span>)
+                </span>
               </div>
               <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
             </div>
@@ -1183,10 +1185,10 @@ export default function App() {
             
             {/* Play trigger buttons row */}
             <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <button
                   onClick={togglePlay}
-                  className={`flex items-center gap-1.5 py-2 px-5 text-sm font-semibold rounded-xl text-white transition-all shadow-xs ${
+                  className={`flex items-center gap-1 mt-0.5 py-2 px-3 sm:px-5 text-xs sm:text-sm font-semibold rounded-xl text-white transition-all shadow-xs ${
                     simState.running
                       ? 'bg-yellow-500 hover:bg-yellow-600'
                       : 'bg-indigo-600 hover:bg-indigo-700'
@@ -1194,11 +1196,11 @@ export default function App() {
                 >
                   {simState.running ? (
                     <>
-                      <Pause className="w-4 h-4 fill-white" /> Pause
+                      <Pause className="w-3.5 h-3.5 fill-white" /> Pause
                     </>
                   ) : (
                     <>
-                      <Play className="w-4 h-4 fill-white" /> Run
+                      <Play className="w-3.5 h-3.5 fill-white" /> Run
                     </>
                   )}
                 </button>
@@ -1206,24 +1208,24 @@ export default function App() {
                 <button
                   onClick={handleStep}
                   disabled={simState.running || simState.converged}
-                  className="flex items-center gap-1.5 py-2 px-4 text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-all disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-700"
+                  className="flex items-center gap-1 mt-0.5 py-2 px-2.5 sm:px-4 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-all disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-700"
                 >
-                  <SkipForward className="w-4 h-4" /> Step
+                  <SkipForward className="w-3.5 h-3.5" /> Step
                 </button>
 
                 <button
                   onClick={handleBackstep}
                   disabled={simState.running || simState.historyStack.length === 0}
-                  className="flex items-center gap-1 py-2 px-3 text-sm font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
+                  className="flex items-center gap-1 mt-0.5 py-2 px-2 sm:px-3 text-xs sm:text-sm font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
                 >
-                  <ChevronLeft className="w-4 h-4" /> Back
+                  <ChevronLeft className="w-3.5 h-3.5" /> Back
                 </button>
 
                 <button
                   onClick={handleReset}
-                  className="flex items-center gap-1 py-2 px-3 text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                  className="flex items-center gap-1 mt-0.5 py-2 px-2 sm:px-3 text-xs sm:text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
                 >
-                  <RotateCcw className="w-4 h-4" /> Reset
+                  <RotateCcw className="w-3.5 h-3.5" /> Reset
                 </button>
               </div>
 
