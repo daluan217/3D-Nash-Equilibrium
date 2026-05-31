@@ -373,7 +373,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       {/* Labels */}
                       <text x="85" y="92" fill="#f43f5e" fontSize="9" fontWeight="extrabold" textAnchor="middle">Player A BR</text>
                       <text x="146" y="145" fill="#3b82f6" fontSize="9" fontWeight="extrabold" textAnchor="start">Player B BR</text>
-                      <text x="156" y="109" fill="#a855f7" fontSize="8" fontWeight="black" textAnchor="start">NASH INTERSECT</text>
+                      <text x="151" y="115" fill="#a855f7" fontSize="8" fontWeight="black" textAnchor="start">NASH INTERSECT</text>
                     </svg>
                   </div>
                 </div>

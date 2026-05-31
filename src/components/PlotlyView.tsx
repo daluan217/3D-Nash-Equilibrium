@@ -25,7 +25,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotId = 'plotly-3d-market-simulation';
-  const [dragMode, setDragMode] = useState<'orbit' | 'pan'>('orbit');
+  const [dragMode, setDragMode] = useState<'turntable' | 'pan'>('turntable');
   const [uiRevision, setUiRevision] = useState<number>(0);
 
   // Set up robust ResizeObserver to force Plotly bounds to sync with fluid flex columns
@@ -155,9 +155,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       <div className={`absolute top-3 right-3 z-10 flex items-center gap-1 border p-1 rounded-xl shadow-xs ${isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
         <button
           type="button"
-          onClick={() => setDragMode('orbit')}
+          onClick={() => setDragMode('turntable')}
           className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-            dragMode === 'orbit'
+            dragMode === 'turntable'
               ? isDark ? 'bg-blue-600/30 text-blue-400 border border-blue-500/30' : 'bg-blue-100 text-blue-700 border border-blue-200/50'
               : isDark ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent' : 'text-slate-500 hover:bg-slate-100 border border-transparent'
           }`}
