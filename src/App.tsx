@@ -41,8 +41,11 @@ import {
   X,
   UserCheck,
   Sun,
-  Moon
+  Moon,
+  Menu
 } from 'lucide-react';
+
+import { MenuDrawer } from './components/MenuDrawer';
 
 export default function App() {
   // ── Theme State ────────────────────────────────────────────────────────────
@@ -64,6 +67,7 @@ export default function App() {
   const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('nash_sim_token'));
   const [user, setUser] = useState<{ id: string; username: string; email: string } | null>(null);
   const [userCustomGames, setUserCustomGames] = useState<any[]>([]);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   
   // Auth Modal States
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -736,6 +740,16 @@ export default function App() {
               title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
             >
               {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+            </button>
+
+            {/* Slideout Menu Toggle Button */}
+            <button
+              id="menu-toggle-btn"
+              onClick={() => setIsMenuOpen(true)}
+              className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer animate-pulse-once"
+              title="Open Workspace Center"
+            >
+              <Menu className="w-4 h-4" />
             </button>
 
             {user ? (
@@ -1723,6 +1737,26 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Slideout workspace center menu drawer */}
+      <MenuDrawer
+        isOpen={isMenuOpen}
+        onClose={() => setIsMenuOpen(false)}
+        user={user}
+        authToken={authToken}
+        userCustomGames={userCustomGames}
+        onDeleteCustomGame={handleDeleteGame}
+        onLoadPreset={handleLoadPreset}
+        activePreset={activePreset}
+        isDark={darkMode}
+        onLogout={handleLogout}
+        onOpenAuth={() => {
+          setAuthError('');
+          setAuthSuccess('');
+          setAuthMode('login');
+          setIsAuthModalOpen(true);
+        }}
+      />
     </div>
   );
 }

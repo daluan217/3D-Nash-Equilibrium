@@ -42,6 +42,8 @@ interface User {
   isVerified: boolean;
   verificationCode: string;
   verificationCodeExpires: number;
+  deleteCode?: string;
+  deleteCodeExpires?: number;
 }
 
 interface DB {
@@ -156,6 +158,51 @@ async function sendVerificationEmail(email: string, code: string, username: stri
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
     console.error("Failed to send email via custom SMTP, error details:", err);
+    throw new Error(`SMTP Mail delivery failed: ${err.message}`);
+  }
+}
+
+async function sendDeleteEmail(email: string, code: string, username: string): Promise<{ success: boolean; via: string; messageId?: string; }> {
+  const transporter = getTransporter();
+  const from = process.env.SMTP_FROM || `"Nash Equilibrium Simulator" <noreply@example.com>`;
+
+  const htmlContent = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 500px; margin: 0 auto; border: 1px solid #fecaca; border-radius: 16px; padding: 32px; box-shadow: 0 4px 12px rgba(220, 38, 38, 0.03); background-color: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <span style="font-size: 32px; display: inline-block; margin-bottom: 8px;">⚠️</span>
+        <h2 style="margin: 0; color: #991b1b; font-size: 20px; font-weight: 800; tracking-tight: -0.025em;">Confirm Account Deletion</h2>
+      </div>
+      <p style="color: #334155; font-size: 15px; line-height: 1.6; margin-bottom: 16px;">Hello <strong>@${username}</strong>,</p>
+      <p style="color: #475569; font-size: 14.5px; line-height: 1.6; margin-bottom: 24px;">We received a request to permanently delete your Nash Equilibrium Simulator account. This action cannot be undone. To proceed, please enter this security confirmation code into the simulator's deletion screen:</p>
+      
+      <div style="text-align: center; margin: 28px 0;">
+        <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 32px; font-weight: 800; letter-spacing: 5px; color: #dc2626; background: #fef2f2; padding: 14px 28px; border: 2px solid #fca5a5; border-radius: 14px; display: inline-block;">
+          ${code}
+        </span>
+      </div>
+
+      <p style="color: #64748b; font-size: 12.5px; line-height: 1.6; margin-top: 28px; border-top: 1px solid #f1f5f9; padding-top: 18px; text-align: center;">
+        If you did not request to delete your account, please ignore this message and consider changing your password. This deletion confirmation code expires in 10 minutes.
+      </p>
+    </div>
+  `;
+
+  if (!transporter) {
+    throw new Error("SMTP configuration is incomplete/missing in .env.");
+  }
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to: email,
+      subject: `Confirm Account Deletion Request: ${code}`,
+      text: `Your account deletion security code is: ${code}. It expires in 10 minutes.`,
+      html: htmlContent,
+    });
+    console.log("Account Deletion confirmation email sent successfully:", info.messageId);
+    return { success: true, via: "smtp", messageId: info.messageId };
+  } catch (err: any) {
+    console.error("Failed to send deletion confirmation email, error details:", err);
     throw new Error(`SMTP Mail delivery failed: ${err.message}`);
   }
 }
@@ -349,6 +396,88 @@ async function startServer() {
       id: user.id,
       username: user.username,
       email: user.email
+    });
+  });
+
+  // Request account deletion code
+  app.post("/api/auth/delete-request", async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized access." });
+    }
+    const token = authHeader.split(" ")[1];
+    const db = loadDB();
+    const user = db.users.find(u => u.id === token);
+
+    if (!user) {
+      return res.status(401).json({ error: "Invalid session." });
+    }
+
+    const deleteCode = Math.floor(100000 + Math.random() * 900000).toString();
+    user.deleteCode = deleteCode;
+    user.deleteCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    saveDB(db);
+
+    try {
+      await sendDeleteEmail(user.email, deleteCode, user.username);
+      res.json({
+        success: true,
+        message: "A 6-digit confirmation security code has been sent to your email address."
+      });
+    } catch (err: any) {
+      console.error("Account deletion request failed to send email:", err);
+      res.status(500).json({
+        error: `Could not send verification email: ${err.message}. Please verify your network or SMTP config.`
+      });
+    }
+  });
+
+  // Verify deletion code and delete account
+  app.post("/api/auth/delete-confirm", (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized access." });
+    }
+    const token = authHeader.split(" ")[1];
+    const { code } = req.body;
+
+    if (!code) {
+      return res.status(400).json({ error: "Verification code is required." });
+    }
+
+    const db = loadDB();
+    const userIndex = db.users.findIndex(u => u.id === token);
+
+    if (userIndex === -1) {
+      return res.status(401).json({ error: "Invalid session or user not found." });
+    }
+
+    const user = db.users[userIndex];
+
+    if (!user.deleteCode || !user.deleteCodeExpires) {
+      return res.status(400).json({ error: "No active deletion request found for this account." });
+    }
+
+    if (user.deleteCodeExpires < Date.now()) {
+      return res.status(400).json({ error: "Deletion confirmation code has expired. Please request a new one." });
+    }
+
+    if (user.deleteCode !== code) {
+      return res.status(400).json({ error: "Incorrect verification code." });
+    }
+
+    // Clean up corresponding games saved by team space
+    db.games = db.games.filter(g => g.userId !== user.id);
+
+    // Delete the user record
+    db.users.splice(userIndex, 1);
+
+    saveDB(db);
+
+    res.json({
+      success: true,
+      message: "Your account and all saved game profiles have been successfully deleted from our records."
     });
   });
 

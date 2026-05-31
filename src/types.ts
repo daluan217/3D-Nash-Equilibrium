@@ -26,6 +26,10 @@ export interface PresetGame {
   a22?: number;
   b22?: number;
   desc: string;
+  row1Label?: string;
+  row2Label?: string;
+  col1Label?: string;
+  col2Label?: string;
 }
 
 export interface PathSegment {
