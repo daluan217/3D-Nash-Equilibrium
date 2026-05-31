@@ -176,7 +176,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1 px-2 hover:bg-slate-100 dark:hover:bg-slate-850 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
+            className="p-1 px-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -285,7 +285,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 {/* VISUAL AIDS GRID */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                   {/* Fig 1 */}
-                  <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-850 flex flex-col items-center">
+                  <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center">
                     <span className="text-[10px] uppercase tracking-wider font-extrabold text-slate-450 dark:text-slate-500 mb-4 text-center">
                       Fig 1. Coordinate Grid & Strategy Axes
                     </span>
@@ -320,7 +320,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   </div>
 
                   {/* Fig 2 */}
-                  <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-850 flex flex-col items-center">
+                  <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center">
                     <span className="text-[10px] uppercase tracking-wider font-extrabold text-slate-450 dark:text-slate-500 mb-4 text-center">
                       Fig 2. Best-Response Intersections
                     </span>
@@ -387,7 +387,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 </h3>
 
                 <div className="grid grid-cols-1 gap-4">
-                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-850 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
+                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       Starting Point
                     </h4>
@@ -396,7 +396,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </p>
                   </div>
 
-                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-850 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
+                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       Best Response Dynamics
                     </h4>
@@ -405,7 +405,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </p>
                   </div>
 
-                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-850 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
+                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       Convergence
                     </h4>
@@ -484,7 +484,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 </h3>
 
                 <div className="space-y-4">
-                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-850 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
+                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       What is Nash Equilibrium?
                     </h4>

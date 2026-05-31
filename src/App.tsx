@@ -866,7 +866,7 @@ export default function App() {
                       className={`group flex items-center justify-between p-2 pl-3 rounded-xl border transition-all ${
                         isSelected
                           ? 'bg-indigo-500 border-indigo-500 text-white shadow-xs'
-                          : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-800 hover:bg-slate-100/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
+                          : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:bg-slate-100/80 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
                       }`}
                     >
                       <button
@@ -1162,7 +1162,7 @@ export default function App() {
             <span className="flex items-center gap-1">🔵 E[B] Surface</span>
             <span className="flex items-center gap-1 text-red-500 font-medium">─ A Moves</span>
             <span className="flex items-center gap-1 text-blue-600 font-medium">─ B Moves</span>
-            <span className="flex items-center gap-1 text-slate-700 font-medium">⚫ Pure NE</span>
+            <span className="flex items-center gap-1 font-semibold" style={{ color: '#4ca47a' }}>◆ Pure NE</span>
             <span className="flex items-center gap-1 text-purple-600 font-bold">🟣 Mixed NE</span>
             <span className="flex items-center gap-1 text-emerald-600">⬚ Domain</span>
             <span className="flex items-center gap-1 text-orange-500">⬚ Search Corridor</span>
@@ -1697,7 +1697,7 @@ export default function App() {
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
                 <input
                   type="text"
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-955/20 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   placeholder="e.g. Battle of the Sexes 2.0"
                   value={saveName}
                   onChange={(e) => setSaveName(e.target.value)}
@@ -1709,7 +1709,7 @@ export default function App() {
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
                 <textarea
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-955/20 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   value={saveDesc}
                   onChange={(e) => setSaveDesc(e.target.value)}

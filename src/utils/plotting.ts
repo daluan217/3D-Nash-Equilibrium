@@ -401,7 +401,7 @@ export function makeTraces(
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [EA(ne.x, ne.y, g), EB(ne.x, ne.y, g)],
-          marker: { size: 10, color: '#222', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: 10, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       } else {
         const zP = trackingMode === 'B' ? EB(ne.x, ne.y, g) : EA(ne.x, ne.y, g);
@@ -413,7 +413,7 @@ export function makeTraces(
           x: [ne.x],
           y: [ne.y],
           z: [zP],
-          marker: { size: 10, color: '#222', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: 10, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       }
       pureShown = true;
