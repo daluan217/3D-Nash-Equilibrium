@@ -27,6 +27,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const plotId = 'plotly-3d-market-simulation';
   const [dragMode, setDragMode] = useState<'turntable' | 'pan'>('turntable');
   const [uiRevision, setUiRevision] = useState<number>(0);
+  const pinchStartDist = useRef<number | null>(null);
+  const pinchStartEye = useRef<{x: number; y: number; z: number} | null>(null);
 
   // Set up robust ResizeObserver to force Plotly bounds to sync with fluid flex columns
   useEffect(() => {
@@ -42,6 +44,52 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
 
     return () => {
       observer.disconnect();
+    };
+  }, []);
+
+  // Pinch-to-zoom: scale camera eye vector on two-finger pinch
+  useEffect(() => {
+    const el = document.getElementById(plotId);
+    if (!el) return;
+
+    const getDist = (t: TouchList) =>
+      Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      pinchStartDist.current = getDist(e.touches);
+      const Plotly = (window as any).Plotly;
+      const plotEl = document.getElementById(plotId) as any;
+      const eye = plotEl?._fullLayout?.scene?.camera?.eye;
+      pinchStartEye.current = eye
+        ? { x: eye.x, y: eye.y, z: eye.z }
+        : { x: 1.5, y: 1.5, z: 1.5 };
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || pinchStartDist.current === null || !pinchStartEye.current) return;
+      e.preventDefault();
+      const ratio = pinchStartDist.current / getDist(e.touches);
+      const { x, y, z } = pinchStartEye.current;
+      const Plotly = (window as any).Plotly;
+      Plotly?.relayout(plotId, {
+        'scene.camera.eye': { x: x * ratio, y: y * ratio, z: z * ratio }
+      });
+    };
+
+    const onTouchEnd = () => {
+      pinchStartDist.current = null;
+      pinchStartEye.current = null;
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
     };
   }, []);
 
