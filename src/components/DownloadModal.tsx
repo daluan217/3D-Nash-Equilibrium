@@ -220,7 +220,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               </pre>
             </div>
             <p className="text-[10px] text-slate-500 dark:text-slate-500 leading-relaxed">
-              Alternatively: open <strong className="text-slate-600 dark:text-slate-400">System Settings → Privacy & Security</strong>, scroll down, and click <strong className="text-slate-600 dark:text-slate-400">Open Anyway</strong> after the first blocked attempt.
+              After running the command, double-click the app to open it normally. You only need to do this once.
             </p>
           </div>
 
