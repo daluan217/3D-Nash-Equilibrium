@@ -1,0 +1,44 @@
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:$SHORT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:latest'
+      - '.'
+
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:$SHORT_SHA'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'nash-equilibrium-backend'
+      - '--image=gcr.io/$PROJECT_ID/nash-equilibrium-backend:$SHORT_SHA'
+      - '--region=us-east1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--set-env-vars=SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GEMINI_API_KEY=${_GEMINI_API_KEY}'
+      - '--memory=512Mi'
+      - '--cpu=1'
+      - '--timeout=3600'
+
+images:
+  - 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:$SHORT_SHA'
+  - 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:latest'
+
+# Substitutions for environment variables (set these in Cloud Build trigger)
+substitutions:
+  _SMTP_HOST: 'smtp.gmail.com'
+  _SMTP_PORT: '465'
+  _SMTP_USER: 'your-email@gmail.com'
+  _SMTP_PASS: 'your-app-password-here'
+  _SMTP_FROM: '"Nash Equilibrium Simulator" <your-email@gmail.com>'
+  _GEMINI_API_KEY: 'your-gemini-key-here'
