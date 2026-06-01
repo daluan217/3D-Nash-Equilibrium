@@ -34,34 +34,31 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
     setErrorMsg(null);
 
     try {
-      // Trigger API check/download
-      const res = await fetch('/api/download/dmg');
-      
-      // If server returned JSON, it means no physical DMG was found (not yet built in sandboxed site host)
-      if (res.headers.get('content-type')?.includes('application/json')) {
-        const data = await res.json();
-        setErrorMsg(data.message || 'No pre-compiled macOS installer found on the sandbox web server.');
+      // Check if DMG exists before triggering download
+      const res = await fetch('/api/download/dmg', { method: 'HEAD' }).catch(() =>
+        fetch('/api/download/dmg')
+      );
+
+      if (!res.ok || res.headers.get('content-type')?.includes('application/json')) {
+        const data = res.headers.get('content-type')?.includes('application/json')
+          ? await res.json()
+          : {};
+        setErrorMsg(data.message || 'No pre-compiled macOS installer found on the server.');
         setDownloading(false);
-      } else if (res.ok) {
-        // Trigger browser file download
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.style.display = 'none';
-        a.href = url;
-        a.download = 'Nash Equilibrium Simulator.dmg';
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        setDownloading(false);
-      } else {
-        throw new Error('Server returned error status code ' + res.status);
+        return;
       }
+
+      // Let the browser handle the download natively (avoids loading 120MB into JS heap)
+      const a = document.createElement('a');
+      a.href = '/api/download/dmg';
+      a.download = 'Nash Equilibrium Simulator.dmg';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setDownloading(false);
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(
-        'The DMG file was not found on the live web preview server. This is typical for sandboxed ephemeral containers. Please build it locally following the guide below!'
-      );
+      setErrorMsg('Could not reach the server. Please try again.');
       setDownloading(false);
     }
   };
@@ -199,24 +196,39 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             </div>
           )}
 
-          {/* Detailed usage and gatekeeper bypass details */}
-          <div className="border-t border-slate-150 dark:border-slate-800/80 pt-4 space-y-3.5 pr-2">
-            <h5 className="font-bold text-slate-800 dark:text-slate-100 text-xs flex items-center gap-1.5">
-              <HelpCircle className="w-4 h-4 text-indigo-500" /> Useful Desktop App Details
+          {/* macOS Gatekeeper notice — always visible */}
+          <div className="border border-amber-200 dark:border-amber-900/50 bg-amber-50/40 dark:bg-amber-950/10 rounded-xl p-4 space-y-3">
+            <h5 className="font-bold text-amber-700 dark:text-amber-400 text-xs flex items-center gap-1.5">
+              <AlertCircle className="w-4 h-4 shrink-0" /> macOS Security — Required Step After Download
             </h5>
-            
-            <ul className="text-[11px] leading-relaxed text-slate-550 dark:text-slate-400 pl-5 list-disc space-y-1.5">
-              <li>
-                <strong className="text-slate-800 dark:text-slate-200 font-semibold">Offline Database Support:</strong> The desktop application automatically migrates save registries and database states locally to a secure offline file sandbox.
-              </li>
-              <li>
-                <strong className="text-slate-800 dark:text-slate-200 font-semibold">Ad-Hoc Safe Executable:</strong> Because binary package registries bypass Apple Developer portal credentials (<code className="font-mono text-[10px]">identity: null</code> in code configs), macOS Gatekeeper might block initial double-click launch.
-              </li>
-              <li>
-                <strong className="text-slate-800 dark:text-slate-200 font-semibold flex items-center gap-1">How to bypass macOS Gatekeeper:</strong>
-                Simply <strong className="text-indigo-650 dark:text-indigo-400">Right-Click</strong> (or Control+Click) on the installed app icon icon, select <strong className="text-slate-800 dark:text-slate-200">Open</strong> from the contextual menu list, and approve the unnotarized prompt to permit launch!
-              </li>
-            </ul>
+            <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+              Because this app is not notarized through Apple, macOS will block it on first launch. Run this one-time command in <strong className="text-slate-700 dark:text-slate-300">Terminal</strong> after dragging the app to Applications:
+            </p>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase">Terminal command</span>
+                <button
+                  onClick={() => copyCode(`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`, 'xattr')}
+                  className="text-[10px] text-indigo-500 hover:text-indigo-600 font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  {copiedText === 'xattr' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                  Copy
+                </button>
+              </div>
+              <pre className="p-2.5 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-[10px] text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto whitespace-pre-wrap break-all">
+                {`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`}
+              </pre>
+            </div>
+            <p className="text-[10px] text-slate-500 dark:text-slate-500 leading-relaxed">
+              Alternatively: open <strong className="text-slate-600 dark:text-slate-400">System Settings → Privacy & Security</strong>, scroll down, and click <strong className="text-slate-600 dark:text-slate-400">Open Anyway</strong> after the first blocked attempt.
+            </p>
+          </div>
+
+          {/* Offline DB note */}
+          <div className="border-t border-slate-150 dark:border-slate-800/80 pt-3 pr-2">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+              <strong className="text-slate-700 dark:text-slate-300">Offline mode:</strong> The desktop app stores all data locally — no account needed. Enable Cloud Sync in Settings to share games with the website.
+            </p>
           </div>
 
         </div>

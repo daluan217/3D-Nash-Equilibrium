@@ -57,11 +57,11 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
-    const checkFullscreen = () => setIsFullscreen(window.outerHeight >= window.screen.height);
-    window.addEventListener('resize', checkFullscreen);
-    checkFullscreen();
-    return () => window.removeEventListener('resize', checkFullscreen);
-  }, []);
+    if (!isElectronMac) return;
+    const handler = (e: Event) => setIsFullscreen((e as CustomEvent).detail as boolean);
+    window.addEventListener('electron-fullscreen-change', handler);
+    return () => window.removeEventListener('electron-fullscreen-change', handler);
+  }, [isElectronMac]);
 
   // ── Website zoom: 133% default so layout matches browser 133% zoom ──────────
   useEffect(() => {

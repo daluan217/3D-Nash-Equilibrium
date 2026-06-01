@@ -59,6 +59,15 @@ if (!gotTheLock) {
     // Load the Express-served application on loopback
     mainWindow.loadURL(`http://127.0.0.1:${finalPort}`);
 
+    // Notify renderer of macOS native fullscreen transitions
+    const dispatchFullscreen = (value) => {
+      mainWindow.webContents.executeJavaScript(
+        `window.dispatchEvent(new CustomEvent('electron-fullscreen-change', { detail: ${value} }))`
+      ).catch(() => {});
+    };
+    mainWindow.on('enter-full-screen', () => dispatchFullscreen(true));
+    mainWindow.on('leave-full-screen', () => dispatchFullscreen(false));
+
     // Open external links (e.g. documentation, help pages) in standard Safari/default browser
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
       shell.openExternal(url);
