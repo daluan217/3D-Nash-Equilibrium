@@ -16,6 +16,7 @@
     "electron:dist": "npm run build && electron-builder"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.19.0",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "5.1.0",
@@ -65,4 +66,3 @@
     "asar": true
   }
 }
-

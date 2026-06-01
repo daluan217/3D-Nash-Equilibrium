@@ -51,12 +51,14 @@ interface DB {
   games: SavedGame[];
 }
 
+const GCS_BUCKET = process.env.GCS_BUCKET_NAME;
 const DB_FILE = process.env.ELECTRON_USER_DATA_PATH
   ? path.join(process.env.ELECTRON_USER_DATA_PATH, "db.json")
   : path.join(process.cwd(), "db.json");
 
-// Helper to load DB
-function loadDB(): DB {
+let inMemoryDb: DB | null = null;
+
+function loadDBFromFile(): DB {
   try {
     const dbDir = path.dirname(DB_FILE);
     if (!fs.existsSync(dbDir)) {
@@ -65,7 +67,6 @@ function loadDB(): DB {
   } catch (err) {
     console.error("Error creating database directory:", err);
   }
-
   if (!fs.existsSync(DB_FILE)) {
     const fresh: DB = { users: [], games: [] };
     try {
@@ -79,21 +80,63 @@ function loadDB(): DB {
     const data = fs.readFileSync(DB_FILE, "utf-8");
     return JSON.parse(data);
   } catch (err) {
-    console.error("Error reading db.json, resetting database", err);
+    console.error("Error reading db.json, resetting database:", err);
     return { users: [], games: [] };
   }
 }
 
-// Helper to save DB
-function saveDB(db: DB) {
-  try {
-    const dbDir = path.dirname(DB_FILE);
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
+// Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
+async function initDB(): Promise<void> {
+  if (process.env.ELECTRON_USER_DATA_PATH) {
+    inMemoryDb = loadDBFromFile();
+  } else if (GCS_BUCKET) {
+    try {
+      const { Storage } = await import('@google-cloud/storage');
+      const storage = new Storage();
+      const file = storage.bucket(GCS_BUCKET).file('db.json');
+      const [exists] = await file.exists();
+      if (exists) {
+        const [content] = await file.download();
+        inMemoryDb = JSON.parse(content.toString('utf-8'));
+      } else {
+        inMemoryDb = { users: [], games: [] };
+      }
+      console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb!.users.length} users, ${inMemoryDb!.games.length} games`);
+    } catch (err) {
+      console.error('Error loading DB from GCS, falling back to local file:', err);
+      inMemoryDb = loadDBFromFile();
     }
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Error writing db.json", err);
+  } else {
+    inMemoryDb = loadDBFromFile();
+  }
+}
+
+// Returns the in-memory DB (always synchronous after initDB resolves)
+function loadDB(): DB {
+  return inMemoryDb ?? { users: [], games: [] };
+}
+
+// Updates in-memory DB immediately; persists to GCS (Cloud Run) or local file (Electron/dev)
+function saveDB(db: DB) {
+  inMemoryDb = db;
+  if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+    import('@google-cloud/storage').then(({ Storage }) => {
+      const storage = new Storage();
+      return storage.bucket(GCS_BUCKET!).file('db.json').save(
+        JSON.stringify(db, null, 2),
+        { contentType: 'application/json' }
+      );
+    }).catch(err => console.error('GCS write failed:', err));
+  } else {
+    try {
+      const dbDir = path.dirname(DB_FILE);
+      if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+      }
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+    } catch (err) {
+      console.error("Error writing db.json:", err);
+    }
   }
 }
 
@@ -739,6 +782,7 @@ async function startServer() {
   };
 
   const initialPort = parseInt(process.env.PORT || "3000", 10);
+  await initDB();
   startListening(initialPort);
 }
 
