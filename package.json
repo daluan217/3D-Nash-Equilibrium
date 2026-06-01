@@ -56,7 +56,8 @@
         "dmg",
         "zip"
       ],
-      "identity": null
+      "identity": null,
+      "icon": "build/icon.icns"
     },
     "files": [
       "dist/**/*",
