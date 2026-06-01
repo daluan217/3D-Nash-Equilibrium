@@ -8,8 +8,6 @@ dist-electron
 .DS_Store
 *.dmg
 *.zip
-src
-assets
 db.json
 *.log
 .vscode
