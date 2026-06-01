@@ -131,9 +131,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       }
       setDeleteStep('inputCode');
       setDeleteSuccess(data.message || 'Verification code sent.');
-      if (data.deleteCode) {
-        setDeleteCode(data.deleteCode);
-      }
     } catch (err: any) {
       setDeleteError(err.message);
     } finally {
@@ -194,7 +191,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       />
 
       {/* Slideout sliding panel */}
-      <div className={`relative w-full max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full flex flex-col shadow-2xl z-10 animate-in slide-in-from-right duration-300`}>
+      <div className={`relative w-full max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full flex flex-col shadow-2xl z-10 animate-in slide-in-from-right duration-300`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {/* Panel Header */}
         <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
           <div className="flex items-center gap-2">
@@ -205,9 +202,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1 px-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
+            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4 pointer-events-none" />
           </button>
         </div>
 
@@ -221,7 +218,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
-            <HelpCircle className="w-4 h-4" />
+            <HelpCircle className="w-4 h-4 pointer-events-none" />
             Help Guides & Visuals
           </button>
 
@@ -233,7 +230,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
-            <BookOpen className="w-4 h-4" />
+            <BookOpen className="w-4 h-4 pointer-events-none" />
             Presets & Custom Library
           </button>
 
@@ -245,7 +242,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
-            <Sliders className="w-4 h-4" />
+            <Sliders className="w-4 h-4 pointer-events-none" />
             Danger Zone
           </button>
         </div>

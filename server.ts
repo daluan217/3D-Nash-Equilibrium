@@ -296,27 +296,34 @@ async function startServer() {
   });
 
   // Serve compiled DMG file
-  app.get("/api/download/dmg", (req, res) => {
+  app.get("/api/download/dmg", async (req, res) => {
     try {
+      // In Cloud Run, stream from GCS
+      if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+        const { Storage } = await import('@google-cloud/storage');
+        const file = new Storage().bucket(GCS_BUCKET).file('Nash Equilibrium Simulator.dmg');
+        const [exists] = await file.exists();
+        if (exists) {
+          res.setHeader('Content-Type', 'application/octet-stream');
+          res.setHeader('Content-Disposition', 'attachment; filename="Nash Equilibrium Simulator.dmg"');
+          file.createReadStream().pipe(res);
+          return;
+        }
+      }
+
+      // Local / Electron: look in dist-electron/
       const distElectronPath = path.join(process.cwd(), "dist-electron");
       if (fs.existsSync(distElectronPath)) {
         const files = fs.readdirSync(distElectronPath);
         const dmgFile = files.find(f => f.toLowerCase().endsWith(".dmg"));
         if (dmgFile) {
-          const fullPath = path.join(distElectronPath, dmgFile);
-          return res.download(fullPath, dmgFile);
+          return res.download(path.join(distElectronPath, dmgFile), dmgFile);
         }
-      }
-
-      const rootFiles = fs.readdirSync(process.cwd());
-      const rootDmg = rootFiles.find(f => f.toLowerCase().endsWith(".dmg"));
-      if (rootDmg) {
-        return res.download(path.join(process.cwd(), rootDmg), rootDmg);
       }
 
       return res.status(404).json({
         error: "DMG Not Found",
-        message: "No compiled macOS .dmg file found in the server's build directory yet. You can package this app locally by running 'npm run electron:dist' on your Mac."
+        message: "No compiled macOS .dmg file found. You can package this app locally by running 'npm run electron:dist' on your Mac."
       });
     } catch (error: any) {
       console.error("Error serving DMG:", error);
