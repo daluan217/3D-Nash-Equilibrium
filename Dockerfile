@@ -22,9 +22,6 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
-
 # Copy package files
 COPY package*.json ./
 
@@ -48,8 +45,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Expose port
 EXPOSE 3000
 
-# Use dumb-init to handle signals properly
-ENTRYPOINT ["/sbin/dumb-init", "--"]
-
-# Run the server
+# Run the server directly
 CMD ["node", "dist/server.cjs"]
