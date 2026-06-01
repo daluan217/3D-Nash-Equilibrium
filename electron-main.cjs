@@ -50,7 +50,7 @@ if (!gotTheLock) {
     // On macOS, infuse the top bar (traffic lights) directly into the app
     if (process.platform === 'darwin') {
       windowOptions.titleBarStyle = 'hidden';
-      windowOptions.trafficLightPosition = { x: 16, y: 10 };
+      windowOptions.trafficLightPosition = { x: 16, y: 12 };
     }
 
     mainWindow = new BrowserWindow(windowOptions);

@@ -803,10 +803,14 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col antialiased">
       {/* ── Heading Banner ── */}
       <header
-        className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle ${isElectronMac ? 'pl-20 pr-6 pt-2 pb-3' : 'py-4 px-6'}`}
+        className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle"
         style={isElectron ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
       >
-        <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${isElectronMac ? '' : 'max-w-7xl mx-auto'}`}>
+        {/* Vertical space for macOS traffic-light buttons — title sits below them, no horizontal offset needed */}
+        {isElectronMac && <div className="h-9" />}
+        <div className={`max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${isElectronMac ? 'px-6 py-2' : 'px-6 py-4'}`}
+          style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
+        >
           <div>
             <div className="flex items-center gap-2.5">
               <span className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl">
@@ -820,10 +824,7 @@ export default function App() {
               Visualise Best-Response dynamics, 3D expected payoff surfaces, and mixed strategy search corridor shrinkage algorithms.
             </p>
           </div>
-          <div
-            className="flex items-center flex-wrap gap-2.5"
-            style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
-          >
+          <div className="flex items-center flex-wrap gap-2.5">
             {/* Desktop installer download button on the website */}
             {!isElectron && (
               <button
