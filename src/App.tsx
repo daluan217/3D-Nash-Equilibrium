@@ -53,6 +53,23 @@ export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
   const isElectronMac = isElectron && window.navigator?.userAgent?.toLowerCase().includes('mac');
 
+  // ── Fullscreen detection (Electron macOS — hide traffic-light spacer when fullscreen) ──
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const checkFullscreen = () => setIsFullscreen(window.outerHeight >= window.screen.height);
+    window.addEventListener('resize', checkFullscreen);
+    checkFullscreen();
+    return () => window.removeEventListener('resize', checkFullscreen);
+  }, []);
+
+  // ── Website zoom: 133% default so layout matches browser 133% zoom ──────────
+  useEffect(() => {
+    if (!isElectron) {
+      (document.documentElement.style as any).zoom = '1.33';
+    }
+  }, [isElectron]);
+
   // ── Theme State ────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('nash_sim_theme') === 'dark';
@@ -807,7 +824,7 @@ export default function App() {
         style={isElectron ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
       >
         {/* Vertical space for macOS traffic-light buttons — title sits below them, no horizontal offset needed */}
-        {isElectronMac && <div className="h-9" />}
+        {isElectronMac && !isFullscreen && <div className="h-9" />}
         <div className={`max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${isElectronMac ? 'px-6 py-2' : 'px-6 py-4'}`}
           style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
         >

@@ -54,6 +54,7 @@ if (!gotTheLock) {
     }
 
     mainWindow = new BrowserWindow(windowOptions);
+    mainWindow.webContents.setZoomFactor(1.33);
 
     // Load the Express-served application on loopback
     mainWindow.loadURL(`http://127.0.0.1:${finalPort}`);

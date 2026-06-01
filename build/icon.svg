@@ -1,50 +1,52 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#12103a"/>
-      <stop offset="100%" stop-color="#080d24"/>
+      <stop offset="0%" stop-color="#1e0a3c"/>
+      <stop offset="100%" stop-color="#0d051f"/>
     </linearGradient>
-    <radialGradient id="atm" cx="512" cy="512" r="440" gradientUnits="userSpaceOnUse">
+    <radialGradient id="atm" cx="512" cy="512" r="480" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#4338ca" stop-opacity="0.22"/>
       <stop offset="100%" stop-color="#4338ca" stop-opacity="0"/>
     </radialGradient>
 
     <!--
-      CENTERED + SCALED projection:
-        Origin O = (512, 650)  ← shifted up so cube center hits (512,512)
-        Unit x  = (+392, +98)
-        Unit y  = (-392, +98)
-        Unit z  = (0, -472)
+      SCALED 1.12× from center (512,512):
+        Origin O = (512, 667)
+        Unit x  = (+439, +110)
+        Unit y  = (-439, +110)
+        Unit z  = (0, -529)
 
       Box vertices:
-        O    = (512, 650)
-        X1   = (904, 748)
-        Y1   = (120, 748)
-        XY   = (512, 846)   ← front-bottom
-        Z1   = (512, 178)   ← top-back
-        XZ   = (904, 276)
-        YZ   = (120, 276)
-        XYZ  = (512, 374)
+        O    = (512, 667)
+        X1   = (951, 777)
+        Y1   = (73,  777)
+        XY   = (512, 887)   bottom-front
+        Z1   = (512, 138)   top-back
+        XZ   = (951, 248)
+        YZ   = (73,  248)
+        XYZ  = (512, 357)
 
-      Visual center of box: y=(178+846)/2=512, x=512 ✓
+      Visual center: y=(138+887)/2=512.5 ≈ 512 ✓, x=512 ✓
 
-      Surfaces (z_A/z_B normalized 0→1, 0.5*zUnit=(0,-236)):
-        Blue  corners: O(512,650)  XZ(904,276)   XY(512,846)  (120,512)
-        Orange corners: O(512,650) (904,512)      XY(512,846)  YZ(120,276)
+      Surfaces (mid-edge helpers):
+        mid(XZ,X1) = (951, 513)
+        mid(YZ,Y1) = (73,  513)
+        Blue   corners: O(512,667)  XZ(951,248)   XY(512,887)  (73,513)
+        Orange corners: O(512,667)  (951,513)      XY(512,887)  YZ(73,248)
 
-      Markers:
-        Red sphere   : center (258, 451), r=29  — on orange surface
-        Purple diamond: center (571, 637), half=26 — both surfaces cross here
-        Green diamonds: XZ(904,276) and YZ(120,276), half=24
+      Markers (scaled 1.12×):
+        Red sphere    center (228, 444), r=33
+        Purple diamond center (578, 652), half=29
+        Green diamonds XZ(951,248) and YZ(73,248), half=27
     -->
 
     <!-- Surface gradients -->
-    <linearGradient id="blue-grad" x1="904" y1="276" x2="350" y2="846" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#c7d2fe"/>
-      <stop offset="55%" stop-color="#6366f1" stop-opacity="0.78"/>
-      <stop offset="100%" stop-color="#3730a3" stop-opacity="0.28"/>
+    <linearGradient id="blue-grad" x1="951" y1="248" x2="331" y2="886" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#bae6fd"/>
+      <stop offset="55%" stop-color="#3b82f6" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#1e3a8a" stop-opacity="0.30"/>
     </linearGradient>
-    <linearGradient id="orange-grad" x1="120" y1="276" x2="760" y2="846" gradientUnits="userSpaceOnUse">
+    <linearGradient id="orange-grad" x1="73" y1="248" x2="790" y2="886" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#fed7aa"/>
       <stop offset="55%" stop-color="#f97316" stop-opacity="0.78"/>
       <stop offset="100%" stop-color="#9a3412" stop-opacity="0.28"/>
@@ -61,10 +63,10 @@
 
     <!-- Clip: surface drawn OVER lower half of each marker -->
     <clipPath id="clip-over-sphere">
-      <rect x="0" y="451" width="1024" height="600"/>
+      <rect x="0" y="444" width="1024" height="600"/>
     </clipPath>
     <clipPath id="clip-over-diamond">
-      <rect x="0" y="637" width="1024" height="400"/>
+      <rect x="0" y="652" width="1024" height="400"/>
     </clipPath>
 
     <!-- Glow filters -->
@@ -86,79 +88,79 @@
   <rect width="1024" height="1024" rx="220" fill="url(#atm)"/>
 
   <!-- ── WIREFRAME BOX ── -->
-  <polygon points="512,650 904,748 512,846 120,748"
+  <polygon points="512,667 951,777 512,887 73,777"
     fill="none" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
-  <polygon points="512,178 904,276 512,374 120,276"
+  <polygon points="512,138 951,248 512,357 73,248"
     fill="none" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
-  <line x1="512" y1="650" x2="512" y2="178" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.30"/>
-  <line x1="904" y1="748" x2="904" y2="276" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
-  <line x1="120" y1="748" x2="120" y2="276" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
-  <line x1="512" y1="846" x2="512" y2="374" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+  <line x1="512" y1="667" x2="512" y2="138" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.30"/>
+  <line x1="951" y1="777" x2="951" y2="248" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+  <line x1="73"  y1="777" x2="73"  y2="248" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+  <line x1="512" y1="887" x2="512" y2="357" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
 
   <!-- LAYER 1 — Surfaces behind markers -->
-  <polygon points="512,650 904,512 512,846 120,276"
+  <polygon points="512,667 951,513 512,887 73,248"
     fill="url(#orange-grad)" opacity="0.60"
     stroke="#f97316" stroke-width="1.5" stroke-opacity="0.45"
     filter="url(#surf-shadow)"/>
-  <polygon points="512,650 904,276 512,846 120,512"
+  <polygon points="512,667 951,248 512,887 73,513"
     fill="url(#blue-grad)" opacity="0.62"
-    stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.45"
+    stroke="#3b82f6" stroke-width="1.5" stroke-opacity="0.55"
     filter="url(#surf-shadow)"/>
 
   <!-- LAYER 2 — Marker back-halves (shadow side) -->
-  <!-- Sphere back: dark below equator y=451 -->
-  <circle cx="258" cy="451" r="29" clip-path="url(#clip-over-sphere)" fill="#5c0000" opacity="0.92"/>
+  <!-- Sphere back: dark below equator y=444 -->
+  <circle cx="228" cy="444" r="33" clip-path="url(#clip-over-sphere)" fill="#5c0000" opacity="0.92"/>
   <!-- Diamond back: lower facets, before surface overlay -->
-  <polygon points="597,637 571,663 571,637" fill="#3b0764"/>
-  <polygon points="545,637 571,663 571,637" fill="#2e1065"/>
+  <polygon points="607,652 578,681 578,652" fill="#3b0764"/>
+  <polygon points="549,652 578,681 578,652" fill="#2e1065"/>
 
   <!-- LAYER 3 — Surfaces crossing THROUGH markers (blend mode creates color tinting) -->
-  <polygon points="512,650 904,512 512,846 120,276"
+  <polygon points="512,667 951,513 512,887 73,248"
     fill="url(#orange-grad)"
     clip-path="url(#clip-over-sphere)"
     opacity="0.72" style="mix-blend-mode: overlay"/>
-  <polygon points="512,650 904,512 512,846 120,276"
+  <polygon points="512,667 951,513 512,887 73,248"
     fill="url(#orange-grad)"
     clip-path="url(#clip-over-diamond)"
     opacity="0.65" style="mix-blend-mode: overlay"/>
-  <polygon points="512,650 904,276 512,846 120,512"
+  <polygon points="512,667 951,248 512,887 73,513"
     fill="url(#blue-grad)"
     clip-path="url(#clip-over-diamond)"
     opacity="0.65" style="mix-blend-mode: overlay"/>
 
   <!-- LAYER 4 — Marker front-halves (bright, on top of surfaces) -->
-  <!-- Red sphere (full 3D gradient; front hemisphere dominates visually) -->
+  <!-- Red sphere -->
   <g filter="url(#glow)">
-    <circle cx="258" cy="451" r="29" fill="url(#sphere-grad)" opacity="0.95"/>
-    <ellipse cx="247" cy="439" rx="9" ry="7" fill="white" opacity="0.30"/>
-    <circle cx="245" cy="436" r="3.5" fill="white" opacity="0.44"/>
+    <circle cx="228" cy="444" r="33" fill="url(#sphere-grad)" opacity="0.95"/>
+    <ellipse cx="215" cy="430" rx="10" ry="8" fill="white" opacity="0.30"/>
+    <circle cx="213" cy="427" r="4" fill="white" opacity="0.44"/>
   </g>
 
-  <!-- Purple diamond front facets (brighter, drawn on top) -->
+  <!-- Purple diamond front facets -->
   <g filter="url(#sm-glow)">
-    <polygon points="571,611 597,637 571,637" fill="#f3e8ff"/>
-    <polygon points="545,637 571,611 571,637" fill="#d8b4fe"/>
-    <polygon points="597,637 571,663 571,637" fill="#a855f7" opacity="0.85"/>
-    <polygon points="545,637 571,663 571,637" fill="#7e22ce" opacity="0.85"/>
-    <polygon points="571,611 597,637 571,663 545,637"
+    <polygon points="578,623 607,652 578,652" fill="#f3e8ff"/>
+    <polygon points="549,652 578,623 578,652" fill="#d8b4fe"/>
+    <polygon points="607,652 578,681 578,652" fill="#a855f7" opacity="0.85"/>
+    <polygon points="549,652 578,681 578,652" fill="#7e22ce" opacity="0.85"/>
+    <polygon points="578,623 607,652 578,681 549,652"
       fill="none" stroke="#f5f3ff" stroke-width="1.5" opacity="0.55"/>
   </g>
 
-  <!-- ── GREEN DIAMONDS (3D faceted) at XZ(904,276) and YZ(120,276), half=24 ── -->
+  <!-- ── GREEN DIAMONDS at XZ(951,248) and YZ(73,248), half=27 ── -->
   <g filter="url(#sm-glow)">
-    <polygon points="904,252 928,276 904,276" fill="#bbf7d0"/>
-    <polygon points="928,276 904,300 904,276" fill="#4ade80"/>
-    <polygon points="904,300 880,276 904,276" fill="#15803d"/>
-    <polygon points="880,276 904,252 904,276" fill="#86efac"/>
-    <polygon points="904,252 928,276 904,300 880,276"
+    <polygon points="951,221 978,248 951,248" fill="#bbf7d0"/>
+    <polygon points="978,248 951,275 951,248" fill="#4ade80"/>
+    <polygon points="951,275 924,248 951,248" fill="#15803d"/>
+    <polygon points="924,248 951,221 951,248" fill="#86efac"/>
+    <polygon points="951,221 978,248 951,275 924,248"
       fill="none" stroke="#f0fdf4" stroke-width="1.5" opacity="0.6"/>
   </g>
   <g filter="url(#sm-glow)">
-    <polygon points="120,252 144,276 120,276" fill="#bbf7d0"/>
-    <polygon points="144,276 120,300 120,276" fill="#4ade80"/>
-    <polygon points="120,300  96,276 120,276" fill="#15803d"/>
-    <polygon points=" 96,276 120,252 120,276" fill="#86efac"/>
-    <polygon points="120,252 144,276 120,300  96,276"
+    <polygon points="73,221 100,248 73,248" fill="#bbf7d0"/>
+    <polygon points="100,248 73,275 73,248"  fill="#4ade80"/>
+    <polygon points="73,275  46,248 73,248"  fill="#15803d"/>
+    <polygon points=" 46,248 73,221 73,248"  fill="#86efac"/>
+    <polygon points="73,221 100,248 73,275 46,248"
       fill="none" stroke="#f0fdf4" stroke-width="1.5" opacity="0.6"/>
   </g>
 
