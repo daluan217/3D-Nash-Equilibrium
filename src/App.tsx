@@ -91,17 +91,17 @@ export default function App() {
   });
   const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => {
     const cached = localStorage.getItem('nash_sim_api_base');
-    if (cached && (cached.includes('ais-pre-') || cached.includes('243079162760') || cached.includes('988056159702'))) {
-      localStorage.setItem('nash_sim_api_base', 'https://nash-equilibrium-backend-194708291738.us-east1.run.app');
-      return 'https://nash-equilibrium-backend-194708291738.us-east1.run.app';
+    if (cached && (cached.includes('ais-pre-') || cached.includes('243079162760') || cached.includes('988056159702') || cached.includes('194708291738'))) {
+      localStorage.setItem('nash_sim_api_base', 'https://nash-equilibrium-simulator.com');
+      return 'https://nash-equilibrium-simulator.com';
     }
-    return cached || 'https://nash-equilibrium-backend-194708291738.us-east1.run.app';
+    return cached || 'https://nash-equilibrium-simulator.com';
   });
 
   const getApiUrl = (path: string) => {
     if (isElectron && dbMode === 'cloud') {
       const base = apiBaseUrl.trim().replace(/\/$/, '');
-      return `${base || 'https://nash-equilibrium-backend-194708291738.us-east1.run.app'}${path}`;
+      return `${base || 'https://nash-equilibrium-simulator.com'}${path}`;
     }
     return path;
   };
