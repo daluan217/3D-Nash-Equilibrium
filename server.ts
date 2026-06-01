@@ -694,13 +694,21 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = fs.existsSync(path.join(__dirname, 'index.html'))
-      ? __dirname
-      : path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    // In production, only serve frontend if dist files exist (optional)
+    const distPath = path.join(process.cwd(), 'dist');
+    if (fs.existsSync(path.join(distPath, 'index.html'))) {
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      // No frontend files - just serve API
+      console.log("Frontend files not found, serving API-only mode");
+      // Fallback 404 for unknown routes (after API routes)
+      app.use((req, res) => {
+        res.status(404).json({ error: "Not found" });
+      });
+    }
   }
 
   // Dynamic port assignment with automatic fallback in case of port collisions
