@@ -43,8 +43,10 @@ export function makeTraces(
   g: GamePayoffs,
   s: SimState,
   trackingMode: 'A' | 'B' | 'both',
-  allNE: NashEquilibrium[]
+  allNE: NashEquilibrium[],
+  isMobile = false
 ): any[] {
+  const diamondSize = isMobile ? 5 : 10;
   const px = s.displayX ?? s.cx;
   const py = s.displayY ?? s.cy;
   const eA = r3(EA(px, py, g));
@@ -401,7 +403,7 @@ export function makeTraces(
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [EA(ne.x, ne.y, g), EB(ne.x, ne.y, g)],
-          marker: { size: 10, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       } else {
         const zP = trackingMode === 'B' ? EB(ne.x, ne.y, g) : EA(ne.x, ne.y, g);
@@ -413,7 +415,7 @@ export function makeTraces(
           x: [ne.x],
           y: [ne.y],
           z: [zP],
-          marker: { size: 10, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       }
       pureShown = true;
@@ -449,7 +451,7 @@ export function makeTraces(
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zA, zB],
-          marker: { size: 10, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       } else {
         const zVal = trackingMode === 'B' ? zB : zA;
@@ -461,7 +463,7 @@ export function makeTraces(
           x: [ne.x],
           y: [ne.y],
           z: [zVal],
-          marker: { size: 10, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       }
       mixedShown = true;

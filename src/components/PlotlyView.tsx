@@ -113,7 +113,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
 
     // Build the surfaces and coordinates
     const surf = buildSurfaces(payoffs);
-    const traces = makeTraces(surf, payoffs, simState, trackingMode, allNE);
+    const isMobile = window.innerWidth < 768;
+    const traces = makeTraces(surf, payoffs, simState, trackingMode, allNE, isMobile);
 
     // Merge custom dynamic interactions into layout
     const layout = {
