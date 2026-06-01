@@ -841,72 +841,100 @@ export default function App() {
               Visualise Best-Response dynamics, 3D expected payoff surfaces, and mixed strategy search corridor shrinkage algorithms.
             </p>
           </div>
-          {/* Mobile: 2×2 grid (≡ | Sign In / ☀️ | Get Desktop). Desktop: flex row. */}
-          <div className="grid grid-cols-2 sm:flex sm:items-center sm:flex-wrap gap-2 sm:gap-2.5 ml-auto sm:ml-0">
-
-            {/* Col 1 Row 1 on mobile | 3rd on desktop: Menu */}
-            <button
-              id="menu-toggle-btn"
-              onClick={() => setIsMenuOpen(true)}
-              className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer animate-pulse-once justify-self-start sm:order-3"
-              title="Open Workspace Center"
-            >
-              <Menu className="w-4 h-4" />
-            </button>
-
-            {/* Col 2 Row 1 on mobile | last on desktop: Sign In / User */}
-            <div className="justify-self-end sm:order-4">
+          {/* ── MOBILE button layout (hidden on sm+): 2×2 grid ── */}
+          <div className="flex flex-col gap-1.5 sm:hidden w-full">
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setIsMenuOpen(true)}
+                className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              >
+                <Menu className="w-4 h-4" />
+              </button>
               {user ? (
                 <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[100px]" title={user.email}>
                     @{user.username}
                   </span>
-                  <button
-                    onClick={handleLogout}
-                    className="text-xs font-medium text-slate-400 dark:text-slate-400 hover:text-red-500 hover:bg-red-50/50 dark:hover:bg-red-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
-                  >
+                  <button onClick={handleLogout} className="text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50/50 dark:hover:bg-red-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">
                     Log out
                   </button>
                 </div>
               ) : (
                 <button
-                  onClick={() => {
-                    setAuthError('');
-                    setAuthSuccess('');
-                    setAuthMode('login');
-                    setIsAuthModalOpen(true);
-                  }}
-                  className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer w-full sm:w-auto justify-center"
+                  onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
+                  className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5" /> Sign In / Sign Up
                 </button>
               )}
             </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setDarkMode(!darkMode)}
+                className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              >
+                {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+              </button>
+              {!isElectron && (
+                <button
+                  onClick={() => setIsDownloadModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-slate-100 text-indigo-700 dark:bg-indigo-950/45 dark:hover:bg-indigo-900/40 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 animate-pulse" />
+                  <span>Get Desktop App</span>
+                </button>
+              )}
+            </div>
+          </div>
 
-            {/* Col 1 Row 2 on mobile | 2nd on desktop: Theme */}
-            <button
-              onClick={() => setDarkMode(!darkMode)}
-              className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer justify-self-start sm:order-2"
-              title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
-            </button>
-
-            {/* Col 2 Row 2 on mobile | 1st on desktop: Get Desktop App */}
+          {/* ── DESKTOP button layout (hidden on mobile): flex row ── */}
+          <div className="hidden sm:flex items-center flex-wrap gap-2.5">
             {!isElectron && (
               <button
                 onClick={() => setIsDownloadModalOpen(true)}
-                className="inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-slate-100 text-indigo-700 dark:bg-indigo-950/45 dark:hover:bg-indigo-900/40 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer justify-self-end sm:order-1 w-full sm:w-auto"
+                className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-slate-100 text-indigo-700 dark:bg-indigo-950/45 dark:hover:bg-indigo-900/40 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                 title="Download macOS Desktop App"
               >
                 <Download className="w-3.5 h-3.5 animate-pulse" />
                 <span>Get Desktop App</span>
               </button>
             )}
-
+            <button
+              onClick={() => setDarkMode(!darkMode)}
+              className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+            </button>
+            <button
+              id="menu-toggle-btn"
+              onClick={() => setIsMenuOpen(true)}
+              className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer animate-pulse-once"
+              title="Open Workspace Center"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+            {user ? (
+              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[120px]" title={user.email}>
+                  @{user.username}
+                </span>
+                <button onClick={handleLogout} className="text-xs font-medium text-slate-400 dark:text-slate-400 hover:text-red-500 hover:bg-red-50/50 dark:hover:bg-red-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">
+                  Log out
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
+                className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5" /> Sign In / Sign Up
+              </button>
+            )}
             {simState.converged && (
-              <span className="hidden sm:inline-flex sm:order-5 items-center gap-1 text-[11px] font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1.5 px-3 rounded-full border border-emerald-200 dark:border-emerald-800">
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1.5 px-3 rounded-full border border-emerald-200 dark:border-emerald-800">
                 <CheckCircle2 className="w-3.5 h-3.5" /> Converged
               </span>
             )}
