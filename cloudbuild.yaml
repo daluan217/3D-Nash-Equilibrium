@@ -45,4 +45,4 @@ substitutions:
   _SMTP_PASS: 'your-app-password-here'
   _SMTP_FROM: '"Nash Equilibrium Simulator" <your-email@gmail.com>'
   _GEMINI_API_KEY: 'your-gemini-key-here'
-  _GCS_BUCKET_NAME: 'nash-equilibrium-db'
+  _GCS_BUCKET_NAME: 'your-gcs-bucket-name'
