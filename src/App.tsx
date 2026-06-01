@@ -73,13 +73,18 @@ export default function App() {
     return (localStorage.getItem('nash_sim_db_mode') as 'local' | 'cloud') || 'local';
   });
   const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => {
-    return localStorage.getItem('nash_sim_api_base') || 'https://ais-pre-h6cs3mumiw42xb6y3tevop-243079162760.us-west2.run.app';
+    const cached = localStorage.getItem('nash_sim_api_base');
+    if (cached && (cached.includes('ais-pre-') || cached.includes('243079162760'))) {
+      localStorage.setItem('nash_sim_api_base', 'https://nash-equilibrium-simulator-988056159702.us-east1.run.app');
+      return 'https://nash-equilibrium-simulator-988056159702.us-east1.run.app';
+    }
+    return cached || 'https://nash-equilibrium-simulator-988056159702.us-east1.run.app';
   });
 
   const getApiUrl = (path: string) => {
     if (isElectron && dbMode === 'cloud') {
       const base = apiBaseUrl.trim().replace(/\/$/, '');
-      return `${base || 'https://ais-pre-h6cs3mumiw42xb6y3tevop-243079162760.us-west2.run.app'}${path}`;
+      return `${base || 'https://nash-equilibrium-simulator-988056159702.us-east1.run.app'}${path}`;
     }
     return path;
   };
