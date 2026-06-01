@@ -25,7 +25,7 @@ steps:
       - '--region=us-east1'
       - '--platform=managed'
       - '--allow-unauthenticated'
-      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GEMINI_API_KEY=${_GEMINI_API_KEY},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME}'
+      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GEMINI_API_KEY=${_GEMINI_API_KEY},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},ADMIN_SECRET=${_ADMIN_SECRET}'
       - '--memory=512Mi'
       - '--cpu=1'
       - '--timeout=3600'
@@ -46,3 +46,4 @@ substitutions:
   _SMTP_FROM: '"Nash Equilibrium Simulator" <your-email@gmail.com>'
   _GEMINI_API_KEY: 'your-gemini-key-here'
   _GCS_BUCKET_NAME: 'your-gcs-bucket-name'
+  _ADMIN_SECRET: 'your-admin-secret-here'

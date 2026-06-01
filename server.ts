@@ -288,6 +288,41 @@ async function startServer() {
     next();
   });
 
+  // ── Admin Stats API ────────────────────────────────────────────────────────
+  app.get("/api/admin/stats", (req, res) => {
+    const secret = req.headers["x-admin-secret"] as string;
+    if (secret !== process.env.ADMIN_SECRET) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const db = loadDB();
+    const now = Date.now();
+    const day = 86400000;
+    const signupsToday = db.users.filter(u => {
+      // Use verificationCodeExpires as a rough creation timestamp proxy
+      // (set to now + 10min on register, so creation ≈ expires - 10min)
+      const created = u.verificationCodeExpires - 10 * 60 * 1000;
+      return created > now - day;
+    }).length;
+    const signupsThisWeek = db.users.filter(u => {
+      const created = u.verificationCodeExpires - 10 * 60 * 1000;
+      return created > now - 7 * day;
+    }).length;
+    res.json({
+      totalUsers: db.users.length,
+      verifiedUsers: db.users.filter(u => u.isVerified).length,
+      unverifiedUsers: db.users.filter(u => !u.isVerified).length,
+      totalGames: db.games.length,
+      signupsToday,
+      signupsThisWeek,
+      users: db.users.map(u => ({
+        username: u.username,
+        email: u.email,
+        isVerified: u.isVerified,
+        gamesCount: db.games.filter(g => g.userId === u.id).length,
+      })),
+    });
+  });
+
   // ── Authentication API ─────────────────────────────────────────────────────
 
   // Express API health check

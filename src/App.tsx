@@ -48,6 +48,7 @@ import {
 
 import { MenuDrawer } from './components/MenuDrawer';
 import { DownloadModal } from './components/DownloadModal';
+import { AdminDashboard } from './components/AdminDashboard';
 
 export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
@@ -142,6 +143,7 @@ export default function App() {
   const [userCustomGames, setUserCustomGames] = useState<any[]>([]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
 
   // Auth Modal States
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -832,7 +834,11 @@ export default function App() {
         >
           <div>
             <div className="flex items-center gap-2.5">
-              <span className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl">
+              <span
+                className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl cursor-pointer select-none"
+                onClick={e => { if (e.detail === 3) setIsAdminOpen(true); }}
+                title=""
+              >
                 <Compass className="w-5.5 h-5.5" />
               </span>
               <h1 className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
@@ -1911,6 +1917,13 @@ export default function App() {
         isOpen={isDownloadModalOpen}
         onClose={() => setIsDownloadModalOpen(false)}
       />
+
+      {isAdminOpen && (
+        <AdminDashboard
+          onClose={() => setIsAdminOpen(false)}
+          isDark={darkMode}
+        />
+      )}
     </div>
   );
 }
