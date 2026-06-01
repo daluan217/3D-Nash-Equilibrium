@@ -42,12 +42,17 @@ import {
   UserCheck,
   Sun,
   Moon,
-  Menu
+  Menu,
+  Download
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
+import { DownloadModal } from './components/DownloadModal';
 
 export default function App() {
+  const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
+  const isElectronMac = isElectron && window.navigator?.userAgent?.toLowerCase().includes('mac');
+
   // ── Theme State ────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('nash_sim_theme') === 'dark';
@@ -64,15 +69,60 @@ export default function App() {
   }, [darkMode]);
 
   // ── Authentication & Saved Games States ────────────────────────────────────
-  const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('nash_sim_token'));
+  const [dbMode, setDbMode] = useState<'local' | 'cloud'>(() => {
+    return (localStorage.getItem('nash_sim_db_mode') as 'local' | 'cloud') || 'local';
+  });
+  const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => {
+    return localStorage.getItem('nash_sim_api_base') || 'https://ais-pre-h6cs3mumiw42xb6y3tevop-243079162760.us-west2.run.app';
+  });
+
+  const getApiUrl = (path: string) => {
+    if (isElectron && dbMode === 'cloud') {
+      const base = apiBaseUrl.trim().replace(/\/$/, '');
+      return `${base || 'https://ais-pre-h6cs3mumiw42xb6y3tevop-243079162760.us-west2.run.app'}${path}`;
+    }
+    return path;
+  };
+
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    const key = (localStorage.getItem('nash_sim_db_mode') || 'local') === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
+    return localStorage.getItem(key) || localStorage.getItem('nash_sim_token');
+  });
+
+  const updateAuthToken = (token: string | null) => {
+    setAuthToken(token);
+    const key = dbMode === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
+    if (token) {
+      localStorage.setItem(key, token);
+    } else {
+      localStorage.removeItem(key);
+      localStorage.removeItem('nash_sim_token'); // clear legacy as well
+    }
+  };
+
+  const handleSwitchDbMode = (mode: 'local' | 'cloud') => {
+    setDbMode(mode);
+    localStorage.setItem('nash_sim_db_mode', mode);
+    const key = mode === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
+    const savedToken = localStorage.getItem(key);
+    setAuthToken(savedToken);
+
+    // Reset basic session users or load correct data
+    if (!savedToken) {
+      setUser(null);
+      setUserCustomGames([]);
+    }
+  };
+
   const [user, setUser] = useState<{ id: string; username: string; email: string } | null>(null);
   const [userCustomGames, setUserCustomGames] = useState<any[]>([]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  
+  const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
+
   // Auth Modal States
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'verify'>('login');
-  
+
   // Save Game Modal States
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
@@ -93,53 +143,52 @@ export default function App() {
   // Fetch Session User and Games
   useEffect(() => {
     if (authToken) {
-      fetch('/api/auth/me', {
+      fetch(getApiUrl('/api/auth/me'), {
         headers: { 'Authorization': `Bearer ${authToken}` }
       })
-      .then((res) => {
-        if (res.ok) return res.json();
-        throw new Error('Session invalid');
-      })
-      .then((data) => {
-        setUser(data);
-      })
-      .catch(() => {
-        localStorage.removeItem('nash_sim_token');
-        setAuthToken(null);
-        setUser(null);
-      });
+        .then((res) => {
+          if (res.ok) return res.json();
+          throw new Error('Session invalid');
+        })
+        .then((data) => {
+          setUser(data);
+        })
+        .catch(() => {
+          updateAuthToken(null);
+          setUser(null);
+        });
     } else {
       setUser(null);
     }
-  }, [authToken]);
+  }, [authToken, dbMode, apiBaseUrl]);
 
   useEffect(() => {
     if (authToken && user) {
-      fetch('/api/games', {
+      fetch(getApiUrl('/api/games'), {
         headers: { 'Authorization': `Bearer ${authToken}` }
       })
-      .then((res) => res.ok ? res.json() : [])
-      .then((data) => {
-        setUserCustomGames(data);
-      })
-      .catch((err) => console.error('Error fetching custom games:', err));
+        .then((res) => res.ok ? res.json() : [])
+        .then((data) => {
+          setUserCustomGames(data);
+        })
+        .catch((err) => console.error('Error fetching custom games:', err));
     } else {
       setUserCustomGames([]);
     }
-  }, [authToken, user]);
+  }, [authToken, user, dbMode, apiBaseUrl]);
 
   // ── Preset Selector State ──────────────────────────────────────────────────
   const [activePreset, setActivePreset] = useState<string>('bos');
 
   // ── Payoff Values State ────────────────────────────────────────────────────
   const [payoffs, setPayoffs] = useState<GamePayoffs>({
-    a11: 2, b11: 1,  a12: 0, b12: 0,
-    a21: 0, b21: 0,  a22: 1, b22: 5,
+    a11: 2, b11: 1, a12: 0, b12: 0,
+    a21: 0, b21: 0, a22: 1, b22: 5,
   });
 
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
-    a11: '2', b11: '1',  a12: '0', b12: '0',
-    a21: '0', b21: '0',  a22: '1', b22: '5',
+    a11: '2', b11: '1', a12: '0', b12: '0',
+    a21: '0', b21: '0', a22: '1', b22: '5',
   });
 
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction
@@ -187,14 +236,18 @@ export default function App() {
     running: false,
     converged: false,
     stepCount: 0,
-    pathSegmentsA: [{ xs: [0.217], ys: [0.217], zs: [r3(EA(0.217, 0.217, {
-      a11: 2, b11: 1,  a12: 0, b12: 0,
-      a21: 0, b21: 0,  a22: 1, b22: 5,
-    }))], mover: 'A' }],
-    pathSegmentsB: [{ xs: [0.217], ys: [0.217], zs: [r3(EB(0.217, 0.217, {
-      a11: 2, b11: 1,  a12: 0, b12: 0,
-      a21: 0, b21: 0,  a22: 1, b22: 5,
-    }))], mover: 'A' }],
+    pathSegmentsA: [{
+      xs: [0.217], ys: [0.217], zs: [r3(EA(0.217, 0.217, {
+        a11: 2, b11: 1, a12: 0, b12: 0,
+        a21: 0, b21: 0, a22: 1, b22: 5,
+      }))], mover: 'A'
+    }],
+    pathSegmentsB: [{
+      xs: [0.217], ys: [0.217], zs: [r3(EB(0.217, 0.217, {
+        a11: 2, b11: 1, a12: 0, b12: 0,
+        a21: 0, b21: 0, a22: 1, b22: 5,
+      }))], mover: 'A'
+    }],
     ghostPathSegmentsA: [],
     ghostPathSegmentsB: [],
     historyStack: []
@@ -242,7 +295,7 @@ export default function App() {
   const committedNE = useMemo<NashEquilibrium | null>(() => {
     if (pureNEs.length === 0) return null;
     if (pureNEs.length === 1) return pureNEs[0];
-    
+
     // Multi-pure NE: Mover selects their preferred choice
     return pureNEs.reduce((best, ne) => {
       const myScore = firstMover === 'A' ? ne.eA : ne.eB;
@@ -350,7 +403,7 @@ export default function App() {
       (msg) => {
         logsCollected.push(msg);
       },
-      () => {}, // Ghost cycle triggers
+      () => { }, // Ghost cycle triggers
       () => {
         // Convergence callback
         next.running = false;
@@ -384,8 +437,7 @@ export default function App() {
 
   // ── Authentication & Custom Game Handlers ──────────────────────────────────
   const handleLogout = () => {
-    localStorage.removeItem('nash_sim_token');
-    setAuthToken(null);
+    updateAuthToken(null);
     setUser(null);
     setUserCustomGames([]);
     setActivePreset('bos');
@@ -395,7 +447,7 @@ export default function App() {
   const handleDeleteGame = async (gameId: string) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/games/${gameId}`, {
+      const res = await fetch(getApiUrl(`/api/games/${gameId}`), {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
@@ -423,7 +475,7 @@ export default function App() {
     setSaveError('');
     setSaveLoading(true);
     try {
-      const res = await fetch('/api/games', {
+      const res = await fetch(getApiUrl('/api/games'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -466,15 +518,21 @@ export default function App() {
         return;
       }
       try {
-        const res = await fetch('/api/auth/login', {
+        const res = await fetch(getApiUrl('/api/auth/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: authEmail, password: authPassword })
         });
-        const data = await res.json();
+        
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = { error: `Server returned invalid response (Status ${res.status}).` };
+        }
+
         if (res.ok) {
-          localStorage.setItem('nash_sim_token', data.token);
-          setAuthToken(data.token);
+          updateAuthToken(data.token);
           setIsAuthModalOpen(false);
           setAuthEmail('');
           setAuthPassword('');
@@ -496,7 +554,7 @@ export default function App() {
         setAuthLoading(false);
         return;
       }
-      
+
       // Client-side validations
       if (authPassword !== authConfirmPassword) {
         setAuthError('Passwords do not match. Please ensure both fields are identical.');
@@ -512,15 +570,30 @@ export default function App() {
       }
 
       try {
-        const res = await fetch('/api/auth/register', {
+        const res = await fetch(getApiUrl('/api/auth/register'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: authUsername, email: authEmail, password: authPassword })
         });
-        const data = await res.json();
+        
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = { error: `Server returned invalid response (Status ${res.status}).` };
+        }
+
         if (res.ok) {
-          setAuthMode('verify');
-          setAuthSuccess('Registration successful! A 6-digit confirmation code has been sent to your email address.');
+          if (data.autoVerified) {
+            setAuthMode('login');
+            setAuthSuccess(data.message || 'Account created successfully inside local database! You are ready to log in.');
+          } else {
+            setAuthMode('verify');
+            setAuthSuccess(data.message || 'Registration successful! A 6-digit confirmation code has been sent to your email address.');
+            if (data.verificationCode) {
+              setAuthCode(data.verificationCode);
+            }
+          }
         } else {
           setAuthError(data.error || 'Registration failed.');
         }
@@ -536,12 +609,19 @@ export default function App() {
         return;
       }
       try {
-        const res = await fetch('/api/auth/verify', {
+        const res = await fetch(getApiUrl('/api/auth/verify'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: authEmail, code: authCode })
         });
-        const data = await res.json();
+        
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = { error: `Server returned invalid response (Status ${res.status}).` };
+        }
+
         if (res.ok) {
           setAuthMode('login');
           setAuthSuccess('Account verified successfully! You can now log in.');
@@ -649,7 +729,7 @@ export default function App() {
   // ── Trajectory Backstep pop ────────────────────────────────────────────────
   const handleBackstep = () => {
     if (simState.historyStack.length === 0 || simState.running) return;
-    
+
     setSimState((prev: SimState) => {
       const history = [...prev.historyStack];
       const prevSnap = history.pop();
@@ -669,7 +749,7 @@ export default function App() {
   const updatePayoffField = (field: keyof GamePayoffs, valStr: string) => {
     setActivePreset('custom');
     setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
-    
+
     let v = parseFloat(valStr);
     if (isNaN(v)) v = 0;
     const clamped = Math.max(-100, Math.min(100, r3(v)));
@@ -717,7 +797,10 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col antialiased">
       {/* ── Heading Banner ── */}
-      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 py-4 px-6 sticky top-0 z-30 shadow-subtle">
+      <header
+        className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle ${isElectronMac ? 'pl-20 pr-6 py-5' : 'py-4 px-6'}`}
+        style={isElectron ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
+      >
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5">
@@ -732,7 +815,22 @@ export default function App() {
               Visualise Best-Response dynamics, 3D expected payoff surfaces, and mixed strategy search corridor shrinkage algorithms.
             </p>
           </div>
-          <div className="flex items-center flex-wrap gap-2.5">
+          <div
+            className="flex items-center flex-wrap gap-2.5"
+            style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
+          >
+            {/* Desktop installer download button on the website */}
+            {!isElectron && (
+              <button
+                onClick={() => setIsDownloadModalOpen(true)}
+                className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-slate-100 text-indigo-700 dark:bg-indigo-950/45 dark:hover:bg-indigo-900/40 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+                title="Download macOS Desktop App"
+              >
+                <Download className="w-3.5 h-3.5 animate-pulse" />
+                <span>Get Desktop App</span>
+              </button>
+            )}
+
             {/* Theme Toggle Button */}
             <button
               onClick={() => setDarkMode(!darkMode)}
@@ -778,7 +876,7 @@ export default function App() {
                 <LogIn className="w-3.5 h-3.5" /> Sign In / Sign Up
               </button>
             )}
-            
+
             {simState.converged && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1.5 px-3 rounded-full border border-emerald-200 dark:border-emerald-800">
                 <CheckCircle2 className="w-3.5 h-3.5" /> Converged
@@ -792,7 +890,7 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* ── Left Sidebar Settings Panel (5 cols) ── */}
         <div className="lg:col-span-5 flex flex-col gap-6">
-          
+
           {/* Preset Buttons Block */}
           <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
             <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-2">
@@ -806,11 +904,10 @@ export default function App() {
                   <button
                     key={key}
                     onClick={() => handleLoadPreset(key)}
-                    className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all text-center cursor-pointer ${
-                      isSelected
+                    className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all text-center cursor-pointer ${isSelected
                         ? 'bg-rose-500 text-white border-rose-500 shadow-xs'
                         : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white'
-                    }`}
+                      }`}
                   >
                     {PRESETS[key].name}
                   </button>
@@ -863,11 +960,10 @@ export default function App() {
                   return (
                     <div
                       key={game.id}
-                      className={`group flex items-center justify-between p-2 pl-3 rounded-xl border transition-all ${
-                        isSelected
+                      className={`group flex items-center justify-between p-2 pl-3 rounded-xl border transition-all ${isSelected
                           ? 'bg-indigo-500 border-indigo-500 text-white shadow-xs'
                           : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:bg-slate-100/80 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
-                      }`}
+                        }`}
                     >
                       <button
                         onClick={() => handleLoadPreset(game.id)}
@@ -881,11 +977,10 @@ export default function App() {
                           e.stopPropagation();
                           handleDeleteGame(game.id);
                         }}
-                        className={`p-1 rounded-md transition-colors cursor-pointer ${
-                          isSelected
+                        className={`p-1 rounded-md transition-colors cursor-pointer ${isSelected
                             ? 'text-indigo-100 hover:text-white hover:bg-indigo-600'
                             : 'text-slate-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40'
-                        }`}
+                          }`}
                         title="Delete this game description"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -928,7 +1023,7 @@ export default function App() {
               <div className="text-xs font-bold text-red-500 text-left pr-2">A: Row 1</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a11}
@@ -938,7 +1033,7 @@ export default function App() {
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b11}
@@ -949,7 +1044,7 @@ export default function App() {
               </div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a12}
@@ -959,7 +1054,7 @@ export default function App() {
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b12}
@@ -973,7 +1068,7 @@ export default function App() {
               <div className="text-xs font-bold text-red-500 text-left pr-2">A: Row 2</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a21}
@@ -983,7 +1078,7 @@ export default function App() {
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b21}
@@ -994,7 +1089,7 @@ export default function App() {
               </div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.a22}
@@ -1004,7 +1099,7 @@ export default function App() {
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
-                   type="text"
+                  type="text"
                   inputMode="decimal"
                   pattern="[0-9.-]*"
                   value={rawPayoffs.b22}
@@ -1091,13 +1186,12 @@ export default function App() {
                         setFirstMover(player);
                         setInitialized(false);
                       }}
-                      className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all ${
-                        active
+                      className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all ${active
                           ? player === 'A'
                             ? 'bg-red-500 text-white border-red-500'
                             : 'bg-blue-600 text-white border-blue-600'
                           : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
-                      }`}
+                        }`}
                     >
                       Player {player}
                     </button>
@@ -1116,15 +1210,14 @@ export default function App() {
                     <button
                       key={m}
                       onClick={() => setTrackingMode(m)}
-                      className={`py-2 px-1 text-[10px] md:text-xs font-semibold rounded-xl border transition-all text-center ${
-                        active
+                      className={`py-2 px-1 text-[10px] md:text-xs font-semibold rounded-xl border transition-all text-center ${active
                           ? m === 'A'
                             ? 'bg-red-500 text-white border-red-500'
                             : m === 'B'
                               ? 'bg-blue-600 text-white border-blue-600'
                               : 'bg-purple-600 text-white border-purple-600'
                           : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
-                      }`}
+                        }`}
                     >
                       {m === 'both' ? 'Both Plots' : `Player ${m}`}
                     </button>
@@ -1157,7 +1250,7 @@ export default function App() {
 
         {/* ── Right Panel Simulation Console & Plots (7 cols) ── */}
         <div className="lg:col-span-7 flex flex-col gap-6">
-          
+
           {/* Plot Legend Info Line */}
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-[10px] text-slate-500 justify-center lg:justify-start">
             <span className="flex items-center gap-1">🔴 E[A] Surface</span>
@@ -1182,17 +1275,16 @@ export default function App() {
 
           {/* Simulation Controls Dashboard */}
           <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
-            
+
             {/* Play trigger buttons row */}
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <button
                   onClick={togglePlay}
-                  className={`flex items-center gap-1 mt-0.5 py-2 px-3 sm:px-5 text-xs sm:text-sm font-semibold rounded-xl text-white transition-all shadow-xs ${
-                    simState.running
+                  className={`flex items-center gap-1 mt-0.5 py-2 px-3 sm:px-5 text-xs sm:text-sm font-semibold rounded-xl text-white transition-all shadow-xs ${simState.running
                       ? 'bg-yellow-500 hover:bg-yellow-600'
                       : 'bg-indigo-600 hover:bg-indigo-700'
-                  }`}
+                    }`}
                 >
                   {simState.running ? (
                     <>
@@ -1281,20 +1373,17 @@ export default function App() {
             </div>
           </div>
           {simState.converged && nearestNE && (
-            <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${
-              nearestNE.type === 'mixed'
+            <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${nearestNE.type === 'mixed'
                 ? 'bg-purple-50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800/60'
                 : 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60'
-            }`}>
+              }`}>
               <div className="flex items-center gap-2">
-                <span className={`p-1.5 rounded-lg ${
-                  nearestNE.type === 'mixed' ? 'bg-purple-105 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300' : 'bg-emerald-105 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
-                }`}>
+                <span className={`p-1.5 rounded-lg ${nearestNE.type === 'mixed' ? 'bg-purple-105 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300' : 'bg-emerald-105 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+                  }`}>
                   <Award className="w-5 h-5" />
                 </span>
-                <span className={`text-sm font-bold uppercase tracking-wider ${
-                  nearestNE.type === 'mixed' ? 'text-purple-900 dark:text-purple-200' : 'text-emerald-900 dark:text-emerald-200'
-                }`}>
+                <span className={`text-sm font-bold uppercase tracking-wider ${nearestNE.type === 'mixed' ? 'text-purple-900 dark:text-purple-200' : 'text-emerald-900 dark:text-emerald-200'
+                  }`}>
                   {nearestNE.type === 'mixed' ? 'Mixed' : 'Pure'} Strategy Nash Equilibrium Reached
                 </span>
               </div>
@@ -1338,7 +1427,7 @@ export default function App() {
               <Compass className="w-4 h-4 text-emerald-500" />
               Game Theorist Situation Report
             </div>
-            
+
             <div className="space-y-3">
               <div>
                 <strong className="text-slate-700 dark:text-slate-200">Calculated Nash Equilibria:</strong>
@@ -1758,6 +1847,19 @@ export default function App() {
           setAuthMode('login');
           setIsAuthModalOpen(true);
         }}
+        getApiUrl={getApiUrl}
+        dbMode={dbMode}
+        apiBaseUrl={apiBaseUrl}
+        onSwitchDbMode={handleSwitchDbMode}
+        onUpdateApiBaseUrl={(url) => {
+          setApiBaseUrl(url);
+          localStorage.setItem('nash_sim_api_base', url);
+        }}
+      />
+
+      <DownloadModal
+        isOpen={isDownloadModalOpen}
+        onClose={() => setIsDownloadModalOpen(false)}
       />
     </div>
   );

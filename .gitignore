@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Electron build and packaging files
+dist-electron/
+*.app/
+*.dmg
+*.zip
+*.blockmap

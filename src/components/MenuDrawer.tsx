@@ -20,7 +20,8 @@ import {
   CheckCircle2,
   Loader2,
   Compass,
-  FileText
+  FileText,
+  Database
 } from 'lucide-react';
 
 interface MenuDrawerProps {
@@ -35,6 +36,11 @@ interface MenuDrawerProps {
   isDark: boolean;
   onLogout: () => void;
   onOpenAuth: () => void;
+  getApiUrl: (path: string) => string;
+  dbMode: 'local' | 'cloud';
+  apiBaseUrl: string;
+  onSwitchDbMode: (mode: 'local' | 'cloud') => void;
+  onUpdateApiBaseUrl: (url: string) => void;
 }
 
 export const MenuDrawer: React.FC<MenuDrawerProps> = ({
@@ -49,7 +55,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   isDark,
   onLogout,
   onOpenAuth,
+  getApiUrl,
+  dbMode,
+  apiBaseUrl,
+  onSwitchDbMode,
+  onUpdateApiBaseUrl,
 }) => {
+  const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
   const [activeTab, setActiveTab] = useState<'help' | 'library' | 'account'>('help');
 
   // Account deletion states
@@ -99,19 +111,29 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     setDeleteLoading(true);
     setDeleteError('');
     try {
-      const res = await fetch('/api/auth/delete-request', {
+      const res = await fetch(getApiUrl('/api/auth/delete-request'), {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
         },
       });
-      const data = await res.json();
+      
+      let data;
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = { error: `Server returned invalid response (Status ${res.status}).` };
+      }
+
       if (!res.ok) {
         throw new Error(data.error || 'Failed to initialize deletion request.');
       }
       setDeleteStep('inputCode');
       setDeleteSuccess(data.message || 'Verification code sent.');
+      if (data.deleteCode) {
+        setDeleteCode(data.deleteCode);
+      }
     } catch (err: any) {
       setDeleteError(err.message);
     } finally {
@@ -126,7 +148,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     setDeleteLoading(true);
     setDeleteError('');
     try {
-      const res = await fetch('/api/auth/delete-confirm', {
+      const res = await fetch(getApiUrl('/api/auth/delete-confirm'), {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${authToken}`,
@@ -134,7 +156,14 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         },
         body: JSON.stringify({ code: deleteCode }),
       });
-      const data = await res.json();
+      
+      let data;
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = { error: `Server returned invalid response (Status ${res.status}).` };
+      }
+
       if (!res.ok) {
         throw new Error(data.error || 'Incorrect security verification code.');
       }
@@ -187,24 +216,22 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('help')}
-            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'help'
+            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'help'
                 ? 'border-indigo-600 text-indigo-650 dark:text-indigo-400 dark:border-indigo-400 bg-indigo-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
-            }`}
+              }`}
           >
             <HelpCircle className="w-4 h-4" />
             Help Guides & Visuals
           </button>
-          
+
           <button
             type="button"
             onClick={() => setActiveTab('library')}
-            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'library'
+            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'library'
                 ? 'border-indigo-600 text-indigo-650 dark:text-indigo-400 dark:border-indigo-400 bg-indigo-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
-            }`}
+              }`}
           >
             <BookOpen className="w-4 h-4" />
             Presets & Custom Library
@@ -213,11 +240,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('account')}
-            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'account'
+            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'account'
                 ? 'border-indigo-600 text-indigo-650 dark:text-indigo-400 dark:border-indigo-400 bg-indigo-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
-            }`}
+              }`}
           >
             <Sliders className="w-4 h-4" />
             Danger Zone
@@ -226,11 +252,11 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
         {/* Sliding Panel Content (with scroll) */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6">
-          
+
           {/* ──────────────── TAB 1: HELP SECTION ──────────────── */}
           {activeTab === 'help' && (
             <div className="space-y-7 text-slate-650 dark:text-slate-300 text-xs md:text-sm leading-relaxed">
-              
+
               {/* SECTION 1: How to Decipher the 3D Graph */}
               <div className="space-y-4">
                 <h3 className="text-sm md:text-base font-bold text-slate-800 dark:text-white flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
@@ -292,12 +318,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     <svg width="200" height="200" viewBox="0 0 200 200" className="overflow-visible select-none">
                       {/* Grid Background Box */}
                       <rect x="25" y="25" width="150" height="150" rx="12" fill={isDark ? '#020617' : '#f8fafc'} stroke={isDark ? '#334155' : '#cbd5e1'} strokeWidth="1.5" />
-                      
+
                       {/* Dotted grid lines */}
                       <line x1="62.5" y1="25" x2="62.5" y2="175" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="100" y1="25" x2="100" y2="175" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="137.5" y1="25" x2="137.5" y2="175" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
-                      
+
                       <line x1="25" y1="62.5" x2="175" y2="62.5" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="25" y1="100" x2="175" y2="100" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="25" y1="137.5" x2="175" y2="137.5" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
@@ -314,7 +340,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       <circle cx="137.5" cy="100" r="14" fill={isDark ? 'rgba(16, 185, 129, 0.15)' : 'rgba(16, 185, 129, 0.08)'} />
                       <circle cx="137.5" cy="100" r="8" fill="none" stroke="#10b981" strokeWidth="2.5" className="animate-pulse" />
                       <circle cx="137.5" cy="100" r="4.5" fill="#10b981" />
-                      
+
                       <text x="137.5" y="80" fill="#10b981" fontSize="9.5" fontWeight="bold" textAnchor="middle">equilibrium core</text>
                     </svg>
                   </div>
@@ -327,12 +353,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     <svg width="200" height="200" viewBox="0 0 200 200" className="overflow-visible select-none">
                       {/* Grid Background Box */}
                       <rect x="25" y="25" width="150" height="150" rx="12" fill={isDark ? '#020617' : '#f8fafc'} stroke={isDark ? '#334155' : '#cbd5e1'} strokeWidth="1.5" />
-                      
+
                       {/* Dotted grid lines */}
                       <line x1="62.5" y1="25" x2="62.5" y2="175" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="100" y1="25" x2="100" y2="175" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="137.5" y1="25" x2="137.5" y2="175" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
-                      
+
                       <line x1="25" y1="62.5" x2="175" y2="62.5" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="25" y1="100" x2="175" y2="100" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
                       <line x1="25" y1="137.5" x2="175" y2="137.5" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="0.75" strokeDasharray="3,3" />
@@ -354,7 +380,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       />
-                      
+
                       {/* Player B BR (Blue path) */}
                       <path
                         d="M 25 25 L 137.5 25 L 137.5 175 L 175 175"
@@ -420,7 +446,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   <h4 className="font-bold text-indigo-600 dark:text-indigo-400 text-xs md:text-sm">
                     Controls & Settings
                   </h4>
-                  
+
                   <div className="space-y-3.5 text-[11px] md:text-xs">
                     <div>
                       <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">Run / Step / Reset</strong>
@@ -516,7 +542,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           {/* ──────────────── TAB 2: LIBRARY SECTION ──────────────── */}
           {activeTab === 'library' && (
             <div className="space-y-6">
-              
+
               {/* Default Presets Segment */}
               <div>
                 <div className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3.5 flex items-center gap-1">
@@ -531,11 +557,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     return (
                       <div
                         key={preset.key}
-                        className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${
-                          isSelected
+                        className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${isSelected
                             ? 'bg-indigo-50/15 dark:bg-indigo-950/10 border-indigo-400 dark:border-indigo-800 shadow-md ring-1 ring-indigo-400/20'
                             : 'bg-white dark:bg-slate-950/30 border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm'
-                        }`}
+                          }`}
                       >
                         {/* Dynamic Miniature SVG representing strategy space */}
                         <div className="flex justify-center items-center">
@@ -559,7 +584,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                               className="text-[11px] text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed"
                               dangerouslySetInnerHTML={{ __html: preset.desc }}
                             />
-                            
+
                             {/* Dynamically Plotted Nash Equilibria */}
                             <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-2.5 border border-slate-100 dark:border-slate-800/85">
                               <div className="text-[10px] font-bold text-slate-450 dark:text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
@@ -590,11 +615,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 onClose();
                               }}
                               disabled={isSelected}
-                              className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-                                isSelected
+                              className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${isSelected
                                   ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-transparent cursor-not-allowed'
                                   : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
-                              }`}
+                                }`}
                             >
                               {isSelected ? 'Currently Loaded' : 'Load Game Layout'}
                             </button>
@@ -626,11 +650,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       return (
                         <div
                           key={game.id}
-                          className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${
-                            isSelected
+                          className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${isSelected
                               ? 'bg-indigo-50/15 dark:bg-indigo-950/10 border-indigo-400 dark:border-indigo-800 shadow-md ring-1 ring-indigo-400/20'
                               : 'bg-white dark:bg-slate-950/30 border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm'
-                          }`}
+                            }`}
                         >
                           {/* Miniature */}
                           <div className="flex justify-center items-center">
@@ -693,11 +716,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                   onClose();
                                 }}
                                 disabled={isSelected}
-                                className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-                                  isSelected
+                                className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${isSelected
                                     ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-transparent cursor-not-allowed'
                                     : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
-                                }`}
+                                  }`}
                               >
                                 {isSelected ? 'Currently Loaded' : 'Load Game Layout'}
                               </button>
@@ -737,7 +759,89 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           {/* ──────────────── TAB 3: ACCOUNT & DANGER ZONE ──────────────── */}
           {activeTab === 'account' && (
             <div className="space-y-6">
-              
+              {isElectron && (
+                <div className="border border-indigo-100 dark:border-indigo-950 rounded-2xl p-5 bg-indigo-50/10 dark:bg-indigo-950/10 shadow-sm space-y-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                      <Database className="w-5 h-5 text-indigo-500" />
+                      Database Sync Mode
+                    </h4>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dbMode === 'cloud'
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-300/30'
+                        : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-300/30'
+                      }`}>
+                      {dbMode === 'cloud' ? 'Cloud Sync Online' : 'Local Standalone Offline'}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                    Choose whether the application saves game presets and user accounts to your offline local computer database, or synchronizes live with the central website hub.
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => onSwitchDbMode('local')}
+                      className={`py-2 px-3 rounded-xl border text-center font-bold text-xs transition-all cursor-pointer ${dbMode === 'local'
+                          ? 'bg-white dark:bg-slate-900 border-indigo-500 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                          : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-950/80 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
+                        }`}
+                    >
+                      Local Offline Mode
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSwitchDbMode('cloud')}
+                      className={`py-2 px-3 rounded-xl border text-center font-bold text-xs transition-all cursor-pointer ${dbMode === 'cloud'
+                          ? 'bg-white dark:bg-slate-900 border-indigo-500 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                          : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-950/80 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
+                        }`}
+                    >
+                      Cloud Sync Mode
+                    </button>
+                  </div>
+
+                  {dbMode === 'cloud' && (
+                    <div className="pt-2.5 space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-450 dark:text-slate-500 uppercase tracking-wide">
+                        Central Hub Website URL
+                      </label>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          value={apiBaseUrl}
+                          onChange={(e) => onUpdateApiBaseUrl(e.target.value)}
+                          placeholder="e.g., https://nash-equilibrium.run.app"
+                          className="flex-1 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl px-2.5 py-1.5 text-xs text-slate-850 dark:text-slate-100 font-mono focus:outline-none focus:border-indigo-500 transition-colors"
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const trimmedBase = apiBaseUrl.trim().replace(/\/$/, '');
+                              const res = await fetch(`${trimmedBase}/api/health`);
+                              if (res.ok) {
+                                alert("Connection successful! The central hub is online and reached successfully.");
+                              } else {
+                                alert(`Server reached but failed with status: ${res.status}`);
+                              }
+                            } catch (err: any) {
+                              alert(`Connection failed! Please verify the URL and your internet connection. Detail: ${err.message}`);
+                            }
+                          }}
+                          className="px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 font-bold transition-all cursor-pointer text-xs"
+                        >
+                          Test
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-normal pl-0.5">
+                        Prefilled with your active digital workspace server URL. Saving custom games in Cloud Sync Mode will instantly sync them across any browser or app linked to your account!
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {!user ? (
                 <div className="bg-slate-50 dark:bg-slate-950/20 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                   <p className="mb-3">You are not logged in. Sign in to view account profiles and manage deletion preferences.</p>
@@ -775,7 +879,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       <AlertTriangle className="w-4 h-4 text-red-600" />
                       Danger Zone Operations
                     </div>
-                    
+
                     <p className="text-xs text-slate-550 dark:text-slate-400 leading-relaxed">
                       Wipe out your profile credentials, saved customs, history logs, and everything else in this simulator immediately. This action cannot be undone.
                     </p>

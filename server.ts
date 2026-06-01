@@ -51,13 +51,28 @@ interface DB {
   games: SavedGame[];
 }
 
-const DB_FILE = path.join(process.cwd(), "db.json");
+const DB_FILE = process.env.ELECTRON_USER_DATA_PATH
+  ? path.join(process.env.ELECTRON_USER_DATA_PATH, "db.json")
+  : path.join(process.cwd(), "db.json");
 
 // Helper to load DB
 function loadDB(): DB {
+  try {
+    const dbDir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+  } catch (err) {
+    console.error("Error creating database directory:", err);
+  }
+
   if (!fs.existsSync(DB_FILE)) {
     const fresh: DB = { users: [], games: [] };
-    fs.writeFileSync(DB_FILE, JSON.stringify(fresh, null, 2), "utf-8");
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(fresh, null, 2), "utf-8");
+    } catch (err) {
+      console.error("Error creating fresh db.json:", err);
+    }
     return fresh;
   }
   try {
@@ -72,6 +87,10 @@ function loadDB(): DB {
 // Helper to save DB
 function saveDB(db: DB) {
   try {
+    const dbDir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
   } catch (err) {
     console.error("Error writing db.json", err);
@@ -87,7 +106,7 @@ function getTransporter() {
 
   if (host && user && pass) {
     const isGmail = host.toLowerCase().includes("gmail") || user.toLowerCase().includes("gmail");
-    
+
     if (isGmail) {
       console.log(`Configuring specialized Gmail SMTP transporter for ${user}`);
       return nodemailer.createTransport({
@@ -221,6 +240,35 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  // Serve compiled DMG file
+  app.get("/api/download/dmg", (req, res) => {
+    try {
+      const distElectronPath = path.join(process.cwd(), "dist-electron");
+      if (fs.existsSync(distElectronPath)) {
+        const files = fs.readdirSync(distElectronPath);
+        const dmgFile = files.find(f => f.toLowerCase().endsWith(".dmg"));
+        if (dmgFile) {
+          const fullPath = path.join(distElectronPath, dmgFile);
+          return res.download(fullPath, dmgFile);
+        }
+      }
+
+      const rootFiles = fs.readdirSync(process.cwd());
+      const rootDmg = rootFiles.find(f => f.toLowerCase().endsWith(".dmg"));
+      if (rootDmg) {
+        return res.download(path.join(process.cwd(), rootDmg), rootDmg);
+      }
+
+      return res.status(404).json({
+        error: "DMG Not Found",
+        message: "No compiled macOS .dmg file found in the server's build directory yet. You can package this app locally by running 'npm run electron:dist' on your Mac."
+      });
+    } catch (error: any) {
+      console.error("Error serving DMG:", error);
+      res.status(500).json({ error: "Internal Server Error", details: error.message });
+    }
+  });
+
   // Register Endpoint
   app.post("/api/auth/register", async (req, res) => {
     const { username, email, password } = req.body;
@@ -239,15 +287,29 @@ async function startServer() {
 
     const emailTrimmed = email.trim().toLowerCase();
     const db = loadDB();
+    const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
 
-    // Check if user exists
-    const existingUser = db.users.find(u => u.email === emailTrimmed);
+    // Check if user exists using trimmed, lowercased comparison
+    const existingUser = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
     if (existingUser) {
       if (existingUser.isVerified) {
         return res.status(400).json({ error: "An account with this email already exists." });
       }
-      
-      // If of the unverified user, refresh code
+
+      // If we are in Electron local mode, mark them verified instantly and save
+      if (isElectron) {
+        existingUser.isVerified = true;
+        existingUser.username = username;
+        existingUser.passwordHash = Buffer.from(password).toString("base64");
+        saveDB(db);
+        return res.json({
+          success: true,
+          message: "Local account created successfully! You are ready to log in.",
+          autoVerified: true
+        });
+      }
+
+      // If of the unverified user on the website, refresh code
       const updatedCode = Math.floor(100000 + Math.random() * 900000).toString();
       existingUser.username = username;
       existingUser.passwordHash = Buffer.from(password).toString("base64"); // Simple hashing
@@ -256,10 +318,17 @@ async function startServer() {
       saveDB(db);
 
       let emailResult;
+      let emailErrorMsg = null;
       try {
         emailResult = await sendVerificationEmail(emailTrimmed, updatedCode, username);
       } catch (err: any) {
-        return res.status(500).json({ error: `Failed to dispatch confirmation email: ${err.message}` });
+        emailErrorMsg = err.message;
+      }
+
+      if (emailErrorMsg) {
+        return res.status(500).json({
+          error: `Could not send verification email: ${emailErrorMsg}. Please check your server SMTP settings.`
+        });
       }
 
       return res.json({
@@ -267,8 +336,27 @@ async function startServer() {
         message: "Unverified user exists. Sent a new 6-digit verification code to your email address.",
         email: emailTrimmed,
         via: emailResult?.via || "smtp",
-        previewUrl: emailResult?.previewUrl || null,
-        smtpError: emailResult?.smtpError || null
+        previewUrl: emailResult?.previewUrl || null
+      });
+    }
+
+    // Direct verified path for local Electron apps
+    if (isElectron) {
+      const newUser: User = {
+        id: "u_" + Math.random().toString(36).substring(2, 11),
+        username,
+        email: emailTrimmed,
+        passwordHash: Buffer.from(password).toString("base64"),
+        isVerified: true,
+        verificationCode: "",
+        verificationCodeExpires: 0
+      };
+      db.users.push(newUser);
+      saveDB(db);
+      return res.json({
+        success: true,
+        message: "Local account created successfully! You are ready to log in.",
+        autoVerified: true
       });
     }
 
@@ -287,19 +375,29 @@ async function startServer() {
     saveDB(db);
 
     let emailResult;
+    let emailErrorMsg = null;
     try {
       emailResult = await sendVerificationEmail(emailTrimmed, verificationCode, username);
     } catch (err: any) {
-      return res.status(500).json({ error: `Registration recorded, but failed to send verification email: ${err.message}` });
+      emailErrorMsg = err.message;
+    }
+
+    if (emailErrorMsg) {
+      // Discard the unverified registration if SMTP is failing completely,
+      // so we do not block subsequent attempts when SMTP config is updated.
+      db.users = db.users.filter(u => u.email.trim().toLowerCase() !== emailTrimmed);
+      saveDB(db);
+      return res.status(500).json({
+        error: `Could not send verification email: ${emailErrorMsg}. Please check your server SMTP settings.`
+      });
     }
 
     res.json({
       success: true,
-      message: "Registration successful! A 6-digit code has been sent to your email.",
+      message: "Registration successful! A 6-digit confirmation code has been sent to your email address.",
       email: emailTrimmed,
       via: emailResult?.via || "smtp",
-      previewUrl: emailResult?.previewUrl || null,
-      smtpError: emailResult?.smtpError || null
+      previewUrl: emailResult?.previewUrl || null
     });
   });
 
@@ -419,18 +517,20 @@ async function startServer() {
 
     saveDB(db);
 
+    let emailErrorMsg = null;
     try {
       await sendDeleteEmail(user.email, deleteCode, user.username);
-      res.json({
-        success: true,
-        message: "A 6-digit confirmation security code has been sent to your email address."
-      });
     } catch (err: any) {
-      console.error("Account deletion request failed to send email:", err);
-      res.status(500).json({
-        error: `Could not send verification email: ${err.message}. Please verify your network or SMTP config.`
-      });
+      emailErrorMsg = err.message;
     }
+
+    res.json({
+      success: true,
+      message: emailErrorMsg
+        ? `A security confirmation code was generated locally (SMTP Offline): Enter code ${deleteCode} below.`
+        : "A 6-digit confirmation security code has been sent to your email address.",
+      deleteCode: deleteCode
+    });
   });
 
   // Verify deletion code and delete account
@@ -467,11 +567,13 @@ async function startServer() {
       return res.status(400).json({ error: "Incorrect verification code." });
     }
 
+    const userEmail = user.email.toLowerCase().trim();
+
     // Clean up corresponding games saved by team space
     db.games = db.games.filter(g => g.userId !== user.id);
 
-    // Delete the user record
-    db.users.splice(userIndex, 1);
+    // Completely wipe out any user records matching this email or user ID
+    db.users = db.users.filter(u => u.email.toLowerCase().trim() !== userEmail && u.id !== user.id);
 
     saveDB(db);
 
@@ -580,16 +682,44 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = fs.existsSync(path.join(__dirname, 'index.html'))
+      ? __dirname
+      : path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Express server running on http://0.0.0.0:${PORT}`);
-  });
+  // Dynamic port assignment with automatic fallback in case of port collisions
+  const startListening = (port: number) => {
+    const serverInstance = app.listen(port, "0.0.0.0", () => {
+      console.log(`Express server running on http://0.0.0.0:${port}`);
+      if (process.env.IS_ELECTRON === 'true') {
+        (global as any).expressPort = port;
+        if ((global as any).onExpressListening) {
+          (global as any).onExpressListening(port);
+        }
+      }
+    });
+
+    serverInstance.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.log(`Port ${port} is already in use. Retrying with port ${port + 1}...`);
+        if (process.env.IS_ELECTRON === 'true') {
+          startListening(port + 1);
+        } else {
+          console.error(`EADDRINUSE: Port ${port} is occupied.`);
+          process.exit(1);
+        }
+      } else {
+        console.error("Server bind error:", err);
+      }
+    });
+  };
+
+  const initialPort = parseInt(process.env.PORT || "3000", 10);
+  startListening(initialPort);
 }
 
 startServer();

@@ -1,4 +1,14 @@
 {
-  "users": [],
+  "users": [
+    {
+      "id": "u_qh78zkdku",
+      "username": "daluan217",
+      "email": "daluan217@gmail.com",
+      "passwordHash": "RGwxN0RsMTc=",
+      "isVerified": true,
+      "verificationCode": "588366",
+      "verificationCodeExpires": 1780273516725
+    }
+  ],
   "games": []
 }
