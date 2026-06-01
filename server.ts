@@ -233,6 +233,18 @@ async function startServer() {
   // Parse JSON bodies
   app.use(express.json());
 
+  // Enable CORS middleware for cross-origin API access (e.g. from local Electron client to website backend)
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // ── Authentication API ─────────────────────────────────────────────────────
 
   // Express API health check
