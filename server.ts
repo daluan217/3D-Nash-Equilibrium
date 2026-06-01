@@ -738,7 +738,11 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     // In production, only serve frontend if dist files exist (optional)
-    const distPath = path.join(process.cwd(), 'dist');
+    // In packaged Electron, process.cwd() is not the app folder — use __dirname
+    // (server.cjs lives inside dist/, so __dirname IS the dist folder)
+    const distPath = process.env.ELECTRON_USER_DATA_PATH
+      ? __dirname
+      : path.join(process.cwd(), 'dist');
     if (fs.existsSync(path.join(distPath, 'index.html'))) {
       app.use(express.static(distPath));
       app.get('*', (req, res) => {
