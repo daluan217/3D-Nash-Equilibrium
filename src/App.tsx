@@ -1658,13 +1658,15 @@ export default function App() {
               {(authMode === 'login' || authMode === 'register') && (
                 <>
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email Address</label>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
+                      {authMode === 'login' ? 'Email or Username' : 'Email Address'}
+                    </label>
                     <div className="relative">
                       <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
-                        type="email"
+                        type={authMode === 'login' ? 'text' : 'email'}
                         className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
-                        placeholder="john@example.com"
+                        placeholder={authMode === 'login' ? 'john@example.com or username' : 'john@example.com'}
                         value={authEmail}
                         onChange={(e) => setAuthEmail(e.target.value)}
                         required

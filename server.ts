@@ -542,16 +542,19 @@ async function startServer() {
   app.post("/api/auth/login", (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required." });
+      return res.status(400).json({ error: "Email/username and password are required." });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const identifier = email.trim().toLowerCase();
     const db = loadDB();
     const hashedPassword = Buffer.from(password).toString("base64");
-    const user = db.users.find(u => u.email === emailTrimmed && u.passwordHash === hashedPassword);
+    const user = db.users.find(u =>
+      (u.email === identifier || u.username.toLowerCase() === identifier) &&
+      u.passwordHash === hashedPassword
+    );
 
     if (!user) {
-      return res.status(401).json({ error: "Invalid email or password." });
+      return res.status(401).json({ error: "Invalid email/username or password." });
     }
 
     if (!user.isVerified) {
