@@ -44,6 +44,8 @@ interface User {
   verificationCodeExpires: number;
   deleteCode?: string;
   deleteCodeExpires?: number;
+  recoveryCode?: string;
+  recoveryCodeExpires?: number;
 }
 
 interface DB {
@@ -265,6 +267,51 @@ async function sendDeleteEmail(email: string, code: string, username: string): P
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
     console.error("Failed to send deletion confirmation email, error details:", err);
+    throw new Error(`SMTP Mail delivery failed: ${err.message}`);
+  }
+}
+
+async function sendRecoveryEmail(email: string, code: string): Promise<{ success: boolean; via: string; messageId?: string; }> {
+  const transporter = getTransporter();
+  const from = process.env.SMTP_FROM || `"Nash Equilibrium Simulator" <noreply@example.com>`;
+
+  const htmlContent = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 500px; margin: 0 auto; border: 1px solid #fed7aa; border-radius: 16px; padding: 32px; box-shadow: 0 4px 12px rgba(234, 88, 12, 0.04); background-color: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <span style="font-size: 32px; display: inline-block; margin-bottom: 8px;">🔑</span>
+        <h2 style="margin: 0; color: #0f172a; font-size: 22px; font-weight: 800;">Password Recovery</h2>
+        <p style="color: #64748b; font-size: 13px; margin-top: 6px;">Nash Equilibrium Simulator</p>
+      </div>
+      <p style="color: #475569; font-size: 14.5px; line-height: 1.6; margin-bottom: 24px;">We received a request to reset the password for this account. Enter the code below in the simulator to set a new password:</p>
+
+      <div style="text-align: center; margin: 28px 0;">
+        <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 34px; font-weight: 800; letter-spacing: 5px; color: #ea580c; background: #fff7ed; padding: 14px 28px; border: 2px solid #fed7aa; border-radius: 14px; display: inline-block;">
+          ${code}
+        </span>
+      </div>
+
+      <p style="color: #64748b; font-size: 12.5px; line-height: 1.6; margin-top: 28px; border-top: 1px solid #f1f5f9; padding-top: 18px; text-align: center;">
+        This recovery code expires in 10 minutes. If you did not request a password reset, you can safely ignore this email — your password will not change.
+      </p>
+    </div>
+  `;
+
+  if (!transporter) {
+    throw new Error("SMTP configuration is incomplete/missing in .env. Please define SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS.");
+  }
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to: email,
+      subject: `Your Nash Sim Password Recovery Code: ${code}`,
+      text: `Your Nash Sim password recovery code is: ${code}. It expires in 10 minutes.`,
+      html: htmlContent,
+    });
+    console.log("Password recovery email sent successfully:", info.messageId);
+    return { success: true, via: "smtp", messageId: info.messageId };
+  } catch (err: any) {
+    console.error("Failed to send recovery email:", err);
     throw new Error(`SMTP Mail delivery failed: ${err.message}`);
   }
 }
@@ -595,6 +642,92 @@ async function startServer() {
       username: user.username,
       email: user.email
     });
+  });
+
+  // Forgot Password — send recovery code to email
+  app.post("/api/auth/forgot-password", async (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Email address is required." });
+    }
+
+    const emailTrimmed = email.trim().toLowerCase();
+    const db = loadDB();
+    const user = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+
+    // Always return a success-looking response to prevent email enumeration
+    if (!user || !user.isVerified) {
+      return res.json({
+        success: true,
+        message: "If an account with that email exists, a recovery code has been sent."
+      });
+    }
+
+    const recoveryCode = Math.floor(100000 + Math.random() * 900000).toString();
+    user.recoveryCode = recoveryCode;
+    user.recoveryCodeExpires = Date.now() + 10 * 60 * 1000;
+    saveDB(db);
+
+    const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
+    let emailErrorMsg = null;
+
+    if (!isElectron) {
+      try {
+        await sendRecoveryEmail(emailTrimmed, recoveryCode);
+      } catch (err: any) {
+        emailErrorMsg = err.message;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: isElectron || emailErrorMsg
+        ? `Recovery code generated (SMTP Offline). Use code: ${recoveryCode}`
+        : "A 6-digit recovery code has been sent to your email address.",
+      ...(isElectron && { recoveryCode })
+    });
+  });
+
+  // Reset Password — verify code and set new password
+  app.post("/api/auth/reset-password", (req, res) => {
+    const { email, code, newPassword } = req.body;
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ error: "Email, recovery code, and new password are required." });
+    }
+
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z]).{8,}$/;
+    if (!passwordRegex.test(newPassword)) {
+      return res.status(400).json({
+        error: "Password must be at least 8 characters long and contain at least one uppercase and one lowercase letter."
+      });
+    }
+
+    const emailTrimmed = email.trim().toLowerCase();
+    const db = loadDB();
+    const user = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+
+    if (!user) {
+      return res.status(404).json({ error: "No account found for this email." });
+    }
+
+    if (!user.recoveryCode || !user.recoveryCodeExpires) {
+      return res.status(400).json({ error: "No active recovery request found. Please request a new code." });
+    }
+
+    if (user.recoveryCodeExpires < Date.now()) {
+      return res.status(400).json({ error: "Recovery code has expired. Please request a new one." });
+    }
+
+    if (user.recoveryCode !== code) {
+      return res.status(400).json({ error: "Incorrect recovery code." });
+    }
+
+    user.passwordHash = Buffer.from(newPassword).toString("base64");
+    user.recoveryCode = undefined;
+    user.recoveryCodeExpires = undefined;
+    saveDB(db);
+
+    res.json({ success: true, message: "Password reset successfully! You can now log in with your new password." });
   });
 
   // Request account deletion code

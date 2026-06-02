@@ -147,7 +147,7 @@ export default function App() {
 
   // Auth Modal States
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register' | 'verify'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'verify' | 'forgot' | 'reset-password'>('login');
 
   // Save Game Modal States
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
@@ -640,7 +640,7 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: authEmail, code: authCode })
         });
-        
+
         let data;
         try {
           data = await res.json();
@@ -654,6 +654,83 @@ export default function App() {
           setAuthCode('');
         } else {
           setAuthError(data.error || 'Incorrect confirmation code.');
+        }
+      } catch (err) {
+        setAuthError('Connection error.');
+      } finally {
+        setAuthLoading(false);
+      }
+    } else if (authMode === 'forgot') {
+      if (!authEmail) {
+        setAuthError('Please enter your email address.');
+        setAuthLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch(getApiUrl('/api/auth/forgot-password'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authEmail })
+        });
+
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = { error: `Server returned invalid response (Status ${res.status}).` };
+        }
+
+        if (res.ok) {
+          setAuthMode('reset-password');
+          setAuthSuccess(data.message || 'Recovery code sent! Check your email.');
+          if (data.recoveryCode) setAuthCode(data.recoveryCode);
+        } else {
+          setAuthError(data.error || 'Failed to send recovery code.');
+        }
+      } catch (err) {
+        setAuthError('Connection error.');
+      } finally {
+        setAuthLoading(false);
+      }
+    } else if (authMode === 'reset-password') {
+      if (!authCode || !authPassword || !authConfirmPassword) {
+        setAuthError('Recovery code, new password, and confirmation are all required.');
+        setAuthLoading(false);
+        return;
+      }
+      if (authPassword !== authConfirmPassword) {
+        setAuthError('Passwords do not match.');
+        setAuthLoading(false);
+        return;
+      }
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z]).{8,}$/;
+      if (!passwordRegex.test(authPassword)) {
+        setAuthError('Password must be at least 8 characters long and contain at least one uppercase and one lowercase letter.');
+        setAuthLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch(getApiUrl('/api/auth/reset-password'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authEmail, code: authCode, newPassword: authPassword })
+        });
+
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = { error: `Server returned invalid response (Status ${res.status}).` };
+        }
+
+        if (res.ok) {
+          setAuthMode('login');
+          setAuthSuccess(data.message || 'Password reset successfully! You can now log in.');
+          setAuthCode('');
+          setAuthPassword('');
+          setAuthConfirmPassword('');
+        } else {
+          setAuthError(data.error || 'Failed to reset password.');
         }
       } catch (err) {
         setAuthError('Connection error.');
@@ -1608,7 +1685,7 @@ export default function App() {
                   <User className="w-4 h-4" />
                 </span>
                 <span className="font-bold text-slate-800 dark:text-slate-100 text-sm md:text-base">
-                  {authMode === 'login' ? 'Sign In' : authMode === 'register' ? 'Create Account' : 'Verify Email'}
+                  {authMode === 'login' ? 'Sign In' : authMode === 'register' ? 'Create Account' : authMode === 'verify' ? 'Verify Email' : authMode === 'forgot' ? 'Forgot Password' : 'Reset Password'}
                 </span>
               </div>
               <button
@@ -1742,53 +1819,141 @@ export default function App() {
                 </div>
               )}
 
+              {authMode === 'forgot' && (
+                <div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
+                    Enter the email address associated with your account and we'll send you a 6-digit recovery code.
+                  </p>
+                  <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email Address</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="email"
+                      className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                      placeholder="john@example.com"
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+              )}
+
+              {authMode === 'reset-password' && (
+                <div className="space-y-3.5">
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">6-Digit Recovery Code</label>
+                    <div className="relative">
+                      <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="text"
+                        maxLength={6}
+                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100 focus:border-slate-300 text-center text-slate-800 dark:text-slate-200"
+                        placeholder="123456"
+                        value={authCode}
+                        onChange={(e) => setAuthCode(e.target.value.replace(/\D/g, ''))}
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">New Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="password"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                        placeholder="••••••••"
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-normal">
+                      Min 8 characters with at least one <strong className="text-orange-600 dark:text-orange-400">uppercase</strong> and one <strong className="text-orange-600 dark:text-orange-400">lowercase</strong> letter.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Confirm New Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="password"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                        placeholder="••••••••"
+                        value={authConfirmPassword}
+                        onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                        required
+                      />
+                    </div>
+                    {authPassword && authConfirmPassword && (
+                      <div className="text-[10px] mt-1 font-semibold">
+                        {authPassword === authConfirmPassword ? (
+                          <span className="text-emerald-600 flex items-center gap-1">✓ Passwords match</span>
+                        ) : (
+                          <span className="text-rose-500 flex items-center gap-1">✗ Passwords do not match</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={authLoading}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm py-2.5 rounded-xl transition-all cursor-pointer shadow-xs disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+                className={`w-full text-white font-bold text-xs sm:text-sm py-2.5 rounded-xl transition-all cursor-pointer shadow-xs disabled:opacity-50 inline-flex items-center justify-center gap-1.5 ${authMode === 'forgot' || authMode === 'reset-password' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700'}`}
               >
-                {authLoading ? 'Please wait...' : authMode === 'login' ? 'Login' : authMode === 'register' ? 'Register Account' : 'Verify & Setup Account'}
+                {authLoading ? 'Please wait...' : authMode === 'login' ? 'Login' : authMode === 'register' ? 'Register Account' : authMode === 'verify' ? 'Verify & Setup Account' : authMode === 'forgot' ? 'Send Recovery Code' : 'Reset Password'}
               </button>
             </form>
 
-            <div className="border-t border-slate-100 dark:border-slate-800 pt-3.5 text-center text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+            <div className="border-t border-slate-100 dark:border-slate-800 pt-3.5 text-center text-[11px] text-slate-500 dark:text-slate-400 font-medium flex flex-col gap-1.5">
               {authMode === 'login' ? (
-                <span>
-                  Don't have an account?{' '}
-                  <button
-                    onClick={() => {
-                      setAuthError('');
-                      setAuthSuccess('');
-                      setAuthMode('register');
-                    }}
-                    className="font-bold text-blue-600 hover:underline cursor-pointer"
-                  >
-                    Sign Up
-                  </button>
-                </span>
+                <>
+                  <span>
+                    Don't have an account?{' '}
+                    <button
+                      onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('register'); }}
+                      className="font-bold text-blue-600 hover:underline cursor-pointer"
+                    >
+                      Sign Up
+                    </button>
+                  </span>
+                  <span>
+                    <button
+                      onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthCode(''); setAuthMode('forgot'); }}
+                      className="font-bold text-orange-500 hover:underline cursor-pointer"
+                    >
+                      Forgot your password?
+                    </button>
+                  </span>
+                </>
               ) : authMode === 'register' ? (
                 <span>
                   Already have an account?{' '}
                   <button
-                    onClick={() => {
-                      setAuthError('');
-                      setAuthSuccess('');
-                      setAuthMode('login');
-                    }}
+                    onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); }}
                     className="font-bold text-blue-600 hover:underline cursor-pointer"
                   >
                     Log In
+                  </button>
+                </span>
+              ) : authMode === 'forgot' || authMode === 'reset-password' ? (
+                <span>
+                  Remember your password?{' '}
+                  <button
+                    onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthCode(''); setAuthPassword(''); setAuthConfirmPassword(''); setAuthMode('login'); }}
+                    className="font-bold text-blue-600 hover:underline cursor-pointer"
+                  >
+                    Back to Login
                   </button>
                 </span>
               ) : (
                 <span>
                   Back to{' '}
                   <button
-                    onClick={() => {
-                      setAuthError('');
-                      setAuthSuccess('');
-                      setAuthMode('register');
-                    }}
+                    onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('register'); }}
                     className="font-bold text-blue-600 hover:underline cursor-pointer"
                   >
                     Registration
