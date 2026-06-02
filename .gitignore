@@ -6,6 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+db.json
 
 # Electron build and packaging files
 dist-electron/
