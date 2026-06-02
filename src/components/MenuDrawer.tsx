@@ -303,6 +303,19 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       The "shrink step" parameter gradually narrows the search range, simulating how players become more confident in their strategy choices over time, forcing convergence to equilibrium.
                     </p>
                   </div>
+
+                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/30 dark:bg-slate-950/20">
+                    <h4 className="font-bold text-slate-800 dark:text-slate-100 mb-2 flex items-center gap-2 text-xs md:text-sm">
+                      <span className="w-2.5 h-2.5 rounded-full bg-slate-400 shadow-xs" />
+                      Ghost Coordinates
+                    </h4>
+                    <div className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold space-y-2">
+                      <p>Ghost positions are semi-transparent marker projections shown on <em>both</em> payoff surfaces simultaneously at the current strategy pair (x, y). They let you compare each player's payoff at the same point without losing the primary position indicator.</p>
+                      <p><span className="text-rose-500 font-bold">Red ghost (E[A]):</span> Player A's payoff at the current (x, y) — its height on the red surface shows how much A earns.</p>
+                      <p><span className="text-blue-500 font-bold">Blue ghost (E[B]):</span> Player B's payoff at the same point — comparing the two heights instantly reveals which player benefits more.</p>
+                      <p className="text-slate-500 dark:text-slate-400 pt-0.5">Use the <span className="font-bold text-slate-700 dark:text-slate-300">Ghost positions</span> toggle in the legend above the graph to show or hide them.</p>
+                    </div>
+                  </div>
                 </div>
 
                 {/* VISUAL AIDS GRID */}
