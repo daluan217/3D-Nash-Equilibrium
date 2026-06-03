@@ -14,7 +14,8 @@ import {
   AlertCircle,
   HelpCircle,
   FileCode,
-  Chrome
+  Chrome,
+  ChevronDown
 } from 'lucide-react';
 
 interface DownloadModalProps {
@@ -24,6 +25,7 @@ interface DownloadModalProps {
 
 export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose }) => {
   const [downloading, setDownloading] = useState(false);
+  const [showTerminalAlt, setShowTerminalAlt] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
@@ -218,6 +220,33 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                 </li>
               ))}
             </ol>
+            <div className="border-t border-amber-200 dark:border-amber-900/40 pt-2">
+              <button
+                onClick={() => setShowTerminalAlt(v => !v)}
+                className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-indigo-500 dark:hover:text-indigo-400 cursor-pointer"
+              >
+                <ChevronDown className={`w-3 h-3 transition-transform ${showTerminalAlt ? 'rotate-180' : ''}`} />
+                Prefer the terminal?
+              </button>
+              {showTerminalAlt && (
+                <div className="mt-2 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1"><Terminal className="w-3 h-3" /> Terminal command</span>
+                    <button
+                      onClick={() => copyCode(`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`, 'xattr')}
+                      className="text-[10px] text-indigo-500 hover:text-indigo-600 font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedText === 'xattr' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                      Copy
+                    </button>
+                  </div>
+                  <pre className="p-2.5 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-[10px] text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto whitespace-pre-wrap break-all">
+                    {`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`}
+                  </pre>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-500">Run this after dragging the app to Applications, then double-click to open normally.</p>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Offline DB note */}
