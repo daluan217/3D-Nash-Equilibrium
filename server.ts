@@ -433,6 +433,15 @@ async function startServer() {
     const db = loadDB();
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
 
+    // Check for duplicate username (case-insensitive)
+    const usernameTaken = db.users.find(
+      u => u.username.trim().toLowerCase() === username.trim().toLowerCase()
+        && u.email.trim().toLowerCase() !== emailTrimmed
+    );
+    if (usernameTaken) {
+      return res.status(400).json({ error: "That username is already taken. Please choose a different one." });
+    }
+
     // Check if user exists using trimmed, lowercased comparison
     const existingUser = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
     if (existingUser) {

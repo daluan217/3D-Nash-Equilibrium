@@ -14,10 +14,13 @@ interface AdminStats {
 interface AdminDashboardProps {
   onClose: () => void;
   isDark: boolean;
-  getApiUrl: (path: string) => string;
+  isElectron: boolean;
+  apiBaseUrl: string;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark, getApiUrl }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark, isElectron, apiBaseUrl }) => {
+  const adminUrl = (path: string) =>
+    isElectron ? `${apiBaseUrl.trim().replace(/\/$/, '') || 'https://nash-equilibrium-simulator.com'}${path}` : path;
   const [password, setPassword] = useState('');
   const [authed, setAuthed] = useState(false);
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -28,7 +31,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(getApiUrl('/api/admin/stats'), {
+      const res = await fetch(adminUrl('/api/admin/stats'), {
         headers: { 'x-admin-secret': secret },
       });
       if (res.status === 401) { setError('Incorrect password.'); setLoading(false); return; }
