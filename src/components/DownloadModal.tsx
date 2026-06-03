@@ -199,29 +199,25 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
           {/* macOS Gatekeeper notice — always visible */}
           <div className="border border-amber-200 dark:border-amber-900/50 bg-amber-50/40 dark:bg-amber-950/10 rounded-xl p-4 space-y-3">
             <h5 className="font-bold text-amber-700 dark:text-amber-400 text-xs flex items-center gap-1.5">
-              <AlertCircle className="w-4 h-4 shrink-0" /> macOS Security — Required Step After Download
+              <AlertCircle className="w-4 h-4 shrink-0" /> macOS Security — One-Time Step After Download
             </h5>
             <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-              Because this app is not notarized through Apple, macOS will block it on first launch. Run this one-time command in <strong className="text-slate-700 dark:text-slate-300">Terminal</strong> after dragging the app to Applications:
+              Because this app is not notarized through Apple, macOS will show an <strong className="text-slate-700 dark:text-slate-300">"unidentified developer"</strong> warning on first launch. Follow these steps to open it:
             </p>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase">Terminal command</span>
-                <button
-                  onClick={() => copyCode(`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`, 'xattr')}
-                  className="text-[10px] text-indigo-500 hover:text-indigo-600 font-bold flex items-center gap-1 cursor-pointer"
-                >
-                  {copiedText === 'xattr' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-                  Copy
-                </button>
-              </div>
-              <pre className="p-2.5 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-[10px] text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto whitespace-pre-wrap break-all">
-                {`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`}
-              </pre>
-            </div>
-            <p className="text-[10px] text-slate-500 dark:text-slate-500 leading-relaxed">
-              After running the command, double-click the app to open it normally. You only need to do this once.
-            </p>
+            <ol className="space-y-1.5 list-none">
+              {[
+                <>Drag <strong className="text-slate-700 dark:text-slate-300">Nash Equilibrium Simulator</strong> from the DMG into your <strong className="text-slate-700 dark:text-slate-300">Applications</strong> folder.</>,
+                <>Double-click the app. When the warning appears, click <strong className="text-slate-700 dark:text-slate-300">Cancel</strong> (not Move to Trash).</>,
+                <>Open <strong className="text-slate-700 dark:text-slate-300">System Settings → Privacy &amp; Security</strong>.</>,
+                <>Scroll down to find <em>"Nash Equilibrium Simulator was blocked"</em> and click <strong className="text-slate-700 dark:text-slate-300">Open Anyway</strong>.</>,
+                <>Double-click the app again and click <strong className="text-slate-700 dark:text-slate-300">Open</strong> to confirm. You only need to do this once.</>,
+              ].map((step, i) => (
+                <li key={i} className="flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                  <span className="shrink-0 w-4 h-4 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-[9px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
           </div>
 
           {/* Offline DB note */}
