@@ -14,9 +14,10 @@ interface AdminStats {
 interface AdminDashboardProps {
   onClose: () => void;
   isDark: boolean;
+  getApiUrl: (path: string) => string;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark, getApiUrl }) => {
   const [password, setPassword] = useState('');
   const [authed, setAuthed] = useState(false);
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -27,7 +28,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark 
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/admin/stats', {
+      const res = await fetch(getApiUrl('/api/admin/stats'), {
         headers: { 'x-admin-secret': secret },
       });
       if (res.status === 401) { setError('Incorrect password.'); setLoading(false); return; }

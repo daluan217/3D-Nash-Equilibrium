@@ -2089,6 +2089,7 @@ export default function App() {
         <AdminDashboard
           onClose={() => setIsAdminOpen(false)}
           isDark={darkMode}
+          getApiUrl={getApiUrl}
         />
       )}
     </div>
