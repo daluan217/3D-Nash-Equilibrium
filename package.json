@@ -47,6 +47,7 @@
   "build": {
     "appId": "com.nashequilibrium.simulator",
     "productName": "Nash Equilibrium Simulator",
+    "afterPack": "./afterPack.cjs",
     "directories": {
       "output": "dist-electron"
     },
