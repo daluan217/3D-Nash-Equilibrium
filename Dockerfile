@@ -13,6 +13,7 @@ RUN npm ci
 # Copy source files
 COPY server.ts ./
 COPY src/ ./src/
+COPY public/ ./public/
 COPY index.html ./
 COPY vite.config.ts ./
 COPY .env.example ./.env.example
