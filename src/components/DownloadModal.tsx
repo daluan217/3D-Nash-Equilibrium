@@ -76,7 +76,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const buildCommands = `npm run build && npm run electron:dist`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 selection:bg-indigo-500/30 selection:text-indigo-900 dark:selection:text-indigo-100">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 py-8 selection:bg-indigo-500/30 selection:text-indigo-900 dark:selection:text-indigo-100">
       {/* Backdrop */}
       <div 
         className="fixed inset-0 bg-slate-900/60 dark:bg-black/75 backdrop-blur-xs transition-opacity duration-300 cursor-pointer"
@@ -84,7 +84,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
       />
 
       {/* Modal Card */}
-      <div className="relative w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh] md:max-h-[85vh] animate-in fade-in zoom-in-95 duration-200">
+      <div className="relative w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         
         {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-850 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
@@ -110,7 +110,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-5 md:p-6 space-y-6">
+        <div className="p-5 md:p-6 space-y-6">
           
           {/* Main Download Button and Banner */}
           <div className="bg-gradient-to-br from-indigo-50/50 via-slate-50/40 to-white dark:from-slate-950/40 dark:to-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-5 text-center flex flex-col items-center">
