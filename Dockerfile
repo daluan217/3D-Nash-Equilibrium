@@ -16,8 +16,6 @@ COPY src/ ./src/
 COPY public/ ./public/
 COPY index.html ./
 COPY vite.config.ts ./
-COPY .env.example ./.env.example
-
 # Build frontend (Vite) and server (esbuild)
 RUN npm run build
 
@@ -34,7 +32,6 @@ RUN npm ci --omit=dev
 
 # Copy built server and frontend from builder
 COPY --from=builder /app/dist/ ./dist/
-COPY --from=builder /app/.env.example ./.env.example
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
