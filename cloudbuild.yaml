@@ -38,6 +38,7 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 # Substitutions for environment variables (set these in Cloud Build trigger)
+# Do NOT hardcode real values here — configure them in the Cloud Build trigger UI instead
 substitutions:
   _SMTP_HOST: 'smtp.gmail.com'
   _SMTP_PORT: '465'
