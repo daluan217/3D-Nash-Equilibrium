@@ -10,12 +10,12 @@ export const PRESETS: Record<string, PresetGame> = {
     key: 'bos',
     name: 'Battle of the Sexes',
     a11: 2, b11: 1,  a12: 0, b12: 0,
-    a21: 0, b21: 0,  a22: 1, b22: 5,
+    a21: 0, b21: 0,  a22: 1, b22: 2,
     desc: '<strong>Battle of the Sexes:</strong> Two partners want to spend the evening together but prefer different activities. '
         + '<span style="color:#C0392B;font-weight:600;">Player A</span> prefers the Opera (Row 1), '
         + '<span style="color:#1A5276;font-weight:600;">Player B</span> prefers Football (Col 2). '
         + 'Being together matters to both, but each would rather be at their favourite venue. '
-        + 'Payoffs: (Opera,Opera)=(2,1), (Opera,Football)=(0,0), (Football,Opera)=(0,0), (Football,Football)=(1,5).'
+        + 'Payoffs: (Opera,Opera)=(2,1), (Opera,Football)=(0,0), (Football,Opera)=(0,0), (Football,Football)=(1,2).'
   },
   pd: {
     key: 'pd',
