@@ -209,12 +209,12 @@ export default function App() {
   // ── Payoff Values State ────────────────────────────────────────────────────
   const [payoffs, setPayoffs] = useState<GamePayoffs>({
     a11: 2, b11: 1, a12: 0, b12: 0,
-    a21: 0, b21: 0, a22: 1, b22: 5,
+    a21: 0, b21: 0, a22: 1, b22: 2,
   });
 
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
     a11: '2', b11: '1', a12: '0', b12: '0',
-    a21: '0', b21: '0', a22: '1', b22: '5',
+    a21: '0', b21: '0', a22: '1', b22: '2',
   });
 
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction
@@ -265,13 +265,13 @@ export default function App() {
     pathSegmentsA: [{
       xs: [0.217], ys: [0.217], zs: [r3(EA(0.217, 0.217, {
         a11: 2, b11: 1, a12: 0, b12: 0,
-        a21: 0, b21: 0, a22: 1, b22: 5,
+        a21: 0, b21: 0, a22: 1, b22: 2,
       }))], mover: 'A'
     }],
     pathSegmentsB: [{
       xs: [0.217], ys: [0.217], zs: [r3(EB(0.217, 0.217, {
         a11: 2, b11: 1, a12: 0, b12: 0,
-        a21: 0, b21: 0, a22: 1, b22: 5,
+        a21: 0, b21: 0, a22: 1, b22: 2,
       }))], mover: 'A'
     }],
     ghostPathSegmentsA: [],
