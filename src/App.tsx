@@ -1453,8 +1453,8 @@ export default function App() {
             isDark={darkMode}
           />
 
-          {/* Memory warning for large simulations */}
-          {showMemoryWarning && (
+          {/* Memory warning for large simulations — desktop only */}
+          {!isTouchDevice && showMemoryWarning && (
             <div className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border text-xs leading-relaxed ${darkMode ? 'bg-amber-950/30 border-amber-800/60 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
               <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
               <span>
@@ -1466,8 +1466,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Timeline scrubber */}
-          {fullHistory.length > 1 && (
+          {/* Timeline scrubber — desktop only */}
+          {!isTouchDevice && fullHistory.length > 1 && (
             <div className={`flex items-center gap-3 px-1 py-2 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
               <span className={`text-xs font-medium w-16 shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Timeline</span>
               <input
