@@ -250,44 +250,38 @@ export function makeTraces(
     const FLAT_STEPS = 50;
 
     // E[A](x, y*) swept over x: flat because A is indifferent at y* — dark red
-    if (trackingMode === 'A' || trackingMode === 'both') {
-      const fXa: number[] = [], fYa: number[] = [], fZa: number[] = [];
-      for (let i = 0; i <= FLAT_STEPS; i++) {
-        const xi = i / FLAT_STEPS;
-        fXa.push(xi); fYa.push(yStar); fZa.push(r3(EA(xi, yStar, g)));
-      }
-      traces.push({
-        type: 'scatter3d',
-        mode: 'lines',
-        name: 'A indifferent (y = y*)',
-        showlegend: true,
-        x: fXa,
-        y: fYa,
-        z: fZa,
-        line: { color: '#7B241C', width: 7 }
-      });
-
+    const fXa: number[] = [], fYa: number[] = [], fZa: number[] = [];
+    for (let i = 0; i <= FLAT_STEPS; i++) {
+      const xi = i / FLAT_STEPS;
+      fXa.push(xi); fYa.push(yStar); fZa.push(r3(EA(xi, yStar, g)));
     }
+    traces.push({
+      type: 'scatter3d',
+      mode: 'lines',
+      name: 'A indifferent (y = y*)',
+      showlegend: true,
+      x: fXa,
+      y: fYa,
+      z: fZa,
+      line: { color: '#7B241C', width: 7 }
+    });
 
     // E[B](x*, y) swept over y: flat because B is indifferent at x* — dark blue
-    if (trackingMode === 'B' || trackingMode === 'both') {
-      const fXb: number[] = [], fYb: number[] = [], fZb: number[] = [];
-      for (let i = 0; i <= FLAT_STEPS; i++) {
-        const yi = i / FLAT_STEPS;
-        fXb.push(xStar); fYb.push(yi); fZb.push(r3(EB(xStar, yi, g)));
-      }
-      traces.push({
-        type: 'scatter3d',
-        mode: 'lines',
-        name: 'B indifferent (x = x*)',
-        showlegend: true,
-        x: fXb,
-        y: fYb,
-        z: fZb,
-        line: { color: '#1A3A5C', width: 7 }
-      });
-
+    const fXb: number[] = [], fYb: number[] = [], fZb: number[] = [];
+    for (let i = 0; i <= FLAT_STEPS; i++) {
+      const yi = i / FLAT_STEPS;
+      fXb.push(xStar); fYb.push(yi); fZb.push(r3(EB(xStar, yi, g)));
     }
+    traces.push({
+      type: 'scatter3d',
+      mode: 'lines',
+      name: 'B indifferent (x = x*)',
+      showlegend: true,
+      x: fXb,
+      y: fYb,
+      z: fZb,
+      line: { color: '#1A3A5C', width: 7 }
+    });
   }
 
   // ── Starting point marker ──────────────────────────────────────────────────
@@ -318,48 +312,72 @@ export function makeTraces(
     }
   }
 
-  // ── Trajectory path segs ───────────────────────────────────────────────────
-  const drawPaths = (segments: any[], isA: boolean) => {
-    const drawable = segments.filter(seg => seg.xs.length >= 2);
-    const total = drawable.length;
-    drawable.forEach((seg, idx) => {
-      const t = total <= 1 ? 1 : idx / (total - 1);
-      const isMoverA = seg.mover === 'A';
-      let color;
-      if (isMoverA) {
-        // Red color gradient for Player A's moves (x changes)
-        const r = Math.round(245 + (192 - 245) * t);
-        const g2 = Math.round(184 + (57 - 184) * t);
-        const b = Math.round(184 + (43 - 184) * t);
-        color = `rgb(${r},${g2},${b})`;
-      } else {
-        // Blue color gradient for Player B's moves (y changes)
-        const r = Math.round(184 + (26 - 184) * t);
-        const g2 = Math.round(204 + (82 - 204) * t);
-        const b = Math.round(245 + (118 - 245) * t);
-        color = `rgb(${r},${g2},${b})`;
+  // ── Trajectory path segs — x-changes=red, y-changes=blue; old=light, new=dark ──
+  // When Phase 2 is active, freeze the gradient at the Phase 1 point count so
+  // Phase 2 additions don't make Phase 1 edges lighter.
+  const mergeSegments = (segs: any[], frozenTotal: number | null) => {
+    const drawable = segs.filter((seg: any) => seg.xs.length >= 2);
+    if (drawable.length === 0) return null;
+    const xs: number[] = [], ys: number[] = [], zs: number[] = [];
+    const colors: number[] = [];
+    const totalPts = drawable.reduce((n: number, seg: any) => n + seg.xs.length, 0);
+    // Use frozenTotal (Phase 1 count) as the denominator so Phase 1 colors don't
+    // shift lighter as Phase 2 adds more points. Points beyond frozenTotal get 1.0 (darkest).
+    const denom = Math.max((frozenTotal ?? totalPts) - 1, 1);
+    let ptIdx = 0;
+    drawable.forEach((seg: any, si: number) => {
+      if (si > 0) {
+        xs.push(NaN); ys.push(NaN); zs.push(NaN);
+        colors.push(Math.min(1, ptIdx / denom));
       }
-
-      const legendName = isMoverA ? 'A moves' : 'B moves';
-      const showLegend = isMoverA ? !aMoveLegendShown : !bMoveLegendShown;
-      if (isMoverA) aMoveLegendShown = true;
-      else bMoveLegendShown = true;
-
-      traces.push({
-        type: 'scatter3d',
-        mode: 'lines',
-        name: showLegend ? legendName : '_',
-        showlegend: showLegend,
-        x: seg.xs,
-        y: seg.ys,
-        z: seg.zs,
-        line: { color, width: 4 }
+      seg.xs.forEach((_: number, i: number) => {
+        xs.push(seg.xs[i]); ys.push(seg.ys[i]); zs.push(seg.zs[i]);
+        colors.push(Math.min(1, ptIdx / denom));
+        ptIdx++;
       });
     });
+    return { xs, ys, zs, colors };
   };
 
-  if (trackingMode === 'A' || trackingMode === 'both') drawPaths(s.pathSegmentsA, true);
-  if (trackingMode === 'B' || trackingMode === 'both') drawPaths(s.pathSegmentsB, false);
+  const drawPaths = (segments: any[], phase1PtsTotal: number | null) => {
+    const xSegs = segments.filter((seg: any) => seg.mover === 'A'); // A moves → x changes → red
+    const ySegs = segments.filter((seg: any) => seg.mover === 'B'); // B moves → y changes → blue
+
+    // Compute the Phase 1 frozen total per mover by proportional split
+    // (phase1PtsTotal covers all movers combined; split by segment counts)
+    const xTotal = segments.filter((seg: any) => seg.mover === 'A').reduce((n: number, seg: any) => n + seg.xs.length, 0);
+    const yTotal = segments.filter((seg: any) => seg.mover === 'B').reduce((n: number, seg: any) => n + seg.xs.length, 0);
+    const allTotal = xTotal + yTotal;
+    const xFrozen = phase1PtsTotal !== null && allTotal > 0 ? Math.round(phase1PtsTotal * xTotal / allTotal) : null;
+    const yFrozen = phase1PtsTotal !== null && allTotal > 0 ? Math.round(phase1PtsTotal * yTotal / allTotal) : null;
+
+    const xMerged = mergeSegments(xSegs, xFrozen);
+    if (xMerged) {
+      const showLegend = !aMoveLegendShown;
+      if (showLegend) aMoveLegendShown = true;
+      traces.push({
+        type: 'scatter3d', mode: 'lines',
+        name: showLegend ? '─ A Moves (x)' : '_', showlegend: showLegend,
+        x: xMerged.xs, y: xMerged.ys, z: xMerged.zs,
+        line: { color: xMerged.colors, colorscale: [[0, 'rgb(245,184,184)'], [1, 'rgb(192,57,43)']], width: 4 }
+      });
+    }
+
+    const yMerged = mergeSegments(ySegs, yFrozen);
+    if (yMerged) {
+      const showLegend = !bMoveLegendShown;
+      if (showLegend) bMoveLegendShown = true;
+      traces.push({
+        type: 'scatter3d', mode: 'lines',
+        name: showLegend ? '─ B Moves (y)' : '_', showlegend: showLegend,
+        x: yMerged.xs, y: yMerged.ys, z: yMerged.zs,
+        line: { color: yMerged.colors, colorscale: [[0, 'rgb(184,204,245)'], [1, 'rgb(26,82,118)']], width: 4 }
+      });
+    }
+  };
+
+  if (trackingMode === 'A' || trackingMode === 'both') drawPaths(s.pathSegmentsA, s.phase1PtsA);
+  if (trackingMode === 'B' || trackingMode === 'both') drawPaths(s.pathSegmentsB, s.phase1PtsB);
 
   // ── Tracking spheres (the large display balls) ────────────────────────────
   if (trackingMode === 'A' || trackingMode === 'both') {

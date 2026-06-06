@@ -73,23 +73,34 @@ function precomputeThinHistory(
   initState: SimState,
   payoffs: GamePayoffs, firstMover: 'A' | 'B', shrinkStep: number,
   allNE: NashEquilibrium[], committedNE: NashEquilibrium | null
-): ThinSnapshot[] {
+): { snaps: ThinSnapshot[], neState: SimState | null } {
   const snaps: ThinSnapshot[] = [toThin(initState)];
-  // Single mutable working copy — no per-step deep clone needed
   const state: SimState = {
     ...initState,
     visitedPositions: [...initState.visitedPositions],
     ghostVisitedPositions: [...initState.ghostVisitedPositions],
     pathSegmentsA: initState.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
     pathSegmentsB: initState.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+    phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
   };
+  let neState: SimState | null = null;
   const MAX_STEPS = 5000;
   while (!state.converged && snaps.length < MAX_STEPS) {
     doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; });
     snaps.push(toThin(state));
+    if (neState === null && state.discoveredMixedX !== null) {
+      neState = {
+        ...state,
+        visitedPositions: [...state.visitedPositions],
+        ghostVisitedPositions: [...state.ghostVisitedPositions],
+        pathSegmentsA: state.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+        pathSegmentsB: state.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+        ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: [], running: false
+      };
+    }
   }
-  return snaps;
+  return { snaps, neState };
 }
 
 function replayToStep(
@@ -103,6 +114,7 @@ function replayToStep(
     ghostVisitedPositions: [...initState.ghostVisitedPositions],
     pathSegmentsA: initState.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
     pathSegmentsB: initState.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+    phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
   };
   for (let i = 0; i < targetStep; i++) {
@@ -335,6 +347,7 @@ export default function App() {
         a21: 0, b21: 0, a22: 1, b22: 2,
       }))], mover: 'A'
     }],
+    phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [],
     ghostPathSegmentsB: [],
     historyStack: []
@@ -344,14 +357,19 @@ export default function App() {
     'Set starting point and first mover, then click Run or Step.'
   ]);
 
-  // ── Timeline scrubber history ──────────────────────────────────────────────
+  // ── Timeline state ─────────────────────────────────────────────────────────
   const [thinHistory, setThinHistory] = useState<ThinSnapshot[]>([]);
-  const [scrubPos, setScrubPos] = useState<number>(0);
   const thinHistoryRef = useRef<ThinSnapshot[]>([]);
   const scrubPosRef = useRef<number>(0);
   const initStateRef = useRef<SimState | null>(null);
   const simStateRef = useRef<SimState>(simState);
   useEffect(() => { simStateRef.current = simState; }, [simState]);
+
+  // Single snapshot saved when the first NE coordinate is discovered
+  const [neSnapshot, setNeSnapshot] = useState<SimState | null>(null);
+  const neSnapshotRef = useRef<SimState | null>(null);
+
+  const [jumpInput, setJumpInput] = useState<string>('');
 
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -451,18 +469,26 @@ export default function App() {
         discoveredMixedX: null, discoveredMixedY: null, foundAxis: null,
         running: false, converged: false, stepCount: 0,
         pathSegmentsA: [initSegA], pathSegmentsB: [initSegB],
+        phase1PtsA: null, phase1PtsB: null,
         ghostPathSegmentsA: [], ghostPathSegmentsB: [],
         historyStack: []
       };
 
       setInitialized(true);
       setLogEntries([`Start (${startValX.toFixed(3)}, ${startValY.toFixed(3)}) — Player ${firstMover} moves first`]);
+      initStateRef.current = initState;
+      neSnapshotRef.current = null;
+      setNeSnapshot(null);
+      setJumpInput('');
 
-      // Pre-compute thin snapshots (O(N) memory)
-      const snaps = precomputeThinHistory(initState, payoffs, firstMover, shrinkStep, allNE, committedNE);
+      // Pre-compute thin snapshots — used for total step count and NE snapshot
+      const { snaps, neState } = precomputeThinHistory(initState, payoffs, firstMover, shrinkStep, allNE, committedNE);
       thinHistoryRef.current = snaps;
       setThinHistory(snaps);
-      initStateRef.current = initState;
+      if (neState) {
+        neSnapshotRef.current = neState;
+        setNeSnapshot(neState);
+      }
 
       // Do the first actual step incrementally
       const next: SimState = {
@@ -470,7 +496,8 @@ export default function App() {
         visitedPositions: [], ghostVisitedPositions: [],
         pathSegmentsA: [{ ...initSegA, xs: [...initSegA.xs], ys: [...initSegA.ys], zs: [...initSegA.zs] }],
         pathSegmentsB: [{ ...initSegB, xs: [...initSegB.xs], ys: [...initSegB.ys], zs: [...initSegB.zs] }],
-        ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
+        phase1PtsA: null, phase1PtsB: null,
+    ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
       };
       const stepLogs: string[] = [];
       doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
@@ -480,7 +507,6 @@ export default function App() {
       simStateRef.current = next;
       setSimState(next);
       scrubPosRef.current = 1;
-      setScrubPos(1);
 
       if (stepLogs.length > 0) {
         setLogEntries(prev => {
@@ -514,7 +540,6 @@ export default function App() {
     setSimState(next);
     const nextPos = scrubPosRef.current + 1;
     scrubPosRef.current = nextPos;
-    setScrubPos(nextPos);
     if (stepLogs.length > 0) setLogEntries(prev => [...prev, ...stepLogs]);
   };
 
@@ -554,7 +579,6 @@ export default function App() {
       setSimState(next);
       const nextPos = pos + 1;
       scrubPosRef.current = nextPos;
-      setScrubPos(nextPos);
       if (stepLogs.length > 0) setLogEntries(prev => [...prev, ...stepLogs]);
     }, intervalMs);
 
@@ -911,6 +935,7 @@ export default function App() {
       stepCount: 0,
       pathSegmentsA: [initSegA],
       pathSegmentsB: [initSegB],
+      phase1PtsA: null, phase1PtsB: null,
       ghostPathSegmentsA: [],
       ghostPathSegmentsB: [],
       historyStack: []
@@ -921,8 +946,10 @@ export default function App() {
     thinHistoryRef.current = [];
     scrubPosRef.current = 0;
     initStateRef.current = null;
+    neSnapshotRef.current = null;
     setThinHistory([]);
-    setScrubPos(0);
+    setNeSnapshot(null);
+    setJumpInput('');
   };
 
   // ── Play/Pause toggle ──────────────────────────────────────────────────────
@@ -941,16 +968,39 @@ export default function App() {
 
   // ── Trajectory Backstep ───────────────────────────────────────────────────
   const handleBackstep = () => {
-    if (simState.running || scrubPosRef.current === 0 || !initStateRef.current) return;
-    const prevPos = scrubPosRef.current - 1;
-    const replayed = replayToStep(initStateRef.current, prevPos, payoffs, firstMover, shrinkStep, allNE, committedNE);
-    replayed.running = false;
-    replayed.historyStack = [];
+    if (simState.running || !initStateRef.current || simState.stepCount <= 0) return;
+    const targetStep = simState.stepCount - 1;
+    const replayed = replayToStep(initStateRef.current, targetStep, payoffs, firstMover, shrinkStep, allNE, committedNE);
     simStateRef.current = replayed;
     setSimState(replayed);
-    scrubPosRef.current = prevPos;
-    setScrubPos(prevPos);
-    setLogEntries(prev => [...prev, `⏮ Stepped back to step ${prevPos}`]);
+    scrubPosRef.current = targetStep;
+    setLogEntries(prev => [...prev, `⏮ Stepped back to step ${targetStep}`]);
+  };
+
+  // ── Jump to NE snapshot ────────────────────────────────────────────────────
+  const handleJumpToNE = () => {
+    const snap = neSnapshotRef.current;
+    if (!snap) return;
+    const paused = { ...snap, running: false };
+    simStateRef.current = paused;
+    setSimState(paused);
+    scrubPosRef.current = paused.stepCount;
+    setJumpInput(String(paused.stepCount));
+    setLogEntries(prev => [...prev, `→ Jumped to step ${paused.stepCount} (first NE coordinate found)`]);
+  };
+
+  // ── Step-input Jump ────────────────────────────────────────────────────────
+  const handleJump = () => {
+    if (!initStateRef.current || thinHistoryRef.current.length === 0) return;
+    const parsed = parseInt(jumpInput, 10);
+    if (isNaN(parsed)) return;
+    const clamped = Math.max(0, Math.min(thinHistoryRef.current.length - 1, parsed));
+    const replayed = replayToStep(initStateRef.current, clamped, payoffs, firstMover, shrinkStep, allNE, committedNE);
+    simStateRef.current = replayed;
+    setSimState(replayed);
+    scrubPosRef.current = clamped;
+    setJumpInput(String(clamped));
+    setLogEntries(prev => [...prev, `→ Jumped to step ${clamped} of ${thinHistoryRef.current.length - 1}`]);
   };
 
   // ── Matrix Editor Input Clamps ─────────────────────────────────────────────
@@ -1511,37 +1561,61 @@ export default function App() {
             isDark={darkMode}
           />
 
-          {/* Timeline scrubber */}
-          {thinHistory.length > 1 && (
-            <div className={`flex items-center gap-3 px-1 py-2 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-              <span className={`text-xs font-medium w-16 shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Timeline</span>
-              <input
-                type="range"
-                min={0}
-                max={thinHistory.length - 1}
-                value={scrubPos}
-                onChange={e => {
-                  const newPos = Number(e.target.value);
-                  if (!initStateRef.current) return;
-                  const replayed = replayToStep(initStateRef.current, newPos, payoffs, firstMover, shrinkStep, allNE, committedNE);
-                  replayed.running = false;
-                  replayed.historyStack = [];
-                  simStateRef.current = replayed;
-                  setSimState(replayed);
-                  scrubPosRef.current = newPos;
-                  setScrubPos(newPos);
-                }}
-                className="flex-1 accent-indigo-500 cursor-pointer"
-              />
-              <span className={`text-xs font-mono shrink-0 w-24 text-right ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-                {scrubPos < thinHistory.length - 1 ? (
-                  <span className="text-amber-500 font-semibold">{scrubPos} / {thinHistory.length - 1}</span>
-                ) : (
-                  <span>{thinHistory.length - 1} / {thinHistory.length - 1}</span>
-                )}
-              </span>
+          {/* Progress bar + step input + NE jump — always visible once simulation starts */}
+          <div className={`flex flex-col gap-2 px-3 py-2.5 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+            {/* Bar row — only shown after first step */}
+            {thinHistory.length > 1 && (
+              <div className="flex items-center gap-3">
+                <span className={`text-xs font-medium shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Progress</span>
+                <div className={`flex-1 h-2 rounded-full overflow-hidden ${darkMode ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                  <div
+                    className="h-full rounded-full bg-indigo-500 transition-all duration-150"
+                    style={{ width: `${Math.min(100, (simState.stepCount / (thinHistory.length - 1)) * 100)}%` }}
+                  />
+                </div>
+                <span className="text-xs font-mono shrink-0 text-amber-500 font-semibold">
+                  {simState.stepCount} / {thinHistory.length - 1}
+                </span>
+              </div>
+            )}
+            {/* Step input row + NE button */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {thinHistory.length > 1 && (
+                <>
+                  <span className={`text-xs font-medium shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Go to step</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={thinHistory.length - 1}
+                    value={jumpInput}
+                    onChange={e => setJumpInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleJump(); }}
+                    placeholder={`0 – ${thinHistory.length - 1}`}
+                    className={`w-28 px-2 py-1 text-xs rounded-lg border font-mono ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-200 placeholder-slate-600' : 'bg-white border-slate-300 text-slate-700 placeholder-slate-400'}`}
+                  />
+                  <button
+                    onClick={handleJump}
+                    className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-all"
+                  >
+                    Go
+                  </button>
+                </>
+              )}
+              {mixedNE && (
+                <button
+                  onClick={handleJumpToNE}
+                  disabled={!neSnapshot}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all ${
+                    neSnapshot
+                      ? darkMode ? 'border-purple-700 text-purple-400 hover:bg-purple-900/30 cursor-pointer' : 'border-purple-300 text-purple-700 hover:bg-purple-50 cursor-pointer'
+                      : darkMode ? 'border-slate-700 text-slate-600 cursor-not-allowed' : 'border-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {neSnapshot ? `1st NE Coord (step ${neSnapshot.stepCount})` : '1st NE Coord'}
+                </button>
+              )}
             </div>
-          )}
+          </div>
 
           {/* Simulation Controls Dashboard */}
           <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
@@ -1569,7 +1643,7 @@ export default function App() {
 
                 <button
                   onClick={() => handleStep()}
-                  disabled={simState.running || (thinHistory.length > 0 && scrubPos >= thinHistory.length - 1)}
+                  disabled={simState.running || (thinHistory.length > 0 && simState.stepCount >= thinHistory.length - 1)}
                   className="flex items-center gap-1 mt-0.5 py-2 px-2.5 sm:px-4 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-all disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-700"
                 >
                   <SkipForward className="w-3.5 h-3.5" /> Step
@@ -1577,7 +1651,7 @@ export default function App() {
 
                 <button
                   onClick={handleBackstep}
-                  disabled={simState.running || scrubPos === 0 || thinHistory.length === 0}
+                  disabled={simState.running || !initStateRef.current || simState.stepCount === 0}
                   className="flex items-center gap-1 mt-0.5 py-2 px-2 sm:px-3 text-xs sm:text-sm font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" /> Back

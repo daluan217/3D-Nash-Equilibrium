@@ -65,6 +65,8 @@ export interface SimState {
 
   pathSegmentsA: PathSegment[];
   pathSegmentsB: PathSegment[];
+  phase1PtsA: number | null;
+  phase1PtsB: number | null;
 
   ghostPathSegmentsA: PathSegment[];
   ghostPathSegmentsB: PathSegment[];

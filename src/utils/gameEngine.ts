@@ -323,6 +323,8 @@ export function createSnapshot(s: SimState): Omit<SimState, 'running' | 'history
     stepCount: s.stepCount,
     pathSegmentsA: segCloneA,
     pathSegmentsB: segCloneB,
+    phase1PtsA: s.phase1PtsA,
+    phase1PtsB: s.phase1PtsB,
     ghostPathSegmentsA: ghostSegCloneA,
     ghostPathSegmentsB: ghostSegCloneB,
   };
@@ -411,6 +413,8 @@ export function doStep(
       // ── Phase 2: ghost cycles freely; large sphere inches along unfound axis ─
       if (s.foundAxis === null) {
         s.foundAxis = s.discoveredMixedX !== null ? 'x' : 'y';
+        s.phase1PtsA = s.pathSegmentsA.reduce((n, seg) => n + seg.xs.length, 0);
+        s.phase1PtsB = s.pathSegmentsB.reduce((n, seg) => n + seg.xs.length, 0);
         s.calcX = s.domainHi;
         s.calcY = s.domainHi;
         s.ghostVisitedPositions = [];

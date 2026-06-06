@@ -35,6 +35,7 @@ function createInitialState(startX: number, startY: number, g: GamePayoffs): Sim
     stepCount: 0,
     pathSegmentsA: [{ xs: [startX], ys: [startY], zs: [r3(EA(startX, startY, g))], mover: 'A' }],
     pathSegmentsB: [{ xs: [startX], ys: [startY], zs: [r3(EB(startX, startY, g))], mover: 'A' }],
+    phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [],
     ghostPathSegmentsB: [],
     historyStack: []
