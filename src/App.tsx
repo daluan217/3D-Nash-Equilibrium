@@ -50,6 +50,45 @@ import { MenuDrawer } from './components/MenuDrawer';
 import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
 
+type SimSnapshot = Omit<SimState, 'running' | 'historyStack'>;
+interface HistoryEntry { snapshot: SimSnapshot; stepLogs: string[]; }
+
+function precomputeFullHistory(
+  initialState: SimState,
+  payoffs: GamePayoffs,
+  firstMover: 'A' | 'B',
+  shrinkStep: number,
+  allNE: NashEquilibrium[],
+  committedNE: NashEquilibrium | null
+): HistoryEntry[] {
+  const entries: HistoryEntry[] = [];
+  const snap0: SimSnapshot = (({ running: _r, historyStack: _h, ...rest }: any) => rest)(initialState);
+  entries.push({ snapshot: snap0, stepLogs: [] });
+
+  let current: SimState = { ...initialState, running: false, historyStack: [] };
+  const MAX_STEPS = 3000;
+
+  while (!current.converged && entries.length < MAX_STEPS) {
+    const next: SimState = {
+      ...current,
+      visitedPositions: [...current.visitedPositions],
+      ghostVisitedPositions: [...current.ghostVisitedPositions],
+      pathSegmentsA: current.pathSegmentsA.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
+      pathSegmentsB: current.pathSegmentsB.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
+      ghostPathSegmentsA: current.ghostPathSegmentsA.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
+      ghostPathSegmentsB: current.ghostPathSegmentsB.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
+      historyStack: []
+    };
+    const stepLogs: string[] = [];
+    doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
+      (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; });
+    const snap: SimSnapshot = (({ running: _r, historyStack: _h, ...rest }: any) => rest)(next);
+    entries.push({ snapshot: snap, stepLogs });
+    current = next;
+  }
+  return entries;
+}
+
 export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
   const isElectronMac = isElectron && window.navigator?.userAgent?.toLowerCase().includes('mac');
@@ -283,6 +322,13 @@ export default function App() {
     'Set starting point and first mover, then click Run or Step.'
   ]);
 
+  // ── Timeline scrubber history ──────────────────────────────────────────────
+  const [fullHistory, setFullHistory] = useState<HistoryEntry[]>([]);
+  const [scrubPos, setScrubPos] = useState<number>(0);
+  const fullHistoryRef = useRef<HistoryEntry[]>([]);
+  const scrubPosRef = useRef<number>(0);
+  const [showMemoryWarning, setShowMemoryWarning] = useState(false);
+
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll the logs browser to the bottom on new entries
@@ -362,9 +408,7 @@ export default function App() {
 
 
   // ── Interactive Single-Step Engine ─────────────────────────────────────────
-  const handleStep = () => {
-    let currentReady = simState;
-
+  const handleStep = (startRunningAfter = false) => {
     if (!initialized) {
       const startValX = Math.max(0, Math.min(1, parseFloat(x0) || 0.217));
       const startValY = Math.max(0, Math.min(1, parseFloat(y0) || 0.217));
@@ -372,94 +416,95 @@ export default function App() {
       const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, payoffs))], mover: 'A' as const };
       const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, payoffs))], mover: 'A' as const };
 
+      const initState: SimState = {
+        ...simState,
+        cx: startValX, cy: startValY,
+        calcX: startValX, calcY: startValY,
+        displayX: startValX, displayY: startValY,
+        startX: startValX, startY: startValY,
+        domainLo: 0, domainHi: 1, cycleCount: 0,
+        visitedPositions: [], ghostVisitedPositions: [],
+        discoveredMixedX: null, discoveredMixedY: null, foundAxis: null,
+        running: false, converged: false, stepCount: 0,
+        pathSegmentsA: [initSegA], pathSegmentsB: [initSegB],
+        ghostPathSegmentsA: [], ghostPathSegmentsB: [],
+        historyStack: []
+      };
+
       setInitialized(true);
       setLogEntries([`Start (${startValX.toFixed(3)}, ${startValY.toFixed(3)}) — Player ${firstMover} moves first`]);
 
-      currentReady = {
-        ...simState,
-        cx: startValX,
-        cy: startValY,
-        calcX: startValX,
-        calcY: startValY,
-        displayX: startValX,
-        displayY: startValY,
-        startX: startValX,
-        startY: startValY,
-        domainLo: 0,
-        domainHi: 1,
-        cycleCount: 0,
-        visitedPositions: [],
-        ghostVisitedPositions: [],
-        discoveredMixedX: null,
-        discoveredMixedY: null,
-        foundAxis: null,
-        converged: false,
-        stepCount: 0,
-        pathSegmentsA: [initSegA],
-        pathSegmentsB: [initSegB],
-        ghostPathSegmentsA: [],
-        ghostPathSegmentsB: [],
-        historyStack: []
-      };
+      // Pre-compute entire simulation immediately
+      const history = precomputeFullHistory(initState, payoffs, firstMover, shrinkStep, allNE, committedNE);
+      fullHistoryRef.current = history;
+      setFullHistory(history);
+      setShowMemoryWarning(history.length - 1 > 1000);
+
+      const nextPos = Math.min(1, history.length - 1);
+      scrubPosRef.current = nextPos;
+      setScrubPos(nextPos);
+
+      const entry = history[nextPos];
+      setSimState({ ...entry.snapshot, running: startRunningAfter, historyStack: [] });
+
+      if (entry.stepLogs.length > 0) {
+        setLogEntries(prev => {
+          let updated = [...prev];
+          if (updated.length === 1 && updated[0].startsWith('Set starting')) updated = [];
+          return [...updated, ...entry.stepLogs];
+        });
+      }
+      return;
     }
 
-    if (currentReady.converged) return;
+    // Already initialized — advance through pre-computed history
+    const history = fullHistoryRef.current;
+    if (history.length === 0) return;
 
-    // Deep clone working state
-    const next: SimState = {
-      ...currentReady,
-      visitedPositions: [...currentReady.visitedPositions],
-      ghostVisitedPositions: [...currentReady.ghostVisitedPositions],
-      pathSegmentsA: currentReady.pathSegmentsA.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
-      pathSegmentsB: currentReady.pathSegmentsB.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
-      ghostPathSegmentsA: currentReady.ghostPathSegmentsA.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
-      ghostPathSegmentsB: currentReady.ghostPathSegmentsB.map((seg): PathSegment => ({ ...seg, xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs] })),
-      historyStack: [...currentReady.historyStack]
-    };
+    const nextPos = Math.min(scrubPosRef.current + 1, history.length - 1);
+    if (nextPos === scrubPosRef.current) return;
 
-    const logsCollected: string[] = [];
+    scrubPosRef.current = nextPos;
+    setScrubPos(nextPos);
 
-    doStep(
-      payoffs,
-      next,
-      firstMover,
-      shrinkStep,
-      allNE,
-      committedNE,
-      (msg) => {
-        logsCollected.push(msg);
-      },
-      () => { }, // Ghost cycle triggers
-      () => {
-        // Convergence callback
-        next.running = false;
-      }
-    );
+    const entry = history[nextPos];
+    setSimState(prev => ({ ...prev, ...entry.snapshot, historyStack: [] }));
 
-    setSimState(next);
-
-    if (logsCollected.length > 0) {
-      setLogEntries((prevLogs: string[]) => {
-        let updated = [...prevLogs];
-        if (updated.length === 1 && updated[0].startsWith('Set starting')) {
-          updated = [];
-        }
-        return [...updated, ...logsCollected];
-      });
+    if (entry.stepLogs.length > 0) {
+      setLogEntries(prev => [...prev, ...entry.stepLogs]);
     }
   };
 
   // Recursive play runner trigger
   useEffect(() => {
-    if (!simState.running || simState.converged) return;
+    if (!simState.running) return;
+
+    const h = fullHistoryRef.current;
+    if (h.length > 0 && scrubPosRef.current >= h.length - 1) {
+      setSimState(prev => ({ ...prev, running: false }));
+      return;
+    }
 
     const intervalMs = Math.max(30, Math.round(550 / speed));
     const timer = setTimeout(() => {
-      handleStep();
+      const hist = fullHistoryRef.current;
+      const pos = scrubPosRef.current;
+      if (hist.length === 0 || pos >= hist.length - 1) {
+        setSimState(prev => ({ ...prev, running: false }));
+        return;
+      }
+      const nextPos = pos + 1;
+      scrubPosRef.current = nextPos;
+      setScrubPos(nextPos);
+      const entry = hist[nextPos];
+      setSimState(prev => ({ ...prev, ...entry.snapshot, historyStack: [] }));
+      if (entry.stepLogs.length > 0) {
+        setLogEntries(prev => [...prev, ...entry.stepLogs]);
+      }
     }, intervalMs);
 
     return () => clearTimeout(timer);
-  }, [simState.running, simState.converged, simState.stepCount, speed]);
+  }, [simState.running, simState.stepCount, speed]);
 
   // ── Authentication & Custom Game Handlers ──────────────────────────────────
   const handleLogout = () => {
@@ -818,34 +863,36 @@ export default function App() {
 
     setLogEntries(['Set starting point and first mover, then click Run or Step.']);
     setInitialized(false);
+    fullHistoryRef.current = [];
+    scrubPosRef.current = 0;
+    setFullHistory([]);
+    setScrubPos(0);
+    setShowMemoryWarning(false);
   };
 
   // ── Play/Pause toggle ──────────────────────────────────────────────────────
   const togglePlay = () => {
-    if (simState.converged) {
+    if (!initialized) {
+      handleStep(true);
+      return;
+    }
+    const h = fullHistoryRef.current;
+    if (h.length > 0 && scrubPosRef.current >= h.length - 1) {
       setLogEntries(prev => [...prev, '✓ Equilibrium reached. Choose Reset to restart.']);
       return;
     }
     setSimState((prev: SimState) => ({ ...prev, running: !prev.running }));
   };
 
-  // ── Trajectory Backstep pop ────────────────────────────────────────────────
+  // ── Trajectory Backstep ───────────────────────────────────────────────────
   const handleBackstep = () => {
-    if (simState.historyStack.length === 0 || simState.running) return;
-
-    setSimState((prev: SimState) => {
-      const history = [...prev.historyStack];
-      const prevSnap = history.pop();
-      if (!prevSnap) return prev;
-
-      setLogEntries((prevLogs: string[]) => [...prevLogs, `⏮ Stepped back to step ${prevSnap.stepCount}`]);
-
-      return {
-        ...prevSnap,
-        running: false,
-        historyStack: history
-      } as SimState;
-    });
+    if (simState.running || scrubPosRef.current === 0 || fullHistoryRef.current.length === 0) return;
+    const prevPos = scrubPosRef.current - 1;
+    scrubPosRef.current = prevPos;
+    setScrubPos(prevPos);
+    const entry = fullHistoryRef.current[prevPos];
+    setSimState(prev => ({ ...prev, ...entry.snapshot, running: false, historyStack: [] }));
+    setLogEntries(prev => [...prev, `⏮ Stepped back to step ${entry.snapshot.stepCount}`]);
   };
 
   // ── Matrix Editor Input Clamps ─────────────────────────────────────────────
@@ -1406,6 +1453,47 @@ export default function App() {
             isDark={darkMode}
           />
 
+          {/* Memory warning for large simulations */}
+          {showMemoryWarning && (
+            <div className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border text-xs leading-relaxed ${darkMode ? 'bg-amber-950/30 border-amber-800/60 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
+              <span>
+                <strong>Memory-intensive simulation ({fullHistory.length - 1} steps).</strong> The full timeline is loaded into memory for scrubbing. Not recommended on devices with less than 16 GB RAM — consider increasing the shrink step size to reduce step count.
+              </span>
+              <button onClick={() => setShowMemoryWarning(false)} className="shrink-0 ml-auto text-amber-400 hover:text-amber-600 cursor-pointer">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Timeline scrubber */}
+          {fullHistory.length > 1 && (
+            <div className={`flex items-center gap-3 px-1 py-2 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+              <span className={`text-xs font-medium w-16 shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Timeline</span>
+              <input
+                type="range"
+                min={0}
+                max={fullHistory.length - 1}
+                value={scrubPos}
+                onChange={e => {
+                  const newPos = Number(e.target.value);
+                  scrubPosRef.current = newPos;
+                  setScrubPos(newPos);
+                  const entry = fullHistoryRef.current[newPos];
+                  if (entry) setSimState(prev => ({ ...prev, ...entry.snapshot, running: false, historyStack: [] }));
+                }}
+                className="flex-1 accent-indigo-500 cursor-pointer"
+              />
+              <span className={`text-xs font-mono shrink-0 w-24 text-right ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                {scrubPos < fullHistory.length - 1 ? (
+                  <span className="text-amber-500 font-semibold">{scrubPos} / {fullHistory.length - 1}</span>
+                ) : (
+                  <span>{fullHistory.length - 1} / {fullHistory.length - 1}</span>
+                )}
+              </span>
+            </div>
+          )}
+
           {/* Simulation Controls Dashboard */}
           <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
 
@@ -1431,8 +1519,8 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={handleStep}
-                  disabled={simState.running || simState.converged}
+                  onClick={() => handleStep()}
+                  disabled={simState.running || (fullHistory.length > 0 && scrubPos >= fullHistory.length - 1)}
                   className="flex items-center gap-1 mt-0.5 py-2 px-2.5 sm:px-4 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-all disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-700"
                 >
                   <SkipForward className="w-3.5 h-3.5" /> Step
@@ -1440,7 +1528,7 @@ export default function App() {
 
                 <button
                   onClick={handleBackstep}
-                  disabled={simState.running || simState.historyStack.length === 0}
+                  disabled={simState.running || scrubPos === 0 || fullHistory.length === 0}
                   className="flex items-center gap-1 mt-0.5 py-2 px-2 sm:px-3 text-xs sm:text-sm font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" /> Back

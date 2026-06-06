@@ -16,6 +16,8 @@ interface PlotlyViewProps {
   isDark?: boolean;
 }
 
+const DEFAULT_CAMERA = { eye: { x: 1.6, y: -1.6, z: 1.1 } };
+
 export const PlotlyView: React.FC<PlotlyViewProps> = ({
   payoffs,
   simState,
@@ -29,6 +31,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const [uiRevision, setUiRevision] = useState<number>(0);
   const pinchStartDist = useRef<number | null>(null);
   const pinchStartEye = useRef<{x: number; y: number; z: number} | null>(null);
+  // Tracks the camera the user has rotated to so Plotly.react never overrides it
+  const cameraRef = useRef<any>(DEFAULT_CAMERA);
 
   // Set up robust ResizeObserver to force Plotly bounds to sync with fluid flex columns
   useEffect(() => {
@@ -46,6 +50,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       observer.disconnect();
     };
   }, []);
+
 
   // Pinch-to-zoom: scale camera eye vector on two-finger pinch
   useEffect(() => {
@@ -125,6 +130,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       uirevision: 'camera_view_' + uiRevision,
       scene: {
         ...plotLayout.scene,
+        camera: cameraRef.current,
         uirevision: 'camera_view_' + uiRevision,
         bgcolor: isDark ? '#000000' : '#ffffff',
         xaxis: {
@@ -188,6 +194,17 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       responsive: true,
       displayModeBar: false
     });
+
+    // Attach camera listener after Plotly has initialized the element's event system
+    const el2 = document.getElementById(plotId) as any;
+    if (el2 && typeof el2.on === 'function') {
+      try { el2.removeAllListeners('plotly_relayout'); } catch {}
+      el2.on('plotly_relayout', (eventData: any) => {
+        if (eventData['scene.camera']) {
+          cameraRef.current = eventData['scene.camera'];
+        }
+      });
+    }
   }, [payoffs, simState, trackingMode, allNE, isDark, uiRevision]);
 
   // Handle dragMode changes separately to preserve camera orientation
@@ -232,7 +249,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         <div className={`w-px h-5 mx-0.5 ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`} />
         <button
           type="button"
-          onClick={() => setUiRevision(prev => prev + 1)}
+          onClick={() => { cameraRef.current = DEFAULT_CAMERA; setUiRevision(prev => prev + 1); }}
           className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
             isDark
               ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent'
