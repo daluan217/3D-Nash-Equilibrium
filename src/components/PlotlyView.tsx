@@ -125,6 +125,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       uirevision: 'camera_view_' + uiRevision,
       scene: {
         ...plotLayout.scene,
+        uirevision: 'camera_view_' + uiRevision,
         bgcolor: isDark ? '#000000' : '#ffffff',
         xaxis: {
           ...plotLayout.scene.xaxis,

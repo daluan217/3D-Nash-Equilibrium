@@ -240,55 +240,53 @@ export function makeTraces(
         });
       }
 
-      // Line swept along unfound axis showing search interval directly on surfaces (the green "Search range" lines)
-      const STEPS = 40;
-      const lineXa: number[] = [], lineYa: number[] = [], lineZa: number[] = [];
-      const lineXb: number[] = [], lineYb: number[] = [], lineZb: number[] = [];
+    }
+  }
 
-      if (xFound) {
-        // y is unfound - sweep from py to the farther y boundary
-        const yTo = (Math.abs(py - lo) >= Math.abs(py - hi)) ? lo : hi;
-        for (let i = 0; i <= STEPS; i++) {
-          const yi = py + (yTo - py) * (i / STEPS);
-          lineXa.push(px); lineYa.push(yi); lineZa.push(r3(EA(px, yi, g)));
-          lineXb.push(px); lineYb.push(yi); lineZb.push(r3(EB(px, yi, g)));
-        }
-      } else {
-        // x is unfound - sweep from px to the farther x boundary
-        const xTo = (Math.abs(px - lo) >= Math.abs(px - hi)) ? lo : hi;
-        for (let i = 0; i <= STEPS; i++) {
-          const xi = px + (xTo - px) * (i / STEPS);
-          lineXa.push(xi); lineYa.push(py); lineZa.push(r3(EA(xi, py, g)));
-          lineXb.push(xi); lineYb.push(py); lineZb.push(r3(EB(xi, py, g)));
-        }
-      }
+  // ── Flatness lines + anchor curtains at mixed NE (only after both coords locked) ─
+  if (s.discoveredMixedX !== null && s.discoveredMixedY !== null) {
+    const xStar = s.discoveredMixedX;
+    const yStar = s.discoveredMixedY;
+    const FLAT_STEPS = 50;
 
-      let searchLineShown = false;
-      if (trackingMode === 'A' || trackingMode === 'both') {
-        traces.push({
-          type: 'scatter3d',
-          mode: 'lines',
-          name: 'Search range',
-          showlegend: true,
-          x: lineXa,
-          y: lineYa,
-          z: lineZa,
-          line: { color: '#27ae60', width: 18, dash: 'dot' }
-        });
-        searchLineShown = true;
+    // E[A](x, y*) swept over x: flat because A is indifferent at y* — dark red
+    if (trackingMode === 'A' || trackingMode === 'both') {
+      const fXa: number[] = [], fYa: number[] = [], fZa: number[] = [];
+      for (let i = 0; i <= FLAT_STEPS; i++) {
+        const xi = i / FLAT_STEPS;
+        fXa.push(xi); fYa.push(yStar); fZa.push(r3(EA(xi, yStar, g)));
       }
-      if (trackingMode === 'B' || trackingMode === 'both') {
-        traces.push({
-          type: 'scatter3d',
-          mode: 'lines',
-          name: searchLineShown ? '_' : 'Search range',
-          showlegend: !searchLineShown,
-          x: lineXb,
-          y: lineYb,
-          z: lineZb,
-          line: { color: '#27ae60', width: 18, dash: 'dot' }
-        });
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines',
+        name: 'A indifferent (y = y*)',
+        showlegend: true,
+        x: fXa,
+        y: fYa,
+        z: fZa,
+        line: { color: '#7B241C', width: 7 }
+      });
+
+    }
+
+    // E[B](x*, y) swept over y: flat because B is indifferent at x* — dark blue
+    if (trackingMode === 'B' || trackingMode === 'both') {
+      const fXb: number[] = [], fYb: number[] = [], fZb: number[] = [];
+      for (let i = 0; i <= FLAT_STEPS; i++) {
+        const yi = i / FLAT_STEPS;
+        fXb.push(xStar); fYb.push(yi); fZb.push(r3(EB(xStar, yi, g)));
       }
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines',
+        name: 'B indifferent (x = x*)',
+        showlegend: true,
+        x: fXb,
+        y: fYb,
+        z: fZb,
+        line: { color: '#1A3A5C', width: 7 }
+      });
+
     }
   }
 
