@@ -340,36 +340,76 @@ export function makeTraces(
   };
 
   const drawPaths = (segments: any[], phase1PtsTotal: number | null) => {
-    const xSegs = segments.filter((seg: any) => seg.mover === 'A'); // A moves → x changes → red
-    const ySegs = segments.filter((seg: any) => seg.mover === 'B'); // B moves → y changes → blue
+    // In Phase 2, reclassify segments beyond phase1PtsTotal to the axis that is
+    // actually moving (foundAxis='x' means x is locked → y moves → 'B';
+    // foundAxis='y' means y is locked → x moves → 'A').
+    const phase2Mover = s.foundAxis === 'x' ? 'B' : s.foundAxis === 'y' ? 'A' : null;
 
-    // Compute the Phase 1 frozen total per mover by proportional split
-    // (phase1PtsTotal covers all movers combined; split by segment counts)
-    const xTotal = segments.filter((seg: any) => seg.mover === 'A').reduce((n: number, seg: any) => n + seg.xs.length, 0);
-    const yTotal = segments.filter((seg: any) => seg.mover === 'B').reduce((n: number, seg: any) => n + seg.xs.length, 0);
-    const allTotal = xTotal + yTotal;
-    const xFrozen = phase1PtsTotal !== null && allTotal > 0 ? Math.round(phase1PtsTotal * xTotal / allTotal) : null;
-    const yFrozen = phase1PtsTotal !== null && allTotal > 0 ? Math.round(phase1PtsTotal * yTotal / allTotal) : null;
+    let cumPts = 0;
+    const processed = segments.map((seg: any) => {
+      const isPhase2 = phase1PtsTotal !== null && cumPts >= phase1PtsTotal && phase2Mover !== null;
+      cumPts += seg.xs.length;
+      return isPhase2 ? { ...seg, mover: phase2Mover } : seg;
+    });
 
-    const xMerged = mergeSegments(xSegs, xFrozen);
+    // Compute Phase 1 point counts per mover (segments before phase1PtsTotal boundary)
+    let p1Cum = 0;
+    const p1xPts = segments.reduce((n: number, seg: any) => {
+      if (phase1PtsTotal === null || p1Cum < phase1PtsTotal) {
+        const pts = seg.mover === 'A' ? seg.xs.length : 0;
+        p1Cum += seg.xs.length;
+        return n + pts;
+      }
+      return n;
+    }, 0);
+    let p1Cum2 = 0;
+    const p1yPts = segments.reduce((n: number, seg: any) => {
+      if (phase1PtsTotal === null || p1Cum2 < phase1PtsTotal) {
+        const pts = seg.mover === 'B' ? seg.xs.length : 0;
+        p1Cum2 += seg.xs.length;
+        return n + pts;
+      }
+      return n;
+    }, 0);
+
+    const xSegs = processed.filter((seg: any) => seg.mover === 'A');
+    const ySegs = processed.filter((seg: any) => seg.mover === 'B');
+
+    const xMerged = mergeSegments(xSegs, phase1PtsTotal !== null ? p1xPts : null);
     if (xMerged) {
-      const showLegend = !aMoveLegendShown;
-      if (showLegend) aMoveLegendShown = true;
+      if (!aMoveLegendShown) {
+        aMoveLegendShown = true;
+        // Legend-only trace with solid color (NaN data = invisible in plot)
+        traces.push({
+          type: 'scatter3d', mode: 'lines',
+          name: '─ A Moves (x)', showlegend: true,
+          x: [NaN], y: [NaN], z: [NaN],
+          line: { color: 'rgb(192,57,43)', width: 4 }
+        });
+      }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: showLegend ? '─ A Moves (x)' : '_', showlegend: showLegend,
+        name: '_', showlegend: false,
         x: xMerged.xs, y: xMerged.ys, z: xMerged.zs,
         line: { color: xMerged.colors, colorscale: [[0, 'rgb(245,184,184)'], [1, 'rgb(192,57,43)']], width: 4 }
       });
     }
 
-    const yMerged = mergeSegments(ySegs, yFrozen);
+    const yMerged = mergeSegments(ySegs, phase1PtsTotal !== null ? p1yPts : null);
     if (yMerged) {
-      const showLegend = !bMoveLegendShown;
-      if (showLegend) bMoveLegendShown = true;
+      if (!bMoveLegendShown) {
+        bMoveLegendShown = true;
+        // Legend-only trace with solid color (NaN data = invisible in plot)
+        traces.push({
+          type: 'scatter3d', mode: 'lines',
+          name: '─ B Moves (y)', showlegend: true,
+          x: [NaN], y: [NaN], z: [NaN],
+          line: { color: 'rgb(26,82,118)', width: 4 }
+        });
+      }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: showLegend ? '─ B Moves (y)' : '_', showlegend: showLegend,
+        name: '_', showlegend: false,
         x: yMerged.xs, y: yMerged.ys, z: yMerged.zs,
         line: { color: yMerged.colors, colorscale: [[0, 'rgb(184,204,245)'], [1, 'rgb(26,82,118)']], width: 4 }
       });
