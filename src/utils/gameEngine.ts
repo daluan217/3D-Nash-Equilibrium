@@ -256,8 +256,11 @@ function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: num
     : (v: number) => v * (g.b11 - g.b12) + (1 - v) * (g.b21 - g.b22);
 
   const pat = { aHi: fn(s.domainHi), aLo: fn(s.domainLo) };
+  // Always capture the first-cycle pattern so overshoot detection has a baseline
+  // even when tooNarrow fires immediately (large step sizes).
+  if (s.ghostCyclePattern === null) s.ghostCyclePattern = pat;
   const EPS_PAT = 1e-4;
-  const patternOK = s.ghostCyclePattern === null || (
+  const patternOK = (
     !(Math.abs(pat.aHi) > EPS_PAT && Math.sign(pat.aHi) !== Math.sign(s.ghostCyclePattern.aHi)) &&
     !(Math.abs(pat.aLo) > EPS_PAT && Math.sign(pat.aLo) !== Math.sign(s.ghostCyclePattern.aLo))
   );
@@ -589,15 +592,19 @@ export function doStep(
         s.foundAxis = s.discoveredMixedX !== null ? 'x' : 'y';
         s.phase1PtsA = s.pathSegmentsA.reduce((n, seg) => n + seg.xs.length, 0);
         s.phase1PtsB = s.pathSegmentsB.reduce((n, seg) => n + seg.xs.length, 0);
-        s.calcX = s.domainHi;
-        s.calcY = s.domainHi;
+        // Reset corridor to [0,1] so the ghost always has a full bracket,
+        // regardless of how narrow Phase 1 left the domain.
+        s.domainLo = 0;
+        s.domainHi = 1;
+        s.calcX = 1;
+        s.calcY = 1;
         s.ghostVisitedPositions = [];
         s.ghostPathSegmentsA = [];
         s.ghostPathSegmentsB = [];
         s.ghostCyclePattern = null;
         s.ghostBisecting = false;
-        s.ghostBisectGoodLo = s.domainLo;
-        s.ghostBisectGoodHi = s.domainHi;
+        s.ghostBisectGoodLo = 0;
+        s.ghostBisectGoodHi = 1;
         s.ghostBisectBadLo = 0;
         s.ghostBisectBadHi = 1;
         addLog(`Phase 2: ${s.foundAxis}* locked, searching ${s.foundAxis === 'x' ? 'y' : 'x'}*`);

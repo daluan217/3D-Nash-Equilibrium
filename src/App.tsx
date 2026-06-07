@@ -304,7 +304,8 @@ export default function App() {
   // ── Simulation Settings State ──────────────────────────────────────────────
   const [firstMover, setFirstMover] = useState<'A' | 'B'>('A');
   const [trackingMode, setTrackingMode] = useState<'A' | 'B' | 'both'>('A');
-  const [shrinkStep, setShrinkStep] = useState<number>(0.010);
+  const [shrinkStep, setShrinkStep] = useState<number>(0.1);
+  const [shrinkStepRaw, setShrinkStepRaw] = useState<string>('0.100');
   const [speed, setSpeed] = useState<number>(5);
 
   // Initial Coordinates States
@@ -1530,15 +1531,31 @@ export default function App() {
             <div>
               <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 font-medium mb-1">
                 <span>Initial Domain Shrink Step Size</span>
-                <span className="font-mono font-semibold text-rose-500">{shrinkStep.toFixed(3)}</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={shrinkStepRaw}
+                  onChange={(e) => {
+                    setShrinkStepRaw(e.target.value);
+                    const v = parseFloat(e.target.value);
+                    if (!isNaN(v) && v > 0) setShrinkStep(Math.min(0.999, Math.max(0.001, Math.round(v * 1000) / 1000)));
+                  }}
+                  onBlur={() => {
+                    const v = parseFloat(shrinkStepRaw);
+                    const clamped = isNaN(v) || v <= 0 ? shrinkStep : Math.min(0.999, Math.max(0.001, Math.round(v * 1000) / 1000));
+                    setShrinkStep(clamped);
+                    setShrinkStepRaw(clamped.toFixed(3));
+                  }}
+                  className="w-20 font-mono font-semibold text-rose-500 text-right bg-transparent border-b border-rose-300 dark:border-rose-700 focus:outline-none focus:border-rose-500"
+                />
               </div>
               <input
                 type="range"
                 min="0.001"
-                max="0.030"
+                max="0.999"
                 step="0.001"
                 value={shrinkStep}
-                onChange={(e) => setShrinkStep(parseFloat(e.target.value))}
+                onChange={(e) => { const v = parseFloat(e.target.value); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); }}
                 className="w-full accent-rose-500 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
               <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 block">
