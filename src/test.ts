@@ -38,6 +38,10 @@ function createInitialState(startX: number, startY: number, g: GamePayoffs): Sim
     phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [],
     ghostPathSegmentsB: [],
+    cyclePattern: null, bisecting: false,
+    bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
+    ghostCyclePattern: null, ghostBisecting: false,
+    ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
     historyStack: []
   };
 }
@@ -68,11 +72,13 @@ function runTests() {
   const maxSteps = 1000;
 
   let savedGhostPositionsInCycle: string[] = [];
+  let prevFoundAxis: 'x' | 'y' | null = null;
 
   while (!state.converged && !ghostCycleDetected && stepsPlayed < maxSteps) {
     const prevCalcX = state.calcX;
     const prevCalcY = state.calcY;
     const prevCycleCount = state.cycleCount;
+    prevFoundAxis = state.foundAxis;
 
     // Capture ghost trajectory coordinates before they are cleared inside doStep due to cycle detection
     const inPhase2Before = (state.discoveredMixedX !== null) !== (state.discoveredMixedY !== null);
@@ -105,18 +111,24 @@ function runTests() {
 
     // In Phase 2, verify that only ONE coordinate changes per step (no diagonal movements!)
     const inPhase2After = (state.discoveredMixedX !== null) !== (state.discoveredMixedY !== null);
+    const isGhostInitStep = prevFoundAxis === null && state.foundAxis !== null;
+
     if (inPhase2After && prevCalcX !== null && prevCalcY !== null && state.calcX !== null && state.calcY !== null) {
-      // Skip check if we had a cycle shrink on this step (as the domain boundaries lo/hi contract and clamp both dimensions)
-      if (state.cycleCount === prevCycleCount) {
+      // Ghost initialization step: Phase 2 resets calcX/calcY to domainHi then runs the first ghost
+      // move in one doStep — so the net change can appear diagonal. Skip this one step.
+      if (isGhostInitStep) {
+        console.log(`   (Ghost initialized at Step ${state.stepCount}. Skipping diagonal check for Phase 2 init.)`);
+      } else if (state.cycleCount !== prevCycleCount) {
+        // Domain contraction clamps both dimensions simultaneously — skip diagonal check.
+        console.log(`   (Cycle detected and shrunk at Step ${state.stepCount}. Skipping diagonal check for contraction.)`);
+      } else {
         const dx = Math.abs(state.calcX - prevCalcX);
         const dy = Math.abs(state.calcY - prevCalcY);
-        
+
         // If BOTH dx and dy are greater than 0, then the ghost has moved diagonally!
         if (dx > 0 && dy > 0) {
           throw new Error(`FAIL: Ghost moved diagonally at step ${state.stepCount}! dx=${dx.toFixed(3)}, dy=${dy.toFixed(3)}. Position switched from (${prevCalcX}, ${prevCalcY}) to (${state.calcX}, ${state.calcY})`);
         }
-      } else {
-        console.log(`   (Cycle detected and shrunk at Step ${state.stepCount}. Skipping diagonal check for contraction.)`);
       }
     }
   }

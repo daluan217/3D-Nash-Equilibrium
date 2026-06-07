@@ -151,6 +151,168 @@ export function buildPolyStr(cXY: number, cX: number, cY: number, cC: number): s
   return terms.length === 0 ? '0' : terms.join('');
 }
 
+// ── Bisection helper: adjusts domain on Phase 1 cycle detection ──────────────
+// Records the best-response sign pattern from the first cycle. On subsequent
+// cycles, if the pattern is unchanged the domain shrinks normally. When the
+// pattern flips (domain overshot the NE coordinate) we bisect between the last
+// known-good domain and the current bad domain until the EPS check fires.
+function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, mover: 'A' | 'B'): void {
+  const sAFn = (y: number) => y * (g.a11 - g.a21) + (1 - y) * (g.a12 - g.a22);
+  const sBFn = (x: number) => x * (g.b11 - g.b12) + (1 - x) * (g.b21 - g.b22);
+  const pat = {
+    aHi: sAFn(s.domainHi), aLo: sAFn(s.domainLo),
+    bHi: sBFn(s.domainHi), bLo: sBFn(s.domainLo),
+  };
+
+  const EPS_PAT = 1e-4;
+  const patternOK = s.cyclePattern === null || (
+    !(Math.abs(pat.aHi) > EPS_PAT && Math.sign(pat.aHi) !== Math.sign(s.cyclePattern.aHi)) &&
+    !(Math.abs(pat.aLo) > EPS_PAT && Math.sign(pat.aLo) !== Math.sign(s.cyclePattern.aLo)) &&
+    !(Math.abs(pat.bHi) > EPS_PAT && Math.sign(pat.bHi) !== Math.sign(s.cyclePattern.bHi)) &&
+    !(Math.abs(pat.bLo) > EPS_PAT && Math.sign(pat.bLo) !== Math.sign(s.cyclePattern.bLo))
+  );
+
+  let newLo: number;
+  let newHi: number;
+
+  if (!s.bisecting) {
+    if (patternOK) {
+      // Forward phase: store reference on first cycle, update good bounds, shrink normally
+      if (s.cyclePattern === null) s.cyclePattern = pat;
+      s.bisectGoodLo = s.domainLo;
+      s.bisectGoodHi = s.domainHi;
+      newLo = r3(s.domainLo + defaultStep);
+      newHi = r3(s.domainHi - defaultStep);
+    } else {
+      // First overshoot: enter bisect mode, try midpoint between last good and current bad
+      s.bisecting = true;
+      s.bisectBadLo = s.domainLo;
+      s.bisectBadHi = s.domainHi;
+      newLo = r3((s.bisectGoodLo + s.bisectBadLo) / 2);
+      newHi = r3((s.bisectGoodHi + s.bisectBadHi) / 2);
+    }
+  } else {
+    // Bisect phase: update good or bad boundary based on current pattern result
+    if (patternOK) {
+      s.bisectGoodLo = s.domainLo;
+      s.bisectGoodHi = s.domainHi;
+    } else {
+      s.bisectBadLo = s.domainLo;
+      s.bisectBadHi = s.domainHi;
+    }
+    newLo = r3((s.bisectGoodLo + s.bisectBadLo) / 2);
+    newHi = r3((s.bisectGoodHi + s.bisectBadHi) / 2);
+    // If rounding made no progress (stuck at bisectGood), use the bad boundary instead
+    // so the EPS check can fire at the correct rounded coordinate.
+    if (newLo === s.bisectGoodLo && newHi === s.bisectGoodHi) {
+      newLo = s.bisectBadLo;
+      newHi = s.bisectBadHi;
+    }
+  }
+
+  s.domainLo = newLo;
+  s.domainHi = newHi;
+
+  if (s.domainLo >= s.domainHi - 0.0005) {
+    s.domainLo = s.domainHi = r3((s.domainLo + s.domainHi) / 2);
+  }
+
+  s.cx    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
+  s.cy    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
+  s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
+  s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
+
+  // Retroactively snap only the mover's axis in the last recorded path point.
+  // The non-mover axis stays at its pre-clamp value so the NEXT step (opposite mover)
+  // changes only that axis — keeping the path axis-aligned with no diagonals.
+  if (s.pathSegmentsA.length > 0) {
+    const lastA = s.pathSegmentsA[s.pathSegmentsA.length - 1];
+    const nA = lastA.xs.length - 1;
+    if (nA >= 0) {
+      if (mover === 'A') lastA.xs[nA] = s.cx;
+      else lastA.ys[nA] = s.cy;
+      lastA.zs[nA] = r3(EA(lastA.xs[nA], lastA.ys[nA], g));
+    }
+  }
+  if (s.pathSegmentsB.length > 0) {
+    const lastB = s.pathSegmentsB[s.pathSegmentsB.length - 1];
+    const nB = lastB.xs.length - 1;
+    if (nB >= 0) {
+      if (mover === 'A') lastB.xs[nB] = s.cx;
+      else lastB.ys[nB] = s.cy;
+      lastB.zs[nB] = r3(EB(lastB.xs[nB], lastB.ys[nB], g));
+    }
+  }
+}
+
+// ── Phase 2 ghost corridor bisection ─────────────────────────────────────────
+// Triggered when hi-lo < 2*step (too narrow for a full step) OR when the
+// best-response sign pattern at corridor boundaries changes (overshoot).
+function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number): void {
+  // foundAxis='x': x* found → searching y* → sA(y) = y*(a11-a21)+(1-y)*(a12-a22)
+  // foundAxis='y': y* found → searching x* → sB(x) = x*(b11-b12)+(1-x)*(b21-b22)
+  const fn = s.foundAxis === 'x'
+    ? (v: number) => v * (g.a11 - g.a21) + (1 - v) * (g.a12 - g.a22)
+    : (v: number) => v * (g.b11 - g.b12) + (1 - v) * (g.b21 - g.b22);
+
+  const pat = { aHi: fn(s.domainHi), aLo: fn(s.domainLo) };
+  const EPS_PAT = 1e-4;
+  const patternOK = s.ghostCyclePattern === null || (
+    !(Math.abs(pat.aHi) > EPS_PAT && Math.sign(pat.aHi) !== Math.sign(s.ghostCyclePattern.aHi)) &&
+    !(Math.abs(pat.aLo) > EPS_PAT && Math.sign(pat.aLo) !== Math.sign(s.ghostCyclePattern.aLo))
+  );
+  const tooNarrow = (s.domainHi - s.domainLo) < 2 * defaultStep;
+
+  let newLo: number;
+  let newHi: number;
+
+  if (!s.ghostBisecting) {
+    if (patternOK && !tooNarrow) {
+      // Forward: record reference pattern, update good bounds, shrink normally.
+      s.ghostCyclePattern = pat;
+      s.ghostBisectGoodLo = s.domainLo;
+      s.ghostBisectGoodHi = s.domainHi;
+      newLo = r3(s.domainLo + defaultStep);
+      newHi = r3(s.domainHi - defaultStep);
+    } else {
+      s.ghostBisecting = true;
+      if (!patternOK) {
+        // Overshoot: current domain is bad; good was stored in last forward step.
+        s.ghostBisectBadLo = s.domainLo;
+        s.ghostBisectBadHi = s.domainHi;
+      } else {
+        // tooNarrow: current domain is good; a full step would be bad.
+        s.ghostBisectGoodLo = s.domainLo;
+        s.ghostBisectGoodHi = s.domainHi;
+        s.ghostBisectBadLo = r3(s.domainLo + defaultStep);
+        s.ghostBisectBadHi = r3(s.domainHi - defaultStep);
+      }
+      newLo = r3((s.ghostBisectGoodLo + s.ghostBisectBadLo) / 2);
+      newHi = r3((s.ghostBisectGoodHi + s.ghostBisectBadHi) / 2);
+    }
+  } else {
+    if (patternOK) {
+      s.ghostBisectGoodLo = s.domainLo;
+      s.ghostBisectGoodHi = s.domainHi;
+    } else {
+      s.ghostBisectBadLo = s.domainLo;
+      s.ghostBisectBadHi = s.domainHi;
+    }
+    newLo = r3((s.ghostBisectGoodLo + s.ghostBisectBadLo) / 2);
+    newHi = r3((s.ghostBisectGoodHi + s.ghostBisectBadHi) / 2);
+  }
+
+  s.domainLo = newLo;
+  s.domainHi = newHi;
+
+  if (s.domainLo >= s.domainHi - 0.0005) {
+    s.domainLo = s.domainHi = r3((s.domainLo + s.domainHi) / 2);
+  }
+
+  s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
+  s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
+}
+
 // ── Algorithm control parameters ─────────────────────────────────────────────
 export function pickShrinkStep(
   lo: number, 
@@ -327,6 +489,18 @@ export function createSnapshot(s: SimState): Omit<SimState, 'running' | 'history
     phase1PtsB: s.phase1PtsB,
     ghostPathSegmentsA: ghostSegCloneA,
     ghostPathSegmentsB: ghostSegCloneB,
+    cyclePattern: s.cyclePattern ? { ...s.cyclePattern } : null,
+    bisecting: s.bisecting,
+    bisectGoodLo: s.bisectGoodLo,
+    bisectGoodHi: s.bisectGoodHi,
+    bisectBadLo: s.bisectBadLo,
+    bisectBadHi: s.bisectBadHi,
+    ghostCyclePattern: s.ghostCyclePattern ? { ...s.ghostCyclePattern } : null,
+    ghostBisecting: s.ghostBisecting,
+    ghostBisectGoodLo: s.ghostBisectGoodLo,
+    ghostBisectGoodHi: s.ghostBisectGoodHi,
+    ghostBisectBadLo: s.ghostBisectBadLo,
+    ghostBisectBadHi: s.ghostBisectBadHi,
   };
 }
 
@@ -420,6 +594,12 @@ export function doStep(
         s.ghostVisitedPositions = [];
         s.ghostPathSegmentsA = [];
         s.ghostPathSegmentsB = [];
+        s.ghostCyclePattern = null;
+        s.ghostBisecting = false;
+        s.ghostBisectGoodLo = s.domainLo;
+        s.ghostBisectGoodHi = s.domainHi;
+        s.ghostBisectBadLo = 0;
+        s.ghostBisectBadHi = 1;
         addLog(`Phase 2: ${s.foundAxis}* locked, searching ${s.foundAxis === 'x' ? 'y' : 'x'}*`);
       }
 
@@ -480,20 +660,10 @@ export function doStep(
       // Ghost cycle detection: checks coordinates (calcX, calcY)
       const ghostKey = s.calcX!.toFixed(3) + ',' + s.calcY!.toFixed(3);
       if (s.ghostVisitedPositions.includes(ghostKey)) {
-        const shrink = pickShrinkStep(s.domainLo, s.domainHi, mixedNE, defaultShrinkStep, s.foundAxis);
         s.cycleCount++;
         s.ghostVisitedPositions = [];
 
-        s.domainLo = parseFloat((s.domainLo + shrink).toFixed(4));
-        s.domainHi = parseFloat((s.domainHi - shrink).toFixed(4));
-
-        if (s.domainLo >= s.domainHi - 0.0005) {
-          s.domainLo = s.domainHi = r3((s.domainLo + s.domainHi) / 2);
-        }
-
-        // Clamp ghost to new corridor
-        s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX!)));
-        s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY!)));
+        applyGhostBisectCycleStep(s, g, defaultShrinkStep);
 
         // Snap large sphere's visual position to the updated boundaries
         if (s.foundAxis === 'x') {
@@ -507,7 +677,7 @@ export function doStep(
         }
 
         const searchMover = s.foundAxis === 'x' ? 'B' : 'A';
-        addLog(`↺ Ghost cycle ${s.cycleCount} (${searchMover}) → corridor [${s.domainLo.toFixed(3)},${s.domainHi.toFixed(3)}] (step=${shrink})`);
+        addLog(`↺ Ghost cycle ${s.cycleCount} (${searchMover}) → corridor [${r3(s.domainLo).toFixed(3)},${r3(s.domainHi).toFixed(3)}]${s.ghostBisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
         onCycleDetected();
       } else {
         s.ghostVisitedPositions.push(ghostKey);
@@ -526,7 +696,7 @@ export function doStep(
   pushToSegs(s, s.displayX, s.displayY, eA, eB, mover);
 
   const domStr = (s.domainLo > 0.0005 || s.domainHi < 0.9995)
-    ? ' [' + s.domainLo.toFixed(3) + ',' + s.domainHi.toFixed(3) + ']' : '';
+    ? ' [' + r3(s.domainLo).toFixed(3) + ',' + r3(s.domainHi).toFixed(3) + ']' : '';
   addLog(`Step ${s.stepCount} (${mover})${domStr}: x=${s.cx.toFixed(3)}, y=${s.cy.toFixed(3)}  E[A]=${eA.toFixed(3)}  E[B]=${eB.toFixed(3)}`);
 
   // Check convergence conditions
@@ -562,19 +732,10 @@ export function doStep(
   if (pureNEs.length === 0 && !inPhase2Now) {
     const posKey = s.cx.toFixed(3) + ',' + s.cy.toFixed(3);
     if (s.visitedPositions.includes(posKey)) {
-      const shrink = pickShrinkStep(s.domainLo, s.domainHi, mixedNE, defaultShrinkStep, s.foundAxis);
       s.cycleCount++;
       s.visitedPositions = [];
-      s.domainLo = parseFloat((s.domainLo + shrink).toFixed(4));
-      s.domainHi = parseFloat((s.domainHi - shrink).toFixed(4));
-      if (s.domainLo >= s.domainHi - 0.0005) {
-        s.domainLo = s.domainHi = r3((s.domainLo + s.domainHi) / 2);
-      }
-      s.cx    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
-      s.cy    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
-      s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
-      s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
-      addLog(`↺ Cycle ${s.cycleCount} → domain [${s.domainLo.toFixed(3)},${s.domainHi.toFixed(3)}] (step=${shrink})`);
+      applyBisectCycleStep(s, g, defaultShrinkStep, mover);
+      addLog(`↺ Cycle ${s.cycleCount} → domain [${r3(s.domainLo).toFixed(3)},${r3(s.domainHi).toFixed(3)}]${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
       onCycleDetected();
       return;
     }
@@ -585,19 +746,12 @@ export function doStep(
   if (pureNEs.length > 0) {
     const posKey = s.cx.toFixed(3) + ',' + s.cy.toFixed(3);
     if (s.visitedPositions.includes(posKey)) {
-      const shrink = pickShrinkStep(s.domainLo, s.domainHi, mixedNE, defaultShrinkStep, s.foundAxis);
       s.cycleCount++;
       s.visitedPositions = [];
-      s.domainLo = parseFloat((s.domainLo + shrink).toFixed(4));
-      s.domainHi = parseFloat((s.domainHi - shrink).toFixed(4));
-      if (s.domainLo >= s.domainHi - 0.0005) {
-        s.domainLo = s.domainHi = r3((s.domainLo + s.domainHi) / 2);
-      }
-      s.cx    = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
-      s.cy    = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
-      s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
-      s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
-      addLog(`↺ Cycle ${s.cycleCount} → domain [${s.domainLo.toFixed(3)},${s.domainHi.toFixed(3)}] (step=${shrink})`);
+      applyBisectCycleStep(s, g, defaultShrinkStep, mover);
+      s.cx = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
+      s.cy = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
+      addLog(`↺ Cycle ${s.cycleCount} → domain [${r3(s.domainLo).toFixed(3)},${r3(s.domainHi).toFixed(3)}]${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
       onCycleDetected();
       return;
     }

@@ -350,6 +350,10 @@ export default function App() {
     phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [],
     ghostPathSegmentsB: [],
+    cyclePattern: null, bisecting: false,
+    bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
+    ghostCyclePattern: null, ghostBisecting: false,
+    ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
     historyStack: []
   });
 
@@ -471,6 +475,10 @@ export default function App() {
         pathSegmentsA: [initSegA], pathSegmentsB: [initSegB],
         phase1PtsA: null, phase1PtsB: null,
         ghostPathSegmentsA: [], ghostPathSegmentsB: [],
+        cyclePattern: null, bisecting: false,
+        bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
+        ghostCyclePattern: null, ghostBisecting: false,
+        ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
         historyStack: []
       };
 
@@ -938,6 +946,10 @@ export default function App() {
       phase1PtsA: null, phase1PtsB: null,
       ghostPathSegmentsA: [],
       ghostPathSegmentsB: [],
+      cyclePattern: null, bisecting: false,
+      bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
+      ghostCyclePattern: null, ghostBisecting: false,
+      ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
       historyStack: []
     });
 

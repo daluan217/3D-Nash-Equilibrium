@@ -71,6 +71,22 @@ export interface SimState {
   ghostPathSegmentsA: PathSegment[];
   ghostPathSegmentsB: PathSegment[];
 
+  // Bisection state for Phase 1 overshoot detection
+  cyclePattern: { aHi: number; aLo: number; bHi: number; bLo: number } | null;
+  bisecting: boolean;
+  bisectGoodLo: number;
+  bisectGoodHi: number;
+  bisectBadLo: number;
+  bisectBadHi: number;
+
+  // Bisection state for Phase 2 ghost corridor
+  ghostCyclePattern: { aHi: number; aLo: number } | null;
+  ghostBisecting: boolean;
+  ghostBisectGoodLo: number;
+  ghostBisectGoodHi: number;
+  ghostBisectBadLo: number;
+  ghostBisectBadHi: number;
+
   historyStack: Omit<SimState, 'running' | 'historyStack'>[];
 }
 
