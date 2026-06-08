@@ -592,19 +592,27 @@ export function doStep(
         s.foundAxis = s.discoveredMixedX !== null ? 'x' : 'y';
         s.phase1PtsA = s.pathSegmentsA.reduce((n, seg) => n + seg.xs.length, 0);
         s.phase1PtsB = s.pathSegmentsB.reduce((n, seg) => n + seg.xs.length, 0);
-        // Reset corridor to [0,1] so the ghost always has a full bracket,
-        // regardless of how narrow Phase 1 left the domain.
-        s.domainLo = 0;
-        s.domainHi = 1;
-        s.calcX = 1;
-        s.calcY = 1;
+        // Use the Phase 1 domain as the starting corridor if it brackets the
+        // second NE coordinate (opposite signs of the indifference function at
+        // lo and hi). If Phase 1 collapsed the domain with a large step and the
+        // bracket is lost, fall back to [0, 1].
+        const _axis = s.discoveredMixedX !== null ? 'x' : 'y';
+        const _fn = _axis === 'x'
+          ? (v: number) => v * (g.a11 - g.a21) + (1 - v) * (g.a12 - g.a22)
+          : (v: number) => v * (g.b11 - g.b12) + (1 - v) * (g.b21 - g.b22);
+        if (_fn(s.domainLo) * _fn(s.domainHi) >= 0) {
+          s.domainLo = 0;
+          s.domainHi = 1;
+        }
+        s.calcX = s.domainHi;
+        s.calcY = s.domainHi;
         s.ghostVisitedPositions = [];
         s.ghostPathSegmentsA = [];
         s.ghostPathSegmentsB = [];
         s.ghostCyclePattern = null;
         s.ghostBisecting = false;
-        s.ghostBisectGoodLo = 0;
-        s.ghostBisectGoodHi = 1;
+        s.ghostBisectGoodLo = s.domainLo;
+        s.ghostBisectGoodHi = s.domainHi;
         s.ghostBisectBadLo = 0;
         s.ghostBisectBadHi = 1;
         addLog(`Phase 2: ${s.foundAxis}* locked, searching ${s.foundAxis === 'x' ? 'y' : 'x'}*`);
