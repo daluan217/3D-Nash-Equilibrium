@@ -316,6 +316,74 @@ async function sendRecoveryEmail(email: string, code: string): Promise<{ success
   }
 }
 
+// Destination inbox for all user feedback submissions
+const FEEDBACK_INBOX = process.env.FEEDBACK_INBOX || "daluan217@gmail.com";
+
+async function sendFeedbackEmail(
+  message: string,
+  rating: number | null,
+  fromEmail: string | null
+): Promise<{ success: boolean; via: string; messageId?: string; }> {
+  const transporter = getTransporter();
+  // Always send from the project's own mailbox so anonymous submissions stay anonymous.
+  const from = process.env.SMTP_FROM || `"Nash Equilibrium Simulator" <noreply@example.com>`;
+
+  if (!transporter) {
+    throw new Error("SMTP configuration is incomplete/missing in .env.");
+  }
+
+  const stars = rating && rating > 0
+    ? "★".repeat(rating) + "☆".repeat(5 - rating) + ` (${rating}/5)`
+    : "Not provided";
+  const senderLabel = fromEmail ? fromEmail : "Anonymous";
+  const safeMessage = (message || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const htmlContent = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 540px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 16px; padding: 32px; box-shadow: 0 4px 12px rgba(0,0,0,0.03); background-color: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <span style="font-size: 32px; display: inline-block; margin-bottom: 8px;">💬</span>
+        <h2 style="margin: 0; color: #0f172a; font-size: 22px; font-weight: 800;">New User Feedback</h2>
+        <p style="color: #64748b; font-size: 13px; margin-top: 6px;">Nash Equilibrium Simulator</p>
+      </div>
+      <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+        <tr>
+          <td style="color: #64748b; font-size: 13px; font-weight: 700; padding: 6px 0; width: 90px;">Rating</td>
+          <td style="color: #ea580c; font-size: 15px; padding: 6px 0;">${stars}</td>
+        </tr>
+        <tr>
+          <td style="color: #64748b; font-size: 13px; font-weight: 700; padding: 6px 0;">From</td>
+          <td style="color: #334155; font-size: 14px; padding: 6px 0;">${senderLabel}</td>
+        </tr>
+      </table>
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; color: #334155; font-size: 14.5px; line-height: 1.6; white-space: pre-wrap;">${safeMessage}</div>
+      <p style="color: #94a3b8; font-size: 11.5px; line-height: 1.6; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 16px; text-align: center;">
+        Submitted on ${new Date().toUTCString()}${fromEmail ? " — reply directly to this email to respond." : " — this submission was sent anonymously."}
+      </p>
+    </div>
+  `;
+
+  const textContent =
+    `New feedback for Nash Equilibrium Simulator\n\n` +
+    `Rating: ${stars}\nFrom: ${senderLabel}\n\n${message}`;
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to: FEEDBACK_INBOX,
+      ...(fromEmail ? { replyTo: fromEmail } : {}),
+      subject: `New Feedback${rating ? ` (${rating}★)` : ""} — Nash Equilibrium Simulator`,
+      text: textContent,
+      html: htmlContent,
+    });
+    console.log("Feedback email sent successfully:", info.messageId);
+    return { success: true, via: "smtp", messageId: info.messageId };
+  } catch (err: any) {
+    console.error("Failed to send feedback email:", err);
+    throw new Error(`SMTP Mail delivery failed: ${err.message}`);
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -375,6 +443,48 @@ async function startServer() {
   // Express API health check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
+  });
+
+  // ── Feedback API ───────────────────────────────────────────────────────────
+  app.post("/api/feedback", async (req, res) => {
+    const { message, email, rating } = req.body;
+
+    const trimmedMessage = typeof message === "string" ? message.trim() : "";
+    if (!trimmedMessage) {
+      return res.status(400).json({ error: "Feedback message cannot be empty." });
+    }
+    if (trimmedMessage.length > 5000) {
+      return res.status(400).json({ error: "Feedback message is too long (max 5000 characters)." });
+    }
+
+    // Email is optional; validate only if the user chose to attach one.
+    let fromEmail: string | null = null;
+    if (email && typeof email === "string" && email.trim()) {
+      const candidate = email.trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) {
+        return res.status(400).json({ error: "Please enter a valid email address or leave it blank to stay anonymous." });
+      }
+      fromEmail = candidate;
+    }
+
+    // Rating is optional; clamp to 1–5 if present.
+    let ratingValue: number | null = null;
+    if (rating !== undefined && rating !== null && rating !== 0) {
+      const r = Math.round(Number(rating));
+      if (!Number.isNaN(r) && r >= 1 && r <= 5) ratingValue = r;
+    }
+
+    try {
+      await sendFeedbackEmail(trimmedMessage, ratingValue, fromEmail);
+      return res.json({
+        success: true,
+        message: fromEmail
+          ? "Thank you! Your feedback has been sent — we may reach out at the email you provided."
+          : "Thank you! Your anonymous feedback has been sent.",
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: `Could not send feedback: ${err.message}` });
+    }
   });
 
   // Serve compiled DMG file

@@ -43,7 +43,10 @@ import {
   Sun,
   Moon,
   Menu,
-  Download
+  Download,
+  MessageSquare,
+  Star,
+  Send
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
@@ -228,6 +231,18 @@ export default function App() {
   const [saveDesc, setSaveDesc] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
+
+  // Feedback Modal States
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [feedbackEmail, setFeedbackEmail] = useState('');
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackHoverRating, setFeedbackHoverRating] = useState(0);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [feedbackSuccess, setFeedbackSuccess] = useState('');
+  const feedbackSubmittedRef = useRef(false);
+  const feedbackLastClosedRef = useRef(0);
 
   // Auth Inputs
   const [authUsername, setAuthUsername] = useState('');
@@ -663,6 +678,72 @@ export default function App() {
       setSaveLoading(false);
     }
   };
+
+  const openFeedback = () => {
+    setFeedbackError('');
+    setFeedbackSuccess('');
+    setIsFeedbackOpen(true);
+  };
+
+  const closeFeedback = () => {
+    setIsFeedbackOpen(false);
+    feedbackLastClosedRef.current = Date.now();
+  };
+
+  const handleFeedbackSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!feedbackText.trim()) {
+      setFeedbackError('Please enter your feedback before sending.');
+      return;
+    }
+    setFeedbackError('');
+    setFeedbackSuccess('');
+    setFeedbackLoading(true);
+    try {
+      const res = await fetch(getApiUrl('/api/feedback'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: feedbackText.trim(),
+          email: feedbackEmail.trim() || undefined,
+          rating: feedbackRating || undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        feedbackSubmittedRef.current = true;
+        setFeedbackSuccess(data.message || 'Thank you! Your feedback has been sent.');
+        setFeedbackText('');
+        setFeedbackEmail('');
+        setFeedbackRating(0);
+        setFeedbackHoverRating(0);
+      } else {
+        setFeedbackError(data.error || 'Failed to send feedback.');
+      }
+    } catch (err) {
+      setFeedbackError('Network error. Failed to send feedback. Please try again.');
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+
+  // Exit-intent: surface the feedback popup when the cursor leaves through the
+  // top of the viewport (toward the tab bar / address bar), like many sites do.
+  useEffect(() => {
+    const handleMouseOut = (e: MouseEvent) => {
+      // Only when the pointer actually leaves the document through the top edge.
+      if (e.relatedTarget !== null || (e as any).toElement !== null) return;
+      if (e.clientY > 0) return;
+      // Don't interrupt: skip if already open, just submitted, recently closed,
+      // or another modal is in the foreground.
+      if (isFeedbackOpen || feedbackSubmittedRef.current) return;
+      if (Date.now() - feedbackLastClosedRef.current < 60000) return;
+      if (isAuthModalOpen || isSaveModalOpen || isDownloadModalOpen || isAdminOpen) return;
+      openFeedback();
+    };
+    document.addEventListener('mouseout', handleMouseOut);
+    return () => document.removeEventListener('mouseout', handleMouseOut);
+  }, [isFeedbackOpen, isAuthModalOpen, isSaveModalOpen, isDownloadModalOpen, isAdminOpen]);
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2332,6 +2413,136 @@ export default function App() {
           isElectron={isElectron}
           apiBaseUrl={apiBaseUrl}
         />
+      )}
+
+      {/* Bottom-left feedback launcher */}
+      <button
+        onClick={openFeedback}
+        title="Send feedback"
+        className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition-all cursor-pointer select-none"
+      >
+        <MessageSquare className="w-4 h-4" />
+        <span className="hidden sm:inline">Feedback</span>
+      </button>
+
+      {isFeedbackOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 rounded-lg">
+                  <MessageSquare className="w-4 h-4" />
+                </span>
+                <span className="font-bold text-slate-800 dark:text-slate-100 text-sm md:text-base">
+                  Send Feedback
+                </span>
+              </div>
+              <button
+                onClick={closeFeedback}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4 text-slate-400" />
+              </button>
+            </div>
+
+            {feedbackSuccess ? (
+              <div className="flex flex-col items-center gap-3 py-6 text-center">
+                <span className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 rounded-full">
+                  <CheckCircle2 className="w-7 h-7" />
+                </span>
+                <p className="text-sm text-slate-700 dark:text-slate-200 font-medium px-2">{feedbackSuccess}</p>
+                <button
+                  onClick={closeFeedback}
+                  className="mt-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 px-5 rounded-xl transition-all cursor-pointer"
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <>
+                {feedbackError && (
+                  <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+                    <span>{feedbackError}</span>
+                  </div>
+                )}
+
+                <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  Share any questions, concerns, or ideas. Your email is optional — leave it blank to send anonymously.
+                </p>
+
+                <form onSubmit={handleFeedbackSubmit} className="flex flex-col gap-3.5">
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1.5">Rating <span className="font-normal text-slate-400">(optional)</span></label>
+                    <div className="flex items-center gap-1">
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setFeedbackRating(n === feedbackRating ? 0 : n)}
+                          onMouseEnter={() => setFeedbackHoverRating(n)}
+                          onMouseLeave={() => setFeedbackHoverRating(0)}
+                          className="p-0.5 cursor-pointer"
+                          aria-label={`${n} star${n > 1 ? 's' : ''}`}
+                        >
+                          <Star
+                            className={`w-6 h-6 transition-colors ${
+                              n <= (feedbackHoverRating || feedbackRating)
+                                ? 'text-amber-400 fill-amber-400'
+                                : 'text-slate-300 dark:text-slate-600'
+                            }`}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Your feedback</label>
+                    <textarea
+                      className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-28 resize-none text-slate-800 dark:text-slate-200"
+                      placeholder="Questions, concerns, or feedback…"
+                      value={feedbackText}
+                      onChange={(e) => setFeedbackText(e.target.value)}
+                      maxLength={5000}
+                      autoFocus
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email <span className="font-normal text-slate-400">(optional — for a reply)</span></label>
+                    <input
+                      type="email"
+                      className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                      placeholder="you@example.com (leave blank to stay anonymous)"
+                      value={feedbackEmail}
+                      onChange={(e) => setFeedbackEmail(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
+                    <button
+                      type="button"
+                      onClick={closeFeedback}
+                      className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={feedbackLoading}
+                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      {feedbackLoading ? 'Sending…' : 'Send Feedback'}
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
