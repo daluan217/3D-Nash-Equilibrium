@@ -13,13 +13,6 @@ import dotenv from "dotenv";
 // Load environment variables from .env file
 dotenv.config();
 
-// Fallback to loading from .env.example if key variables are not present in process.env
-const envExamplePath = path.join(process.cwd(), ".env.example");
-if (!process.env.SMTP_HOST && fs.existsSync(envExamplePath)) {
-  console.log("No SMTP configuration found in .env, falling back to loading from .env.example...");
-  dotenv.config({ path: envExamplePath });
-}
-
 interface GamePayoffs {
   a11: number; a12: number; a21: number; a22: number;
   b11: number; b12: number; b21: number; b22: number;

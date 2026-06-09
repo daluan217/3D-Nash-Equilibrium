@@ -4,7 +4,9 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
+.env
+.env.local
+.env.*.local
 db.json
 
 # Electron build and packaging files
