@@ -20,9 +20,9 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -50,14 +50,16 @@ jobs:
           BUCKET: ${{ secrets.GCS_BUCKET_NAME }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
 
           # electron-builder names the file "<productName>-<version>.dmg";
           # the website expects the fixed object name, so we rename on upload.
-          DMG_PATH="$(find dist-electron -maxdepth 1 -name '*.dmg' | head -n 1)"
-          if [ -z "$DMG_PATH" ]; then
+          dmgs=(dist-electron/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
             echo "::error::No .dmg produced in dist-electron/" >&2
             exit 1
           fi
+          DMG_PATH="${dmgs[0]}"
 
           VERSION="$(node -p "require('./package.json').version")"
           echo "Uploading '$DMG_PATH' (v$VERSION) -> gs://$BUCKET/Nash Equilibrium Simulator.dmg"
