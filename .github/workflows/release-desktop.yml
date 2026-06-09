@@ -31,7 +31,11 @@ jobs:
         run: npm ci
 
       - name: Build macOS DMG
-        run: npm run electron:dist
+        # Build the bundle, then package. --publish never stops electron-builder
+        # from trying to push a GitHub release (we upload to GCS ourselves).
+        run: |
+          npm run build
+          npx electron-builder --publish never
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
