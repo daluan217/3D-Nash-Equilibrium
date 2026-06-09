@@ -1,6 +1,10 @@
 const { app, BrowserWindow, shell, dialog } = require('electron');
 const path = require('path');
 
+// Override the package.json "name" so the macOS app menu (About/Hide/Quit)
+// reads the product name instead of the template default ("react-example").
+app.setName('Nash Equilibrium Simulator');
+
 // Public site that hosts the latest DMG + version manifest (served from GCS via Cloud Run).
 const UPDATE_BASE_URL = 'https://nash-equilibrium-simulator.com';
 
