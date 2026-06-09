@@ -533,9 +533,18 @@ export function doStep(
   let ny = s.cy;
 
   if (pureNEs.length > 1 && committedNE) {
-    if (mover === 'A') {
-      nx = committedNE.x;
+    if (mover === firstMover) {
+      // The first mover commits to its own preferred pure NE coordinate,
+      // forcing the other player to best-respond into that equilibrium.
+      if (mover === 'A') nx = committedNE.x;
+      else ny = committedNE.y;
+    } else if (mover === 'A') {
+      // Follower A best-responds to the current y.
+      const valRow1 = s.cy * g.a11 + (1 - s.cy) * g.a12;
+      const valRow2 = s.cy * g.a21 + (1 - s.cy) * g.a22;
+      nx = valRow1 >= valRow2 ? 1 : 0;
     } else {
+      // Follower B best-responds to the current x.
       const valCol1 = s.cx * g.b11 + (1 - s.cx) * g.b21;
       const valCol2 = s.cx * g.b12 + (1 - s.cx) * g.b22;
       ny = valCol1 >= valCol2 ? 1 : 0;
