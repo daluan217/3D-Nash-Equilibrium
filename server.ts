@@ -438,6 +438,27 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  // Latest desktop app version — written to GCS by the release CI alongside the DMG.
+  // The installed Electron app polls this to decide whether to prompt for an update.
+  app.get("/api/version", async (req, res) => {
+    try {
+      if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+        const { Storage } = await import('@google-cloud/storage');
+        const file = new Storage().bucket(GCS_BUCKET).file('app-version.json');
+        const [exists] = await file.exists();
+        if (exists) {
+          const [content] = await file.download();
+          res.setHeader('Cache-Control', 'no-store');
+          return res.type('application/json').send(content.toString('utf-8'));
+        }
+      }
+      return res.json({ version: null });
+    } catch (error: any) {
+      console.error("Error reading app version:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
   // ── Feedback API ───────────────────────────────────────────────────────────
   app.post("/api/feedback", async (req, res) => {
     const { message, email, rating } = req.body;

@@ -1,0 +1,66 @@
+name: Build & Publish macOS DMG
+
+# Builds the macOS desktop app and uploads it to the GCS bucket so the website
+# always serves the latest version. A .dmg can only be built on macOS, so this
+# runs on a macOS runner (not Cloud Build, which is Linux).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one release build at a time; newer pushes cancel in-flight ones.
+concurrency:
+  group: release-desktop
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build macOS DMG
+        run: npm run electron:dist
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload DMG and version manifest to GCS
+        env:
+          BUCKET: ${{ secrets.GCS_BUCKET_NAME }}
+        run: |
+          set -euo pipefail
+
+          # electron-builder names the file "<productName>-<version>.dmg";
+          # the website expects the fixed object name, so we rename on upload.
+          DMG_PATH="$(find dist-electron -maxdepth 1 -name '*.dmg' | head -n 1)"
+          if [ -z "$DMG_PATH" ]; then
+            echo "::error::No .dmg produced in dist-electron/" >&2
+            exit 1
+          fi
+
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "Uploading '$DMG_PATH' (v$VERSION) -> gs://$BUCKET/Nash Equilibrium Simulator.dmg"
+
+          gsutil -h "Cache-Control:no-cache, max-age=0" \
+            cp "$DMG_PATH" "gs://$BUCKET/Nash Equilibrium Simulator.dmg"
+
+          printf '{"version":"%s"}' "$VERSION" > app-version.json
+          gsutil -h "Cache-Control:no-store" \
+            cp app-version.json "gs://$BUCKET/app-version.json"
