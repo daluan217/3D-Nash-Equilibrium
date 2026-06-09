@@ -731,13 +731,15 @@ export default function App() {
   // top of the viewport (toward the tab bar / address bar), like many sites do.
   useEffect(() => {
     const handleMouseOut = (e: MouseEvent) => {
-      // Only when the pointer actually leaves the document through the top edge.
-      if (e.relatedTarget !== null || (e as any).toElement !== null) return;
-      if (e.clientY > 0) return;
-      // Don't interrupt: skip if already open, just submitted, recently closed,
-      // or another modal is in the foreground.
+      // Fire only when the pointer truly leaves the document (relatedTarget is
+      // null) heading out the top edge of the viewport.
+      const goingToElement = e.relatedTarget || (e as any).toElement;
+      if (goingToElement) return;
+      if (e.clientY > 8) return;
+      // Don't interrupt: skip if already open, just submitted, in an anti-flicker
+      // window after closing, or while another modal is in the foreground.
       if (isFeedbackOpen || feedbackSubmittedRef.current) return;
-      if (Date.now() - feedbackLastClosedRef.current < 60000) return;
+      if (Date.now() - feedbackLastClosedRef.current < 8000) return;
       if (isAuthModalOpen || isSaveModalOpen || isDownloadModalOpen || isAdminOpen) return;
       openFeedback();
     };
@@ -1997,6 +1999,11 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
+        <p className="text-[11px] text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
+      </footer>
+
       {isAuthModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
           <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
