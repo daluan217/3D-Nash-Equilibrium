@@ -21,6 +21,8 @@ import {
   RotateCcw,
   SkipForward,
   ChevronLeft,
+  ChevronUp,
+  ChevronDown,
   BookOpen,
   Sliders,
   Award,
@@ -52,6 +54,16 @@ import {
 import { MenuDrawer } from './components/MenuDrawer';
 import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
+import katex from 'katex';
+
+// Typeset LaTeX inline via KaTeX (self-hosted, works offline)
+function MathTex({ tex, className }: { tex: string; className?: string }) {
+  const html = useMemo(
+    () => katex.renderToString(tex, { throwOnError: false }),
+    [tex]
+  );
+  return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+}
 
 interface ThinSnapshot {
   cx: number; cy: number;
@@ -142,10 +154,14 @@ export default function App() {
     return () => window.removeEventListener('electron-fullscreen-change', handler);
   }, [isElectronMac]);
 
-  // ── Website zoom: 133% default so layout matches browser 133% zoom ──────────
+  // ── Web display scale ────────────────────────────────────────────────────
+  // The site historically rendered at 133% via a non-standard `zoom` hack.
+  // Scaling the root font-size instead scales every rem-based size (text,
+  // spacing, panels) together without breaking Plotly's pointer hit-testing.
+  // 125% on top of the 15px type-scale base matches the old effective sizes.
   useEffect(() => {
     if (!isElectron) {
-      (document.documentElement.style as any).zoom = '1.33';
+      document.documentElement.style.fontSize = '125%';
     }
   }, [isElectron]);
 
@@ -326,6 +342,15 @@ export default function App() {
   // Initial Coordinates States
   const [x0, setX0] = useState<string>('0.217');
   const [y0, setY0] = useState<string>('0.217');
+
+  // Custom stepper for the start-point fields (replaces the native spinners)
+  const stepStartPoint = (axis: 'x' | 'y', dir: 1 | -1) => {
+    const cur = parseFloat(axis === 'x' ? x0 : y0);
+    const base = isNaN(cur) ? 0.217 : cur;
+    const next = Math.max(0, Math.min(1, Math.round((base + dir * 0.01) * 1000) / 1000));
+    (axis === 'x' ? setX0 : setY0)(next.toFixed(3));
+    setInitialized(false);
+  };
 
   // Initialize simulation running flag
   const [initialized, setInitialized] = useState<boolean>(false);
@@ -727,25 +752,17 @@ export default function App() {
     }
   };
 
-  // Exit-intent: surface the feedback popup when the cursor leaves through the
-  // top of the viewport (toward the tab bar / address bar), like many sites do.
+  // Close whichever foreground modal is open on Escape
   useEffect(() => {
-    const handleMouseOut = (e: MouseEvent) => {
-      // Fire only when the pointer truly leaves the document (relatedTarget is
-      // null) heading out the top edge of the viewport.
-      const goingToElement = e.relatedTarget || (e as any).toElement;
-      if (goingToElement) return;
-      if (e.clientY > 8) return;
-      // Don't interrupt: skip if already open, just submitted, in an anti-flicker
-      // window after closing, or while another modal is in the foreground.
-      if (isFeedbackOpen || feedbackSubmittedRef.current) return;
-      if (Date.now() - feedbackLastClosedRef.current < 8000) return;
-      if (isAuthModalOpen || isSaveModalOpen || isDownloadModalOpen || isAdminOpen) return;
-      openFeedback();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (isFeedbackOpen) closeFeedback();
+      else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); }
+      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); }
     };
-    document.addEventListener('mouseout', handleMouseOut);
-    return () => document.removeEventListener('mouseout', handleMouseOut);
-  }, [isFeedbackOpen, isAuthModalOpen, isSaveModalOpen, isDownloadModalOpen, isAdminOpen]);
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isFeedbackOpen, isSaveModalOpen, isAuthModalOpen]);
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1173,8 +1190,8 @@ export default function App() {
                 Nash Equilibrium Simulator
               </h1>
             </div>
-            <p className="text-[11px] md:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Visualise Best-Response dynamics, 3D expected payoff surfaces, and mixed strategy search corridor shrinkage algorithms.
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Best-response dynamics on 3D expected-payoff surfaces — watch the search corridor contract onto the Nash equilibrium.
             </p>
           </div>
           {isTouchDevice ? (
@@ -1182,7 +1199,7 @@ export default function App() {
             <div className="flex flex-col gap-1.5 w-full">
               <div className="flex items-center justify-end gap-2">
                 <button
-                  onClick={() => setIsMenuOpen(true)}
+                  aria-label="Open workspace menu" onClick={() => setIsMenuOpen(true)}
                   className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                 >
                   <Menu className="w-4 h-4" />
@@ -1191,12 +1208,12 @@ export default function App() {
                   <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                     <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[100px]" title={user.email}>@{user.username}</span>
-                    <button onClick={handleLogout} className="text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50/50 dark:hover:bg-red-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">Log out</button>
+                    <button onClick={handleLogout} className="text-xs font-medium text-slate-400 hover:text-danger-500 hover:bg-danger-50/50 dark:hover:bg-danger-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">Log out</button>
                   </div>
                 ) : (
                   <button
                     onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
-                    className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+                    className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                   >
                     <LogIn className="w-3.5 h-3.5" /> Sign In / Sign Up
                   </button>
@@ -1204,17 +1221,17 @@ export default function App() {
               </div>
               <div className="flex items-center justify-end gap-2">
                 <button
-                  onClick={() => setDarkMode(!darkMode)}
+                  aria-label="Toggle dark mode" onClick={() => setDarkMode(!darkMode)}
                   className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                 >
-                  {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+                  {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-accent-500" />}
                 </button>
                 {!isElectron && (
                   <button
                     onClick={() => setIsDownloadModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-slate-100 text-indigo-700 dark:bg-indigo-950/45 dark:hover:bg-indigo-900/40 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+                    className="inline-flex items-center gap-1.5 bg-accent-50 hover:bg-slate-100 text-accent-700 dark:bg-accent-950/45 dark:hover:bg-accent-900/40 dark:text-accent-400 border border-accent-100 dark:border-accent-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                   >
-                    <Download className="w-3.5 h-3.5 animate-pulse" /><span>Get Desktop App</span>
+                    <Download className="w-3.5 h-3.5" /><span>Get Desktop App</span>
                   </button>
                 )}
               </div>
@@ -1225,22 +1242,22 @@ export default function App() {
               {!isElectron && (
                 <button
                   onClick={() => setIsDownloadModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-slate-100 text-indigo-700 dark:bg-indigo-950/45 dark:hover:bg-indigo-900/40 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+                  className="inline-flex items-center gap-1.5 bg-accent-50 hover:bg-slate-100 text-accent-700 dark:bg-accent-950/45 dark:hover:bg-accent-900/40 dark:text-accent-400 border border-accent-100 dark:border-accent-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                   title="Download macOS Desktop App"
                 >
-                  <Download className="w-3.5 h-3.5 animate-pulse" /><span>Get Desktop App</span>
+                  <Download className="w-3.5 h-3.5" /><span>Get Desktop App</span>
                 </button>
               )}
               <button
-                onClick={() => setDarkMode(!darkMode)}
+                aria-label="Toggle dark mode" onClick={() => setDarkMode(!darkMode)}
                 className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                 title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
               >
-                {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
+                {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-accent-500" />}
               </button>
               <button
                 id="menu-toggle-btn"
-                onClick={() => setIsMenuOpen(true)}
+                aria-label="Open workspace menu" onClick={() => setIsMenuOpen(true)}
                 className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer animate-pulse-once"
                 title="Open Workspace Center"
               >
@@ -1250,20 +1267,15 @@ export default function App() {
                 <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[120px]" title={user.email}>@{user.username}</span>
-                  <button onClick={handleLogout} className="text-xs font-medium text-slate-400 dark:text-slate-400 hover:text-red-500 hover:bg-red-50/50 dark:hover:bg-red-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">Log out</button>
+                  <button onClick={handleLogout} className="text-xs font-medium text-slate-400 dark:text-slate-400 hover:text-danger-500 hover:bg-danger-50/50 dark:hover:bg-danger-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">Log out</button>
                 </div>
               ) : (
                 <button
                   onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
-                  className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
+                  className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5" /> Sign In / Sign Up
                 </button>
-              )}
-              {simState.converged && (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1.5 px-3 rounded-full border border-emerald-200 dark:border-emerald-800">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Converged
-                </span>
               )}
             </div>
           )}
@@ -1289,7 +1301,7 @@ export default function App() {
                     key={key}
                     onClick={() => handleLoadPreset(key)}
                     className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all text-center cursor-pointer ${isSelected
-                        ? 'bg-rose-500 text-white border-rose-500 shadow-xs'
+                        ? 'bg-accent-600 text-white border-accent-600 shadow-xs'
                         : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white'
                       }`}
                   >
@@ -1302,8 +1314,8 @@ export default function App() {
             {/* User Custom Saved Games Segment */}
             <div className="flex items-center justify-between text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
               <div className="flex items-center gap-2">
-                <Award className="w-4 h-4 text-indigo-500" />
-                Custom Game presets
+                <Award className="w-4 h-4 text-accent-500" />
+                Custom Game Presets
               </div>
               {user && (
                 <button
@@ -1311,9 +1323,9 @@ export default function App() {
                     setSaveError('');
                     setIsSaveModalOpen(true);
                   }}
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200/50 dark:border-indigo-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
+                  className="inline-flex items-center gap-1 text-xs font-bold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-950/40 hover:bg-accent-100 dark:hover:bg-accent-900/50 border border-accent-200/50 dark:border-accent-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
                 >
-                  <Plus className="w-3 h-3" /> Save payoff
+                  <Plus className="w-3 h-3" /> Save Preset
                 </button>
               )}
             </div>
@@ -1328,14 +1340,14 @@ export default function App() {
                     setAuthMode('login');
                     setIsAuthModalOpen(true);
                   }}
-                  className="font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                  className="font-bold text-accent-600 dark:text-accent-400 hover:underline cursor-pointer"
                 >
                   Sign in here
                 </button>
               </div>
             ) : userCustomGames.length === 0 ? (
               <div className="text-xs text-slate-400 dark:text-slate-500 bg-slate-50/70 dark:bg-slate-950/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-4 text-center">
-                No saved custom games. Adapt payoffs and click <strong className="text-indigo-600 dark:text-indigo-400">Save payoff</strong> to persist your first game!
+                No saved custom games. Adapt payoffs and click <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to persist your first game!
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1">
@@ -1345,7 +1357,7 @@ export default function App() {
                     <div
                       key={game.id}
                       className={`group flex items-center justify-between p-2 pl-3 rounded-xl border transition-all ${isSelected
-                          ? 'bg-indigo-500 border-indigo-500 text-white shadow-xs'
+                          ? 'bg-accent-500 border-accent-500 text-white shadow-xs'
                           : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:bg-slate-100/80 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
                         }`}
                     >
@@ -1362,10 +1374,10 @@ export default function App() {
                           handleDeleteGame(game.id);
                         }}
                         className={`p-1 rounded-md transition-colors cursor-pointer ${isSelected
-                            ? 'text-indigo-100 hover:text-white hover:bg-indigo-600'
-                            : 'text-slate-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40'
+                            ? 'text-accent-100 hover:text-white hover:bg-accent-600'
+                            : 'text-slate-400 hover:text-danger-500 dark:text-slate-500 dark:hover:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-950/40'
                           }`}
-                        title="Delete this game description"
+                        title="Delete this saved game"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -1388,24 +1400,24 @@ export default function App() {
           <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col gap-4">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-sm">
-                <Sliders className="w-4 h-4 text-blue-500" />
+                <Sliders className="w-4 h-4 text-player-b-500" />
                 <span>
-                  Payoff Settings Grid — (
-                  <span className="text-red-500 font-semibold font-mono">A</span>,{' '}
-                  <span className="text-blue-600 dark:text-blue-400 font-semibold font-mono">B</span>)
+                  Payoff Matrix — (
+                  <span className="text-player-a-500 font-semibold font-mono">A</span>,{' '}
+                  <span className="text-accent-600 dark:text-accent-400 font-semibold font-mono">B</span>)
                 </span>
               </div>
-              <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
+              <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
             </div>
 
             <div className="grid grid-cols-[auto_1fr_1fr] gap-3 text-center items-center">
               <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
-              <div className="text-xs font-bold text-blue-600 dark:text-blue-400">B: Col 1</div>
-              <div className="text-xs font-bold text-blue-600 dark:text-blue-400">B: Col 2</div>
+              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400">B: Col 1</div>
+              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400">B: Col 2</div>
 
               {/* Row 1 inputs */}
-              <div className="text-xs font-bold text-red-500 text-left pr-2">A: Row 1</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="text-xs font-bold text-player-a-500 text-left pr-2">A: Row 1</div>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1413,7 +1425,7 @@ export default function App() {
                   value={rawPayoffs.a11}
                   onChange={(e) => updatePayoffField('a11', e.target.value)}
                   onBlur={() => handlePayoffBlur('a11')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -1423,10 +1435,10 @@ export default function App() {
                   value={rawPayoffs.b11}
                   onChange={(e) => updatePayoffField('b11', e.target.value)}
                   onBlur={() => handlePayoffBlur('b11')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1434,7 +1446,7 @@ export default function App() {
                   value={rawPayoffs.a12}
                   onChange={(e) => updatePayoffField('a12', e.target.value)}
                   onBlur={() => handlePayoffBlur('a12')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -1444,13 +1456,13 @@ export default function App() {
                   value={rawPayoffs.b12}
                   onChange={(e) => updatePayoffField('b12', e.target.value)}
                   onBlur={() => handlePayoffBlur('b12')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
 
               {/* Row 2 inputs */}
-              <div className="text-xs font-bold text-red-500 text-left pr-2">A: Row 2</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="text-xs font-bold text-player-a-500 text-left pr-2">A: Row 2</div>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1458,7 +1470,7 @@ export default function App() {
                   value={rawPayoffs.a21}
                   onChange={(e) => updatePayoffField('a21', e.target.value)}
                   onBlur={() => handlePayoffBlur('a21')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -1468,10 +1480,10 @@ export default function App() {
                   value={rawPayoffs.b21}
                   onChange={(e) => updatePayoffField('b21', e.target.value)}
                   onBlur={() => handlePayoffBlur('b21')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-blue-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1479,7 +1491,7 @@ export default function App() {
                   value={rawPayoffs.a22}
                   onChange={(e) => updatePayoffField('a22', e.target.value)}
                   onBlur={() => handlePayoffBlur('a22')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-red-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -1489,7 +1501,7 @@ export default function App() {
                   value={rawPayoffs.b22}
                   onChange={(e) => updatePayoffField('b22', e.target.value)}
                   onBlur={() => handlePayoffBlur('b22')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-blue-600 dark:text-blue-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
             </div>
@@ -1498,22 +1510,20 @@ export default function App() {
           {/* Expected math formulations */}
           <div className="bg-slate-900 text-slate-100 p-5 rounded-2xl shadow-sm flex flex-col gap-3">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              Polynomial Payoff Equations
+              Expected-Payoff Functions
             </span>
-            <div className="flex flex-col gap-2 font-mono text-xs">
-              <div className="flex items-center gap-1.5 bg-slate-800/50 p-2.5 rounded-lg border border-slate-800">
-                <span className="text-red-400 font-bold">E[A]</span>
-                <span className="text-slate-400">=</span>
-                <span className="text-slate-300">{eqAStr}</span>
+            <div className="flex flex-col gap-2 text-sm">
+              <div className="flex items-center gap-2 bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-800">
+                <MathTex tex="\mathbb{E}[A]" className="text-player-a-400" />
+                <MathTex tex={`= ${eqAStr}`} className="text-slate-200" />
               </div>
-              <div className="flex items-center gap-1.5 bg-slate-800/50 p-2.5 rounded-lg border border-slate-800">
-                <span className="text-blue-400 font-bold">E[B]</span>
-                <span className="text-slate-400">=</span>
-                <span className="text-slate-300">{eqBStr}</span>
+              <div className="flex items-center gap-2 bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-800">
+                <MathTex tex="\mathbb{E}[B]" className="text-player-b-400" />
+                <MathTex tex={`= ${eqBStr}`} className="text-slate-200" />
               </div>
             </div>
-            <span className="text-[10px] text-slate-500 font-mono">
-              x = P(A handles Row 1), &nbsp;y = P(B handles Col 1)
+            <span className="text-xs text-slate-400">
+              <MathTex tex="x = P(\text{A plays Row 1}), \quad y = P(\text{B plays Col 1})" />
             </span>
           </div>
 
@@ -1526,34 +1536,78 @@ export default function App() {
             {/* Starting coordinate fields */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-red-500 font-semibold mb-1">Row Start Point (x₀)</label>
-                <input
-                  type="number"
-                  min="0.0"
-                  max="1.0"
-                  step="0.01"
-                  value={x0}
-                  onChange={(e) => {
-                    setX0(e.target.value);
-                    setInitialized(false);
-                  }}
-                  className="w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 rounded-xl focus:ring-rose-200 focus:outline-none"
-                />
+                <label className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0.0"
+                    max="1.0"
+                    step="0.01"
+                    value={x0}
+                    onChange={(e) => {
+                      setX0(e.target.value);
+                      setInitialized(false);
+                    }}
+                    className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-rose-200 focus:outline-none"
+                  />
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label="Increase x₀"
+                      onClick={() => stepStartPoint('x', 1)}
+                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-a-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                    >
+                      <ChevronUp className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label="Decrease x₀"
+                      onClick={() => stepStartPoint('x', -1)}
+                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-a-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                    >
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
               </div>
               <div>
-                <label className="block text-xs text-blue-600 dark:text-blue-405 font-semibold mb-1">Col Start Point (y₀)</label>
-                <input
-                  type="number"
-                  min="0.0"
-                  max="1.0"
-                  step="0.01"
-                  value={y0}
-                  onChange={(e) => {
-                    setY0(e.target.value);
-                    setInitialized(false);
-                  }}
-                  className="w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 rounded-xl focus:ring-blue-105 focus:outline-none"
-                />
+                <label className="block text-xs text-player-b-600 dark:text-player-b-400 font-semibold mb-1">Col Start Point (y₀)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0.0"
+                    max="1.0"
+                    step="0.01"
+                    value={y0}
+                    onChange={(e) => {
+                      setY0(e.target.value);
+                      setInitialized(false);
+                    }}
+                    className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-accent-100 focus:outline-none"
+                  />
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label="Increase y₀"
+                      onClick={() => stepStartPoint('y', 1)}
+                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-b-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                    >
+                      <ChevronUp className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label="Decrease y₀"
+                      onClick={() => stepStartPoint('y', -1)}
+                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-b-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                    >
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1572,8 +1626,8 @@ export default function App() {
                       }}
                       className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all ${active
                           ? player === 'A'
-                            ? 'bg-red-500 text-white border-red-500'
-                            : 'bg-blue-600 text-white border-blue-600'
+                            ? 'bg-player-a-500 text-white border-player-a-500'
+                            : 'bg-player-b-600 text-white border-player-b-600'
                           : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                         }`}
                     >
@@ -1594,12 +1648,12 @@ export default function App() {
                     <button
                       key={m}
                       onClick={() => setTrackingMode(m)}
-                      className={`py-2 px-1 text-[10px] md:text-xs font-semibold rounded-xl border transition-all text-center ${active
+                      className={`py-2 px-1 text-xs font-semibold rounded-xl border transition-all text-center ${active
                           ? m === 'A'
-                            ? 'bg-red-500 text-white border-red-500'
+                            ? 'bg-player-a-500 text-white border-player-a-500'
                             : m === 'B'
-                              ? 'bg-blue-600 text-white border-blue-600'
-                              : 'bg-purple-600 text-white border-purple-600'
+                              ? 'bg-player-b-600 text-white border-player-b-600'
+                              : 'bg-ne-mixed-600 text-white border-ne-mixed-600'
                           : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                         }`}
                     >
@@ -1629,7 +1683,7 @@ export default function App() {
                     setShrinkStep(clamped);
                     setShrinkStepRaw(clamped.toFixed(3));
                   }}
-                  className="w-20 font-mono font-semibold text-rose-500 text-right bg-transparent border-b border-rose-300 dark:border-rose-700 focus:outline-none focus:border-rose-500"
+                  className="w-20 font-mono font-semibold text-accent-600 dark:text-accent-400 text-right bg-transparent border-b border-accent-300 dark:border-accent-700 focus:outline-none focus:border-accent-500"
                 />
               </div>
               <input
@@ -1639,9 +1693,9 @@ export default function App() {
                 step="0.001"
                 value={shrinkStep}
                 onChange={(e) => { const v = parseFloat(e.target.value); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); }}
-                className="w-full accent-rose-500 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                className="w-full accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
-              <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 block">
+              <span className="text-xs text-slate-400 dark:text-slate-500 mt-1 block">
                 Shrinking step near equilibrium converges automatically to 0.001.
               </span>
             </div>
@@ -1652,13 +1706,13 @@ export default function App() {
         <div className="lg:col-span-7 flex flex-col gap-6">
 
           {/* Plot Legend Info Line */}
-          <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-[10px] text-slate-500 justify-center lg:justify-start">
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-xs text-slate-500 justify-center lg:justify-start">
             <span className="flex items-center gap-1">🔴 E[A] Surface</span>
             <span className="flex items-center gap-1">🔵 E[B] Surface</span>
-            <span className="flex items-center gap-1 text-red-500 font-medium">─ A Moves</span>
-            <span className="flex items-center gap-1 text-blue-600 font-medium">─ B Moves</span>
-            <span className="flex items-center gap-1 font-semibold" style={{ color: '#4ca47a' }}>◆ Pure NE</span>
-            <span className="flex items-center gap-1 text-purple-600 font-bold">🟣 Mixed NE</span>
+            <span className="flex items-center gap-1 text-player-a-500 font-medium">─ A Moves</span>
+            <span className="flex items-center gap-1 text-player-b-600 font-medium">─ B Moves</span>
+            <span className="flex items-center gap-1 font-semibold text-ne-pure">◆ Pure NE</span>
+            <span className="flex items-center gap-1 text-ne-mixed-600 font-bold">🟣 Mixed NE</span>
             <span className="flex items-center gap-1 text-emerald-600">⬚ Domain</span>
             <span className="flex items-center gap-1 text-orange-500">⬚ Search Corridor</span>
             <span className="flex items-center gap-1 text-orange-500">○ Ghost positions</span>
@@ -1681,12 +1735,20 @@ export default function App() {
                 <span className={`text-xs font-medium shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Progress</span>
                 <div className={`flex-1 h-2 rounded-full overflow-hidden ${darkMode ? 'bg-slate-700' : 'bg-slate-200'}`}>
                   <div
-                    className="h-full rounded-full bg-indigo-500 transition-all duration-150"
+                    className="h-full rounded-full bg-accent-500 transition-all duration-150"
                     style={{ width: `${Math.min(100, (simState.stepCount / (thinHistory.length - 1)) * 100)}%` }}
                   />
                 </div>
                 <span className="text-xs font-mono shrink-0 text-amber-500 font-semibold">
                   {simState.stepCount} / {thinHistory.length - 1}
+                </span>
+              </div>
+            )}
+            {/* Converged status — appears under the bar once equilibrium is reached */}
+            {simState.converged && (
+              <div className="flex">
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1 px-2.5 rounded-full border border-emerald-200 dark:border-emerald-800 animate-fade-in">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Converged
                 </span>
               </div>
             )}
@@ -1703,11 +1765,11 @@ export default function App() {
                     onChange={e => setJumpInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') handleJump(); }}
                     placeholder={`0 – ${thinHistory.length - 1}`}
-                    className={`w-28 px-2 py-1 text-xs rounded-lg border font-mono ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-200 placeholder-slate-600' : 'bg-white border-slate-300 text-slate-700 placeholder-slate-400'}`}
+                    className={`no-native-spinner w-28 px-2 py-1 text-xs rounded-lg border font-mono ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-200 placeholder-slate-600' : 'bg-white border-slate-300 text-slate-700 placeholder-slate-400'}`}
                   />
                   <button
                     onClick={handleJump}
-                    className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-all"
+                    className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-accent-600 hover:bg-accent-700 text-white transition-all"
                   >
                     Go
                   </button>
@@ -1719,7 +1781,7 @@ export default function App() {
                   disabled={!neSnapshot}
                   className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all ${
                     neSnapshot
-                      ? darkMode ? 'border-purple-700 text-purple-400 hover:bg-purple-900/30 cursor-pointer' : 'border-purple-300 text-purple-700 hover:bg-purple-50 cursor-pointer'
+                      ? darkMode ? 'border-ne-mixed-700 text-ne-mixed-400 hover:bg-ne-mixed-900/30 cursor-pointer' : 'border-ne-mixed-300 text-ne-mixed-700 hover:bg-ne-mixed-50 cursor-pointer'
                       : darkMode ? 'border-slate-700 text-slate-600 cursor-not-allowed' : 'border-slate-200 text-slate-400 cursor-not-allowed'
                   }`}
                 >
@@ -1739,7 +1801,7 @@ export default function App() {
                   onClick={togglePlay}
                   className={`flex items-center gap-1 mt-0.5 py-2 px-3 sm:px-5 text-xs sm:text-sm font-semibold rounded-xl text-white transition-all shadow-xs ${simState.running
                       ? 'bg-yellow-500 hover:bg-yellow-600'
-                      : 'bg-indigo-600 hover:bg-indigo-700'
+                      : 'bg-accent-600 hover:bg-accent-700'
                     }`}
                 >
                   {simState.running ? (
@@ -1756,7 +1818,7 @@ export default function App() {
                 <button
                   onClick={() => handleStep()}
                   disabled={simState.running || (thinHistory.length > 0 && simState.stepCount >= thinHistory.length - 1)}
-                  className="flex items-center gap-1 mt-0.5 py-2 px-2.5 sm:px-4 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-all disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-700"
+                  className="flex items-center gap-1 mt-0.5 py-2 px-2.5 sm:px-4 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-accent-600 dark:text-accent-400 bg-accent-50/50 dark:bg-accent-950/20 hover:bg-accent-50 dark:hover:bg-accent-950/40 transition-all disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-800 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-700"
                 >
                   <SkipForward className="w-3.5 h-3.5" /> Step
                 </button>
@@ -1764,7 +1826,7 @@ export default function App() {
                 <button
                   onClick={handleBackstep}
                   disabled={simState.running || !initStateRef.current || simState.stepCount === 0}
-                  className="flex items-center gap-1 mt-0.5 py-2 px-2 sm:px-3 text-xs sm:text-sm font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
+                  className="flex items-center gap-1 mt-0.5 py-2 px-2 sm:px-3 text-xs sm:text-sm font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-40"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" /> Back
                 </button>
@@ -1786,7 +1848,7 @@ export default function App() {
                   max="10"
                   value={speed}
                   onChange={(e) => setSpeed(parseInt(e.target.value))}
-                  className="w-20 accent-indigo-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                  className="w-20 accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
                 />
                 <span className="text-xs font-mono text-slate-400 font-semibold">{speed}x</span>
               </div>
@@ -1795,7 +1857,7 @@ export default function App() {
             {/* Realtime coordinates outputs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-[10px] text-red-500 font-bold uppercase block tracking-wider">
+                <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
@@ -1803,26 +1865,26 @@ export default function App() {
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-[10px] text-blue-600 dark:text-blue-405 font-semibold uppercase block tracking-wider">
+                <span className="text-xs text-accent-600 dark:text-accent-400 font-semibold uppercase block tracking-wider">
                   y: P(B playing Col 1)
                 </span>
-                <span className="text-sm font-bold text-slate-805 dark:text-slate-200 font-mono">
+                <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
                   {simState.cy.toFixed(3)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block tracking-wider">
+                <span className="text-xs text-slate-500 dark:text-slate-400 block tracking-wider">
                   Expected Payoff E[A]
                 </span>
-                <span className="text-sm font-bold text-red-500 font-mono">
+                <span className="text-sm font-bold text-player-a-500 font-mono">
                   {r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block tracking-wider">
+                <span className="text-xs text-slate-500 dark:text-slate-400 block tracking-wider">
                   Expected Payoff E[B]
                 </span>
-                <span className="text-sm font-bold text-blue-600 dark:text-blue-405 font-mono">
+                <span className="text-sm font-bold text-player-b-600 dark:text-player-b-400 font-mono">
                   {r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}
                 </span>
               </div>
@@ -1830,41 +1892,47 @@ export default function App() {
           </div>
           {simState.converged && nearestNE && (
             <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${nearestNE.type === 'mixed'
-                ? 'bg-purple-50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800/60'
+                ? 'bg-ne-mixed-50 dark:bg-ne-mixed-950/20 border-ne-mixed-200 dark:border-ne-mixed-800/60'
                 : 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60'
               }`}>
               <div className="flex items-center gap-2">
-                <span className={`p-1.5 rounded-lg ${nearestNE.type === 'mixed' ? 'bg-purple-105 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300' : 'bg-emerald-105 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+                <span className={`p-1.5 rounded-lg ${nearestNE.type === 'mixed' ? 'bg-ne-mixed-100 dark:bg-ne-mixed-900/60 text-ne-mixed-700 dark:text-ne-mixed-300' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
                   }`}>
                   <Award className="w-5 h-5" />
                 </span>
-                <span className={`text-sm font-bold uppercase tracking-wider ${nearestNE.type === 'mixed' ? 'text-purple-900 dark:text-purple-200' : 'text-emerald-900 dark:text-emerald-200'
+                <span className={`text-sm font-bold uppercase tracking-wider ${nearestNE.type === 'mixed' ? 'text-ne-mixed-900 dark:text-ne-mixed-200' : 'text-emerald-900 dark:text-emerald-200'
                   }`}>
                   {nearestNE.type === 'mixed' ? 'Mixed' : 'Pure'} Strategy Nash Equilibrium Reached
                 </span>
               </div>
 
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 py-3 bg-white/75 dark:bg-slate-900/65 px-4 rounded-xl border border-slate-100 dark:border-slate-800 text-xs shadow-3xs">
-                <span className="text-slate-600 dark:text-slate-350">
-                  x* = <strong className="text-red-500 font-mono">{simState.cx.toFixed(3)}</strong>
+                <span className="text-player-a-600 dark:text-player-a-400">
+                  <MathTex tex={`x^* = ${simState.cx.toFixed(3)}`} />
                 </span>
-                <span className="text-slate-600 dark:text-slate-350">
-                  y* = <strong className="text-blue-600 dark:text-blue-405 font-mono">{simState.cy.toFixed(3)}</strong>
+                <span className="text-player-b-600 dark:text-player-b-400">
+                  <MathTex tex={`y^* = ${simState.cy.toFixed(3)}`} />
                 </span>
-                <span className="text-slate-600 dark:text-slate-350">
-                  Payoff E[A] = <strong className="text-slate-800 dark:text-slate-200 font-mono">{r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}</strong>
+                <span className="text-slate-700 dark:text-slate-200">
+                  <MathTex tex={`\\mathbb{E}[A] = ${r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}`} />
                 </span>
-                <span className="text-slate-600 dark:text-slate-350">
-                  Payoff E[B] = <strong className="text-slate-800 dark:text-slate-200 font-mono">{r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}</strong>
+                <span className="text-slate-700 dark:text-slate-200">
+                  <MathTex tex={`\\mathbb{E}[B] = ${r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}`} />
                 </span>
               </div>
 
-              <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-350 space-y-1">
+              <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-300 space-y-1">
                 {nearestNE.type === 'mixed' ? (
                   <>
-                    <div>A Indifferent: E[Row1]={r3(simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12).toFixed(3)} &asymp; E[Row2]={r3(simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22).toFixed(3)}</div>
-                    <div>B Indifferent: E[Col1]={r3(simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21).toFixed(3)} &asymp; E[Col2]={r3(simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22).toFixed(3)}</div>
-                    <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
+                    <div>
+                      <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">A indifferent:</span>
+                      <MathTex tex={`\\mathbb{E}[\\text{Row 1}] = ${r3(simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12).toFixed(3)} \\approx \\mathbb{E}[\\text{Row 2}] = ${r3(simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22).toFixed(3)}`} />
+                    </div>
+                    <div>
+                      <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">B indifferent:</span>
+                      <MathTex tex={`\\mathbb{E}[\\text{Col 1}] = ${r3(simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21).toFixed(3)} \\approx \\mathbb{E}[\\text{Col 2}] = ${r3(simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22).toFixed(3)}`} />
+                    </div>
+                    <div className="text-xs text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
                       Resolved via {simState.cycleCount} contraction cycles of search corridors.
                     </div>
                   </>
@@ -1879,9 +1947,9 @@ export default function App() {
 
           {/* Game situation description box */}
           <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300 h-fit">
-            <div className="text-slate-800 dark:text-slate-105 font-semibold text-sm border-b border-rose-100/50 dark:border-slate-800 pb-2 flex items-center gap-1.5">
+            <div className="text-slate-800 dark:text-slate-100 font-semibold text-sm border-b border-rose-100/50 dark:border-slate-800 pb-2 flex items-center gap-1.5">
               <Compass className="w-4 h-4 text-emerald-500" />
-              Game Theorist Situation Report
+              Game-Theoretic Report
             </div>
 
             <div className="space-y-3">
@@ -1890,7 +1958,7 @@ export default function App() {
                 <ul className="list-disc pl-5 mt-1 text-slate-600 dark:text-slate-300 space-y-1">
                   {allNE.map((ne, idx) => (
                     <li key={idx}>
-                      <span className={`font-semibold ${ne.type === 'mixed' ? 'text-purple-600 dark:text-purple-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                      <span className={`font-semibold ${ne.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400' : 'text-slate-800 dark:text-slate-100'}`}>
                         {ne.label}
                       </span>{' '}
                       with values E[A]={ne.eA.toFixed(3)}, E[B]={ne.eB.toFixed(3)}
@@ -1903,9 +1971,9 @@ export default function App() {
               </div>
 
               {indifferenceStatus.any && (
-                <div className="bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/30 rounded-xl p-3.5 text-[11px] text-amber-800 dark:text-amber-300 space-y-1.5 shadow-sm leading-relaxed">
+                <div className="bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/30 rounded-xl p-3.5 text-xs text-amber-800 dark:text-amber-300 space-y-1.5 shadow-sm leading-relaxed">
                   <div className="font-semibold flex items-center gap-1.5 text-amber-900 dark:text-amber-100">
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-405 shrink-0" />
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                     Flat Payoffs & Indifference Notice
                   </div>
                   {indifferenceStatus.both ? (
@@ -1927,7 +1995,7 @@ export default function App() {
               <div className="text-slate-500 dark:text-slate-400">
                 {pureNEs.length === 0 && mixedNE ? (
                   <p>
-                    No pure strategy NE coordinates exist. The best-response trajectory forms stable cyclic loops, letting our domain-shrinking algorithm narrow down the search corridor boundaries until they safely contract and lock directly onto the <strong className="text-purple-600 dark:text-purple-400 font-bold">Mixed NE</strong>.
+                    No pure strategy NE coordinates exist. The best-response trajectory forms stable cyclic loops, letting our domain-shrinking algorithm narrow down the search corridor boundaries until they safely contract and lock directly onto the <strong className="text-ne-mixed-600 dark:text-ne-mixed-400 font-bold">Mixed NE</strong>.
                   </p>
                 ) : pureNEs.length === 1 && !mixedNE ? (
                   <p>
@@ -1963,9 +2031,9 @@ export default function App() {
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-200">
             <span className="text-xs uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1.5">
               <Terminal className="w-4 h-4 text-emerald-400" />
-              Real-time Output Console Logs
+              Simulation Log
             </span>
-            <div ref={logsContainerRef} className="w-full h-44 overflow-y-auto bg-slate-950/70 border border-slate-800 rounded-xl p-4 font-mono text-[10px] md:text-xs text-slate-300 space-y-1 block leading-relaxed select-text">
+            <div ref={logsContainerRef} className="w-full h-44 overflow-y-auto bg-slate-950/70 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 space-y-1 block leading-relaxed select-text">
               {logEntries.map((line, idx) => {
                 let colClass = 'text-slate-300';
                 if (line.includes('✓')) {
@@ -1975,7 +2043,7 @@ export default function App() {
                     if (line.includes('(A)')) {
                       colClass = 'text-rose-300 font-medium';
                     } else if (line.includes('(B)')) {
-                      colClass = 'text-blue-300 font-medium';
+                      colClass = 'text-player-b-300 font-medium';
                     } else {
                       colClass = 'text-amber-300 font-medium';
                     }
@@ -1983,11 +2051,11 @@ export default function App() {
                     colClass = 'text-amber-400 font-semibold';
                   }
                 } else if (line.includes('━━') || line.includes('Start')) {
-                  colClass = 'text-indigo-400 font-semibold';
+                  colClass = 'text-accent-400 font-semibold';
                 } else if (line.includes('(A)')) {
-                  colClass = 'text-red-400 font-semibold';
+                  colClass = 'text-player-a-400 font-semibold';
                 } else if (line.includes('(B)')) {
-                  colClass = 'text-blue-400 font-semibold';
+                  colClass = 'text-player-b-400 font-semibold';
                 }
                 return (
                   <p key={idx} className={colClass}>
@@ -2001,15 +2069,23 @@ export default function App() {
       </main>
 
       <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
-        <p className="text-[11px] text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
+        <p className="text-xs text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
       </footer>
 
       {isAuthModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
+          onClick={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Account"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-blue-50 dark:bg-blue-950/40 text-blue-600 rounded-lg">
+                <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <User className="w-4 h-4" />
                 </span>
                 <span className="font-bold text-slate-800 dark:text-slate-100 text-sm md:text-base">
@@ -2022,21 +2098,21 @@ export default function App() {
                   setAuthError('');
                   setAuthSuccess('');
                 }}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-350 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {authError && (
-              <div className="bg-rose-50 dark:bg-rose-955/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
+              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
                 <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
                 <span>{authError}</span>
               </div>
             )}
 
             {authSuccess && (
-              <div className="bg-emerald-50 dark:bg-emerald-955/20 border border-emerald-200 dark:border-emerald-900/40 text-emerald-707 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-3 font-medium">
+              <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-3 font-medium">
                 <Check className="w-4 h-4 shrink-0 text-emerald-500" />
                 <span>{authSuccess}</span>
               </div>
@@ -2050,7 +2126,7 @@ export default function App() {
                     <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                     <input
                       type="text"
-                      className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                      className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                       placeholder="game_theorist"
                       value={authUsername}
                       onChange={(e) => setAuthUsername(e.target.value)}
@@ -2070,7 +2146,7 @@ export default function App() {
                       <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
                         type={authMode === 'login' ? 'text' : 'email'}
-                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={authMode === 'login' ? 'john@example.com or username' : 'john@example.com'}
                         value={authEmail}
                         onChange={(e) => setAuthEmail(e.target.value)}
@@ -2085,7 +2161,7 @@ export default function App() {
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
                         type="password"
-                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                        className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder="••••••••"
                         value={authPassword}
                         onChange={(e) => setAuthPassword(e.target.value)}
@@ -2093,8 +2169,8 @@ export default function App() {
                       />
                     </div>
                     {authMode === 'register' && (
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-normal">
-                        Password requirement: <strong className="text-blue-600 dark:text-blue-400 font-semibold">Min 8 characters</strong> with at least <strong className="text-blue-600 dark:text-blue-400 font-semibold">one uppercase</strong> and <strong className="text-blue-600 dark:text-blue-400 font-semibold">one lowercase</strong> letter.
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-normal">
+                        Password requirement: <strong className="text-accent-600 dark:text-accent-400 font-semibold">Min 8 characters</strong> with at least <strong className="text-accent-600 dark:text-accent-400 font-semibold">one uppercase</strong> and <strong className="text-accent-600 dark:text-accent-400 font-semibold">one lowercase</strong> letter.
                       </p>
                     )}
                   </div>
@@ -2114,7 +2190,7 @@ export default function App() {
                         />
                       </div>
                       {authPassword && authConfirmPassword && (
-                        <div className="text-[10px] mt-1 font-semibold">
+                        <div className="text-xs mt-1 font-semibold">
                           {authPassword === authConfirmPassword ? (
                             <span className="text-emerald-600 flex items-center gap-1">✓ Passwords match</span>
                           ) : (
@@ -2136,7 +2212,7 @@ export default function App() {
                       <input
                         type="text"
                         maxLength={6}
-                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-slate-300 text-center text-slate-800 dark:text-slate-200"
+                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-center text-slate-800 dark:text-slate-200"
                         placeholder="123456"
                         value={authCode}
                         onChange={(e) => setAuthCode(e.target.value.replace(/\D/g, ''))}
@@ -2197,7 +2273,7 @@ export default function App() {
                         required
                       />
                     </div>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-normal">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-normal">
                       Min 8 characters with at least one <strong className="text-orange-600 dark:text-orange-400">uppercase</strong> and one <strong className="text-orange-600 dark:text-orange-400">lowercase</strong> letter.
                     </p>
                   </div>
@@ -2215,7 +2291,7 @@ export default function App() {
                       />
                     </div>
                     {authPassword && authConfirmPassword && (
-                      <div className="text-[10px] mt-1 font-semibold">
+                      <div className="text-xs mt-1 font-semibold">
                         {authPassword === authConfirmPassword ? (
                           <span className="text-emerald-600 flex items-center gap-1">✓ Passwords match</span>
                         ) : (
@@ -2230,20 +2306,20 @@ export default function App() {
               <button
                 type="submit"
                 disabled={authLoading}
-                className={`w-full text-white font-bold text-xs sm:text-sm py-2.5 rounded-xl transition-all cursor-pointer shadow-xs disabled:opacity-50 inline-flex items-center justify-center gap-1.5 ${authMode === 'forgot' || authMode === 'reset-password' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700'}`}
+                className={`w-full text-white font-bold text-xs sm:text-sm py-2.5 rounded-xl transition-all cursor-pointer shadow-xs disabled:opacity-50 inline-flex items-center justify-center gap-1.5 ${authMode === 'forgot' || authMode === 'reset-password' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-accent-600 hover:bg-accent-700'}`}
               >
                 {authLoading ? 'Please wait...' : authMode === 'login' ? 'Login' : authMode === 'register' ? 'Register Account' : authMode === 'verify' ? 'Verify & Setup Account' : authMode === 'forgot' ? 'Send Recovery Code' : 'Reset Password'}
               </button>
             </form>
 
-            <div className="border-t border-slate-100 dark:border-slate-800 pt-3.5 text-center text-[11px] text-slate-500 dark:text-slate-400 font-medium flex flex-col gap-1.5">
+            <div className="border-t border-slate-100 dark:border-slate-800 pt-3.5 text-center text-xs text-slate-500 dark:text-slate-400 font-medium flex flex-col gap-1.5">
               {authMode === 'login' ? (
                 <>
                   <span>
                     Don't have an account?{' '}
                     <button
                       onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('register'); }}
-                      className="font-bold text-blue-600 hover:underline cursor-pointer"
+                      className="font-bold text-accent-600 hover:underline cursor-pointer"
                     >
                       Sign Up
                     </button>
@@ -2262,7 +2338,7 @@ export default function App() {
                   Already have an account?{' '}
                   <button
                     onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); }}
-                    className="font-bold text-blue-600 hover:underline cursor-pointer"
+                    className="font-bold text-accent-600 hover:underline cursor-pointer"
                   >
                     Log In
                   </button>
@@ -2272,7 +2348,7 @@ export default function App() {
                   Remember your password?{' '}
                   <button
                     onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthCode(''); setAuthPassword(''); setAuthConfirmPassword(''); setAuthMode('login'); }}
-                    className="font-bold text-blue-600 hover:underline cursor-pointer"
+                    className="font-bold text-accent-600 hover:underline cursor-pointer"
                   >
                     Back to Login
                   </button>
@@ -2282,7 +2358,7 @@ export default function App() {
                   Back to{' '}
                   <button
                     onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('register'); }}
-                    className="font-bold text-blue-600 hover:underline cursor-pointer"
+                    className="font-bold text-accent-600 hover:underline cursor-pointer"
                   >
                     Registration
                   </button>
@@ -2295,15 +2371,23 @@ export default function App() {
 
       {/* ── Save Custom Game Modal ── */}
       {isSaveModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
+          onClick={() => { setIsSaveModalOpen(false); setSaveError(''); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Save custom game"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 rounded-lg">
+                <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <Award className="w-4 h-4" />
                 </span>
-                <span className="font-bold text-slate-801 dark:text-slate-100 text-sm md:text-base">
-                  Save Custom Game payoffs
+                <span className="font-bold text-slate-800 dark:text-slate-100 text-sm md:text-base">
+                  Save Custom Game
                 </span>
               </div>
               <button
@@ -2311,22 +2395,22 @@ export default function App() {
                   setIsSaveModalOpen(false);
                   setSaveError('');
                 }}
-                className="text-slate-400 hover:text-slate-605 dark:hover:text-slate-350 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4 text-slate-400" />
               </button>
             </div>
 
             {saveError && (
-              <div className="bg-rose-50 dark:bg-rose-955/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
+              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
                 <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
                 <span>{saveError}</span>
               </div>
             )}
 
-            <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
-              <span className="font-semibold text-slate-700 dark:text-slate-250">Payload to be saved:</span>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[10px] text-slate-500 dark:text-slate-400 mt-1.5">
+            <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+              <span className="font-semibold text-slate-700 dark:text-slate-200">Payload to be saved:</span>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs text-slate-500 dark:text-slate-400 mt-1.5">
                 <div>(Row 1, Col 1) = ({payoffs.a11}, {payoffs.b11})</div>
                 <div>(Row 1, Col 2) = ({payoffs.a12}, {payoffs.b12})</div>
                 <div>(Row 2, Col 1) = ({payoffs.a21}, {payoffs.b21})</div>
@@ -2339,7 +2423,7 @@ export default function App() {
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
                 <input
                   type="text"
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   placeholder="e.g. Battle of the Sexes 2.0"
                   value={saveName}
                   onChange={(e) => setSaveName(e.target.value)}
@@ -2351,7 +2435,7 @@ export default function App() {
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
                 <textarea
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   value={saveDesc}
                   onChange={(e) => setSaveDesc(e.target.value)}
@@ -2370,7 +2454,7 @@ export default function App() {
                 <button
                   type="submit"
                   disabled={saveLoading}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                  className="bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
                   {saveLoading ? 'Saving...' : 'Save Game Profile'}
                 </button>
@@ -2426,18 +2510,26 @@ export default function App() {
       <button
         onClick={openFeedback}
         title="Send feedback"
-        className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition-all cursor-pointer select-none"
+        className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-accent-600 hover:bg-accent-700 text-white text-xs font-semibold shadow-lg shadow-accent-600/20 transition-all cursor-pointer select-none"
       >
         <MessageSquare className="w-4 h-4" />
         <span className="hidden sm:inline">Feedback</span>
       </button>
 
       {isFeedbackOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none">
-          <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-in fade-in zoom-in-95 duration-150">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
+          onClick={closeFeedback}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Send feedback"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 rounded-lg">
+                <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <MessageSquare className="w-4 h-4" />
                 </span>
                 <span className="font-bold text-slate-800 dark:text-slate-100 text-sm md:text-base">
@@ -2446,7 +2538,7 @@ export default function App() {
               </div>
               <button
                 onClick={closeFeedback}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4 text-slate-400" />
               </button>
@@ -2460,7 +2552,7 @@ export default function App() {
                 <p className="text-sm text-slate-700 dark:text-slate-200 font-medium px-2">{feedbackSuccess}</p>
                 <button
                   onClick={closeFeedback}
-                  className="mt-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 px-5 rounded-xl transition-all cursor-pointer"
+                  className="mt-1 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-5 rounded-xl transition-all cursor-pointer"
                 >
                   Done
                 </button>
@@ -2474,7 +2566,7 @@ export default function App() {
                   </div>
                 )}
 
-                <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                   Share any questions, concerns, or ideas. Your email is optional — leave it blank to send anonymously.
                 </p>
 
@@ -2507,7 +2599,7 @@ export default function App() {
                   <div>
                     <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Your feedback</label>
                     <textarea
-                      className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 h-28 resize-none text-slate-800 dark:text-slate-200"
+                      className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-28 resize-none text-slate-800 dark:text-slate-200"
                       placeholder="Questions, concerns, or feedback…"
                       value={feedbackText}
                       onChange={(e) => setFeedbackText(e.target.value)}
@@ -2521,7 +2613,7 @@ export default function App() {
                     <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email <span className="font-normal text-slate-400">(optional — for a reply)</span></label>
                     <input
                       type="email"
-                      className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                      className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                       placeholder="you@example.com (leave blank to stay anonymous)"
                       value={feedbackEmail}
                       onChange={(e) => setFeedbackEmail(e.target.value)}
@@ -2539,7 +2631,7 @@ export default function App() {
                     <button
                       type="submit"
                       disabled={feedbackLoading}
-                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                      className="flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
                     >
                       <Send className="w-3.5 h-3.5" />
                       {feedbackLoading ? 'Sending…' : 'Send Feedback'}

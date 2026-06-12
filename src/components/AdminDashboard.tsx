@@ -51,7 +51,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
       <div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">{value}</div>
         <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
-        {sub && <div className="text-[10px] text-slate-400 dark:text-slate-500">{sub}</div>}
+        {sub && <div className="text-xs text-slate-400 dark:text-slate-500">{sub}</div>}
       </div>
     </div>
   );
@@ -64,12 +64,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
         {/* Header */}
         <div className={`flex items-center justify-between p-4 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
           <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-indigo-500" />
+            <ShieldCheck className="w-5 h-5 text-accent-500" />
             <h2 className="font-bold text-slate-900 dark:text-white text-sm">Admin Dashboard</h2>
           </div>
           <div className="flex items-center gap-2">
             {authed && (
-              <button onClick={() => fetchStats(password)} className="flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-500 cursor-pointer">
+              <button onClick={() => fetchStats(password)} className="flex items-center gap-1 text-xs text-slate-500 hover:text-accent-500 cursor-pointer">
                 <RefreshCw className="w-3.5 h-3.5" /> Refresh
               </button>
             )}
@@ -87,7 +87,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {!authed ? (
             <div className="flex flex-col items-center gap-4 py-8">
-              <ShieldCheck className="w-10 h-10 text-indigo-400" />
+              <ShieldCheck className="w-10 h-10 text-accent-400" />
               <p className="text-sm text-slate-500 dark:text-slate-400">Enter admin password to view stats</p>
               <div className="flex gap-2 w-full max-w-xs">
                 <input
@@ -96,12 +96,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
                   onChange={e => setPassword(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && fetchStats(password)}
                   placeholder="Admin password"
-                  className={`flex-1 px-3 py-2 text-sm rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-300 ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-800'}`}
+                  className={`flex-1 px-3 py-2 text-sm rounded-xl border focus:outline-none focus:ring-2 focus:ring-accent-300 ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-800'}`}
                 />
                 <button
                   onClick={() => fetchStats(password)}
                   disabled={loading}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl cursor-pointer disabled:opacity-50"
+                  className="px-4 py-2 bg-accent-600 hover:bg-accent-700 text-white text-sm font-semibold rounded-xl cursor-pointer disabled:opacity-50"
                 >
                   {loading ? '...' : 'Login'}
                 </button>
@@ -112,10 +112,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
             <>
               {/* Stat cards */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <StatCard icon={<Users className="w-4 h-4 text-indigo-500" />} label="Total Users" value={stats.totalUsers} />
+                <StatCard icon={<Users className="w-4 h-4 text-accent-500" />} label="Total Users" value={stats.totalUsers} />
                 <StatCard icon={<ShieldCheck className="w-4 h-4 text-emerald-500" />} label="Verified" value={stats.verifiedUsers} />
                 <StatCard icon={<ShieldX className="w-4 h-4 text-amber-500" />} label="Unverified" value={stats.unverifiedUsers} />
-                <StatCard icon={<GamepadIcon className="w-4 h-4 text-purple-500" />} label="Saved Games" value={stats.totalGames} />
+                <StatCard icon={<GamepadIcon className="w-4 h-4 text-ne-mixed-500" />} label="Saved Games" value={stats.totalGames} />
                 <StatCard icon={<TrendingUp className="w-4 h-4 text-blue-500" />} label="Signups Today" value={stats.signupsToday} />
                 <StatCard icon={<TrendingUp className="w-4 h-4 text-cyan-500" />} label="Signups This Week" value={stats.signupsThisWeek} />
               </div>

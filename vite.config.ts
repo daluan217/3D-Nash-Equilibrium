@@ -6,6 +6,18 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // Keep the heavy visualization/typesetting libraries out of the
+            // main bundle so the UI shell loads and caches independently.
+            plotly: ['plotly.js-dist-min'],
+            katex: ['katex'],
+          },
+        },
+      },
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.

@@ -217,7 +217,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   }, [dragMode]);
 
   return (
-    <div ref={containerRef} className={`w-full relative border rounded-xl p-2 md:p-4 shadow-sm h-[450px] ${isDark ? 'bg-black border-slate-800' : 'bg-white border-slate-200'}`}>
+    <div ref={containerRef} className={`w-full relative border rounded-xl p-2 md:p-4 shadow-sm h-[28rem] ${isDark ? 'bg-black border-slate-800' : 'bg-white border-slate-200'}`}>
       {/* Floating 3D Navigation Controls */}
       <div className={`absolute top-3 right-3 z-10 flex items-center gap-0.5 sm:gap-1 border p-1 rounded-xl shadow-xs ${isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
         <button
@@ -225,7 +225,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           onClick={() => setDragMode('turntable')}
           className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
             dragMode === 'turntable'
-              ? isDark ? 'bg-blue-600/30 text-blue-400 border border-blue-500/30' : 'bg-blue-100 text-blue-700 border border-blue-200/50'
+              ? isDark ? 'bg-accent-600/30 text-accent-400 border border-accent-500/30' : 'bg-accent-100 text-accent-700 border border-accent-200/50'
               : isDark ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent' : 'text-slate-500 hover:bg-slate-100 border border-transparent'
           }`}
           title="Rotate view (Click & Drag)"
@@ -238,7 +238,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           onClick={() => setDragMode('pan')}
           className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
             dragMode === 'pan'
-              ? isDark ? 'bg-blue-600/30 text-blue-400 border border-blue-500/30' : 'bg-blue-100 text-blue-700 border border-blue-200/50'
+              ? isDark ? 'bg-accent-600/30 text-accent-400 border border-accent-500/30' : 'bg-accent-100 text-accent-700 border border-accent-200/50'
               : isDark ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent' : 'text-slate-500 hover:bg-slate-100 border border-transparent'
           }`}
           title="Pan / Move view (Click & Drag)"

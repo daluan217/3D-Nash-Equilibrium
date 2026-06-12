@@ -180,6 +180,14 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     }
   };
 
+  // Close the drawer on Escape
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
@@ -191,17 +199,18 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       />
 
       {/* Slideout sliding panel */}
-      <div className={`relative w-full max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full flex flex-col shadow-2xl z-10 animate-in slide-in-from-right duration-300`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <div className={`relative w-full max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full flex flex-col shadow-2xl z-10 animate-drawer-in`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {/* Panel Header */}
         <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
           <div className="flex items-center gap-2">
-            <Compass className="w-5 h-5 text-indigo-500 animate-spin-slow" />
+            <Compass className="w-5 h-5 text-accent-500 animate-spin-slow" />
             <span className="font-bold text-slate-800 dark:text-slate-100 text-base">
               Simulator Workspace Center
             </span>
           </div>
           <button
             onClick={onClose}
+            aria-label="Close menu"
             className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg transition-colors cursor-pointer"
           >
             <X className="w-4 h-4 pointer-events-none" />
@@ -214,8 +223,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             type="button"
             onClick={() => setActiveTab('help')}
             className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'help'
-                ? 'border-indigo-600 text-indigo-650 dark:text-indigo-400 dark:border-indigo-400 bg-indigo-50/10'
-                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
+                ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
+                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
             <HelpCircle className="w-4 h-4 pointer-events-none" />
@@ -226,8 +235,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             type="button"
             onClick={() => setActiveTab('library')}
             className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'library'
-                ? 'border-indigo-600 text-indigo-650 dark:text-indigo-400 dark:border-indigo-400 bg-indigo-50/10'
-                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
+                ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
+                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
             <BookOpen className="w-4 h-4 pointer-events-none" />
@@ -238,8 +247,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             type="button"
             onClick={() => setActiveTab('account')}
             className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'account'
-                ? 'border-indigo-600 text-indigo-650 dark:text-indigo-400 dark:border-indigo-400 bg-indigo-50/10'
-                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-450 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
+                ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
+                : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
             <Sliders className="w-4 h-4 pointer-events-none" />
@@ -252,22 +261,22 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
           {/* ──────────────── TAB 1: HELP SECTION ──────────────── */}
           {activeTab === 'help' && (
-            <div className="space-y-7 text-slate-650 dark:text-slate-300 text-xs md:text-sm leading-relaxed">
+            <div className="space-y-7 text-slate-600 dark:text-slate-300 text-xs md:text-sm leading-relaxed">
 
               {/* SECTION 1: How to Decipher the 3D Graph */}
               <div className="space-y-4">
                 <h3 className="text-sm md:text-base font-bold text-slate-800 dark:text-white flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
-                  <span className="p-1 px-2.5 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-500 rounded-lg text-xs md:text-sm font-extrabold">1</span>
+                  <span className="p-1 px-2.5 bg-accent-50 dark:bg-accent-950/30 text-accent-500 rounded-lg text-xs md:text-sm font-extrabold">1</span>
                   How to Decipher the 3D Graph
                 </h3>
 
                 <div className="space-y-4">
                   <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/30 dark:bg-slate-950/20">
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 mb-1.5 flex items-center gap-2 text-xs md:text-sm">
-                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-xs" />
+                      <span className="w-2.5 h-2.5 rounded-full bg-accent-500 shadow-xs" />
                       The 3D Surface
                     </h4>
-                    <p className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
                       The graph shows expected payoffs for each player at different strategy combinations. The X and Y axes represent the probability of each action, and the Z-axis (height) shows the payoff.
                     </p>
                   </div>
@@ -277,10 +286,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-xs" />
                       Colored Paths
                     </h4>
-                    <div className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold space-y-1">
-                      <p><span className="text-blue-500 font-bold">Blue path:</span> Player A's strategy evolution over time.</p>
-                      <p><span className="text-rose-500 font-bold">Red path:</span> Player B's strategy evolution over time.</p>
-                      <p className="pt-1.5 text-slate-550 dark:text-slate-400">The paths show how each player's best responses zigzag through strategy space.</p>
+                    <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold space-y-1">
+                      <p><span className="text-player-a-500 font-bold">Red path:</span> Player A's strategy evolution over time.</p>
+                      <p><span className="text-player-b-500 font-bold">Blue path:</span> Player B's strategy evolution over time.</p>
+                      <p className="pt-1.5 text-slate-500 dark:text-slate-400">The paths show how each player's best responses zigzag through strategy space.</p>
                     </div>
                   </div>
 
@@ -289,17 +298,17 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-xs" />
                       Equilibrium Points
                     </h4>
-                    <p className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
                       Where the colored paths converge to flat regions or specific points on the payoff surface are Nash Equilibria. These are the stable end states of the game.
                     </p>
                   </div>
 
                   <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/30 dark:bg-slate-950/20">
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 mb-1.5 flex items-center gap-2 text-xs md:text-sm">
-                      <span className="w-2.5 h-2.5 rounded-full bg-purple-500 shadow-xs" />
+                      <span className="w-2.5 h-2.5 rounded-full bg-ne-mixed-500 shadow-xs" />
                       Corridor Shrinkage
                     </h4>
-                    <p className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
                       The "shrink step" parameter gradually narrows the search range, simulating how players become more confident in their strategy choices over time, forcing convergence to equilibrium.
                     </p>
                   </div>
@@ -309,10 +318,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       <span className="w-2.5 h-2.5 rounded-full bg-slate-400 shadow-xs" />
                       Ghost Coordinates
                     </h4>
-                    <div className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold space-y-2">
-                      <p>Ghost positions are semi-transparent marker projections shown on <em>both</em> payoff surfaces simultaneously at the current strategy pair (x, y). They are only active in games with a <span className="text-indigo-500 dark:text-indigo-400 font-bold">mixed Nash Equilibrium</span> — games where no pure strategy equilibrium exists (such as Cops &amp; Robbers or Spy vs. Analyst).</p>
-                      <p><span className="text-rose-500 font-bold">Red ghost (E[A]):</span> Player A's payoff at the current (x, y) — its height on the red surface shows how much A earns.</p>
-                      <p><span className="text-blue-500 font-bold">Blue ghost (E[B]):</span> Player B's payoff at the same point — comparing the two heights instantly reveals which player benefits more.</p>
+                    <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold space-y-2">
+                      <p>Ghost positions are semi-transparent marker projections shown on <em>both</em> payoff surfaces simultaneously at the current strategy pair (x, y). They are only active in games with a <span className="text-ne-mixed-500 dark:text-ne-mixed-400 font-bold">mixed Nash Equilibrium</span> — games where no pure strategy equilibrium exists (such as Cops &amp; Robbers or Spy vs. Analyst).</p>
+                      <p><span className="text-player-a-500 font-bold">Red ghost (E[A]):</span> Player A's payoff at the current (x, y) — its height on the red surface shows how much A earns.</p>
+                      <p><span className="text-player-b-500 font-bold">Blue ghost (E[B]):</span> Player B's payoff at the same point — comparing the two heights instantly reveals which player benefits more.</p>
                       <p className="pt-0.5"><span className="text-slate-800 dark:text-slate-200 font-bold">How ghost coordinates find the mixed NE:</span> As the simulation runs, the ghost markers detect when a player's strategy is cycling between extremes. Each detected cycle causes the search corridor to shrink. Once one coordinate (x or y) has been pinned down by this shrinkage, the ghost for that dimension stabilizes — its found value is held fixed — while the remaining corridor continues to contract around the other coordinate. This asymmetric shrinkage nudges the actual player sphere toward the true mixed equilibrium one dimension at a time.</p>
                       <p className="text-slate-500 dark:text-slate-400 pt-0.5">Use the <span className="font-bold text-slate-700 dark:text-slate-300">Ghost positions</span> toggle in the legend above the graph to show or hide them.</p>
                     </div>
@@ -323,7 +332,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                   {/* Fig 1 */}
                   <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center">
-                    <span className="text-[10px] uppercase tracking-wider font-extrabold text-slate-450 dark:text-slate-500 mb-4 text-center">
+                    <span className="text-xs uppercase tracking-wider font-extrabold text-slate-400 dark:text-slate-500 mb-4 text-center">
                       Fig 1. Coordinate Grid & Strategy Axes
                     </span>
                     <svg width="200" height="200" viewBox="0 0 200 200" className="overflow-visible select-none">
@@ -358,7 +367,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                   {/* Fig 2 */}
                   <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center">
-                    <span className="text-[10px] uppercase tracking-wider font-extrabold text-slate-450 dark:text-slate-500 mb-4 text-center">
+                    <span className="text-xs uppercase tracking-wider font-extrabold text-slate-400 dark:text-slate-500 mb-4 text-center">
                       Fig 2. Best-Response Intersections
                     </span>
                     <svg width="200" height="200" viewBox="0 0 200 200" className="overflow-visible select-none">
@@ -419,7 +428,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
               {/* SECTION 2: How the Simulation Works */}
               <div className="space-y-4 pt-2">
                 <h3 className="text-sm md:text-base font-bold text-slate-800 dark:text-white flex items-center gap-2 pb-2 border-b border-b-slate-100 dark:border-b-slate-800">
-                  <span className="p-1 px-2.5 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-500 rounded-lg text-xs md:text-sm font-extrabold">2</span>
+                  <span className="p-1 px-2.5 bg-accent-50 dark:bg-accent-950/30 text-accent-500 rounded-lg text-xs md:text-sm font-extrabold">2</span>
                   How the Simulation Works
                 </h3>
 
@@ -428,7 +437,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       Starting Point
                     </h4>
-                    <p className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
                       The simulation begins at a mix strategy (a point between 0 and 1 on each axis representing probability of each action).
                     </p>
                   </div>
@@ -437,7 +446,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       Best Response Dynamics
                     </h4>
-                    <p className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
                       Players take turns playing their best response to the opponent's current strategy. The simulation tracks how strategies evolve over time as players react to each other.
                     </p>
                   </div>
@@ -446,22 +455,22 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       Convergence
                     </h4>
-                    <p className="text-[11px] md:text-xs text-slate-600 dark:text-slate-350 leading-relaxed font-semibold">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
                       When the simulation reaches a Nash Equilibrium, both players are playing optimal strategies and the system stabilizes. The simulation shows "Converged" in the top right when this happens.
                     </p>
                   </div>
                 </div>
 
                 {/* Sub-section: Controls & Settings */}
-                <div className="p-4 border border-indigo-100 dark:border-indigo-950/40 rounded-xl bg-indigo-50/10 dark:bg-indigo-950/5 space-y-3">
-                  <h4 className="font-bold text-indigo-600 dark:text-indigo-400 text-xs md:text-sm">
+                <div className="p-4 border border-accent-100 dark:border-accent-950/40 rounded-xl bg-accent-50/10 dark:bg-accent-950/5 space-y-3">
+                  <h4 className="font-bold text-accent-600 dark:text-accent-400 text-xs md:text-sm">
                     Controls & Settings
                   </h4>
 
-                  <div className="space-y-3.5 text-[11px] md:text-xs">
+                  <div className="space-y-3.5 text-xs">
                     <div>
-                      <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">Run / Step / Reset</strong>
-                      <ul className="list-disc pl-5 mt-1 space-y-1 text-slate-550 dark:text-slate-400">
+                      <strong className="text-slate-700 dark:text-slate-200 block mb-0.5">Run / Step / Reset</strong>
+                      <ul className="list-disc pl-5 mt-1 space-y-1 text-slate-500 dark:text-slate-400">
                         <li><strong>Step:</strong> Execute one round of best responses.</li>
                         <li><strong>Run:</strong> Continuously play until convergence.</li>
                         <li><strong>Reset:</strong> Return to the starting point.</li>
@@ -469,43 +478,43 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </div>
 
                     <div>
-                      <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">Back</strong>
-                      <p className="text-slate-550 dark:text-slate-400">
+                      <strong className="text-slate-700 dark:text-slate-200 block mb-0.5">Back</strong>
+                      <p className="text-slate-500 dark:text-slate-400">
                         Rewind one round/step of best responses to explore alternative trajectories backward in time.
                       </p>
                     </div>
 
                     <div>
-                      <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">First Mover</strong>
-                      <p className="text-slate-550 dark:text-slate-400">
+                      <strong className="text-slate-700 dark:text-slate-200 block mb-0.5">First Mover</strong>
+                      <p className="text-slate-500 dark:text-slate-400">
                         Choose which player plays their best response first. This can significantly affect the path to equilibrium!
                       </p>
                     </div>
 
                     <div>
-                      <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">Speed</strong>
-                      <p className="text-slate-550 dark:text-slate-400">
+                      <strong className="text-slate-700 dark:text-slate-200 block mb-0.5">Speed</strong>
+                      <p className="text-slate-500 dark:text-slate-400">
                         Controls how fast the animation runs during the simulation. Higher speeds mean faster convergence visualization.
                       </p>
                     </div>
 
                     <div>
-                      <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">Step-size</strong>
-                      <p className="text-slate-550 dark:text-slate-400">
+                      <strong className="text-slate-700 dark:text-slate-200 block mb-0.5">Step-size</strong>
+                      <p className="text-slate-500 dark:text-slate-400">
                         Simulates learning rate modifications, altering how responsive players' beliefs adapt to opponent strategies.
                       </p>
                     </div>
 
                     <div>
-                      <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">Initial Position</strong>
-                      <p className="text-slate-550 dark:text-slate-400">
+                      <strong className="text-slate-700 dark:text-slate-200 block mb-0.5">Initial Position</strong>
+                      <p className="text-slate-500 dark:text-slate-400">
                         Set where the simulation starts. Since initial position does not determine the Nash Equilibrium in most standard games, this feature is moreso simply for visual aesthetics for the user, illustrating alternative pathways and trajectories to convergence.
                       </p>
                     </div>
 
                     <div>
-                      <strong className="text-slate-750 dark:text-slate-200 block mb-0.5">Pan / Zoom</strong>
-                      <p className="text-slate-550 dark:text-slate-400">
+                      <strong className="text-slate-700 dark:text-slate-200 block mb-0.5">Pan / Zoom</strong>
+                      <p className="text-slate-500 dark:text-slate-400">
                         Navigate the 3D graph representation to inspect convergence surfaces and trajectory paths from different angles.
                       </p>
                     </div>
@@ -516,7 +525,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
               {/* SECTION 3: Education/Learning Tips Section */}
               <div className="space-y-4 pt-2">
                 <h3 className="text-sm md:text-base font-bold text-slate-800 dark:text-white flex items-center gap-2 pb-2 border-b border-b-slate-100 dark:border-b-slate-800">
-                  <span className="p-1 px-2.5 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-500 rounded-lg text-xs md:text-sm font-extrabold">3</span>
+                  <span className="p-1 px-2.5 bg-accent-50 dark:bg-accent-950/30 text-accent-500 rounded-lg text-xs md:text-sm font-extrabold">3</span>
                   Tips for Learning
                 </h3>
 
@@ -525,12 +534,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
                       What is Nash Equilibrium?
                     </h4>
-                    <p className="text-[11px] md:text-xs text-slate-650 dark:text-slate-300 leading-relaxed font-semibold">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
                       A Nash Equilibrium is a state in a game where no player can improve their outcome by changing their strategy, given the other player's strategy. It represents a stable situation where both players are making optimal decisions.
                     </p>
                   </div>
 
-                  <ul className="space-y-2 text-[11px] md:text-xs pl-5 list-disc text-slate-600 dark:text-slate-350 font-semibold direct-tips">
+                  <ul className="space-y-2 text-xs pl-5 list-disc text-slate-600 dark:text-slate-300 font-semibold direct-tips">
                     <li>
                       <span className="text-slate-800 dark:text-slate-200 font-bold">Experiment with payoffs:</span> Change the game payoffs and watch how equilibria shift.
                     </li>
@@ -569,7 +578,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       <div
                         key={preset.key}
                         className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${isSelected
-                            ? 'bg-indigo-50/15 dark:bg-indigo-950/10 border-indigo-400 dark:border-indigo-800 shadow-md ring-1 ring-indigo-400/20'
+                            ? 'bg-accent-50/15 dark:bg-accent-950/10 border-accent-400 dark:border-accent-800 shadow-md ring-1 ring-accent-400/20'
                             : 'bg-white dark:bg-slate-950/30 border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm'
                           }`}
                       >
@@ -586,26 +595,26 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 {preset.name}
                               </span>
                               {isSelected && (
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-900">
+                                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-accent-50 dark:bg-accent-950/60 text-accent-600 dark:text-accent-400 border border-accent-200 dark:border-accent-900">
                                   Simulation Active
                                 </span>
                               )}
                             </div>
                             <p
-                              className="text-[11px] text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed"
+                              className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed"
                               dangerouslySetInnerHTML={{ __html: preset.desc }}
                             />
 
                             {/* Dynamically Plotted Nash Equilibria */}
                             <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-2.5 border border-slate-100 dark:border-slate-800/85">
-                              <div className="text-[10px] font-bold text-slate-450 dark:text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+                              <div className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                                 Computed Nash Equilibria:
                               </div>
-                              <ul className="text-[10px] md:text-xs text-slate-600 dark:text-slate-300 pl-4 list-disc space-y-0.5">
+                              <ul className="text-xs text-slate-600 dark:text-slate-300 pl-4 list-disc space-y-0.5">
                                 {eqList.map((eq, i) => (
                                   <li key={i}>
-                                    <strong className={eq.type === 'mixed' ? 'text-purple-650 dark:text-purple-400 font-bold' : 'text-slate-705 dark:text-slate-200'}>
+                                    <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
                                       {eq.label}
                                     </strong>{' '}
                                     val (E[A]={eq.eA.toFixed(2)}, E[B]={eq.eB.toFixed(2)})
@@ -628,7 +637,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                               disabled={isSelected}
                               className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${isSelected
                                   ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-transparent cursor-not-allowed'
-                                  : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
+                                  : 'bg-accent-600 hover:bg-accent-700 text-white shadow-xs'
                                 }`}
                             >
                               {isSelected ? 'Currently Loaded' : 'Load Game Layout'}
@@ -646,7 +655,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 <div className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3.5 flex items-center justify-between">
                   <span>Custom User Profiles ({formattedCustomGames.length})</span>
                   {!user && (
-                    <span className="text-[10px] text-indigo-500 normal-case font-medium">
+                    <span className="text-xs text-accent-500 normal-case font-medium">
                       🔒 Log in to persist custom profiles
                     </span>
                   )}
@@ -662,7 +671,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                         <div
                           key={game.id}
                           className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${isSelected
-                              ? 'bg-indigo-50/15 dark:bg-indigo-950/10 border-indigo-400 dark:border-indigo-800 shadow-md ring-1 ring-indigo-400/20'
+                              ? 'bg-accent-50/15 dark:bg-accent-950/10 border-accent-400 dark:border-accent-800 shadow-md ring-1 ring-accent-400/20'
                               : 'bg-white dark:bg-slate-950/30 border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm'
                             }`}
                         >
@@ -680,33 +689,33 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 </span>
                                 <div className="flex items-center gap-1.5">
                                   {isSelected && (
-                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-900">
+                                    <span className="text-xs font-bold px-1.5 py-0.5 rounded-full bg-accent-50 dark:bg-accent-950/60 text-accent-600 dark:text-accent-400 border border-accent-200 dark:border-accent-900">
                                       Active
                                     </span>
                                   )}
                                   <button
                                     onClick={() => onDeleteCustomGame(game.id)}
-                                    className="p-1 px-1.5 hover:bg-rose-50 dark:hover:bg-rose-955/25 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer"
+                                    className="p-1 px-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/25 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer"
                                     title="Delete custom layout"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
                                 </div>
                               </div>
-                              <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed">
+                              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed">
                                 {game.desc}
                               </p>
 
                               {/* Plotted NE */}
                               <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-2.5 border border-slate-100 dark:border-slate-800/85">
-                                <div className="text-[10px] font-bold text-slate-450 dark:text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+                                <div className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
                                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                                   Computed Nash Equilibria:
                                 </div>
-                                <ul className="text-[10px] md:text-xs text-slate-600 dark:text-slate-300 pl-4 list-disc space-y-0.5">
+                                <ul className="text-xs text-slate-600 dark:text-slate-300 pl-4 list-disc space-y-0.5">
                                   {eqList.map((eq, i) => (
                                     <li key={i}>
-                                      <strong className={eq.type === 'mixed' ? 'text-purple-650 dark:text-purple-400 font-bold' : 'text-slate-705 dark:text-slate-200'}>
+                                      <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
                                         {eq.label}
                                       </strong>{' '}
                                       val (E[A]={eq.eA.toFixed(2)}, E[B]={eq.eB.toFixed(2)})
@@ -729,7 +738,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 disabled={isSelected}
                                 className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${isSelected
                                     ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-transparent cursor-not-allowed'
-                                    : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
+                                    : 'bg-accent-600 hover:bg-accent-700 text-white shadow-xs'
                                   }`}
                               >
                                 {isSelected ? 'Currently Loaded' : 'Load Game Layout'}
@@ -741,11 +750,11 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     })}
                   </div>
                 ) : (
-                  <div className="bg-slate-50 dark:bg-slate-950/20 border border-slate-150 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                  <div className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                     {user ? (
                       <p>
                         No saved custom game presets. Customize payoffs in the main board and click{' '}
-                        <strong className="text-indigo-600 dark:text-indigo-400">Save payoffs</strong> to record your own scenarios!
+                        <strong className="text-accent-600 dark:text-accent-400">Save payoffs</strong> to record your own scenarios!
                       </p>
                     ) : (
                       <div className="space-y-2">
@@ -755,7 +764,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                             onClose();
                             onOpenAuth();
                           }}
-                          className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-all"
+                          className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-all"
                         >
                           <LogIn className="w-3 h-3" /> Sign In / Sign Up
                         </button>
@@ -771,13 +780,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           {activeTab === 'account' && (
             <div className="space-y-6">
               {isElectron && (
-                <div className="border border-indigo-100 dark:border-indigo-950 rounded-2xl p-5 bg-indigo-50/10 dark:bg-indigo-950/10 shadow-sm space-y-3 text-xs">
+                <div className="border border-accent-100 dark:border-accent-950 rounded-2xl p-5 bg-accent-50/10 dark:bg-accent-950/10 shadow-sm space-y-3 text-xs">
                   <div className="flex items-center justify-between">
                     <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-                      <Database className="w-5 h-5 text-indigo-500" />
+                      <Database className="w-5 h-5 text-accent-500" />
                       Database Sync Mode
                     </h4>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dbMode === 'cloud'
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${dbMode === 'cloud'
                         ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-300/30'
                         : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-300/30'
                       }`}>
@@ -785,7 +794,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </span>
                   </div>
 
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-normal">
                     Choose whether the application saves game presets and user accounts to your offline local computer database, or synchronizes live with the central website hub.
                   </p>
 
@@ -794,7 +803,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       type="button"
                       onClick={() => onSwitchDbMode('local')}
                       className={`py-2 px-3 rounded-xl border text-center font-bold text-xs transition-all cursor-pointer ${dbMode === 'local'
-                          ? 'bg-white dark:bg-slate-900 border-indigo-500 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                          ? 'bg-white dark:bg-slate-900 border-accent-500 text-accent-600 dark:text-accent-400 shadow-xs'
                           : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-950/80 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
                         }`}
                     >
@@ -804,7 +813,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       type="button"
                       onClick={() => onSwitchDbMode('cloud')}
                       className={`py-2 px-3 rounded-xl border text-center font-bold text-xs transition-all cursor-pointer ${dbMode === 'cloud'
-                          ? 'bg-white dark:bg-slate-900 border-indigo-500 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                          ? 'bg-white dark:bg-slate-900 border-accent-500 text-accent-600 dark:text-accent-400 shadow-xs'
                           : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-950/80 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
                         }`}
                     >
@@ -814,7 +823,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                   {dbMode === 'cloud' && (
                     <div className="pt-2.5 space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-450 dark:text-slate-500 uppercase tracking-wide">
+                      <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">
                         Central Hub Website URL
                       </label>
                       <div className="flex gap-1.5">
@@ -823,7 +832,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                           value={apiBaseUrl}
                           onChange={(e) => onUpdateApiBaseUrl(e.target.value)}
                           placeholder="e.g., https://nash-equilibrium.run.app"
-                          className="flex-1 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl px-2.5 py-1.5 text-xs text-slate-850 dark:text-slate-100 font-mono focus:outline-none focus:border-indigo-500 transition-colors"
+                          className="flex-1 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-100 font-mono focus:outline-none focus:border-accent-500 transition-colors"
                         />
                         <button
                           type="button"
@@ -840,12 +849,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                               alert(`Connection failed! Please verify the URL and your internet connection. Detail: ${err.message}`);
                             }
                           }}
-                          className="px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 font-bold transition-all cursor-pointer text-xs"
+                          className="px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold transition-all cursor-pointer text-xs"
                         >
                           Test
                         </button>
                       </div>
-                      <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-normal pl-0.5">
+                      <p className="text-xs text-slate-400 dark:text-slate-500 leading-normal pl-0.5">
                         Prefilled with your active digital workspace server URL. Saving custom games in Cloud Sync Mode will instantly sync them across any browser or app linked to your account!
                       </p>
                     </div>
@@ -854,14 +863,14 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
               )}
 
               {!user ? (
-                <div className="bg-slate-50 dark:bg-slate-950/20 border border-slate-150 dark:border-slate-800 rounded-2xl p-6 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                <div className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-6 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                   <p className="mb-3">You are not logged in. Sign in to view account profiles and manage deletion preferences.</p>
                   <button
                     onClick={() => {
                       onClose();
                       onOpenAuth();
                     }}
-                    className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-all"
+                    className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white px-4 py-2 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-all"
                   >
                     <LogIn className="w-3.5 h-3.5" /> Sign In to Your Account
                   </button>
@@ -891,12 +900,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       Danger Zone Operations
                     </div>
 
-                    <p className="text-xs text-slate-550 dark:text-slate-400 leading-relaxed">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                       Wipe out your profile credentials, saved customs, history logs, and everything else in this simulator immediately. This action cannot be undone.
                     </p>
 
                     {deleteError && (
-                      <div className="bg-rose-50 dark:bg-rose-955/20 border border-rose-200 dark:border-rose-900/40 text-rose-750 dark:text-rose-350 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                      <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
                         <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
                         <span>{deleteError}</span>
                       </div>
@@ -919,7 +928,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                         <p className="text-xs font-bold text-red-800 dark:text-red-300">
                           ⚠️ Are you absolutely sure? This cannot be undone!
                         </p>
-                        <p className="text-xs text-slate-600 dark:text-slate-450 leading-relaxed">
+                        <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
                           Clicking below sends a 6-digit confirmation key to your primary address{' '}
                           <strong>{user.email}</strong>. Entering the correct code will trigger immediate deletion.
                         </p>
@@ -952,7 +961,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                     {deleteStep === 'inputCode' && (
                       <form onSubmit={handleDeleteConfirm} className="space-y-4">
-                        <div className="bg-emerald-50 dark:bg-emerald-955/15 border border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                        <div className="bg-emerald-50 dark:bg-emerald-950/15 border border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
                           <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
                           <span>{deleteSuccess || 'Check your email inbox for a confirmation security code.'}</span>
                         </div>
@@ -970,7 +979,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                               placeholder="123456"
                               value={deleteCode}
                               onChange={(e) => setDeleteCode(e.target.value.replace(/\D/g, ''))}
-                              className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-105 focus:border-red-400 text-slate-800 dark:text-slate-200 tracking-widest font-mono font-bold text-center"
+                              className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-100 focus:border-red-400 text-slate-800 dark:text-slate-200 tracking-widest font-mono font-bold text-center"
                             />
                           </div>
                         </div>
@@ -1005,7 +1014,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     )}
 
                     {deleteStep === 'success' && (
-                      <div className="bg-emerald-50 dark:bg-emerald-995/10 border border-emerald-200 dark:border-emerald-900 rounded-xl p-5 text-center text-emerald-800 dark:text-emerald-350 space-y-2">
+                      <div className="bg-emerald-50 dark:bg-emerald-950/10 border border-emerald-200 dark:border-emerald-900 rounded-xl p-5 text-center text-emerald-800 dark:text-emerald-300 space-y-2">
                         <CheckCircle2 className="w-8 h-8 mx-auto text-emerald-500" />
                         <h5 className="font-bold text-sm">Account Wiped Successfully</h5>
                         <p className="text-xs">

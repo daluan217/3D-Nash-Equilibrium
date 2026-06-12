@@ -29,6 +29,14 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
+  // Close on Escape
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleDownloadDmg = async () => {
@@ -76,7 +84,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const buildCommands = `npm run build && npm run electron:dist`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 py-8 selection:bg-indigo-500/30 selection:text-indigo-900 dark:selection:text-indigo-100">
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 py-8 selection:bg-accent-500/30 selection:text-accent-900 dark:selection:text-accent-100">
       {/* Backdrop */}
       <div 
         className="fixed inset-0 bg-slate-900/60 dark:bg-black/75 backdrop-blur-xs transition-opacity duration-300 cursor-pointer"
@@ -84,19 +92,19 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
       />
 
       {/* Modal Card */}
-      <div className="relative w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div className="relative w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-modal-in">
         
         {/* Header */}
-        <div className="p-4 border-b border-slate-200 dark:border-slate-850 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
+        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
           <div className="flex items-center gap-2.5">
-            <span className="p-1.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 rounded-xl">
+            <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 dark:text-accent-400 rounded-xl">
               <Laptop className="w-5 h-5" />
             </span>
             <div>
               <h3 className="font-bold text-slate-800 dark:text-white text-sm md:text-base leading-tight">
                 macOS Desktop App Installer
               </h3>
-              <p className="text-[10px] md:text-[11px] text-slate-500 dark:text-slate-400">
+              <p className="text-slate-500 dark:text-slate-400">
                 Run the Nash Equilibrium Simulator as a native macOS app.
               </p>
             </div>
@@ -113,7 +121,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
         <div className="p-5 md:p-6 space-y-6">
           
           {/* Main Download Button and Banner */}
-          <div className="bg-gradient-to-br from-indigo-50/50 via-slate-50/40 to-white dark:from-slate-950/40 dark:to-slate-900 border border-slate-150 dark:border-slate-800 rounded-2xl p-5 text-center flex flex-col items-center">
+          <div className="bg-gradient-to-br from-accent-50/50 via-slate-50/40 to-white dark:from-slate-950/40 dark:to-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center flex flex-col items-center">
             <div className="w-12 h-12 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 shadow-sm mb-4">
               <Download className="w-6 h-6 animate-bounce" />
             </div>
@@ -121,14 +129,14 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             <h4 className="font-bold text-slate-800 dark:text-white text-sm md:text-base mb-1">
               Download Mac App DMG Installer
             </h4>
-            <p className="text-[11px] md:text-xs text-slate-500 dark:text-slate-400 max-w-sm mb-5 leading-normal font-medium">
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mb-5 leading-normal font-medium">
               Get the standard macOS volume file. Mount the disk, copy the app to your Applications folder, and launch instantly!
             </p>
 
             <button
               onClick={handleDownloadDmg}
               disabled={downloading}
-              className="w-full sm:w-auto px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-md transition-all hover:translate-y-[-1px] active:translate-y-[1px] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              className="w-full sm:w-auto px-6 py-2.5 bg-accent-600 hover:bg-accent-700 text-white text-xs font-bold rounded-xl shadow-md transition-all hover:translate-y-[-1px] active:translate-y-[1px] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
               {downloading ? 'Searching server package...' : 'Download macOS App (.dmg)'}
             </button>
@@ -136,20 +144,20 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
 
           {/* Conditional Guidance / Warnings */}
           {errorMsg && (
-            <div className="p-4 rounded-xl border border-amber-250 dark:border-amber-900/40 bg-amber-50/20 dark:bg-amber-950/10 text-slate-700 dark:text-slate-300 text-xs leading-relaxed space-y-3">
+            <div className="p-4 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/20 dark:bg-amber-950/10 text-slate-700 dark:text-slate-300 text-xs leading-relaxed space-y-3">
               <div className="flex items-start gap-2 text-amber-600 dark:text-amber-400 font-bold">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>DMG App Not Compiled On Server Yet</span>
               </div>
-              <p className="text-[11px] md:text-xs font-medium text-slate-500 dark:text-slate-450 leading-relaxed pl-6">
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400 leading-relaxed pl-6">
                 Because this is an active cloud web sandbox, the final macOS installer hasn't been compiled into the server's build directory yet (building DMG binaries requires macOS environment libraries or packaging tools not typically cached inside ephemeral cloud containers).
               </p>
               <div className="pl-6 pt-1">
-                <div className="text-[11px] font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wide mb-2 flex items-center gap-1">
-                  <Terminal className="w-3.5 h-3.5 text-indigo-500" />
+                <div className="text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wide mb-2 flex items-center gap-1">
+                  <Terminal className="w-3.5 h-3.5 text-accent-500" />
                   Self-Service Desktop Compiler (Mac guide):
                 </div>
-                <p className="text-[11px] text-slate-600 dark:text-slate-350 font-medium mb-3">
+                <p className="text-xs text-slate-600 dark:text-slate-300 font-medium mb-3">
                   If you are working on your own Mac machine, you have the full codebase! You can build your own macOS `.dmg` entirely locally in 10 seconds:
                 </p>
 
@@ -158,16 +166,16 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                   {/* Step 1 */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase">Step 1 — Install dependencies</span>
+                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 1 — Install dependencies</span>
                       <button
                         onClick={() => copyCode(installCommands, 'inst')}
-                        className="text-[10px] text-indigo-500 hover:text-indigo-600 font-bold flex items-center gap-1 cursor-pointer"
+                        className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
                       >
                         {copiedText === 'inst' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                         Copy command
                       </button>
                     </div>
-                    <pre className="p-2 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-[10px] text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto">
+                    <pre className="p-2 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-xs text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto">
                       {installCommands}
                     </pre>
                   </div>
@@ -175,23 +183,23 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                   {/* Step 2 */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase">Step 2 — Pack macOS DMG Installer</span>
+                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 2 — Pack macOS DMG Installer</span>
                       <button
                         onClick={() => copyCode(buildCommands, 'build')}
-                        className="text-[10px] text-indigo-500 hover:text-indigo-600 font-bold flex items-center gap-1 cursor-pointer"
+                        className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
                       >
                         {copiedText === 'build' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                         Copy command
                       </button>
                     </div>
-                    <pre className="p-2 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-[10px] text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto">
+                    <pre className="p-2 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-xs text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto">
                       {buildCommands}
                     </pre>
                   </div>
                 </div>
 
-                <div className="mt-4 p-3 bg-indigo-50/10 dark:bg-indigo-950/10 rounded-xl border border-indigo-100 dark:border-indigo-900 border-dashed text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
-                  <span className="font-bold text-indigo-600 dark:text-indigo-400 block mb-0.5">Where does it compile?</span>
+                <div className="mt-4 p-3 bg-accent-50/10 dark:bg-accent-950/10 rounded-xl border border-accent-100 dark:border-accent-900 border-dashed text-xs text-slate-500 dark:text-slate-400 leading-normal">
+                  <span className="font-bold text-accent-600 dark:text-accent-400 block mb-0.5">Where does it compile?</span>
                   Your finished, un-sandboxed executable file will appear instantly in a newly generated <code className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-[9.5px]">dist-electron/</code> folder in your directory, fully ready for distribution!
                 </div>
               </div>
@@ -203,7 +211,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             <h5 className="font-bold text-amber-700 dark:text-amber-400 text-xs flex items-center gap-1.5">
               <AlertCircle className="w-4 h-4 shrink-0" /> macOS Security — One-Time Step After Download
             </h5>
-            <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               Because this app is not notarized through Apple, macOS will show an <strong className="text-slate-700 dark:text-slate-300">"unidentified developer"</strong> warning on first launch. Follow these steps to open it:
             </p>
             <ol className="space-y-1.5 list-none">
@@ -214,7 +222,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                 <>Scroll down to find <em>"Nash Equilibrium Simulator was blocked"</em> and click <strong className="text-slate-700 dark:text-slate-300">Open Anyway</strong>.</>,
                 <>Double-click the app again and click <strong className="text-slate-700 dark:text-slate-300">Open</strong> to confirm. You only need to do this once.</>,
               ].map((step, i) => (
-                <li key={i} className="flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                <li key={i} className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
                   <span className="shrink-0 w-4 h-4 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-[9px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
                   <span>{step}</span>
                 </li>
@@ -223,7 +231,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             <div className="border-t border-amber-200 dark:border-amber-900/40 pt-2">
               <button
                 onClick={() => setShowTerminalAlt(v => !v)}
-                className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-indigo-500 dark:hover:text-indigo-400 cursor-pointer"
+                className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500 hover:text-accent-500 dark:hover:text-accent-400 cursor-pointer"
               >
                 <ChevronDown className={`w-3 h-3 transition-transform ${showTerminalAlt ? 'rotate-180' : ''}`} />
                 Prefer the terminal?
@@ -231,27 +239,27 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               {showTerminalAlt && (
                 <div className="mt-2 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1"><Terminal className="w-3 h-3" /> Terminal command</span>
+                    <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1"><Terminal className="w-3 h-3" /> Terminal command</span>
                     <button
                       onClick={() => copyCode(`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`, 'xattr')}
-                      className="text-[10px] text-indigo-500 hover:text-indigo-600 font-bold flex items-center gap-1 cursor-pointer"
+                      className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
                     >
                       {copiedText === 'xattr' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                       Copy
                     </button>
                   </div>
-                  <pre className="p-2.5 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-[10px] text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto whitespace-pre-wrap break-all">
+                  <pre className="p-2.5 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-xs text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto whitespace-pre-wrap break-all">
                     {`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`}
                   </pre>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-500">Run this after dragging the app to Applications, then double-click to open normally.</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-500">Run this after dragging the app to Applications, then double-click to open normally.</p>
                 </div>
               )}
             </div>
           </div>
 
           {/* Offline DB note */}
-          <div className="border-t border-slate-150 dark:border-slate-800/80 pt-3 pr-2">
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+          <div className="border-t border-slate-100 dark:border-slate-800/80 pt-3 pr-2">
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               <strong className="text-slate-700 dark:text-slate-300">Offline mode:</strong> The desktop app stores all data locally — no account needed. Enable Cloud Sync in Settings to share games with the website.
             </p>
           </div>
@@ -259,7 +267,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
         </div>
 
         {/* Footer */}
-        <div className="p-3.5 px-6 border-t border-slate-200 dark:border-slate-850 flex justify-end bg-slate-50 dark:bg-slate-950/40">
+        <div className="p-3.5 px-6 border-t border-slate-200 dark:border-slate-800 flex justify-end bg-slate-50 dark:bg-slate-950/40">
           <button
             onClick={onClose}
             className="px-4.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"

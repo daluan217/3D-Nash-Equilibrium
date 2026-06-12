@@ -1,17 +1,175 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 @import "tailwindcss";
 
 @variant dark (&:where(.dark, .dark *));
 
-:root {
+/* ════════════════════════════════════════════════════════════════════════
+   Design tokens
+   ──────────────────────────────────────────────────────────────────────────
+   Semantic color roles (single source of truth for the whole surface):
+     accent     — interactive/primary UI (buttons, links, selection)
+     player-a   — Player A (row player) everywhere: labels, paths, payoffs
+     player-b   — Player B (column player)
+     ne-mixed   — mixed-strategy Nash equilibrium
+     ne-pure    — pure-strategy NE marker (matches the Plotly diamond color)
+     danger     — destructive actions (delete, log out)
+   ════════════════════════════════════════════════════════════════════════ */
+
+@theme inline {
+  /* accent = indigo */
+  --color-accent-50: var(--color-indigo-50);
+  --color-accent-100: var(--color-indigo-100);
+  --color-accent-200: var(--color-indigo-200);
+  --color-accent-300: var(--color-indigo-300);
+  --color-accent-400: var(--color-indigo-400);
+  --color-accent-500: var(--color-indigo-500);
+  --color-accent-600: var(--color-indigo-600);
+  --color-accent-700: var(--color-indigo-700);
+  --color-accent-800: var(--color-indigo-800);
+  --color-accent-900: var(--color-indigo-900);
+  --color-accent-950: var(--color-indigo-950);
+
+  /* player A = red */
+  --color-player-a-50: var(--color-red-50);
+  --color-player-a-100: var(--color-red-100);
+  --color-player-a-200: var(--color-red-200);
+  --color-player-a-300: var(--color-red-300);
+  --color-player-a-400: var(--color-red-400);
+  --color-player-a-500: var(--color-red-500);
+  --color-player-a-600: var(--color-red-600);
+  --color-player-a-700: var(--color-red-700);
+  --color-player-a-800: var(--color-red-800);
+  --color-player-a-900: var(--color-red-900);
+  --color-player-a-950: var(--color-red-950);
+
+  /* player B = blue */
+  --color-player-b-50: var(--color-blue-50);
+  --color-player-b-100: var(--color-blue-100);
+  --color-player-b-200: var(--color-blue-200);
+  --color-player-b-300: var(--color-blue-300);
+  --color-player-b-400: var(--color-blue-400);
+  --color-player-b-500: var(--color-blue-500);
+  --color-player-b-600: var(--color-blue-600);
+  --color-player-b-700: var(--color-blue-700);
+  --color-player-b-800: var(--color-blue-800);
+  --color-player-b-900: var(--color-blue-900);
+  --color-player-b-950: var(--color-blue-950);
+
+  /* mixed NE = purple */
+  --color-ne-mixed-50: var(--color-purple-50);
+  --color-ne-mixed-100: var(--color-purple-100);
+  --color-ne-mixed-200: var(--color-purple-200);
+  --color-ne-mixed-300: var(--color-purple-300);
+  --color-ne-mixed-400: var(--color-purple-400);
+  --color-ne-mixed-500: var(--color-purple-500);
+  --color-ne-mixed-600: var(--color-purple-600);
+  --color-ne-mixed-700: var(--color-purple-700);
+  --color-ne-mixed-800: var(--color-purple-800);
+  --color-ne-mixed-900: var(--color-purple-900);
+  --color-ne-mixed-950: var(--color-purple-950);
+
+  /* danger = rose */
+  --color-danger-50: var(--color-rose-50);
+  --color-danger-100: var(--color-rose-100);
+  --color-danger-400: var(--color-rose-400);
+  --color-danger-500: var(--color-rose-500);
+  --color-danger-600: var(--color-rose-600);
+  --color-danger-950: var(--color-rose-950);
+}
+
+@theme {
+  /* Pure-NE marker green — must match the diamond markers in plotting.ts */
+  --color-ne-pure: #4ca47a;
+
+  /* ── Typography ──────────────────────────────────────────────────────────
+     Modular scale, minor third (1.2), anchored at 15px body:
+       12.5 → 15 → 18 → 21.6 → 25.9 → 31.1
+     This replaces the old ad-hoc 10/11/12px sizes and the html `zoom: 1.33`
+     hack — sizes are now legible at 100% zoom on web and desktop alike.   */
+  --text-xs: 0.78125rem;        /* 12.5px — captions, labels, metadata */
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.9375rem;         /* 15px — body */
+  --text-sm--line-height: 1.5;
+  --text-base: 1.125rem;        /* 18px — emphasized body, modal titles */
+  --text-base--line-height: 1.5;
+  --text-lg: 1.35rem;           /* 21.6px — section headings */
+  --text-lg--line-height: 1.35;
+  --text-xl: 1.62rem;           /* 25.9px — app title */
+  --text-xl--line-height: 1.3;
+  --text-2xl: 1.944rem;         /* 31.1px — display */
+  --text-2xl--line-height: 1.25;
+
+  /* Self-hosted via @fontsource (bundled — works offline in the desktop app) */
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* ── Elevation ─────────────────────────────────────────────────────────── */
+  --shadow-3xs: 0 1px 1px 0 rgb(0 0 0 / 0.03);
+  --shadow-subtle: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 6px -1px rgb(15 23 42 / 0.06);
+
+  /* ── Motion ────────────────────────────────────────────────────────────── */
+  --animate-fade-in: fade-in 0.3s ease-out both;
+  --animate-pulse-once: pulse-once 1.2s ease-in-out 1;
+  --animate-modal-in: modal-in 0.15s ease-out both;
+  --animate-drawer-in: drawer-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-spin-slow: spin 6s linear infinite;
+
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes pulse-once {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
+  }
+  @keyframes modal-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  @keyframes drawer-in {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
+  }
+}
+
+:root {
+  font-family: var(--font-sans);
 }
 
 body {
   font-family: var(--font-sans);
-  background: #f8fafc;
-  color: #0f172a;
+  background: var(--color-slate-50);
+  color: var(--color-slate-900);
   margin: 0;
   padding: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Consistent, visible keyboard-focus indicator across the entire surface */
+:focus-visible {
+  outline: 2px solid var(--color-accent-500);
+  outline-offset: 2px;
+}
+
+/* Hide native number-input spinners where the UI provides its own steppers */
+input.no-native-spinner::-webkit-outer-spin-button,
+input.no-native-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input.no-native-spinner {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* KaTeX inherits the surrounding text color; size it relative to context */
+.katex {
+  font-size: 1.06em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
