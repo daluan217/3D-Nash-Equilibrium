@@ -1174,7 +1174,7 @@ export default function App() {
       >
         {/* Vertical space for macOS traffic-light buttons — title sits below them, no horizontal offset needed */}
         {isElectronMac && !isFullscreen && <div className="h-9" />}
-        <div className={`max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${isElectronMac ? 'px-6 py-2' : 'px-6 py-4'}`}
+        <div className={`w-full flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${isElectronMac ? 'px-6 py-2' : 'px-6 py-4'}`}
           style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
         >
           <div>
@@ -1283,7 +1283,7 @@ export default function App() {
       </header>
 
       {/* ── Main Layout Body ── */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="flex-1 max-w-[100rem] w-full mx-auto px-4 lg:px-6 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* ── Left Sidebar Settings Panel (5 cols) ── */}
         <div className="lg:col-span-5 flex flex-col gap-6">
 
@@ -1404,7 +1404,7 @@ export default function App() {
                 <span>
                   Payoff Matrix — (
                   <span className="text-player-a-500 font-semibold font-mono">A</span>,{' '}
-                  <span className="text-accent-600 dark:text-accent-400 font-semibold font-mono">B</span>)
+                  <span className="text-player-b-600 dark:text-player-b-400 font-semibold font-mono">B</span>)
                 </span>
               </div>
               <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
@@ -1696,7 +1696,7 @@ export default function App() {
                 className="w-full accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
               <span className="text-xs text-slate-400 dark:text-slate-500 mt-1 block">
-                Shrinking step near equilibrium converges automatically to 0.001.
+                Sets how much the search corridor contracts per detected cycle; switches to bisection method when a Player overshoots a mixed equilibrium coordinate.
               </span>
             </div>
           </div>
@@ -1744,15 +1744,7 @@ export default function App() {
                 </span>
               </div>
             )}
-            {/* Converged status — appears under the bar once equilibrium is reached */}
-            {simState.converged && (
-              <div className="flex">
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1 px-2.5 rounded-full border border-emerald-200 dark:border-emerald-800 animate-fade-in">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Converged
-                </span>
-              </div>
-            )}
-            {/* Step input row + NE button */}
+            {/* Step input row + NE button + converged status */}
             <div className="flex items-center gap-2 flex-wrap">
               {thinHistory.length > 1 && (
                 <>
@@ -1787,6 +1779,11 @@ export default function App() {
                 >
                   {neSnapshot ? `1st NE Coord (step ${neSnapshot.stepCount})` : '1st NE Coord'}
                 </button>
+              )}
+              {simState.converged && (
+                <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1 px-2.5 rounded-full border border-emerald-200 dark:border-emerald-800 animate-fade-in">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Converged
+                </span>
               )}
             </div>
           </div>
@@ -1865,7 +1862,7 @@ export default function App() {
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-xs text-accent-600 dark:text-accent-400 font-semibold uppercase block tracking-wider">
+                <span className="text-xs text-player-b-600 dark:text-player-b-400 font-semibold uppercase block tracking-wider">
                   y: P(B playing Col 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
@@ -2025,9 +2022,10 @@ export default function App() {
               </div>
             </div>
           </div>
+        </div>
 
-
-          {/* Execution details logger browser */}
+        {/* Execution details logger browser — full width beneath both columns */}
+        <div className="lg:col-span-12">
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-200">
             <span className="text-xs uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1.5">
               <Terminal className="w-4 h-4 text-emerald-400" />
