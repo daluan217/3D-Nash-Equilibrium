@@ -1165,6 +1165,50 @@ export default function App() {
     setRawPayoffs((prev) => ({ ...prev, [field]: String(clamped) }));
   };
 
+  // ── Simulation log panel ──────────────────────────────────────────────────
+  // Lives under the Game-Theoretic Report (filling the right column) until the
+  // simulation converges; then it moves to a full-width band beneath both
+  // columns, where the equilibrium report needs the extra vertical room.
+  const simulationLogPanel = (
+    <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-200">
+      <span className="text-xs uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1.5">
+        <Terminal className="w-4 h-4 text-emerald-400" />
+        Simulation Log
+      </span>
+      <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-950/70 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 space-y-1 block leading-relaxed select-text ${simState.converged ? 'h-44' : 'h-80'}`}>
+        {logEntries.map((line, idx) => {
+          let colClass = 'text-slate-300';
+          if (line.includes('✓')) {
+            colClass = 'text-emerald-400 font-semibold';
+          } else if (line.includes('↺')) {
+            if (line.includes('Ghost cycle')) {
+              if (line.includes('(A)')) {
+                colClass = 'text-rose-300 font-medium';
+              } else if (line.includes('(B)')) {
+                colClass = 'text-player-b-300 font-medium';
+              } else {
+                colClass = 'text-amber-300 font-medium';
+              }
+            } else {
+              colClass = 'text-amber-400 font-semibold';
+            }
+          } else if (line.includes('━━') || line.includes('Start')) {
+            colClass = 'text-accent-400 font-semibold';
+          } else if (line.includes('(A)')) {
+            colClass = 'text-player-a-400 font-semibold';
+          } else if (line.includes('(B)')) {
+            colClass = 'text-player-b-400 font-semibold';
+          }
+          return (
+            <p key={idx} className={colClass}>
+              {line}
+            </p>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col antialiased">
       {/* ── Heading Banner ── */}
@@ -2020,48 +2064,17 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* Log sits in the right column until convergence frees up the bottom */}
+          {!simState.converged && simulationLogPanel}
         </div>
 
-        {/* Execution details logger browser — full width beneath both columns */}
-        <div className="lg:col-span-12">
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-200">
-            <span className="text-xs uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1.5">
-              <Terminal className="w-4 h-4 text-emerald-400" />
-              Simulation Log
-            </span>
-            <div ref={logsContainerRef} className="w-full h-44 overflow-y-auto bg-slate-950/70 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 space-y-1 block leading-relaxed select-text">
-              {logEntries.map((line, idx) => {
-                let colClass = 'text-slate-300';
-                if (line.includes('✓')) {
-                  colClass = 'text-emerald-400 font-semibold';
-                } else if (line.includes('↺')) {
-                  if (line.includes('Ghost cycle')) {
-                    if (line.includes('(A)')) {
-                      colClass = 'text-rose-300 font-medium';
-                    } else if (line.includes('(B)')) {
-                      colClass = 'text-player-b-300 font-medium';
-                    } else {
-                      colClass = 'text-amber-300 font-medium';
-                    }
-                  } else {
-                    colClass = 'text-amber-400 font-semibold';
-                  }
-                } else if (line.includes('━━') || line.includes('Start')) {
-                  colClass = 'text-accent-400 font-semibold';
-                } else if (line.includes('(A)')) {
-                  colClass = 'text-player-a-400 font-semibold';
-                } else if (line.includes('(B)')) {
-                  colClass = 'text-player-b-400 font-semibold';
-                }
-                return (
-                  <p key={idx} className={colClass}>
-                    {line}
-                  </p>
-                );
-              })}
-            </div>
+        {/* Once converged, the log spans full width beneath both columns */}
+        {simState.converged && (
+          <div className="lg:col-span-12">
+            {simulationLogPanel}
           </div>
-        </div>
+        )}
       </main>
 
       <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
