@@ -204,6 +204,21 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           cameraRef.current = eventData['scene.camera'];
         }
       });
+
+      // The "A Moves"/"B Moves" legend entries are solid-color stub traces; the
+      // actual path is a separate gradient trace sharing the same legendgroup.
+      // Toggle the whole group so clicking the legend hides the real path too.
+      try { el2.removeAllListeners('plotly_legendclick'); } catch {}
+      el2.on('plotly_legendclick', (ev: any) => {
+        const grp = ev?.data?.[ev.curveNumber]?.legendgroup;
+        if (grp !== 'amoves' && grp !== 'bmoves') return true; // default toggle
+        const indices: number[] = [];
+        ev.data.forEach((t: any, i: number) => { if (t.legendgroup === grp) indices.push(i); });
+        const cur = ev.data[ev.curveNumber].visible;
+        const nextVisible = (cur === undefined || cur === true) ? 'legendonly' : true;
+        (window as any).Plotly?.restyle(plotId, { visible: nextVisible }, indices);
+        return false; // suppress Plotly's single-trace default
+      });
     }
   }, [payoffs, simState, trackingMode, allNE, isDark, uiRevision]);
 

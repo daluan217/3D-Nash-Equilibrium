@@ -382,14 +382,14 @@ export function makeTraces(
         // Legend-only trace with solid color (NaN data = invisible in plot)
         traces.push({
           type: 'scatter3d', mode: 'lines',
-          name: '─ A Moves (x)', showlegend: true,
+          name: '─ A Moves (x)', showlegend: true, legendgroup: 'amoves',
           x: [NaN], y: [NaN], z: [NaN],
           line: { color: 'rgb(192,57,43)', width: 4 }
         });
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: '_', showlegend: false,
+        name: '_', showlegend: false, legendgroup: 'amoves',
         x: xMerged.xs, y: xMerged.ys, z: xMerged.zs,
         line: { color: xMerged.colors, colorscale: [[0, 'rgb(245,184,184)'], [1, 'rgb(192,57,43)']], width: 4 }
       });
@@ -402,14 +402,14 @@ export function makeTraces(
         // Legend-only trace with solid color (NaN data = invisible in plot)
         traces.push({
           type: 'scatter3d', mode: 'lines',
-          name: '─ B Moves (y)', showlegend: true,
+          name: '─ B Moves (y)', showlegend: true, legendgroup: 'bmoves',
           x: [NaN], y: [NaN], z: [NaN],
           line: { color: 'rgb(26,82,118)', width: 4 }
         });
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: '_', showlegend: false,
+        name: '_', showlegend: false, legendgroup: 'bmoves',
         x: yMerged.xs, y: yMerged.ys, z: yMerged.zs,
         line: { color: yMerged.colors, colorscale: [[0, 'rgb(184,204,245)'], [1, 'rgb(26,82,118)']], width: 4 }
       });
