@@ -222,36 +222,36 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('help')}
-            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'help'
+            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer ${activeTab === 'help'
                 ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
-            <HelpCircle className="w-4 h-4 pointer-events-none" />
+            <HelpCircle className="w-4 h-4 shrink-0 pointer-events-none" />
             Help Guides & Visuals
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('library')}
-            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'library'
+            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer ${activeTab === 'library'
                 ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
-            <BookOpen className="w-4 h-4 pointer-events-none" />
+            <BookOpen className="w-4 h-4 shrink-0 pointer-events-none" />
             Presets & Custom Library
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('account')}
-            className={`flex-1 py-3 text-xs sm:text-sm font-semibold border-b-2 flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'account'
+            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer ${activeTab === 'account'
                 ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
           >
-            <Sliders className="w-4 h-4 pointer-events-none" />
+            <Sliders className="w-4 h-4 shrink-0 pointer-events-none" />
             Danger Zone
           </button>
         </div>
@@ -882,13 +882,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       Active User Profile Information
                     </h4>
                     <div className="grid grid-cols-2 gap-4 pt-1.5 border-t border-slate-100 dark:border-slate-800">
-                      <div>
+                      <div className="min-w-0">
                         <span className="text-slate-400 dark:text-slate-500 block">Username badge</span>
-                        <strong className="text-slate-700 dark:text-slate-200 block text-xs md:text-sm">@{user.username}</strong>
+                        <strong className="text-slate-700 dark:text-slate-200 block text-xs md:text-sm break-all">@{user.username}</strong>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <span className="text-slate-400 dark:text-slate-500 block">Registered Email</span>
-                        <strong className="text-slate-700 dark:text-slate-200 block text-xs md:text-sm">{user.email}</strong>
+                        <strong className="text-slate-700 dark:text-slate-200 block text-xs md:text-sm break-all">{user.email}</strong>
                       </div>
                     </div>
                   </div>
