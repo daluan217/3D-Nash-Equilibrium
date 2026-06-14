@@ -1231,7 +1231,7 @@ export default function App() {
                 <Compass className="w-5.5 h-5.5" />
               </span>
               <h1 className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-                Nash Equilibrium Simulator
+                Mixed Nash Equilibrium Visualizer
               </h1>
             </div>
             {/* Tagline is hidden on phones — the header would otherwise dominate the viewport */}
