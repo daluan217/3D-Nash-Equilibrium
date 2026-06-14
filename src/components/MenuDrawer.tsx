@@ -41,6 +41,7 @@ interface MenuDrawerProps {
   apiBaseUrl: string;
   onSwitchDbMode: (mode: 'local' | 'cloud') => void;
   onUpdateApiBaseUrl: (url: string) => void;
+  anonymized?: boolean;
 }
 
 export const MenuDrawer: React.FC<MenuDrawerProps> = ({
@@ -60,6 +61,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   apiBaseUrl,
   onSwitchDbMode,
   onUpdateApiBaseUrl,
+  anonymized = false,
 }) => {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
   const [activeTab, setActiveTab] = useState<'help' | 'library' | 'account'>('help');
@@ -243,6 +245,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             Presets & Custom Library
           </button>
 
+          {!anonymized && (
           <button
             type="button"
             onClick={() => setActiveTab('account')}
@@ -254,6 +257,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             <Sliders className="w-4 h-4 shrink-0 pointer-events-none" />
             Danger Zone
           </button>
+          )}
         </div>
 
         {/* Sliding Panel Content (with scroll) */}
@@ -650,7 +654,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 </div>
               </div>
 
-              {/* Custom Games Saved Segment */}
+              {/* Custom Games Saved Segment — account-gated, hidden in the anonymized build */}
+              {!anonymized && (
               <div className="border-t border-slate-100 dark:border-slate-800 pt-6">
                 <div className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3.5 flex items-center justify-between">
                   <span>Custom User Profiles ({formattedCustomGames.length})</span>
@@ -773,11 +778,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   </div>
                 )}
               </div>
+              )}
             </div>
           )}
 
           {/* ──────────────── TAB 3: ACCOUNT & DANGER ZONE ──────────────── */}
-          {activeTab === 'account' && (
+          {activeTab === 'account' && !anonymized && (
             <div className="space-y-6">
               {isElectron && (
                 <div className="border border-accent-100 dark:border-accent-950 rounded-2xl p-5 bg-accent-50/10 dark:bg-accent-950/10 shadow-sm space-y-3 text-xs">

@@ -79,7 +79,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
     setTimeout(() => setCopiedText(null), 2000);
   };
 
-  const cloneCommands = `git clone https://github.com/your-username/nash-equilibrium-simulator.git\ncd nash-equilibrium-simulator`;
+  const cloneCommands = `git clone <repository-url>\ncd <project-directory>`;
   const installCommands = `npm install`;
   const buildCommands = `npm run build && npm run electron:dist`;
 

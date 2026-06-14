@@ -56,6 +56,14 @@ import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
 
+// ── Anonymized build (double-blind review mirror) ───────────────────────────
+// When true, every surface that could identify the author is suppressed:
+// the desktop-app link, the feedback form (author email), sign-in/account UI,
+// the admin trigger, and the author name in the footer. The math/visualization
+// experience a reviewer needs is untouched. Flip to false to restore the full
+// public build.
+const ANONYMIZED = true;
+
 // Typeset LaTeX inline via KaTeX (self-hosted, works offline)
 function MathTex({ tex, className }: { tex: string; className?: string }) {
   const html = useMemo(
@@ -187,16 +195,16 @@ export default function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => {
     const cached = localStorage.getItem('nash_sim_api_base');
     if (cached && (cached.includes('ais-pre-') || cached.includes('243079162760') || cached.includes('988056159702') || cached.includes('194708291738'))) {
-      localStorage.setItem('nash_sim_api_base', 'https://nash-equilibrium-simulator.com');
-      return 'https://nash-equilibrium-simulator.com';
+      localStorage.setItem('nash_sim_api_base', '');
+      return '';
     }
-    return cached || 'https://nash-equilibrium-simulator.com';
+    return cached || '';
   });
 
   const getApiUrl = (path: string) => {
     if (isElectron && dbMode === 'cloud') {
       const base = apiBaseUrl.trim().replace(/\/$/, '');
-      return `${base || 'https://nash-equilibrium-simulator.com'}${path}`;
+      return `${base || ''}${path}`;
     }
     return path;
   };
@@ -272,6 +280,7 @@ export default function App() {
 
   // Fetch Session User and Games
   useEffect(() => {
+    if (ANONYMIZED) { setUser(null); return; }
     if (authToken) {
       fetch(getApiUrl('/api/auth/me'), {
         headers: { 'Authorization': `Bearer ${authToken}` }
@@ -1224,8 +1233,8 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2.5">
               <span
-                className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl cursor-pointer select-none"
-                onClick={e => { if (e.detail === 3) setIsAdminOpen(true); }}
+                className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl select-none"
+                onClick={e => { if (!ANONYMIZED && e.detail === 3) setIsAdminOpen(true); }}
                 title=""
               >
                 <Compass className="w-5.5 h-5.5" />
@@ -1236,13 +1245,13 @@ export default function App() {
             </div>
             {/* Tagline is hidden on phones — the header would otherwise dominate the viewport */}
             <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Best-response dynamics on 3D expected-payoff surfaces — watch the search corridor contract onto the Nash equilibrium.
+              An interactive 3D view of expected-payoff surfaces for 2×2 games and their equilibria.
             </p>
           </div>
           {isTouchDevice ? (
             /* ── TOUCH (phones + tablets): single compact row ── */
             <div className="flex items-center justify-end gap-2 w-full flex-wrap">
-              {!isElectron && (
+              {!isElectron && !ANONYMIZED && (
                 <button
                   aria-label="Get the desktop app"
                   onClick={() => setIsDownloadModalOpen(true)}
@@ -1263,7 +1272,7 @@ export default function App() {
               >
                 <Menu className="w-4 h-4" />
               </button>
-              {user ? (
+              {ANONYMIZED ? null : user ? (
                 <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[100px]" title={user.email}>@{user.username}</span>
@@ -1281,7 +1290,7 @@ export default function App() {
           ) : (
             /* ── NON-TOUCH (desktops/laptops): original flex row ── */
             <div className="flex items-center flex-wrap gap-2.5">
-              {!isElectron && (
+              {!isElectron && !ANONYMIZED && (
                 <button
                   onClick={() => setIsDownloadModalOpen(true)}
                   className="inline-flex items-center gap-1.5 bg-accent-50 hover:bg-slate-100 text-accent-700 dark:bg-accent-950/45 dark:hover:bg-accent-900/40 dark:text-accent-400 border border-accent-100 dark:border-accent-900 font-bold text-xs px-3 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
@@ -1305,7 +1314,7 @@ export default function App() {
               >
                 <Menu className="w-4 h-4" />
               </button>
-              {user ? (
+              {ANONYMIZED ? null : user ? (
                 <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[120px]" title={user.email}>@{user.username}</span>
@@ -1353,7 +1362,8 @@ export default function App() {
               })}
             </div>
 
-            {/* User Custom Saved Games Segment */}
+            {/* User Custom Saved Games Segment — account-gated, hidden in the anonymized build */}
+            {!ANONYMIZED && (<>
             <div className="flex items-center justify-between text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
               <div className="flex items-center gap-2">
                 <Award className="w-4 h-4 text-accent-500" />
@@ -1427,6 +1437,8 @@ export default function App() {
                   );
                 })}
               </div>
+            )}
+            </>
             )}
 
             {/* Selected Preset Narrative Card */}
@@ -2077,11 +2089,11 @@ export default function App() {
         )}
       </main>
 
-      {/* <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
-        <p className="text-xs text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
-      </footer> */}
+      <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
+        <p className="text-xs text-slate-400 dark:text-slate-500">© 2026</p>
+      </footer>
 
-      {isAuthModalOpen && (
+      {!ANONYMIZED && isAuthModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
           onClick={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); }}
@@ -2379,7 +2391,7 @@ export default function App() {
       )}
 
       {/* ── Save Custom Game Modal ── */}
-      {isSaveModalOpen && (
+      {!ANONYMIZED && isSaveModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
           onClick={() => { setIsSaveModalOpen(false); setSaveError(''); }}
@@ -2499,6 +2511,7 @@ export default function App() {
           setApiBaseUrl(url);
           localStorage.setItem('nash_sim_api_base', url);
         }}
+        anonymized={ANONYMIZED}
       />
 
       <DownloadModal
@@ -2506,7 +2519,7 @@ export default function App() {
         onClose={() => setIsDownloadModalOpen(false)}
       />
 
-      {isAdminOpen && (
+      {!ANONYMIZED && isAdminOpen && (
         <AdminDashboard
           onClose={() => setIsAdminOpen(false)}
           isDark={darkMode}
@@ -2515,17 +2528,19 @@ export default function App() {
         />
       )}
 
-      {/* Bottom-left feedback launcher */}
-      <button
-        onClick={openFeedback}
-        title="Send feedback"
-        className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-accent-600 hover:bg-accent-700 text-white text-xs font-semibold shadow-lg shadow-accent-600/20 transition-all cursor-pointer select-none"
-      >
-        <MessageSquare className="w-4 h-4" />
-        <span className="hidden sm:inline">Feedback</span>
-      </button>
+      {/* Bottom-left feedback launcher — hidden in the anonymized build */}
+      {!ANONYMIZED && (
+        <button
+          onClick={openFeedback}
+          title="Send feedback"
+          className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-accent-600 hover:bg-accent-700 text-white text-xs font-semibold shadow-lg shadow-accent-600/20 transition-all cursor-pointer select-none"
+        >
+          <MessageSquare className="w-4 h-4" />
+          <span className="hidden sm:inline">Feedback</span>
+        </button>
+      )}
 
-      {isFeedbackOpen && (
+      {!ANONYMIZED && isFeedbackOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
           onClick={closeFeedback}

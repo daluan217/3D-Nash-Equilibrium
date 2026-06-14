@@ -20,7 +20,7 @@ interface AdminDashboardProps {
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark, isElectron, apiBaseUrl }) => {
   const adminUrl = (path: string) =>
-    isElectron ? `${apiBaseUrl.trim().replace(/\/$/, '') || 'https://nash-equilibrium-simulator.com'}${path}` : path;
+    isElectron ? `${apiBaseUrl.trim().replace(/\/$/, '') || ''}${path}` : path;
   const [password, setPassword] = useState('');
   const [authed, setAuthed] = useState(false);
   const [stats, setStats] = useState<AdminStats | null>(null);
