@@ -2077,9 +2077,9 @@ export default function App() {
         )}
       </main>
 
-      <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
+      {/* <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
         <p className="text-xs text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
-      </footer>
+      </footer> */}
 
       {isAuthModalOpen && (
         <div
