@@ -63,6 +63,9 @@ export function makeTraces(
       y: surf.ys,
       z: surf.zA,
       colorscale: 'Reds',
+      // Reverse so low payoff (which sits nearer the default camera) renders
+      // dark and high/far payoff fades lighter — the conventional depth cue.
+      reversescale: true,
       opacity: 0.6,
       showscale: false
     },
@@ -73,6 +76,7 @@ export function makeTraces(
       y: surf.ys,
       z: surf.zB,
       colorscale: 'Blues',
+      reversescale: true,
       opacity: 0.45,
       showscale: false
     },
