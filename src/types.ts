@@ -51,6 +51,18 @@ export interface SimState {
 
   domainLo: number;
   domainHi: number;
+  // Regret mode keeps a SEPARATE domain per player, each contracting toward its
+  // own NE coordinate so the two strategy lines flatten independently and
+  // gradually (a single shared corridor makes them snap). A's domain brackets
+  // x = P(A Row1); B's brackets y = P(B Col1).
+  domXLo: number;
+  domXHi: number;
+  domYLo: number;
+  domYHi: number;
+  // Representative mix (each player's domain midpoint) the strategy line is drawn
+  // at; glides smoothly to the NE coordinate as the domains contract.
+  stratX: number;
+  stratY: number;
   cycleCount: number;
   visitedPositions: string[];
   ghostVisitedPositions: string[];

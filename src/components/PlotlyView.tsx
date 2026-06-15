@@ -14,6 +14,7 @@ interface PlotlyViewProps {
   trackingMode: 'A' | 'B' | 'both';
   allNE: NashEquilibrium[];
   isDark?: boolean;
+  stepMode?: 'shrink' | 'regret';
 }
 
 const DEFAULT_CAMERA = { eye: { x: 1.6, y: -1.6, z: 1.1 } };
@@ -23,7 +24,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   simState,
   trackingMode,
   allNE,
-  isDark = false
+  isDark = false,
+  stepMode = 'shrink'
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotId = 'plotly-3d-market-simulation';
@@ -119,7 +121,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // Build the surfaces and coordinates
     const surf = buildSurfaces(payoffs);
     const isMobile = navigator.maxTouchPoints > 0 && window.innerWidth < 1400;
-    const traces = makeTraces(surf, payoffs, simState, trackingMode, allNE, isMobile);
+    const traces = makeTraces(surf, payoffs, simState, trackingMode, allNE, isMobile, stepMode);
 
     // Merge custom dynamic interactions into layout
     const layout = {
@@ -220,7 +222,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         return false; // suppress Plotly's single-trace default
       });
     }
-  }, [payoffs, simState, trackingMode, allNE, isDark, uiRevision]);
+  }, [payoffs, simState, trackingMode, allNE, isDark, uiRevision, stepMode]);
 
   // Handle dragMode changes separately to preserve camera orientation
   useEffect(() => {

@@ -95,7 +95,8 @@ function toThin(s: SimState): ThinSnapshot {
 function precomputeThinHistory(
   initState: SimState,
   payoffs: GamePayoffs, firstMover: 'A' | 'B', shrinkStep: number,
-  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null
+  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null,
+  stepMode: 'shrink' | 'regret' = 'shrink'
 ): { snaps: ThinSnapshot[], neState: SimState | null } {
   const snaps: ThinSnapshot[] = [toThin(initState)];
   const state: SimState = {
@@ -110,7 +111,7 @@ function precomputeThinHistory(
   let neState: SimState | null = null;
   const MAX_STEPS = 5000;
   while (!state.converged && snaps.length < MAX_STEPS) {
-    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; });
+    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; }, stepMode);
     snaps.push(toThin(state));
     if (neState === null && state.discoveredMixedX !== null) {
       neState = {
@@ -129,7 +130,8 @@ function precomputeThinHistory(
 function replayToStep(
   initState: SimState, targetStep: number,
   payoffs: GamePayoffs, firstMover: 'A' | 'B', shrinkStep: number,
-  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null
+  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null,
+  stepMode: 'shrink' | 'regret' = 'shrink'
 ): SimState {
   const state: SimState = {
     ...initState,
@@ -141,7 +143,7 @@ function replayToStep(
     ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
   };
   for (let i = 0; i < targetStep; i++) {
-    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; });
+    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; }, stepMode);
   }
   return state;
 }
@@ -346,6 +348,8 @@ export default function App() {
   const [trackingMode, setTrackingMode] = useState<'A' | 'B' | 'both'>('A');
   const [shrinkStep, setShrinkStep] = useState<number>(0.1);
   const [shrinkStepRaw, setShrinkStepRaw] = useState<string>('0.100');
+  // Convergence method: fixed domain-shrink/bisection vs opponent's-regret stepping
+  const [stepMode, setStepMode] = useState<'shrink' | 'regret'>('shrink');
   const [speed, setSpeed] = useState<number>(5);
 
   // Initial Coordinates States
@@ -376,6 +380,12 @@ export default function App() {
     startY: 0.217,
     domainLo: 0,
     domainHi: 1,
+    domXLo: 0,
+    domXHi: 1,
+    domYLo: 0,
+    domYHi: 1,
+    stratX: 0.217,
+    stratY: 0.217,
     cycleCount: 0,
     visitedPositions: [],
     ghostVisitedPositions: [],
@@ -518,7 +528,7 @@ export default function App() {
         calcX: startValX, calcY: startValY,
         displayX: startValX, displayY: startValY,
         startX: startValX, startY: startValY,
-        domainLo: 0, domainHi: 1, cycleCount: 0,
+        domainLo: 0, domainHi: 1, domXLo: 0, domXHi: 1, domYLo: 0, domYHi: 1, stratX: startValX, stratY: startValY, cycleCount: 0,
         visitedPositions: [], ghostVisitedPositions: [],
         discoveredMixedX: null, discoveredMixedY: null, foundAxis: null,
         running: false, converged: false, stepCount: 0,
@@ -540,7 +550,7 @@ export default function App() {
       setJumpInput('');
 
       // Pre-compute thin snapshots — used for total step count and NE snapshot
-      const { snaps, neState } = precomputeThinHistory(initState, payoffs, firstMover, shrinkStep, allNE, committedNE);
+      const { snaps, neState } = precomputeThinHistory(initState, payoffs, firstMover, shrinkStep, allNE, committedNE, stepMode);
       thinHistoryRef.current = snaps;
       setThinHistory(snaps);
       if (neState) {
@@ -559,7 +569,7 @@ export default function App() {
       };
       const stepLogs: string[] = [];
       doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
-        (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; });
+        (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, stepMode);
       if (!next.converged) next.running = startRunningAfter;
 
       simStateRef.current = next;
@@ -592,7 +602,7 @@ export default function App() {
     };
     const stepLogs: string[] = [];
     doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
-      (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; });
+      (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, stepMode);
 
     simStateRef.current = next;
     setSimState(next);
@@ -632,7 +642,7 @@ export default function App() {
       };
       const stepLogs: string[] = [];
       doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
-        (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; });
+        (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, stepMode);
       simStateRef.current = next;
       setSimState(next);
       const nextPos = pos + 1;
@@ -1042,6 +1052,12 @@ export default function App() {
       startY: startValY,
       domainLo: 0,
       domainHi: 1,
+      domXLo: 0,
+      domXHi: 1,
+      domYLo: 0,
+      domYHi: 1,
+      stratX: startValX,
+      stratY: startValY,
       cycleCount: 0,
       visitedPositions: [],
       ghostVisitedPositions: [],
@@ -1092,7 +1108,7 @@ export default function App() {
   const handleBackstep = () => {
     if (simState.running || !initStateRef.current || simState.stepCount <= 0) return;
     const targetStep = simState.stepCount - 1;
-    const replayed = replayToStep(initStateRef.current, targetStep, payoffs, firstMover, shrinkStep, allNE, committedNE);
+    const replayed = replayToStep(initStateRef.current, targetStep, payoffs, firstMover, shrinkStep, allNE, committedNE, stepMode);
     simStateRef.current = replayed;
     setSimState(replayed);
     scrubPosRef.current = targetStep;
@@ -1117,7 +1133,7 @@ export default function App() {
     const parsed = parseInt(jumpInput, 10);
     if (isNaN(parsed)) return;
     const clamped = Math.max(0, Math.min(thinHistoryRef.current.length - 1, parsed));
-    const replayed = replayToStep(initStateRef.current, clamped, payoffs, firstMover, shrinkStep, allNE, committedNE);
+    const replayed = replayToStep(initStateRef.current, clamped, payoffs, firstMover, shrinkStep, allNE, committedNE, stepMode);
     simStateRef.current = replayed;
     setSimState(replayed);
     scrubPosRef.current = clamped;
@@ -1718,10 +1734,40 @@ export default function App() {
               </div>
             </div>
 
-            {/* Domain Shrink Value */}
+            {/* Convergence method */}
+            <div>
+              <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Convergence Method</label>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { key: 'shrink', label: 'Domain Shrink' },
+                  { key: 'regret', label: 'Opponent Regret' },
+                ] as const).map(({ key, label }) => {
+                  const active = stepMode === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => { setStepMode(key); setInitialized(false); }}
+                      className={`py-2 px-2 text-xs font-semibold rounded-xl border transition-all text-center ${active
+                          ? 'bg-accent-600 text-white border-accent-600 shadow-xs'
+                          : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                        }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="text-xs text-slate-400 dark:text-slate-500 mt-1.5 block">
+                {stepMode === 'regret'
+                  ? "Steps each player's strategy by the opponent's regret, animating the strategy line flattening into the indifference line (mixed-strategy games only)."
+                  : 'Contracts the search corridor by a fixed step, bisecting when a coordinate is overshot.'}
+              </span>
+            </div>
+
+            {/* Step size / regret weight */}
             <div>
               <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 font-medium mb-1">
-                <span>Initial Domain Shrink Step Size</span>
+                <span>{stepMode === 'regret' ? 'Regret Step Weight (λ)' : 'Initial Domain Shrink Step Size'}</span>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -1750,7 +1796,9 @@ export default function App() {
                 className="w-full accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
               <span className="text-xs text-slate-400 dark:text-slate-500 mt-1 block">
-                Sets how much the search corridor contracts per detected cycle; switches to bisection method when a Player overshoots a mixed equilibrium coordinate.
+                {stepMode === 'regret'
+                  ? 'Larger λ glides in faster; keep it modest so the line flattens smoothly without overshooting. As the opponent’s regret → 0, the steps shrink and the line eases into the flat shelf.'
+                  : 'Sets how much the search corridor contracts per detected cycle; switches to bisection method when a Player overshoots a mixed equilibrium coordinate.'}
               </span>
             </div>
           </div>
@@ -1779,6 +1827,7 @@ export default function App() {
             trackingMode={trackingMode}
             allNE={allNE}
             isDark={darkMode}
+            stepMode={stepMode}
           />
 
           {/* Progress bar + step input + NE jump — always visible once simulation starts */}
@@ -1821,7 +1870,9 @@ export default function App() {
                   </button>
                 </>
               )}
-              {mixedNE && (
+              {/* In regret mode both coordinates lock together (no Phase 1→2 handoff),
+                  so the "1st NE coordinate" marker coincides with convergence — hide it. */}
+              {mixedNE && stepMode !== 'regret' && (
                 <button
                   onClick={handleJumpToNE}
                   disabled={!neSnapshot}

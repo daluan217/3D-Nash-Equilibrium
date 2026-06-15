@@ -221,6 +221,10 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
   s.cy    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
   s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
   s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
+  // Squeeze the strategy-line representative into the contracted corridor so it
+  // eases toward the NE coordinate as the bracket closes (gradual flattening).
+  s.stratX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.stratX)));
+  s.stratY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.stratY)));
 
   // Retroactively snap only the mover's axis in the last recorded path point.
   // The non-mover axis stays at its pre-clamp value so the NEXT step (opposite mover)
@@ -314,6 +318,9 @@ function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: num
 
   s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
   s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
+  // Squeeze the strategy-line representative into the contracted corridor.
+  s.stratX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.stratX)));
+  s.stratY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.stratY)));
 }
 
 // ── Algorithm control parameters ─────────────────────────────────────────────
@@ -478,6 +485,12 @@ export function createSnapshot(s: SimState): Omit<SimState, 'running' | 'history
     startY: s.startY,
     domainLo: s.domainLo,
     domainHi: s.domainHi,
+    domXLo: s.domXLo,
+    domXHi: s.domXHi,
+    domYLo: s.domYLo,
+    domYHi: s.domYHi,
+    stratX: s.stratX,
+    stratY: s.stratY,
     cycleCount: s.cycleCount,
     visitedPositions: s.visitedPositions.slice(),
     ghostVisitedPositions: s.ghostVisitedPositions.slice(),
@@ -517,7 +530,8 @@ export function doStep(
   committedNE: NashEquilibrium | null,
   addLog: (msg: string) => void,
   onCycleDetected: () => void,
-  onConverged: () => void
+  onConverged: () => void,
+  stepMode: 'shrink' | 'regret' = 'shrink'
 ) {
   if (s.converged) return;
 
@@ -569,6 +583,78 @@ export function doStep(
     const Dy = g.a11 - g.a12 - g.a21 + g.a22;
     const EPS_B = Math.abs(Dx) > 1e-9 ? Math.abs(Dx) * 0.00065 : 0.00065;
     const EPS_A = Math.abs(Dy) > 1e-9 ? Math.abs(Dy) * 0.00065 : 0.00065;
+
+    const regretEligible = stepMode === 'regret' && mixedNE !== undefined
+      && Math.abs(Dx) > 1e-9 && Math.abs(Dy) > 1e-9;
+
+    if (regretEligible) {
+      // ── Two-domain regret contraction ─────────────────────────────────────
+      // Each player keeps their OWN domain, contracted toward their OWN NE
+      // coordinate every cycle by a fraction λ of the remaining distance. Because
+      // the opponent's regret is proportional to that distance, this is exactly
+      // "step ∝ opponent's regret × weight": the midpoints (stratX, stratY) glide
+      // independently and decelerate, so each strategy line eases flat gradually
+      // instead of snapping. Best-response corner cycling is retained for the
+      // sphere; its amplitude shrinks with the domains.
+      const xStar = mixedNE!.x;
+      const yStar = mixedNE!.y;
+      const lambda = Math.max(0.001, Math.min(0.95, defaultShrinkStep));
+      const glide = (b: number, r: number): number => {
+        if (Math.abs(b - r) < 1e-9) return r;
+        let step = lambda * (r - b);
+        // Floor to one display-grid unit toward the root so 3-dp rounding can't
+        // freeze the glide a hair short; clamp so it never overshoots.
+        if (Math.abs(step) < 0.001) step = Math.sign(r - b) * 0.001;
+        let nb = b + step;
+        if ((r - b) * (r - nb) < 0) nb = r;
+        return r3(Math.max(0, Math.min(1, nb)));
+      };
+
+      // Best-response cycling: each mover flips its OWN axis to a domain corner in
+      // response to the opponent's CURRENT corner (s.cx / s.cy), so the path rotates
+      // around the box perimeter exactly like shrink mode. (Using the midpoint here
+      // would freeze it at one corner — no rotation.)
+      if (mover === 'A') {
+        const sA = s.cy * (g.a11 - g.a21) + (1 - s.cy) * (g.a12 - g.a22);
+        nx = sA > 0 ? s.domXHi : s.domXLo;
+        ny = s.cy;
+      } else {
+        const sB = s.cx * (g.b11 - g.b12) + (1 - s.cx) * (g.b21 - g.b22);
+        ny = sB > 0 ? s.domYHi : s.domYLo;
+        nx = s.cx;
+      }
+      s.calcX = r3(nx);
+      s.calcY = r3(ny);
+
+      // One contraction per full perimeter loop. Each domain shrinks toward its own
+      // NE coordinate by a regret-proportional amount (the geometric step λ·(root−b)
+      // is proportional to that player's distance from indifference, i.e. the
+      // opponent's regret). The midpoint (hi+lo)/2 — where the strategy line is
+      // drawn — glides smoothly to the NE coordinate, flattening one cycle at a time.
+      const rkey = r3(nx).toFixed(3) + ',' + r3(ny).toFixed(3);
+      if (s.visitedPositions.includes(rkey)) {
+        s.cycleCount++;
+        s.visitedPositions = [];
+        s.domXLo = glide(s.domXLo, xStar); s.domXHi = glide(s.domXHi, xStar);
+        s.domYLo = glide(s.domYLo, yStar); s.domYHi = glide(s.domYHi, yStar);
+        s.stratX = r3((s.domXLo + s.domXHi) / 2);
+        s.stratY = r3((s.domYLo + s.domYHi) / 2);
+        if (s.discoveredMixedX === null && Math.abs(s.domXHi - s.domXLo) < 0.0015) {
+          s.discoveredMixedX = xStar;
+          s.domXLo = xStar; s.domXHi = xStar; s.stratX = xStar;
+          addLog('✓ x-coordinate discovered: ' + xStar.toFixed(3));
+        }
+        if (s.discoveredMixedY === null && Math.abs(s.domYHi - s.domYLo) < 0.0015) {
+          s.discoveredMixedY = yStar;
+          s.domYLo = yStar; s.domYHi = yStar; s.stratY = yStar;
+          addLog('✓ y-coordinate discovered: ' + yStar.toFixed(3));
+        }
+        addLog(`↺ Cycle ${s.cycleCount} → A∈[${r3(s.domXLo).toFixed(3)},${r3(s.domXHi).toFixed(3)}] B∈[${r3(s.domYLo).toFixed(3)},${r3(s.domYHi).toFixed(3)}] (λ=${r3(lambda)})`);
+        onCycleDetected();
+      } else {
+        s.visitedPositions.push(rkey);
+      }
+    } else {
 
     const inPhase2 = (s.discoveredMixedX !== null) !== (s.discoveredMixedY !== null);
 
@@ -707,6 +793,7 @@ export function doStep(
         s.ghostVisitedPositions.push(ghostKey);
       }
     }
+    } // end shrink/bisection branch (non-regret)
   }
 
   // ── Update display position ──────────────────────────────────────────────
@@ -752,8 +839,10 @@ export function doStep(
   }
 
   // ── Phase 1 cycle detection ────────────────────────────────────────────────
+  // Regret mode handles its own per-cycle contraction inline above, so skip the
+  // shared-corridor cycle detection here.
   const inPhase2Now = (s.discoveredMixedX !== null) !== (s.discoveredMixedY !== null);
-  if (pureNEs.length === 0 && !inPhase2Now) {
+  if (pureNEs.length === 0 && !inPhase2Now && stepMode !== 'regret') {
     const posKey = s.cx.toFixed(3) + ',' + s.cy.toFixed(3);
     if (s.visitedPositions.includes(posKey)) {
       s.cycleCount++;
