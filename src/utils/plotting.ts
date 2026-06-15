@@ -44,7 +44,8 @@ export function makeTraces(
   s: SimState,
   trackingMode: 'A' | 'B' | 'both',
   allNE: NashEquilibrium[],
-  isMobile = false
+  isMobile = false,
+  stepMode: 'shrink' | 'regret' = 'shrink'
 ): any[] {
   const diamondSize = isMobile ? 5 : 10;
   const px = s.displayX ?? s.cx;
@@ -84,11 +85,17 @@ export function makeTraces(
 
   // ── Domain / search-corridor bounding box ─────────────────────────────────
   {
-    const lo = s.domainLo;
-    const hi = s.domainHi;
+    const regretBox = stepMode === 'regret'
+      && allNE.some(n => n.type === 'mixed') && !allNE.some(n => n.type === 'pure');
+    // Regret mode brackets each player with their own domain, so the box is the
+    // rectangle [A's x-domain] × [B's y-domain], contracting onto the NE.
+    const loX = regretBox ? s.domXLo : s.domainLo;
+    const hiX = regretBox ? s.domXHi : s.domainHi;
+    const loY = regretBox ? s.domYLo : s.domainLo;
+    const hiY = regretBox ? s.domYHi : s.domainHi;
     const zC = [
-      EA(lo, lo, g), EA(lo, hi, g), EA(hi, lo, g), EA(hi, hi, g),
-      EB(lo, lo, g), EB(lo, hi, g), EB(hi, lo, g), EB(hi, hi, g)
+      EA(loX, loY, g), EA(loX, hiY, g), EA(hiX, loY, g), EA(hiX, hiY, g),
+      EB(loX, loY, g), EB(loX, hiY, g), EB(hiX, loY, g), EB(hiX, hiY, g)
     ];
     const zMax = Math.max(...zC) + 0.3;
     const zMin = Math.min(...zC) - 0.3;
@@ -99,8 +106,8 @@ export function makeTraces(
     const boxName  = oneFound ? 'Search corridor' : 'Domain boundary';
 
     // Top and bottom 2D bounding boxes
-    [[lo, hi, hi, lo, lo], [lo, lo, hi, hi, lo]].forEach((xA, idx) => {
-      const yA = idx === 0 ? [lo, lo, hi, hi, lo] : [lo, hi, hi, lo, lo];
+    [[loX, hiX, hiX, loX, loX], [loX, loX, hiX, hiX, loX]].forEach((xA, idx) => {
+      const yA = idx === 0 ? [loY, loY, hiY, hiY, loY] : [loY, hiY, hiY, loY, loY];
       
       // Bottom flat square
       traces.push({
@@ -128,7 +135,7 @@ export function makeTraces(
     });
 
     // Vertical pillars of the bounding box
-    [[lo, lo], [hi, lo], [hi, hi], [lo, hi]].forEach(c => {
+    [[loX, loY], [hiX, loY], [hiX, hiY], [loX, hiY]].forEach(c => {
       traces.push({
         type: 'scatter3d',
         mode: 'lines',
@@ -143,7 +150,6 @@ export function makeTraces(
 
     // ── Phase 2 extra graphics: ghost spheres + search-range surface line ──
     if (oneFound) {
-      const xFound = s.discoveredMixedX !== null;
       const gx = s.calcX ?? px;
       const gy = s.calcY ?? py;
 
@@ -286,6 +292,61 @@ export function makeTraces(
       z: fZb,
       line: { color: '#1A3A5C', width: 7 }
     });
+  }
+
+  // ── Regret mode: live "strategy line" that flattens into the indifference line ─
+  // E[A](x, y_cur) swept over x has slope sA(y_cur); it is flat exactly when
+  // y_cur = y* (A indifferent). E[B](x_cur, y) over y is flat when x_cur = x*.
+  // The tilt magnitude IS the opponent's regret, so the line eases flat as the
+  // regret steps shrink. Shown until both coordinates lock (then the block above
+  // draws the final flat lines).
+  // Only for mixed-ONLY games (regret mode auto-falls back to shrink when a pure
+  // NE exists, so the strategy lines must not appear there either).
+  const hasMixed = allNE.some(n => n.type === 'mixed');
+  const hasPure = allNE.some(n => n.type === 'pure');
+  const bothLocked = s.discoveredMixedX !== null && s.discoveredMixedY !== null;
+  if (stepMode === 'regret' && hasMixed && !hasPure && !bothLocked) {
+    const FLAT_STEPS = 50;
+    // Representative mix = each player's domain midpoint (hi+lo)/2, which eases
+    // toward its own NE coordinate as that domain contracts — so each line
+    // flattens gradually, one cycle at a time, instead of snapping.
+    const xRep = s.discoveredMixedX ?? r3((s.domXLo + s.domXHi) / 2);
+    const yRep = s.discoveredMixedY ?? r3((s.domYLo + s.domYHi) / 2);
+    const Dy = g.a11 - g.a12 - g.a21 + g.a22;
+    const Dx = g.b11 - g.b12 - g.b21 + g.b22;
+    const sA = yRep * (g.a11 - g.a21) + (1 - yRep) * (g.a12 - g.a22);
+    const sB = xRep * (g.b11 - g.b12) + (1 - xRep) * (g.b21 - g.b22);
+    const aFlat = Math.abs(sA) < Math.max(1e-4, Math.abs(Dy) * 0.01);
+    const bFlat = Math.abs(sB) < Math.max(1e-4, Math.abs(Dx) * 0.01);
+
+    if (trackingMode === 'A' || trackingMode === 'both') {
+      const xs: number[] = [], ys: number[] = [], zs: number[] = [];
+      for (let i = 0; i <= FLAT_STEPS; i++) {
+        const xi = i / FLAT_STEPS;
+        xs.push(xi); ys.push(yRep); zs.push(r3(EA(xi, yRep, g)));
+      }
+      traces.push({
+        type: 'scatter3d', mode: 'lines',
+        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at current y)',
+        showlegend: true,
+        x: xs, y: ys, z: zs,
+        line: { color: '#7B241C', width: aFlat ? 7 : 5 }
+      });
+    }
+    if (trackingMode === 'B' || trackingMode === 'both') {
+      const xs: number[] = [], ys: number[] = [], zs: number[] = [];
+      for (let i = 0; i <= FLAT_STEPS; i++) {
+        const yi = i / FLAT_STEPS;
+        xs.push(xRep); ys.push(yi); zs.push(r3(EB(xRep, yi, g)));
+      }
+      traces.push({
+        type: 'scatter3d', mode: 'lines',
+        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at current x)',
+        showlegend: true,
+        x: xs, y: ys, z: zs,
+        line: { color: '#1A3A5C', width: bFlat ? 7 : 5 }
+      });
+    }
   }
 
   // ── Starting point marker ──────────────────────────────────────────────────
@@ -455,14 +516,36 @@ export function makeTraces(
   allNE.forEach(ne => {
     if (ne.type === 'pure') {
       if (trackingMode === 'both') {
+        const zAp = EA(ne.x, ne.y, g);
+        const zBp = EB(ne.x, ne.y, g);
+        const zLo = Math.min(zAp, zBp);
+        const zHi = Math.max(zAp, zBp);
+        const COORD_STEPS = 15;
+        const lineZ: number[] = [], lineX: number[] = [], lineY: number[] = [];
+        for (let si = 0; si <= COORD_STEPS; si++) {
+          lineZ.push(zLo + (zHi - zLo) * si / COORD_STEPS);
+          lineX.push(ne.x);
+          lineY.push(ne.y);
+        }
+        // Vertical line connecting payoff A and payoff B for pure NE
+        traces.push({
+          type: 'scatter3d',
+          mode: 'lines',
+          name: pureShown ? '_' : 'Pure NE',
+          showlegend: !pureShown,
+          x: lineX,
+          y: lineY,
+          z: lineZ,
+          line: { color: '#4ca47a', width: 6, dash: 'solid' }
+        });
         traces.push({
           type: 'scatter3d',
           mode: 'markers',
-          name: pureShown ? '_' : 'Pure NE',
-          showlegend: !pureShown,
+          name: '_',
+          showlegend: false,
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
-          z: [EA(ne.x, ne.y, g), EB(ne.x, ne.y, g)],
+          z: [zAp, zBp],
           marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       } else {
