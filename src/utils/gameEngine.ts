@@ -639,14 +639,18 @@ export function doStep(
         s.domYLo = glide(s.domYLo, yStar); s.domYHi = glide(s.domYHi, yStar);
         s.stratX = r3((s.domXLo + s.domXHi) / 2);
         s.stratY = r3((s.domYLo + s.domYHi) / 2);
-        if (s.discoveredMixedX === null && Math.abs(s.domXHi - s.domXLo) < 0.0015) {
+        // Snap each domain onto its root once it has collapsed (its line sits flat).
+        const xDone = Math.abs(s.domXHi - s.domXLo) < 0.0015;
+        const yDone = Math.abs(s.domYHi - s.domYLo) < 0.0015;
+        if (xDone) { s.domXLo = xStar; s.domXHi = xStar; s.stratX = xStar; }
+        if (yDone) { s.domYLo = yStar; s.domYHi = yStar; s.stratY = yStar; }
+        // Declare BOTH coordinates together (parallel convergence). Setting them
+        // atomically avoids a transient "exactly one found" state, which would
+        // otherwise flash the Search-corridor box / ghost for a few end steps.
+        if (xDone && yDone && s.discoveredMixedX === null) {
           s.discoveredMixedX = xStar;
-          s.domXLo = xStar; s.domXHi = xStar; s.stratX = xStar;
-          addLog('✓ x-coordinate discovered: ' + xStar.toFixed(3));
-        }
-        if (s.discoveredMixedY === null && Math.abs(s.domYHi - s.domYLo) < 0.0015) {
           s.discoveredMixedY = yStar;
-          s.domYLo = yStar; s.domYHi = yStar; s.stratY = yStar;
+          addLog('✓ x-coordinate discovered: ' + xStar.toFixed(3));
           addLog('✓ y-coordinate discovered: ' + yStar.toFixed(3));
         }
         addLog(`↺ Cycle ${s.cycleCount} → A∈[${r3(s.domXLo).toFixed(3)},${r3(s.domXHi).toFixed(3)}] B∈[${r3(s.domYLo).toFixed(3)},${r3(s.domYHi).toFixed(3)}] (λ=${r3(lambda)})`);
