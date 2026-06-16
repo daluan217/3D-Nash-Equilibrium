@@ -584,7 +584,12 @@ export function doStep(
     const EPS_B = Math.abs(Dx) > 1e-9 ? Math.abs(Dx) * 0.00065 : 0.00065;
     const EPS_A = Math.abs(Dy) > 1e-9 ? Math.abs(Dy) * 0.00065 : 0.00065;
 
-    const regretEligible = stepMode === 'regret' && mixedNE !== undefined
+    // We are in the no-pure-NE branch (the corner best-response checks found none).
+    // By Nash's theorem a non-degenerate 2×2 game with no pure NE must have an
+    // interior mixed NE — so the best responses cycle and the regret search is
+    // valid WITHOUT ever consulting the precomputed mixed coordinate. Dx,Dy ≠ 0
+    // just rules out a degenerate game where a player is indifferent everywhere.
+    const regretEligible = stepMode === 'regret'
       && Math.abs(Dx) > 1e-9 && Math.abs(Dy) > 1e-9;
 
     if (regretEligible) {
@@ -637,6 +642,11 @@ export function doStep(
       // is read off the collapsed domain — found by the dynamics, not precomputed.
       const rkey = r3(nx).toFixed(3) + ',' + r3(ny).toFixed(3);
       if (s.visitedPositions.includes(rkey)) {
+        // A revisited best-response corner means the dynamics cycle — proof there
+        // is no pure-strategy NE, so a mixed-strategy NE must exist to find.
+        if (s.cycleCount === 0) {
+          addLog('↻ Best responses cycle — no pure NE, so a mixed NE must exist. Contracting on it via regret.');
+        }
         s.cycleCount++;
         s.visitedPositions = [];
         s.domXLo = regretGlide(s.domXLo, sBfn, Dx); s.domXHi = regretGlide(s.domXHi, sBfn, Dx);
