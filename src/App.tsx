@@ -1734,7 +1734,10 @@ export default function App() {
               </div>
             </div>
 
-            {/* Convergence method */}
+            {/* Convergence method — hidden in the anonymized review build (regret
+                mode is withheld there; stepMode stays 'shrink', so the slider,
+                strategy lines and two-domain box all behave as the shrink default). */}
+            {!ANONYMIZED && (
             <div>
               <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Convergence Method</label>
               <div className="grid grid-cols-2 gap-2">
@@ -1763,6 +1766,7 @@ export default function App() {
                   : 'Contracts the search corridor by a fixed step, bisecting when a coordinate is overshot.'}
               </span>
             </div>
+            )}
 
             {/* Step size / regret weight */}
             <div>

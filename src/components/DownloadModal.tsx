@@ -61,7 +61,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
       // Let the browser handle the download natively (avoids loading 120MB into JS heap)
       const a = document.createElement('a');
       a.href = '/api/download/dmg';
-      a.download = 'Nash Equilibrium Simulator.dmg';
+      a.download = 'Mixed Nash Equilibrium Visualizer.dmg';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -105,7 +105,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                 macOS Desktop App Installer
               </h3>
               <p className="text-slate-500 dark:text-slate-400">
-                Run the Nash Equilibrium Simulator as a native macOS app.
+                Run the Mixed Nash Equilibrium Visualizer as a native macOS app.
               </p>
             </div>
           </div>
@@ -216,10 +216,10 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             </p>
             <ol className="space-y-1.5 list-none">
               {[
-                <>Drag <strong className="text-slate-700 dark:text-slate-300">Nash Equilibrium Simulator</strong> from the DMG into your <strong className="text-slate-700 dark:text-slate-300">Applications</strong> folder.</>,
+                <>Drag <strong className="text-slate-700 dark:text-slate-300">Mixed Nash Equilibrium Visualizer</strong> from the DMG into your <strong className="text-slate-700 dark:text-slate-300">Applications</strong> folder.</>,
                 <>Double-click the app. When the warning appears, click <strong className="text-slate-700 dark:text-slate-300">Cancel</strong> (not Move to Trash).</>,
                 <>Open <strong className="text-slate-700 dark:text-slate-300">System Settings → Privacy &amp; Security</strong>.</>,
-                <>Scroll down to find <em>"Nash Equilibrium Simulator was blocked"</em> and click <strong className="text-slate-700 dark:text-slate-300">Open Anyway</strong>.</>,
+                <>Scroll down to find <em>"Mixed Nash Equilibrium Visualizer was blocked"</em> and click <strong className="text-slate-700 dark:text-slate-300">Open Anyway</strong>.</>,
                 <>Double-click the app again and click <strong className="text-slate-700 dark:text-slate-300">Open</strong> to confirm. You only need to do this once.</>,
               ].map((step, i) => (
                 <li key={i} className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
@@ -241,7 +241,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1"><Terminal className="w-3 h-3" /> Terminal command</span>
                     <button
-                      onClick={() => copyCode(`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`, 'xattr')}
+                      onClick={() => copyCode(`xattr -dr com.apple.quarantine "/Applications/Mixed Nash Equilibrium Visualizer.app"`, 'xattr')}
                       className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
                     >
                       {copiedText === 'xattr' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
@@ -249,7 +249,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                     </button>
                   </div>
                   <pre className="p-2.5 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-xs text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto whitespace-pre-wrap break-all">
-                    {`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`}
+                    {`xattr -dr com.apple.quarantine "/Applications/Mixed Nash Equilibrium Visualizer.app"`}
                   </pre>
                   <p className="text-xs text-slate-500 dark:text-slate-500">Run this after dragging the app to Applications, then double-click to open normally.</p>
                 </div>
