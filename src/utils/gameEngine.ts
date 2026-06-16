@@ -588,72 +588,83 @@ export function doStep(
       && Math.abs(Dx) > 1e-9 && Math.abs(Dy) > 1e-9;
 
     if (regretEligible) {
-      // ── Two-domain regret contraction ─────────────────────────────────────
-      // Each player keeps their OWN domain, contracted toward their OWN NE
-      // coordinate every cycle by a fraction λ of the remaining distance. Because
-      // the opponent's regret is proportional to that distance, this is exactly
-      // "step ∝ opponent's regret × weight": the midpoints (stratX, stratY) glide
-      // independently and decelerate, so each strategy line eases flat gradually
-      // instead of snapping. Best-response corner cycling is retained for the
-      // sphere; its amplitude shrinks with the domains.
-      const xStar = mixedNE!.x;
-      const yStar = mixedNE!.y;
+      // ── Two-domain regret contraction (genuinely regret-driven) ───────────
+      // Each player keeps their OWN domain. Every cycle a bound steps by the LIVE
+      // regret signal evaluated THERE — the opponent's indifference gap — never by
+      // distance to a precomputed root:
+      //   sB(x) = E[Col1]−E[Col2] at x   (B's regret signal; zero ⇒ B indifferent)
+      //   sA(y) = E[Row1]−E[Row2] at y   (A's regret signal; zero ⇒ A indifferent)
+      // The step is a damped Newton move on that signal, step = λ·s / s′ (s′ = Dx
+      // or Dy, the signal's own slope from the payoffs). Its direction is the sign
+      // of the signal (which way reduces the opponent's regret) and its magnitude
+      // scales with |s| — so it decelerates as the line flattens. The indifference
+      // point is DISCOVERED where the signal crosses zero (detected by a sign flip
+      // and pinned by secant), not supplied in advance. The midpoint (hi+lo)/2,
+      // where the strategy line is drawn, eases flat one cycle at a time.
       const lambda = Math.max(0.001, Math.min(0.95, defaultShrinkStep));
-      const glide = (b: number, r: number): number => {
-        if (Math.abs(b - r) < 1e-9) return r;
-        let step = lambda * (r - b);
-        // Floor to one display-grid unit toward the root so 3-dp rounding can't
-        // freeze the glide a hair short; clamp so it never overshoots.
-        if (Math.abs(step) < 0.001) step = Math.sign(r - b) * 0.001;
-        let nb = b + step;
-        if ((r - b) * (r - nb) < 0) nb = r;
+      const regretGlide = (b: number, sfn: (v: number) => number, slope: number): number => {
+        const sHere = sfn(b);
+        if (Math.abs(sHere) < 1e-12) return b; // already indifferent here
+        let step = lambda * sHere / slope; // damped Newton on the live regret signal
+        if (Math.abs(step) < 0.001) step = Math.sign(step) * 0.001; // grid-unit floor → progress
+        let nb = b - step;
+        const sNext = sfn(nb);
+        // Sign flip ⇒ the step crossed the indifference point; land on the zero by
+        // secant (still derived only from the live signal, no precomputed root).
+        if (sHere * sNext < 0) nb = b - sHere * (nb - b) / (sNext - sHere);
         return r3(Math.max(0, Math.min(1, nb)));
       };
+      const sBfn = (x: number) => x * (g.b11 - g.b12) + (1 - x) * (g.b21 - g.b22);
+      const sAfn = (y: number) => y * (g.a11 - g.a21) + (1 - y) * (g.a12 - g.a22);
 
       // Best-response cycling: each mover flips its OWN axis to a domain corner in
       // response to the opponent's CURRENT corner (s.cx / s.cy), so the path rotates
       // around the box perimeter exactly like shrink mode. (Using the midpoint here
       // would freeze it at one corner — no rotation.)
       if (mover === 'A') {
-        const sA = s.cy * (g.a11 - g.a21) + (1 - s.cy) * (g.a12 - g.a22);
-        nx = sA > 0 ? s.domXHi : s.domXLo;
+        nx = sAfn(s.cy) > 0 ? s.domXHi : s.domXLo;
         ny = s.cy;
       } else {
-        const sB = s.cx * (g.b11 - g.b12) + (1 - s.cx) * (g.b21 - g.b22);
-        ny = sB > 0 ? s.domYHi : s.domYLo;
+        ny = sBfn(s.cx) > 0 ? s.domYHi : s.domYLo;
         nx = s.cx;
       }
       s.calcX = r3(nx);
       s.calcY = r3(ny);
 
-      // One contraction per full perimeter loop. Each domain shrinks toward its own
-      // NE coordinate by a regret-proportional amount (the geometric step λ·(root−b)
-      // is proportional to that player's distance from indifference, i.e. the
-      // opponent's regret). The midpoint (hi+lo)/2 — where the strategy line is
-      // drawn — glides smoothly to the NE coordinate, flattening one cycle at a time.
+      // One contraction per full perimeter loop: step each domain's bounds by the
+      // opponent's live regret. As the signal → 0 the steps shrink, so the domain
+      // closes and its midpoint's strategy line flattens. The converged coordinate
+      // is read off the collapsed domain — found by the dynamics, not precomputed.
       const rkey = r3(nx).toFixed(3) + ',' + r3(ny).toFixed(3);
       if (s.visitedPositions.includes(rkey)) {
         s.cycleCount++;
         s.visitedPositions = [];
-        s.domXLo = glide(s.domXLo, xStar); s.domXHi = glide(s.domXHi, xStar);
-        s.domYLo = glide(s.domYLo, yStar); s.domYHi = glide(s.domYHi, yStar);
+        s.domXLo = regretGlide(s.domXLo, sBfn, Dx); s.domXHi = regretGlide(s.domXHi, sBfn, Dx);
+        s.domYLo = regretGlide(s.domYLo, sAfn, Dy); s.domYHi = regretGlide(s.domYHi, sAfn, Dy);
         s.stratX = r3((s.domXLo + s.domXHi) / 2);
         s.stratY = r3((s.domYLo + s.domYHi) / 2);
-        // Snap each domain onto its root once it has collapsed (its line sits flat).
-        const xDone = Math.abs(s.domXHi - s.domXLo) < 0.0015;
-        const yDone = Math.abs(s.domYHi - s.domYLo) < 0.0015;
-        if (xDone) { s.domXLo = xStar; s.domXHi = xStar; s.stratX = xStar; }
-        if (yDone) { s.domYLo = yStar; s.domYHi = yStar; s.stratY = yStar; }
+        // A domain has converged once its remaining regret span is negligible.
+        // Pin it to the neighbouring grid point with the smallest LIVE regret
+        // (so a half-grid midpoint like r3(0.1675) can't round to the wrong cell) —
+        // still read purely off the signal, not a precomputed root.
+        const snapToIndifference = (mid: number, sfn: (v: number) => number): number => {
+          const cands = [r3(mid - 0.001), r3(mid), r3(mid + 0.001)].filter(v => v >= 0 && v <= 1);
+          return cands.reduce((best, v) => Math.abs(sfn(v)) < Math.abs(sfn(best)) ? v : best, r3(mid));
+        };
+        const xDone = Math.abs(s.domXHi - s.domXLo) < 0.0015 || Math.abs(sBfn(s.stratX)) < EPS_B;
+        const yDone = Math.abs(s.domYHi - s.domYLo) < 0.0015 || Math.abs(sAfn(s.stratY)) < EPS_A;
+        if (xDone) { s.stratX = snapToIndifference(s.stratX, sBfn); s.domXLo = s.stratX; s.domXHi = s.stratX; }
+        if (yDone) { s.stratY = snapToIndifference(s.stratY, sAfn); s.domYLo = s.stratY; s.domYHi = s.stratY; }
         // Declare BOTH coordinates together (parallel convergence). Setting them
         // atomically avoids a transient "exactly one found" state, which would
         // otherwise flash the Search-corridor box / ghost for a few end steps.
         if (xDone && yDone && s.discoveredMixedX === null) {
-          s.discoveredMixedX = xStar;
-          s.discoveredMixedY = yStar;
-          addLog('✓ x-coordinate discovered: ' + xStar.toFixed(3));
-          addLog('✓ y-coordinate discovered: ' + yStar.toFixed(3));
+          s.discoveredMixedX = s.stratX;
+          s.discoveredMixedY = s.stratY;
+          addLog('✓ x-coordinate discovered: ' + s.stratX.toFixed(3));
+          addLog('✓ y-coordinate discovered: ' + s.stratY.toFixed(3));
         }
-        addLog(`↺ Cycle ${s.cycleCount} → A∈[${r3(s.domXLo).toFixed(3)},${r3(s.domXHi).toFixed(3)}] B∈[${r3(s.domYLo).toFixed(3)},${r3(s.domYHi).toFixed(3)}] (λ=${r3(lambda)})`);
+        addLog(`↺ Cycle ${s.cycleCount} → A∈[${r3(s.domXLo).toFixed(3)},${r3(s.domXHi).toFixed(3)}] B∈[${r3(s.domYLo).toFixed(3)},${r3(s.domYHi).toFixed(3)}] (regretλ=${r3(lambda)})`);
         onCycleDetected();
       } else {
         s.visitedPositions.push(rkey);
