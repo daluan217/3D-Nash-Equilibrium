@@ -1,0 +1,11 @@
+#!/bin/sh
+# Auto-bump the patch version on every commit so each commit yields a strictly
+# newer semver. This drives the Electron app's "Download Update" prompt: once a
+# commit is built into a DMG and its version published to /api/version, installed
+# apps detect the newer version and notify the user to update.
+#
+# Enabled via `git config core.hooksPath .githooks` (wired automatically by the
+# package.json "prepare" script on `npm install`).
+
+node "$(git rev-parse --show-toplevel)/scripts/bump-version.cjs" || exit 1
+git add "$(git rev-parse --show-toplevel)/package.json"
