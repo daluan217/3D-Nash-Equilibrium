@@ -1186,34 +1186,34 @@ export default function App() {
   // simulation converges; then it moves to a full-width band beneath both
   // columns, where the equilibrium report needs the extra vertical room.
   const simulationLogPanel = (
-    <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-200">
-      <span className="text-xs uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1.5">
-        <Terminal className="w-4 h-4 text-emerald-400" />
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-700 dark:text-slate-200 shadow-sm">
+      <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
+        <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
         Simulation Log
       </span>
-      <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-950/70 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-300 space-y-1 block leading-relaxed select-text ${simState.converged ? 'h-44' : 'h-80'}`}>
+      <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text ${simState.converged ? 'h-44' : 'h-80'}`}>
         {logEntries.map((line, idx) => {
-          let colClass = 'text-slate-300';
+          let colClass = 'text-slate-600 dark:text-slate-300';
           if (line.includes('✓')) {
-            colClass = 'text-emerald-400 font-semibold';
+            colClass = 'text-emerald-600 dark:text-emerald-400 font-semibold';
           } else if (line.includes('↺')) {
             if (line.includes('Ghost cycle')) {
               if (line.includes('(A)')) {
-                colClass = 'text-rose-300 font-medium';
+                colClass = 'text-rose-500 dark:text-rose-300 font-medium';
               } else if (line.includes('(B)')) {
-                colClass = 'text-player-b-300 font-medium';
+                colClass = 'text-player-b-600 dark:text-player-b-300 font-medium';
               } else {
-                colClass = 'text-amber-300 font-medium';
+                colClass = 'text-amber-600 dark:text-amber-300 font-medium';
               }
             } else {
-              colClass = 'text-amber-400 font-semibold';
+              colClass = 'text-amber-600 dark:text-amber-400 font-semibold';
             }
           } else if (line.includes('━━') || line.includes('Start')) {
-            colClass = 'text-accent-400 font-semibold';
+            colClass = 'text-accent-600 dark:text-accent-400 font-semibold';
           } else if (line.includes('(A)')) {
-            colClass = 'text-player-a-400 font-semibold';
+            colClass = 'text-player-a-600 dark:text-player-a-400 font-semibold';
           } else if (line.includes('(B)')) {
-            colClass = 'text-player-b-400 font-semibold';
+            colClass = 'text-player-b-600 dark:text-player-b-400 font-semibold';
           }
           return (
             <p key={idx} className={colClass}>
@@ -1566,21 +1566,21 @@ export default function App() {
           </div>
 
           {/* Expected math formulations */}
-          <div className="bg-slate-900 text-slate-100 p-5 rounded-2xl shadow-sm flex flex-col gap-3">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+          <div className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
               Expected-Payoff Functions
             </span>
             <div className="flex flex-col gap-2 text-sm">
-              <div className="flex items-center gap-2 bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-800">
-                <MathTex tex="\mathbb{E}[A]" className="text-player-a-400" />
-                <MathTex tex={`= ${eqAStr}`} className="text-slate-200" />
+              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+                <MathTex tex="\mathbb{E}[A]" className="text-player-a-600 dark:text-player-a-400" />
+                <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
-              <div className="flex items-center gap-2 bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-800">
-                <MathTex tex="\mathbb{E}[B]" className="text-player-b-400" />
-                <MathTex tex={`= ${eqBStr}`} className="text-slate-200" />
+              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+                <MathTex tex="\mathbb{E}[B]" className="text-player-b-600 dark:text-player-b-400" />
+                <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
             </div>
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
               <MathTex tex="x = P(\text{A plays Row 1}), \quad y = P(\text{B plays Col 1})" />
             </span>
           </div>
