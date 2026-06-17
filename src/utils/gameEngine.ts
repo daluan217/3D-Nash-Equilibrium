@@ -51,6 +51,20 @@ export const PRESETS: Record<string, PresetGame> = {
         + 'This zero-sum-adjacent game has no pure Nash Equilibrium — both players must mix their strategies. '
         + 'Payoffs (clockwise from top-left): (3,−3), (−2,2), (0,0), (−1,1).'
   },
+  search: {
+    key: 'search',
+    name: 'Search Game',
+    a11: 2, b11: -2,  a12: 0, b12: 0,
+    a21: 0, b21: 0,   a22: 1, b22: -1,
+    row1Label: 'Search L', row2Label: 'Search R',
+    col1Label: 'Hide L',   col2Label: 'Hide R',
+    desc: '<strong>Search Game:</strong> A searcher chooses to look Left (Row 1) or Right (Row 2); a hider simultaneously picks Left (Col 1) or Right (Col 2). '
+        + 'The searcher wins 2 by finding the hider at the left door, 1 at the right door. '
+        + 'The hider\'s payoffs are the exact negatives (zero-sum). '
+        + 'Neither player has a dominant strategy — both must randomize. '
+        + 'The unique Nash Equilibrium is mixed: Searcher plays Left with probability ⅓, Hider hides Left with probability ⅓. '
+        + 'Notice the <em>flat spot</em> in both expected-payoff surfaces at (x*, y*) = (⅓, ⅓).'
+  },
   custom: {
     key: 'custom',
     name: 'Custom',

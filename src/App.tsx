@@ -319,17 +319,17 @@ export default function App() {
   }, [authToken, user, dbMode, apiBaseUrl]);
 
   // ── Preset Selector State ──────────────────────────────────────────────────
-  const [activePreset, setActivePreset] = useState<string>('bos');
+  const [activePreset, setActivePreset] = useState<string>('search');
 
   // ── Payoff Values State ────────────────────────────────────────────────────
   const [payoffs, setPayoffs] = useState<GamePayoffs>({
-    a11: 2, b11: 1, a12: 0, b12: 0,
-    a21: 0, b21: 0, a22: 1, b22: 2,
+    a11: 2, b11: -2, a12: 0, b12: 0,
+    a21: 0, b21: 0,  a22: 1, b22: -1,
   });
 
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
-    a11: '2', b11: '1', a12: '0', b12: '0',
-    a21: '0', b21: '0', a22: '1', b22: '2',
+    a11: '2', b11: '-2', a12: '0', b12: '0',
+    a21: '0', b21: '0',  a22: '1', b22: '-1',
   });
 
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction
@@ -397,14 +397,14 @@ export default function App() {
     stepCount: 0,
     pathSegmentsA: [{
       xs: [0.217], ys: [0.217], zs: [r3(EA(0.217, 0.217, {
-        a11: 2, b11: 1, a12: 0, b12: 0,
-        a21: 0, b21: 0, a22: 1, b22: 2,
+        a11: 2, b11: -2, a12: 0, b12: 0,
+        a21: 0, b21: 0,  a22: 1, b22: -1,
       }))], mover: 'A'
     }],
     pathSegmentsB: [{
       xs: [0.217], ys: [0.217], zs: [r3(EB(0.217, 0.217, {
-        a11: 2, b11: 1, a12: 0, b12: 0,
-        a21: 0, b21: 0, a22: 1, b22: 2,
+        a11: 2, b11: -2, a12: 0, b12: 0,
+        a21: 0, b21: 0,  a22: 1, b22: -1,
       }))], mover: 'A'
     }],
     phase1PtsA: null, phase1PtsB: null,
