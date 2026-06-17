@@ -15,3 +15,7 @@ dist-electron/
 *.dmg
 *.zip
 *.blockmap
+
+# Local agent / tooling artifacts
+CLAUDE.md
+.playwright-mcp/
