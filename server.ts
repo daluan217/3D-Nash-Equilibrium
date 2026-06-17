@@ -309,8 +309,8 @@ async function sendRecoveryEmail(email: string, code: string): Promise<{ success
   }
 }
 
-// Destination inbox for all user feedback submissions (configured via env)
-const FEEDBACK_INBOX = process.env.FEEDBACK_INBOX || "";
+// Destination inbox for all user feedback submissions
+const FEEDBACK_INBOX = process.env.FEEDBACK_INBOX || "noreply@example.com";
 
 async function sendFeedbackEmail(
   message: string,
