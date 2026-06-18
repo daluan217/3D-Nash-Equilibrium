@@ -36,10 +36,13 @@ interface User {
   isVerified: boolean;
   verificationCode: string;
   verificationCodeExpires: number;
+  verificationCodeAttempts?: number;
   deleteCode?: string;
   deleteCodeExpires?: number;
+  deleteCodeAttempts?: number;
   recoveryCode?: string;
   recoveryCodeExpires?: number;
+  recoveryCodeAttempts?: number;
 }
 
 interface DB {
@@ -136,6 +139,43 @@ function safeEqual(a: string, b: string): boolean {
 
 function makeCode(): string {
   return crypto.randomInt(100000, 1000000).toString();
+}
+
+// How many wrong guesses a one-time code tolerates before it's invalidated.
+const MAX_CODE_ATTEMPTS = 5;
+
+const CODE_FIELDS = {
+  verification: { code: "verificationCode", expires: "verificationCodeExpires", attempts: "verificationCodeAttempts" },
+  recovery: { code: "recoveryCode", expires: "recoveryCodeExpires", attempts: "recoveryCodeAttempts" },
+  delete: { code: "deleteCode", expires: "deleteCodeExpires", attempts: "deleteCodeAttempts" },
+} as const;
+
+// Constant-time, attempt-limited check of a one-time 6-digit code. Increments a
+// per-code failure counter and invalidates the code after MAX_CODE_ATTEMPTS
+// wrong guesses, so the 10-minute TTL can't be brute-forced across the 1e6
+// space (the per-IP rate limit alone is bypassable via IP rotation). Mutates
+// `user`; the caller must persist with saveDB(). `locked` means this attempt
+// tripped the limit and the code is now cleared.
+function verifyOneTimeCode(user: User, kind: keyof typeof CODE_FIELDS, submitted: string): { ok: boolean; locked: boolean } {
+  const f = CODE_FIELDS[kind];
+  const u = user as unknown as Record<string, unknown>;
+  const stored = u[f.code];
+  if (typeof stored !== "string" || stored.length === 0) {
+    return { ok: false, locked: false };
+  }
+  if (safeEqual(stored, submitted)) {
+    u[f.attempts] = undefined;
+    return { ok: true, locked: false };
+  }
+  const attempts = ((u[f.attempts] as number) ?? 0) + 1;
+  if (attempts >= MAX_CODE_ATTEMPTS) {
+    u[f.code] = kind === "verification" ? "" : undefined;
+    u[f.expires] = kind === "verification" ? 0 : undefined;
+    u[f.attempts] = undefined;
+    return { ok: false, locked: true };
+  }
+  u[f.attempts] = attempts;
+  return { ok: false, locked: false };
 }
 
 function makeId(prefix: "u" | "g"): string {
@@ -288,9 +328,12 @@ function getTransporter() {
         user,
         pass,
       },
-      tls: {
-        rejectUnauthorized: false
-      }
+      // Validate the SMTP server's TLS certificate by default. Disabling it
+      // exposes SMTP credentials and mail contents to MITM, so only opt out via
+      // an explicit dev-only flag (e.g. a self-signed local relay).
+      ...(process.env.SMTP_ALLOW_INSECURE_TLS === "true"
+        ? { tls: { rejectUnauthorized: false } }
+        : {}),
     });
   }
   return null;
@@ -722,6 +765,7 @@ async function startServer() {
       existingUser.passwordHash = hashPassword(password);
       existingUser.verificationCode = updatedCode;
       existingUser.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+      existingUser.verificationCodeAttempts = undefined; // fresh code → fresh attempt budget
       saveDB(db);
 
       let emailResult;
@@ -833,8 +877,14 @@ async function startServer() {
       return res.status(400).json({ error: "Verification code has expired. Please register again to get a new code." });
     }
 
-    if (user.verificationCode !== code) {
-      return res.status(400).json({ error: "Incorrect verification code." });
+    const verifyCheck = verifyOneTimeCode(user, "verification", code);
+    if (!verifyCheck.ok) {
+      saveDB(db);
+      return res.status(400).json({
+        error: verifyCheck.locked
+          ? "Too many incorrect attempts. Please register again to get a new code."
+          : "Incorrect verification code."
+      });
     }
 
     // Mark verified
@@ -927,6 +977,7 @@ async function startServer() {
     const recoveryCode = makeCode();
     user.recoveryCode = recoveryCode;
     user.recoveryCodeExpires = Date.now() + 10 * 60 * 1000;
+    user.recoveryCodeAttempts = undefined; // fresh code → fresh attempt budget
     saveDB(db);
 
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
@@ -983,8 +1034,14 @@ async function startServer() {
       return res.status(400).json({ error: "Recovery code has expired. Please request a new one." });
     }
 
-    if (user.recoveryCode !== code) {
-      return res.status(400).json({ error: "Incorrect recovery code." });
+    const recoveryCheck = verifyOneTimeCode(user, "recovery", code);
+    if (!recoveryCheck.ok) {
+      saveDB(db);
+      return res.status(400).json({
+        error: recoveryCheck.locked
+          ? "Too many incorrect attempts. Please request a new recovery code."
+          : "Incorrect recovery code."
+      });
     }
 
     user.passwordHash = hashPassword(newPassword);
@@ -1007,6 +1064,7 @@ async function startServer() {
     const deleteCode = makeCode();
     user.deleteCode = deleteCode;
     user.deleteCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.deleteCodeAttempts = undefined; // fresh code → fresh attempt budget
 
     saveDB(db);
 
@@ -1057,8 +1115,14 @@ async function startServer() {
       return res.status(400).json({ error: "Deletion confirmation code has expired. Please request a new one." });
     }
 
-    if (user.deleteCode !== code) {
-      return res.status(400).json({ error: "Incorrect verification code." });
+    const deleteCheck = verifyOneTimeCode(user, "delete", code);
+    if (!deleteCheck.ok) {
+      saveDB(db);
+      return res.status(400).json({
+        error: deleteCheck.locked
+          ? "Too many incorrect attempts. Please request a new confirmation code."
+          : "Incorrect verification code."
+      });
     }
 
     const userEmail = user.email.toLowerCase().trim();
