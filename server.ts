@@ -43,6 +43,7 @@ interface User {
   recoveryCode?: string;
   recoveryCodeExpires?: number;
   recoveryCodeAttempts?: number;
+  tokenVersion?: number;
 }
 
 interface DB {
@@ -206,9 +207,25 @@ function needsPasswordRehash(stored: string): boolean {
   return !stored.startsWith("pbkdf2$");
 }
 
-function createAuthToken(userId: string): string {
+// Precomputed hash for a random password. Used to spend the same pbkdf2 work on
+// a login miss as on a hit, so response timing doesn't reveal whether an
+// account exists (user enumeration).
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(16).toString("hex"));
+
+// Escape user-controlled text before interpolating it into HTML (email bodies).
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function createAuthToken(user: User): string {
   const payload = b64url(JSON.stringify({
-    sub: userId,
+    sub: user.id,
+    ver: user.tokenVersion ?? 0,
     exp: Date.now() + AUTH_TOKEN_TTL_MS,
     nonce: b64url(crypto.randomBytes(12)),
   }));
@@ -216,7 +233,7 @@ function createAuthToken(userId: string): string {
   return `${payload}.${sig}`;
 }
 
-function readAuthToken(token: string): string | null {
+function readAuthToken(token: string): { sub: string; ver: number } | null {
   const [payload, sig, extra] = token.split(".");
   if (!payload || !sig || extra) return null;
   const expected = b64url(crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest());
@@ -224,7 +241,7 @@ function readAuthToken(token: string): string | null {
   try {
     const parsed = JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
     if (!parsed.sub || typeof parsed.exp !== "number" || parsed.exp < Date.now()) return null;
-    return parsed.sub;
+    return { sub: parsed.sub, ver: typeof parsed.ver === "number" ? parsed.ver : 0 };
   } catch {
     return null;
   }
@@ -234,9 +251,13 @@ function getAuthUser(req: express.Request): User | null {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
   const token = authHeader.slice("Bearer ".length).trim();
-  const userId = readAuthToken(token);
-  if (!userId) return null;
-  return loadDB().users.find(u => u.id === userId) ?? null;
+  const claims = readAuthToken(token);
+  if (!claims) return null;
+  const user = loadDB().users.find(u => u.id === claims.sub) ?? null;
+  // Reject tokens minted before the user's current token version (e.g. issued
+  // before a password reset), so a stolen token can't outlive the reset.
+  if (!user || (user.tokenVersion ?? 0) !== claims.ver) return null;
+  return user;
 }
 
 function cleanText(value: unknown, maxLength: number): string {
@@ -256,11 +277,21 @@ function cleanPayoffs(value: any): GamePayoffs | null {
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
+// Drop expired buckets so the Map can't grow unbounded under many distinct IPs.
+// Cheap: only sweeps once the Map gets large rather than on every request.
+function pruneRateBuckets(now: number) {
+  if (rateBuckets.size < 1000) return;
+  for (const [key, bucket] of rateBuckets) {
+    if (bucket.resetAt <= now) rateBuckets.delete(key);
+  }
+}
+
 function rateLimit(label: string, max: number, windowMs: number): express.RequestHandler {
   return (req, res, next) => {
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const key = `${label}:${ip}`;
     const now = Date.now();
+    pruneRateBuckets(now);
     const bucket = rateBuckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
       rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
@@ -350,7 +381,7 @@ async function sendVerificationEmail(email: string, code: string, username: stri
         <span style="font-size: 32px; display: inline-block; margin-bottom: 8px;">🧭</span>
         <h2 style="margin: 0; color: #0f172a; font-size: 22px; font-weight: 800; tracking-tight: -0.025em;">Nash Equilibrium Simulator</h2>
       </div>
-      <p style="color: #334155; font-size: 15px; line-height: 1.6; margin-bottom: 16px;">Hello <strong>@${username}</strong>,</p>
+      <p style="color: #334155; font-size: 15px; line-height: 1.6; margin-bottom: 16px;">Hello <strong>@${escapeHtml(username)}</strong>,</p>
       <p style="color: #475569; font-size: 14.5px; line-height: 1.6; margin-bottom: 24px;">To complete your setup, please enter this code into the Nash Equilibrium Simulator verification modal:</p>
       
       <div style="text-align: center; margin: 28px 0;">
@@ -395,7 +426,7 @@ async function sendDeleteEmail(email: string, code: string, username: string): P
         <span style="font-size: 32px; display: inline-block; margin-bottom: 8px;">⚠️</span>
         <h2 style="margin: 0; color: #991b1b; font-size: 20px; font-weight: 800; tracking-tight: -0.025em;">Confirm Account Deletion</h2>
       </div>
-      <p style="color: #334155; font-size: 15px; line-height: 1.6; margin-bottom: 16px;">Hello <strong>@${username}</strong>,</p>
+      <p style="color: #334155; font-size: 15px; line-height: 1.6; margin-bottom: 16px;">Hello <strong>@${escapeHtml(username)}</strong>,</p>
       <p style="color: #475569; font-size: 14.5px; line-height: 1.6; margin-bottom: 24px;">We received a request to permanently delete your Nash Equilibrium Simulator account. This action cannot be undone. To proceed, please enter this security confirmation code into the simulator's deletion screen:</p>
       
       <div style="text-align: center; margin: 28px 0;">
@@ -512,7 +543,7 @@ async function sendFeedbackEmail(
         </tr>
         <tr>
           <td style="color: #64748b; font-size: 13px; font-weight: 700; padding: 6px 0;">From</td>
-          <td style="color: #334155; font-size: 14px; padding: 6px 0;">${senderLabel}</td>
+          <td style="color: #334155; font-size: 14px; padding: 6px 0;">${escapeHtml(senderLabel)}</td>
         </tr>
       </table>
       <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; color: #334155; font-size: 14.5px; line-height: 1.6; white-space: pre-wrap;">${safeMessage}</div>
@@ -547,15 +578,52 @@ async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
+  // Trust the proxy in front of us (e.g. Cloud Run) so req.ip reflects the real
+  // client for rate limiting. Configurable because trusting X-Forwarded-For when
+  // NOT behind a trusted proxy would let clients spoof their IP. Set TRUST_PROXY
+  // to a hop count (e.g. "1"), "true", or a subnet; defaults to off for local.
+  const trustProxy = process.env.TRUST_PROXY;
+  if (trustProxy) {
+    app.set("trust proxy", /^\d+$/.test(trustProxy) ? parseInt(trustProxy, 10)
+      : trustProxy === "true" ? true
+      : trustProxy);
+  }
+
   // Parse JSON bodies
   app.use(express.json());
 
-  // Enable CORS middleware for cross-origin API access (e.g. from local Electron client to website backend)
+  // Baseline security headers. A full content CSP is intentionally omitted here
+  // because the app loads Google Analytics + inline scripts and Plotly may use
+  // eval/blob workers — tightening script/style/connect needs browser testing.
   app.use((req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-secret");
-    
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+    next();
+  });
+
+  // CORS for cross-origin API access (e.g. from the local Electron client to the
+  // website backend). Set CORS_ALLOWED_ORIGINS (comma-separated) to restrict to
+  // known origins; if unset we fall back to "*" for backward compatibility.
+  const corsAllowlist = (process.env.CORS_ALLOWED_ORIGINS || "")
+    .split(",").map(o => o.trim()).filter(Boolean);
+  app.use((req, res, next) => {
+    // Never expose admin routes (which return user PII) cross-origin: with no
+    // Access-Control-Allow-Origin header the browser blocks the response.
+    if (!req.path.startsWith("/api/admin/")) {
+      const origin = req.headers.origin;
+      if (corsAllowlist.length === 0) {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+      } else if (origin && corsAllowlist.includes(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+      }
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-secret");
+    }
+
     if (req.method === "OPTIONS") {
       return res.sendStatus(200);
     }
@@ -609,7 +677,7 @@ async function startServer() {
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
   // The installed Electron app polls this to decide whether to prompt for an update.
-  app.get("/api/version", async (req, res) => {
+  app.get("/api/version", rateLimit("version", 60, 60_000), async (req, res) => {
     try {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
@@ -644,7 +712,7 @@ async function startServer() {
     let fromEmail: string | null = null;
     if (email && typeof email === "string" && email.trim()) {
       const candidate = email.trim();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) {
+      if (candidate.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) {
         return res.status(400).json({ error: "Please enter a valid email address or leave it blank to stay anonymous." });
       }
       fromEmail = candidate;
@@ -666,12 +734,13 @@ async function startServer() {
           : "Thank you! Your anonymous feedback has been sent.",
       });
     } catch (err: any) {
-      return res.status(500).json({ error: `Could not send feedback: ${err.message}` });
+      console.error("Failed to send feedback:", err);
+      return res.status(500).json({ error: "Could not send feedback. Please try again later." });
     }
   });
 
   // Serve compiled DMG file
-  app.get("/api/download/dmg", async (req, res) => {
+  app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), async (req, res) => {
     try {
       // In Cloud Run, stream from GCS
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
@@ -702,7 +771,7 @@ async function startServer() {
       });
     } catch (error: any) {
       console.error("Error serving DMG:", error);
-      res.status(500).json({ error: "Internal Server Error", details: error.message });
+      res.status(500).json({ error: "Internal Server Error" });
     }
   });
 
@@ -771,7 +840,7 @@ async function startServer() {
       let emailResult;
       let emailErrorMsg = null;
       try {
-        emailResult = await sendVerificationEmail(emailTrimmed, updatedCode, username);
+        emailResult = await sendVerificationEmail(emailTrimmed, updatedCode, usernameTrimmed);
       } catch (err: any) {
         emailErrorMsg = err.message;
       }
@@ -828,7 +897,7 @@ async function startServer() {
     let emailResult;
     let emailErrorMsg = null;
     try {
-      emailResult = await sendVerificationEmail(emailTrimmed, verificationCode, username);
+      emailResult = await sendVerificationEmail(emailTrimmed, verificationCode, usernameTrimmed);
     } catch (err: any) {
       emailErrorMsg = err.message;
     }
@@ -907,10 +976,13 @@ async function startServer() {
 
     const identifier = email.trim().toLowerCase();
     const db = loadDB();
-    const user = db.users.find(u =>
-      (u.email === identifier || u.username.toLowerCase() === identifier) &&
-      verifyPassword(password, u.passwordHash)
+    const candidate = db.users.find(u =>
+      u.email === identifier || u.username.toLowerCase() === identifier
     );
+    // Always run pbkdf2 (against a dummy hash on a miss) so a non-existent
+    // account isn't revealed by a faster response — see DUMMY_PASSWORD_HASH.
+    const passwordOk = verifyPassword(password, candidate ? candidate.passwordHash : DUMMY_PASSWORD_HASH);
+    const user = candidate && passwordOk ? candidate : null;
 
     if (!user) {
       return res.status(401).json({ error: "Invalid email/username or password." });
@@ -931,7 +1003,7 @@ async function startServer() {
 
     res.json({
       success: true,
-      token: createAuthToken(user.id),
+      token: createAuthToken(user),
       user: {
         id: user.id,
         username: user.username,
@@ -941,7 +1013,7 @@ async function startServer() {
   });
 
   // Get Current Session
-  app.get("/api/auth/me", (req, res) => {
+  app.get("/api/auth/me", rateLimit("me", 60, 60_000), (req, res) => {
     const user = getAuthUser(req);
 
     if (!user) {
@@ -1047,6 +1119,7 @@ async function startServer() {
     user.passwordHash = hashPassword(newPassword);
     user.recoveryCode = undefined;
     user.recoveryCodeExpires = undefined;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1; // invalidate existing sessions
     saveDB(db);
 
     res.json({ success: true, message: "Password reset successfully! You can now log in with your new password." });
@@ -1144,7 +1217,7 @@ async function startServer() {
   // ── Custom Saved Games API ─────────────────────────────────────────────────
 
   // Get User's Custom Games
-  app.get("/api/games", (req, res) => {
+  app.get("/api/games", rateLimit("games-read", 60, 60_000), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -1156,7 +1229,7 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", (req, res) => {
+  app.post("/api/games", rateLimit("games-write", 20, 60_000), (req, res) => {
     const db = loadDB();
     const user = getAuthUser(req);
     if (!user) {
@@ -1191,7 +1264,7 @@ async function startServer() {
   });
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", (req, res) => {
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
@@ -1248,6 +1321,14 @@ async function startServer() {
         res.status(404).json({ error: "Not found" });
       });
     }
+  }
+
+  // Legacy accounts store passwords as reversible base64 (pre-pbkdf2). They're
+  // upgraded on next successful login, but dormant rows stay plaintext-equivalent
+  // if db.json/GCS leaks. Surface the count so operators can force a reset.
+  const legacyPwCount = loadDB().users.filter(u => needsPasswordRehash(u.passwordHash)).length;
+  if (legacyPwCount > 0) {
+    console.warn(`SECURITY: ${legacyPwCount} account(s) still use legacy (reversible) password hashes. Consider forcing a password reset for these users.`);
   }
 
   // Dynamic port assignment with automatic fallback in case of port collisions
