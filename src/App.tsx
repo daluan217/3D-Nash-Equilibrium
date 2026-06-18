@@ -1360,8 +1360,8 @@ export default function App() {
               <BookOpen className="w-4 h-4 text-rose-500" />
               Standard Scenarios
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {(['bos', 'pd', 'cnr', 'spy'] as const).map((key) => {
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {(['search', 'bos', 'pd', 'cnr', 'spy'] as const).map((key) => {
                 const isSelected = activePreset === key;
                 return (
                   <button
