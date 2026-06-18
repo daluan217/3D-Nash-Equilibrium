@@ -25,7 +25,7 @@ steps:
       - '--region=us-east1'
       - '--platform=managed'
       - '--allow-unauthenticated'
-      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},ADMIN_SECRET=${_ADMIN_SECRET},AUTH_SECRET=${_AUTH_SECRET}'
+      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},ADMIN_SECRET=${_ADMIN_SECRET},AUTH_SECRET=${_AUTH_SECRET},TRUST_PROXY=${_TRUST_PROXY}'
       - '--memory=512Mi'
       - '--cpu=1'
       - '--timeout=3600'
@@ -51,3 +51,6 @@ substitutions:
   # on every Cloud Run restart/redeploy. Generate with `openssl rand -hex 32`
   # and set the real value in the Cloud Build trigger UI (do NOT commit it here).
   _AUTH_SECRET: 'generate-with-openssl-rand-hex-32'
+  # Trust the Cloud Run front-end proxy so rate limiting keys on the real client
+  # IP (req.ip) rather than the proxy. "1" = trust one hop, correct for Cloud Run.
+  _TRUST_PROXY: '1'
