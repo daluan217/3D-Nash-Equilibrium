@@ -147,7 +147,15 @@ SMTP_PORT=465
 SMTP_USER=your-email@gmail.com
 SMTP_PASS=your-app-password
 ADMIN_SECRET=your-admin-password
+AUTH_SECRET=generate-with-openssl-rand-hex-32
 ```
+
+> **`AUTH_SECRET` (required in production):** HMAC key used to sign auth
+> session bearer tokens. If unset, the server generates a random key at boot,
+> so every restart/redeploy invalidates all existing sessions (users get logged
+> out). Set a long, stable, random value (`openssl rand -hex 32`). `SESSION_SECRET`
+> is accepted as an alias. In Cloud Run it's wired via the `_AUTH_SECRET`
+> Cloud Build substitution.
 
 ---
 
