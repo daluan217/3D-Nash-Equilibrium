@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
 import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment } from './types';
 import {
   PRESETS,
@@ -435,6 +435,53 @@ export default function App() {
       container.scrollTop = container.scrollHeight;
     }
   }, [logEntries]);
+
+  // ── Simulation-log placement ───────────────────────────────────────────────
+  // The log lives in the right column with an explicit height so its bottom lines
+  // up with the bottom of the "Simulation Coordinates & Parameters" panel in the
+  // left column. We size it to the room between the report panel's bottom and the
+  // params panel's bottom (minus the column gap). Once converged, the Equilibrium
+  // Reached box can grow tall enough that this room collapses; when it drops below
+  // MIN_LOG_ROOM we move the log to a full-width band beneath both columns.
+  const paramsPanelRef = useRef<HTMLDivElement>(null);
+  const reportPanelRef = useRef<HTMLDivElement>(null);
+  const [logBelow, setLogBelow] = useState(false);
+  const [inlineLogHeight, setInlineLogHeight] = useState<number | null>(null);
+  const COLUMN_GAP = 24;     // matches the right column's `gap-6` (1.5rem)
+  const MIN_LOG_ROOM = 120;  // px below which the inline log drops to full width
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const params = paramsPanelRef.current;
+      const report = reportPanelRef.current;
+      // Side-by-side only at lg; stacked layout doesn't need bottom-alignment.
+      const sideBySide = window.matchMedia('(min-width: 1024px)').matches;
+      if (!params || !report || !sideBySide) {
+        setLogBelow(false);
+        setInlineLogHeight(null);
+        return;
+      }
+      const room = params.getBoundingClientRect().bottom - report.getBoundingClientRect().bottom;
+      if (simState.converged && room < MIN_LOG_ROOM) {
+        setLogBelow(true);
+        setInlineLogHeight(null);
+        return;
+      }
+      setLogBelow(false);
+      // `room` spans from the report's bottom to the params' bottom; the log's own
+      // header + padding sit inside that, so the scroll area gets the remainder.
+      setInlineLogHeight(Math.max(MIN_LOG_ROOM - COLUMN_GAP, room - COLUMN_GAP));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (paramsPanelRef.current) ro.observe(paramsPanelRef.current);
+    if (reportPanelRef.current) ro.observe(reportPanelRef.current);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [simState.converged, simState.cx, simState.cy, logEntries]);
 
   // ── Memoized Nash Equilibria ───────────────────────────────────────────────
   const allNE = useMemo<NashEquilibrium[]>(() => {
@@ -1182,16 +1229,20 @@ export default function App() {
   };
 
   // ── Simulation log panel ──────────────────────────────────────────────────
-  // Lives under the Game-Theoretic Report (filling the right column) until the
-  // simulation converges; then it moves to a full-width band beneath both
-  // columns, where the equilibrium report needs the extra vertical room.
+  // Lives in the right column with an explicit height (see the placement effect)
+  // so its bottom lines up with the params panel's bottom; when the converged
+  // report leaves no room, it drops to a full-width band beneath both columns.
+  const useFlexLog = !logBelow && inlineLogHeight != null;
   const simulationLogPanel = (
-    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-700 dark:text-slate-200 shadow-sm">
+    <div
+      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-700 dark:text-slate-200 shadow-sm"
+      style={useFlexLog ? { height: inlineLogHeight! } : undefined}
+    >
       <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
         <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
         Simulation Log
       </span>
-      <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text ${simState.converged ? 'h-44' : 'h-80'}`}>
+      <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}>
         {logEntries.map((line, idx) => {
           let colClass = 'text-slate-600 dark:text-slate-300';
           if (line.includes('✓')) {
@@ -1586,7 +1637,7 @@ export default function App() {
           </div>
 
           {/* Configuration Parameters Panel */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
+          <div ref={paramsPanelRef} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
             <div className="text-slate-800 dark:text-slate-200 font-semibold text-sm border-b border-slate-100 dark:border-slate-800 pb-2">
               Simulation Coordinates & Parameters
             </div>
@@ -2036,7 +2087,7 @@ export default function App() {
           )}
 
           {/* Game situation description box */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300 h-fit">
+          <div ref={reportPanelRef} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300 h-fit">
             <div className="text-slate-800 dark:text-slate-100 font-semibold text-sm border-b border-rose-100/50 dark:border-slate-800 pb-2 flex items-center gap-1.5">
               <Compass className="w-4 h-4 text-emerald-500" />
               Game-Theoretic Report
@@ -2116,12 +2167,12 @@ export default function App() {
             </div>
           </div>
 
-          {/* Log sits in the right column until convergence frees up the bottom */}
-          {!simState.converged && simulationLogPanel}
+          {/* Log sits in the right column, sized to align with the params panel */}
+          {!logBelow && simulationLogPanel}
         </div>
 
-        {/* Once converged, the log spans full width beneath both columns */}
-        {simState.converged && (
+        {/* When the converged report leaves no room, the log spans full width */}
+        {logBelow && (
           <div className="lg:col-span-12">
             {simulationLogPanel}
           </div>

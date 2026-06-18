@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -44,6 +44,7 @@
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3",
     "esbuild": "^0.25.12",
+    "playwright": "^1.61.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
