@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Favicon variant of icon.svg: the background gradient fills the FULL square
+    (no rounded corners / transparent corners) so platforms that mask the icon
+    into a circle (e.g. Google search results) show the dark blue/purple to the
+    edge instead of white. Artwork is otherwise identical to build/icon.svg.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e0a3c"/>
+      <stop offset="100%" stop-color="#0d051f"/>
+    </linearGradient>
+    <radialGradient id="atm" cx="512" cy="512" r="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4338ca" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#4338ca" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Surface gradients -->
+    <linearGradient id="blue-grad" x1="951" y1="248" x2="331" y2="886" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#bae6fd"/>
+      <stop offset="55%" stop-color="#3b82f6" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#1e3a8a" stop-opacity="0.30"/>
+    </linearGradient>
+    <linearGradient id="orange-grad" x1="73" y1="248" x2="790" y2="886" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fed7aa"/>
+      <stop offset="55%" stop-color="#f97316" stop-opacity="0.78"/>
+      <stop offset="100%" stop-color="#9a3412" stop-opacity="0.28"/>
+    </linearGradient>
+
+    <!-- 3D sphere gradient -->
+    <radialGradient id="sphere-grad" cx="33%" cy="26%" r="68%" gradientUnits="objectBoundingBox">
+      <stop offset="0%"   stop-color="#fff1f2"/>
+      <stop offset="18%"  stop-color="#fca5a5"/>
+      <stop offset="52%"  stop-color="#ef4444"/>
+      <stop offset="82%"  stop-color="#b91c1c"/>
+      <stop offset="100%" stop-color="#450a0a"/>
+    </radialGradient>
+
+    <!-- Clip: surface drawn OVER lower half of each marker -->
+    <clipPath id="clip-over-sphere">
+      <rect x="0" y="444" width="1024" height="600"/>
+    </clipPath>
+    <clipPath id="clip-over-diamond">
+      <rect x="0" y="652" width="1024" height="400"/>
+    </clipPath>
+
+    <!-- Glow filters -->
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="sm-glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="surf-shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="9" flood-color="#000030" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- ── BACKGROUND (full square, no rounded corners) ── -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#atm)"/>
+
+  <!-- ── WIREFRAME BOX ── -->
+  <polygon points="512,667 951,777 512,887 73,777"
+    fill="none" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+  <polygon points="512,138 951,248 512,357 73,248"
+    fill="none" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+  <line x1="512" y1="667" x2="512" y2="138" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.30"/>
+  <line x1="951" y1="777" x2="951" y2="248" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+  <line x1="73"  y1="777" x2="73"  y2="248" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+  <line x1="512" y1="887" x2="512" y2="357" stroke="#34d399" stroke-width="2.5" stroke-dasharray="12,7" opacity="0.40"/>
+
+  <!-- LAYER 1 — Surfaces behind markers -->
+  <polygon points="512,667 951,513 512,887 73,248"
+    fill="url(#orange-grad)" opacity="0.60"
+    stroke="#f97316" stroke-width="1.5" stroke-opacity="0.45"
+    filter="url(#surf-shadow)"/>
+  <polygon points="512,667 951,248 512,887 73,513"
+    fill="url(#blue-grad)" opacity="0.62"
+    stroke="#3b82f6" stroke-width="1.5" stroke-opacity="0.55"
+    filter="url(#surf-shadow)"/>
+
+  <!-- LAYER 2 — Marker back-halves (shadow side) -->
+  <circle cx="228" cy="444" r="33" clip-path="url(#clip-over-sphere)" fill="#5c0000" opacity="0.92"/>
+  <polygon points="607,652 578,681 578,652" fill="#3b0764"/>
+  <polygon points="549,652 578,681 578,652" fill="#2e1065"/>
+
+  <!-- LAYER 3 — Surfaces crossing THROUGH markers -->
+  <polygon points="512,667 951,513 512,887 73,248"
+    fill="url(#orange-grad)"
+    clip-path="url(#clip-over-sphere)"
+    opacity="0.72" style="mix-blend-mode: overlay"/>
+  <polygon points="512,667 951,513 512,887 73,248"
+    fill="url(#orange-grad)"
+    clip-path="url(#clip-over-diamond)"
+    opacity="0.65" style="mix-blend-mode: overlay"/>
+  <polygon points="512,667 951,248 512,887 73,513"
+    fill="url(#blue-grad)"
+    clip-path="url(#clip-over-diamond)"
+    opacity="0.65" style="mix-blend-mode: overlay"/>
+
+  <!-- LAYER 4 — Marker front-halves -->
+  <g filter="url(#glow)">
+    <circle cx="228" cy="444" r="33" fill="url(#sphere-grad)" opacity="0.95"/>
+    <ellipse cx="215" cy="430" rx="10" ry="8" fill="white" opacity="0.30"/>
+    <circle cx="213" cy="427" r="4" fill="white" opacity="0.44"/>
+  </g>
+
+  <g filter="url(#sm-glow)">
+    <polygon points="578,623 607,652 578,652" fill="#f3e8ff"/>
+    <polygon points="549,652 578,623 578,652" fill="#d8b4fe"/>
+    <polygon points="607,652 578,681 578,652" fill="#a855f7" opacity="0.85"/>
+    <polygon points="549,652 578,681 578,652" fill="#7e22ce" opacity="0.85"/>
+    <polygon points="578,623 607,652 578,681 549,652"
+      fill="none" stroke="#f5f3ff" stroke-width="1.5" opacity="0.55"/>
+  </g>
+
+  <!-- ── GREEN DIAMONDS ── -->
+  <g filter="url(#sm-glow)">
+    <polygon points="951,221 978,248 951,248" fill="#bbf7d0"/>
+    <polygon points="978,248 951,275 951,248" fill="#4ade80"/>
+    <polygon points="951,275 924,248 951,248" fill="#15803d"/>
+    <polygon points="924,248 951,221 951,248" fill="#86efac"/>
+    <polygon points="951,221 978,248 951,275 924,248"
+      fill="none" stroke="#f0fdf4" stroke-width="1.5" opacity="0.6"/>
+  </g>
+  <g filter="url(#sm-glow)">
+    <polygon points="73,221 100,248 73,248" fill="#bbf7d0"/>
+    <polygon points="100,248 73,275 73,248"  fill="#4ade80"/>
+    <polygon points="73,275  46,248 73,248"  fill="#15803d"/>
+    <polygon points=" 46,248 73,221 73,248"  fill="#86efac"/>
+    <polygon points="73,221 100,248 73,275 46,248"
+      fill="none" stroke="#f0fdf4" stroke-width="1.5" opacity="0.6"/>
+  </g>
+</svg>
