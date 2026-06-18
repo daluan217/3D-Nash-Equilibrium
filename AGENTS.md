@@ -57,6 +57,20 @@ Server port is `PORT` in `.env` (3001). `.env` is gitignored.
 
 > Newest first. Append a dated entry each session; keep entries short.
 
+### 2026-06-18
+- Hardened hosted auth/session basics on `main`: PBKDF2 password hashes with legacy migration,
+  signed expiring bearer tokens, crypto-backed IDs/codes, rate limits on sensitive endpoints,
+  and no recovery/deletion-code disclosure from the web API.
+- Closed the custom-game description HTML injection path by rendering user-saved descriptions
+  as text; server now clamps/validates saved payoff matrices and text fields.
+- Added `Search Game` as a first-class standard scenario on `main`; in a separate
+  `review-mirror` worktree, surfaced existing `search` preset in the anonymized standard
+  scenario row. Kept Spy vs. Analyst.
+- Replaced the one-off ghost-corridor diagnostic with `npm test` regression coverage for
+  solver results, zero-sum search variants, shrink/regret convergence, pure convergence, and
+  the ghost no-diagonal/four-endpoint invariant. `npm run lint`, `npm test`, and
+  `npm run build` passed on Node 22; browser smoke test found no console errors.
+
 ### 2026-06-17
 - Drove the app via Playwright (production build on :3001, since Vite dev hangs on Node 26).
   Verified the simulation: Battle of the Sexes converges to a **pure NE**; Spy vs. Analyst

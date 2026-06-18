@@ -1041,11 +1041,14 @@ export default function App() {
         a12: g.payoffs.a12, b12: g.payoffs.b12,
         a21: g.payoffs.a21, b21: g.payoffs.b21,
         a22: g.payoffs.a22, b22: g.payoffs.b22,
-        desc: `<strong>Custom - ${g.name}:</strong> ${g.description}`
+        desc: g.description || ''
       };
     });
     return merged;
   }, [userCustomGames]);
+
+  const selectedPreset = mergedPresets[activePreset];
+  const selectedCustomGame = userCustomGames.find((g) => g.id === activePreset);
 
   // ── Preset loader action ───────────────────────────────────────────────────
   const handleLoadPreset = (key: string) => {
@@ -1402,8 +1405,8 @@ export default function App() {
               <BookOpen className="w-4 h-4 text-rose-500" />
               Standard Scenarios
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {(['bos', 'pd', 'cnr', 'spy'] as const).map((key) => {
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {(['search', 'bos', 'pd', 'cnr', 'spy'] as const).map((key) => {
                 const isSelected = activePreset === key;
                 return (
                   <button
@@ -1497,11 +1500,17 @@ export default function App() {
             )}
 
             {/* Selected Preset Narrative Card */}
-            {mergedPresets[activePreset]?.desc && (
-              <div
-                className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3"
-                dangerouslySetInnerHTML={{ __html: mergedPresets[activePreset].desc }}
-              />
+            {selectedPreset?.desc && (
+              selectedCustomGame ? (
+                <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
+                  <strong>Custom - {selectedCustomGame.name}:</strong> {selectedPreset.desc}
+                </div>
+              ) : (
+                <div
+                  className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3"
+                  dangerouslySetInnerHTML={{ __html: selectedPreset.desc }}
+                />
+              )
             )}
           </div>
 

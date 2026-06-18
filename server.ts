@@ -6,6 +6,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -44,6 +45,17 @@ interface User {
 interface DB {
   users: User[];
   games: SavedGame[];
+}
+
+const PASSWORD_ITERATIONS = 210_000;
+const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const AUTH_SECRET = process.env.AUTH_SECRET
+  || process.env.SESSION_SECRET
+  || process.env.ADMIN_SECRET
+  || crypto.randomBytes(32).toString("hex");
+
+if (process.env.NODE_ENV === "production" && !process.env.AUTH_SECRET && !process.env.SESSION_SECRET && !process.env.ADMIN_SECRET) {
+  console.warn("AUTH_SECRET/SESSION_SECRET is not configured; auth sessions will be invalidated on server restart.");
 }
 
 const GCS_BUCKET = process.env.GCS_BUCKET_NAME;
@@ -109,6 +121,117 @@ async function initDB(): Promise<void> {
 // Returns the in-memory DB (always synchronous after initDB resolves)
 function loadDB(): DB {
   return inMemoryDb ?? { users: [], games: [] };
+}
+
+function b64url(input: Buffer | string): string {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf-8");
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}
+
+function makeCode(): string {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function makeId(prefix: "u" | "g"): string {
+  return `${prefix}_${crypto.randomUUID()}`;
+}
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.pbkdf2Sync(password, salt, PASSWORD_ITERATIONS, 32, "sha256");
+  return `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(salt)}$${b64url(hash)}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  if (stored.startsWith("pbkdf2$")) {
+    const [, iterRaw, saltRaw, hashRaw] = stored.split("$");
+    const iterations = Number(iterRaw);
+    if (!iterations || !saltRaw || !hashRaw) return false;
+    const salt = Buffer.from(saltRaw.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+    const actual = b64url(crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256"));
+    return safeEqual(actual, hashRaw);
+  }
+
+  // Legacy migration path for older local/cloud accounts.
+  return safeEqual(Buffer.from(password).toString("base64"), stored);
+}
+
+function needsPasswordRehash(stored: string): boolean {
+  return !stored.startsWith("pbkdf2$");
+}
+
+function createAuthToken(userId: string): string {
+  const payload = b64url(JSON.stringify({
+    sub: userId,
+    exp: Date.now() + AUTH_TOKEN_TTL_MS,
+    nonce: b64url(crypto.randomBytes(12)),
+  }));
+  const sig = b64url(crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  return `${payload}.${sig}`;
+}
+
+function readAuthToken(token: string): string | null {
+  const [payload, sig, extra] = token.split(".");
+  if (!payload || !sig || extra) return null;
+  const expected = b64url(crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  if (!safeEqual(sig, expected)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
+    if (!parsed.sub || typeof parsed.exp !== "number" || parsed.exp < Date.now()) return null;
+    return parsed.sub;
+  } catch {
+    return null;
+  }
+}
+
+function getAuthUser(req: express.Request): User | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.slice("Bearer ".length).trim();
+  const userId = readAuthToken(token);
+  if (!userId) return null;
+  return loadDB().users.find(u => u.id === userId) ?? null;
+}
+
+function cleanText(value: unknown, maxLength: number): string {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function cleanPayoffs(value: any): GamePayoffs | null {
+  const keys: (keyof GamePayoffs)[] = ["a11", "a12", "a21", "a22", "b11", "b12", "b21", "b22"];
+  const out = {} as GamePayoffs;
+  for (const key of keys) {
+    const n = Number(value?.[key]);
+    if (!Number.isFinite(n)) return null;
+    out[key] = Math.max(-100, Math.min(100, Math.round(n * 1000) / 1000));
+  }
+  return out;
+}
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimit(label: string, max: number, windowMs: number): express.RequestHandler {
+  return (req, res, next) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const key = `${label}:${ip}`;
+    const now = Date.now();
+    const bucket = rateBuckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    bucket.count++;
+    if (bucket.count > max) {
+      return res.status(429).json({ error: "Too many attempts. Please wait a minute and try again." });
+    }
+    return next();
+  };
 }
 
 // Updates in-memory DB immediately; persists to GCS (Cloud Run) or local file (Electron/dev)
@@ -397,7 +520,7 @@ async function startServer() {
   });
 
   // ── Admin Stats API ────────────────────────────────────────────────────────
-  app.get("/api/admin/stats", (req, res) => {
+  app.get("/api/admin/stats", rateLimit("admin", 10, 60_000), (req, res) => {
     const secret = req.headers["x-admin-secret"] as string;
     if (secret !== process.env.ADMIN_SECRET) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -460,7 +583,7 @@ async function startServer() {
   });
 
   // ── Feedback API ───────────────────────────────────────────────────────────
-  app.post("/api/feedback", async (req, res) => {
+  app.post("/api/feedback", rateLimit("feedback", 10, 60_000), async (req, res) => {
     const { message, email, rating } = req.body;
 
     const trimmedMessage = typeof message === "string" ? message.trim() : "";
@@ -538,11 +661,15 @@ async function startServer() {
   });
 
   // Register Endpoint
-  app.post("/api/auth/register", async (req, res) => {
+  app.post("/api/auth/register", rateLimit("register", 8, 60_000), async (req, res) => {
     const { username, email, password } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ error: "Username, email, and password are required." });
+    }
+    const usernameTrimmed = cleanText(username, 40);
+    if (!usernameTrimmed) {
+      return res.status(400).json({ error: "Username is required." });
     }
 
     // Password validation: At least 8 characters, with at least one uppercase and one lowercase letter
@@ -559,7 +686,7 @@ async function startServer() {
 
     // Check for duplicate username (case-insensitive)
     const usernameTaken = db.users.find(
-      u => u.username.trim().toLowerCase() === username.trim().toLowerCase()
+      u => u.username.trim().toLowerCase() === usernameTrimmed.toLowerCase()
         && u.email.trim().toLowerCase() !== emailTrimmed
     );
     if (usernameTaken) {
@@ -576,8 +703,8 @@ async function startServer() {
       // If we are in Electron local mode, mark them verified instantly and save
       if (isElectron) {
         existingUser.isVerified = true;
-        existingUser.username = username;
-        existingUser.passwordHash = Buffer.from(password).toString("base64");
+        existingUser.username = usernameTrimmed;
+        existingUser.passwordHash = hashPassword(password);
         saveDB(db);
         return res.json({
           success: true,
@@ -587,9 +714,9 @@ async function startServer() {
       }
 
       // If of the unverified user on the website, refresh code
-      const updatedCode = Math.floor(100000 + Math.random() * 900000).toString();
-      existingUser.username = username;
-      existingUser.passwordHash = Buffer.from(password).toString("base64"); // Simple hashing
+      const updatedCode = makeCode();
+      existingUser.username = usernameTrimmed;
+      existingUser.passwordHash = hashPassword(password);
       existingUser.verificationCode = updatedCode;
       existingUser.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
       saveDB(db);
@@ -620,10 +747,10 @@ async function startServer() {
     // Direct verified path for local Electron apps
     if (isElectron) {
       const newUser: User = {
-        id: "u_" + Math.random().toString(36).substring(2, 11),
-        username,
+        id: makeId("u"),
+        username: usernameTrimmed,
         email: emailTrimmed,
-        passwordHash: Buffer.from(password).toString("base64"),
+        passwordHash: hashPassword(password),
         isVerified: true,
         verificationCode: "",
         verificationCodeExpires: 0
@@ -637,12 +764,12 @@ async function startServer() {
       });
     }
 
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = makeCode();
     const newUser: User = {
-      id: "u_" + Math.random().toString(36).substring(2, 11),
-      username,
+      id: makeId("u"),
+      username: usernameTrimmed,
       email: emailTrimmed,
-      passwordHash: Buffer.from(password).toString("base64"),
+      passwordHash: hashPassword(password),
       isVerified: false,
       verificationCode,
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
@@ -679,7 +806,7 @@ async function startServer() {
   });
 
   // Verify Endpoint
-  app.post("/api/auth/verify", (req, res) => {
+  app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), (req, res) => {
     const { email, code } = req.body;
     if (!email || !code) {
       return res.status(400).json({ error: "Email and verification code are required." });
@@ -719,7 +846,7 @@ async function startServer() {
   });
 
   // Login Endpoint
-  app.post("/api/auth/login", (req, res) => {
+  app.post("/api/auth/login", rateLimit("login", 10, 60_000), (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: "Email/username and password are required." });
@@ -727,10 +854,9 @@ async function startServer() {
 
     const identifier = email.trim().toLowerCase();
     const db = loadDB();
-    const hashedPassword = Buffer.from(password).toString("base64");
     const user = db.users.find(u =>
       (u.email === identifier || u.username.toLowerCase() === identifier) &&
-      u.passwordHash === hashedPassword
+      verifyPassword(password, u.passwordHash)
     );
 
     if (!user) {
@@ -745,9 +871,14 @@ async function startServer() {
       });
     }
 
+    if (needsPasswordRehash(user.passwordHash)) {
+      user.passwordHash = hashPassword(password);
+      saveDB(db);
+    }
+
     res.json({
       success: true,
-      token: user.id,
+      token: createAuthToken(user.id),
       user: {
         id: user.id,
         username: user.username,
@@ -758,13 +889,7 @@ async function startServer() {
 
   // Get Current Session
   app.get("/api/auth/me", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized access." });
-    }
-    const token = authHeader.split(" ")[1];
-    const db = loadDB();
-    const user = db.users.find(u => u.id === token);
+    const user = getAuthUser(req);
 
     if (!user) {
       return res.status(401).json({ error: "Invalid session." });
@@ -778,7 +903,7 @@ async function startServer() {
   });
 
   // Forgot Password — send recovery code to email
-  app.post("/api/auth/forgot-password", async (req, res) => {
+  app.post("/api/auth/forgot-password", rateLimit("forgot", 6, 60_000), async (req, res) => {
     const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: "Email address is required." });
@@ -796,7 +921,7 @@ async function startServer() {
       });
     }
 
-    const recoveryCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const recoveryCode = makeCode();
     user.recoveryCode = recoveryCode;
     user.recoveryCodeExpires = Date.now() + 10 * 60 * 1000;
     saveDB(db);
@@ -812,17 +937,21 @@ async function startServer() {
       }
     }
 
-    res.json({
+    if (emailErrorMsg && !isElectron) {
+      return res.status(500).json({ error: "Could not send recovery email. Please try again later." });
+    }
+
+    return res.json({
       success: true,
-      message: isElectron || emailErrorMsg
-        ? `Recovery code generated (SMTP Offline). Use code: ${recoveryCode}`
+      message: isElectron
+        ? `Recovery code generated locally. Use code: ${recoveryCode}`
         : "A 6-digit recovery code has been sent to your email address.",
-      ...(isElectron && { recoveryCode })
+      ...(isElectron ? { recoveryCode } : {})
     });
   });
 
   // Reset Password — verify code and set new password
-  app.post("/api/auth/reset-password", (req, res) => {
+  app.post("/api/auth/reset-password", rateLimit("reset", 8, 60_000), (req, res) => {
     const { email, code, newPassword } = req.body;
     if (!email || !code || !newPassword) {
       return res.status(400).json({ error: "Email, recovery code, and new password are required." });
@@ -855,7 +984,7 @@ async function startServer() {
       return res.status(400).json({ error: "Incorrect recovery code." });
     }
 
-    user.passwordHash = Buffer.from(newPassword).toString("base64");
+    user.passwordHash = hashPassword(newPassword);
     user.recoveryCode = undefined;
     user.recoveryCodeExpires = undefined;
     saveDB(db);
@@ -864,20 +993,15 @@ async function startServer() {
   });
 
   // Request account deletion code
-  app.post("/api/auth/delete-request", async (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized access." });
-    }
-    const token = authHeader.split(" ")[1];
+  app.post("/api/auth/delete-request", rateLimit("delete-request", 6, 60_000), async (req, res) => {
     const db = loadDB();
-    const user = db.users.find(u => u.id === token);
+    const user = getAuthUser(req);
 
     if (!user) {
       return res.status(401).json({ error: "Invalid session." });
     }
 
-    const deleteCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const deleteCode = makeCode();
     user.deleteCode = deleteCode;
     user.deleteCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
 
@@ -890,22 +1014,22 @@ async function startServer() {
       emailErrorMsg = err.message;
     }
 
-    res.json({
+    const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
+    if (emailErrorMsg && !isElectron) {
+      return res.status(500).json({ error: "Could not send deletion confirmation email. Please try again later." });
+    }
+
+    return res.json({
       success: true,
-      message: emailErrorMsg
-        ? `A security confirmation code was generated locally (SMTP Offline): Enter code ${deleteCode} below.`
+      message: isElectron && emailErrorMsg
+        ? `A security confirmation code was generated locally: Enter code ${deleteCode} below.`
         : "A 6-digit confirmation security code has been sent to your email address.",
-      deleteCode: deleteCode
+      ...(isElectron ? { deleteCode } : {})
     });
   });
 
   // Verify deletion code and delete account
-  app.post("/api/auth/delete-confirm", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized access." });
-    }
-    const token = authHeader.split(" ")[1];
+  app.post("/api/auth/delete-confirm", rateLimit("delete-confirm", 8, 60_000), (req, res) => {
     const { code } = req.body;
 
     if (!code) {
@@ -913,7 +1037,8 @@ async function startServer() {
     }
 
     const db = loadDB();
-    const userIndex = db.users.findIndex(u => u.id === token);
+    const authUser = getAuthUser(req);
+    const userIndex = authUser ? db.users.findIndex(u => u.id === authUser.id) : -1;
 
     if (userIndex === -1) {
       return res.status(401).json({ error: "Invalid session or user not found." });
@@ -953,48 +1078,38 @@ async function startServer() {
 
   // Get User's Custom Games
   app.get("/api/games", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized access." });
-    }
-    const token = authHeader.split(" ")[1];
-    const db = loadDB();
-
-    // Check user validity
-    const userExists = db.users.some(u => u.id === token);
-    if (!userExists) {
+    const user = getAuthUser(req);
+    if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
 
-    const userGames = db.games.filter(g => g.userId === token);
+    const db = loadDB();
+    const userGames = db.games.filter(g => g.userId === user.id);
     res.json(userGames);
   });
 
   // Create/Save a Custom Game
   app.post("/api/games", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized access." });
-    }
-    const token = authHeader.split(" ")[1];
     const db = loadDB();
-
-    const user = db.users.find(u => u.id === token);
+    const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
 
     const { name, description, payoffs } = req.body;
-    if (!name || !payoffs) {
+    const cleanName = cleanText(name, 80);
+    const cleanDescription = cleanText(description, 800);
+    const cleanMatrix = cleanPayoffs(payoffs);
+    if (!cleanName || !cleanMatrix) {
       return res.status(400).json({ error: "Game name and payoffs matrix are required." });
     }
 
     const newGame: SavedGame = {
-      id: "g_" + Math.random().toString(36).substring(2, 11),
-      userId: token,
-      name,
-      description: description || `Custom payoff matrix saved by ${user.username}`,
-      payoffs,
+      id: makeId("g"),
+      userId: user.id,
+      name: cleanName,
+      description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
+      payoffs: cleanMatrix,
       createdAt: new Date().toISOString()
     };
 
@@ -1010,11 +1125,10 @@ async function startServer() {
 
   // Delete a Custom Game
   app.delete("/api/games/:id", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    const user = getAuthUser(req);
+    if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
     }
-    const token = authHeader.split(" ")[1];
     const gameId = req.params.id;
     const db = loadDB();
 
@@ -1024,7 +1138,7 @@ async function startServer() {
     }
 
     const game = db.games[gameIndex];
-    if (game.userId !== token) {
+    if (game.userId !== user.id) {
       return res.status(403).json({ error: "You are not authorized to delete this game." });
     }
 

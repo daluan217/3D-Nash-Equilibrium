@@ -6,10 +6,22 @@
 import { GamePayoffs, SimState, NashEquilibrium, PathSegment } from './types';
 import { doStep, PRESETS, computeAllNE, EA, EB, r3 } from './utils/gameEngine';
 
-// Mock function for Logging in tests
-let logs: string[] = [];
-function addTestLog(msg: string) {
-  logs.push(msg);
+const TOL = 0.002;
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+function assertApprox(actual: number, expected: number, label: string, tol = TOL) {
+  assert(
+    Math.abs(actual - expected) <= tol,
+    `${label}: expected ${expected.toFixed(3)}, got ${actual.toFixed(3)}`
+  );
+}
+
+function assertNE(nes: NashEquilibrium[], type: 'pure' | 'mixed', x: number, y: number, label: string) {
+  const ne = nes.find(n => n.type === type && Math.abs(n.x - x) <= TOL && Math.abs(n.y - y) <= TOL);
+  assert(ne, `${label}: missing ${type} NE at (${x.toFixed(3)}, ${y.toFixed(3)})`);
 }
 
 function createInitialState(startX: number, startY: number, g: GamePayoffs): SimState {
@@ -41,52 +53,157 @@ function createInitialState(startX: number, startY: number, g: GamePayoffs): Sim
     stepCount: 0,
     pathSegmentsA: [{ xs: [startX], ys: [startY], zs: [r3(EA(startX, startY, g))], mover: 'A' }],
     pathSegmentsB: [{ xs: [startX], ys: [startY], zs: [r3(EB(startX, startY, g))], mover: 'A' }],
-    phase1PtsA: null, phase1PtsB: null,
+    phase1PtsA: null,
+    phase1PtsB: null,
     ghostPathSegmentsA: [],
     ghostPathSegmentsB: [],
-    cyclePattern: null, bisecting: false,
-    bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
-    ghostCyclePattern: null, ghostBisecting: false,
-    ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
+    cyclePattern: null,
+    bisecting: false,
+    bisectGoodLo: 0,
+    bisectGoodHi: 1,
+    bisectBadLo: 0,
+    bisectBadHi: 1,
+    ghostCyclePattern: null,
+    ghostBisecting: false,
+    ghostBisectGoodLo: 0,
+    ghostBisectGoodHi: 1,
+    ghostBisectBadLo: 0,
+    ghostBisectBadHi: 1,
     historyStack: []
   };
 }
 
-// ── TEST 1: Diagnostic on Old Diagonal Ghost Step vs New Step ──────────────
-function runTests() {
-  console.log('----------------------------------------------------');
-  console.log('NASH EQUILIBRIUM SIMULATOR GHOST CORIDDORS TEST SUITE');
-  console.log('----------------------------------------------------');
+function cloneState(s: SimState): SimState {
+  const cloneSegments = (segments: PathSegment[]) =>
+    segments.map(seg => ({ xs: [...seg.xs], ys: [...seg.ys], zs: [...seg.zs], mover: seg.mover }));
 
-  const spyGame: GamePayoffs = {
-    a11: 3, b11: -3,  a12: -2, b12: 2,
-    a21: -1, b21: 1,  a22: 0, b22: 0,
+  return {
+    ...s,
+    visitedPositions: [...s.visitedPositions],
+    ghostVisitedPositions: [...s.ghostVisitedPositions],
+    pathSegmentsA: cloneSegments(s.pathSegmentsA),
+    pathSegmentsB: cloneSegments(s.pathSegmentsB),
+    ghostPathSegmentsA: cloneSegments(s.ghostPathSegmentsA),
+    ghostPathSegmentsB: cloneSegments(s.ghostPathSegmentsB),
+    historyStack: []
   };
+}
 
+function simulate(
+  g: GamePayoffs,
+  opts: {
+    firstMover?: 'A' | 'B';
+    shrinkStep?: number;
+    stepMode?: 'shrink' | 'regret';
+    startX?: number;
+    startY?: number;
+    maxSteps?: number;
+  } = {}
+): SimState {
+  const firstMover = opts.firstMover ?? 'A';
+  const shrinkStep = opts.shrinkStep ?? 0.01;
+  const stepMode = opts.stepMode ?? 'shrink';
+  const state = createInitialState(opts.startX ?? 0.217, opts.startY ?? 0.217, g);
+  const allNE = computeAllNE(g);
+  const pureNEs = allNE.filter(n => n.type === 'pure');
+  const committedNE = pureNEs.length > 0
+    ? pureNEs.reduce((best, ne) => {
+        const myScore = firstMover === 'A' ? ne.eA : ne.eB;
+        const bestScore = firstMover === 'A' ? best.eA : best.eB;
+        return myScore > bestScore ? ne : best;
+      })
+    : null;
+
+  for (let i = 0; i < (opts.maxSteps ?? 5000) && !state.converged; i++) {
+    doStep(g, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => {}, stepMode);
+  }
+
+  assert(state.converged, `Simulation did not converge within ${opts.maxSteps ?? 5000} steps`);
+  return state;
+}
+
+function payoffsFromPreset(key: keyof typeof PRESETS): GamePayoffs {
+  const p = PRESETS[key];
+  return {
+    a11: p.a11 ?? 0,
+    a12: p.a12 ?? 0,
+    a21: p.a21 ?? 0,
+    a22: p.a22 ?? 0,
+    b11: p.b11 ?? 0,
+    b12: p.b12 ?? 0,
+    b21: p.b21 ?? 0,
+    b22: p.b22 ?? 0,
+  };
+}
+
+function testSolverCanonicalGames() {
+  const search = payoffsFromPreset('search');
+  const searchNE = computeAllNE(search);
+  assert(searchNE.length === 1, 'Search Game should have exactly one NE');
+  assertNE(searchNE, 'mixed', 1 / 3, 1 / 3, 'Search Game');
+
+  const bos = computeAllNE(payoffsFromPreset('bos'));
+  assertNE(bos, 'pure', 1, 1, 'Battle of the Sexes');
+  assertNE(bos, 'pure', 0, 0, 'Battle of the Sexes');
+  assertNE(bos, 'mixed', 2 / 3, 1 / 3, 'Battle of the Sexes');
+
+  const pd = computeAllNE(payoffsFromPreset('pd'));
+  assert(pd.filter(n => n.type === 'pure').length === 1, 'Prisoners Dilemma should have one pure NE');
+  assertNE(pd, 'pure', 0, 0, 'Prisoners Dilemma');
+}
+
+function testZeroSumSearchFamily() {
+  const cases = [
+    { left: 2, right: 1 },
+    { left: 5, right: 2 },
+    { left: 1.5, right: 4 },
+  ];
+
+  cases.forEach(({ left, right }) => {
+    const g: GamePayoffs = {
+      a11: left, b11: -left,
+      a12: 0, b12: 0,
+      a21: 0, b21: 0,
+      a22: right, b22: -right,
+    };
+    const expected = right / (left + right);
+    const nes = computeAllNE(g);
+    assertNE(nes, 'mixed', expected, expected, `Zero-sum search ${left}/${right}`);
+  });
+}
+
+function testSimulationConvergence() {
+  const search = payoffsFromPreset('search');
+  const searchShrink = simulate(search, { shrinkStep: 0.01, stepMode: 'shrink' });
+  assertApprox(searchShrink.cx, 1 / 3, 'Search Game shrink x');
+  assertApprox(searchShrink.cy, 1 / 3, 'Search Game shrink y');
+
+  const searchRegret = simulate(search, { shrinkStep: 0.1, stepMode: 'regret' });
+  assertApprox(searchRegret.cx, 1 / 3, 'Search Game regret x');
+  assertApprox(searchRegret.cy, 1 / 3, 'Search Game regret y');
+
+  const bos = simulate(payoffsFromPreset('bos'), { shrinkStep: 0.1, firstMover: 'A' });
+  assertApprox(bos.cx, 1, 'Battle of the Sexes first-mover A x');
+  assertApprox(bos.cy, 1, 'Battle of the Sexes first-mover A y');
+
+  const pd = simulate(payoffsFromPreset('pd'), { shrinkStep: 0.1 });
+  assertApprox(pd.cx, 0, 'Prisoners Dilemma x');
+  assertApprox(pd.cy, 0, 'Prisoners Dilemma y');
+}
+
+function testGhostCorridorInvariant() {
+  const spyGame = payoffsFromPreset('spy');
   const allNE = computeAllNE(spyGame);
-  const startX = 0.217;
-  const startY = 0.217;
+  const state = createInitialState(0.217, 0.217, spyGame);
 
-  const state = createInitialState(startX, startY, spyGame);
-  logs = [];
-
-  console.log('1. Simulating best-response dynamics for Spy vs. Analyst...');
-
-  // Run the simulation steps until we enter Phase 2 and complete a full corridor cycle
   let ghostCycleDetected = false;
-  let stepsPlayed = 0;
-  const maxSteps = 1000;
-
   let savedGhostPositionsInCycle: string[] = [];
   let prevFoundAxis: 'x' | 'y' | null = null;
 
-  while (!state.converged && !ghostCycleDetected && stepsPlayed < maxSteps) {
-    const prevCalcX = state.calcX;
-    const prevCalcY = state.calcY;
-    const prevCycleCount = state.cycleCount;
+  for (let steps = 0; steps < 1000 && !state.converged && !ghostCycleDetected; steps++) {
+    const prev = cloneState(state);
     prevFoundAxis = state.foundAxis;
 
-    // Capture ghost trajectory coordinates before they are cleared inside doStep due to cycle detection
     const inPhase2Before = (state.discoveredMixedX !== null) !== (state.discoveredMixedY !== null);
     if (inPhase2Before && state.ghostVisitedPositions.length > 0) {
       savedGhostPositionsInCycle = [...state.ghostVisitedPositions];
@@ -95,82 +212,44 @@ function runTests() {
     doStep(
       spyGame,
       state,
-      'A', // firstMover A
-      0.01, // default shrink step
+      'A',
+      0.01,
       allNE,
-      null, // committedNE (none for mixed game)
-      addTestLog,
+      null,
+      () => {},
       () => {
         const inPhase2 = (state.discoveredMixedX !== null) !== (state.discoveredMixedY !== null);
-        if (inPhase2) {
-          ghostCycleDetected = true;
-        }
+        if (inPhase2) ghostCycleDetected = true;
       },
-      () => {
-        console.log('   Converged!');
-      }
+      () => {}
     );
 
-    console.log(`Step ${state.stepCount}: calcX=${state.calcX}, calcY=${state.calcY}, discX=${state.discoveredMixedX}, discY=${state.discoveredMixedY}, ghostLen=${state.ghostVisitedPositions.length}, cycleCount=${state.cycleCount}`);
-
-    stepsPlayed++;
-
-    // In Phase 2, verify that only ONE coordinate changes per step (no diagonal movements!)
     const inPhase2After = (state.discoveredMixedX !== null) !== (state.discoveredMixedY !== null);
     const isGhostInitStep = prevFoundAxis === null && state.foundAxis !== null;
-
-    if (inPhase2After && prevCalcX !== null && prevCalcY !== null && state.calcX !== null && state.calcY !== null) {
-      // Ghost initialization step: Phase 2 resets calcX/calcY to domainHi then runs the first ghost
-      // move in one doStep — so the net change can appear diagonal. Skip this one step.
-      if (isGhostInitStep) {
-        console.log(`   (Ghost initialized at Step ${state.stepCount}. Skipping diagonal check for Phase 2 init.)`);
-      } else if (state.cycleCount !== prevCycleCount) {
-        // Domain contraction clamps both dimensions simultaneously — skip diagonal check.
-        console.log(`   (Cycle detected and shrunk at Step ${state.stepCount}. Skipping diagonal check for contraction.)`);
-      } else {
-        const dx = Math.abs(state.calcX - prevCalcX);
-        const dy = Math.abs(state.calcY - prevCalcY);
-
-        // If BOTH dx and dy are greater than 0, then the ghost has moved diagonally!
-        if (dx > 0 && dy > 0) {
-          throw new Error(`FAIL: Ghost moved diagonally at step ${state.stepCount}! dx=${dx.toFixed(3)}, dy=${dy.toFixed(3)}. Position switched from (${prevCalcX}, ${prevCalcY}) to (${state.calcX}, ${state.calcY})`);
-        }
-      }
+    const cycleContracted = state.cycleCount !== prev.cycleCount;
+    if (inPhase2After && !isGhostInitStep && !cycleContracted) {
+      const dx = Math.abs((state.calcX ?? state.cx) - (prev.calcX ?? prev.cx));
+      const dy = Math.abs((state.calcY ?? state.cy) - (prev.calcY ?? prev.cy));
+      assert(!(dx > 0 && dy > 0), `Ghost moved diagonally at step ${state.stepCount}`);
     }
   }
 
-  console.log('   [PASS] Verified that the ghost never moves diagonally (only one coordinate changes per step).');
+  assert(ghostCycleDetected, 'Expected to detect a Phase 2 ghost corridor cycle');
+  assert(new Set(savedGhostPositionsInCycle).size === 4, 'Ghost corridor should visit exactly four endpoints before cycling');
+}
 
-  // Verify that all 4 endpoints of the corridor were reached during Phase 2 cycle detection
-  // In the first Ghost Cycle:
-  // Since we check the list of visited positions *before* adding the next one:
-  // On Phase 2 entry, ghost starts at hi, hi.
-  // Then B flips y to lo: (hi, lo) is logged -> Step 1
-  // Then A moves x to lo (best response): (lo, lo) is logged -> Step 2
-  // Then B flips y to hi: (lo, hi) is logged -> Step 3
-  // Then A moves x to hi: (hi, hi) is logged -> Step 4
-  // Then B flips y to lo: (hi, lo) is tested, seen in ghostVisitedPositions, triggering a cycle!
-  // This means exactly 4 unique endpoints of the search corridor were in the visited positions at cycle detection!
-  
-  const ghostUniquePositions = new Set(savedGhostPositionsInCycle);
-  console.log('   Ghost coordinates logged in the first corridor cycle:', savedGhostPositionsInCycle);
-  console.log(`   Number of unique coordinates visited: ${ghostUniquePositions.size}`);
-
-  if (ghostUniquePositions.size !== 4) {
-    throw new Error(`FAIL: Simulated cycle only visited ${ghostUniquePositions.size} endpoints. Expected exactly 4!`);
-  }
-
-  console.log('   [PASS] All 4 corridor endpoints were reached before a cycle was detected.');
-  console.log('----------------------------------------------------');
-  console.log('ALL TESTS PASSED SUCCESSFULLY! The corridor search is mathematically correct.');
-  console.log('----------------------------------------------------');
+function runTests() {
+  testSolverCanonicalGames();
+  testZeroSumSearchFamily();
+  testSimulationConvergence();
+  testGhostCorridorInvariant();
+  console.log('All game-engine regression tests passed.');
 }
 
 try {
   runTests();
-  process.exit(0);
 } catch (err: any) {
-  console.error('\n❌ TEST SUITE FAILURE:');
-  console.error(err.message || err);
+  console.error('Test suite failure:');
+  console.error(err?.message || err);
   process.exit(1);
 }

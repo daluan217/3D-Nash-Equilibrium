@@ -6,6 +6,20 @@
 import { GamePayoffs, SimState, NashEquilibrium, PresetGame, PathSegment } from '../types';
 
 export const PRESETS: Record<string, PresetGame> = {
+  search: {
+    key: 'search',
+    name: 'Search Game',
+    a11: 2, b11: -2,  a12: 0, b12: 0,
+    a21: 0, b21: 0,   a22: 1, b22: -1,
+    row1Label: 'Search L', row2Label: 'Search R',
+    col1Label: 'Hide L',   col2Label: 'Hide R',
+    desc: '<strong>Search Game:</strong> A searcher chooses to look Left (Row 1) or Right (Row 2); '
+        + 'a hider simultaneously picks Left (Col 1) or Right (Col 2). '
+        + 'The searcher wins 2 by finding the hider at the left door, and 1 at the right door. '
+        + 'The hider\'s payoffs are the exact negatives (zero-sum). Neither player has a dominant strategy; both must randomize. '
+        + 'The unique Nash Equilibrium is mixed: Searcher plays Left with probability 1/3, Hider hides Left with probability 1/3. '
+        + 'Notice the flat spot in both expected-payoff surfaces at (x*, y*)=(1/3, 1/3).'
+  },
   bos: {
     key: 'bos',
     name: 'Battle of the Sexes',
