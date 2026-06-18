@@ -522,7 +522,10 @@ async function startServer() {
   // ── Admin Stats API ────────────────────────────────────────────────────────
   app.get("/api/admin/stats", rateLimit("admin", 10, 60_000), (req, res) => {
     const secret = req.headers["x-admin-secret"] as string;
-    if (secret !== process.env.ADMIN_SECRET) {
+    // Fail closed: reject when ADMIN_SECRET is unconfigured or the header is
+    // missing — otherwise an unset env makes `undefined !== undefined` false and
+    // the check passes, exposing all-user PII to an unauthenticated caller.
+    if (!process.env.ADMIN_SECRET || !secret || !safeEqual(secret, process.env.ADMIN_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     const db = loadDB();
