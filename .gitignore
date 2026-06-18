@@ -18,4 +18,9 @@ dist-electron/
 
 # Local agent / tooling artifacts
 CLAUDE.md
+AGENTS.md
+CODEX.md
+.codex/
+.claude/
 .playwright-mcp/
+ensemble/

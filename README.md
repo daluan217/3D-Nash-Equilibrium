@@ -1,21 +1,24 @@
 # Nash Equilibrium Simulator
 
-A full-stack SaaS application for visualising Nash Equilibria in 2-player games. Renders interactive 3D expected-payoff surfaces, animates best-response dynamics, and computes pure and mixed strategy Nash Equilibria in real time.
+> Interactive 3D visualizer for the Nash equilibria of two-player games.
 
-**Live site:** [nash-equilibrium-simulator.com](https://nash-equilibrium-simulator.com)
+See the strategic structure of a 2×2 game at a glance. Rotate and zoom the
+expected-payoff surfaces, watch best-response dynamics converge step by step, and
+read off the pure and mixed-strategy Nash equilibria as they're computed in real time.
+Built as a full-stack web app, with an Electron desktop build for offline use.
+
+**▶ Live site:** [nash-equilibrium-simulator.com](https://nash-equilibrium-simulator.com)
 
 ---
 
 ## Features
 
-- **3D Plotly visualisation** — interactive payoff surfaces with rotate, pan, and pinch-to-zoom on mobile
-- **Best-response simulation** — step-by-step or looping animation of strategy convergence
-- **Nash Equilibrium solver** — computes all pure and mixed NE analytically
-- **AI game theorist report** — Gemini-powered natural language analysis of each game
-- **User accounts** — email-verified registration, saved custom game presets, cloud sync
-- **Desktop app** — Electron wrapper with embedded Express server for fully offline use
-- **Admin dashboard** — password-protected stats panel (triple-click the compass logo)
-- **Google Analytics** — page view and session tracking via GA4
+- **Interactive 3D surfaces** — rotate, pan, and pinch-to-zoom the expected-payoff landscape (Plotly.js)
+- **Best-response dynamics** — step through or loop an animation of strategy convergence
+- **Nash equilibrium solver** — computes every pure and mixed NE analytically, in real time
+- **AI game-theorist report** — natural-language analysis of each game's strategic situation
+- **Accounts & saved games** — email-verified sign-in with cloud-synced custom presets
+- **Desktop app** — Electron build with an embedded Express server for fully offline use
 
 ---
 
@@ -39,7 +42,7 @@ A full-stack SaaS application for visualising Nash Equilibria in 2-player games.
 | Google Cloud Storage | Persistent JSON database (Cloud Run) |
 | Nodemailer | Email verification and account deletion codes |
 | Google Gemini API | AI game theorist situation reports |
-| JWT (manual) | Authentication tokens |
+| HMAC-signed tokens | Stateless bearer-token auth (PBKDF2 password hashing) |
 
 ### Desktop (Electron)
 | Technology | Purpose |
@@ -69,6 +72,7 @@ A full-stack SaaS application for visualising Nash Equilibria in 2-player games.
 │   ├── main.tsx                 # React entry point
 │   ├── index.css                # Global styles
 │   ├── types.ts                 # Shared TypeScript interfaces
+│   ├── test.ts                  # Game-engine regression tests (npm test)
 │   ├── components/
 │   │   ├── PlotlyView.tsx       # 3D Plotly chart with rotate/pan/pinch controls
 │   │   ├── MenuDrawer.tsx       # Slide-out workspace centre panel
@@ -77,8 +81,7 @@ A full-stack SaaS application for visualising Nash Equilibria in 2-player games.
 │   │   └── GameGraphMiniature.tsx # Small graph preview thumbnail
 │   └── utils/
 │       ├── gameEngine.ts        # Nash Equilibrium solver + simulation step logic
-│       ├── plotting.ts          # Plotly trace builders for surfaces and markers
-│       └── test.ts              # Unit tests for the game engine
+│       └── plotting.ts          # Plotly trace builders for surfaces and markers
 │
 ├── server.ts                    # Express server — API routes, auth, GCS DB, email
 ├── electron-main.cjs            # Electron main process — window creation, IPC
@@ -111,18 +114,24 @@ The app uses a simple JSON file as its database (`db.json`), with two collection
 
 ## API Routes
 
+All routes are rate-limited. Routes that read or write user data require a bearer token.
+
 | Method | Route | Description |
 |---|---|---|
 | GET | `/api/health` | Health check |
+| GET | `/api/version` | Latest desktop app version (for update prompts) |
 | GET | `/api/admin/stats` | Admin stats (requires `x-admin-secret` header) |
 | GET | `/api/download/dmg` | Streams DMG from GCS or local `dist-electron/` |
+| POST | `/api/feedback` | Send anonymous or attributed user feedback |
 | POST | `/api/auth/register` | Register + send email verification code |
 | POST | `/api/auth/verify` | Verify email with 6-digit code |
-| POST | `/api/auth/login` | Login, returns JWT token |
-| GET | `/api/auth/me` | Get current user from token |
-| POST | `/api/auth/delete-request` | Send account deletion confirmation email |
-| POST | `/api/auth/delete-confirm` | Confirm and delete account |
-| GET | `/api/games` | List saved games for authenticated user |
+| POST | `/api/auth/login` | Log in, returns a signed bearer token |
+| GET | `/api/auth/me` | Get the current user from a token |
+| POST | `/api/auth/forgot-password` | Send a password-recovery code by email |
+| POST | `/api/auth/reset-password` | Reset the password with a recovery code |
+| POST | `/api/auth/delete-request` | Send account-deletion confirmation email |
+| POST | `/api/auth/delete-confirm` | Confirm and delete the account |
+| GET | `/api/games` | List saved games for the authenticated user |
 | POST | `/api/games` | Save a new game preset |
 | DELETE | `/api/games/:id` | Delete a saved game |
 
