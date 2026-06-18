@@ -46,11 +46,15 @@ substitutions:
   _SMTP_PASS: 'your-app-password-here'
   _SMTP_FROM: '"Nash Equilibrium Simulator" <your-email@gmail.com>'
   _GCS_BUCKET_NAME: 'your-gcs-bucket-name'
-  _ADMIN_SECRET: 'your-admin-secret-here'
-  # Stable HMAC key for signing auth session tokens. Without it, sessions reset
-  # on every Cloud Run restart/redeploy. Generate with `openssl rand -hex 32`
-  # and set the real value in the Cloud Build trigger UI (do NOT commit it here).
-  _AUTH_SECRET: 'generate-with-openssl-rand-hex-32'
+  # Secret for the admin stats endpoint. Intentionally empty here: set the real
+  # value in the Cloud Build trigger UI. If left unset, the admin endpoint stays
+  # fail-closed (401 for everyone) rather than deploying a repo-known placeholder.
+  _ADMIN_SECRET: ''
+  # Stable HMAC key for signing auth session tokens. Intentionally empty here:
+  # set the real value (generate with `openssl rand -hex 32`) in the Cloud Build
+  # trigger UI. If left unset the app falls back to a random per-boot key — safe
+  # but sessions reset on every restart/redeploy — never a repo-known placeholder.
+  _AUTH_SECRET: ''
   # Trust the Cloud Run front-end proxy so rate limiting keys on the real client
   # IP (req.ip) rather than the proxy. "1" = trust one hop, correct for Cloud Run.
   _TRUST_PROXY: '1'
