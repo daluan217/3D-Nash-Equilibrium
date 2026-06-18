@@ -1352,7 +1352,9 @@ export default function App() {
       {/* ── Main Layout Body ── */}
       <main className="flex-1 max-w-[100rem] w-full mx-auto px-4 lg:px-6 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* ── Left Sidebar Settings Panel (5 cols) ── */}
-        <div className="lg:col-span-5 flex flex-col gap-6">
+        {/* On mobile, the plot column (order-1) comes first so reviewers see the
+            3D plot without scrolling past the setup panels; lg: restores source order. */}
+        <div className="lg:col-span-5 flex flex-col gap-6 order-2 lg:order-none">
 
           {/* Preset Buttons Block */}
           <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
@@ -1809,7 +1811,7 @@ export default function App() {
         </div>
 
         {/* ── Right Panel Simulation Console & Plots (7 cols) ── */}
-        <div className="lg:col-span-7 flex flex-col gap-6">
+        <div className="lg:col-span-7 flex flex-col gap-6 order-1 lg:order-none">
 
           {/* Plot Legend Info Line */}
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-xs text-slate-500 justify-center lg:justify-start">
@@ -2138,7 +2140,7 @@ export default function App() {
 
         {/* Once converged, the log spans full width beneath both columns */}
         {simState.converged && (
-          <div className="lg:col-span-12">
+          <div className="lg:col-span-12 order-3 lg:order-none">
             {simulationLogPanel}
           </div>
         )}
