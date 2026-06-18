@@ -609,11 +609,23 @@ async function startServer() {
   // known origins; if unset we fall back to "*" for backward compatibility.
   const corsAllowlist = (process.env.CORS_ALLOWED_ORIGINS || "")
     .split(",").map(o => o.trim()).filter(Boolean);
+  // The desktop (Electron) client runs on http://127.0.0.1:<port> and calls the
+  // hosted backend cross-origin — treat localhost as a trusted first-party origin.
+  const isLocalClientOrigin = (origin: string) =>
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
   app.use((req, res, next) => {
-    // Never expose admin routes (which return user PII) cross-origin: with no
-    // Access-Control-Allow-Origin header the browser blocks the response.
-    if (!req.path.startsWith("/api/admin/")) {
-      const origin = req.headers.origin;
+    const origin = req.headers.origin;
+    if (req.path.startsWith("/api/admin/")) {
+      // Admin returns user PII and is gated by x-admin-secret. Don't expose it to
+      // arbitrary internet origins via "*"; allow cross-origin calls only from the
+      // first-party local (Electron) client or explicitly allowlisted origins.
+      if (origin && (isLocalClientOrigin(origin) || corsAllowlist.includes(origin))) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "x-admin-secret");
+      }
+    } else {
       if (corsAllowlist.length === 0) {
         res.setHeader("Access-Control-Allow-Origin", "*");
       } else if (origin && corsAllowlist.includes(origin)) {
