@@ -578,19 +578,28 @@ export function doStep(
       ny = valCol1 >= valCol2 ? 1 : 0;
     }
   } else if (pureNEs.length >= 1) {
+    // Alternating best response: each mover best-responds to the opponent's
+    // CURRENT strategy (s.cy / s.cx), not a frozen reference. (calcX/calcY are
+    // kept in sync below; previously they were read here but never updated, so
+    // both players forever best-responded to the START point — converging to the
+    // mutual best response to the start rather than the equilibrium.)
     if (mover === 'A') {
-      const sY = s.calcY ?? s.cy;
+      const sY = s.cy;
       const sA = sY * (g.a11 - g.a21) + (1 - sY) * (g.a12 - g.a22);
       if (sA > 1e-9) nx = s.domainHi;
       else if (sA < -1e-9) nx = s.domainLo;
       else if (mixedNE) nx = Math.max(s.domainLo, Math.min(s.domainHi, mixedNE.x));
     } else {
-      const sX = s.calcX ?? s.cx;
+      const sX = s.cx;
       const sB = sX * (g.b11 - g.b12) + (1 - sX) * (g.b21 - g.b22);
       if (sB > 1e-9) ny = s.domainHi;
       else if (sB < -1e-9) ny = s.domainLo;
       else if (mixedNE) ny = Math.max(s.domainLo, Math.min(s.domainHi, mixedNE.y));
     }
+    // Keep the best-response reference current for the next step and for the
+    // cycle-detection / bisection helpers (mirrors the mixed-NE Phase-1 branch).
+    s.calcX = r3(nx);
+    s.calcY = r3(ny);
   } else {
     // ── Mixed NE only: Domain shrinking dynamics ────────────────────────────
     const Dx = g.b11 - g.b12 - g.b21 + g.b22;
@@ -854,7 +863,12 @@ export function doStep(
     const prev = s.historyStack[s.historyStack.length - 1];
     const dx = Math.abs(s.cx - (prev ? prev.cx : s.cx));
     const dy = Math.abs(s.cy - (prev ? prev.cy : s.cy));
-    if (dx < 0.0003 && dy < 0.0003) {
+    // Require both players to have moved at least once (stepCount >= 2) before
+    // declaring convergence. Otherwise, if the first mover starts exactly on its
+    // own indifference line (sA=0 / sB=0 → it legitimately doesn't move), this
+    // delta check would fire after a single non-move and freeze at the start
+    // point before the opponent ever responds.
+    if (s.stepCount >= 2 && dx < 0.0003 && dy < 0.0003) {
       s.converged = true;
       const finalEA = r3(EA(s.cx, s.cy, g));
       const finalEB = r3(EB(s.cx, s.cy, g));
