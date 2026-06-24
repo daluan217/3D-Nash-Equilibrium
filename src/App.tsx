@@ -447,7 +447,6 @@ export default function App() {
   const reportPanelRef = useRef<HTMLDivElement>(null);
   const [logBelow, setLogBelow] = useState(false);
   const [inlineLogHeight, setInlineLogHeight] = useState<number | null>(null);
-  const COLUMN_GAP = 24;     // matches the right column's `gap-6` (1.5rem)
   const MIN_LOG_ROOM = 120;  // px below which the inline log drops to full width
 
   useLayoutEffect(() => {
@@ -461,6 +460,13 @@ export default function App() {
         setInlineLogHeight(null);
         return;
       }
+      // The flex gap above the log (`gap-6` = 1.5rem) scales with the root
+      // font-size, which is responsive (e.g. 20px on the web layout, 16px in the
+      // Electron window). Derive it from the live root font-size instead of
+      // hardcoding 24px, otherwise the log's bottom drifts below the params panel
+      // whenever the root font-size isn't 16px.
+      const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const columnGap = remPx * 1.5;
       const room = params.getBoundingClientRect().bottom - report.getBoundingClientRect().bottom;
       if (simState.converged && room < MIN_LOG_ROOM) {
         setLogBelow(true);
@@ -470,7 +476,7 @@ export default function App() {
       setLogBelow(false);
       // `room` spans from the report's bottom to the params' bottom; the log's own
       // header + padding sit inside that, so the scroll area gets the remainder.
-      setInlineLogHeight(Math.max(MIN_LOG_ROOM - COLUMN_GAP, room - COLUMN_GAP));
+      setInlineLogHeight(Math.max(MIN_LOG_ROOM - columnGap, room - columnGap));
     };
     measure();
     const ro = new ResizeObserver(measure);
