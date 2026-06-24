@@ -47,7 +47,18 @@ export function makeTraces(
   isMobile = false,
   stepMode: 'shrink' | 'regret' = 'shrink'
 ): any[] {
-  const diamondSize = isMobile ? 5 : 10;
+  // The NE diamond is the PRECISE marker for the equilibrium coordinate, so it
+  // stays small (the surfaces' domain/range is tight — a large marker would hide
+  // exactly where the NE sits). The current-position sphere is drawn a touch
+  // smaller than the diamond and rendered AFTER it, so at convergence the sphere
+  // sits on top with just the diamond's corners poking out around it — the
+  // equilibrium stays pinpointed and both markers are visible.
+  const diamondSize = isMobile ? 8.5 : 10.5;
+  const sphereSize = isMobile ? 7 : 8;
+  // Phase 2 ghost (search) markers stay smaller than the current-position
+  // spheres so the size hierarchy reads ghost < sphere < diamond at every
+  // breakpoint.
+  const ghostSize = isMobile ? 5 : 6.5;
   const px = s.displayX ?? s.cx;
   const py = s.displayY ?? s.cy;
   const eA = r3(EA(px, py, g));
@@ -195,7 +206,7 @@ export function makeTraces(
           y: [gy],
           z: [zCurrentA],
           marker: {
-            size: 6.5,
+            size: ghostSize,
             color: ghostColor,
             symbol: 'circle',
             line: { color: ghostLineColor, width: 1.5 }
@@ -242,7 +253,7 @@ export function makeTraces(
           y: [gy],
           z: [zCurrentB],
           marker: {
-            size: 6.5,
+            size: ghostSize,
             color: ghostColor,
             symbol: 'circle',
             line: { color: ghostLineColor, width: 1.5 }
@@ -360,7 +371,11 @@ export function makeTraces(
         x: [s.startX],
         y: [s.startY],
         z: [EA(s.startX, s.startY, g)],
-        marker: { size: 7, color: '#7F8C8D', symbol: 'circle', line: { color: 'white', width: 1 } }
+        // Semi-transparent so the (opaque, drawn-last) current-position sphere is
+        // never fully hidden by the start marker, whatever the camera angle: even
+        // when the start point sits nearer the camera, the current position shows
+        // through it instead of being occluded.
+        marker: { size: 7, color: '#7F8C8D', symbol: 'circle', opacity: 0.5, line: { color: 'white', width: 1 } }
       });
     }
     if (trackingMode === 'B' || trackingMode === 'both') {
@@ -372,7 +387,11 @@ export function makeTraces(
         x: [s.startX],
         y: [s.startY],
         z: [EB(s.startX, s.startY, g)],
-        marker: { size: 7, color: '#7F8C8D', symbol: 'circle', line: { color: 'white', width: 1 } }
+        // Semi-transparent so the (opaque, drawn-last) current-position sphere is
+        // never fully hidden by the start marker, whatever the camera angle: even
+        // when the start point sits nearer the camera, the current position shows
+        // through it instead of being occluded.
+        marker: { size: 7, color: '#7F8C8D', symbol: 'circle', opacity: 0.5, line: { color: 'white', width: 1 } }
       });
     }
   }
@@ -484,32 +503,6 @@ export function makeTraces(
   if (trackingMode === 'A' || trackingMode === 'both') drawPaths(s.pathSegmentsA, s.phase1PtsA);
   if (trackingMode === 'B' || trackingMode === 'both') drawPaths(s.pathSegmentsB, s.phase1PtsB);
 
-  // ── Tracking spheres (the large display balls) ────────────────────────────
-  if (trackingMode === 'A' || trackingMode === 'both') {
-    traces.push({
-      type: 'scatter3d',
-      mode: 'markers',
-      name: 'Current position (A)',
-      showlegend: trackingMode === 'A' || trackingMode === 'both',
-      x: [px],
-      y: [py],
-      z: [eA],
-      marker: { size: 9, color: '#d52c1a', line: { color: 'white', width: 2 } }
-    });
-  }
-  if (trackingMode === 'B' || trackingMode === 'both') {
-    traces.push({
-      type: 'scatter3d',
-      mode: 'markers',
-      name: 'Current position (B)',
-      showlegend: trackingMode === 'B' || trackingMode === 'both',
-      x: [px],
-      y: [py],
-      z: [eB],
-      marker: { size: 9, color: '#2980B9', line: { color: 'white', width: 2 } }
-    });
-  }
-
   // ── Nash Equilibrium markers ───────────────────────────────────────────────
   let pureShown = false;
   let mixedShown = false;
@@ -533,6 +526,7 @@ export function makeTraces(
           mode: 'lines',
           name: pureShown ? '_' : 'Pure NE',
           showlegend: !pureShown,
+          legendgroup: 'pureNE',
           x: lineX,
           y: lineY,
           z: lineZ,
@@ -543,10 +537,15 @@ export function makeTraces(
           mode: 'markers',
           name: '_',
           showlegend: false,
+          legendgroup: 'pureNE',
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zAp, zBp],
-          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          // Semi-transparent so an NE diamond never opaquely hides the
+          // current-position sphere when the camera puts it in front (same
+          // treatment as the start marker); the opaque sphere is drawn last so
+          // at convergence it stays on top with the diamond corners protruding.
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
         });
       } else {
         const zP = trackingMode === 'B' ? EB(ne.x, ne.y, g) : EA(ne.x, ne.y, g);
@@ -555,10 +554,15 @@ export function makeTraces(
           mode: 'markers',
           name: pureShown ? '_' : 'Pure NE',
           showlegend: !pureShown,
+          legendgroup: 'pureNE',
           x: [ne.x],
           y: [ne.y],
           z: [zP],
-          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          // Semi-transparent so an NE diamond never opaquely hides the
+          // current-position sphere when the camera puts it in front (same
+          // treatment as the start marker); the opaque sphere is drawn last so
+          // at convergence it stays on top with the diamond corners protruding.
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
         });
       }
       pureShown = true;
@@ -581,6 +585,7 @@ export function makeTraces(
           mode: 'lines',
           name: mixedShown ? '_' : 'Mixed NE',
           showlegend: !mixedShown,
+          legendgroup: 'mixedNE',
           x: lineX,
           y: lineY,
           z: lineZ,
@@ -591,10 +596,11 @@ export function makeTraces(
           mode: 'markers',
           name: '_',
           showlegend: false,
+          legendgroup: 'mixedNE',
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zA, zB],
-          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
         });
       } else {
         const zVal = trackingMode === 'B' ? zB : zA;
@@ -603,15 +609,44 @@ export function makeTraces(
           mode: 'markers',
           name: mixedShown ? '_' : 'Mixed NE',
           showlegend: !mixedShown,
+          legendgroup: 'mixedNE',
           x: [ne.x],
           y: [ne.y],
           z: [zVal],
-          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
         });
       }
       mixedShown = true;
     }
   });
+
+  // ── Tracking spheres (the large display balls) ────────────────────────────
+  // Drawn LAST so that at convergence they render on top of the NE diamond,
+  // leaving only the diamond's corners protruding (see diamondSize note above).
+  if (trackingMode === 'A' || trackingMode === 'both') {
+    traces.push({
+      type: 'scatter3d',
+      mode: 'markers',
+      name: 'Current position (A)',
+      showlegend: trackingMode === 'A' || trackingMode === 'both',
+      x: [px],
+      y: [py],
+      z: [eA],
+      marker: { size: sphereSize, color: '#d52c1a', line: { color: 'white', width: 2 } }
+    });
+  }
+  if (trackingMode === 'B' || trackingMode === 'both') {
+    traces.push({
+      type: 'scatter3d',
+      mode: 'markers',
+      name: 'Current position (B)',
+      showlegend: trackingMode === 'B' || trackingMode === 'both',
+      x: [px],
+      y: [py],
+      z: [eB],
+      marker: { size: sphereSize, color: '#2980B9', line: { color: 'white', width: 2 } }
+    });
+  }
 
   return traces;
 }
