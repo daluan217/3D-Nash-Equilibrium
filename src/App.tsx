@@ -478,14 +478,30 @@ export default function App() {
       // header + padding sit inside that, so the scroll area gets the remainder.
       setInlineLogHeight(Math.max(MIN_LOG_ROOM - columnGap, room - columnGap));
     };
+    let cancelled = false;
+    const safeMeasure = () => { if (!cancelled) measure(); };
     measure();
     const ro = new ResizeObserver(measure);
     if (paramsPanelRef.current) ro.observe(paramsPanelRef.current);
     if (reportPanelRef.current) ro.observe(reportPanelRef.current);
     window.addEventListener('resize', measure);
+    // A ResizeObserver only fires on element SIZE changes, not POSITION shifts.
+    // On initial open, the 3D Plotly chart renders asynchronously above the
+    // report panel and pushes it down (a position change), and web fonts can
+    // reflow the panels — neither re-triggers the observer, so the first measure
+    // is stale until the user resizes the window (which is why full-screening
+    // "fixes" the alignment). Re-measure once those settle.
+    const raf = requestAnimationFrame(() => requestAnimationFrame(safeMeasure));
+    const settleTimers = [setTimeout(safeMeasure, 250), setTimeout(safeMeasure, 800)];
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(safeMeasure).catch(() => {});
+    }
     return () => {
+      cancelled = true;
       ro.disconnect();
       window.removeEventListener('resize', measure);
+      cancelAnimationFrame(raf);
+      settleTimers.forEach(clearTimeout);
     };
   }, [simState.converged, simState.cx, simState.cy, logEntries]);
 
