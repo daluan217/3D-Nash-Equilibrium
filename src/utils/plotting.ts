@@ -61,8 +61,13 @@ export function makeTraces(
   const ghostSize = isMobile ? 5 : 6.5;
   const px = s.displayX ?? s.cx;
   const py = s.displayY ?? s.cy;
-  const eA = r3(EA(px, py, g));
-  const eB = r3(EB(px, py, g));
+  // Current-position sphere z: use the SAME unrounded EA/EB the NE diamond uses
+  // (not r3-rounded). At convergence the sphere and diamond share coordinates, so
+  // matching the z computation makes their depths bit-identical — then draw order
+  // (spheres are pushed last) puts the sphere on top, instead of a ~0.0003 z gap
+  // from rounding letting the opaque diamond win the depth test and hide it.
+  const eA = EA(px, py, g);
+  const eB = EB(px, py, g);
 
   let aMoveLegendShown = false;
   let bMoveLegendShown = false;
