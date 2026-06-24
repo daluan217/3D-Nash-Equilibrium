@@ -541,11 +541,7 @@ export function makeTraces(
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zAp, zBp],
-          // Semi-transparent so an NE diamond never opaquely hides the
-          // current-position sphere when the camera puts it in front (same
-          // treatment as the start marker); the opaque sphere is drawn last so
-          // at convergence it stays on top with the diamond corners protruding.
-          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       } else {
         const zP = trackingMode === 'B' ? EB(ne.x, ne.y, g) : EA(ne.x, ne.y, g);
@@ -558,11 +554,7 @@ export function makeTraces(
           x: [ne.x],
           y: [ne.y],
           z: [zP],
-          // Semi-transparent so an NE diamond never opaquely hides the
-          // current-position sphere when the camera puts it in front (same
-          // treatment as the start marker); the opaque sphere is drawn last so
-          // at convergence it stays on top with the diamond corners protruding.
-          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       }
       pureShown = true;
@@ -600,7 +592,7 @@ export function makeTraces(
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zA, zB],
-          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       } else {
         const zVal = trackingMode === 'B' ? zB : zA;
@@ -613,7 +605,7 @@ export function makeTraces(
           x: [ne.x],
           y: [ne.y],
           z: [zVal],
-          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', opacity: 0.6, line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
         });
       }
       mixedShown = true;
