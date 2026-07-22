@@ -64,9 +64,9 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           echo "Uploading '$DMG_PATH' (v$VERSION) -> gs://$BUCKET/Nash Equilibrium Simulator.dmg"
 
-          gsutil -h "Cache-Control:no-cache, max-age=0" \
-            cp "$DMG_PATH" "gs://$BUCKET/Nash Equilibrium Simulator.dmg"
+          gcloud storage cp "$DMG_PATH" "gs://$BUCKET/Nash Equilibrium Simulator.dmg" \
+            --cache-control="no-cache, max-age=0"
 
           printf '{"version":"%s"}' "$VERSION" > app-version.json
-          gsutil -h "Cache-Control:no-store" \
-            cp app-version.json "gs://$BUCKET/app-version.json"
+          gcloud storage cp app-version.json "gs://$BUCKET/app-version.json" \
+            --cache-control="no-store"
