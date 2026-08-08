@@ -1,7 +1,7 @@
 {
   "name": "nash-equilibrium-simulator",
   "private": true,
-  "version": "0.0.20",
+  "version": "0.0.21",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -11,7 +11,7 @@
     "preview": "NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist db.json",
     "lint": "tsc --noEmit",
-    "test": "tsx src/test.ts",
+    "test": "tsx src/test.ts && tsx src/fuzz.test.ts",
     "prepare": "git config core.hooksPath .githooks || true",
     "electron:start": "npm run build && electron .",
     "electron:pack": "npm run build && electron-builder --dir",

@@ -11,6 +11,7 @@ import {
   EB,
   r3,
   computeAllNE,
+  computeIndifference,
   doStep,
   buildPolyStr,
 } from './utils/gameEngine';
@@ -510,16 +511,7 @@ export default function App() {
     return computeAllNE(payoffs);
   }, [payoffs]);
 
-  const indifferenceStatus = useMemo(() => {
-    const aIndifferent = payoffs.a11 === payoffs.a21 && payoffs.a12 === payoffs.a22;
-    const bIndifferent = payoffs.b11 === payoffs.b12 && payoffs.b21 === payoffs.b22;
-    return {
-      aIndifferent,
-      bIndifferent,
-      any: aIndifferent || bIndifferent,
-      both: aIndifferent && bIndifferent
-    };
-  }, [payoffs]);
+  const indifferenceStatus = useMemo(() => computeIndifference(payoffs), [payoffs]);
 
   const pureNEs = useMemo<NashEquilibrium[]>(() => {
     return allNE.filter((n) => n.type === 'pure');

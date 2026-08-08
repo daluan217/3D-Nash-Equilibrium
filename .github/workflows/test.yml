@@ -1,0 +1,33 @@
+name: Test
+
+# Type-checks and runs both test suites (regression + property/fuzz) on every
+# push and PR. Node 20 matches the version release-desktop.yml already proves
+# green in Actions; CI never sees the local machine's default Node, so the
+# Node 26 Vite hang documented for local dev is not a concern here.
+on:
+  push:
+    branches: [main, review-mirror]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Run test suites
+        run: npm test

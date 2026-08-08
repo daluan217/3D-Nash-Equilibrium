@@ -81,6 +81,25 @@ export function EB(x: number, y: number, g: GamePayoffs): number {
   return x * y * g.b11 + x * (1 - y) * g.b12 + (1 - x) * y * g.b21 + (1 - x) * (1 - y) * g.b22;
 }
 
+// ── Regret (independent NE oracle) ────────────────────────────────────────────
+// A profile (x,y) is a Nash equilibrium iff neither player has positive regret.
+// These are computed straight from the payoff matrix and share NO code with
+// computeAllNE, so they are a genuine independent oracle: the fuzz suite and the
+// report validator can cross-check computeAllNE's output against them.
+// INVARIANT: computeAllNE must never call these — doing so would collapse the two
+// computations into one and destroy that independence.
+export function regretA(x: number, y: number, g: GamePayoffs): number {
+  const rA1 = y * g.a11 + (1 - y) * g.a12;
+  const rA2 = y * g.a21 + (1 - y) * g.a22;
+  return Math.max(rA1, rA2) - (x * rA1 + (1 - x) * rA2);
+}
+
+export function regretB(x: number, y: number, g: GamePayoffs): number {
+  const rB1 = x * g.b11 + (1 - x) * g.b21;
+  const rB2 = x * g.b12 + (1 - x) * g.b22;
+  return Math.max(rB1, rB2) - (y * rB1 + (1 - y) * rB2);
+}
+
 export function r3(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
@@ -134,6 +153,30 @@ export function computeAllNE(g: GamePayoffs): NashEquilibrium[] {
     });
   }
   return nes;
+}
+
+// ── Indifference / degenerate-payoff status ──────────────────────────────────
+// When a player's payoffs are flat (identical across their own choices) the game
+// admits NE continua that computeAllNE's corner+interior model does not enumerate
+// (it returns [] for the fully-flat case). Callers that need the complete
+// ground-truth picture — the report grounding payload especially — must pair
+// computeAllNE with this. Kept a pure function so the server/eval can reuse it.
+export interface IndifferenceStatus {
+  aIndifferent: boolean;
+  bIndifferent: boolean;
+  any: boolean;
+  both: boolean;
+}
+
+export function computeIndifference(g: GamePayoffs): IndifferenceStatus {
+  const aIndifferent = g.a11 === g.a21 && g.a12 === g.a22;
+  const bIndifferent = g.b11 === g.b12 && g.b21 === g.b22;
+  return {
+    aIndifferent,
+    bIndifferent,
+    any: aIndifferent || bIndifferent,
+    both: aIndifferent && bIndifferent,
+  };
 }
 
 export function chooseBestPureNEForMover(mover: 'A' | 'B', pureNEs: NashEquilibrium[]): NashEquilibrium | null {
@@ -264,8 +307,21 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
 }
 
 // ── Phase 2 ghost corridor bisection ─────────────────────────────────────────
-// Triggered when hi-lo < 2*step (too narrow for a full step) OR when the
-// best-response sign pattern at corridor boundaries changes (overshoot).
+// Contracts the search corridor [domainLo, domainHi] onto the second mixed
+// coordinate — the single root of the unfound axis's indifference line.
+//
+// The line is monotone and, at Phase-2 entry, is bracketed by [lo,hi] with
+// OPPOSITE signs (doStep resets the corridor to [0,1] if the Phase-1 bracket was
+// lost). A single root can only be approached from one side per bound, so the old
+// scheme — stepping BOTH bounds inward symmetrically — marched to the corridor
+// CENTRE and stalled (or collapsed to the wrong point) whenever the root sat
+// off-centre. This version moves each bound TOWARD THE ROOT instead: it advances a
+// bound by the largest step ≤ defaultStep that does not cross the root (same sign),
+// halving the step on overshoot. Small step ⇒ linear creep; large step ⇒
+// overshoot-and-halve ≡ classical bisection — the v2 contraction schedule of
+// RESEARCH_PLAN §2.1. The converged coordinate is read off the live indifference
+// signal (smallest |fn| on the grid), never a precomputed root, per the design
+// ethos ("found by dynamics, not precomputed").
 function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number): void {
   // foundAxis='x': x* found → searching y* → sA(y) = y*(a11-a21)+(1-y)*(a12-a22)
   // foundAxis='y': y* found → searching x* → sB(x) = x*(b11-b12)+(1-x)*(b21-b22)
@@ -273,61 +329,50 @@ function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: num
     ? (v: number) => v * (g.a11 - g.a21) + (1 - v) * (g.a12 - g.a22)
     : (v: number) => v * (g.b11 - g.b12) + (1 - v) * (g.b21 - g.b22);
 
-  const pat = { aHi: fn(s.domainHi), aLo: fn(s.domainLo) };
-  // Always capture the first-cycle pattern so overshoot detection has a baseline
-  // even when tooNarrow fires immediately (large step sizes).
-  if (s.ghostCyclePattern === null) s.ghostCyclePattern = pat;
-  const EPS_PAT = 1e-4;
-  const patternOK = (
-    !(Math.abs(pat.aHi) > EPS_PAT && Math.sign(pat.aHi) !== Math.sign(s.ghostCyclePattern.aHi)) &&
-    !(Math.abs(pat.aLo) > EPS_PAT && Math.sign(pat.aLo) !== Math.sign(s.ghostCyclePattern.aLo))
-  );
-  const tooNarrow = (s.domainHi - s.domainLo) < 2 * defaultStep;
+  const lo = s.domainLo;
+  const hi = s.domainHi;
+  const sLo = fn(lo);
+  const sHi = fn(hi);
+
+  // Advance `from` toward the opposite bound `toward` by the largest step
+  // ≤ defaultStep that keeps fn's sign (i.e. does not cross the root). Halve the
+  // step on overshoot; return `from` unchanged once no sub-step clears the root.
+  const advance = (from: number, toward: number, keepSign: number): number => {
+    const dir = Math.sign(toward - from);
+    if (dir === 0) return from;
+    let step = defaultStep;
+    for (let k = 0; k < 24 && step >= 1e-4; k++) {
+      const cand = r3(from + dir * step);
+      const beyond = dir > 0 ? cand >= toward : cand <= toward;
+      if (!beyond && Math.sign(fn(cand)) === keepSign) return cand;
+      step /= 2;
+    }
+    return from;
+  };
 
   let newLo: number;
   let newHi: number;
-
-  if (!s.ghostBisecting) {
-    if (patternOK && !tooNarrow) {
-      // Forward: record reference pattern, update good bounds, shrink normally.
-      s.ghostCyclePattern = pat;
-      s.ghostBisectGoodLo = s.domainLo;
-      s.ghostBisectGoodHi = s.domainHi;
-      newLo = r3(s.domainLo + defaultStep);
-      newHi = r3(s.domainHi - defaultStep);
-    } else {
-      s.ghostBisecting = true;
-      if (!patternOK) {
-        // Overshoot: current domain is bad; good was stored in last forward step.
-        s.ghostBisectBadLo = s.domainLo;
-        s.ghostBisectBadHi = s.domainHi;
-      } else {
-        // tooNarrow: current domain is good; a full step would be bad.
-        s.ghostBisectGoodLo = s.domainLo;
-        s.ghostBisectGoodHi = s.domainHi;
-        s.ghostBisectBadLo = r3(s.domainLo + defaultStep);
-        s.ghostBisectBadHi = r3(s.domainHi - defaultStep);
-      }
-      newLo = r3((s.ghostBisectGoodLo + s.ghostBisectBadLo) / 2);
-      newHi = r3((s.ghostBisectGoodHi + s.ghostBisectBadHi) / 2);
-    }
+  if (Math.sign(sLo) !== Math.sign(sHi) && sLo !== 0 && sHi !== 0) {
+    newLo = advance(lo, hi, Math.sign(sLo));
+    newHi = advance(hi, lo, Math.sign(sHi));
+    if (newLo > newHi) { const m = r3((newLo + newHi) / 2); newLo = m; newHi = m; }
   } else {
-    if (patternOK) {
-      s.ghostBisectGoodLo = s.domainLo;
-      s.ghostBisectGoodHi = s.domainHi;
-    } else {
-      s.ghostBisectBadLo = s.domainLo;
-      s.ghostBisectBadHi = s.domainHi;
-    }
-    newLo = r3((s.ghostBisectGoodLo + s.ghostBisectBadLo) / 2);
-    newHi = r3((s.ghostBisectGoodHi + s.ghostBisectBadHi) / 2);
+    // Bracket lost / a bound already sits on the root: collapse to the midpoint.
+    newLo = newHi = r3((lo + hi) / 2);
   }
 
   s.domainLo = newLo;
   s.domainHi = newHi;
 
-  if (s.domainLo >= s.domainHi - 0.0005) {
-    s.domainLo = s.domainHi = r3((s.domainLo + s.domainHi) / 2);
+  // Tight bracket → snap to the grid point carrying the smallest live indifference
+  // signal (the root) and collapse. Read purely off the signal, not a precomputed
+  // coordinate, so a half-grid boundary can't round onto the wrong cell.
+  if (s.domainHi - s.domainLo <= 0.0025) {
+    let root = r3(s.domainLo);
+    for (let v = r3(s.domainLo); v <= s.domainHi + 1e-9; v = r3(v + 0.001)) {
+      if (Math.abs(fn(v)) < Math.abs(fn(root))) root = r3(v);
+    }
+    s.domainLo = s.domainHi = root;
   }
 
   s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
