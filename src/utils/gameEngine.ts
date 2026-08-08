@@ -352,12 +352,20 @@ function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: num
 
   let newLo: number;
   let newHi: number;
-  if (Math.sign(sLo) !== Math.sign(sHi) && sLo !== 0 && sHi !== 0) {
+  if (sLo === 0) {
+    // Root sits exactly on lo — collapse there, not the midpoint. (Unreachable in
+    // the mixed-NE-only path: sLo===0 needs a12===a22, which drives the root to a
+    // boundary and makes computeMixedNE return null so Phase 2 is never entered.
+    // Guarded anyway because the failure mode would be a silent wrong answer.)
+    newLo = newHi = r3(lo);
+  } else if (sHi === 0) {
+    newLo = newHi = r3(hi);
+  } else if (Math.sign(sLo) !== Math.sign(sHi)) {
     newLo = advance(lo, hi, Math.sign(sLo));
     newHi = advance(hi, lo, Math.sign(sHi));
     if (newLo > newHi) { const m = r3((newLo + newHi) / 2); newLo = m; newHi = m; }
   } else {
-    // Bracket lost / a bound already sits on the root: collapse to the midpoint.
+    // Bracket lost (same sign at both ends): collapse to the midpoint.
     newLo = newHi = r3((lo + hi) / 2);
   }
 
