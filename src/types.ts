@@ -110,3 +110,66 @@ export interface NashEquilibrium {
   eA: number;
   eB: number;
 }
+
+/* ------------------------------------------------------------------ *
+ * LLM report types
+ *
+ * Shared by the client, the /api/report route, the validator, and the
+ * eval harness so all four agree on one definition. Types only — these
+ * erase at build time and cost nothing in the server bundle.
+ * ------------------------------------------------------------------ */
+
+/** Request body for POST /api/report — the full payoff matrix. */
+export interface ReportRequest {
+  payoffs: GamePayoffs;
+}
+
+/**
+ * One equilibrium the model claims exists. `continuum` covers the
+ * degenerate case where a player is indifferent and every point on a
+ * line (or the whole square) is an equilibrium — computeAllNE returns
+ * an empty array there, so it cannot be expressed as 'pure' | 'mixed'.
+ */
+export interface ClaimedEquilibrium {
+  type: 'pure' | 'mixed' | 'continuum';
+  x: number;
+  y: number;
+}
+
+/** Schema-constrained model output. Shape is guaranteed; truth is not. */
+export interface LlmReport {
+  claimedEquilibria: ClaimedEquilibrium[];
+  prose: string;
+}
+
+/** Why a single claim failed, so the eval can bucket failures by cause. */
+export type MismatchKind =
+  | 'out-of-range'      // x or y outside [0,1], or not finite
+  | 'nonzero-regret'    // fails the independent oracle: not an equilibrium
+  | 'not-in-solver'     // regret-clean but the solver does not list it
+  | 'wrong-type'        // real equilibrium, mislabelled pure/mixed/continuum
+  | 'omitted';          // solver found it; the model never mentioned it
+
+export interface Mismatch {
+  kind: MismatchKind;
+  claimed: ClaimedEquilibrium | null;
+  expected: NashEquilibrium | null;
+  detail: string;
+}
+
+export interface ValidationResult {
+  ok: boolean;
+  /** Human-readable pass/fail lines, in the order they were checked. */
+  checks: string[];
+  mismatches: Mismatch[];
+}
+
+/** What POST /api/report returns. */
+export interface ReportEnvelope {
+  source: 'llm' | 'deterministic';
+  report: LlmReport | null;
+  validation: ValidationResult | null;
+  groundTruth: NashEquilibrium[];
+  /** Set when source is 'deterministic', so the client can say why. */
+  fallbackReason?: 'no-key' | 'refusal' | 'max-tokens' | 'unparseable' | 'validation-failed' | 'error';
+}

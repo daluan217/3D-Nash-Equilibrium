@@ -11,6 +11,15 @@ import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
+// First imports from src/ into the server. esbuild bundles these relative
+// modules into dist/server.cjs; only npm packages stay external. Sharing one
+// solver between client, server, and eval is the point — a second copy here
+// would let them drift and quietly invalidate every consistency number.
+import { computeAllNE } from "./src/utils/gameEngine";
+import { validateReport } from "./src/utils/nashValidator";
+import { generateReport, DEFAULT_MODEL } from "./src/utils/report";
+import type { ReportEnvelope } from "./src/types";
+
 // Load environment variables from .env file
 dotenv.config();
 
@@ -706,6 +715,60 @@ async function startServer() {
       console.error("Error reading app version:", error);
       return res.status(500).json({ error: "Internal Server Error" });
     }
+  });
+
+  // ── Report API ─────────────────────────────────────────────────────────────
+  // Grounded LLM analysis with deterministic fallback. The client renders model
+  // prose only when validation passes; a refusal, truncation, or hallucination
+  // degrades to the existing deterministic panel rather than showing something
+  // wrong. That makes the fallback path exercised in normal operation.
+  app.post("/api/report", rateLimit("report", 20, 60_000), async (req, res) => {
+    const payoffs = cleanPayoffs(req.body?.payoffs);
+    if (!payoffs) {
+      return res.status(400).json({ error: "Invalid payoff matrix." });
+    }
+
+    const groundTruth = computeAllNE(payoffs);
+
+    // No key: local Electron mode, or an unkeyed deploy. Not an error.
+    if (!process.env.ANTHROPIC_API_KEY) {
+      const envelope: ReportEnvelope = {
+        source: "deterministic",
+        report: null,
+        validation: null,
+        groundTruth,
+        fallbackReason: "no-key",
+      };
+      return res.json(envelope);
+    }
+
+    // Model is server-controlled on purpose — a client-supplied model would let
+    // anyone bill the expensive one. The eval sweep calls generateReport
+    // directly, so it varies the model without this route needing to accept it.
+    const { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL });
+
+    if (!report) {
+      const envelope: ReportEnvelope = {
+        source: "deterministic",
+        report: null,
+        validation: null,
+        groundTruth,
+        fallbackReason: failure ?? "error",
+      };
+      return res.json(envelope);
+    }
+
+    const validation = validateReport(report, payoffs);
+    const envelope: ReportEnvelope = validation.ok
+      ? { source: "llm", report, validation, groundTruth }
+      : {
+          source: "deterministic",
+          report,
+          validation,
+          groundTruth,
+          fallbackReason: "validation-failed",
+        };
+    return res.json(envelope);
   });
 
   // ── Feedback API ───────────────────────────────────────────────────────────
