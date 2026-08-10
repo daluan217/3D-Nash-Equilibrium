@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
-import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment } from './types';
+import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment, ReportEnvelope } from './types';
 import {
   PRESETS,
   EA,
@@ -49,7 +49,9 @@ import {
   Download,
   MessageSquare,
   Star,
-  Send
+  Send,
+  Sparkles,
+  ShieldCheck
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
@@ -512,6 +514,47 @@ export default function App() {
   }, [payoffs]);
 
   const indifferenceStatus = useMemo(() => computeIndifference(payoffs), [payoffs]);
+
+  // ── Grounded LLM explanation ───────────────────────────────────────────────
+  // On demand, never reactive: payoffs change on every slider drag, so fetching
+  // per change would fire a model call per keystroke. The user asks for it.
+  const [llmEnvelope, setLlmEnvelope] = useState<ReportEnvelope | null>(null);
+  const [llmLoading, setLlmLoading] = useState(false);
+  // Tracked separately: without it a failed request clears the envelope and
+  // renders identically to "never asked", so the user cannot tell a dead
+  // request from an untouched panel.
+  const [llmError, setLlmError] = useState(false);
+
+  // Model prose renders ONLY when the server validated it against the solver.
+  // Every other outcome — refusal, truncation, rate limit, hallucinated
+  // equilibrium, or no API key at all — leaves the deterministic report above as
+  // the only answer shown. The fallback is the default, not the exception.
+  const llmVerified =
+    llmEnvelope?.source === 'llm' && llmEnvelope.validation?.ok === true && !!llmEnvelope.report;
+
+  // Any edit to the game invalidates prose written about the previous one.
+  useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
+
+  const fetchLlmExplanation = async () => {
+    setLlmLoading(true);
+    setLlmError(false);
+    try {
+      const res = await fetch(getApiUrl('/api/report'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payoffs }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      setLlmEnvelope((await res.json()) as ReportEnvelope);
+    } catch {
+      // Offline, unreachable server, or a non-2xx. The deterministic report
+      // above still stands; we just say so instead of failing silently.
+      setLlmEnvelope(null);
+      setLlmError(true);
+    } finally {
+      setLlmLoading(false);
+    }
+  };
 
   const pureNEs = useMemo<NashEquilibrium[]>(() => {
     return allNE.filter((n) => n.type === 'pure');
@@ -2186,6 +2229,66 @@ export default function App() {
                     </p>
                   </div>
                 ) : null}
+              </div>
+
+              {/* Plain-English explanation. The solver computes; the model only
+                  narrates, and its claims are checked against the solver before
+                  a single word of it is shown. */}
+              <div className="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <strong className="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 shrink-0" />
+                    Plain-English Explanation
+                  </strong>
+                  <button
+                    onClick={fetchLlmExplanation}
+                    disabled={llmLoading}
+                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {llmLoading ? 'Analyzing…' : llmEnvelope ? 'Regenerate' : 'Explain this game'}
+                  </button>
+                </div>
+
+                {llmLoading && (
+                  <p className="italic text-slate-400 dark:text-slate-500">
+                    Writing an explanation and checking it against the solver…
+                  </p>
+                )}
+
+                {!llmLoading && llmVerified && llmEnvelope?.report && (
+                  <div className="space-y-2">
+                    <p className="text-slate-600 dark:text-slate-300">{llmEnvelope.report.prose}</p>
+                    <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">
+                      <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        Every equilibrium named above was verified against the solver
+                        {llmEnvelope.validation ? ` (${llmEnvelope.validation.checks.length} checks passed)` : ''}.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {!llmLoading && llmEnvelope && !llmVerified && (
+                  <p className="text-slate-400 dark:text-slate-500 italic">
+                    No verified explanation available
+                    {llmEnvelope.fallbackReason ? ` (${llmEnvelope.fallbackReason})` : ''} — the computed
+                    report above is authoritative.
+                  </p>
+                )}
+
+                {!llmLoading && !llmEnvelope && llmError && (
+                  <p className="text-amber-700 dark:text-amber-400">
+                    Couldn't reach the explanation service. The computed report above is unaffected —
+                    try again in a moment.
+                  </p>
+                )}
+
+                {!llmLoading && !llmEnvelope && !llmError && (
+                  <p className="text-slate-400 dark:text-slate-500">
+                    Get a written walkthrough of what each player is trading off. The equilibria are
+                    always computed exactly; the explanation is checked against them before it appears.
+                  </p>
+                )}
               </div>
             </div>
           </div>

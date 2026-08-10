@@ -25,7 +25,7 @@ steps:
       - '--region=us-east1'
       - '--platform=managed'
       - '--allow-unauthenticated'
-      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},ADMIN_SECRET=${_ADMIN_SECRET},AUTH_SECRET=${_AUTH_SECRET},TRUST_PROXY=${_TRUST_PROXY}'
+      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},ADMIN_SECRET=${_ADMIN_SECRET},AUTH_SECRET=${_AUTH_SECRET},TRUST_PROXY=${_TRUST_PROXY},AZURE_FOUNDRY_ENDPOINT=${_AZURE_FOUNDRY_ENDPOINT},AZURE_FOUNDRY_API_KEY=${_AZURE_FOUNDRY_API_KEY},REPORT_MODEL=${_REPORT_MODEL}'
       - '--memory=512Mi'
       - '--cpu=1'
       - '--timeout=3600'
@@ -58,3 +58,14 @@ substitutions:
   # Trust the Cloud Run front-end proxy so rate limiting keys on the real client
   # IP (req.ip) rather than the proxy. "1" = trust one hop, correct for Cloud Run.
   _TRUST_PROXY: '1'
+  # Microsoft Foundry credentials for the grounded LLM report (POST /api/report).
+  # Intentionally empty here: set the real values in the Cloud Build trigger UI.
+  # If either is unset the route fails SOFT — it returns fallbackReason "no-key"
+  # and every user silently gets the deterministic report. That is safe but
+  # invisible, so click "Explain this game" on the live site after deploying to
+  # confirm the model path is actually reachable.
+  _AZURE_FOUNDRY_ENDPOINT: ''
+  _AZURE_FOUNDRY_API_KEY: ''
+  # Optional per-deploy override of the report model. Empty falls back to
+  # DEFAULT_MODEL in src/utils/report.ts (gpt-5.4-nano, chosen from eval data).
+  _REPORT_MODEL: ''
