@@ -150,9 +150,11 @@ export type MismatchKind =
   | 'wrong-type'        // real equilibrium, mislabelled pure/mixed/continuum
   | 'omitted'           // solver found it; the model never mentioned it
   // ── prose-level (the text the user actually reads) ────────────────────────
+  // Only DECIDABLE checks live here: "is this number in the allowlist?" has an
+  // answer, so it can be tested. A semantic check ("does this sentence assert a
+  // pure equilibrium exists?") was tried and removed — see nashValidator.ts.
   | 'prose-bad-coordinate' // cites an x=/y= that is not an equilibrium coordinate
-  | 'prose-bad-payoff'     // cites an A=/B= value that appears nowhere in the game
-  | 'prose-false-pure';    // asserts a pure equilibrium in a game that has none
+  | 'prose-bad-payoff';    // cites an A=/B= value that appears nowhere in the game
 
 export interface Mismatch {
   kind: MismatchKind;

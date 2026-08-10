@@ -135,17 +135,23 @@ function checkProse(
       });
     }
 
-    // Asserting a pure equilibrium in a game that has none is the single most
-    // misleading thing this feature could tell a learner.
-    const hasPure = truth.some((t) => t.type === 'pure');
-    if (!hasPure && /\bpure\b/i.test(prose) && !/\b(no|not|none|without|never|lacks)\b[^.]{0,40}\bpure\b/i.test(prose)) {
-      out.push({
-        kind: 'prose-false-pure',
-        claimed: null,
-        expected: null,
-        detail: 'prose refers to a pure equilibrium, but this game has none',
-      });
-    }
+    // REMOVED: a "does the prose falsely assert a pure equilibrium?" check.
+    //
+    // It was implemented as `/\bpure\b/` minus a negation-word window, and it
+    // produced false positives on correct prose — "if the opponent played a
+    // single pure strategy" (a counterfactual) and "neither side can commit to
+    // a single pure action" (which asserts the exact opposite) both flagged.
+    // Distinguishing an existence claim from a counterfactual or a negation is
+    // a semantic judgement, not a lexical one, and a regex cannot do it. A
+    // check that misfires on correct output is worse than no check: it corrupts
+    // the consistency metric it feeds, and a false positive is indistinguishable
+    // from a model regression.
+    //
+    // The underlying failure is already covered where it IS decidable: a model
+    // that actually claims a nonexistent pure equilibrium must put it in
+    // claimedEquilibria, where 'nonzero-regret' and 'not-in-solver' catch it
+    // against ground truth. Only the numeric prose checks above survive here,
+    // because "is this number in the allowlist?" is decidable and testable.
   }
 
   return out;
