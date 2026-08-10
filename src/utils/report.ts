@@ -27,8 +27,23 @@ import type { GamePayoffs, LlmReport } from '../types';
 import { computeAllNE, computeIndifference } from './gameEngine';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure } from './providers';
 
-/** Overridden per-request by the eval sweep; see src/evals/. */
-export const DEFAULT_MODEL = process.env.REPORT_MODEL || 'gemini-3.5-flash-lite';
+/**
+ * Chosen from eval data, not preference — see src/evals/ and the sweep of
+ * 2026-08-10 (16 golden games x 3 passes, two model families).
+ *
+ * gpt-5.4-nano and gemini-3.5-flash-lite tied at 100% factual consistency, so
+ * accuracy did not decide it. Cost was close ($0.00037 vs $0.00058/report).
+ * TAIL LATENCY decided it: gemini won the median (1144ms vs 2478ms) but its
+ * p90 was 38s and p95 66s, against 3.8s/4.0s here. This is rendered behind a
+ * button a user waits on, so the tail is the experience — a median win is worth
+ * nothing if one click in ten hangs for half a minute.
+ *
+ * Caveats worth re-checking before treating this as settled: gemini's tail is
+ * partly a FREE-TIER artifact and a paid key may look different, and the Azure
+ * credits backing this deployment expire. Overridden per-request by the eval
+ * sweep, and per-deploy by REPORT_MODEL.
+ */
+export const DEFAULT_MODEL = process.env.REPORT_MODEL || 'gpt-5.4-nano';
 
 /**
  * Structured-output schema. Constrains SHAPE only.
