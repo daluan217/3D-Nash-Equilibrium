@@ -34,7 +34,16 @@ export type GoldenCategory =
   | 'coordination'
   | 'no-pure'
   | 'degenerate'
-  | 'near-tie';
+  | 'near-tie'
+  /**
+   * Games whose NUMBERS are easy but whose STORY is easy to get wrong: all
+   * payoffs negative, wildly mismatched scales between players, a weakly
+   * dominated row, sub-unit magnitudes. Added after numeric hardening failed to
+   * separate models — coordinate transcription turned out to be trivial for
+   * them, while the prose was where actual errors appeared. These exist to be
+   * caught by the prose checks in nashValidator, not the claim checks.
+   */
+  | 'adversarial';
 
 export interface GoldenGame {
   name: string;
@@ -69,6 +78,15 @@ export const GOLDEN: GoldenGame[] = [
   // near-tie — stresses the solver's 1e-9 / r3 tolerances and model rounding.
   { name: 'tiny-margin',       category: 'near-tie',         payoffs: G(1, 0.999, 0.998, 1.001, 1, 0.998, 0.999, 1.002) }, // + mixed (0.6,0.5)
   { name: 'near-boundary-mixed',category: 'near-tie',        payoffs: G(10, 0, 0, 0.02, 0.02, 0, 0, 10) }, // + mixed (0.998,0.002)
+  // (0.999, 0.001) is the practical extreme: past this, r3 rounds a coordinate
+  // to 1.000 and computeMixedNE drops it for failing the strict 0<x<1 test.
+  { name: 'extreme-boundary',  category: 'near-tie',         payoffs: G(100, 0, 0, 0.1, 0.1, 0, 0, 100) }, // + mixed (0.999,0.001)
+
+  // adversarial — numbers are ordinary, the narrative is the trap.
+  { name: 'all-negative',      category: 'adversarial',      payoffs: G(-1, -9, -9, -2, -2, -9, -9, -1) }, // every payoff < 0
+  { name: 'asymmetric-scale',  category: 'adversarial',      payoffs: G(100, -100, -100, 100, 0.01, -0.01, -0.01, 0.01) }, // A ~10^2, B ~10^-2
+  { name: 'weak-dominance',    category: 'adversarial',      payoffs: G(5, 5, 3, 1, 2, 1, 2, 4) }, // Row 1 weakly dominates
+  { name: 'sub-unit-payoffs',  category: 'adversarial',      payoffs: G(0.003, 0.001, 0.001, 0.004, 0.004, 0.001, 0.001, 0.003) }, // all |payoff| < 0.01
 ];
 
 /** True iff the solver says this game has a continuum (a player is indifferent). */
@@ -96,6 +114,10 @@ export function assertCategories(games: GoldenGame[] = GOLDEN): string[] {
       case 'no-pure':          ok = pures === 0 && hasMixed && !degenerate; break;
       case 'degenerate':       ok = degenerate; break;
       case 'near-tie':         ok = hasMixed && !degenerate; break;
+      // Deliberately loose: these vary in shape by design (some have a mixed
+      // NE, some don't). What they share is a misleading narrative, which no
+      // structural assertion can express — only the prose checks catch it.
+      case 'adversarial':      ok = !degenerate; break;
       default:                 ok = false;
     }
     if (!ok) {

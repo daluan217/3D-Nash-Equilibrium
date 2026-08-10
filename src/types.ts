@@ -148,7 +148,11 @@ export type MismatchKind =
   | 'nonzero-regret'    // fails the independent oracle: not an equilibrium
   | 'not-in-solver'     // regret-clean but the solver does not list it
   | 'wrong-type'        // real equilibrium, mislabelled pure/mixed/continuum
-  | 'omitted';          // solver found it; the model never mentioned it
+  | 'omitted'           // solver found it; the model never mentioned it
+  // ── prose-level (the text the user actually reads) ────────────────────────
+  | 'prose-bad-coordinate' // cites an x=/y= that is not an equilibrium coordinate
+  | 'prose-bad-payoff'     // cites an A=/B= value that appears nowhere in the game
+  | 'prose-false-pure';    // asserts a pure equilibrium in a game that has none
 
 export interface Mismatch {
   kind: MismatchKind;

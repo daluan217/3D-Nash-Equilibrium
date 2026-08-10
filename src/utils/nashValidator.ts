@@ -72,6 +72,85 @@ function fmt(p: { x: number; y: number }): string {
   return `(${p.x}, ${p.y})`;
 }
 
+/**
+ * Checks the PROSE — the only part of the report a user actually reads.
+ *
+ * The claim-level checks above validate a JSON array; a model can satisfy them
+ * completely and still write a factually wrong sentence next to it (observed:
+ * "at (x=0, y=0) ... B's Col 1 works best", when y=0 means Col 2). Nothing else
+ * in the pipeline looks at this text before it is rendered.
+ *
+ * Deliberately tuned for very low false positives, because a noisy check would
+ * corrupt the consistency metric it feeds:
+ *  - Payoffs are matched against a GENEROUS allowlist — every cell in the matrix
+ *    plus every equilibrium payoff — so only genuinely invented numbers flag.
+ *    Legitimate counterfactuals ("switching drops A to 0") cite real cells.
+ *  - Coordinates 0 and 1 are always allowed (they name pure strategies), and
+ *    the check is skipped entirely on degenerate games, where every point in
+ *    the region really is an equilibrium.
+ */
+function checkProse(
+  prose: string,
+  g: GamePayoffs,
+  truth: NashEquilibrium[],
+  degenerate: boolean,
+): Mismatch[] {
+  const out: Mismatch[] = [];
+  if (!prose) return out;
+
+  // Generous: any payoff printed in the matrix, or any equilibrium payoff.
+  const allowedPayoffs = [
+    g.a11, g.a12, g.a21, g.a22, g.b11, g.b12, g.b21, g.b22,
+    ...truth.flatMap((t) => [t.eA, t.eB]),
+  ];
+  // Absolute floor plus a relative term so large payoffs aren't held to an
+  // unreasonably tight match when the model rounds them for readability.
+  const near = (v: number, allowed: number[]) =>
+    allowed.some((a) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005));
+
+  for (const m of prose.matchAll(/\b([AB])\s*=\s*(-?\d+(?:\.\d+)?)/g)) {
+    const value = Number(m[2]);
+    if (!Number.isFinite(value) || near(value, allowedPayoffs)) continue;
+    out.push({
+      kind: 'prose-bad-payoff',
+      claimed: null,
+      expected: null,
+      detail: `prose cites ${m[1]}=${m[2]}, which is not a payoff anywhere in this game`,
+    });
+  }
+
+  if (!degenerate) {
+    const allowedX = [0, 1, ...truth.map((t) => t.x)];
+    const allowedY = [0, 1, ...truth.map((t) => t.y)];
+    for (const m of prose.matchAll(/\b([xy])\s*\*?\s*=\s*(-?\d+(?:\.\d+)?)/gi)) {
+      const axis = m[1].toLowerCase();
+      const value = Number(m[2]);
+      if (!Number.isFinite(value)) continue;
+      if (near(value, axis === 'x' ? allowedX : allowedY)) continue;
+      out.push({
+        kind: 'prose-bad-coordinate',
+        claimed: null,
+        expected: null,
+        detail: `prose cites ${axis}=${m[2]}, which is not an equilibrium coordinate`,
+      });
+    }
+
+    // Asserting a pure equilibrium in a game that has none is the single most
+    // misleading thing this feature could tell a learner.
+    const hasPure = truth.some((t) => t.type === 'pure');
+    if (!hasPure && /\bpure\b/i.test(prose) && !/\b(no|not|none|without|never|lacks)\b[^.]{0,40}\bpure\b/i.test(prose)) {
+      out.push({
+        kind: 'prose-false-pure',
+        claimed: null,
+        expected: null,
+        detail: 'prose refers to a pure equilibrium, but this game has none',
+      });
+    }
+  }
+
+  return out;
+}
+
 export function validateReport(report: LlmReport, g: GamePayoffs): ValidationResult {
   const checks: string[] = [];
   const mismatches: Mismatch[] = [];
@@ -198,6 +277,19 @@ export function validateReport(report: LlmReport, g: GamePayoffs): ValidationRes
       detail: 'game has a continuum of equilibria; the report claims none',
     });
     checks.push('FAIL: omitted the equilibrium continuum');
+  }
+
+  // Prose checks run last and are opt-out (NASH_PROSE_CHECKS=0) so their effect
+  // on the consistency metric can be measured in isolation — a new check that
+  // silently changes the number it reports is indistinguishable from a model
+  // regression, which is the failure this harness exists to avoid.
+  if (process.env.NASH_PROSE_CHECKS !== '0') {
+    const proseIssues = checkProse(report.prose, g, truth, degenerate);
+    for (const issue of proseIssues) {
+      mismatches.push(issue);
+      checks.push(`FAIL prose: ${issue.detail}`);
+    }
+    if (proseIssues.length === 0) checks.push('ok prose: no invented values or false claims');
   }
 
   return { ok: mismatches.length === 0, checks, mismatches };
