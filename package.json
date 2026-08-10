@@ -1,11 +1,11 @@
 {
   "name": "nash-equilibrium-simulator",
   "private": true,
-  "version": "0.0.24",
+  "version": "0.0.25",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
-    "dev": "node --experimental-strip-types server.ts",
+    "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "NODE_ENV=production node dist/server.cjs",
     "preview": "NODE_ENV=production node dist/server.cjs",
@@ -19,10 +19,10 @@
     "electron:dist": "npm run build && electron-builder"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.116.0",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@google-cloud/storage": "^7.19.0",
+    "@google/genai": "^2.16.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "5.1.0",
     "dotenv": "^17.2.3",
@@ -31,6 +31,7 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "nodemailer": "^8.0.9",
+    "openai": "^7.4.0",
     "plotly.js-dist-min": "^2.27.1",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",

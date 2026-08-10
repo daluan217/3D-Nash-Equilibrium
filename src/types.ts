@@ -171,5 +171,12 @@ export interface ReportEnvelope {
   validation: ValidationResult | null;
   groundTruth: NashEquilibrium[];
   /** Set when source is 'deterministic', so the client can say why. */
-  fallbackReason?: 'no-key' | 'refusal' | 'max-tokens' | 'unparseable' | 'validation-failed' | 'error';
+  fallbackReason?:
+    | 'no-key'
+    | 'refusal'
+    | 'max-tokens'
+    | 'unparseable'
+    | 'rate-limited'
+    | 'validation-failed'
+    | 'error';
 }

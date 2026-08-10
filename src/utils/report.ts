@@ -8,9 +8,9 @@
  *
  * ┌──────────────────────────────────────────────────────────────────┐
  * │ SDK-BOUND MODULE — SERVER AND EVAL HARNESS ONLY.                 │
- * │ Never import this from the App.tsx graph. It pulls in the        │
- * │ Anthropic SDK, which would break the browser build and ship a    │
- * │ server-side client (and its key handling) to the client.         │
+ * │ Never import this from the App.tsx graph. It pulls in provider   │
+ * │ SDKs, which would break the browser build and ship server-side   │
+ * │ clients (and their key handling) to the client.                  │
  * │ The pure counterpart is nashValidator.ts, which anyone may use.  │
  * └──────────────────────────────────────────────────────────────────┘
  *
@@ -18,28 +18,30 @@
  * never asked to derive an equilibrium — it receives them and writes prose.
  * Whatever it claims is then checked against ground truth by nashValidator.
  *
- * The model is a parameter, not a constant, because model choice is an output
- * of the eval harness rather than an input to it. The harness sweeps models and
- * reports consistency, latency, and cost; the default here is only a default.
+ * This file is PROVIDER-AGNOSTIC: the grounding payload, the rubric, and the
+ * response schema are identical for every model, which is what makes the eval's
+ * cross-family comparison meaningful. All vendor dialect lives in providers.ts.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { GamePayoffs, LlmReport } from '../types';
 import { computeAllNE, computeIndifference } from './gameEngine';
+import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure } from './providers';
 
 /** Overridden per-request by the eval sweep; see src/evals/. */
-export const DEFAULT_MODEL = process.env.REPORT_MODEL || 'claude-haiku-4-5';
+export const DEFAULT_MODEL = process.env.REPORT_MODEL || 'gemini-3.5-flash-lite';
 
 /**
  * Structured-output schema. Constrains SHAPE only.
  *
- * Numeric constraints (minimum/maximum) are not supported by structured
- * outputs, so "x is a probability" cannot be expressed here — nashValidator
- * range-checks instead. Every object needs additionalProperties: false.
+ * Written as a plain JSON-Schema subset so one definition serves every
+ * provider: Gemini takes it as-is (it rejects `additionalProperties`), and the
+ * OpenAI adapter grafts `additionalProperties: false` on for strict mode.
+ * Numeric constraints (minimum/maximum) are unsupported across the board, so
+ * "x is a probability" cannot be expressed here — nashValidator range-checks
+ * instead. Schema constrains shape; the solver constrains truth.
  */
-const REPORT_SCHEMA = {
+const REPORT_SCHEMA: Record<string, unknown> = {
   type: 'object',
-  additionalProperties: false,
   required: ['claimedEquilibria', 'prose'],
   properties: {
     claimedEquilibria: {
@@ -50,7 +52,6 @@ const REPORT_SCHEMA = {
         'representative point for x and y in that case.',
       items: {
         type: 'object',
-        additionalProperties: false,
         required: ['type', 'x', 'y'],
         properties: {
           type: { type: 'string', enum: ['pure', 'mixed', 'continuum'] },
@@ -67,13 +68,11 @@ const REPORT_SCHEMA = {
         'sits where it does. No markdown, no headings, no LaTeX.',
     },
   },
-} as const;
+};
 
 /**
- * Stable across every request, so it earns a cache breakpoint. Sized past the
- * 1024-token minimum that the smaller models need — Opus 5 caches from 512,
- * but a rubric that only cached on one model in a three-model sweep would make
- * the cost column incomparable.
+ * Identical for every model in the sweep — the rubric is part of the
+ * measurement, so it must not vary by provider.
  */
 const SYSTEM_PROMPT = `You are a game theorist explaining a 2x2 normal-form game to someone learning the subject.
 
@@ -142,69 +141,56 @@ export function buildGroundingPayload(g: GamePayoffs): string {
 export interface GenerateResult {
   report: LlmReport | null;
   raw: string | null;
+  /** Vendor stop/finish reason, verbatim, for failure bucketing. */
   stopReason: string | null;
-  usage: Anthropic.Usage | null;
+  usage: NormalizedUsage | null;
   /** Set when no report was produced — distinguishes a refusal from a crash. */
-  failure: 'refusal' | 'max-tokens' | 'unparseable' | 'error' | null;
+  failure: ProviderFailure | null;
 }
+
+export { hasCredentials };
 
 /**
  * One shared entry point for both POST /api/report and the eval sweep. If these
  * ever diverge the eval stops measuring what production actually runs.
- *
- * Note the absence of temperature/top_p/top_k: they are rejected outright on
- * claude-opus-5 and claude-sonnet-5, and setting them only on the models that
- * still accept them would make those models' numbers incomparable in a sweep.
  */
 export async function generateReport(
   g: GamePayoffs,
-  opts: { model?: string; client?: Anthropic } = {},
+  opts: { model?: string } = {},
 ): Promise<GenerateResult> {
   const model = opts.model || DEFAULT_MODEL;
-  const client = opts.client || new Anthropic();
 
-  let message: Anthropic.Message;
-  try {
-    message = await client.messages.create({
-      model,
-      // Roomy: on models where thinking is on by default it shares this budget
-      // with the response, and a truncated report is unparseable JSON.
-      max_tokens: 4096,
-      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-      output_config: { format: { type: 'json_schema', schema: REPORT_SCHEMA } },
-      messages: [{ role: 'user', content: buildGroundingPayload(g) }],
-    });
-  } catch {
-    return { report: null, raw: null, stopReason: null, usage: null, failure: 'error' };
-  }
+  const res = await callProvider({
+    model,
+    systemPrompt: SYSTEM_PROMPT,
+    userPrompt: buildGroundingPayload(g),
+    schema: REPORT_SCHEMA,
+    // Roomy on purpose: current models think by default, and thinking tokens
+    // count against this budget on every provider. Too tight a cap makes the
+    // model spend the whole budget reasoning and return truncated (or empty)
+    // JSON. The report body itself is only a few hundred tokens.
+    maxOutputTokens: 8192,
+  });
 
-  const usage = message.usage ?? null;
-
-  // Check stop_reason BEFORE reading content: on a refusal content is empty or
-  // partial, and on max_tokens the JSON is truncated and will not parse.
-  if (message.stop_reason === 'refusal') {
-    return { report: null, raw: null, stopReason: 'refusal', usage, failure: 'refusal' };
-  }
-
-  const text = message.content.find((b) => b.type === 'text')?.text ?? null;
-
-  if (message.stop_reason === 'max_tokens') {
-    return { report: null, raw: text, stopReason: 'max_tokens', usage, failure: 'max-tokens' };
-  }
-
-  if (!text) {
-    return { report: null, raw: null, stopReason: message.stop_reason, usage, failure: 'unparseable' };
+  if (res.failure || !res.text) {
+    return {
+      report: null,
+      raw: res.text,
+      stopReason: res.stopReason,
+      usage: res.usage,
+      failure: res.failure ?? 'unparseable',
+    };
   }
 
   try {
     return {
-      report: JSON.parse(text) as LlmReport,
-      raw: text,
-      stopReason: message.stop_reason,
-      usage,
+      report: JSON.parse(res.text) as LlmReport,
+      raw: res.text,
+      stopReason: res.stopReason,
+      usage: res.usage,
       failure: null,
     };
   } catch {
-    return { report: null, raw: text, stopReason: message.stop_reason, usage, failure: 'unparseable' };
+    return { report: null, raw: res.text, stopReason: res.stopReason, usage: res.usage, failure: 'unparseable' };
   }
 }

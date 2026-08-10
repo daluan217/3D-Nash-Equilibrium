@@ -15,9 +15,14 @@ import dotenv from "dotenv";
 // modules into dist/server.cjs; only npm packages stay external. Sharing one
 // solver between client, server, and eval is the point — a second copy here
 // would let them drift and quietly invalidate every consistency number.
+// Extensionless, matching the rest of src/ (a Vite convention the whole client
+// tree relies on). That means the dev runtime must resolve like the bundlers do:
+// `npm run dev` uses tsx, NOT node --experimental-strip-types, whose native ESM
+// resolver requires explicit extensions and throws ERR_MODULE_NOT_FOUND on the
+// first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE } from "./src/utils/gameEngine";
 import { validateReport } from "./src/utils/nashValidator";
-import { generateReport, DEFAULT_MODEL } from "./src/utils/report";
+import { generateReport, hasCredentials, DEFAULT_MODEL } from "./src/utils/report";
 import type { ReportEnvelope } from "./src/types";
 
 // Load environment variables from .env file
@@ -730,8 +735,9 @@ async function startServer() {
 
     const groundTruth = computeAllNE(payoffs);
 
-    // No key: local Electron mode, or an unkeyed deploy. Not an error.
-    if (!process.env.ANTHROPIC_API_KEY) {
+    // No key for the configured model's provider: local Electron mode, or an
+    // unkeyed deploy. Not an error — fall through to the deterministic report.
+    if (!hasCredentials(DEFAULT_MODEL)) {
       const envelope: ReportEnvelope = {
         source: "deterministic",
         report: null,

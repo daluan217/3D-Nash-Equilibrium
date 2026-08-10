@@ -5,7 +5,7 @@ name: Report Eval
 # or releases. Gating a tag on a recent green eval is the sensible follow-up, but
 # blocking every push on a paid, network-dependent model sweep is not.
 #
-# MAIN ONLY, and manual/scheduled only: it needs a real ANTHROPIC_API_KEY, which
+# MAIN ONLY, and manual/scheduled only: it needs a real GEMINI_API_KEY, which
 # must never run in review-mirror's context (the anonymized reviewer branch).
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
 
       - name: Run report eval sweep
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EVAL_OUT: eval-results.json
         run: npm run eval
 

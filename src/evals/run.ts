@@ -8,9 +8,8 @@
  * often the model's claims survive validation, plus latency and cost.
  *
  * SDK-BOUND — server/CLI only, never the browser graph (it imports report.ts).
- * Needs ANTHROPIC_API_KEY; every model call goes through generateReport, the
- * same entry point POST /api/report uses, so the eval measures what production
- * actually runs.
+ * Needs GEMINI_API_KEY; every model call goes through generateReport, the same
+ * entry point POST /api/report uses, so the eval measures what production runs.
  *
  * Two env-selected modes:
  *   - SWEEP (default): all EVAL_MODELS, informational table, always exits 0.
@@ -19,43 +18,51 @@
  *     EVAL_MIN_CONSISTENCY. Gating on the mean is itself noisy.
  *
  * Env:
- *   EVAL_MODELS           csv, default haiku-4-5,sonnet-5,opus-5 (sweep)
+ *   EVAL_MODELS           csv, default gemini 2.5 flash-lite,flash,pro (sweep)
  *   EVAL_MODEL            single model -> GATE mode (overrides EVAL_MODELS)
  *   EVAL_PASSES           default 3
  *   EVAL_MIN_CONSISTENCY  default 0.95, gate mode only
  *   EVAL_OUT              default ./eval-results.json
  */
 
+// Loads .env so provider credentials resolve without shell exports — some key
+// names (e.g. GPT-5.4-NANO_AZURE_FOUNDRY_API_KEY) aren't valid shell
+// identifiers and cannot be `export`ed at all.
+import 'dotenv/config';
 import { writeFileSync } from 'fs';
-import type Anthropic from '@anthropic-ai/sdk';
-import { generateReport } from '../utils/report';
+import { generateReport, hasCredentials } from '../utils/report';
+import { resolveProvider, type NormalizedUsage } from '../utils/providers';
 import { validateReport } from '../utils/nashValidator';
 import { GOLDEN, assertCategories, type GoldenCategory } from './golden';
 import type { MismatchKind } from '../types';
 
 // ── Cost model ────────────────────────────────────────────────────────────────
-// List prices per million tokens, pulled from the claude-api skill (verified
-// 2026-08-09). RE-CHECK before quoting numbers: Sonnet 5 is on an intro rate
-// ($2/$10) through 2026-08-31 that then reverts to $3/$15, and it WILL expire
-// silently. Cache reads bill ~0.1x the input rate; cache-creation ~1.25x. The
-// system prompt is cached, so ignoring cache tokens materially overstates cost.
-const PRICE: Record<string, { in: number; out: number }> = {
-  'claude-haiku-4-5': { in: 1, out: 5 },
-  'claude-sonnet-5': { in: 3, out: 15 }, // intro $2/$10 through 2026-08-31
-  'claude-opus-5': { in: 5, out: 25 },
+// List prices per MILLION tokens. RE-CHECK before quoting any cost number —
+// these move fast and a stale rate silently corrupts the cost column.
+//   Gemini: Google pricing, verified 2026-08-10.
+//   Foundry: keyed by DEPLOYMENT name (what we called it at deploy time), not
+//   the catalog id, because that is what the API bills against.
+// Reasoning/thinking tokens bill at the OUTPUT rate on every provider, and
+// promptTokens already INCLUDES the cached subset, so uncached = prompt - cached.
+// A model with no entry reports cost `n/a` rather than a fabricated number.
+const PRICE: Record<string, { in: number; out: number; cacheMult: number }> = {
+  'gemini-3.5-flash-lite': { in: 0.3, out: 2.5, cacheMult: 0.1 },
+  'gemini-3.5-flash': { in: 0.75, out: 4.5, cacheMult: 0.1 },
+  'gemini-3.6-flash': { in: 1.5, out: 7.5, cacheMult: 0.1 },
+  // Foundry deployment of gpt-5.4-nano. Rate is OpenAI's published list price;
+  // Azure's own list can differ per region and this is billed against Azure, so
+  // treat the cost column for this row as approximate until reconciled against
+  // an actual Azure invoice.
+  'gpt-5.4-nano': { in: 0.2, out: 1.25, cacheMult: 0.1 },
 };
-const CACHE_READ_MULT = 0.1;
-const CACHE_WRITE_MULT = 1.25;
 
-function reportCost(model: string, usage: Anthropic.Usage | null): number | null {
+function reportCost(model: string, usage: NormalizedUsage | null): number | null {
   const p = PRICE[model];
   if (!p || !usage) return null;
-  const cacheRead = usage.cache_read_input_tokens ?? 0;
-  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
-  const inputCost =
-    (usage.input_tokens + cacheRead * CACHE_READ_MULT + cacheWrite * CACHE_WRITE_MULT) * p.in;
-  const outputCost = usage.output_tokens * p.out;
-  return (inputCost + outputCost) / 1e6;
+  const uncached = Math.max(0, usage.promptTokens - usage.cachedTokens);
+  const output = usage.outputTokens + usage.reasoningTokens;
+  const inputCost = (uncached + usage.cachedTokens * p.cacheMult) * p.in;
+  return (inputCost + output * p.out) / 1e6;
 }
 
 // ── Records ────────────────────────────────────────────────────────────────────
@@ -74,13 +81,18 @@ interface PassRecord {
   mismatchKinds: MismatchKind[];
 }
 
-const DEFAULT_MODELS = ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'];
+// The flash family this key can actually reach: 2.5 is deprecated for new users
+// and the pro tier is quota-gated (429) on a free key. Add gemini-*-pro via
+// EVAL_MODELS once the key has pro quota.
+const DEFAULT_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.6-flash'];
 
 function envInt(name: string, dflt: number): number {
   const v = process.env[name];
   const n = v ? Number(v) : NaN;
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Runs `fn` over `items` with at most `concurrency` in flight at once. */
 async function pool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -95,12 +107,21 @@ async function pool<T>(items: T[], concurrency: number, fn: (item: T) => Promise
 }
 
 async function runOne(model: string, game: (typeof GOLDEN)[number], pass: number): Promise<PassRecord> {
-  const t0 = Date.now();
-  const { report, usage, stopReason, failure } = await generateReport(game.payoffs, { model });
-  const latencyMs = Date.now() - t0;
+  const maxRetries = envInt('EVAL_MAX_RETRIES', 5);
+  // Retry only the transient 'rate-limited' failure, with exponential backoff.
+  // A refusal / max-tokens / unparseable is NOT retried — it's the real
+  // deterministic-fallback path and belongs in the denominator as a failed pass.
+  let res!: Awaited<ReturnType<typeof generateReport>>;
+  let latencyMs = 0;
+  for (let attempt = 0; ; attempt++) {
+    const t0 = Date.now();
+    res = await generateReport(game.payoffs, { model });
+    latencyMs = Date.now() - t0;
+    if (res.failure !== 'rate-limited' || attempt >= maxRetries) break;
+    await sleep(Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 500);
+  }
+  const { report, usage, stopReason, failure } = res;
 
-  // A refusal / max-tokens / unparseable is a FAILED pass, not a skipped one:
-  // it's the deterministic-fallback path, and it belongs in the denominator.
   const validation = failure || !report ? null : validateReport(report, game.payoffs);
   const ok = validation?.ok ?? false;
 
@@ -112,8 +133,10 @@ async function runOne(model: string, game: (typeof GOLDEN)[number], pass: number
     ok,
     latencyMs,
     costUsd: reportCost(model, usage),
-    inputTokens: usage ? usage.input_tokens : null,
-    cacheReadTokens: usage ? usage.cache_read_input_tokens ?? 0 : null,
+    // promptTokens is the FULL input incl. cached; cachedTokens is the cached
+    // subset of it (so they are not additive — see aggregate()).
+    inputTokens: usage ? usage.promptTokens : null,
+    cacheReadTokens: usage ? usage.cachedTokens : null,
     stopReason,
     failure: failure ?? null,
     mismatchKinds: validation ? validation.mismatches.map((m) => m.kind) : [],
@@ -121,8 +144,16 @@ async function runOne(model: string, game: (typeof GOLDEN)[number], pass: number
 }
 
 // ── Aggregation ─────────────────────────────────────────────────────────────────
-function pct(n: number, d: number): number {
-  return d === 0 ? 0 : n / d;
+// null means "no counted passes" (e.g. every pass in this cell stayed
+// rate-limited after retries) — NOT "0% consistency". Collapsing those two
+// into a bare 0 would silently misreport a measurement gap as a real failure,
+// which is exactly the class of bug this harness exists to catch.
+function pct(n: number, d: number): number | null {
+  return d === 0 ? null : n / d;
+}
+
+function fmtPct(p: number | null): string {
+  return p === null ? 'n/a' : (p * 100).toFixed(1) + '%';
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -131,7 +162,8 @@ function percentile(sorted: number[], p: number): number {
   return sorted[idx];
 }
 
-function stddev(xs: number[]): number {
+function stddev(xsIn: (number | null)[]): number {
+  const xs = xsIn.filter((x): x is number => x !== null);
   if (xs.length < 2) return 0;
   const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
   const variance = xs.reduce((a, b) => a + (b - mean) ** 2, 0) / (xs.length - 1);
@@ -140,42 +172,53 @@ function stddev(xs: number[]): number {
 
 interface ModelAggregate {
   model: string;
-  overall: number;
-  passRates: number[];
-  passRateMin: number;
-  passRateMax: number;
+  /** null iff every pass was rate-limited (no measurement, not a 0% score). */
+  overall: number | null;
+  passRates: (number | null)[];
+  passRateMin: number | null;
+  passRateMax: number | null;
   passRateStddev: number;
-  byCategory: Record<string, number>;
+  byCategory: Record<string, number | null>;
   p50LatencyMs: number;
   p95LatencyMs: number;
   meanCostUsd: number | null;
   cacheHitRate: number | null;
   failureByStopReason: Record<string, number>;
   failureByMismatch: Record<string, number>;
+  /** Passes that stayed rate-limited after retries — excluded from consistency. */
+  rateLimited: number;
+  /** Non-rate-limited passes: the denominator behind every consistency figure. */
+  counted: number;
   passes: number;
   games: number;
 }
 
 function aggregate(model: string, recs: PassRecord[], passes: number): ModelAggregate {
-  const overall = pct(recs.filter((r) => r.ok).length, recs.length);
+  // Consistency measures the MODEL, so a pass that stayed rate-limited after
+  // retries (an infra failure the model never controlled) is excluded from
+  // every rate below and reported separately instead of tanking the numbers.
+  const counted = recs.filter((r) => r.failure !== 'rate-limited');
+  const overall = pct(counted.filter((r) => r.ok).length, counted.length);
 
-  // Per-pass consistency: fraction of games that passed within each pass.
+  // Per-pass consistency: fraction of (counted) games that passed within each pass.
   const passRates: number[] = [];
   for (let p = 1; p <= passes; p++) {
-    const inPass = recs.filter((r) => r.pass === p);
+    const inPass = counted.filter((r) => r.pass === p);
     passRates.push(pct(inPass.filter((r) => r.ok).length, inPass.length));
   }
 
-  const byCategory: Record<string, number> = {};
+  const byCategory: Record<string, number | null> = {};
   for (const cat of new Set(recs.map((r) => r.category))) {
-    const inCat = recs.filter((r) => r.category === cat);
+    const inCat = counted.filter((r) => r.category === cat);
     byCategory[cat] = pct(inCat.filter((r) => r.ok).length, inCat.length);
   }
 
-  const latencies = recs.map((r) => r.latencyMs).sort((a, b) => a - b);
-  const costs = recs.map((r) => r.costUsd).filter((c): c is number => c !== null);
-  const cacheReads = recs.reduce((a, r) => a + (r.cacheReadTokens ?? 0), 0);
-  const totalInput = recs.reduce((a, r) => a + (r.inputTokens ?? 0) + (r.cacheReadTokens ?? 0), 0);
+  const latencies = counted.map((r) => r.latencyMs).sort((a, b) => a - b);
+  const costs = counted.map((r) => r.costUsd).filter((c): c is number => c !== null);
+  const cacheReads = counted.reduce((a, r) => a + (r.cacheReadTokens ?? 0), 0);
+  // inputTokens already includes the cached subset (Gemini promptTokenCount),
+  // so total input is just the sum — do not add cacheReadTokens again.
+  const totalInput = counted.reduce((a, r) => a + (r.inputTokens ?? 0), 0);
 
   const failureByStopReason: Record<string, number> = {};
   const failureByMismatch: Record<string, number> = {};
@@ -184,12 +227,13 @@ function aggregate(model: string, recs: PassRecord[], passes: number): ModelAggr
     for (const k of r.mismatchKinds) failureByMismatch[k] = (failureByMismatch[k] ?? 0) + 1;
   }
 
+  const measuredPassRates = passRates.filter((r): r is number => r !== null);
   return {
     model,
     overall,
     passRates,
-    passRateMin: Math.min(...passRates),
-    passRateMax: Math.max(...passRates),
+    passRateMin: measuredPassRates.length ? Math.min(...measuredPassRates) : null,
+    passRateMax: measuredPassRates.length ? Math.max(...measuredPassRates) : null,
     passRateStddev: stddev(passRates),
     byCategory,
     p50LatencyMs: percentile(latencies, 0.5),
@@ -198,6 +242,8 @@ function aggregate(model: string, recs: PassRecord[], passes: number): ModelAggr
     cacheHitRate: totalInput ? cacheReads / totalInput : null,
     failureByStopReason,
     failureByMismatch,
+    rateLimited: recs.length - counted.length,
+    counted: counted.length,
     passes,
     games: GOLDEN.length,
   };
@@ -210,11 +256,23 @@ async function main(): Promise<void> {
     ? [gateModel]
     : (process.env.EVAL_MODELS || DEFAULT_MODELS.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
   const passes = envInt('EVAL_PASSES', 3);
+  // Default 2: a free-tier Gemini key's RPM limit turns a 4-wide fan-out into a
+  // wall of 429s. Raise it on a paid key.
+  const concurrency = envInt('EVAL_CONCURRENCY', 2);
   const minConsistency = process.env.EVAL_MIN_CONSISTENCY ? Number(process.env.EVAL_MIN_CONSISTENCY) : 0.95;
   const outPath = process.env.EVAL_OUT || './eval-results.json';
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.error('ANTHROPIC_API_KEY is not set — the eval needs a real key. Aborting.');
+  // Credentials are per-provider now, so check each model's own provider rather
+  // than assuming one vendor. Failing here beats discovering it 33 calls in.
+  const missing = models.filter((m) => !hasCredentials(m));
+  if (missing.length) {
+    for (const m of missing) {
+      const p = resolveProvider(m);
+      console.error(
+        `${m}: missing credentials for provider '${p}' — set ` +
+          (p === 'gemini' ? 'GEMINI_API_KEY' : 'AZURE_FOUNDRY_ENDPOINT and AZURE_FOUNDRY_API_KEY'),
+      );
+    }
     process.exit(2);
   }
 
@@ -228,7 +286,9 @@ async function main(): Promise<void> {
 
   console.log('='.repeat(72));
   console.log(`Nash report eval  ${gateModel ? '[GATE]' : '[SWEEP]'}`);
-  console.log(`date=${new Date().toISOString()}  golden=${GOLDEN.length} games  passes=${passes}`);
+  console.log(
+    `date=${new Date().toISOString()}  golden=${GOLDEN.length} games  passes=${passes}  concurrency=${concurrency}`,
+  );
   console.log(`models=${models.join(', ')}`);
   console.log('='.repeat(72));
 
@@ -247,7 +307,7 @@ async function main(): Promise<void> {
     if (tasks.length) {
       modelRecs.push(await runOne(model, tasks[0].game, tasks[0].pass));
     }
-    await pool(tasks.slice(1), 4, async (t) => {
+    await pool(tasks.slice(1), concurrency, async (t) => {
       modelRecs.push(await runOne(model, t.game, t.pass));
     });
 
@@ -257,8 +317,10 @@ async function main(): Promise<void> {
 
     console.log(`\n### ${model}`);
     console.log(
-      `overall consistency: ${(agg.overall * 100).toFixed(1)}%  ` +
-        `(per-pass ${(agg.passRateMin * 100).toFixed(1)}–${(agg.passRateMax * 100).toFixed(1)}%, ` +
+      `overall consistency: ${fmtPct(agg.overall)}  ` +
+        `(${agg.counted} passes counted` +
+        (agg.rateLimited ? `, ${agg.rateLimited} rate-limited excluded` : '') +
+        `; per-pass ${fmtPct(agg.passRateMin)}–${fmtPct(agg.passRateMax)}, ` +
         `sd ${(agg.passRateStddev * 100).toFixed(1)}pp)`,
     );
     console.log(
@@ -267,9 +329,7 @@ async function main(): Promise<void> {
         `cache-hit: ${agg.cacheHitRate === null ? 'n/a' : (agg.cacheHitRate * 100).toFixed(0) + '%'}`,
     );
     console.table(
-      Object.fromEntries(
-        Object.entries(agg.byCategory).map(([c, r]) => [c, { consistency: (r * 100).toFixed(1) + '%' }]),
-      ),
+      Object.fromEntries(Object.entries(agg.byCategory).map(([c, r]) => [c, { consistency: fmtPct(r) }])),
     );
     if (Object.keys(agg.failureByStopReason).length)
       console.log('  failures by stop/failure reason:', agg.failureByStopReason);
@@ -289,9 +349,15 @@ async function main(): Promise<void> {
 
   if (gateModel) {
     const agg = aggregates[0];
-    const lowerBound = agg.passRateMin; // never the mean — a gate on the mean is noisy
+    if (agg.counted === 0) {
+      console.error('GATE INCONCLUSIVE: every pass was rate-limited — nothing to measure.');
+      process.exit(2);
+    }
+    // agg.counted > 0 (checked above) guarantees at least one measured pass,
+    // so passRateMin is non-null here even though the type is nullable.
+    const lowerBound = agg.passRateMin ?? 0; // never the mean — a gate on the mean is noisy
     console.log(
-      `\nGATE: ${gateModel} lower-bound consistency ${(lowerBound * 100).toFixed(1)}% ` +
+      `\nGATE: ${gateModel} lower-bound consistency ${fmtPct(agg.passRateMin)} ` +
         `vs floor ${(minConsistency * 100).toFixed(1)}%`,
     );
     if (lowerBound < minConsistency) {
