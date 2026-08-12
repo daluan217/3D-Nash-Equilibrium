@@ -51,7 +51,9 @@ import {
   Star,
   Send,
   Sparkles,
-  ShieldCheck
+  ShieldCheck,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
@@ -430,14 +432,26 @@ export default function App() {
   const [jumpInput, setJumpInput] = useState<string>('');
 
   const logsContainerRef = useRef<HTMLDivElement>(null);
+  // The expanded overlay renders a SECOND copy of the log, so it needs its own
+  // ref — a single ref would be overwritten by whichever copy mounted last and
+  // the auto-scroll would silently follow the wrong one.
+  const logsExpandedRef = useRef<HTMLDivElement>(null);
+  const [logExpanded, setLogExpanded] = useState(false);
 
   // Auto-scroll the logs browser to the bottom on new entries
   useEffect(() => {
-    const container = logsContainerRef.current;
-    if (container) {
-      container.scrollTop = container.scrollHeight;
+    for (const container of [logsContainerRef.current, logsExpandedRef.current]) {
+      if (container) container.scrollTop = container.scrollHeight;
     }
-  }, [logEntries]);
+  }, [logEntries, logExpanded]);
+
+  // Escape closes the expanded log, matching the other modals in the app.
+  useEffect(() => {
+    if (!logExpanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLogExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [logExpanded]);
 
   // ── Simulation-log placement ───────────────────────────────────────────────
   // The log lives in the right column with an explicit height so its bottom lines
@@ -1301,45 +1315,105 @@ export default function App() {
   // so its bottom lines up with the params panel's bottom; when the converged
   // report leaves no room, it drops to a full-width band beneath both columns.
   const useFlexLog = !logBelow && inlineLogHeight != null;
+
+  // Rendered once and used by BOTH the inline panel and the expanded overlay, so
+  // the two can never drift apart in colouring or content.
+  const logLines = logEntries.map((line, idx) => {
+    let colClass = 'text-slate-600 dark:text-slate-300';
+    if (line.includes('✓')) {
+      colClass = 'text-emerald-600 dark:text-emerald-400 font-semibold';
+    } else if (line.includes('↺')) {
+      if (line.includes('Ghost cycle')) {
+        if (line.includes('(A)')) {
+          colClass = 'text-rose-500 dark:text-rose-300 font-medium';
+        } else if (line.includes('(B)')) {
+          colClass = 'text-player-b-600 dark:text-player-b-300 font-medium';
+        } else {
+          colClass = 'text-amber-600 dark:text-amber-300 font-medium';
+        }
+      } else {
+        colClass = 'text-amber-600 dark:text-amber-400 font-semibold';
+      }
+    } else if (line.includes('━━') || line.includes('Start')) {
+      colClass = 'text-accent-600 dark:text-accent-400 font-semibold';
+    } else if (line.includes('(A)')) {
+      colClass = 'text-player-a-600 dark:text-player-a-400 font-semibold';
+    } else if (line.includes('(B)')) {
+      colClass = 'text-player-b-600 dark:text-player-b-400 font-semibold';
+    }
+    return (
+      <p key={idx} className={colClass}>
+        {line}
+      </p>
+    );
+  });
+
   const simulationLogPanel = (
     <div
       className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-700 dark:text-slate-200 shadow-sm"
       style={useFlexLog ? { height: inlineLogHeight! } : undefined}
     >
-      <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
-        <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
-        Simulation Log
-      </span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
+          <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
+          Simulation Log
+        </span>
+        <button
+          type="button"
+          onClick={() => setLogExpanded(true)}
+          title="Expand log"
+          aria-label="Expand simulation log"
+          className="shrink-0 p-1.5 -m-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
       <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}>
-        {logEntries.map((line, idx) => {
-          let colClass = 'text-slate-600 dark:text-slate-300';
-          if (line.includes('✓')) {
-            colClass = 'text-emerald-600 dark:text-emerald-400 font-semibold';
-          } else if (line.includes('↺')) {
-            if (line.includes('Ghost cycle')) {
-              if (line.includes('(A)')) {
-                colClass = 'text-rose-500 dark:text-rose-300 font-medium';
-              } else if (line.includes('(B)')) {
-                colClass = 'text-player-b-600 dark:text-player-b-300 font-medium';
-              } else {
-                colClass = 'text-amber-600 dark:text-amber-300 font-medium';
-              }
-            } else {
-              colClass = 'text-amber-600 dark:text-amber-400 font-semibold';
-            }
-          } else if (line.includes('━━') || line.includes('Start')) {
-            colClass = 'text-accent-600 dark:text-accent-400 font-semibold';
-          } else if (line.includes('(A)')) {
-            colClass = 'text-player-a-600 dark:text-player-a-400 font-semibold';
-          } else if (line.includes('(B)')) {
-            colClass = 'text-player-b-600 dark:text-player-b-400 font-semibold';
-          }
-          return (
-            <p key={idx} className={colClass}>
-              {line}
-            </p>
-          );
-        })}
+        {logLines}
+      </div>
+    </div>
+  );
+
+  // ── Expanded log overlay ───────────────────────────────────────────────────
+  // Fills most of the viewport over a blurred backdrop. The backdrop closes on
+  // click; the dialog stops propagation so selecting log text does not dismiss
+  // it — the whole point of expanding is to read and copy from it.
+  const expandedLogOverlay = logExpanded && (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md"
+      onClick={() => setLogExpanded(false)}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Simulation log"
+    >
+      <div
+        className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
+            <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
+            Simulation Log
+            <span className="normal-case tracking-normal text-slate-400 dark:text-slate-500 font-normal">
+              — {logEntries.length} {logEntries.length === 1 ? 'line' : 'lines'}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setLogExpanded(false)}
+            title="Collapse log (Esc)"
+            aria-label="Collapse simulation log"
+            className="shrink-0 p-1.5 -m-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
+          >
+            <Minimize2 className="w-4 h-4" />
+          </button>
+        </div>
+        <div
+          ref={logsExpandedRef}
+          className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text"
+        >
+          {logLines}
+        </div>
       </div>
     </div>
   );
@@ -2316,6 +2390,8 @@ export default function App() {
       <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
         <p className="text-xs text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
       </footer>
+
+      {expandedLogOverlay}
 
       {isAuthModalOpen && (
         <div
