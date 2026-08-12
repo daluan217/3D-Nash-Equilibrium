@@ -136,10 +136,72 @@ export interface ClaimedEquilibrium {
   y: number;
 }
 
+/**
+ * The geometric assertions the prose makes, DECLARED as booleans.
+ *
+ * These exist so the geometry in the explanation is checkable. The model is
+ * told to describe the equilibrium in terms of the plotted surfaces — level
+ * shelves, warp, the joint flat spot — which widens what it can get wrong.
+ * Asking it to also state those claims as four booleans turns "does this
+ * paragraph assert a flat shelf?" from a semantic judgement into a lookup.
+ *
+ * This is the same move nashValidator already documents for the removed
+ * `prose-false-pure` regex: a claim a model makes in PROSE is not decidable, so
+ * the claim is required in the STRUCTURED output, where an oracle can compare it
+ * against a computed value. Do not add a check here that has to read `prose`.
+ */
+export interface GeometryClaims {
+  /** A's surface is warped — the players' choices genuinely interact. */
+  surfacesInteract: boolean;
+  /** B's surface is A's flipped over (zero-sum, or constant-sum up to an offset). */
+  opponentSurfaceIsMirror: boolean;
+  /** A's surface goes level somewhere ON the board — A has an indifference shelf. */
+  hasFlatShelfForA: boolean;
+  /** The equilibrium is the interior point where BOTH surfaces are level at once. */
+  equilibriumIsInteriorFlatSpot: boolean;
+}
+
 /** Schema-constrained model output. Shape is guaranteed; truth is not. */
 export interface LlmReport {
   claimedEquilibria: ClaimedEquilibrium[];
   prose: string;
+  /**
+   * Null when the model declined to describe the geometry, which is allowed —
+   * the checks exist to catch FALSE assertions, not to compel assertions.
+   */
+  geometryClaims?: GeometryClaims | null;
+  /**
+   * Present only when the game arrived with no usable scenario and the model
+   * invented one. Offered to the user to save into their game's description.
+   * Illustrative only: the payoffs and equilibria remain authoritative, and
+   * nashValidator does not check the story.
+   */
+  suggestedScenario?: SuggestedScenario;
+}
+
+/**
+ * A scenario the model invented for a game that had none.
+ *
+ * SAVE CONTRACT — persist the LABELS, not only the description.
+ *
+ * A saved scenario is only worth saving if the next explanation reuses it
+ * instead of inventing another one; otherwise the text the user kept is a dead
+ * letter. Reuse is decided by `scenarioIsUsable`, which accepts either all four
+ * labels OR a description of at least twelve words. Labels are the reliable
+ * half: they are always sufficient, whereas a terse description would silently
+ * fall through to regeneration.
+ *
+ * So when the user accepts a suggestion, write row1/row2/col1/col2 into the
+ * game's label fields as well as the description, and send all of them back on
+ * the next /api/report call.
+ */
+export interface SuggestedScenario {
+  name?: string;
+  row1?: string;
+  row2?: string;
+  col1?: string;
+  col2?: string;
+  description?: string;
 }
 
 /** Why a single claim failed, so the eval can bucket failures by cause. */
@@ -154,7 +216,14 @@ export type MismatchKind =
   // answer, so it can be tested. A semantic check ("does this sentence assert a
   // pure equilibrium exists?") was tried and removed — see nashValidator.ts.
   | 'prose-bad-coordinate' // cites an x=/y= that is not an equilibrium coordinate
-  | 'prose-bad-payoff';    // cites an A=/B= value that appears nowhere in the game
+  | 'prose-bad-payoff'     // cites an A=/B= value that appears nowhere in the game
+  // ── geometry (declared in geometryClaims, compared against describeGeometry) ─
+  // Decidable for the same reason the two above are: each compares a value the
+  // model STATED against one the solver COMPUTED. None of them reads the prose.
+  | 'geometry-bad-twist'    // claims interaction on a game whose surface is flat
+  | 'geometry-bad-mirror'   // claims a mirrored surface on a non-constant-sum game
+  | 'geometry-bad-shelf'    // claims a flat shelf when y* lies off the board
+  | 'geometry-bad-flatspot';// claims an interior joint flat spot when the NE is on an edge
 
 export interface Mismatch {
   kind: MismatchKind;

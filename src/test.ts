@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GamePayoffs, SimState, NashEquilibrium, PathSegment } from './types';
+import { GamePayoffs, SimState, NashEquilibrium, PathSegment, LlmReport, MismatchKind } from './types';
 import { doStep, PRESETS, computeAllNE, EA, EB, r3 } from './utils/gameEngine';
+import { describeGeometry } from './utils/geometry';
+import { validateReport } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -238,11 +240,148 @@ function testGhostCorridorInvariant() {
   assert(new Set(savedGhostPositionsInCycle).size === 4, 'Ghost corridor should visit exactly four endpoints before cycling');
 }
 
+/**
+ * describeGeometry must agree with the solver about where the equilibrium is.
+ *
+ * This exists because the x* formula here was WRONG once and nothing caught it.
+ * The widely-quoted shortcut x* = (a22-a21)/T_A is zero-sum-only: it coincides
+ * with the truth when B = -A and silently disagrees otherwise, returning 0.333
+ * on Battle of the Sexes where the real answer is 0.667. Since x* is B's
+ * indifference point it must be built from B's payoffs, and this test is what
+ * keeps it that way — a game with a random non-mirrored B is exactly the case
+ * the bad formula gets wrong, so the fuzz below fails immediately if it returns.
+ */
+function testGeometryOracleAgreesWithSolver() {
+  let seed = 20260812;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const pick = () => Math.round((rnd() * 20 - 10));
+
+  let interiorChecked = 0;
+  for (let i = 0; i < 20000; i++) {
+    const g: GamePayoffs = {
+      a11: pick(), a12: pick(), a21: pick(), a22: pick(),
+      b11: pick(), b12: pick(), b21: pick(), b22: pick(),
+    };
+    const geo = describeGeometry(g);
+    const ne = computeAllNE(g);
+    const interiorMixed = ne.find(
+      n => n.type === 'mixed' && n.x > 1e-6 && n.x < 1 - 1e-6 && n.y > 1e-6 && n.y < 1 - 1e-6,
+    );
+
+    // Skip degenerate games: a flat player makes a whole region equilibrium, so
+    // "the interior mixed NE" is not a single point to compare against.
+    if (Math.abs(geo.twistA) < 1e-9 || Math.abs(geo.twistB) < 1e-9) continue;
+
+    assert(
+      geo.hasInteriorFlatSpot === !!interiorMixed,
+      `geometry/solver disagree on interior NE for ${JSON.stringify(g)}: `
+      + `predicate=${geo.hasInteriorFlatSpot} solver=${!!interiorMixed}`,
+    );
+
+    if (interiorMixed) {
+      interiorChecked++;
+      // The joint flat spot IS the mixed equilibrium — same point, two derivations.
+      //
+      // Tolerance is 1e-3, not 0: computeAllNE reports r3-rounded coordinates
+      // while xStar/yStar are exact, so they can differ by up to 5e-4 while
+      // agreeing perfectly. That is far tighter than the ~0.33 error the
+      // zero-sum-only x* formula produces, which is what this test guards.
+      assertApprox(geo.xStar, interiorMixed.x, `xStar vs solver ${JSON.stringify(g)}`, 1e-3);
+      assertApprox(geo.yStar, interiorMixed.y, `yStar vs solver ${JSON.stringify(g)}`, 1e-3);
+    }
+  }
+  assert(interiorChecked > 500, `too few interior cases sampled (${interiorChecked}) to mean anything`);
+
+  // Named regression for the specific game the bad formula got wrong.
+  const bos = describeGeometry({ a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 });
+  assertApprox(bos.xStar, 2 / 3, 'Battle of the Sexes xStar (must use B\'s payoffs)', 1e-9);
+  assertApprox(bos.yStar, 1 / 3, 'Battle of the Sexes yStar', 1e-9);
+}
+
+/**
+ * Each geometry check needs a fixture that FIRES and one that stays silent.
+ * A check only proves something if both halves are demonstrated: one that never
+ * fires is decoration, and one that always fires is noise.
+ */
+function testGeometryValidatorChecks() {
+  const MATCHING_PENNIES: GamePayoffs =
+    { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 };
+  // Prisoner's Dilemma: a corner equilibrium, not zero-sum, no interior flat spot.
+  const PD: GamePayoffs =
+    { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  // A's payoff ignores B entirely, so A's surface is a flat plane (twistA = 0).
+  const FLAT_A: GamePayoffs =
+    { a11: 2, a12: 2, a21: 5, a22: 5, b11: -2, b12: -3, b21: -4, b22: -5 };
+
+  const truthFor = (g: GamePayoffs) => {
+    const geo = describeGeometry(g);
+    return {
+      surfacesInteract: Math.abs(geo.twistA) >= 1e-9,
+      opponentSurfaceIsMirror: geo.zeroSum || geo.constantSum,
+      hasFlatShelfForA: geo.yStarInRange,
+      equilibriumIsInteriorFlatSpot: geo.hasInteriorFlatSpot,
+    };
+  };
+
+  // Claims that are true carry the report; only the geometry is under test, so
+  // the equilibria are copied from the solver to keep the other checks quiet.
+  const reportFor = (g: GamePayoffs, claims: ReturnType<typeof truthFor>): LlmReport => ({
+    claimedEquilibria: computeAllNE(g).map(n => ({ type: n.type, x: n.x, y: n.y })),
+    prose: 'A neutral sentence with no numbers in it.',
+    geometryClaims: claims,
+  });
+
+  // --- negative fixtures: truthful declarations must not fire ---------------
+  for (const [name, g] of [['matching pennies', MATCHING_PENNIES], ['PD', PD], ['flat A', FLAT_A]] as const) {
+    const v = validateReport(reportFor(g, truthFor(g)), g);
+    const geoFails = v.mismatches.filter(m => m.kind.startsWith('geometry-'));
+    assert(geoFails.length === 0, `${name}: truthful geometry flagged — ${geoFails.map(m => m.detail).join('; ')}`);
+  }
+
+  // --- positive fixtures: one lie each, and ONLY that check fires -----------
+  const cases: { label: string; g: GamePayoffs; field: keyof ReturnType<typeof truthFor>; kind: MismatchKind }[] = [
+    { label: 'claims interaction on a flat surface', g: FLAT_A, field: 'surfacesInteract', kind: 'geometry-bad-twist' },
+    { label: 'claims a mirror on non-zero-sum PD', g: PD, field: 'opponentSurfaceIsMirror', kind: 'geometry-bad-mirror' },
+    { label: 'claims a shelf where y* is off-board', g: PD, field: 'hasFlatShelfForA', kind: 'geometry-bad-shelf' },
+    { label: 'claims an interior flat spot at a corner NE', g: PD, field: 'equilibriumIsInteriorFlatSpot', kind: 'geometry-bad-flatspot' },
+  ];
+  for (const c of cases) {
+    const claims = truthFor(c.g);
+    claims[c.field] = !claims[c.field];              // flip exactly one
+    const kinds = validateReport(reportFor(c.g, claims), c.g)
+      .mismatches.filter(m => m.kind.startsWith('geometry-')).map(m => m.kind);
+    assert(kinds.includes(c.kind), `${c.label}: expected ${c.kind}, got [${kinds.join(', ')}]`);
+    assert(kinds.length === 1, `${c.label}: one lie should raise one check, got [${kinds.join(', ')}]`);
+  }
+
+  // --- null is an escape hatch, not a failure ------------------------------
+  const nullClaims = validateReport(
+    { claimedEquilibria: computeAllNE(PD).map(n => ({ type: n.type, x: n.x, y: n.y })), prose: 'No shape talk.', geometryClaims: null },
+    PD,
+  );
+  assert(
+    nullClaims.mismatches.every(m => !m.kind.startsWith('geometry-')),
+    'a null geometryClaims must be skipped, not failed',
+  );
+
+  // --- the existing checks must be untouched by all of this ----------------
+  const legacyShaped: LlmReport = {
+    claimedEquilibria: computeAllNE(MATCHING_PENNIES).map(n => ({ type: n.type, x: n.x, y: n.y })),
+    prose: 'A neutral sentence with no numbers in it.',
+  };
+  assert(
+    validateReport(legacyShaped, MATCHING_PENNIES).ok,
+    'a report with no geometryClaims field at all must still validate',
+  );
+}
+
 function runTests() {
   testSolverCanonicalGames();
   testZeroSumSearchFamily();
   testSimulationConvergence();
   testGhostCorridorInvariant();
+  testGeometryOracleAgreesWithSolver();
+  testGeometryValidatorChecks();
   console.log('All game-engine regression tests passed.');
 }
 

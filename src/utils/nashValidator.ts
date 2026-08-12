@@ -29,12 +29,17 @@
 import type {
   ClaimedEquilibrium,
   GamePayoffs,
+  GeometryClaims,
   LlmReport,
   Mismatch,
+  MismatchKind,
   NashEquilibrium,
   ValidationResult,
 } from '../types';
 import { computeAllNE, computeIndifference, regretA, regretB } from './gameEngine';
+// Pure like gameEngine — types in, numbers out, no I/O. Importing it keeps this
+// module dependency-free in the sense the header means.
+import { describeGeometry } from './geometry';
 
 /** Matches the solver's own r3 rounding, so tolerance is consistent. */
 const COORD_TOL = 0.0015;
@@ -155,6 +160,86 @@ function checkProse(
   }
 
   return out;
+}
+
+/**
+ * Checks the DECLARED geometry against the computed geometry.
+ *
+ * The explainer is given the shape of the two payoff surfaces and told to
+ * describe the equilibrium in those terms — a level shelf, a warp, the joint
+ * flat spot. That widens what the prose can get wrong, and none of it was
+ * covered: the older checks all validate coordinates and payoffs.
+ *
+ * The claims are checked HERE, in the structured output, and never by reading
+ * the prose. That is deliberate and is the lesson recorded in checkProse above:
+ * "does this sentence assert a flat shelf?" is a semantic judgement a regex
+ * cannot make, so the model is required to state the claim as a boolean where
+ * comparing it is a lookup.
+ *
+ * Checked in BOTH directions. The briefing states every one of these facts
+ * explicitly, in the positive AND the negative ("A's surface is WARPED" /
+ * "is a FLAT PLANE"), so the model is not guessing and a disagreement in either
+ * direction means it contradicted material it was handed. Declining to declare
+ * is the escape hatch — a null geometryClaims is skipped, not failed.
+ */
+function checkGeometry(
+  claims: GeometryClaims | null | undefined,
+  g: GamePayoffs,
+): Mismatch[] {
+  if (!claims) return [];
+  const geo = describeGeometry(g);
+  const EPS = 1e-9;
+
+  const rows: {
+    kind: MismatchKind;
+    claimed: boolean;
+    actual: boolean;
+    yes: string;
+    no: string;
+  }[] = [
+    {
+      kind: 'geometry-bad-twist',
+      claimed: claims.surfacesInteract,
+      actual: Math.abs(geo.twistA) >= EPS,
+      yes: "A's surface is warped",
+      no: "A's surface is a flat plane",
+    },
+    {
+      kind: 'geometry-bad-mirror',
+      // Constant-sum counts: the briefing calls it "A's flipped, offset by a
+      // constant", which is still a mirror. Only a genuinely non-constant-sum
+      // game makes the claim false.
+      claimed: claims.opponentSurfaceIsMirror,
+      actual: geo.zeroSum || geo.constantSum,
+      yes: "B's surface mirrors A's",
+      no: "B's surface is its own shape",
+    },
+    {
+      kind: 'geometry-bad-shelf',
+      // yStarInRange is false when twistA is 0 (yStar is NaN), so this single
+      // predicate covers both ways a shelf can fail to exist.
+      claimed: claims.hasFlatShelfForA,
+      actual: geo.yStarInRange,
+      yes: 'A has a flat shelf on the board',
+      no: 'A has no flat shelf on the board',
+    },
+    {
+      kind: 'geometry-bad-flatspot',
+      claimed: claims.equilibriumIsInteriorFlatSpot,
+      actual: geo.hasInteriorFlatSpot,
+      yes: 'the equilibrium is an interior joint flat spot',
+      no: 'the equilibrium sits on an edge or corner',
+    },
+  ];
+
+  return rows
+    .filter((r) => r.claimed !== r.actual)
+    .map((r) => ({
+      kind: r.kind,
+      claimed: null,
+      expected: null,
+      detail: `report declares ${r.claimed ? r.yes : r.no}, but ${r.actual ? r.yes : r.no}`,
+    }));
 }
 
 export function validateReport(report: LlmReport, g: GamePayoffs): ValidationResult {
@@ -296,6 +381,25 @@ export function validateReport(report: LlmReport, g: GamePayoffs): ValidationRes
       checks.push(`FAIL prose: ${issue.detail}`);
     }
     if (proseIssues.length === 0) checks.push('ok prose: no invented values or false claims');
+  }
+
+  // Same opt-out treatment as the prose checks, and for the same reason: these
+  // are new, they feed the consistency metric, and a metric that shifts for an
+  // unknown reason is worth less than one that can be measured with the new
+  // checks held out.
+  if (process.env.NASH_GEOMETRY_CHECKS !== '0') {
+    const geoIssues = checkGeometry(report.geometryClaims, g);
+    for (const issue of geoIssues) {
+      mismatches.push(issue);
+      checks.push(`FAIL geometry: ${issue.detail}`);
+    }
+    if (geoIssues.length === 0) {
+      checks.push(
+        report.geometryClaims
+          ? 'ok geometry: declared shape matches the computed surfaces'
+          : 'ok geometry: no geometric claims declared',
+      );
+    }
   }
 
   return { ok: mismatches.length === 0, checks, mismatches };

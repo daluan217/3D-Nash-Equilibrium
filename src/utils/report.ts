@@ -25,6 +25,7 @@
 
 import type { GamePayoffs, LlmReport } from '../types';
 import { computeAllNE, computeIndifference } from './gameEngine';
+import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure } from './providers';
 
 /**
@@ -57,7 +58,9 @@ export const DEFAULT_MODEL = process.env.REPORT_MODEL || 'gpt-5.4-nano';
  */
 const REPORT_SCHEMA: Record<string, unknown> = {
   type: 'object',
-  required: ['claimedEquilibria', 'prose'],
+  // Strict structured output requires EVERY property to be listed here;
+  // optionality is expressed by allowing null, not by omission.
+  required: ['claimedEquilibria', 'suggestedScenario', 'geometryClaims', 'prose'],
   properties: {
     claimedEquilibria: {
       type: 'array',
@@ -72,6 +75,63 @@ const REPORT_SCHEMA: Record<string, unknown> = {
           type: { type: 'string', enum: ['pure', 'mixed', 'continuum'] },
           x: { type: 'number', description: "Player A's probability of Row 1, 0 to 1." },
           y: { type: 'number', description: "Player B's probability of Column 1, 0 to 1." },
+        },
+      },
+    },
+    suggestedScenario: {
+      type: ['object', 'null'],
+      required: ['name', 'row1', 'row2', 'col1', 'col2', 'description'],
+      description:
+        'ONLY when the game had no scenario attached: a short concrete story ' +
+        'fitting these payoffs. Omit entirely when a scenario was supplied.',
+      properties: {
+        name: { type: 'string', description: 'Short title, e.g. "Border Patrol".' },
+        row1: { type: 'string', description: "A's first option, 1-3 words." },
+        row2: { type: 'string', description: "A's second option, 1-3 words." },
+        col1: { type: 'string', description: "B's first option, 1-3 words." },
+        col2: { type: 'string', description: "B's second option, 1-3 words." },
+        description: {
+          type: 'string',
+          description:
+            'Two or three plain sentences setting up the situation and what each ' +
+            'player is choosing between. Do not state the equilibrium.',
+        },
+      },
+    },
+    /**
+     * The geometric claims, declared so they can be checked.
+     *
+     * Nullable on purpose. A required non-null object would make every provider
+     * that fumbles one boolean fail the whole parse, and a failed parse drops
+     * the user to the deterministic panel — a worse outcome than an unchecked
+     * paragraph. Declining to declare is allowed; declaring falsely is not.
+     */
+    geometryClaims: {
+      type: ['object', 'null'],
+      required: [
+        'surfacesInteract', 'opponentSurfaceIsMirror',
+        'hasFlatShelfForA', 'equilibriumIsInteriorFlatSpot',
+      ],
+      description:
+        'The geometric facts your prose relies on, restated as booleans. Copy ' +
+        'them from the supplied geometry — do not derive them. Set null only if ' +
+        'your explanation says nothing about the shape of the surfaces.',
+      properties: {
+        surfacesInteract: {
+          type: 'boolean',
+          description: "True when A's surface is warped rather than a flat plane.",
+        },
+        opponentSurfaceIsMirror: {
+          type: 'boolean',
+          description: "True when B's surface is A's flipped over (zero-sum or constant-sum).",
+        },
+        hasFlatShelfForA: {
+          type: 'boolean',
+          description: "True when A's surface goes level somewhere on the board.",
+        },
+        equilibriumIsInteriorFlatSpot: {
+          type: 'boolean',
+          description: 'True when both surfaces are level at the same interior point.',
         },
       },
     },
@@ -95,14 +155,74 @@ You will be given a payoff matrix AND the equilibria, already computed exactly b
 
 Rules:
 - Report exactly the equilibria you are given. Do not add, drop, merge, or recompute any of them. If the solver reports one equilibrium, report one.
-- Copy the coordinates verbatim. Do not round, rescale, or "correct" them.
+- In claimedEquilibria, copy the coordinates verbatim. Do not round, rescale, or "correct" them.
+- In the PROSE you may name a coordinate in words when that reads better — "a third", "two-thirds", "fifty-fifty" — provided it is the same value. The structured claims carry the exact numbers, so the prose does not have to.
 - When you are told the game is degenerate (a player is indifferent, so a whole line or region is in equilibrium), label those claims "continuum" and give any representative point inside the region.
 - The prose should say what the players are actually trading off, in the terms of the game itself. Prefer "A gains nothing by switching once B mixes at these odds" over restating the definition of Nash equilibrium.
 - Write for a reader who knows what a payoff matrix is and does not yet have intuition for mixed strategies. Two to four sentences. Plain prose, no markdown, no headings, no LaTeX.
-- Never claim an equilibrium exists that you were not given, and never describe a pure equilibrium in a game that has none. If the solver found no pure equilibria, say plainly that the game has none and explain why the players must mix.`;
+- Never claim an equilibrium exists that you were not given, and never describe a pure equilibrium in a game that has none. If the solver found no pure equilibria, say plainly that the game has none and explain why the players must mix.
+- If a scenario is supplied, use its names for the players' options instead of "Row 1"/"Col 2" wherever that reads better, and leave suggestedScenario out. If none is supplied, invent one that fits the payoffs, write the explanation in its terms, and return it in suggestedScenario. Never let an invented story contradict the payoffs or the equilibria.
+- You are also given the GEOMETRY of the two expected-payoff surfaces the reader is looking at. Where it helps, describe the equilibrium in those terms: indifference is a level shelf where a surface stops tilting; the equilibrium is the joint flat spot where both surfaces are level at once; strategic interaction is the warp in the surface; a best response is which way a slice tilts. Use these ONLY where the supplied geometry says they apply — if it tells you there is no flat shelf, or no interior flat spot, or that the game is not zero-sum, do not describe one.
+- Fill in geometryClaims to match what the supplied geometry states, and make sure your prose agrees with it. These are copied, not worked out: every one of them is stated for you above. If your explanation does not discuss the shape of the surfaces at all, set geometryClaims to null rather than guessing.`;
 
 /** Everything the model is allowed to know. Ground truth, nothing else. */
-export function buildGroundingPayload(g: GamePayoffs): string {
+/**
+ * The story attached to a game, when there is one.
+ *
+ * Without it the model can only write "Player A plays Row 1", because Row 1 is
+ * genuinely all it knows. The app's presets already carry concrete nouns
+ * ("Search L", "Hide R") and never passed them to the explainer — so an
+ * explanation of the Search Game talked about rows and columns rather than
+ * doors, which is worse for a learner and made the prose unmistakably
+ * machine-written.
+ *
+ * The preset `desc` is deliberately NOT included: it is HTML, and it states the
+ * equilibrium outright, which would let the model recite instead of explain.
+ */
+export interface Scenario {
+  name?: string;
+  row1?: string; row2?: string;
+  col1?: string; col2?: string;
+  /** Free text a user wrote about their own game. Plain text, already clamped. */
+  description?: string;
+}
+
+/**
+ * Is there enough here for the model to talk about the game in concrete nouns?
+ *
+ * Labels are enough on their own. A description needs to be long enough to
+ * actually describe something — a two-word title tells the model nothing it can
+ * write with, and inventing a scenario is better than half-using a fragment.
+ */
+export function scenarioIsUsable(sc?: Scenario): boolean {
+  if (!sc) return false;
+  const hasLabels = !!(sc.row1 && sc.row2 && sc.col1 && sc.col2);
+  const hasStory = (sc.description ?? '').trim().split(/\s+/).length >= 12;
+  return hasLabels || hasStory;
+}
+
+function scenarioBlock(sc?: Scenario): string {
+  if (scenarioIsUsable(sc) && sc) {
+    const parts: string[] = [];
+    if (sc.name) parts.push(`This game is known as: ${sc.name}.`);
+    if (sc.description) parts.push(`The person who built it describes it this way: "${sc.description}"`);
+    if (sc.row1 && sc.row2) parts.push(`A's two options are "${sc.row1}" (Row 1) and "${sc.row2}" (Row 2).`);
+    if (sc.col1 && sc.col2) parts.push(`B's two options are "${sc.col1}" (Col 1) and "${sc.col2}" (Col 2).`);
+    parts.push(
+      'Use these names in the prose where they read more naturally than "Row 1" and "Col 2".'
+      + ' Do NOT invent a different story, and do not fill suggestedScenario.',
+    );
+    return parts.join(' ');
+  }
+  // Nothing usable: let the model invent one, and hand it back so the user can
+  // keep it. The story is illustrative only — the payoffs remain authoritative.
+  return 'This game has no scenario attached. Invent a short, concrete one that fits these payoffs'
+    + ' — who the two players are and what their two options are — write the explanation using it,'
+    + ' and return it in suggestedScenario so it can be offered to the user. The story must not'
+    + ' contradict the payoffs or the equilibria you were given.';
+}
+
+export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): string {
   const equilibria = computeAllNE(g);
   const indifference = computeIndifference(g);
   // A flat-payoff player is indifferent between their own actions, so a whole
@@ -129,8 +249,12 @@ export function buildGroundingPayload(g: GamePayoffs): string {
     const validPoints = equilibria.length
       ? equilibria.map((e) => `(x=${e.x}, y=${e.y})`).join(', ')
       : 'any point where neither player can gain by deviating';
+    const sc0 = scenarioBlock(scenario);
     return [
       ...matrix,
+      ...(sc0 ? ['', sc0] : []),
+      '',
+      geometryBriefing(g),
       '',
       `This game is DEGENERATE: ${region}.`,
       'There is a continuum of equilibria, not a finite list. Report it as a SINGLE',
@@ -141,8 +265,12 @@ export function buildGroundingPayload(g: GamePayoffs): string {
     ].join('\n');
   }
 
+  const sc = scenarioBlock(scenario);
   return [
     ...matrix,
+    ...(sc ? ['', sc] : []),
+    '',
+    geometryBriefing(g),
     '',
     'Solver output (authoritative — x is A\'s probability of Row 1, y is B\'s probability of Col 1):',
     equilibria.length
@@ -171,14 +299,62 @@ export { hasCredentials };
  */
 export async function generateReport(
   g: GamePayoffs,
-  opts: { model?: string } = {},
+  opts: { model?: string; framingGuidance?: string; styleExemplars?: string[]; scenario?: Scenario } = {},
 ): Promise<GenerateResult> {
   const model = opts.model || DEFAULT_MODEL;
 
+  // `framingGuidance` is an EXPERIMENTAL hook, appended rather than substituted
+  // so the production rules above always still apply. Production passes nothing
+  // and is byte-identical to before. It exists so the voice/framing experiment
+  // measures the real production path instead of a copy that can drift — the
+  // same reason this function is the single entry point for the API and the
+  // eval sweep.
+  // `styleExemplars` supplies EXAMPLES rather than rules. The framing pilot
+  // showed instructions do not take ("you may use these framings" moved
+  // nothing) while material does -- vocabulary handed over inside a computed
+  // fact was adopted immediately. Exemplars are material, and unlike a briefing
+  // they can carry the SHAPE of an argument, which is what the briefing route
+  // could not reach.
+  //
+  // They are appended, never substituted, so every correctness rule above still
+  // applies and nashValidator still gates every number.
+  // HARD GATE: exemplars are EXPERIMENT-ONLY and must never ship.
+  //
+  // They are verbatim prose from a manuscript under double-anonymous review. If
+  // they reached the deployed system prompt, that text would be transmitted to
+  // the model provider on every public request, and prompt-extraction would
+  // surface manuscript wording under the author's identity -- a
+  // deanonymisation vector while review is live.
+  //
+  // Opt-in rather than opt-out on purpose: the default is OFF everywhere,
+  // including any environment that forgets to set anything, so shipping them is
+  // an action someone has to take rather than a mistake they can make.
+  const exemplarsAllowed = process.env.ALLOW_STYLE_EXEMPLARS === '1';
+  if (opts.styleExemplars?.length && !exemplarsAllowed) {
+    throw new Error(
+      'styleExemplars supplied without ALLOW_STYLE_EXEMPLARS=1. These carry manuscript '
+      + 'prose and are experiment-only; they must not reach a deployed prompt.',
+    );
+  }
+
+  const exemplarBlock = opts.styleExemplars?.length
+    ? `\n\nHere are examples of the explanatory voice to match. Match their register, sentence`
+      + ` rhythm, and way of building an argument -- NOT their content, which describes different`
+      + ` games. Never import a claim from an example; every claim must come from the solver output`
+      + ` and geometry you were given.\n\n`
+      + opts.styleExemplars.map((e, i) => `Example ${i + 1}:\n${e}`).join('\n\n')
+    : '';
+
+  const systemPrompt = [
+    SYSTEM_PROMPT,
+    opts.framingGuidance ? `\n\n${opts.framingGuidance}` : '',
+    exemplarBlock,
+  ].join('');
+
   const res = await callProvider({
     model,
-    systemPrompt: SYSTEM_PROMPT,
-    userPrompt: buildGroundingPayload(g),
+    systemPrompt,
+    userPrompt: buildGroundingPayload(g, opts.scenario),
     schema: REPORT_SCHEMA,
     // Roomy on purpose: current models think by default, and thinking tokens
     // count against this budget on every provider. Too tight a cap makes the

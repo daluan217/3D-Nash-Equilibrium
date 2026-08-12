@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
-import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment, ReportEnvelope } from './types';
+import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment, ReportEnvelope, type SuggestedScenario } from './types';
 import {
   PRESETS,
   EA,
@@ -51,7 +51,9 @@ import {
   Star,
   Send,
   Sparkles,
-  ShieldCheck
+  ShieldCheck,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
@@ -430,14 +432,26 @@ export default function App() {
   const [jumpInput, setJumpInput] = useState<string>('');
 
   const logsContainerRef = useRef<HTMLDivElement>(null);
+  // The expanded overlay renders a SECOND copy of the log, so it needs its own
+  // ref — a single ref would be overwritten by whichever copy mounted last and
+  // the auto-scroll would silently follow the wrong one.
+  const logsExpandedRef = useRef<HTMLDivElement>(null);
+  const [logExpanded, setLogExpanded] = useState(false);
 
   // Auto-scroll the logs browser to the bottom on new entries
   useEffect(() => {
-    const container = logsContainerRef.current;
-    if (container) {
-      container.scrollTop = container.scrollHeight;
+    for (const container of [logsContainerRef.current, logsExpandedRef.current]) {
+      if (container) container.scrollTop = container.scrollHeight;
     }
-  }, [logEntries]);
+  }, [logEntries, logExpanded]);
+
+  // Escape closes the expanded log, matching the other modals in the app.
+  useEffect(() => {
+    if (!logExpanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLogExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [logExpanded]);
 
   // ── Simulation-log placement ───────────────────────────────────────────────
   // The log lives in the right column with an explicit height so its bottom lines
@@ -471,7 +485,15 @@ export default function App() {
       const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
       const columnGap = remPx * 1.5;
       const room = params.getBoundingClientRect().bottom - report.getBoundingClientRect().bottom;
-      if (simState.converged && room < MIN_LOG_ROOM) {
+      // Drop to the full-width band whenever the room is gone — regardless of
+      // WHY it is gone. This used to also require simState.converged, on the
+      // assumption that only the "Equilibrium Reached" box could grow the report
+      // panel that far, and that box only appears after convergence. The LLM
+      // explanation broke that assumption: a long explanation, or the invented
+      // scenario card, makes the report tall before the simulation is ever run.
+      // The old condition then could not fire, and the log was clamped to the
+      // 90px floor — a squashed stub holding a single line.
+      if (room < MIN_LOG_ROOM) {
         setLogBelow(true);
         setInlineLogHeight(null);
         return;
@@ -535,6 +557,58 @@ export default function App() {
   // Any edit to the game invalidates prose written about the previous one.
   useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
 
+  /**
+   * Carry an invented scenario into the save-game flow.
+   *
+   * The games API can create and delete but not update, so a scenario is kept by
+   * saving the game (again) with the story in its description. Saving the LABELS
+   * matters as much as the prose: the server treats four labels as always
+   * sufficient, whereas a short description can fall below its threshold and
+   * silently trigger a fresh invention next time — which would make the text the
+   * user just kept meaningless.
+   */
+  const useSuggestedScenario = async (sc: SuggestedScenario) => {
+    // The labels go into the description text on purpose. The server treats four
+    // labels as always sufficient to reuse a scenario, while a short description
+    // can fall under its word threshold and silently trigger a fresh invention —
+    // which would make the story the user just kept meaningless.
+    const labels = [sc.row1, sc.row2, sc.col1, sc.col2].every(Boolean)
+      ? ` A chooses between ${sc.row1} and ${sc.row2}; B chooses between ${sc.col1} and ${sc.col2}.`
+      : '';
+    const description = `${sc.description ?? ''}${labels}`.trim();
+
+    // Already a saved game of this user's: update it in place, so the scenario
+    // sticks to the game they have rather than spawning a duplicate.
+    const existing = userCustomGames.find((g) => g.id === activePreset);
+    if (existing && authToken) {
+      try {
+        const res = await fetch(getApiUrl(`/api/games/${existing.id}`), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+          body: JSON.stringify({ description }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setUserCustomGames((prev) => prev.map((g) => (g.id === existing.id ? data.game : g)));
+          setLogEntries((prev) => [...prev, `✓ Scenario saved to "${existing.name}".`]);
+          return;
+        }
+        setLogEntries((prev) => [...prev, `✗ Couldn't save scenario: ${data.error ?? 'unknown error'}`]);
+        return;
+      } catch {
+        setLogEntries((prev) => [...prev, "✗ Couldn't reach the server to save the scenario."]);
+        return;
+      }
+    }
+
+    // Preset or unsaved matrix: there is nothing to patch, so route through the
+    // existing save-as-new flow with the story prefilled.
+    setSaveName(sc.name ?? '');
+    setSaveDesc(description);
+    setSaveError('');
+    setIsSaveModalOpen(true);
+  };
+
   const fetchLlmExplanation = async () => {
     setLlmLoading(true);
     setLlmError(false);
@@ -542,7 +616,7 @@ export default function App() {
       const res = await fetch(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payoffs }),
+        body: JSON.stringify({ payoffs, scenario: scenarioForReport }),
       });
       if (!res.ok) throw new Error(String(res.status));
       setLlmEnvelope((await res.json()) as ReportEnvelope);
@@ -1107,6 +1181,38 @@ export default function App() {
   const selectedPreset = mergedPresets[activePreset];
   const selectedCustomGame = userCustomGames.find((g) => g.id === activePreset);
 
+  // The nouns this game already has. Without them the explainer can only say
+  // "Player A plays Row 1" — the Search Game has "Search L"/"Hide R" sitting
+  // unused in its preset, and a saved custom game has whatever story the user
+  // wrote. The server decides whether it is enough to use or whether to invent
+  // one, so this just hands over everything available.
+  const scenarioForReport = useMemo(() => {
+    const p = mergedPresets[activePreset];
+    const custom = userCustomGames.find((g) => g.id === activePreset);
+    // Only if the matrix still MATCHES the selected game. Editing the payoffs
+    // does not clear activePreset, so without this check a tweaked Battle of the
+    // Sexes would still be explained in terms of opera and football — a story
+    // those numbers no longer tell. When they diverge, send nothing and let the
+    // model invent a scenario that fits what is actually on screen.
+    const matches = p
+      && p.a11 === payoffs.a11 && p.a12 === payoffs.a12
+      && p.a21 === payoffs.a21 && p.a22 === payoffs.a22
+      && p.b11 === payoffs.b11 && p.b12 === payoffs.b12
+      && p.b21 === payoffs.b21 && p.b22 === payoffs.b22;
+    if (!matches) return undefined;
+
+    const sc = {
+      name: custom?.name ?? p?.name,
+      row1: p?.row1Label,
+      row2: p?.row2Label,
+      col1: p?.col1Label,
+      col2: p?.col2Label,
+      description: custom?.description ?? p?.desc,
+    };
+    return Object.values(sc).some(Boolean) ? sc : undefined;
+  }, [activePreset, mergedPresets, userCustomGames, payoffs]);
+
+
   // ── Preset loader action ───────────────────────────────────────────────────
   const handleLoadPreset = (key: string) => {
     setActivePreset(key);
@@ -1293,45 +1399,105 @@ export default function App() {
   // so its bottom lines up with the params panel's bottom; when the converged
   // report leaves no room, it drops to a full-width band beneath both columns.
   const useFlexLog = !logBelow && inlineLogHeight != null;
+
+  // Rendered once and used by BOTH the inline panel and the expanded overlay, so
+  // the two can never drift apart in colouring or content.
+  const logLines = logEntries.map((line, idx) => {
+    let colClass = 'text-slate-600 dark:text-slate-300';
+    if (line.includes('✓')) {
+      colClass = 'text-emerald-600 dark:text-emerald-400 font-semibold';
+    } else if (line.includes('↺')) {
+      if (line.includes('Ghost cycle')) {
+        if (line.includes('(A)')) {
+          colClass = 'text-rose-500 dark:text-rose-300 font-medium';
+        } else if (line.includes('(B)')) {
+          colClass = 'text-player-b-600 dark:text-player-b-300 font-medium';
+        } else {
+          colClass = 'text-amber-600 dark:text-amber-300 font-medium';
+        }
+      } else {
+        colClass = 'text-amber-600 dark:text-amber-400 font-semibold';
+      }
+    } else if (line.includes('━━') || line.includes('Start')) {
+      colClass = 'text-accent-600 dark:text-accent-400 font-semibold';
+    } else if (line.includes('(A)')) {
+      colClass = 'text-player-a-600 dark:text-player-a-400 font-semibold';
+    } else if (line.includes('(B)')) {
+      colClass = 'text-player-b-600 dark:text-player-b-400 font-semibold';
+    }
+    return (
+      <p key={idx} className={colClass}>
+        {line}
+      </p>
+    );
+  });
+
   const simulationLogPanel = (
     <div
       className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-700 dark:text-slate-200 shadow-sm"
       style={useFlexLog ? { height: inlineLogHeight! } : undefined}
     >
-      <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
-        <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
-        Simulation Log
-      </span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
+          <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
+          Simulation Log
+        </span>
+        <button
+          type="button"
+          onClick={() => setLogExpanded(true)}
+          title="Expand log"
+          aria-label="Expand simulation log"
+          className="shrink-0 p-1.5 -m-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
       <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}>
-        {logEntries.map((line, idx) => {
-          let colClass = 'text-slate-600 dark:text-slate-300';
-          if (line.includes('✓')) {
-            colClass = 'text-emerald-600 dark:text-emerald-400 font-semibold';
-          } else if (line.includes('↺')) {
-            if (line.includes('Ghost cycle')) {
-              if (line.includes('(A)')) {
-                colClass = 'text-rose-500 dark:text-rose-300 font-medium';
-              } else if (line.includes('(B)')) {
-                colClass = 'text-player-b-600 dark:text-player-b-300 font-medium';
-              } else {
-                colClass = 'text-amber-600 dark:text-amber-300 font-medium';
-              }
-            } else {
-              colClass = 'text-amber-600 dark:text-amber-400 font-semibold';
-            }
-          } else if (line.includes('━━') || line.includes('Start')) {
-            colClass = 'text-accent-600 dark:text-accent-400 font-semibold';
-          } else if (line.includes('(A)')) {
-            colClass = 'text-player-a-600 dark:text-player-a-400 font-semibold';
-          } else if (line.includes('(B)')) {
-            colClass = 'text-player-b-600 dark:text-player-b-400 font-semibold';
-          }
-          return (
-            <p key={idx} className={colClass}>
-              {line}
-            </p>
-          );
-        })}
+        {logLines}
+      </div>
+    </div>
+  );
+
+  // ── Expanded log overlay ───────────────────────────────────────────────────
+  // Fills most of the viewport over a blurred backdrop. The backdrop closes on
+  // click; the dialog stops propagation so selecting log text does not dismiss
+  // it — the whole point of expanding is to read and copy from it.
+  const expandedLogOverlay = logExpanded && (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md"
+      onClick={() => setLogExpanded(false)}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Simulation log"
+    >
+      <div
+        className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
+            <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
+            Simulation Log
+            <span className="normal-case tracking-normal text-slate-400 dark:text-slate-500 font-normal">
+              — {logEntries.length} {logEntries.length === 1 ? 'line' : 'lines'}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setLogExpanded(false)}
+            title="Collapse log (Esc)"
+            aria-label="Collapse simulation log"
+            className="shrink-0 p-1.5 -m-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
+          >
+            <Minimize2 className="w-4 h-4" />
+          </button>
+        </div>
+        <div
+          ref={logsExpandedRef}
+          className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text"
+        >
+          {logLines}
+        </div>
       </div>
     </div>
   );
@@ -2265,6 +2431,41 @@ export default function App() {
                         {llmEnvelope.validation ? ` (${llmEnvelope.validation.checks.length} checks passed)` : ''}.
                       </span>
                     </div>
+
+                    {/*
+                      Only appears when this game had no scenario of its own, so the
+                      explanation above was written against an invented one. Saving it
+                      is what makes the next explanation reuse this story instead of
+                      inventing a different one.
+                    */}
+                    {llmEnvelope.report.suggestedScenario && (
+                      <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                          Scenario written for this game
+                        </p>
+                        <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200">
+                          {llmEnvelope.report.suggestedScenario.name}
+                        </p>
+                        <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300">
+                          {llmEnvelope.report.suggestedScenario.description}
+                        </p>
+                        <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                          A: {llmEnvelope.report.suggestedScenario.row1} / {llmEnvelope.report.suggestedScenario.row2}
+                          {'  ·  '}
+                          B: {llmEnvelope.report.suggestedScenario.col1} / {llmEnvelope.report.suggestedScenario.col2}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => useSuggestedScenario(llmEnvelope.report!.suggestedScenario!)}
+                          className="mt-2.5 rounded-md bg-indigo-600 px-2.5 py-1.5 text-[12px] font-semibold text-white transition hover:bg-indigo-700"
+                        >
+                          Save this scenario with the game
+                        </button>
+                        <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                          Keeps these names for future explanations instead of inventing new ones.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2308,6 +2509,8 @@ export default function App() {
       <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
         <p className="text-xs text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
       </footer>
+
+      {expandedLogOverlay}
 
       {isAuthModalOpen && (
         <div
