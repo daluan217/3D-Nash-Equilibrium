@@ -471,7 +471,15 @@ export default function App() {
       const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
       const columnGap = remPx * 1.5;
       const room = params.getBoundingClientRect().bottom - report.getBoundingClientRect().bottom;
-      if (simState.converged && room < MIN_LOG_ROOM) {
+      // Drop to the full-width band whenever the room is gone — regardless of
+      // WHY it is gone. This used to also require simState.converged, on the
+      // assumption that only the "Equilibrium Reached" box could grow the report
+      // panel that far, and that box only appears after convergence. The LLM
+      // explanation broke that assumption: a long explanation, or the invented
+      // scenario card, makes the report tall before the simulation is ever run.
+      // The old condition then could not fire, and the log was clamped to the
+      // 90px floor — a squashed stub holding a single line.
+      if (room < MIN_LOG_ROOM) {
         setLogBelow(true);
         setInlineLogHeight(null);
         return;
