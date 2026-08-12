@@ -312,6 +312,10 @@ function testGeometryValidatorChecks() {
   // A's payoff ignores B entirely, so A's surface is a flat plane (twistA = 0).
   const FLAT_A: GamePayoffs =
     { a11: 2, a12: 2, a21: 5, a22: 5, b11: -2, b12: -3, b21: -4, b22: -5 };
+  // Battle of the Sexes: not constant-sum and no dominant strategy either way,
+  // so it is the negative fixture for BOTH of the new checks.
+  const BOS: GamePayoffs =
+    { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 };
 
   const truthFor = (g: GamePayoffs) => {
     const geo = describeGeometry(g);
@@ -320,6 +324,8 @@ function testGeometryValidatorChecks() {
       opponentSurfaceIsMirror: geo.zeroSum || geo.constantSum,
       hasFlatShelfForA: geo.yStarInRange,
       equilibriumIsInteriorFlatSpot: geo.hasInteriorFlatSpot,
+      invokesMinimax: geo.minimaxApplies,
+      claimsDominantStrategy: geo.dominantRowA || geo.dominantColB,
     };
   };
 
@@ -332,7 +338,7 @@ function testGeometryValidatorChecks() {
   });
 
   // --- negative fixtures: truthful declarations must not fire ---------------
-  for (const [name, g] of [['matching pennies', MATCHING_PENNIES], ['PD', PD], ['flat A', FLAT_A]] as const) {
+  for (const [name, g] of [['matching pennies', MATCHING_PENNIES], ['PD', PD], ['flat A', FLAT_A], ['BoS', BOS]] as const) {
     const v = validateReport(reportFor(g, truthFor(g)), g);
     const geoFails = v.mismatches.filter(m => m.kind.startsWith('geometry-'));
     assert(geoFails.length === 0, `${name}: truthful geometry flagged — ${geoFails.map(m => m.detail).join('; ')}`);
@@ -344,6 +350,9 @@ function testGeometryValidatorChecks() {
     { label: 'claims a mirror on non-zero-sum PD', g: PD, field: 'opponentSurfaceIsMirror', kind: 'geometry-bad-mirror' },
     { label: 'claims a shelf where y* is off-board', g: PD, field: 'hasFlatShelfForA', kind: 'geometry-bad-shelf' },
     { label: 'claims an interior flat spot at a corner NE', g: PD, field: 'equilibriumIsInteriorFlatSpot', kind: 'geometry-bad-flatspot' },
+    // The observed failure: minimax asserted on a non-constant-sum game.
+    { label: 'invokes minimax on a non-zero-sum game', g: BOS, field: 'invokesMinimax', kind: 'geometry-bad-minimax' },
+    { label: 'claims dominance where neither player has it', g: BOS, field: 'claimsDominantStrategy', kind: 'geometry-bad-dominance' },
   ];
   for (const c of cases) {
     const claims = truthFor(c.g);
