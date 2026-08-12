@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
-import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment, ReportEnvelope } from './types';
+import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment, ReportEnvelope, type SuggestedScenario } from './types';
 import {
   PRESETS,
   EA,
@@ -557,6 +557,58 @@ export default function App() {
   // Any edit to the game invalidates prose written about the previous one.
   useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
 
+  /**
+   * Carry an invented scenario into the save-game flow.
+   *
+   * The games API can create and delete but not update, so a scenario is kept by
+   * saving the game (again) with the story in its description. Saving the LABELS
+   * matters as much as the prose: the server treats four labels as always
+   * sufficient, whereas a short description can fall below its threshold and
+   * silently trigger a fresh invention next time — which would make the text the
+   * user just kept meaningless.
+   */
+  const useSuggestedScenario = async (sc: SuggestedScenario) => {
+    // The labels go into the description text on purpose. The server treats four
+    // labels as always sufficient to reuse a scenario, while a short description
+    // can fall under its word threshold and silently trigger a fresh invention —
+    // which would make the story the user just kept meaningless.
+    const labels = [sc.row1, sc.row2, sc.col1, sc.col2].every(Boolean)
+      ? ` A chooses between ${sc.row1} and ${sc.row2}; B chooses between ${sc.col1} and ${sc.col2}.`
+      : '';
+    const description = `${sc.description ?? ''}${labels}`.trim();
+
+    // Already a saved game of this user's: update it in place, so the scenario
+    // sticks to the game they have rather than spawning a duplicate.
+    const existing = userCustomGames.find((g) => g.id === activePreset);
+    if (existing && authToken) {
+      try {
+        const res = await fetch(getApiUrl(`/api/games/${existing.id}`), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+          body: JSON.stringify({ description }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setUserCustomGames((prev) => prev.map((g) => (g.id === existing.id ? data.game : g)));
+          setLogEntries((prev) => [...prev, `✓ Scenario saved to "${existing.name}".`]);
+          return;
+        }
+        setLogEntries((prev) => [...prev, `✗ Couldn't save scenario: ${data.error ?? 'unknown error'}`]);
+        return;
+      } catch {
+        setLogEntries((prev) => [...prev, "✗ Couldn't reach the server to save the scenario."]);
+        return;
+      }
+    }
+
+    // Preset or unsaved matrix: there is nothing to patch, so route through the
+    // existing save-as-new flow with the story prefilled.
+    setSaveName(sc.name ?? '');
+    setSaveDesc(description);
+    setSaveError('');
+    setIsSaveModalOpen(true);
+  };
+
   const fetchLlmExplanation = async () => {
     setLlmLoading(true);
     setLlmError(false);
@@ -564,7 +616,7 @@ export default function App() {
       const res = await fetch(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payoffs }),
+        body: JSON.stringify({ payoffs, scenario: scenarioForReport }),
       });
       if (!res.ok) throw new Error(String(res.status));
       setLlmEnvelope((await res.json()) as ReportEnvelope);
@@ -1128,6 +1180,38 @@ export default function App() {
 
   const selectedPreset = mergedPresets[activePreset];
   const selectedCustomGame = userCustomGames.find((g) => g.id === activePreset);
+
+  // The nouns this game already has. Without them the explainer can only say
+  // "Player A plays Row 1" — the Search Game has "Search L"/"Hide R" sitting
+  // unused in its preset, and a saved custom game has whatever story the user
+  // wrote. The server decides whether it is enough to use or whether to invent
+  // one, so this just hands over everything available.
+  const scenarioForReport = useMemo(() => {
+    const p = mergedPresets[activePreset];
+    const custom = userCustomGames.find((g) => g.id === activePreset);
+    // Only if the matrix still MATCHES the selected game. Editing the payoffs
+    // does not clear activePreset, so without this check a tweaked Battle of the
+    // Sexes would still be explained in terms of opera and football — a story
+    // those numbers no longer tell. When they diverge, send nothing and let the
+    // model invent a scenario that fits what is actually on screen.
+    const matches = p
+      && p.a11 === payoffs.a11 && p.a12 === payoffs.a12
+      && p.a21 === payoffs.a21 && p.a22 === payoffs.a22
+      && p.b11 === payoffs.b11 && p.b12 === payoffs.b12
+      && p.b21 === payoffs.b21 && p.b22 === payoffs.b22;
+    if (!matches) return undefined;
+
+    const sc = {
+      name: custom?.name ?? p?.name,
+      row1: p?.row1Label,
+      row2: p?.row2Label,
+      col1: p?.col1Label,
+      col2: p?.col2Label,
+      description: custom?.description ?? p?.desc,
+    };
+    return Object.values(sc).some(Boolean) ? sc : undefined;
+  }, [activePreset, mergedPresets, userCustomGames, payoffs]);
+
 
   // ── Preset loader action ───────────────────────────────────────────────────
   const handleLoadPreset = (key: string) => {
@@ -2347,6 +2431,41 @@ export default function App() {
                         {llmEnvelope.validation ? ` (${llmEnvelope.validation.checks.length} checks passed)` : ''}.
                       </span>
                     </div>
+
+                    {/*
+                      Only appears when this game had no scenario of its own, so the
+                      explanation above was written against an invented one. Saving it
+                      is what makes the next explanation reuse this story instead of
+                      inventing a different one.
+                    */}
+                    {llmEnvelope.report.suggestedScenario && (
+                      <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                          Scenario written for this game
+                        </p>
+                        <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200">
+                          {llmEnvelope.report.suggestedScenario.name}
+                        </p>
+                        <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300">
+                          {llmEnvelope.report.suggestedScenario.description}
+                        </p>
+                        <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                          A: {llmEnvelope.report.suggestedScenario.row1} / {llmEnvelope.report.suggestedScenario.row2}
+                          {'  ·  '}
+                          B: {llmEnvelope.report.suggestedScenario.col1} / {llmEnvelope.report.suggestedScenario.col2}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => useSuggestedScenario(llmEnvelope.report!.suggestedScenario!)}
+                          className="mt-2.5 rounded-md bg-indigo-600 px-2.5 py-1.5 text-[12px] font-semibold text-white transition hover:bg-indigo-700"
+                        >
+                          Save this scenario with the game
+                        </button>
+                        <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                          Keeps these names for future explanations instead of inventing new ones.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 

@@ -28,6 +28,7 @@ import {
   type GenerateContentResponseUsageMetadata,
 } from '@google/genai';
 import OpenAI from 'openai';
+import AnthropicFoundry from '@anthropic-ai/foundry-sdk';
 
 /**
  * Provider-neutral token accounting.
@@ -65,6 +66,26 @@ export interface ProviderResult {
   failure: ProviderFailure | null;
 }
 
+/**
+ * Neutral reasoning/thinking level.
+ *
+ * Each family exposes this differently — OpenAI as `reasoning_effort`, Gemini as
+ * a `thinkingConfig` token budget, Anthropic as a `thinking` block — so the
+ * benchmark asks for an EFFORT LEVEL and each adapter translates. Omitting it
+ * means "provider default", which is what the first sweep measured.
+ */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+
+/**
+ * 'none' is not the same as omitting the field: omitting takes the provider
+ * DEFAULT (which for gpt-5.6-sol is thinking ON), whereas 'none' explicitly
+ * disables it. The distinction is the control arm of the benchmark, so the two
+ * must stay separately expressible.
+ */
+function thinkingRequested(r: ReasoningEffort | undefined): boolean {
+  return !!r && r !== 'none';
+}
+
 export interface ProviderRequest {
   model: string;
   systemPrompt: string;
@@ -72,9 +93,15 @@ export interface ProviderRequest {
   /** Plain JSON Schema (lowercase types) constraining the reply shape. */
   schema: Record<string, unknown>;
   maxOutputTokens: number;
+  /**
+   * Reasoning effort. Undefined = provider default (no thinking requested).
+   * Not every deployment honours this; check `usage.reasoningTokens > 0` to
+   * confirm thinking actually happened rather than assuming it did.
+   */
+  reasoning?: ReasoningEffort;
 }
 
-export type ProviderName = 'gemini' | 'foundry-openai';
+export type ProviderName = 'gemini' | 'foundry-openai' | 'foundry-anthropic';
 
 /** True for transient 429/503/500 responses that are worth retrying. */
 export function isRateLimit(err: unknown): boolean {
@@ -124,6 +151,12 @@ async function callGemini(req: ProviderRequest): Promise<ProviderResult> {
         // schema is passed through as-is.
         responseSchema: req.schema,
         maxOutputTokens: req.maxOutputTokens,
+        // Gemini takes a token budget, not an effort level. -1 = dynamic ("think
+        // as much as this problem needs"), which is the honest analogue of
+        // "reasoning enabled" — a fixed budget would cap harder games unequally.
+        // Flash-lite ships with thinking OFF by default, so this is the switch;
+        // budget 0 is the explicit OFF used by the control arm.
+        ...(req.reasoning ? { thinkingConfig: { thinkingBudget: thinkingRequested(req.reasoning) ? -1 : 0 } } : {}),
       },
     });
   } catch (err) {
@@ -170,7 +203,12 @@ function withAdditionalPropertiesFalse(node: unknown): unknown {
     for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
       out[k] = withAdditionalPropertiesFalse(v);
     }
-    if (out.type === 'object') out.additionalProperties = false;
+    // Strict mode requires additionalProperties:false on every object node,
+    // including nullable ones declared as type: ['object','null'] — which is
+    // how an OPTIONAL field has to be expressed, since strict also demands
+    // that every property appear in `required`.
+    const t = out.type;
+    if (t === 'object' || (Array.isArray(t) && t.includes('object'))) out.additionalProperties = false;
     return out;
   }
   return node;
@@ -212,31 +250,69 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
   const { endpoint, apiKey } = foundryCreds(req.model);
   const client = new OpenAI({ baseURL: endpoint, apiKey });
 
-  let response: OpenAI.Chat.Completions.ChatCompletion;
-  try {
-    response = await client.chat.completions.create({
-      model: req.model,
-      messages: [
-        { role: 'system', content: req.systemPrompt },
-        { role: 'user', content: req.userPrompt },
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'nash_report',
-          strict: true,
-          schema: withAdditionalPropertiesFalse(req.schema) as Record<string, unknown>,
-        },
-      },
-      // `max_completion_tokens`, not `max_tokens`: the GPT-5 family rejects the
-      // legacy field, and this budget must also cover reasoning tokens.
-      max_completion_tokens: req.maxOutputTokens,
-      // No temperature/top_p: the request shape is kept uniform across every
-      // model in the sweep so the comparison table means something. Variance is
-      // measured by the N passes the harness runs, not tuned away here.
-    });
-  } catch (err) {
-    return { text: null, stopReason: null, usage: null, failure: isRateLimit(err) ? 'rate-limited' : 'error' };
+  const messages = [
+    { role: 'system' as const, content: req.systemPrompt },
+    { role: 'user' as const, content: req.userPrompt },
+  ];
+  const jsonSchema = {
+    type: 'json_schema' as const,
+    json_schema: {
+      name: 'nash_report',
+      strict: true,
+      schema: withAdditionalPropertiesFalse(req.schema) as Record<string, unknown>,
+    },
+  };
+
+  /**
+   * The Foundry catalog is NOT uniform in request shape. Two real divergences:
+   *   - Phi-4 rejects `response_format: json_schema` but accepts `json_object`.
+   *   - Mistral-Large-3 rejects `max_completion_tokens` and wants `max_tokens`.
+   * Rather than hard-code a per-model table that silently rots as the catalog
+   * changes, negotiate: try the strictest shape, then degrade one axis at a time.
+   *
+   * NOTE FOR ANY COMPARISON: `json_object` asks for valid JSON but does NOT
+   * enforce the schema, so a model that lands on variant 2 or 4 is under a
+   * weaker output constraint than one that lands on variant 1. That asymmetry
+   * has to be stated whenever these models are scored against each other.
+   */
+  const shapes: Record<string, unknown>[] = [
+    { response_format: jsonSchema, max_completion_tokens: req.maxOutputTokens },
+    { response_format: { type: 'json_object' }, max_completion_tokens: req.maxOutputTokens },
+    { response_format: jsonSchema, max_tokens: req.maxOutputTokens },
+    { response_format: { type: 'json_object' }, max_tokens: req.maxOutputTokens },
+  ];
+  // Reasoning is its own fallback axis: models with no thinking mode (Phi-4,
+  // Mistral-Large-3) reject `reasoning_effort` outright, and if it were spread
+  // into every shape they would fail all of them and look broken. Try the
+  // reasoning shapes first, then the same shapes without it.
+  const variants: Record<string, unknown>[] = req.reasoning
+    ? [...shapes.map((s) => ({ ...s, reasoning_effort: req.reasoning })), ...shapes]
+    : shapes;
+
+  let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
+  let lastErr: unknown;
+  for (const variant of variants) {
+    try {
+      response = await client.chat.completions.create({
+        model: req.model,
+        messages,
+        ...variant,
+        // No temperature/top_p: the request shape is kept uniform across every
+        // model in the sweep so the comparison table means something. Variance is
+        // measured by the N passes the harness runs, not tuned away here.
+      } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming);
+      break;
+    } catch (err) {
+      lastErr = err;
+      // A rate limit is about load, not shape — degrading the request would not
+      // help and would silently change what we measured. Surface it immediately.
+      if (isRateLimit(err)) {
+        return { text: null, stopReason: null, usage: null, failure: 'rate-limited' };
+      }
+    }
+  }
+  if (!response) {
+    return { text: null, stopReason: null, usage: null, failure: isRateLimit(lastErr) ? 'rate-limited' : 'error' };
   }
 
   const usage = normalizeOpenAIUsage(response.usage);
@@ -262,6 +338,77 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
   return { text, stopReason: finish, usage, failure: null };
 }
 
+// ── Microsoft Foundry (Anthropic Messages API) ───────────────────────────────
+
+/**
+ * Anthropic models on Foundry speak the Messages API, not chat-completions, so
+ * they need their own adapter despite living behind the same resource.
+ *
+ * JSON is enforced with FORCED TOOL USE rather than structured outputs: this
+ * workspace returns "structured_outputs not supported in your workspace" (400),
+ * while tool_choice:{type:'tool'} works. Both mechanisms bind the reply to a
+ * JSON Schema, so the constraint is equivalent in strength — but the request
+ * shape does differ from the other providers, which is worth stating whenever
+ * these numbers are compared.
+ */
+async function callFoundryAnthropic(req: ProviderRequest): Promise<ProviderResult> {
+  const { endpoint, apiKey } = foundryCreds(req.model);
+  // The SDK wants the bare resource name; derive it from the endpoint host so a
+  // single AZURE_FOUNDRY_ENDPOINT keeps working for every provider.
+  const resource =
+    process.env.ANTHROPIC_FOUNDRY_RESOURCE ??
+    (endpoint ? new URL(endpoint).hostname.split('.')[0] : undefined);
+  const client = new AnthropicFoundry({ resource, apiKey });
+
+  let message: any;
+  try {
+    message = await client.messages.create({
+      model: req.model,
+      max_tokens: req.maxOutputTokens,
+      system: req.systemPrompt,
+      messages: [{ role: 'user', content: req.userPrompt }],
+      tools: [{ name: 'report', description: 'Report your answer.', input_schema: req.schema }],
+      // Extended thinking is incompatible with FORCED tool use, so enabling it
+      // necessarily relaxes the JSON constraint from "must call report" to "may".
+      // That is a real difference in request shape between the two sweeps and has
+      // to be stated whenever the numbers are compared.
+      tool_choice: thinkingRequested(req.reasoning) ? { type: 'auto' } : { type: 'tool', name: 'report' },
+      // claude-haiku-4-5 predates the 4.6 `adaptive` form and still takes an
+      // explicit budget; it must leave room under max_tokens for the answer.
+      ...(thinkingRequested(req.reasoning)
+        ? { thinking: { type: 'enabled', budget_tokens: Math.max(1024, Math.floor(req.maxOutputTokens / 2)) } }
+        : {}),
+    } as any);
+  } catch (err) {
+    return { text: null, stopReason: null, usage: null, failure: isRateLimit(err) ? 'rate-limited' : 'error' };
+  }
+
+  const u = message?.usage;
+  const usage: NormalizedUsage | null = u
+    ? {
+        // input_tokens EXCLUDES cached reads on Anthropic, unlike Gemini/OpenAI
+        // where the prompt count includes them — so add them back to keep
+        // promptTokens meaning the same thing across every provider.
+        promptTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+        cachedTokens: u.cache_read_input_tokens ?? 0,
+        outputTokens: u.output_tokens ?? 0,
+        reasoningTokens: 0,
+      }
+    : null;
+
+  const stop = message?.stop_reason ?? null;
+  if (stop === 'refusal') return { text: null, stopReason: stop, usage, failure: 'refusal' };
+
+  const toolUse = (message?.content ?? []).find((b: any) => b.type === 'tool_use');
+  if (!toolUse) {
+    // max_tokens can truncate before the tool block is emitted at all.
+    return { text: null, stopReason: stop, usage, failure: stop === 'max_tokens' ? 'max-tokens' : 'unparseable' };
+  }
+  // tool_use.input is already a parsed object; re-serialise so every provider
+  // hands back the same thing (a JSON string) to the caller.
+  return { text: JSON.stringify(toolUse.input), stopReason: stop, usage, failure: null };
+}
+
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 /**
@@ -272,17 +419,25 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
  */
 export function resolveProvider(model: string): ProviderName {
   const override = process.env[`EVAL_PROVIDER_${model}`];
-  if (override === 'gemini' || override === 'foundry-openai') return override;
-  return /^gemini-/i.test(model) ? 'gemini' : 'foundry-openai';
+  if (override === 'gemini' || override === 'foundry-openai' || override === 'foundry-anthropic') return override;
+  if (/^gemini-/i.test(model)) return 'gemini';
+  // Anthropic models on Foundry speak Messages, not chat-completions.
+  if (/^claude-/i.test(model)) return 'foundry-anthropic';
+  return 'foundry-openai';
 }
 
 export async function callProvider(req: ProviderRequest): Promise<ProviderResult> {
-  return resolveProvider(req.model) === 'gemini' ? callGemini(req) : callFoundryOpenAI(req);
+  switch (resolveProvider(req.model)) {
+    case 'gemini': return callGemini(req);
+    case 'foundry-anthropic': return callFoundryAnthropic(req);
+    default: return callFoundryOpenAI(req);
+  }
 }
 
 /** Whether the credentials for a model's provider are present. */
 export function hasCredentials(model: string): boolean {
   if (resolveProvider(model) === 'gemini') return !!process.env.GEMINI_API_KEY;
+  // Both Foundry adapters read the same per-resource endpoint + key.
   const { endpoint, apiKey } = foundryCreds(model);
   return !!(endpoint && apiKey);
 }

@@ -22,7 +22,7 @@ import dotenv from "dotenv";
 // first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE } from "./src/utils/gameEngine";
 import { validateReport } from "./src/utils/nashValidator";
-import { generateReport, hasCredentials, DEFAULT_MODEL } from "./src/utils/report";
+import { generateReport, hasCredentials, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
 import type { ReportEnvelope } from "./src/types";
 
 // Load environment variables from .env file
@@ -276,6 +276,30 @@ function getAuthUser(req: express.Request): User | null {
 
 function cleanText(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+/**
+ * A client-supplied scenario goes straight into the model prompt, so it is
+ * clamped and stripped rather than trusted.
+ *
+ * Tags are removed because preset descriptions are stored as HTML and a custom
+ * game's description is free text a user typed; neither should reach the prompt
+ * as markup. Lengths are capped so a long description cannot crowd out the
+ * grounding payload that keeps the explanation correct.
+ */
+function cleanScenario(value: any): Scenario | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const noTags = (v: unknown, n: number) =>
+    cleanText(v, n).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const sc: Scenario = {
+    name: noTags(value.name, 80) || undefined,
+    row1: noTags(value.row1, 40) || undefined,
+    row2: noTags(value.row2, 40) || undefined,
+    col1: noTags(value.col1, 40) || undefined,
+    col2: noTags(value.col2, 40) || undefined,
+    description: noTags(value.description, 1200) || undefined,
+  };
+  return Object.values(sc).some(Boolean) ? sc : undefined;
 }
 
 function cleanPayoffs(value: any): GamePayoffs | null {
@@ -729,6 +753,7 @@ async function startServer() {
   // wrong. That makes the fallback path exercised in normal operation.
   app.post("/api/report", rateLimit("report", 20, 60_000), async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
+    const scenario = cleanScenario(req.body?.scenario);
     if (!payoffs) {
       return res.status(400).json({ error: "Invalid payoff matrix." });
     }
@@ -751,7 +776,7 @@ async function startServer() {
     // Model is server-controlled on purpose — a client-supplied model would let
     // anyone bill the expensive one. The eval sweep calls generateReport
     // directly, so it varies the model without this route needing to accept it.
-    const { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL });
+    const { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
 
     if (!report) {
       const envelope: ReportEnvelope = {
@@ -1342,6 +1367,42 @@ async function startServer() {
       message: "Game saved successfully!",
       game: newGame
     });
+  });
+
+  // Update a Custom Game's story (name / description).
+  //
+  // Exists so an invented scenario can be kept ON the game the user already
+  // saved. Without it the only way to retain a scenario was to save a second
+  // copy of the same matrix, and the original would keep getting a freshly
+  // invented story on every explanation.
+  //
+  // Payoffs are deliberately NOT updatable here: changing them would silently
+  // invalidate the description, which is the exact mismatch this feature exists
+  // to prevent. Editing a matrix stays a save-as-new operation.
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000), (req, res) => {
+    const user = getAuthUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Invalid or expired session." });
+    }
+    const db = loadDB();
+    const game = db.games.find(g => g.id === req.params.id);
+    if (!game) {
+      return res.status(404).json({ error: "Game not found." });
+    }
+    if (game.userId !== user.id) {
+      return res.status(403).json({ error: "You are not authorized to edit this game." });
+    }
+
+    const nextName = cleanText(req.body?.name, 80);
+    const nextDescription = cleanText(req.body?.description, 800);
+    if (!nextName && !nextDescription) {
+      return res.status(400).json({ error: "Nothing to update." });
+    }
+    if (nextName) game.name = nextName;
+    if (nextDescription) game.description = nextDescription;
+    saveDB(db);
+
+    res.json({ success: true, message: "Game updated.", game });
   });
 
   // Delete a Custom Game
