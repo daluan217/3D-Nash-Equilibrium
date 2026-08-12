@@ -167,7 +167,59 @@ function render(level: Level, A: Mat): string {
  * at 4x4 and 5x5 and read as a capability cliff -- the precise failure this
  * ladder exists to rule out. Caught by printing the prompt before running.
  */
-const sysFor = (m: number, n: number) => {
+
+/**
+ * REASONING FRAMING — the experiment this file was extended for.
+ *
+ * The abstraction ladder (L0..L4) varies how the GAME IS DESCRIBED. This varies
+ * how the MODEL IS TOLD TO THINK, holding the game fixed. The two are
+ * orthogonal, so runs here hold the rendering at L0 (the raw matrix): with
+ * formalization made trivial, any difference between arms is attributable to
+ * solving rather than to reading.
+ *
+ * The question is the paper's own thesis, turned into something measurable.
+ * The paper claims a geometric re-description of mixed equilibria -- expected
+ * payoff as a surface, indifference as the surface going level -- conveys
+ * intuition that the algebra does not. That is a claim about human learners. It
+ * is also, now, a claim that can be tested on a model: give it the same
+ * mathematics in two descriptions and see whether accuracy moves.
+ *
+ * THE TWO ARMS DESCRIBE IDENTICAL MATHEMATICS. That is the point, not a flaw.
+ * "Solve the indifference equations" and "find where the surface stops tilting"
+ * pick out the same mixture. If accuracy differs, the re-description carries
+ * information; if it does not, the geometry is pedagogy rather than content.
+ * Both outcomes are worth reporting.
+ *
+ * SYMMETRY IS THE LOAD-BEARING CONTROL. Both arms are imperative ("Method:"),
+ * matched in structure -- name the object, state the equilibrium condition,
+ * state the action, state the check -- and close in length. An arm that was
+ * merely more forceful or more actionable would win for that reason and the
+ * result would be about instruction strength, not geometry. Related: the
+ * framing pilot found PERMISSIVE guidance gets 0% uptake, so neither arm is
+ * phrased as an invitation.
+ *
+ * 'none' is the baseline and is not optional: without it, a difference between
+ * the two framings cannot be read as either one HELPING.
+ */
+type Frame = 'none' | 'algebraic' | 'geometric';
+
+const FRAME_TEXT: Record<Frame, string> = {
+  none: '',
+  algebraic:
+    `Method: your expected payoff from each of your options is a linear function of the opponent's mixing probabilities. `
+    + `At equilibrium your mixture must leave the opponent indifferent among every column they use with positive probability, `
+    + `so the opponent's expected payoff is equal across all of those columns. `
+    + `Set up that system of equations and solve it for your probabilities, then check they are non-negative and sum to one.`,
+  geometric:
+    `Method: think of each player's expected payoff as a surface lying over the space of mixtures. `
+    + `The opponent's surface tilts one way or the other as your mixture changes, and it goes exactly level `
+    + `when they are indifferent among every column they use with positive probability. `
+    + `Find the mixture where the opponent's surface stops tilting, then check the probabilities are non-negative and sum to one.`,
+};
+
+const FRAMES = (process.env.L_FRAMES || 'none').split(',') as Frame[];
+
+const sysFor = (m: number, n: number, frame: Frame = 'none') => {
   const rows = Array.from({ length: m }, (_, i) => `[<row ${i + 1}>]`).join(',');
   const probs = Array.from({ length: m }, (_, i) => `"<p${i + 1}>"`).join(',');
   return `You are analysing a two-player, simultaneous, strictly competitive (zero-sum) game.
@@ -175,7 +227,8 @@ You have ${m} options (Row 1..Row ${m}); the opponent has ${n} options (Column 1
 Work out YOUR payoff for every combination, then report your equilibrium mixed strategy: the probability you place on each of your ${m} options, in order, summing to 1.
 Respond with JSON only, exactly:
 {"payoffs":[${rows}],"strategy":[${probs}]}
-where each row is ${n} numbers (YOUR payoff for that cell), and each probability is a decimal such as "0.4118" or an exact fraction such as "7/17".`;
+where each row is ${n} numbers (YOUR payoff for that cell), and each probability is a decimal such as "0.4118" or an exact fraction such as "7/17".`
+    + (FRAME_TEXT[frame] ? `\n${FRAME_TEXT[frame]}` : '');
 };
 
 const schemaFor = (m: number, n: number): Record<string, unknown> => ({
@@ -213,13 +266,13 @@ interface Row {
   dev?: number[];
 }
 
-async function askOne(model: string, level: Level, g: Game, reasoning: ReasoningEffort | undefined): Promise<Row> {
+async function askOne(model: string, level: Level, g: Game, reasoning: ReasoningEffort | undefined, frame: Frame = 'none'): Promise<Row> {
   const miss: Row = { parsed: false, formalOk: false, solutionOk: false, consistentOk: null, exploit: null };
   const m = g.A.length, n = g.A[0].length;
 
   for (let attempt = 0; attempt < 4; attempt++) {
     const r = await callProvider({
-      model, systemPrompt: sysFor(m, n), userPrompt: render(level, g.A),
+      model, systemPrompt: sysFor(m, n, frame), userPrompt: render(level, g.A),
       schema: schemaFor(m, n), maxOutputTokens: MAX_TOKENS, reasoning,
     });
     if (r.failure === 'rate-limited') { await new Promise((z) => setTimeout(z, 1500 * 2 ** attempt)); continue; }
@@ -276,21 +329,32 @@ const PASSES = Number(process.env.L_N || 2);
     const s = games[0];
     console.log('\nSAMPLE RENDERINGS (first game):');
     for (const L of LEVELS) console.log(`\n--- ${L} ---\n${render(L, s.A)}`);
-    console.log(`\n--- SYSTEM ---\n${sysFor(s.A.length, s.A[0].length)}`);
+    for (const fr of FRAMES) console.log(`\n--- SYSTEM (frame=${fr}) ---\n${sysFor(s.A.length, s.A[0].length, fr)}`);
     return;
   }
 
   console.log(`ABSTRACTION LADDER ${SIZE}x${SIZE}   games=${games.length}  passes=${PASSES}  levels=${LEVELS.join(',')}  efforts=${EFFORTS.join(',')}\n`);
-  console.log(`${'model'.padEnd(15)}${'effort'.padEnd(8)}${'lvl'.padEnd(5)}${'formalize'.padStart(10)}${'solve'.padStart(8)}${'consistent'.padStart(12)}${'exploit'.padStart(10)}${'parsed'.padStart(8)}`);
+  console.log(`${'model'.padEnd(15)}${'effort'.padEnd(8)}${'lvl'.padEnd(5)}${'frame'.padEnd(11)}${'formalize'.padStart(10)}${'solve'.padStart(8)}${'consistent'.padStart(12)}${'exploit'.padStart(10)}${'parsed'.padStart(8)}`);
+
+  /**
+   * Per-(frame, game) mean exploitability, for the PAIRED comparison below.
+   *
+   * Comparing raw means across arms wastes the design. Every arm is shown the
+   * SAME games, and exploitability varies far more between games (payoff ranges
+   * differ) than between framings, so that between-game variance swamps the
+   * effect being measured. Pairing by game removes it entirely.
+   */
+  const paired: Record<string, Record<string, number[]>> = {};
 
   for (const model of MODELS) {
     for (const eff of EFFORTS) {
       for (const level of LEVELS) {
+       for (const frame of FRAMES) {
         let f = 0, s = 0, c = 0, cN = 0, ok = 0, n = 0;
         const ex: number[] = [];
         for (const g of games) {
           for (let p = 0; p < PASSES; p++) {
-            const r = await askOne(model, level, g, eff);
+            const r = await askOne(model, level, g, eff, frame);
             n++;
             if (process.env.L_DETAIL) {
               if (!r.parsed) {
@@ -311,16 +375,56 @@ const PASSES = Number(process.env.L_N || 2);
             if (r.formalOk) f++;
             if (r.solutionOk) s++;
             if (r.consistentOk !== null) { cN++; if (r.consistentOk) c++; }
-            if (r.exploit !== null) ex.push(r.exploit);
+            if (r.exploit !== null) {
+              ex.push(r.exploit);
+              // Normalised by payoff range: an exploitability of 2 means
+              // something different in a game spanning 4 than in one spanning 20,
+              // and un-normalised means are dominated by the widest games.
+              ((paired[frame] ??= {})[g.name] ??= []).push(r.exploit / rangeOf(g.A));
+            }
           }
         }
         const pct = (x: number, d: number) => (d ? `${((x / d) * 100).toFixed(0)}%` : 'n/a');
         const meanEx = ex.length ? (ex.reduce((a, b) => a + b, 0) / ex.length).toFixed(2) : 'n/a';
         console.log(
-          `${model.padEnd(15)}${String(eff).padEnd(8)}${level.padEnd(5)}` +
+          `${model.padEnd(15)}${String(eff).padEnd(8)}${level.padEnd(5)}${frame.padEnd(11)}` +
           `${pct(f, ok).padStart(10)}${pct(s, ok).padStart(8)}${pct(c, cN).padStart(12)}${meanEx.padStart(10)}${`${ok}/${n}`.padStart(8)}`,
         );
+       }
       }
     }
+  }
+
+  // ── paired comparison against the no-method baseline ──────────────────────
+  if (FRAMES.includes('none') && FRAMES.length > 1) {
+    const meanOf = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+    const base = paired['none'] ?? {};
+    console.log(`\n${'='.repeat(72)}\nPAIRED vs baseline — normalised exploitability (lower = closer to equilibrium)`);
+    console.log(`${'frame'.padEnd(12)}${'games'.padStart(6)}${'better'.padStart(8)}${'worse'.padStart(7)}${'mean Δ'.padStart(10)}${'median Δ'.padStart(11)}`);
+    for (const frame of FRAMES) {
+      if (frame === 'none') continue;
+      const arm = paired[frame] ?? {};
+      const deltas: number[] = [];
+      for (const game of Object.keys(base)) {
+        if (!arm[game]) continue;
+        deltas.push(meanOf(arm[game]) - meanOf(base[game]));   // negative = framing helped
+      }
+      if (!deltas.length) continue;
+      const sorted = [...deltas].sort((a, b) => a - b);
+      const med = sorted.length % 2
+        ? sorted[(sorted.length - 1) / 2]
+        : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+      const better = deltas.filter((d) => d < 0).length;
+      console.log(
+        `${frame.padEnd(12)}${String(deltas.length).padStart(6)}${String(better).padStart(8)}`
+        + `${String(deltas.filter((d) => d > 0).length).padStart(7)}`
+        + `${meanOf(deltas).toFixed(4).padStart(10)}${med.toFixed(4).padStart(11)}`,
+      );
+    }
+    console.log(`
+  Negative Δ means the framing moved the answer CLOSER to equilibrium than no
+  method at all. "better/worse" is the per-game sign count: with n games a
+  split near half is consistent with no effect regardless of the mean, and a
+  mean driven by one game is visible as a lopsided median.`);
   }
 })();

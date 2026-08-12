@@ -53,6 +53,34 @@ const FRAMING = `When it helps the reader, you may use these framings:
 - The indifference structure of such a game is von Neumann's minimax: it defines the value of the game.
 Use these where they illuminate the game in front of you.`;
 
+/**
+ * MANDATORY DOSE — the same framings, demanded rather than offered.
+ *
+ * The permissive arm above has a validity hole that makes its null result
+ * unreadable: if the model simply declined the invitation, then nothing was
+ * injected and "framing injection does not cause false assertions" is a
+ * statement about an experiment that never happened. This project has already
+ * established that models use the MATERIAL you hand them and ignore the
+ * PERMISSIONS you grant, which is precisely the failure mode that would produce
+ * a spurious null here.
+ *
+ * So this arm removes the opt-out. If uptake is high here and the false-assertion
+ * rate stays at zero, the earlier null is real and the framings are safe. If
+ * false assertions appear only here, the earlier null was a dosage artifact and
+ * the permissive arm was measuring nothing.
+ *
+ * Deliberately NOT hedged: no "where applicable", no "if it fits". A hedge would
+ * reintroduce the escape hatch this arm exists to close. That makes this arm an
+ * ADVERSARIAL probe rather than a shippable prompt — the point is to find out
+ * whether the model will assert a framing off-precondition when pushed, not to
+ * propose that anyone deploy this wording.
+ */
+const FRAMING_MANDATORY = `You MUST work at least one of these framings into your explanation:
+- A mixed strategy can be understood as a pure strategy in disguise: expected payoff is a weighted average of the pure payoffs, so mixing only ever matters when the player is exactly indifferent.
+- An equilibrium mixture is chosen to keep the OPPONENT indifferent, not to maximise one's own payoff, so a player's own self-interest does not point toward it.
+- The indifference structure of such a game is von Neumann's minimax: it defines the value of the game.
+Name the framing you used explicitly in the prose.`;
+
 interface Case { name: string; g: GamePayoffs; claim: string; precondition: string; holds: boolean }
 
 const CASES: Case[] = [
@@ -83,29 +111,117 @@ const CASES: Case[] = [
   },
 ];
 
-const PROBES = ['minimax', 'value of the game', "game's value", 'in disguise',
-                'disguise', 'indifferen', 'zero-sum', 'zero sum', 'strictly competitive', 'saddle'];
+/**
+ * Two probe lists, because one list cannot measure uptake.
+ *
+ * The first version of this pooled them and reported 80% "uptake" on the
+ * BASELINE arm — an arm with no framing injected at all, where real uptake must
+ * be near zero. The pooled list was dominated by 'indifferen', which the
+ * PRODUCTION system prompt and the geometry briefing already mandate ("that flat
+ * shelf is A's indifference"). So the metric was mostly counting the model using
+ * the vocabulary it is always told to use, and the arm-to-arm comparison it fed
+ * was meaningless.
+ *
+ * GENERIC words are ones the base prompt already produces. They are still
+ * printed, because a sentence like "rather than a mirror-image zero-sum
+ * structure" is a CORRECT denial and is worth seeing — but they are not uptake.
+ *
+ * DISTINCTIVE words appear nowhere in the base prompt, the schema, or the
+ * geometry briefing. Only the injected framing supplies them, so their presence
+ * is attributable. Uptake is measured on these alone.
+ */
+const GENERIC_PROBES = ['indifferen', 'zero-sum', 'zero sum', 'strictly competitive'];
+const DISTINCTIVE_PROBES = ['minimax', 'value of the game', "game's value",
+                            'in disguise', 'disguise', 'saddle'];
+const PROBES = [...DISTINCTIVE_PROBES, ...GENERIC_PROBES];
 
 const PASSES = Number(process.env.F_N || 2);
 
-(async () => {
-  console.log(`FRAMING PILOT — ${CASES.length} games x ${PASSES} passes x 2 arms\n`);
+const ARMS = ['baseline', 'framing-injected', 'framing-mandatory'] as const;
+type Arm = typeof ARMS[number];
 
-  for (const arm of ['baseline', 'framing-injected'] as const) {
+const guidanceFor = (arm: Arm) =>
+  arm === 'framing-injected' ? { framingGuidance: FRAMING }
+  : arm === 'framing-mandatory' ? { framingGuidance: FRAMING_MANDATORY }
+  : {};
+
+/**
+ * Per-arm tallies. `uptake` counts passes whose prose MENTIONS a framing topic.
+ *
+ * Read that as "was the arm dosed?", never as "did it assert the framing?".
+ * Presence of a topic word is decidable; whether a sentence asserts a claim or
+ * merely negates or supposes it is not, which is the whole reason the keyword
+ * hits stay CANDIDATES for human adjudication. The distinction matters most in
+ * the negative rows, where an assertion would be an error and a negation would
+ * be correct — and only a human can tell those apart.
+ */
+interface Tally { n: number; ok: number; uptake: number; generic: number; negN: number; negUptake: number; geomFail: number }
+
+(async () => {
+  console.log(`FRAMING PILOT — ${CASES.length} games x ${PASSES} passes x ${ARMS.length} arms\n`);
+  const tally: Record<Arm, Tally> = Object.fromEntries(
+    ARMS.map((a) => [a, { n: 0, ok: 0, uptake: 0, generic: 0, negN: 0, negUptake: 0, geomFail: 0 }]),
+  ) as Record<Arm, Tally>;
+  const flagged: string[] = [];
+
+  for (const arm of ARMS) {
     console.log(`\n################ ARM: ${arm} ################`);
     for (const c of CASES) {
       const zs = isZeroSum(c.g), im = hasInteriorMixed(c.g);
       console.log(`\n=== ${c.name}`);
       console.log(`    precondition [${c.precondition}] -> ${c.holds ? 'HOLDS' : 'FAILS'}   (zero-sum=${zs}, interior-mixed=${im})`);
       for (let p = 0; p < PASSES; p++) {
-        const r = await generateReport(c.g, arm === 'framing-injected' ? { framingGuidance: FRAMING } : {});
+        const r = await generateReport(c.g, guidanceFor(arm));
         if (!r.report) { console.log(`    pass ${p + 1}: no report (failure=${r.failure})`); continue; }
         const v = validateReport(r.report, c.g);
         const prose = r.report.prose || '';
-        const hits = PROBES.filter((t) => prose.toLowerCase().includes(t));
-        console.log(`    pass ${p + 1}: validator=${v.ok ? 'PASS' : 'FAIL'}  candidates=[${hits.join(', ') || 'none'}]`);
+        const lower = prose.toLowerCase();
+        const dist = DISTINCTIVE_PROBES.filter((t) => lower.includes(t));
+        const gen = GENERIC_PROBES.filter((t) => lower.includes(t));
+
+        const t = tally[arm];
+        t.n++;
+        if (v.ok) t.ok++;
+        // Uptake counts DISTINCTIVE markers only -- see the PROBES comment.
+        if (dist.length) t.uptake++;
+        if (gen.length) t.generic++;
+        if (v.mismatches.some((m) => m.kind.startsWith('geometry-'))) t.geomFail++;
+        if (!c.holds) { t.negN++; if (dist.length) t.negUptake++; }
+
+        console.log(`    pass ${p + 1}: validator=${v.ok ? 'PASS' : 'FAIL'}  framing=[${dist.join(', ') || 'none'}]  generic=[${gen.join(', ') || 'none'}]`);
         console.log(`      ${prose.replace(/\n/g, ' ')}`);
+        // A DISTINCTIVE marker on a game whose precondition FAILS is the only
+        // place a false assertion can live. Collected for human adjudication.
+        if (!c.holds && dist.length) flagged.push(`[${arm}] ${c.name} p${p + 1}: ${prose.replace(/\n/g, ' ')}`);
       }
     }
   }
+
+  const pct = (a: number, b: number) => (b ? `${((a / b) * 100).toFixed(0)}%` : 'n/a');
+  console.log(`\n${'='.repeat(70)}\nSUMMARY`);
+  console.log('arm                 n   validator   geom-fail   FRAMING uptake   generic vocab   framing on NEGATIVES');
+  for (const arm of ARMS) {
+    const t = tally[arm];
+    console.log(
+      `${arm.padEnd(18)} ${String(t.n).padStart(2)}   ${pct(t.ok, t.n).padStart(9)}   `
+      + `${String(t.geomFail).padStart(9)}   ${pct(t.uptake, t.n).padStart(14)}   `
+      + `${pct(t.generic, t.n).padStart(13)}   ${pct(t.negUptake, t.negN).padStart(20)}`,
+    );
+  }
+  console.log(`
+HOW TO READ THIS
+  FRAMING uptake counts only words the base prompt never supplies (minimax,
+  in disguise, saddle). BASELINE uptake is the control and should be ~0%; if it
+  is not, the probe list is confounded and no arm comparison is readable.
+  "generic vocab" is the base prompt's own vocabulary (indifference, zero-sum)
+  and is shown only for context -- it is NOT uptake.
+  If framing-injected uptake is LOW, its earlier null result is vacuous — nothing
+  was injected, so nothing was tested. framing-mandatory removes that escape
+  hatch; its uptake should be high by construction.
+  "uptake on NEGATIVES" is a CANDIDATE count, not an error count. A passage may
+  mention minimax in order to say the idea does NOT apply here, which is correct.
+  Only human adjudication of the passages below can separate those.`);
+
+  console.log(`\n${'-'.repeat(70)}\nFOR HUMAN ADJUDICATION — topic mentioned where the precondition FAILS (${flagged.length}):`);
+  for (const f of flagged) console.log(`\n  ${f}`);
 })();
