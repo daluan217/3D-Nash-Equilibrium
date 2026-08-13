@@ -252,6 +252,9 @@ export default function App() {
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDesc, setSaveDesc] = useState('');
+  /** Option names for the save dialog: typed by the user, or prefilled from an
+   *  invented scenario the user chose to keep. */
+  const [saveLabels, setSaveLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
   const [saveError, setSaveError] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
 
@@ -558,24 +561,37 @@ export default function App() {
   useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
 
   /**
-   * Carry an invented scenario into the save-game flow.
+   * Keep an invented scenario ON the game, labels and all.
    *
-   * The games API can create and delete but not update, so a scenario is kept by
-   * saving the game (again) with the story in its description. Saving the LABELS
-   * matters as much as the prose: the server treats four labels as always
-   * sufficient, whereas a short description can fall below its threshold and
-   * silently trigger a fresh invention next time — which would make the text the
-   * user just kept meaningless.
+   * The four option labels are the half that makes reuse reliable.
+   * `scenarioIsUsable` accepts four labels OR a description of at least twelve
+   * words, and only the labels are unconditionally sufficient — a terse
+   * description silently falls under the word threshold and triggers a fresh
+   * invention next time, which would make the text the user just kept a dead
+   * letter.
+   *
+   * They used to be crammed into the description as a sentence ("A chooses
+   * between X and Y…") because SavedGame had nowhere to put them. It does now,
+   * so they go in the label fields, where the UI can show them as the matrix
+   * headers too. The sentence survives only as a fallback for a suggestion that
+   * arrives with labels missing.
    */
   const useSuggestedScenario = async (sc: SuggestedScenario) => {
-    // The labels go into the description text on purpose. The server treats four
-    // labels as always sufficient to reuse a scenario, while a short description
-    // can fall under its word threshold and silently trigger a fresh invention —
-    // which would make the story the user just kept meaningless.
-    const labels = [sc.row1, sc.row2, sc.col1, sc.col2].every(Boolean)
-      ? ` A chooses between ${sc.row1} and ${sc.row2}; B chooses between ${sc.col1} and ${sc.col2}.`
-      : '';
-    const description = `${sc.description ?? ''}${labels}`.trim();
+    const hasAllLabels = [sc.row1, sc.row2, sc.col1, sc.col2].every(Boolean);
+    // Only when the labels have no field of their own to live in. With all four
+    // present they are saved structurally and the description stays prose.
+    const labelSentence = hasAllLabels
+      ? ''
+      : ` A chooses between ${sc.row1} and ${sc.row2}; B chooses between ${sc.col1} and ${sc.col2}.`;
+    const description = `${sc.description ?? ''}${
+      [sc.row1, sc.row2, sc.col1, sc.col2].some(Boolean) ? labelSentence : ''
+    }`.trim();
+    const labelFields = {
+      row1Label: sc.row1,
+      row2Label: sc.row2,
+      col1Label: sc.col1,
+      col2Label: sc.col2,
+    };
 
     // Already a saved game of this user's: update it in place, so the scenario
     // sticks to the game they have rather than spawning a duplicate.
@@ -585,12 +601,15 @@ export default function App() {
         const res = await fetch(getApiUrl(`/api/games/${existing.id}`), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-          body: JSON.stringify({ description }),
+          body: JSON.stringify({ description, ...labelFields }),
         });
         const data = await res.json();
         if (res.ok) {
           setUserCustomGames((prev) => prev.map((g) => (g.id === existing.id ? data.game : g)));
-          setLogEntries((prev) => [...prev, `✓ Scenario saved to "${existing.name}".`]);
+          setLogEntries((prev) => [
+            ...prev,
+            `✓ Scenario saved to "${existing.name}"${hasAllLabels ? ' — options renamed to match.' : '.'}`,
+          ]);
           return;
         }
         setLogEntries((prev) => [...prev, `✗ Couldn't save scenario: ${data.error ?? 'unknown error'}`]);
@@ -605,6 +624,10 @@ export default function App() {
     // existing save-as-new flow with the story prefilled.
     setSaveName(sc.name ?? '');
     setSaveDesc(description);
+    setSaveLabels({
+      row1: sc.row1 ?? '', row2: sc.row2 ?? '',
+      col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+    });
     setSaveError('');
     setIsSaveModalOpen(true);
   };
@@ -871,7 +894,11 @@ export default function App() {
         body: JSON.stringify({
           name: saveName.trim(),
           description: saveDesc.trim(),
-          payoffs
+          payoffs,
+          row1Label: saveLabels.row1.trim(),
+          row2Label: saveLabels.row2.trim(),
+          col1Label: saveLabels.col1.trim(),
+          col2Label: saveLabels.col2.trim()
         })
       });
       const data = await res.json();
@@ -881,6 +908,7 @@ export default function App() {
         setIsSaveModalOpen(false);
         setSaveName('');
         setSaveDesc('');
+        setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });
         setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
       } else {
         setSaveError(data.error || 'Failed to save game.');
@@ -1172,7 +1200,15 @@ export default function App() {
         a12: g.payoffs.a12, b12: g.payoffs.b12,
         a21: g.payoffs.a21, b21: g.payoffs.b21,
         a22: g.payoffs.a22, b22: g.payoffs.b22,
-        desc: g.description || ''
+        desc: g.description || '',
+        // Saved games carry option labels exactly like presets do. Merging them
+        // here rather than reading them separately downstream keeps ONE source
+        // of labels, so the headers above the payoff inputs and the nouns sent
+        // to the explainer can never disagree about what Row 1 is called.
+        row1Label: g.row1Label,
+        row2Label: g.row2Label,
+        col1Label: g.col1Label,
+        col2Label: g.col2Label,
       };
     });
     return merged;
@@ -1211,6 +1247,23 @@ export default function App() {
     };
     return Object.values(sc).some(Boolean) ? sc : undefined;
   }, [activePreset, mergedPresets, userCustomGames, payoffs]);
+
+  /**
+   * What to CALL each option in the UI, falling back to "Row 1" / "Col 2".
+   *
+   * Derived from scenarioForReport rather than read fresh off the preset, so it
+   * inherits that memo's matches-the-matrix gate for free: edit the payoffs away
+   * from the saved game and the headers revert to generic names in the same
+   * instant the explainer stops being told the story. Reading the labels
+   * independently would leave "Undercut" sitting above a matrix that is no
+   * longer the undercutting game.
+   */
+  const activeLabels = useMemo(() => ({
+    row1: scenarioForReport?.row1 || 'Row 1',
+    row2: scenarioForReport?.row2 || 'Row 2',
+    col1: scenarioForReport?.col1 || 'Col 1',
+    col2: scenarioForReport?.col2 || 'Col 2',
+  }), [scenarioForReport]);
 
 
   // ── Preset loader action ───────────────────────────────────────────────────
@@ -1656,6 +1709,15 @@ export default function App() {
                 <button
                   onClick={() => {
                     setSaveError('');
+                    // Prefill from whatever the current game already calls its
+                    // options, so saving a copy of a named game keeps the names.
+                    // Read from scenarioForReport, not activeLabels, because the
+                    // latter substitutes the literal "Row 1" and prefilling that
+                    // would save a placeholder as if it were a real label.
+                    setSaveLabels({
+                      row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',
+                      col1: scenarioForReport?.col1 ?? '', col2: scenarioForReport?.col2 ?? '',
+                    });
                     setIsSaveModalOpen(true);
                   }}
                   className="inline-flex items-center gap-1 text-xs font-bold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-950/40 hover:bg-accent-100 dark:hover:bg-accent-900/50 border border-accent-200/50 dark:border-accent-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
@@ -1753,11 +1815,11 @@ export default function App() {
 
             <div className="grid grid-cols-[auto_1fr_1fr] gap-3 text-center items-center">
               <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
-              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400">B: Col 1</div>
-              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400">B: Col 2</div>
+              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col1}>B: {activeLabels.col1}</div>
+              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col2}>B: {activeLabels.col2}</div>
 
               {/* Row 1 inputs */}
-              <div className="text-xs font-bold text-player-a-500 text-left pr-2">A: Row 1</div>
+              <div className="text-xs font-bold text-player-a-500 text-left pr-2 break-words" title={activeLabels.row1}>A: {activeLabels.row1}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -1802,7 +1864,7 @@ export default function App() {
               </div>
 
               {/* Row 2 inputs */}
-              <div className="text-xs font-bold text-player-a-500 text-left pr-2">A: Row 2</div>
+              <div className="text-xs font-bold text-player-a-500 text-left pr-2 break-words" title={activeLabels.row2}>A: {activeLabels.row2}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -2881,6 +2943,41 @@ export default function App() {
                   onChange={(e) => setSaveDesc(e.target.value)}
                   maxLength={250}
                 />
+              </div>
+
+              {/* Option names. Optional, but the most valuable thing a user can
+                  fill in: four labels are enough on their own for the explainer
+                  to reuse this game's story instead of inventing a new one, and
+                  they replace "Row 1"/"Col 2" in the matrix headers. */}
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
+                  Option Names <span className="font-normal text-slate-400 dark:text-slate-500">(optional)</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ['row1', "A's Row 1", 'e.g. Undercut'],
+                    ['row2', "A's Row 2", 'e.g. Hold price'],
+                    ['col1', "B's Col 1", 'e.g. Match'],
+                    ['col2', "B's Col 2", 'e.g. Ignore'],
+                  ] as const).map(([key, label, placeholder]) => (
+                    <div key={key}>
+                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                        {label}
+                      </span>
+                      <input
+                        type="text"
+                        className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                        placeholder={placeholder}
+                        value={saveLabels[key]}
+                        onChange={(e) => setSaveLabels((prev) => ({ ...prev, [key]: e.target.value }))}
+                        maxLength={40}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                  Naming all four lets the AI explainer reuse this scenario instead of inventing a new one.
+                </p>
               </div>
 
               <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
