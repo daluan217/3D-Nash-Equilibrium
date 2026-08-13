@@ -305,11 +305,15 @@ const LABEL_MAX = 40;
  * other user-supplied string here: these are rendered in the UI and fed to the
  * model prompt, so they are trimmed and length-capped rather than trusted.
  */
-function cleanLabels(body: any): Partial<Pick<SavedGame, "row1Label" | "row2Label" | "col1Label" | "col2Label">> {
+function cleanLabels(body: any, allowClear = false): Partial<Pick<SavedGame, "row1Label" | "row2Label" | "col1Label" | "col2Label">> {
   const out: Record<string, string> = {};
   for (const key of ["row1Label", "row2Label", "col1Label", "col2Label"] as const) {
     const v = cleanText(body?.[key], LABEL_MAX);
-    if (v) out[key] = v;
+    // Without allowClear an empty value means "not supplied", so a caller
+    // updating only the description cannot blank the labels by omission. The
+    // edit dialog is the opposite case: it sends every field every time, and a
+    // user who deletes a wrong label means it. Only that caller opts in.
+    if (v || (allowClear && key in (body ?? {}))) out[key] = v;
   }
   return out;
 }
@@ -1430,9 +1434,12 @@ async function startServer() {
       return res.status(403).json({ error: "You are not authorized to edit this game." });
     }
 
+    // The edit dialog sends every field, so it opts into clearing; the
+    // save-this-scenario path sends only what it means to change.
+    const allowClear = req.body?.allowClear === true;
     const nextName = cleanText(req.body?.name, 80);
     const nextDescription = cleanText(req.body?.description, 800);
-    const nextLabels = cleanLabels(req.body);
+    const nextLabels = cleanLabels(req.body, allowClear);
     // Labels count as an update in their own right. Keeping an invented
     // scenario means writing its four option names onto the game, and that has
     // to be a valid PATCH on its own — otherwise a scenario whose description
@@ -1442,7 +1449,10 @@ async function startServer() {
       return res.status(400).json({ error: "Nothing to update." });
     }
     if (nextName) game.name = nextName;
-    if (nextDescription) game.description = nextDescription;
+    // Description follows the same rule as the labels: normally an empty value
+    // means "not supplied", but an edit that deliberately empties the box must
+    // be able to remove the text.
+    if (nextDescription || (allowClear && "description" in req.body)) game.description = nextDescription;
     Object.assign(game, nextLabels);
     saveDB(db);
 
