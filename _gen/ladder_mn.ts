@@ -51,6 +51,49 @@ function uniqueInteriorNE(A: Mat): number[] | null {
   return e.x;
 }
 
+/** The unique equilibrium of a zero-sum A whatever its support, or null. */
+function uniqueNEAnySupport(A: Mat): { x: number[]; supX: number; supY: number } | null {
+  const eq = enumerateNE(zeroSumOf(A));
+  if (eq.length !== 1) return null;
+  const e = eq[0];
+  return { x: e.x, supX: e.supportX.length, supY: e.supportY.length };
+}
+
+/**
+ * WHICH equilibria the game set contains — the difficulty axis that size is not.
+ *
+ *   'full'    (default) completely mixed: every action carries positive weight.
+ *   'partial'           unique, but at least one action sits OUT of the support.
+ *
+ * Full support is the case with a closed-form route. If every row is known to be
+ * in the support, the answer is the solution of one linear system — m equations
+ * saying every row earns the same, no search anywhere. Growing m only makes that
+ * system bigger, which is why 4x4, 5x5 and 6x6 all came back at 100%: the task
+ * never changed KIND, only size.
+ *
+ * Partial support removes the closed form. The model must first work out which
+ * subset of actions is in the support — a 2^m search — and only then solve the
+ * smaller system. Same board size, same prompt, same scoring; the one thing that
+ * changes is whether a search is required.
+ *
+ * Note this makes the games no less well defined: uniqueness is still enforced,
+ * so there is exactly one correct answer to compare against.
+ */
+const SUPPORT = process.env.L_SUPPORT === 'partial' ? 'partial' : 'full';
+
+/** Generation filter: does this matrix belong in the set under SUPPORT? */
+function acceptGame(A: Mat): number[] | null {
+  if (SUPPORT !== 'partial') return uniqueInteriorNE(A);
+  const u = uniqueNEAnySupport(A);
+  if (!u) return null;
+  if (u.supX === A.length && u.supY === A[0].length) return null;  // that is the full case
+  // A support of one is a saddle point: read the value straight off the matrix,
+  // no mixing at all. Requiring two or more keeps this a genuine mixing problem
+  // whose support has to be FOUND, rather than a lookup.
+  if (u.supX < 2 || u.supY < 2) return null;
+  return u.x;
+}
+
 interface Game { name: string; A: Mat; xStar: number[]; value: number }
 
 /**
@@ -83,8 +126,8 @@ function buildSet(): Game[] {
 
   for (let guard = 0; guard < 500000 && games.length < COUNT; guard++) {
     const A: Mat = Array.from({ length: SIZE }, () => Array.from({ length: SIZE }, ri));
-    const x = uniqueInteriorNE(A);
-    if (!x) continue;                                   // must be unique + fully mixed
+    const x = acceptGame(A);
+    if (!x) continue;                                   // unique, and matching SUPPORT
     games.push({ name: `mn-${games.length + 1}`, A, xStar: x, value: guaranteed(A, x) });
   }
   return games;
@@ -313,7 +356,11 @@ async function askOne(model: string, level: Level, g: Game, reasoning: Reasoning
       // Consistency: is the answer the equilibrium of the matrix IT extracted?
       // Undefined when its own matrix has no unique interior equilibrium —
       // there is no coordinate for the answer to agree with.
-      const own = uniqueInteriorNE(M);
+      // Under 'partial' the model's own matrix is expected to have a partially
+      // supported equilibrium, so requiring an INTERIOR one would report null for
+      // nearly every game. Full mode keeps the original test untouched, so its
+      // consistency column stays comparable with every run already banked.
+      const own = SUPPORT === 'partial' ? uniqueNEAnySupport(M)?.x ?? null : uniqueInteriorNE(M);
       const consistentOk = own ? xn.every((v, i) => Math.abs(v - own[i]) <= 0.02) : null;
 
       const dev = xn.map((v, i) => v - g.xStar[i]);
@@ -335,7 +382,7 @@ const PASSES = Number(process.env.L_N || 2);
   if (games.length < COUNT) { console.error(`only found ${games.length}/${COUNT} qualifying games`); }
 
   if (process.env.L_PRINT) {
-    console.log(`GAMES (${SIZE}x${SIZE}, zero-sum, unique completely-mixed equilibrium):`);
+    console.log(`GAMES (${SIZE}x${SIZE}, zero-sum, unique ${SUPPORT === 'partial' ? 'PARTIALLY-supported' : 'completely-mixed'} equilibrium):`);
     for (const g of games) {
       console.log(`  ${g.name.padEnd(6)} A=${JSON.stringify(g.A)}`);
       console.log(`         x*=[${g.xStar.map((v) => v.toFixed(4)).join(', ')}]  value=${g.value.toFixed(3)}  range=${rangeOf(g.A)}`);
@@ -347,7 +394,7 @@ const PASSES = Number(process.env.L_N || 2);
     return;
   }
 
-  console.log(`ABSTRACTION LADDER ${SIZE}x${SIZE}   games=${games.length}  passes=${PASSES}  levels=${LEVELS.join(',')}  efforts=${EFFORTS.join(',')}\n`);
+  console.log(`ABSTRACTION LADDER ${SIZE}x${SIZE}   games=${games.length}  passes=${PASSES}  levels=${LEVELS.join(',')}  efforts=${EFFORTS.join(',')}  support=${SUPPORT}  maxtok=${MAX_TOKENS}\n`);
   console.log(`${'model'.padEnd(15)}${'effort'.padEnd(8)}${'lvl'.padEnd(5)}${'frame'.padEnd(11)}${'formalize'.padStart(10)}${'solve'.padStart(8)}${'consistent'.padStart(12)}${'exploit'.padStart(10)}${'parsed'.padStart(8)}`);
 
   /**
