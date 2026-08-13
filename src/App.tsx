@@ -37,6 +37,7 @@ import {
   LogOut,
   Plus,
   Trash2,
+  Pencil,
   Key,
   Mail,
   Info,
@@ -255,6 +256,17 @@ export default function App() {
   /** Option names for the save dialog: typed by the user, or prefilled from an
    *  invented scenario the user chose to keep. */
   const [saveLabels, setSaveLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
+
+  // Edit dialog for an already-saved game. Separate state from the save dialog
+  // rather than shared: the two are open in different situations and reusing
+  // one set of fields would let a half-typed new game leak into an edit.
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editGameId, setEditGameId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editLabels, setEditLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
+  const [editError, setEditError] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
 
@@ -623,14 +635,23 @@ export default function App() {
         const res = await fetch(getApiUrl(`/api/games/${existing.id}`), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-          body: JSON.stringify({ description, ...labelFields }),
+          // `name` was missing here, so accepting a suggestion on an ALREADY
+          // SAVED game kept its story and its option labels but silently threw
+          // away the title the model proposed — the game stayed "Untitled" while
+          // its description talked about couriers. The save-as-new path had
+          // always used sc.name, so the two routes disagreed about what
+          // "keep this scenario" means. They now save the same four things.
+          body: JSON.stringify({ name: sc.name, description, ...labelFields }),
         });
         const data = await res.json();
         if (res.ok) {
           setUserCustomGames((prev) => prev.map((g) => (g.id === existing.id ? data.game : g)));
+          const renamed = sc.name && sc.name !== existing.name;
           setLogEntries((prev) => [
             ...prev,
-            `✓ Scenario saved to "${existing.name}"${hasAllLabels ? ' — options renamed to match.' : '.'}`,
+            `✓ Scenario saved to "${data.game.name}"`
+            + `${renamed ? ` (renamed from "${existing.name}")` : ''}`
+            + `${hasAllLabels ? ' — options renamed to match.' : '.'}`,
           ]);
           return;
         }
@@ -874,6 +895,68 @@ export default function App() {
     setUserCustomGames([]);
     setActivePreset('bos');
     setLogEntries(['Logged out successfully.']);
+  };
+
+  /**
+   * Open the edit dialog for a saved game, prefilled with what it already says.
+   *
+   * Until now a saved game was write-once: the only way to fix a name, a
+   * description or an option label was to delete the game and save it again,
+   * which loses the id every explanation is keyed to.
+   */
+  const openEditGame = (game: any) => {
+    setEditGameId(game.id);
+    setEditName(game.name ?? '');
+    setEditDesc(game.description ?? '');
+    setEditLabels({
+      row1: game.row1Label ?? '', row2: game.row2Label ?? '',
+      col1: game.col1Label ?? '', col2: game.col2Label ?? '',
+    });
+    setEditError('');
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditGameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editGameId || !authToken) return;
+    if (!editName.trim()) { setEditError('Please enter a game name.'); return; }
+    setEditError('');
+    setEditLoading(true);
+    try {
+      const res = await fetch(getApiUrl(`/api/games/${editGameId}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({
+          name: editName.trim(),
+          description: editDesc.trim(),
+          // Sent even when blank so CLEARING a label is possible. The server
+          // ignores empty strings on create, but an edit dialog that cannot
+          // remove a wrong label is only half an edit dialog — see the
+          // allowClear flag on the PATCH route.
+          row1Label: editLabels.row1.trim(),
+          row2Label: editLabels.row2.trim(),
+          col1Label: editLabels.col1.trim(),
+          col2Label: editLabels.col2.trim(),
+          allowClear: true,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUserCustomGames((prev) => prev.map((g) => (g.id === editGameId ? data.game : g)));
+        setIsEditModalOpen(false);
+        setLogEntries((prev) => [...prev, `✓ Updated "${data.game.name}".`]);
+        // The explanation was written about the OLD story, so it no longer
+        // describes what the panel now says. Same reasoning as clearing it when
+        // the payoffs change.
+        setLlmEnvelope(null);
+      } else {
+        setEditError(data.error || 'Failed to update game.');
+      }
+    } catch {
+      setEditError('Network error. Failed to update game.');
+    } finally {
+      setEditLoading(false);
+    }
   };
 
   const handleDeleteGame = async (gameId: string) => {
@@ -1786,6 +1869,20 @@ export default function App() {
                         title={`${game.name} - ${game.description}`}
                       >
                         {game.name}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditGame(game);
+                        }}
+                        className={`p-1 rounded-md transition-colors cursor-pointer ${isSelected
+                            ? 'text-accent-100 hover:text-white hover:bg-accent-600'
+                            : 'text-slate-400 hover:text-accent-600 dark:text-slate-500 dark:hover:text-accent-400 hover:bg-accent-50 dark:hover:bg-accent-950/40'
+                          }`}
+                        title="Edit name, description and option names"
+                        aria-label={`Edit ${game.name}`}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={(e) => {
@@ -2894,6 +2991,121 @@ export default function App() {
       )}
 
       {/* ── Save Custom Game Modal ── */}
+      {/* Edit an already-saved game: name, description, option names.
+          Payoffs are deliberately absent — the server refuses to update them
+          here, because changing the numbers silently invalidates the story
+          written about them, which is the exact mismatch the scenario feature
+          exists to prevent. Editing a matrix stays a save-as-new operation. */}
+      {isEditModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
+          onClick={() => { setIsEditModalOpen(false); setEditError(''); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Edit saved game"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-accent-500" />
+                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Edit Game</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setIsEditModalOpen(false); setEditError(''); }}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs cursor-pointer"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleEditGameSubmit} className="flex flex-col gap-4">
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  maxLength={40}
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
+                <textarea
+                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
+                  placeholder="What is this game about?"
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  maxLength={250}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
+                  Option Names <span className="font-normal text-slate-400 dark:text-slate-500">(optional)</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ['row1', "A's Row 1", 'e.g. Undercut'],
+                    ['row2', "A's Row 2", 'e.g. Hold price'],
+                    ['col1', "B's Col 1", 'e.g. Match'],
+                    ['col2', "B's Col 2", 'e.g. Ignore'],
+                  ] as const).map(([key, label, placeholder]) => (
+                    <div key={key}>
+                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                        {label}
+                      </span>
+                      <input
+                        type="text"
+                        className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
+                        placeholder={placeholder}
+                        value={editLabels[key]}
+                        onChange={(e) => setEditLabels((prev) => ({ ...prev, [key]: e.target.value }))}
+                        maxLength={40}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                  Naming all four lets the AI explainer reuse this scenario instead of inventing a new one.
+                  Clear a box to remove that name.
+                </p>
+              </div>
+
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 -mt-1">
+                To change the payoff numbers, edit them on the board and save as a new game — the
+                description here would no longer match.
+              </p>
+
+              {editError && <p className="text-xs text-danger-500 font-semibold">{editError}</p>}
+
+              <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
+                <button
+                  type="button"
+                  onClick={() => { setIsEditModalOpen(false); setEditError(''); }}
+                  className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editLoading}
+                  className="bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {editLoading ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {isSaveModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
