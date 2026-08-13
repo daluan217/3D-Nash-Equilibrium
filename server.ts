@@ -40,6 +40,20 @@ interface SavedGame {
   description: string;
   payoffs: GamePayoffs;
   createdAt: string;
+  /**
+   * What this game's four options are actually called.
+   *
+   * Presets have carried these since the beginning (`row1Label` and friends in
+   * PRESETS); saved games could not, so a custom game had no way to say that
+   * Row 1 means "Undercut" and Col 2 means "Hold price". The explainer decides
+   * whether to reuse a scenario or invent a fresh one by asking whether four
+   * labels are present, so a game that cannot store labels was condemned to a
+   * new invented story on every single explanation.
+   */
+  row1Label?: string;
+  row2Label?: string;
+  col1Label?: string;
+  col2Label?: string;
 }
 
 interface User {
@@ -276,6 +290,28 @@ function getAuthUser(req: express.Request): User | null {
 
 function cleanText(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+/** How long an option label may be. Short on purpose: these render as column
+ *  and row headers next to the payoff inputs, and a sentence would break the
+ *  grid. Long enough for "Advertise heavily", short enough to stay a label. */
+const LABEL_MAX = 40;
+
+/**
+ * The four option labels off a request body, cleaned.
+ *
+ * Returns only the keys that were actually supplied, so a caller updating just
+ * the description does not blank the labels by omission. Same clamping as every
+ * other user-supplied string here: these are rendered in the UI and fed to the
+ * model prompt, so they are trimmed and length-capped rather than trusted.
+ */
+function cleanLabels(body: any): Partial<Pick<SavedGame, "row1Label" | "row2Label" | "col1Label" | "col2Label">> {
+  const out: Record<string, string> = {};
+  for (const key of ["row1Label", "row2Label", "col1Label", "col2Label"] as const) {
+    const v = cleanText(body?.[key], LABEL_MAX);
+    if (v) out[key] = v;
+  }
+  return out;
 }
 
 /**
@@ -1356,7 +1392,8 @@ async function startServer() {
       name: cleanName,
       description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
       payoffs: cleanMatrix,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...cleanLabels(req.body)
     };
 
     db.games.push(newGame);
@@ -1369,7 +1406,7 @@ async function startServer() {
     });
   });
 
-  // Update a Custom Game's story (name / description).
+  // Update a Custom Game's story (name / description / option labels).
   //
   // Exists so an invented scenario can be kept ON the game the user already
   // saved. Without it the only way to retain a scenario was to save a second
@@ -1395,11 +1432,18 @@ async function startServer() {
 
     const nextName = cleanText(req.body?.name, 80);
     const nextDescription = cleanText(req.body?.description, 800);
-    if (!nextName && !nextDescription) {
+    const nextLabels = cleanLabels(req.body);
+    // Labels count as an update in their own right. Keeping an invented
+    // scenario means writing its four option names onto the game, and that has
+    // to be a valid PATCH on its own — otherwise a scenario whose description
+    // came back empty would be rejected as "nothing to update" and the labels
+    // would be lost with it.
+    if (!nextName && !nextDescription && Object.keys(nextLabels).length === 0) {
       return res.status(400).json({ error: "Nothing to update." });
     }
     if (nextName) game.name = nextName;
     if (nextDescription) game.description = nextDescription;
+    Object.assign(game, nextLabels);
     saveDB(db);
 
     res.json({ success: true, message: "Game updated.", game });

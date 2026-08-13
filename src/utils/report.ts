@@ -221,7 +221,10 @@ function scenarioBlock(sc?: Scenario): string {
     if (sc.col1 && sc.col2) parts.push(`B's two options are "${sc.col1}" (Col 1) and "${sc.col2}" (Col 2).`);
     parts.push(
       'Use these names in the prose where they read more naturally than "Row 1" and "Col 2".'
-      + ' Do NOT invent a different story, and do not fill suggestedScenario.',
+      + ' Do NOT invent a different story, and do not fill suggestedScenario.'
+      + ' Explain this scenario in your own words rather than quoting the description'
+      + ' back — the reader has already seen it, and what they want from you is the'
+      + ' equilibrium told in these terms, not the setup repeated.',
     );
     return parts.join(' ');
   }
