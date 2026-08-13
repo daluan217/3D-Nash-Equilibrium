@@ -46,6 +46,18 @@ export interface Geometry {
   zeroSum: boolean;
   /** a+b is the same constant in every cell — a mirror up to a vertical offset. */
   constantSum: boolean;
+  /**
+   * Is the minimax / "value of the game" framing available at all?
+   *
+   * Zero-sum is the textbook precondition; constant-sum qualifies because it is
+   * zero-sum after an affine shift, which moves the value without changing the
+   * strategies. Anything else has no single value to be the minimax OF.
+   */
+  minimaxApplies: boolean;
+  /** A has a row that beats their other row against every column B can play. */
+  dominantRowA: boolean;
+  /** B has a column that beats their other column against every row A can play. */
+  dominantColB: boolean;
 }
 
 const EPS = 1e-9;
@@ -75,6 +87,19 @@ export function describeGeometry(g: GamePayoffs): Geometry {
   const zeroSum = sums.every((s) => Math.abs(s) < EPS);
   const constantSum = sums.every((s) => Math.abs(s - sums[0]) < EPS);
 
+  // STRICT dominance only. With weak dominance a tie in one column would count,
+  // and "Row 1 is always at least as good" is a materially weaker statement than
+  // the one the prose makes when it says a strategy dominates. Keeping it strict
+  // means the check fires only on claims that are unambiguously wrong.
+  const dominantRowA =
+    (g.a11 > g.a21 + EPS && g.a12 > g.a22 + EPS) ||
+    (g.a21 > g.a11 + EPS && g.a22 > g.a12 + EPS);
+  // B compares COLUMNS, so the pairs are (b11 vs b12) and (b21 vs b22) — B's own
+  // payoffs, held against each of A's rows.
+  const dominantColB =
+    (g.b11 > g.b12 + EPS && g.b21 > g.b22 + EPS) ||
+    (g.b12 > g.b11 + EPS && g.b22 > g.b21 + EPS);
+
   return {
     twistA,
     twistB,
@@ -85,6 +110,9 @@ export function describeGeometry(g: GamePayoffs): Geometry {
     hasInteriorFlatSpot: inUnit(xStar) && inUnit(yStar),
     zeroSum,
     constantSum,
+    minimaxApplies: zeroSum || constantSum,
+    dominantRowA,
+    dominantColB,
   };
 }
 
@@ -145,6 +173,25 @@ export function geometryBriefing(g: GamePayoffs): string {
     geo.hasInteriorFlatSpot
       ? `  Both surfaces are level at the same interior point (x = ${rw(geo.xStar)}, y = ${rw(geo.yStar)}) — the joint flat spot, which is the mixed equilibrium.`
       : `  There is NO interior joint flat spot. The equilibrium sits on an edge or corner of the square, where a player is pinned to one action rather than balanced between two.`,
+  );
+
+  // MINIMAX AND DOMINANCE. Stated here rather than left to the model's judgement
+  // for the reason this whole file exists: an explainer that was merely PERMITTED
+  // to use a framing ignored it entirely (0% uptake in the framing pilot), while
+  // one handed a framing under instruction asserted von Neumann's minimax about a
+  // game that was not zero-sum. Both facts are one comparison away from the
+  // matrix, so both are supplied and both are checked.
+  lines.push(
+    geo.minimaxApplies
+      ? `  This game is ${geo.zeroSum ? 'zero-sum' : 'constant-sum'}, so it HAS a value in von Neumann's sense and the minimax framing applies.`
+      : `  This game is NOT zero-sum or constant-sum, so there is NO single "value of the game" and the minimax framing does NOT apply. Do not call the equilibrium a minimax value.`,
+  );
+
+  const dom = [geo.dominantRowA ? 'A' : null, geo.dominantColB ? 'B' : null].filter(Boolean);
+  lines.push(
+    dom.length
+      ? `  Dominant strategy present for ${dom.join(' and ')} — one option beats the other whatever the opponent does.`
+      : `  NEITHER player has a dominant strategy: for each player, which option is better depends on what the opponent does. Do not claim one dominates.`,
   );
 
   // WHO AUTHORS WHOSE INDIFFERENCE. This is a fact, not a flourish: x* is

@@ -111,6 +111,7 @@ const REPORT_SCHEMA: Record<string, unknown> = {
       required: [
         'surfacesInteract', 'opponentSurfaceIsMirror',
         'hasFlatShelfForA', 'equilibriumIsInteriorFlatSpot',
+        'invokesMinimax', 'claimsDominantStrategy',
       ],
       description:
         'The geometric facts your prose relies on, restated as booleans. Copy ' +
@@ -132,6 +133,16 @@ const REPORT_SCHEMA: Record<string, unknown> = {
         equilibriumIsInteriorFlatSpot: {
           type: 'boolean',
           description: 'True when both surfaces are level at the same interior point.',
+        },
+        invokesMinimax: {
+          type: 'boolean',
+          description:
+            'True if your prose calls the equilibrium a minimax outcome or "the value of the game".',
+        },
+        claimsDominantStrategy: {
+          type: 'boolean',
+          description:
+            'True if your prose says a player has an option that is better whatever the opponent does.',
         },
       },
     },
