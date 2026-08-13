@@ -94,7 +94,21 @@ function buildSet(): Game[] {
 
 type Level = 'L0' | 'L1' | 'L2' | 'L3' | 'L4';
 
-const ROADS = ['North', 'Central', 'South', 'East', 'West'];
+/**
+ * Route names for the L2+ scenario, one per row and per column.
+ *
+ * APPEND ONLY. `ROADS.slice(0, m)` means the first five entries are what every
+ * 3x3/4x4/5x5 run already used; reordering or renaming them would silently
+ * change prompts that have already been measured, and cross-size comparison
+ * would be comparing two instruments.
+ *
+ * The list must be at least as long as the largest SIZE. It held exactly five
+ * names, so at 6x6 `roads[5]` was undefined and the scenario rendered "Send
+ * undefined while the checkpoint is undefined" -- a broken prompt that would
+ * have read as the model cracking at 6x6. Same class of bug as the hardcoded
+ * three-row JSON example noted below.
+ */
+const ROADS = ['North', 'Central', 'South', 'East', 'West', 'Ridge', 'Hollow', 'Marsh'];
 
 /**
  * Fee + settlement summing to the payoff, so L3 requires real arithmetic.
