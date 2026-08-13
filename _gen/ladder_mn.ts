@@ -321,6 +321,29 @@ interface Row {
   x?: number[];
   /** Per-component deviation from x*, for diagnosing tolerance-vs-capability. */
   dev?: number[];
+  /**
+   * Tokens the model actually spent THINKING, and whether the budget bound.
+   *
+   * providers.ts tries each request shape with `reasoning_effort` and then, as a
+   * fallback, the same shape WITHOUT it — so a deployment that rejects the
+   * parameter succeeds silently as a non-thinking call while the log still says
+   * effort=high. That is the confound behind this study's second retracted
+   * ranking, and providers.ts:98 says outright to "check usage.reasoningTokens
+   * > 0 to confirm thinking actually happened rather than assuming it did."
+   *
+   * This harness did not record it, so for every cell already published the
+   * check was UNVERIFIED rather than verified — confirming it afterwards needed
+   * a separate probe. Recording it per row makes an effort=high cell that never
+   * thought visible in its own log.
+   *
+   * `capBound` is the neighbouring failure: thinking that runs into
+   * MAX_TOKENS returns nothing on this stack, so a cell can read as a
+   * capability cliff when it was the budget. Cheap to record, and it is the
+   * defect that already faked a 4x4 cliff once.
+   */
+  reasoningTokens?: number;
+  outputTokens?: number;
+  capBound?: boolean;
 }
 
 async function askOne(model: string, level: Level, g: Game, reasoning: ReasoningEffort | undefined, frame: Frame = 'none'): Promise<Row> {
@@ -333,21 +356,29 @@ async function askOne(model: string, level: Level, g: Game, reasoning: Reasoning
       schema: schemaFor(m, n), maxOutputTokens: MAX_TOKENS, reasoning,
     });
     if (r.failure === 'rate-limited') { await new Promise((z) => setTimeout(z, 1500 * 2 ** attempt)); continue; }
-    if (!r.text) return miss;
+    // Attached to EVERY return below, including the failures. A row that did not
+    // parse is exactly the row where you need to know whether the budget bound.
+    const use = {
+      reasoningTokens: r.usage?.reasoningTokens ?? 0,
+      outputTokens: r.usage?.outputTokens ?? 0,
+      capBound: /length|max_tokens/i.test(r.stopReason ?? '')
+        || (r.usage?.outputTokens ?? 0) >= MAX_TOKENS,
+    };
+    if (!r.text) return { ...miss, ...use };
     try {
       const o = JSON.parse(r.text);
       const M: Mat = (o.payoffs ?? []).map((row: unknown[]) => row.map(Number));
       const xs = (o.strategy ?? []).map(parseProb);
       const shapeOk = M.length === m && M.every((row) => row.length === n && row.every(Number.isFinite));
-      if (!shapeOk || xs.length !== m || xs.some((v: number | null) => v === null)) return miss;
+      if (!shapeOk || xs.length !== m || xs.some((v: number | null) => v === null)) return { ...miss, ...use };
 
       const x = xs as number[];
       const total = x.reduce((a, b) => a + b, 0);
       // Renormalise only for rounding drift; a genuinely non-normalised answer
       // is a wrong answer, not a formatting quirk.
-      if (!(total > 0.98 && total < 1.02)) return { ...miss, parsed: true };
+      if (!(total > 0.98 && total < 1.02)) return { ...miss, ...use, parsed: true };
       const xn = x.map((v) => v / total);
-      if (xn.some((v) => v < -1e-6)) return { ...miss, parsed: true };
+      if (xn.some((v) => v < -1e-6)) return { ...miss, ...use, parsed: true };
 
       const formalOk = M.every((row, i) => row.every((v, j) => v === g.A[i][j]));
       const solutionOk = xn.every((v, i) => Math.abs(v - g.xStar[i]) <= 0.02);
@@ -364,8 +395,8 @@ async function askOne(model: string, level: Level, g: Game, reasoning: Reasoning
       const consistentOk = own ? xn.every((v, i) => Math.abs(v - own[i]) <= 0.02) : null;
 
       const dev = xn.map((v, i) => v - g.xStar[i]);
-      return { parsed: true, formalOk, solutionOk, consistentOk, exploit, x: xn, dev };
-    } catch { return miss; }
+      return { parsed: true, formalOk, solutionOk, consistentOk, exploit, x: xn, dev, ...use };
+    } catch { return { ...miss, ...use }; }
   }
   return miss;
 }
@@ -395,7 +426,7 @@ const PASSES = Number(process.env.L_N || 2);
   }
 
   console.log(`ABSTRACTION LADDER ${SIZE}x${SIZE}   games=${games.length}  passes=${PASSES}  levels=${LEVELS.join(',')}  efforts=${EFFORTS.join(',')}  support=${SUPPORT}  maxtok=${MAX_TOKENS}\n`);
-  console.log(`${'model'.padEnd(15)}${'effort'.padEnd(8)}${'lvl'.padEnd(5)}${'frame'.padEnd(11)}${'formalize'.padStart(10)}${'solve'.padStart(8)}${'consistent'.padStart(12)}${'exploit'.padStart(10)}${'parsed'.padStart(8)}`);
+  console.log(`${'model'.padEnd(15)}${'effort'.padEnd(8)}${'lvl'.padEnd(5)}${'frame'.padEnd(11)}${'formalize'.padStart(10)}${'solve'.padStart(8)}${'consistent'.padStart(12)}${'exploit'.padStart(10)}${'parsed'.padStart(8)}${'think'.padStart(9)}`);
 
   /**
    * Per-(frame, game) mean exploitability, for the PAIRED comparison below.
@@ -413,13 +444,22 @@ const PASSES = Number(process.env.L_N || 2);
        for (const frame of FRAMES) {
         let f = 0, s = 0, c = 0, cN = 0, ok = 0, n = 0;
         const ex: number[] = [];
+        // Thinking actually spent, and whether the budget bound. Aggregated so a
+        // cell that never reasoned, or one that ran into the cap, is visible in
+        // its own summary line instead of needing a separate probe afterwards.
+        const think: number[] = [];
+        let capHits = 0;
         for (const g of games) {
           for (let p = 0; p < PASSES; p++) {
             const r = await askOne(model, level, g, eff, frame);
             n++;
             if (process.env.L_DETAIL) {
               if (!r.parsed) {
-                console.log(`    ${g.name.padEnd(6)} p${p + 1}  UNPARSEABLE`);
+                console.log(
+                  `    ${g.name.padEnd(6)} p${p + 1}  UNPARSEABLE` +
+                  `  think=${r.reasoningTokens ?? '?'}  out=${r.outputTokens ?? '?'}` +
+                  `${r.capBound ? '  CAP-BOUND (budget, not capability)' : '  cap not bound'}`,
+                );
               } else {
                 const worst = Math.max(...(r.dev ?? [0]).map(Math.abs));
                 console.log(
@@ -427,10 +467,15 @@ const PASSES = Number(process.env.L_N || 2);
                   `  x=[${(r.x ?? []).map((v) => v.toFixed(4)).join(', ')}]` +
                   `  x*=[${g.xStar.map((v) => v.toFixed(4)).join(', ')}]` +
                   `  maxDev=${worst.toFixed(4)}  exploit=${(r.exploit ?? 0).toFixed(3)}` +
-                  `  formalize=${r.formalOk ? 'ok' : 'WRONG'}`,
+                  `  formalize=${r.formalOk ? 'ok' : 'WRONG'}` +
+                  `  think=${r.reasoningTokens ?? '?'}${r.capBound ? ' CAP-BOUND' : ''}`,
                 );
               }
             }
+            // Recorded for EVERY call, including unparsed ones: an unparsed row
+            // is exactly where the cap-bound question matters most.
+            if (r.reasoningTokens !== undefined) think.push(r.reasoningTokens);
+            if (r.capBound) capHits++;
             if (!r.parsed) continue;
             ok++;
             if (r.formalOk) f++;
@@ -447,9 +492,17 @@ const PASSES = Number(process.env.L_N || 2);
         }
         const pct = (x: number, d: number) => (d ? `${((x / d) * 100).toFixed(0)}%` : 'n/a');
         const meanEx = ex.length ? (ex.reduce((a, b) => a + b, 0) / ex.length).toFixed(2) : 'n/a';
+        const meanThinkN = think.length ? think.reduce((a, b) => a + b, 0) / think.length : 0;
+        const meanThink = think.length ? String(Math.round(meanThinkN)) : 'n/a';
+        const thoughtNothing = eff !== 'none' && think.length > 0 && meanThinkN === 0;
         console.log(
           `${model.padEnd(15)}${String(eff).padEnd(8)}${level.padEnd(5)}${frame.padEnd(11)}` +
-          `${pct(f, ok).padStart(10)}${pct(s, ok).padStart(8)}${pct(c, cN).padStart(12)}${meanEx.padStart(10)}${`${ok}/${n}`.padStart(8)}`,
+          `${pct(f, ok).padStart(10)}${pct(s, ok).padStart(8)}${pct(c, cN).padStart(12)}${meanEx.padStart(10)}${`${ok}/${n}`.padStart(8)}` +
+          // A cell claiming effort=high with mean think 0 did NOT think: providers.ts
+          // falls back to the same request shape without reasoning_effort when a
+          // deployment rejects it, and the run label would still say high.
+          `${meanThink.padStart(9)}${capHits ? `  CAP-BOUND x${capHits}` : ''}` +
+          `${thoughtNothing ? '  <-- effort requested but NO thinking recorded' : ''}`,
         );
        }
       }
