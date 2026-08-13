@@ -25,3 +25,4 @@ CODEX.md
 .claude/
 .playwright-mcp/
 ensemble/
+_gen/exemplars/*.json
