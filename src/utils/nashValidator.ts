@@ -230,10 +230,42 @@ function checkGeometry(
       yes: 'the equilibrium is an interior joint flat spot',
       no: 'the equilibrium sits on an edge or corner',
     },
+    {
+      // The hole this check exists to close was observed, not hypothesised: a
+      // report asserted "the mixed-strategy equilibrium is von Neumann's minimax
+      // logic" about a game that is not zero-sum, and passed every other check at
+      // 100% because each NUMBER in it was correct. Minimax is a claim about the
+      // game's STRUCTURE, and structure is exactly what the other checks ignore.
+      kind: 'geometry-bad-minimax',
+      claimed: claims.invokesMinimax,
+      actual: geo.minimaxApplies,
+      yes: 'the minimax / value-of-the-game framing applies',
+      no: 'the game is not constant-sum, so it has no single value to be a minimax of',
+    },
+    {
+      kind: 'geometry-bad-dominance',
+      claimed: claims.claimsDominantStrategy,
+      actual: geo.dominantRowA || geo.dominantColB,
+      yes: 'some player has a dominant strategy',
+      no: 'neither player has a dominant strategy',
+    },
   ];
 
+  /**
+   * ASYMMETRY, on purpose. The first four are checked both ways: the briefing
+   * states each of those facts positively AND negatively, so disagreeing in
+   * either direction contradicts material the model was handed.
+   *
+   * The last two are checked in ONE direction only — claiming them when they are
+   * false. Declining to call a zero-sum game a minimax problem, or not
+   * mentioning an available dominant strategy, is a stylistic choice in a
+   * two-to-four sentence explanation, not an error. Flagging silence would make
+   * the check fire on correct output, which is the failure mode this file exists
+   * to avoid.
+   */
+  const oneWay = new Set<MismatchKind>(['geometry-bad-minimax', 'geometry-bad-dominance']);
   return rows
-    .filter((r) => r.claimed !== r.actual)
+    .filter((r) => (oneWay.has(r.kind) ? r.claimed && !r.actual : r.claimed !== r.actual))
     .map((r) => ({
       kind: r.kind,
       claimed: null,

@@ -159,6 +159,14 @@ export interface GeometryClaims {
   hasFlatShelfForA: boolean;
   /** The equilibrium is the interior point where BOTH surfaces are level at once. */
   equilibriumIsInteriorFlatSpot: boolean;
+  /**
+   * The prose frames the equilibrium as von Neumann's minimax / "the value of
+   * the game". Only meaningful on a zero- or constant-sum game; elsewhere there
+   * is no single value for it to be the minimax of.
+   */
+  invokesMinimax: boolean;
+  /** The prose says some player has a strategy that is better whatever the opponent does. */
+  claimsDominantStrategy: boolean;
 }
 
 /** Schema-constrained model output. Shape is guaranteed; truth is not. */
@@ -223,7 +231,9 @@ export type MismatchKind =
   | 'geometry-bad-twist'    // claims interaction on a game whose surface is flat
   | 'geometry-bad-mirror'   // claims a mirrored surface on a non-constant-sum game
   | 'geometry-bad-shelf'    // claims a flat shelf when y* lies off the board
-  | 'geometry-bad-flatspot';// claims an interior joint flat spot when the NE is on an edge
+  | 'geometry-bad-flatspot' // claims an interior joint flat spot when the NE is on an edge
+  | 'geometry-bad-minimax'  // invokes minimax/"the value of the game" on a non-constant-sum game
+  | 'geometry-bad-dominance';// claims a dominant strategy when neither player has one
 
 export interface Mismatch {
   kind: MismatchKind;
