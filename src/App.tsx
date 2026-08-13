@@ -459,12 +459,29 @@ export default function App() {
   // left column. We size it to the room between the report panel's bottom and the
   // params panel's bottom (minus the column gap). Once converged, the Equilibrium
   // Reached box can grow tall enough that this room collapses; when it drops below
-  // MIN_LOG_ROOM we move the log to a full-width band beneath both columns.
+  // the height the log needs to render, we move it to a full-width band below.
   const paramsPanelRef = useRef<HTMLDivElement>(null);
   const reportPanelRef = useRef<HTMLDivElement>(null);
   const [logBelow, setLogBelow] = useState(false);
   const [inlineLogHeight, setInlineLogHeight] = useState<number | null>(null);
-  const MIN_LOG_ROOM = 120;  // px below which the inline log drops to full width
+  /**
+   * The smallest inline log worth rendering, in REM so it tracks the responsive
+   * root font-size — the same reason columnGap is derived rather than hardcoded.
+   *
+   * This is a real floor, not a taste threshold. The card cannot render shorter
+   * than its own chrome (padding + header + gap) plus the console's minimum box,
+   * and that box does not shrink to nothing: `flex-1 min-h-0` lets the console's
+   * CONTENT reach zero height, but its padding and borders still occupy space —
+   * 42px at a 20px root.
+   *
+   * The previous value was 120px, floored with Math.max so the card could be
+   * assigned a height SMALLER than the panel's own minimum. At 1512x945 that
+   * produced a 101px card: 50px padding + 24px header + 15px gap left about 9px
+   * for a box that cannot go below 42, and the log spilled 29px out through the
+   * bottom of its card. The escape hatch to the full-width band never fired,
+   * because the threshold was below the height at which rendering breaks.
+   */
+  const MIN_LOG_REM = 9;
 
   useLayoutEffect(() => {
     const measure = () => {
@@ -493,15 +510,20 @@ export default function App() {
       // scenario card, makes the report tall before the simulation is ever run.
       // The old condition then could not fire, and the log was clamped to the
       // 90px floor — a squashed stub holding a single line.
-      if (room < MIN_LOG_ROOM) {
+      // `room` spans from the report's bottom to the params' bottom; the log's own
+      // header + padding sit inside that, so the scroll area gets the remainder.
+      const inlineHeight = room - columnGap;
+      // Compare the height the card would ACTUALLY get against the height it
+      // needs. The old test compared `room` to a constant and then clamped with
+      // Math.max, which could hand the card a height it cannot render in — the
+      // clamp defeated the very check it was part of.
+      if (inlineHeight < remPx * MIN_LOG_REM) {
         setLogBelow(true);
         setInlineLogHeight(null);
         return;
       }
       setLogBelow(false);
-      // `room` spans from the report's bottom to the params' bottom; the log's own
-      // header + padding sit inside that, so the scroll area gets the remainder.
-      setInlineLogHeight(Math.max(MIN_LOG_ROOM - columnGap, room - columnGap));
+      setInlineLogHeight(inlineHeight);
     };
     let cancelled = false;
     const safeMeasure = () => { if (!cancelled) measure(); };
