@@ -36,6 +36,32 @@ interface Rect { top: number; left: number; width: number; height: number }
 const GAP = 16;
 /** How far the highlight ring sits outside the target. */
 const PAD = 8;
+/** Below this viewport width the caption docks to the bottom as a sheet. */
+const COMPACT_MAX = 900;
+/** Ceiling on the sheet's height, so it can never swallow the picture. */
+const SHEET_MAX_VH = 0.38;
+/**
+ * Fixed size estimates for the FLOATING card, used only to ask "would it fit
+ * beside the target?".
+ *
+ * Deliberately constants rather than the measured height: the sheet is shorter
+ * than the floating card, so testing with the live measurement flip-flops —
+ * sheet fits, so switch to floating, which no longer fits, so switch back.
+ */
+// Must be >= the real floating card, which measures ~405px at the desktop type
+// scale. An optimistic 300 made the fit test disagree with the placement that
+// followed it: the test said "fits", placement then found no side with 405px of
+// room and fell back to a centred card sitting across 79% of its own target.
+const FLOAT_H_EST = 420;
+const FLOAT_W_EST = 520;
+
+/** Would a floating card fit on some side of this rect? */
+function floatingFits(r: Rect, vw: number, vh: number): boolean {
+  return (vh - (r.top + r.height) - GAP) >= FLOAT_H_EST
+      || (r.top - GAP) >= FLOAT_H_EST
+      || (vw - (r.left + r.width) - GAP) >= FLOAT_W_EST
+      || (r.left - GAP) >= FLOAT_W_EST;
+}
 
 const readRect = (el: Element): Rect => {
   const r = el.getBoundingClientRect();
@@ -55,6 +81,23 @@ export function Walkthrough({
   const [rect, setRect] = useState<Rect | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardH, setCardH] = useState(0);
+  /**
+   * Viewport, tracked in state so a rotation or resize re-lays-out the card.
+   * Read during render otherwise, which would go stale on orientation change.
+   */
+  const [vp, setVp] = useState(() => ({
+    w: typeof window === 'undefined' ? 1280 : window.innerWidth,
+    h: typeof window === 'undefined' ? 800 : window.innerHeight,
+  }));
+  useEffect(() => {
+    const onResize = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
+  }, []);
 
   const step = steps[i];
   const last = i === steps.length - 1;
@@ -100,11 +143,38 @@ export function Walkthrough({
     // object identity would tear down and restart this loop each time.
   }, [open, step?.target]);
 
-  // Bring the target into view when the step changes.
+  /**
+   * Bring the target into view when the step changes.
+   *
+   * On a phone the card is a bottom sheet, so `block: 'center'` centres the
+   * target in the FULL viewport — which is underneath the sheet. Measured
+   * before this fix: the card covered 85-90% of the very element it was
+   * pointing at. Small screens instead centre the target in the strip of
+   * screen left above the sheet.
+   */
   useEffect(() => {
     if (!open || !step) return;
-    document.querySelector(`[data-tour="${step.target}"]`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const el = document.querySelector(`[data-tour="${step.target}"]`);
+    if (!el) return;
+    const r0 = el.getBoundingClientRect();
+    const asRect: Rect = { top: r0.top, left: r0.left, width: r0.width, height: r0.height };
+    const willSheet = window.innerWidth < COMPACT_MAX
+      || !floatingFits(asRect, window.innerWidth, window.innerHeight);
+    if (!willSheet) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const sheet = cardH || Math.round(window.innerHeight * SHEET_MAX_VH);
+    const room = Math.max(120, window.innerHeight - sheet - GAP * 2);
+    // Centre it when it fits; when the target is TALLER than the strip -- the
+    // 3D plot on a phone is -- centring pushes its bottom under the sheet and
+    // its top off screen at once. Align the top instead, so the part of the
+    // picture being described is the part that stays visible.
+    const delta = r0.height > room
+      ? r0.top - GAP * 2
+      : (r0.top + r0.height / 2) - room / 2;
+    window.scrollBy({ top: delta, behavior: 'smooth' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, step?.target]);
 
   useLayoutEffect(() => {
@@ -124,10 +194,22 @@ export function Walkthrough({
 
   if (!open || !step) return null;
 
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const CARD_W = Math.min(520, vw - 32);
-  const h = cardH || 280;
+  const vw = vp.w;
+  const vh = vp.h;
+  /**
+   * Below this width the caption becomes a bottom sheet instead of a floating
+   * card. 900px rather than a phone width because tablets were just as bad:
+   * a 520px card on an iPad still sat across 45-55% of its own target, since
+   * the plot is tall and neither above nor below ever has room.
+   */
+  // Narrow screens always get the sheet; wider ones get it whenever the target
+  // leaves no room for a floating card. Width alone was not enough — an iPad in
+  // landscape is 1194px wide but only 834 tall, and the plot fills the height,
+  // so the floating card fell back to centre and sat across 55% of its own
+  // target with no arrow at all.
+  const compact = vw < COMPACT_MAX || (!!rect && !floatingFits(rect, vw, vh));
+  const CARD_W = compact ? vw - GAP * 2 : Math.min(520, vw - 32);
+  const h = cardH || (compact ? Math.round(vh * 0.3) : 280);
 
   // Put the card wherever there is room, preferring below the target. Without a
   // target (element not on screen) it centres, so a missing anchor degrades to a
@@ -135,7 +217,15 @@ export function Walkthrough({
   let cardTop: number;
   let cardLeft: number;
   let place: 'below' | 'above' | 'right' | 'left' | 'center' = 'center';
-  if (rect) {
+  if (compact) {
+    // Docked to the bottom, full width. `place = 'below'` is not a guess about
+    // free space here -- the sheet IS below, and the scroll effect above has
+    // put the target in the strip over it, so the existing arrow geometry
+    // (card top -> target bottom) is correct by construction.
+    cardLeft = GAP;
+    cardTop = vh - h - GAP;
+    place = rect ? 'below' : 'center';
+  } else if (rect) {
     const below = vh - (rect.top + rect.height) - GAP;
     const above = rect.top - GAP;
     const right = vw - (rect.left + rect.width) - GAP;
@@ -206,7 +296,7 @@ export function Walkthrough({
         type="button"
         onClick={close}
         aria-label="Exit tour"
-        className="pointer-events-auto absolute top-4 right-4 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 px-4 py-2.5 text-[15px] font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors"
+        className={`pointer-events-auto absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${compact ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
       >
         <X className="w-4 h-4" /> Exit tour
       </button>
@@ -228,12 +318,21 @@ export function Walkthrough({
 
       <div
         ref={cardRef}
-        className="pointer-events-auto absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl p-6 sm:p-7 flex flex-col gap-3.5"
-        style={{ top: cardTop, left: cardLeft, width: CARD_W }}
+        className={`pointer-events-auto absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
+          compact ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
+        }`}
+        style={{
+          top: cardTop,
+          left: cardLeft,
+          width: CARD_W,
+          // Capped rather than fixed: a long caption scrolls inside the sheet
+          // instead of growing over the diagram it is describing.
+          maxHeight: compact ? `${Math.round(SHEET_MAX_VH * 100)}vh` : undefined,
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
-          <span className="text-[13px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+          <span className={`font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${compact ? 'text-[11px]' : 'text-[13px]'}`}>
             {i + 1} / {steps.length}
           </span>
           <button
@@ -246,14 +345,19 @@ export function Walkthrough({
           </button>
         </div>
 
-        <h3 className="text-2xl font-bold text-slate-800 dark:text-slate-100 leading-snug tracking-tight">{step.title}</h3>
-        <p className="text-[17px] leading-relaxed text-slate-600 dark:text-slate-300" aria-live="polite">{step.body}</p>
+        <h3 className={`font-bold text-slate-800 dark:text-slate-100 leading-snug tracking-tight ${compact ? 'text-[17px]' : 'text-2xl'}`}>{step.title}</h3>
+        <p
+          className={`leading-relaxed text-slate-600 dark:text-slate-300 ${compact ? 'text-[14px] overflow-y-auto min-h-0' : 'text-[17px]'}`}
+          aria-live="polite"
+        >
+          {step.body}
+        </p>
 
-        <div className="flex items-center justify-between gap-3 pt-3 mt-1 border-t border-slate-100 dark:border-slate-800">
+        <div className={`flex items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 ${compact ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
           <button
             type="button"
             onClick={close}
-            className="text-[15px] font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+            className={`font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors ${compact ? 'text-[13px]' : 'text-[15px]'}`}
           >
             Skip
           </button>
@@ -262,14 +366,14 @@ export function Walkthrough({
               type="button"
               onClick={() => setI((n) => Math.max(n - 1, 0))}
               disabled={i === 0}
-              className="inline-flex items-center gap-1 rounded-xl px-4 py-2.5 text-[15px] font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors"
+              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors ${compact ? 'px-3 py-2 text-[13px]' : 'px-4 py-2.5 text-[15px]'}`}
             >
               <ArrowLeft className="w-4 h-4" /> Back
             </button>
             <button
               type="button"
               onClick={() => (last ? close() : setI((n) => n + 1))}
-              className="inline-flex items-center gap-1 rounded-xl px-5 py-2.5 text-[15px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors ${compact ? 'px-3.5 py-2 text-[13px]' : 'px-5 py-2.5 text-[15px]'}`}
             >
               {last ? 'Explore on your own' : <>Next <ArrowRight className="w-4 h-4" /></>}
             </button>

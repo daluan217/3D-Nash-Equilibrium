@@ -533,7 +533,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   }, [dragMode]);
 
   return (
-    <div ref={containerRef} data-tour="plot" className={`w-full relative border rounded-xl p-2 md:p-4 shadow-sm h-[28rem] ${isDark ? 'bg-black border-slate-800' : 'bg-white border-slate-200'}`}>
+    <div ref={containerRef} data-tour="plot" className={`w-full relative border rounded-xl p-2 md:p-4 shadow-sm h-[20rem] sm:h-[24rem] lg:h-[28rem] ${isDark ? 'bg-black border-slate-800' : 'bg-white border-slate-200'}`}>
       {/* Floating 3D Navigation Controls */}
       <div className={`absolute top-3 right-3 z-10 flex items-center gap-0.5 sm:gap-1 border p-1 rounded-xl shadow-xs ${isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
         <button
