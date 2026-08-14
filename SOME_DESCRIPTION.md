@@ -52,10 +52,10 @@ So **a best response is always a pure strategy**. Self-interest alone can only p
 
 | | Prisoner's Dilemma | Spy vs. Analyst |
 |---|---|---|
-| Row payoffs | `[[3, 0], [5, 1]]` | `[[3, -2], [-1, 0]]` |
-| Twist $T_A$ | $-1$ | $6$ |
-| $y^{*}$ | $-1$ — **off the board** | $1/3$ |
-| Equilibrium | a corner: both confess | interior: $(1/6,\ 1/3)$ |
+| Row payoffs | `[[3, 0], [5, 1]]` | `[[1, -2], [-3, 4]]` |
+| Twist $T_A$ | $-1$ | $10$ |
+| $y^{*}$ | $-1$ — **off the board** | $3/5$ |
+| Equilibrium | a corner: both confess | interior: $(7/10,\ 3/5)$ |
 
 The dilemma comes first on purpose. Its $y^{*}$ lies outside $[0,1]$, so its surface never levels anywhere on the board — nothing to balance, no reason to mix, and the equilibrium is stuck in a corner worse for both than the one they can't reach. That contrast is what the mixed case needs.
 

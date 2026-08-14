@@ -56,14 +56,22 @@ export const PRESETS: Record<string, PresetGame> = {
   spy: {
     key: 'spy',
     name: 'Spy vs. Analyst',
-    a11: 3, b11: -3,  a12: -2, b12: 2,
-    a21: -1, b21: 1,  a22: 0, b22: 0,
+    // Chosen so the two indifference lines FLATTEN apart in the tour's regret
+    // run. The lines are drawn at the corridors' midpoints, which start at 0.5,
+    // so the flatten order is set by each root's distance from 0.5 — NOT by the
+    // starting point. y* = 0.6 sits close to 0.5, so A's line levels early;
+    // x* = 0.7 is twice as far, so B's keeps visibly leaning while its corridor
+    // shrinks. The previous values flattened both lines at nearly the same
+    // step, which made the tour's "first coordinate found" beat impossible to
+    // show live.
+    a11: 1, b11: -1,  a12: -2, b12: 2,
+    a21: -3, b21: 3,  a22: 4, b22: -4,
     desc: '<strong>Spy vs. Analyst:</strong> A spy chooses to leak classified intel (Row 1) or stay silent (Row 2). '
         + 'An analyst simultaneously decides to publish a story (Col 1) or hold it (Col 2). '
         + 'The spy gains from publication when leaking but loses credibility if silent and published. '
         + 'The analyst profits from a confirmed scoop but risks backlash if they publish without a leak. '
         + 'This zero-sum-adjacent game has no pure Nash Equilibrium — both players must mix their strategies. '
-        + 'Payoffs (clockwise from top-left): (3,−3), (−2,2), (0,0), (−1,1).'
+        + 'Payoffs (clockwise from top-left): (1,−1), (−2,2), (4,−4), (−3,3).'
   },
   custom: {
     key: 'custom',

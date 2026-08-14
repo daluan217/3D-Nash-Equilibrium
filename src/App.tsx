@@ -1527,10 +1527,50 @@ export default function App() {
     return () => clearTimeout(t);
   }, [authToken]);
 
+  /**
+   * Armed only by the tour's run step: stop the simulation the moment either
+   * NE coordinate is discovered, so the frame the visitor is left looking at
+   * is the first line going flat — and the next step's caption explains the
+   * thing that just happened rather than something long past. Watching state
+   * rather than hooking the playback loop means it works no matter how the
+   * run was started, and clicking Next before the pause fires is fine: the
+   * flat-line step stages its own picture anyway.
+   */
+  const [tourPauseAtFirstFind, setTourPauseAtFirstFind] = useState(false);
+  /** Set when the pause below fires, so the next step can keep the exact frame
+   *  the run stopped on instead of restaging one. */
+  const tourPausedRunRef = useRef(false);
+  useEffect(() => {
+    if (!tourPauseAtFirstFind || !simState.running) return;
+    // Regret mode records discovery only at full convergence (both coordinates
+    // at once), so watching discoveredMixed* here never fires mid-run. Watch
+    // the live indifference signals instead, with EXACTLY the thresholds the
+    // plot uses to rename a strategy line to "indifferent" — so the run pauses
+    // on the same frame the visitor sees the first line go flat.
+    const dY = payoffs.a11 - payoffs.a12 - payoffs.a21 + payoffs.a22;
+    const dX = payoffs.b11 - payoffs.b12 - payoffs.b21 + payoffs.b22;
+    const yRep = simState.discoveredMixedY ?? (simState.domYLo + simState.domYHi) / 2;
+    const xRep = simState.discoveredMixedX ?? (simState.domXLo + simState.domXHi) / 2;
+    const sA = yRep * (payoffs.a11 - payoffs.a21) + (1 - yRep) * (payoffs.a12 - payoffs.a22);
+    const sB = xRep * (payoffs.b11 - payoffs.b12) + (1 - xRep) * (payoffs.b21 - payoffs.b22);
+    const aFlat = Math.abs(sA) < Math.max(1e-4, Math.abs(dY) * 0.01);
+    const bFlat = Math.abs(sB) < Math.max(1e-4, Math.abs(dX) * 0.01);
+    // One line flat, not both: if they flattened in the same frame there is no
+    // "first" to pause on, and the run may as well finish.
+    if ((aFlat || bFlat) && !(aFlat && bFlat)) {
+      tourPausedRunRef.current = true;
+      setSimState((prev) => ({ ...prev, running: false }));
+    }
+  }, [tourPauseAtFirstFind, simState, payoffs]);
+
   const closeTour = useCallback(() => {
     setTourOpen(false);
     setTourPoints([]);
     setTourHiddenTraces([]);
+    setTourPauseAtFirstFind(false);
+    setSpeed(5);
+    setShrinkStep(0.1);
+    setShrinkStepRaw('0.100');
   }, []);
 
   /**
@@ -1564,6 +1604,7 @@ export default function App() {
   const enterDilemmaAct = () => {
     setTourSpinNonce((n) => n + 1);
     setTourSpinAllowed(true);
+    setTourPauseAtFirstFind(false);
     if (activePreset !== 'pd') {
       handleLoadPreset('pd');
       setX0('0.217');
@@ -1585,12 +1626,13 @@ export default function App() {
   const enterMixedAct = (extraHidden: string[] = []) => {
     setTourSpinNonce((n) => n + 1);
     setTourSpinAllowed(true);
+    setTourPauseAtFirstFind(false);
     if (activePreset !== 'spy') {
       handleLoadPreset('spy');
       // Far from the equilibrium at (0.167, 0.333): the default 0.217 start sits
       // almost on top of it, leaving the chase no distance to run.
       setX0('0.800');
-      setY0('0.800');
+      setY0('0.200');
     }
     // Deliberately does NOT set the convergence method. It used to force
     // 'shrink' here, so every step had to re-assert 'regret' or be silently
@@ -1798,16 +1840,30 @@ export default function App() {
       },
     },
     {
-      target: 'controls',
+      // Points at the GRAPH: the run starts itself, so the thing to look at is
+      // the lines losing their lean, not the button that started it.
+      target: 'plot',
       title: 'Watch the leans flatten',
       body:
-        'Press Run. Self-interest alone always points at a corner — the best reply to any opponent mix is a '
-        + 'pure strategy, never a blend — so it can never name an interior point. The contracting boundary '
-        + 'carries the search inward instead, and step by step both lines lose their lean.',
+        'The search is running. Self-interest alone always points at a corner — the best reply to any '
+        + 'opponent mix is a pure strategy, never a blend — so it can never name an interior point. The '
+        + 'contracting boundary carries the search inward instead, and step by step both lines lose their '
+        + 'lean. The moment the first line goes flat, the run pauses.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
         setTourPoints([]);
+        tourPausedRunRef.current = false;
+        setTourPauseAtFirstFind(true);
+        // 1x and a heavier step for the tour's run. At the app's defaults
+        // (5x, lambda = 0.1) the search took 272 steps and the first line only
+        // flattened 85 seconds in; lambda = 0.3 contracts the corridors fast
+        // enough that the whole run is a few dozen steps, which 1x then plays
+        // at a readable pace. Both restored on tour close — later steps freeze
+        // the sim anyway.
+        setSpeed(1);
+        setShrinkStep(0.3);
+        setShrinkStepRaw('0.300');
         // The markers come back ON here: this is the only step where anything is
         // moving, and they are what the visitor is being asked to watch — and
         // the idle spin stays off for the same reason, including after the run
@@ -1825,27 +1881,36 @@ export default function App() {
       target: 'plot',
       title: 'The first lean disappears',
       body:
-        'The search has pinned one coordinate — and look at what that did: one line has gone completely FLAT. '
-        + 'No lean means no regret left; every mix now pays that player exactly the same. That is '
-        + 'indifference, found rather than declared. The other line still leans, so the search is not done.',
+        'The run paused the moment this happened: one line has gone completely FLAT. No lean means no regret '
+        + 'left; every mix now pays that player exactly the same. That is indifference, found rather than '
+        + 'declared. The other line still leans inside its shrinking corridor — the search is not done.',
       onEnter: () => {
-        // Staged rather than caught mid-run, and BOTH lines stay visible now:
-        // the flat-against-leaning contrast is the point, where an earlier cut
-        // hid the leaning line because the lean had not been introduced yet.
-        // running:false stops the live run this step usually follows.
+        // Continuity when the tour just paused the run: keep the exact frame
+        // the visitor watched stop — one line genuinely flat, the other
+        // genuinely still leaning in its contracted corridor. The spy payoffs
+        // make that separation real (the start sits near x*, far from y*), so
+        // nothing shown here is an idealisation. enterMixedAct leaves domains
+        // and paths alone, so keeping the frame just means not resetting.
+        const pausedByTour = tourPausedRunRef.current;
         enterMixedAct();
         setStepMode('regret');
         setTourPoints([]);
-        handleReset();
-        if (mixedNE) {
+        if (pausedByTour) {
+          setSimState((prev) => ({ ...prev, running: false }));
+        } else if (mixedNE) {
+          // Skipped ahead before the first find (or arrived from elsewhere):
+          // stage the state the run would have paused on. y-first matches the
+          // real dynamics — the strategy lines sit at the corridor midpoints,
+          // and y* is the root nearer 0.5, so A's line levels first.
+          handleReset();
           setSimState((prev) => ({
             ...prev,
             running: false,
             converged: false,
-            discoveredMixedX: mixedNE.x,
-            discoveredMixedY: null,
-            foundAxis: 'x',
-            domYLo: 0, domYHi: 1,
+            discoveredMixedX: null,
+            discoveredMixedY: mixedNE.y,
+            foundAxis: 'y',
+            domXLo: 0, domXHi: 1,
           }));
         }
         moveCamera(CAMERA.edgeOn, 1100);
