@@ -56,22 +56,33 @@ export const PRESETS: Record<string, PresetGame> = {
   spy: {
     key: 'spy',
     name: 'Spy vs. Analyst',
-    // Chosen so the two indifference lines FLATTEN apart in the tour's regret
-    // run. The lines are drawn at the corridors' midpoints, which start at 0.5,
-    // so the flatten order is set by each root's distance from 0.5 — NOT by the
-    // starting point. y* = 0.6 sits close to 0.5, so A's line levels early;
-    // x* = 0.7 is twice as far, so B's keeps visibly leaning while its corridor
-    // shrinks. The previous values flattened both lines at nearly the same
-    // step, which made the tour's "first coordinate found" beat impossible to
-    // show live.
-    a11: 1, b11: -1,  a12: -2, b12: 2,
-    a21: -3, b21: 3,  a22: 4, b22: -4,
+    a11: 3, b11: -3,  a12: -2, b12: 2,
+    a21: -1, b21: 1,  a22: 0, b22: 0,
     desc: '<strong>Spy vs. Analyst:</strong> A spy chooses to leak classified intel (Row 1) or stay silent (Row 2). '
         + 'An analyst simultaneously decides to publish a story (Col 1) or hold it (Col 2). '
         + 'The spy gains from publication when leaking but loses credibility if silent and published. '
         + 'The analyst profits from a confirmed scoop but risks backlash if they publish without a leak. '
         + 'This zero-sum-adjacent game has no pure Nash Equilibrium — both players must mix their strategies. '
-        + 'Payoffs (clockwise from top-left): (1,−1), (−2,2), (4,−4), (−3,3).'
+        + 'Payoffs (clockwise from top-left): (3,−3), (−2,2), (0,0), (−1,1).'
+  },
+  penalty: {
+    key: 'penalty',
+    name: 'Penalty Kick',
+    // Built for the guided tour's regret act. The strategy lines are drawn at
+    // the corridors' midpoints (0.5), so their initial lean is |dY|*|0.5-root|:
+    // here dY = -10 with roots y* = 0.3 and x* = 0.1, giving leans of 2 and 4 —
+    // both unmistakable — while the roots' different distances from 0.5 make
+    // A's line flatten first and B's keep leaning, which is the tour's
+    // "first coordinate found" beat. Spy vs. Analyst (lean 1) was too subtle.
+    a11: -6, b11: 6,  a12: 3, b12: -3,
+    a21: 1, b21: -1,  a22: 0, b22: 0,
+    row1Label: 'Aim Left', row2Label: 'Aim Right',
+    col1Label: 'Dive Left', col2Label: 'Dive Right',
+    desc: '<strong>Penalty Kick:</strong> A kicker picks a side to shoot (Row 1 = Aim Left, Row 2 = Aim Right); '
+        + 'the goalie simultaneously picks a side to dive (Col 1 = Dive Left, Col 2 = Dive Right). '
+        + 'The kicker\'s left-side strike is lethal when the goalie guesses wrong but easily smothered when read; '
+        + 'the right side is safer but weaker. Zero-sum with no pure Nash Equilibrium — both players must mix. '
+        + 'Payoffs (clockwise from top-left): (−6,6), (3,−3), (0,0), (1,−1).'
   },
   custom: {
     key: 'custom',

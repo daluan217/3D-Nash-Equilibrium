@@ -1627,10 +1627,10 @@ export default function App() {
     setTourSpinNonce((n) => n + 1);
     setTourSpinAllowed(true);
     setTourPauseAtFirstFind(false);
-    if (activePreset !== 'spy') {
-      handleLoadPreset('spy');
-      // Far from the equilibrium at (0.167, 0.333): the default 0.217 start sits
-      // almost on top of it, leaving the chase no distance to run.
+    if (activePreset !== 'penalty') {
+      handleLoadPreset('penalty');
+      // Far from the equilibrium at (0.1, 0.3), so the chase has distance to
+      // run and the position markers start well clear of the NE diamonds.
       setX0('0.800');
       setY0('0.200');
     }
@@ -1737,8 +1737,9 @@ export default function App() {
       target: 'matrix',
       title: 'Now take the dominance away',
       body:
-        'A spy chooses whether to leak; an analyst chooses whether to publish. This time neither side has a '
-        + 'move that is always best, and what helps one hurts the other. No corner can hold still.',
+        'A penalty kick: the kicker picks a side to shoot, the goalie picks a side to dive, at the same '
+        + 'instant. This time neither side has a move that is always best, and what helps one hurts the '
+        + 'other. No corner can hold still.',
       onEnter: () => {
         enterMixedAct();
         // Shrink here only because the regret renderer would draw strategy lines,
