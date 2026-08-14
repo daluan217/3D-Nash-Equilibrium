@@ -410,7 +410,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // top of the mixed-NE diamond once the mixed act zoomed in, and in a
       // symmetric game both players share a z, so 'top'/'bottom' would still
       // have collided with each other.
-      for (const [z, who, pos] of [[zA, 'A', 'top right'], [zB, 'B', 'bottom right']] as const) {
+      // A goes up-LEFT and B down-RIGHT: splitting horizontally as well as
+      // vertically, because on a wide payoff axis two callouts half a unit
+      // apart land on the same pixel row and overprint into garbage.
+      for (const [z, who, pos] of [[zA, 'A', 'top left'], [zB, 'B', 'bottom right']] as const) {
         traces.push({
           type: 'scatter3d', mode: 'markers+text',
           x: [pt.x], y: [pt.y], z: [z],
