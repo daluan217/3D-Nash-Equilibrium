@@ -40,6 +40,21 @@ const PAD = 8;
 const COMPACT_MAX = 900;
 /** Ceiling on the sheet's height, so it can never swallow the picture. */
 const SHEET_MAX_VH = 0.38;
+/** Short screens give the sheet less, because the strip above it is the scarce
+ *  resource there — a 667px phone spends 161px on a sticky header before the
+ *  picture gets any room at all. */
+const SHEET_MAX_VH_SHORT = 0.32;
+const SHORT_VH = 720;
+const sheetMaxVh = (vh: number) => (vh < SHORT_VH ? SHEET_MAX_VH_SHORT : SHEET_MAX_VH);
+
+/** Bottom edge of the sticky header, which overlays the top of the page. */
+function headerOffset(): number {
+  const el = document.querySelector('header');
+  if (!el) return 0;
+  const r = el.getBoundingClientRect();
+  // Only counts while it is actually pinned over the content.
+  return r.top <= 1 ? Math.max(0, r.bottom) : 0;
+}
 /**
  * Fixed size estimates for the FLOATING card, used only to ask "would it fit
  * beside the target?".
@@ -164,15 +179,19 @@ export function Walkthrough({
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    const sheet = cardH || Math.round(window.innerHeight * SHEET_MAX_VH);
-    const room = Math.max(120, window.innerHeight - sheet - GAP * 2);
+    // The sticky header sits OVER the top of the page, so the usable strip
+    // starts below it. Without this the target was scrolled to the top of the
+    // viewport and the header covered 123-137px of it on a phone.
+    const top = headerOffset();
+    const sheet = cardH || Math.round(window.innerHeight * sheetMaxVh(window.innerHeight));
+    const room = Math.max(120, window.innerHeight - sheet - top - GAP * 2);
     // Centre it when it fits; when the target is TALLER than the strip -- the
     // 3D plot on a phone is -- centring pushes its bottom under the sheet and
     // its top off screen at once. Align the top instead, so the part of the
     // picture being described is the part that stays visible.
     const delta = r0.height > room
-      ? r0.top - GAP * 2
-      : (r0.top + r0.height / 2) - room / 2;
+      ? r0.top - top - GAP
+      : (r0.top + r0.height / 2) - (top + room / 2);
     window.scrollBy({ top: delta, behavior: 'smooth' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, step?.target]);
@@ -209,7 +228,7 @@ export function Walkthrough({
   // target with no arrow at all.
   const compact = vw < COMPACT_MAX || (!!rect && !floatingFits(rect, vw, vh));
   const CARD_W = compact ? vw - GAP * 2 : Math.min(520, vw - 32);
-  const h = cardH || (compact ? Math.round(vh * 0.3) : 280);
+  const h = cardH || (compact ? Math.round(vh * sheetMaxVh(vh)) : 280);
 
   // Put the card wherever there is room, preferring below the target. Without a
   // target (element not on screen) it centres, so a missing anchor degrades to a
@@ -327,7 +346,7 @@ export function Walkthrough({
           width: CARD_W,
           // Capped rather than fixed: a long caption scrolls inside the sheet
           // instead of growing over the diagram it is describing.
-          maxHeight: compact ? `${Math.round(SHEET_MAX_VH * 100)}vh` : undefined,
+          maxHeight: compact ? `${Math.round(sheetMaxVh(vh) * 100)}vh` : undefined,
         }}
         onClick={(e) => e.stopPropagation()}
       >

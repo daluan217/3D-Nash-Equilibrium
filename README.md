@@ -41,7 +41,7 @@ Built as a full-stack web app, with an Electron desktop build for offline use.
 | Node.js + Express | REST API server |
 | Google Cloud Storage | Persistent JSON database (Cloud Run) |
 | Nodemailer | Email verification and account deletion codes |
-| Google Gemini API | AI game theorist situation reports |
+| Azure AI Foundry (OpenAI-compatible) | AI game theorist situation reports — `gpt-5.4-nano` by default |
 | HMAC-signed tokens | Stateless bearer-token auth (PBKDF2 password hashing) |
 
 ### Desktop (Electron)
@@ -150,7 +150,9 @@ npm run electron:start  # builds and launches the Electron desktop app
 Copy `.env.example` to `.env` and fill in:
 
 ```
-GEMINI_API_KEY=your-key
+AZURE_FOUNDRY_ENDPOINT=https://your-resource.services.ai.azure.com
+AZURE_FOUNDRY_API_KEY=your-key
+REPORT_MODEL=gpt-5.4-nano   # optional; this is the default
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=465
 SMTP_USER=your-email@gmail.com
