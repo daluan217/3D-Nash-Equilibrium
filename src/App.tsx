@@ -1592,7 +1592,11 @@ export default function App() {
       setX0('0.800');
       setY0('0.800');
     }
-    setStepMode('shrink');
+    // Deliberately does NOT set the convergence method. It used to force
+    // 'shrink' here, so every step had to re-assert 'regret' or be silently
+    // flipped back — which is what happened on the last step and left the
+    // visitor in Domain Shrink after the tour ended. Each step now says what it
+    // needs, and the method is left alone otherwise.
     setTrackingMode('both');
     setSimState((prev) => ({ ...prev, discoveredMixedX: null, discoveredMixedY: null, foundAxis: null }));
     setTourHiddenTraces([...FROZEN_HIDDEN, ...extraHidden]);
@@ -1695,6 +1699,9 @@ export default function App() {
         + 'move that is always best, and what helps one hurts the other. No corner can hold still.',
       onEnter: () => {
         enterMixedAct();
+        // Shrink here only because the regret renderer would draw strategy lines,
+        // and these two steps are introducing the surface, not the method.
+        setStepMode('shrink');
         setTourPoints([]);
         moveCamera(CAMERA.mixedOpen, 900);
       },
@@ -1707,6 +1714,9 @@ export default function App() {
         + 'single twist — and that twist is the strategic interaction itself.',
       onEnter: () => {
         enterMixedAct();
+        // Shrink here only because the regret renderer would draw strategy lines,
+        // and these two steps are introducing the surface, not the method.
+        setStepMode('shrink');
         setTourPoints([]);
         moveCamera(CAMERA.mixedOpen, 900);
       },
@@ -1792,11 +1802,16 @@ export default function App() {
     // ── Act 3: why a boundary is what makes convergence possible ─────────────
     {
       target: 'method',
-      title: 'That tilt had a name',
+      // Defines regret FROM the flatness just shown, and points forward to the
+      // tilt rather than back at it. The earlier wording ("that tilt had a
+      // name") referred to a lean the reader had never seen: the steps before
+      // this one show flat lines only, and the sloped strategy lines do not
+      // appear until the next step.
+      title: 'Measuring what is left',
       body:
-        'The lean in those strategy lines is Opponent Regret: how much better a player could still have done '
-        + 'against what the other one actually played. A flat line means zero regret left, which is what the '
-        + 'flat spot meant all along.',
+        'Watch both lines lean again. That lean is Opponent Regret: how much better a player could still have '
+        + 'done against what the other one actually played. On the flat lines a moment ago it was exactly zero '
+        + '— nothing left to gain by changing your mind. The steeper the lean, the more is still on the table.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -1808,8 +1823,8 @@ export default function App() {
       target: 'coords',
       title: 'Each player gets a shrinking corridor',
       body:
-        'Every player carries a boundary — a range of mixes still worth considering. As the opponent\'s regret '
-        + 'falls, that range contracts. Seen from above, the two corridors close in from both sides.',
+        'Every player also carries a boundary — a range of mixes still worth considering. As the opponent\'s '
+        + 'regret falls, that range contracts. Seen from above, the two corridors close in from both sides.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -1846,6 +1861,7 @@ export default function App() {
         + 'the flat spot move somewhere new.',
       onEnter: () => {
         enterMixedAct();
+        setStepMode('regret');
         setTourHiddenTraces([]);
         setTourPoints([]);
         moveCamera(CAMERA.overview, 900);
