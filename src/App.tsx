@@ -113,7 +113,7 @@ function precomputeThinHistory(
   while (!state.converged && snaps.length < MAX_STEPS) {
     doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; }, stepMode);
     snaps.push(toThin(state));
-    if (neState === null && state.discoveredMixedX !== null) {
+    if (neState === null && (state.discoveredMixedX !== null || state.discoveredMixedY !== null)) {
       neState = {
         ...state,
         visitedPositions: [...state.visitedPositions],
@@ -1627,6 +1627,11 @@ export default function App() {
     setTourSpinNonce((n) => n + 1);
     setTourSpinAllowed(true);
     setTourPauseAtFirstFind(false);
+    // λ = 0.5 paces the sequential search for watching: the first corridor
+    // declares at ~57 steps instead of ~270 at the 0.1 default, with the line
+    // still flattening in ~9 visible increments rather than snapping.
+    setShrinkStep(0.5);
+    setShrinkStepRaw('0.500');
     if (activePreset !== 'penalty') {
       handleLoadPreset('penalty');
       // Far from the equilibrium at (0.1, 0.3), so the chase has distance to
@@ -1830,8 +1835,9 @@ export default function App() {
       target: 'coords',
       title: 'Each player gets a shrinking corridor',
       body:
-        'Every player also carries a boundary — a range of mixes still worth considering. As the opponent\'s '
-        + 'regret falls, that range contracts. Seen from above, the two corridors close in from both sides.',
+        'Every player also carries a boundary — a range of mixes still worth considering. As regret falls the '
+        + 'corridor contracts from both sides, and the search takes them one at a time: the steeper line '
+        + 'first, while the other holds.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -1848,8 +1854,8 @@ export default function App() {
       body:
         'The search is running. Self-interest alone always points at a corner — the best reply to any '
         + 'opponent mix is a pure strategy, never a blend — so it can never name an interior point. The '
-        + 'contracting boundary carries the search inward instead, and step by step both lines lose their '
-        + 'lean. The moment the first line goes flat, the run pauses.',
+        + 'contracting boundary carries the search inward instead: the steeper line flattens step by step '
+        + 'while the other keeps its lean. The moment the first line goes flat, the run pauses.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -1882,9 +1888,10 @@ export default function App() {
       target: 'plot',
       title: 'The first lean disappears',
       body:
-        'The run paused the moment this happened: one line has gone completely FLAT. No lean means no regret '
-        + 'left; every mix now pays that player exactly the same. That is indifference, found rather than '
-        + 'declared. The other line still leans inside its shrinking corridor — the search is not done.',
+        'The run paused the moment this happened: one line has gone completely FLAT, and its coordinate is '
+        + 'found. No lean means no regret left; every mix now pays that player exactly the same. That is '
+        + 'indifference, found rather than declared. The other line still leans at full strength — its '
+        + 'corridor is untouched, and the search turns there next.',
       onEnter: () => {
         // Continuity when the tour just paused the run: keep the exact frame
         // the visitor watched stop — one line genuinely flat, the other
@@ -1900,18 +1907,19 @@ export default function App() {
           setSimState((prev) => ({ ...prev, running: false }));
         } else if (mixedNE) {
           // Skipped ahead before the first find (or arrived from elsewhere):
-          // stage the state the run would have paused on. y-first matches the
-          // real dynamics — the strategy lines sit at the corridor midpoints,
-          // and y* is the root nearer 0.5, so A's line levels first.
+          // stage the state the run would have paused on. The search contracts
+          // the steeper line's corridor first — B's, on this game — so x is the
+          // coordinate that gets found.
           handleReset();
           setSimState((prev) => ({
             ...prev,
             running: false,
             converged: false,
-            discoveredMixedX: null,
-            discoveredMixedY: mixedNE.y,
-            foundAxis: 'y',
-            domXLo: 0, domXHi: 1,
+            discoveredMixedX: mixedNE.x,
+            discoveredMixedY: null,
+            foundAxis: 'x',
+            domXLo: mixedNE.x, domXHi: mixedNE.x,
+            domYLo: 0, domYHi: 1,
           }));
         }
         moveCamera(CAMERA.edgeOn, 1100);

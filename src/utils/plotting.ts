@@ -165,7 +165,7 @@ export function makeTraces(
     });
 
     // ── Phase 2 extra graphics: ghost spheres + search-range surface line ──
-    if (oneFound) {
+    if (oneFound && stepMode !== 'regret') {
       const gx = s.calcX ?? px;
       const gy = s.calcY ?? py;
 

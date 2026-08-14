@@ -744,8 +744,23 @@ export function doStep(
         }
         s.cycleCount++;
         s.visitedPositions = [];
-        s.domXLo = regretGlide(s.domXLo, sBfn, Dx); s.domXHi = regretGlide(s.domXHi, sBfn, Dx);
-        s.domYLo = regretGlide(s.domYLo, sAfn, Dy); s.domYHi = regretGlide(s.domYHi, sAfn, Dy);
+        // ── Steepest line first: contract ONE corridor at a time ─────────────
+        // Both corridors used to contract every cycle, which made the two
+        // strategy lines flatten in lockstep: each signal decays by the same
+        // (1-λ) per cycle, so at the first declaration the other line's lean
+        // was always ~0 (measured 0.2-0.3% of the payoff range across games).
+        // Sequencing by initial steepness — |s(0.5)|, a constant of the payoffs,
+        // no root knowledge — keeps the waiting line at its FULL lean until its
+        // own search begins, so "first coordinate found, now searching the
+        // second" is something a viewer can actually see. A line that is born
+        // indifferent (root at the midpoint, e.g. Cops & Robbers' y* = 0.5)
+        // still declares immediately via its own criterion below, whether or
+        // not it is the active corridor.
+        const xActive = s.discoveredMixedX === null
+          && (s.discoveredMixedY !== null || Math.abs(sBfn(0.5)) >= Math.abs(sAfn(0.5)));
+        const yActive = s.discoveredMixedY === null && !xActive;
+        if (xActive) { s.domXLo = regretGlide(s.domXLo, sBfn, Dx); s.domXHi = regretGlide(s.domXHi, sBfn, Dx); }
+        if (yActive) { s.domYLo = regretGlide(s.domYLo, sAfn, Dy); s.domYHi = regretGlide(s.domYHi, sAfn, Dy); }
         s.stratX = r3((s.domXLo + s.domXHi) / 2);
         s.stratY = r3((s.domYLo + s.domYHi) / 2);
         // A domain has converged once its remaining regret span is negligible.
@@ -758,16 +773,28 @@ export function doStep(
         };
         const xDone = Math.abs(s.domXHi - s.domXLo) < 0.0015 || Math.abs(sBfn(s.stratX)) < EPS_B;
         const yDone = Math.abs(s.domYHi - s.domYLo) < 0.0015 || Math.abs(sAfn(s.stratY)) < EPS_A;
-        if (xDone) { s.stratX = snapToIndifference(s.stratX, sBfn); s.domXLo = s.stratX; s.domXHi = s.stratX; }
-        if (yDone) { s.stratY = snapToIndifference(s.stratY, sAfn); s.domYLo = s.stratY; s.domYHi = s.stratY; }
-        // Declare BOTH coordinates together (parallel convergence). Setting them
-        // atomically avoids a transient "exactly one found" state, which would
-        // otherwise flash the Search-corridor box / ghost for a few end steps.
-        if (xDone && yDone && s.discoveredMixedX === null) {
-          s.discoveredMixedX = s.stratX;
-          s.discoveredMixedY = s.stratY;
-          addLog('✓ x-coordinate discovered: ' + s.stratX.toFixed(3));
-          addLog('✓ y-coordinate discovered: ' + s.stratY.toFixed(3));
+        // Declare EACH coordinate the moment its own criterion fires, exactly
+        // like shrink mode does. This used to declare both atomically "to avoid
+        // a transient exactly-one-found state" — but that transient IS the
+        // discovery event: without it regret mode never logs a first
+        // coordinate, never sets foundAxis, and the "1st NE Coord" jump stays
+        // dead no matter the game. The ghost renderer (the reason for the old
+        // caution) is shrink-phase furniture and is now gated off in regret.
+        if (xDone) {
+          s.stratX = snapToIndifference(s.stratX, sBfn); s.domXLo = s.stratX; s.domXHi = s.stratX;
+          if (s.discoveredMixedX === null) {
+            s.discoveredMixedX = s.stratX;
+            if (s.foundAxis === null) s.foundAxis = 'x';
+            addLog('✓ x-coordinate discovered: ' + s.stratX.toFixed(3));
+          }
+        }
+        if (yDone) {
+          s.stratY = snapToIndifference(s.stratY, sAfn); s.domYLo = s.stratY; s.domYHi = s.stratY;
+          if (s.discoveredMixedY === null) {
+            s.discoveredMixedY = s.stratY;
+            if (s.foundAxis === null) s.foundAxis = 'y';
+            addLog('✓ y-coordinate discovered: ' + s.stratY.toFixed(3));
+          }
         }
         addLog(`↺ Cycle ${s.cycleCount} → A∈[${r3(s.domXLo).toFixed(3)},${r3(s.domXHi).toFixed(3)}] B∈[${r3(s.domYLo).toFixed(3)},${r3(s.domYHi).toFixed(3)}] (regretλ=${r3(lambda)})`);
         onCycleDetected();
