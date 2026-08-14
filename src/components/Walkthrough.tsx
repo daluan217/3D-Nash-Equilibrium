@@ -173,9 +173,10 @@ export function Walkthrough({
     if (!el) return;
     const r0 = el.getBoundingClientRect();
     const asRect: Rect = { top: r0.top, left: r0.left, width: r0.width, height: r0.height };
-    const willSheet = window.innerWidth < COMPACT_MAX
-      || !floatingFits(asRect, window.innerWidth, window.innerHeight);
-    if (!willSheet) {
+    const isLand = window.innerWidth > window.innerHeight;
+    const willSheet = !isLand && (window.innerWidth < COMPACT_MAX
+      || !floatingFits(asRect, window.innerWidth, window.innerHeight));
+    if (!willSheet && !isLand) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
@@ -183,8 +184,10 @@ export function Walkthrough({
     // starts below it. Without this the target was scrolled to the top of the
     // viewport and the header covered 123-137px of it on a phone.
     const top = headerOffset();
-    const sheet = cardH || Math.round(window.innerHeight * sheetMaxVh(window.innerHeight));
-    const room = Math.max(120, window.innerHeight - sheet - top - GAP * 2);
+    // In landscape the card sits BESIDE the target, so the whole below-header
+    // strip is available; only the portrait sheet eats vertical room.
+    const sheetH = isLand ? 0 : (cardH || Math.round(window.innerHeight * sheetMaxVh(window.innerHeight)));
+    const room = Math.max(120, window.innerHeight - sheetH - top - GAP * 2);
     // Centre it when it fits; when the target is TALLER than the strip -- the
     // 3D plot on a phone is -- centring pushes its bottom under the sheet and
     // its top off screen at once. Align the top instead, so the part of the
@@ -216,27 +219,63 @@ export function Walkthrough({
   const vw = vp.w;
   const vh = vp.h;
   /**
-   * Below this width the caption becomes a bottom sheet instead of a floating
-   * card. 900px rather than a phone width because tablets were just as bad:
-   * a 520px card on an iPad still sat across 45-55% of its own target, since
-   * the plot is tall and neither above nor below ever has room.
+   * Orientation decides the layout FAMILY, and it is the viewport's aspect —
+   * never the device class. A phone rotated sideways, an iPad in landscape and
+   * a desktop browser at full width are all `landscape`; the same desktop
+   * snapped into a half-screen split taller than it is wide is `portrait`.
+   * Keying on user-agent or touch would get every one of those wrong somewhere.
+   *
+   * LANDSCAPE: the card always sits horizontally adjacent to its target — left
+   * or right, whichever side has more room — so the arrow is always horizontal.
+   * PORTRAIT: the previous behaviour — a bottom sheet on narrow screens or
+   * wherever a floating card cannot fit, the free-floating card otherwise.
    */
-  // Narrow screens always get the sheet; wider ones get it whenever the target
-  // leaves no room for a floating card. Width alone was not enough — an iPad in
-  // landscape is 1194px wide but only 834 tall, and the plot fills the height,
-  // so the floating card fell back to centre and sat across 55% of its own
-  // target with no arrow at all.
-  const compact = vw < COMPACT_MAX || (!!rect && !floatingFits(rect, vw, vh));
-  const CARD_W = compact ? vw - GAP * 2 : Math.min(520, vw - 32);
-  const h = cardH || (compact ? Math.round(vh * sheetMaxVh(vh)) : 280);
+  const landscape = vw > vh;
+  const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !floatingFits(rect, vw, vh)));
+
+  /** Landscape card width: whatever the roomier side offers, clamped sane. */
+  const sideAvail = rect
+    ? Math.max(vw - (rect.left + rect.width) - GAP * 2, rect.left - GAP * 2)
+    : vw - GAP * 2;
+  const CARD_W = landscape
+    ? Math.max(280, Math.min(520, Math.min(sideAvail, vw - GAP * 2)))
+    : sheet
+      ? vw - GAP * 2
+      : Math.min(520, vw - 32);
+  const h = cardH
+    || (sheet ? Math.round(vh * sheetMaxVh(vh))
+      : landscape ? Math.min(300, vh - GAP * 2)
+      : 280);
 
   // Put the card wherever there is room, preferring below the target. Without a
   // target (element not on screen) it centres, so a missing anchor degrades to a
   // plain caption instead of an arrow pointing into empty space.
+  /** Small-type treatment: the portrait sheet, or a landscape card that is
+   *  narrow or on a short screen (a phone held sideways is ~390px tall). */
+  const dense = sheet || (landscape && (CARD_W < 420 || vh < 560));
   let cardTop: number;
   let cardLeft: number;
   let place: 'below' | 'above' | 'right' | 'left' | 'center' = 'center';
-  if (compact) {
+  if (landscape) {
+    if (rect) {
+      // Horizontal by decree, not by search: the roomier side wins, and when
+      // even that side is too narrow the card docks at the screen edge and is
+      // allowed to overlap the target's edge rather than abandon the layout.
+      // A phone in landscape has full-width targets, so "fits beside" is often
+      // impossible — a right-docked panel with a horizontal arrow is still the
+      // reading the user asked for, and beats a sheet covering the bottom half.
+      const rightSpace = vw - (rect.left + rect.width) - GAP * 2;
+      const leftSpace = rect.left - GAP * 2;
+      place = rightSpace >= leftSpace ? 'right' : 'left';
+      cardLeft = place === 'right'
+        ? Math.min(rect.left + rect.width + GAP, vw - CARD_W - GAP)
+        : Math.max(GAP, rect.left - GAP - CARD_W);
+      cardTop = Math.max(GAP, Math.min(rect.top + rect.height / 2 - h / 2, vh - h - GAP));
+    } else {
+      cardTop = Math.max(GAP, (vh - h) / 2);
+      cardLeft = (vw - CARD_W) / 2;
+    }
+  } else if (sheet) {
     // Docked to the bottom, full width. `place = 'below'` is not a guess about
     // free space here -- the sheet IS below, and the scroll effect above has
     // put the target in the strip over it, so the existing arrow geometry
@@ -276,9 +315,17 @@ export function Walkthrough({
         : { x1: x, y1: cardTop + h + 4, x2: x, y2: rect.top - 3 };
     } else {
       const y = Math.max(rect.top + 12, Math.min(cardTop + h / 2, rect.top + rect.height - 12));
-      arrow = place === 'right'
-        ? { x1: cardLeft - 4, y1: y, x2: rect.left + rect.width + 3, y2: y }
-        : { x1: cardLeft + CARD_W + 4, y1: y, x2: rect.left - 3, y2: y };
+      // Clamped so the head always sits at least 8px on the target's side of
+      // the card edge. In landscape the card may legitimately overlap a
+      // full-width target (a phone held sideways); without the clamp the two
+      // endpoints swap and the arrow points INTO the card.
+      if (place === 'right') {
+        const x1 = cardLeft - 4;
+        arrow = { x1, y1: y, x2: Math.min(rect.left + rect.width + 3, x1 - 8), y2: y };
+      } else {
+        const x1 = cardLeft + CARD_W + 4;
+        arrow = { x1, y1: y, x2: Math.max(rect.left - 3, x1 + 8), y2: y };
+      }
     }
   }
 
@@ -315,7 +362,7 @@ export function Walkthrough({
         type="button"
         onClick={close}
         aria-label="Exit tour"
-        className={`pointer-events-auto absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${compact ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
+        className={`pointer-events-auto absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
       >
         <X className="w-4 h-4" /> Exit tour
       </button>
@@ -338,7 +385,7 @@ export function Walkthrough({
       <div
         ref={cardRef}
         className={`pointer-events-auto absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
-          compact ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
+          dense ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
         }`}
         style={{
           top: cardTop,
@@ -346,12 +393,12 @@ export function Walkthrough({
           width: CARD_W,
           // Capped rather than fixed: a long caption scrolls inside the sheet
           // instead of growing over the diagram it is describing.
-          maxHeight: compact ? `${Math.round(sheetMaxVh(vh) * 100)}vh` : undefined,
+          maxHeight: sheet ? `${Math.round(sheetMaxVh(vh) * 100)}vh` : landscape ? `${vh - GAP * 2}px` : undefined,
         }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
-          <span className={`font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${compact ? 'text-[11px]' : 'text-[13px]'}`}>
+          <span className={`font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${dense ? 'text-[11px]' : 'text-[13px]'}`}>
             {i + 1} / {steps.length}
           </span>
           <button
@@ -364,19 +411,19 @@ export function Walkthrough({
           </button>
         </div>
 
-        <h3 className={`font-bold text-slate-800 dark:text-slate-100 leading-snug tracking-tight ${compact ? 'text-[17px]' : 'text-2xl'}`}>{step.title}</h3>
+        <h3 className={`font-bold text-slate-800 dark:text-slate-100 leading-snug tracking-tight ${dense ? 'text-[17px]' : 'text-2xl'}`}>{step.title}</h3>
         <p
-          className={`leading-relaxed text-slate-600 dark:text-slate-300 ${compact ? 'text-[14px] overflow-y-auto min-h-0' : 'text-[17px]'}`}
+          className={`leading-relaxed text-slate-600 dark:text-slate-300 ${dense ? 'text-[14px]' : 'text-[17px]'}${sheet || landscape ? ' overflow-y-auto min-h-0' : ''}`}
           aria-live="polite"
         >
           {step.body}
         </p>
 
-        <div className={`flex items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 ${compact ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
+        <div className={`flex items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 ${dense ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
           <button
             type="button"
             onClick={close}
-            className={`font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors ${compact ? 'text-[13px]' : 'text-[15px]'}`}
+            className={`font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors ${dense ? 'text-[13px]' : 'text-[15px]'}`}
           >
             Skip
           </button>
@@ -385,14 +432,14 @@ export function Walkthrough({
               type="button"
               onClick={() => setI((n) => Math.max(n - 1, 0))}
               disabled={i === 0}
-              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors ${compact ? 'px-3 py-2 text-[13px]' : 'px-4 py-2.5 text-[15px]'}`}
+              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors ${dense ? 'px-3 py-2 text-[13px]' : 'px-4 py-2.5 text-[15px]'}`}
             >
               <ArrowLeft className="w-4 h-4" /> Back
             </button>
             <button
               type="button"
               onClick={() => (last ? close() : setI((n) => n + 1))}
-              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors ${compact ? 'px-3.5 py-2 text-[13px]' : 'px-5 py-2.5 text-[15px]'}`}
+              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors ${dense ? 'px-3.5 py-2 text-[13px]' : 'px-5 py-2.5 text-[15px]'}`}
             >
               {last ? 'Explore on your own' : <>Next <ArrowRight className="w-4 h-4" /></>}
             </button>
