@@ -545,15 +545,13 @@ export function makeTraces(
   allNE.forEach(ne => {
     if (ne.type === 'pure') {
       if (trackingMode === 'both') {
-        let zAp = EA(ne.x, ne.y, g);
-        let zBp = EB(ne.x, ne.y, g);
         // In a symmetric game both surfaces pay the same at a pure NE, so the
-        // trace's two diamonds land on the identical 3D point and depth-tie —
-        // they flicker against each other as the view turns. Split them by a
-        // hair; equal payoffs still READ as one diamond.
-        const spanNE = Math.max(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22)
-                     - Math.min(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22) || 1;
-        if (Math.abs(zAp - zBp) < spanNE * 0.001) { zAp += spanNE * 0.004; zBp -= spanNE * 0.004; }
+        // trace's two diamonds land on the identical 3D point and depth-tie.
+        // That tie is invisible: both sprites are the same glyph, colour and
+        // size, so whichever fragment wins looks the same. Exact coincidence
+        // is the spec — no split.
+        const zAp = EA(ne.x, ne.y, g);
+        const zBp = EB(ne.x, ne.y, g);
         const zLo = Math.min(zAp, zBp);
         const zHi = Math.max(zAp, zBp);
         const COORD_STEPS = 15;
@@ -584,7 +582,7 @@ export function makeTraces(
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zAp, zBp],
-          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', opacity: 0.99, line: { color: 'white', width: 1 } }
         });
       } else {
         const zP = trackingMode === 'B' ? EB(ne.x, ne.y, g) : EA(ne.x, ne.y, g);
@@ -597,16 +595,15 @@ export function makeTraces(
           x: [ne.x],
           y: [ne.y],
           z: [zP],
-          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', opacity: 0.99, line: { color: 'white', width: 1 } }
         });
       }
       pureShown = true;
     } else {
-      let zA = EA(ne.x, ne.y, g);
-      let zB = EB(ne.x, ne.y, g);
-      const spanNE2 = Math.max(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22)
-                    - Math.min(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22) || 1;
-      if (Math.abs(zA - zB) < spanNE2 * 0.001) { zA += spanNE2 * 0.004; zB -= spanNE2 * 0.004; }
+      // Same-glyph coincidence as the pure-NE twins above: a depth tie between
+      // two identical purple diamonds cannot be seen, so keep the exact z.
+      const zA = EA(ne.x, ne.y, g);
+      const zB = EB(ne.x, ne.y, g);
       if (trackingMode === 'both') {
         const zLo = Math.min(zA, zB);
         const zHi = Math.max(zA, zB);
@@ -638,7 +635,7 @@ export function makeTraces(
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zA, zB],
-          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', opacity: 0.99, line: { color: 'white', width: 1 } }
         });
       } else {
         const zVal = trackingMode === 'B' ? zB : zA;
@@ -651,7 +648,7 @@ export function makeTraces(
           x: [ne.x],
           y: [ne.y],
           z: [zVal],
-          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', line: { color: 'white', width: 1 } }
+          marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', opacity: 0.99, line: { color: 'white', width: 1 } }
         });
       }
       mixedShown = true;
@@ -662,15 +659,19 @@ export function makeTraces(
   // Drawn LAST so that at convergence they render on top of the NE diamond,
   // leaving only the diamond's corners protruding (see diamondSize note above).
   //
-  // When a sphere sits EXACTLY on an equilibrium marker the two billboards
-  // depth-tie, and which one wins flips with the camera angle — the sphere
-  // flickered in and out of the diamond while the view spun. A lift of 0.6%
-  // of the z-span breaks the tie invisibly; draw order alone cannot, because
-  // WebGL resolves equal depths per-fragment, not per-trace.
-  const zSpanAll = Math.max(g.a11, g.a12, g.a21, g.a22, g.b11, g.b12, g.b21, g.b22)
-                 - Math.min(g.a11, g.a12, g.a21, g.a22, g.b11, g.b12, g.b21, g.b22) || 1;
-  const onNE = allNE.some(n => Math.abs(n.x - px) < 1e-3 && Math.abs(n.y - py) < 1e-3);
-  const zLift = onNE ? zSpanAll * 0.006 : 0;
+  // When a sphere sits EXACTLY on an equilibrium diamond the two billboards
+  // depth-tie, and which fragment wins can flip with the camera angle — the
+  // sphere flickered in and out of the diamond while the view spun. Geometry
+  // offsets were tried and rejected: ANY nonzero z-lift reads as a visible
+  // hover at sufficient zoom, and the spec is that the sphere's centre sits
+  // exactly on the diamond's. The deterministic fix is opacity 0.99 on the
+  // DIAMONDS (visually identical to opaque): it routes them through
+  // gl-plot3d's translucent pass, which draws after the opaque spheres and
+  // depth-tests with strict LESS. Inside the sphere's disc the depths are
+  // equal, so the diamond loses there; outside the disc it wins against the
+  // background — sphere in the middle, corners protruding, no tie left to
+  // race. (Making the SPHERE the translucent one fails for the same reason:
+  // strict LESS at equal depth culls whichever is drawn second.)
   if (trackingMode === 'A' || trackingMode === 'both') {
     traces.push({
       type: 'scatter3d',
@@ -679,7 +680,7 @@ export function makeTraces(
       showlegend: trackingMode === 'A' || trackingMode === 'both',
       x: [px],
       y: [py],
-      z: [eA + zLift],
+      z: [eA],
       marker: { size: sphereSize, color: '#d52c1a', line: { color: 'white', width: 2 } }
     });
   }
@@ -691,7 +692,7 @@ export function makeTraces(
       showlegend: trackingMode === 'B' || trackingMode === 'both',
       x: [px],
       y: [py],
-      z: [eB + zLift],
+      z: [eB],
       marker: { size: sphereSize, color: '#2980B9', line: { color: 'white', width: 2 } }
     });
   }

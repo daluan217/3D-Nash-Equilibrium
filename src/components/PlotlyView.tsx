@@ -21,7 +21,7 @@ interface PlotlyViewProps {
    * with each player's payoff spelled out. A caption that says "three each" is
    * only convincing if the reader can see the three.
    */
-  tourPoints?: { x: number; y: number }[];
+  tourPoints?: { x: number; y: number; accent?: 'gold' | 'purple' }[];
   /**
    * Traces the guided tour wants switched off, by name, as if the viewer had
    * clicked them out in the legend.
@@ -395,6 +395,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
      * addTraces would be wiped by the next state change. Marker + text rather
      * than scene.annotations so the label is anchored in 3D and travels with the
      * surface as the camera rotates. */
+    const goldAnnotations: any[] = [];
     for (const pt of tourPoints) {
       // When a callout sits exactly on an equilibrium marker — the mixed-NE
       // steps put it there on purpose, and the dilemma's corners ARE pure-NE
@@ -411,8 +412,11 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // when it shares one with ITS OWN TWIN: at a symmetric game's corners
       // EA = EB, so A's and B's callouts coincide and flicker against each
       // other exactly like the NE case.
-      let calloutLift = onNE ? span * 0.008 : 0;
-      if (Math.abs(zAraw - zBraw) < span * 0.001) calloutLift = Math.max(calloutLift, span * 0.004);
+      // Text glyphs are already offset in SCREEN space by textposition, so the
+      // anchor lift only needs to break depth ties, same as the markers — keep
+      // it a sliver so the numbers sit visually on the point they describe.
+      let calloutLift = onNE ? span * 0.001 : 0;
+      if (Math.abs(zAraw - zBraw) < span * 0.001) calloutLift = Math.max(calloutLift, span * 0.0006);
       // The lift positions the MARKER; the LABEL prints the true payoff. An
       // earlier cut fed the lifted height into the text and the equilibrium
       // read "A = 0.919" where the payoff is 0.727 — a made-up number on the
@@ -421,28 +425,82 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       const zB = r3(zBraw - calloutLift);
       const labelA = r3(zAraw);
       const labelB = r3(zBraw);
-      // Text-only annotations in the Mixed-NE purple: the equilibrium diamonds
-      // already mark the spot, so a second glyph on the same point was one
-      // marker too many — and colouring the text like the diamonds says
-      // outright which markers the numbers belong to. (Earlier cuts used
-      // yellow diamonds+text; deliberately not a player colour, so the note
-      // never reads as a data series.)
-      const callout = isDark ? '#c084fc' : '#8E44AD';
-      // Off to the RIGHT, not stacked above and below. Centred labels landed on
-      // top of the mixed-NE diamond once the mixed act zoomed in, and in a
-      // symmetric game both players share a z, so 'top'/'bottom' would still
-      // have collided with each other.
-      // A goes up-LEFT and B down-RIGHT: splitting horizontally as well as
-      // vertically, because on a wide payoff axis two callouts half a unit
-      // apart land on the same pixel row and overprint into garbage.
-      for (const [z, label, who, pos] of [[zA, labelA, 'A', 'top left'], [zB, labelB, 'B', 'bottom right']] as const) {
-        traces.push({
-          type: 'scatter3d', mode: 'text',
-          x: [pt.x], y: [pt.y], z: [z],
-          text: [`${who} = ${label}`], textposition: pos,
-          textfont: { size: 13, color: callout, family: 'ui-monospace, monospace' },
-          hoverinfo: 'skip', showlegend: false, cliponaxis: false,
-        } as any);
+      // Two accents, chosen per step:
+      // - 'purple' (mixed act): TEXT-ONLY in the Mixed-NE purple. The
+      //   equilibrium diamonds already mark the spot, so a second glyph on the
+      //   same point was one marker too many — and colouring the text like the
+      //   diamonds says outright which markers the numbers belong to.
+      // - 'gold' (default; dilemma act): gold diamond + text. Those points sit
+      //   on plain surface corners with nothing else marking them, so the
+      //   callout has to BE the marker. Deliberately not a player colour, so
+      //   the note never reads as a data series.
+      if (pt.accent === 'purple') {
+        const callout = isDark ? '#c084fc' : '#8E44AD';
+        // Off to the RIGHT, not stacked above and below. Centred labels landed on
+        // top of the mixed-NE diamond once the mixed act zoomed in, and in a
+        // symmetric game both players share a z, so 'top'/'bottom' would still
+        // have collided with each other.
+        // A goes up-LEFT and B down-RIGHT: splitting horizontally as well as
+        // vertically, because on a wide payoff axis two callouts half a unit
+        // apart land on the same pixel row and overprint into garbage.
+        for (const [z, label, who, pos] of [[zA, labelA, 'A', 'top left'], [zB, labelB, 'B', 'bottom right']] as const) {
+          traces.push({
+            type: 'scatter3d', mode: 'text',
+            x: [pt.x], y: [pt.y], z: [z],
+            text: [`${who} = ${label}`], textposition: pos,
+            textfont: { size: 13, color: callout, family: 'ui-monospace, monospace' },
+            hoverinfo: 'skip', showlegend: false, cliponaxis: false,
+          } as any);
+        }
+      } else {
+        const callout = isDark ? '#FACC15' : '#CA8A04';
+        const calloutRing = isDark ? '#1f2937' : '#ffffff';
+        // Gold diamonds sit at their EXACT payoff height — no tie-lift. At a
+        // symmetric point EA = EB, and the lifted per-player pair printed TWO
+        // gold diamonds a sliver apart on top of the pure-NE diamond: three
+        // glyphs for one point. When the heights coincide, draw ONE diamond
+        // and hang both labels off it.
+        //
+        // Size 13 on purpose, larger than the pure-NE diamond (10.5 + ring):
+        // opaque gold beats the translucent NE diamond deterministically at
+        // equal depth (see plotting.ts), and being bigger it covers the green
+        // completely — the corner reads as one gold marker, not gold-on-green.
+        const goldSize = 13;
+        const sameHeight = Math.abs(zAraw - zBraw) < span * 0.001;
+        const goldPts: [number, string, boolean][] = sameHeight
+          ? [[r3(zAraw), `A = ${labelA}`, true], [r3(zAraw), `B = ${labelB}`, false]]
+          : [[r3(zAraw), `A = ${labelA}`, true], [r3(zBraw), `B = ${labelB}`, false]];
+        for (const [i, [z, label, isA]] of goldPts.entries()) {
+          if (!(sameHeight && i > 0)) {
+            traces.push({
+              type: 'scatter3d', mode: 'markers',
+              x: [pt.x], y: [pt.y], z: [z],
+              marker: { size: goldSize, color: callout, symbol: 'diamond', line: { color: calloutRing, width: 2 } },
+              hoverinfo: 'skip', showlegend: false, cliponaxis: false,
+            } as any);
+          }
+          // The labels are scene ANNOTATIONS, not trace text: gl3d perspective-
+          // scales trace text glyphs with depth, so on the two-corner step the
+          // far corner's "A = 1 / B = 1" rendered visibly smaller than the near
+          // corner's "A = 3 / B = 3" at the same font size. Annotations anchor
+          // to the 3D point (they still travel with rotation) but draw in
+          // screen space at a fixed size — every label prints equally.
+          // A reads directly ABOVE the diamond and B directly BELOW — centred,
+          // not left/right-anchored: the tour cameras put corners at the plot
+          // edge, and a side-anchored label there pushes its text clean off
+          // the visible area. Centred, at worst half the label meets the edge.
+          goldAnnotations.push({
+            x: pt.x, y: pt.y, z,
+            text: label, showarrow: false,
+            xanchor: 'center',
+            // Anchor the text EDGE nearest the diamond, then push off by the
+            // glyph's half-height plus a margin — centre-anchoring left the
+            // label straddling the diamond at some cameras.
+            yanchor: isA ? 'bottom' : 'top',
+            yshift: isA ? 12 : -12,
+            font: { size: 16, color: callout, family: 'ui-monospace, monospace' },
+          });
+        }
       }
     }
 
@@ -455,6 +513,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       uirevision: 'camera_view_' + uiRevision,
       scene: {
         ...plotLayout.scene,
+        // Always set (empty when no tour callouts) so stale labels from a
+        // previous step are cleared on the next Plotly.react.
+        annotations: goldAnnotations,
         camera: cameraRef.current,
         uirevision: 'camera_view_' + uiRevision,
         bgcolor: isDark ? '#000000' : '#ffffff',

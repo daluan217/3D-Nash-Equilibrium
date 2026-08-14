@@ -1504,7 +1504,7 @@ export default function App() {
    * Points the tour is currently talking about, drawn on the surfaces with each
    * player's payoff labelled. Empty except while a step is discussing one.
    */
-  const [tourPoints, setTourPoints] = useState<{ x: number; y: number }[]>([]);
+  const [tourPoints, setTourPoints] = useState<{ x: number; y: number; accent?: 'gold' | 'purple' }[]>([]);
   /** Trace names the current tour step wants switched off. Held in state (not
    *  rebuilt inline) so its identity is stable between steps. */
   const [tourHiddenTraces, setTourHiddenTraces] = useState<string[]>([]);
@@ -1537,9 +1537,6 @@ export default function App() {
    * flat-line step stages its own picture anyway.
    */
   const [tourPauseAtFirstFind, setTourPauseAtFirstFind] = useState(false);
-  /** Set when the pause below fires, so the next step can keep the exact frame
-   *  the run stopped on instead of restaging one. */
-  const tourPausedRunRef = useRef(false);
   useEffect(() => {
     if (!tourPauseAtFirstFind || !simState.running) return;
     // Fire on the DECLARATION itself. Regret mode now declares coordinates
@@ -1549,12 +1546,44 @@ export default function App() {
     // every indicator telling one story. (An older version watched the
     // rename thresholds because declaration only happened at convergence.)
     if ((simState.discoveredMixedX !== null) !== (simState.discoveredMixedY !== null)) {
-      tourPausedRunRef.current = true;
       setSimState((prev) => ({ ...prev, running: false }));
     }
   }, [tourPauseAtFirstFind, simState, payoffs]);
 
+  /* Deferred work scheduled by tour steps (delayed handleStep, delayed
+   * resume). Every timer goes through tourDefer so that entering ANY step
+   * first cancels whatever a previous step left in flight — otherwise a
+   * leftover "start running" or "take the first step" callback fires into the
+   * frame the NEW step just staged, and what the visitor sees depends on how
+   * fast they clicked. Determinism rule: a step's onEnter must fully own
+   * everything that happens until the next onEnter. */
+  const tourTimersRef = useRef<number[]>([]);
+  const tourDefer = (fn: () => void, ms: number) => {
+    tourTimersRef.current.push(window.setTimeout(fn, ms));
+  };
+  const clearTourTimers = () => {
+    tourTimersRef.current.forEach((t) => window.clearTimeout(t));
+    tourTimersRef.current = [];
+  };
+
+  /* Request that the sim be staged AT the first-find frame (the step the
+   * "1st NE Coord" button names — 24 on the tour's Penalty Kick run), with an
+   * optional resume. Steps 14/15 must show the SAME animation no matter how
+   * the visitor arrived — waited out the pause, clicked past it early, or came
+   * Back from a later step — so they never reuse whatever the live run left
+   * behind: they reset and rebuild through this request instead.
+   *
+   * It is a state+effect rather than a direct call chain because onEnter's own
+   * render can still have initialized=true (entering from a live run): a
+   * handleStep captured in THAT closure takes the incremental branch and
+   * no-ops against the just-cleared history. The effect below runs after the
+   * reset commits, with fresh closures. */
+  const [tourFirstFindReq, setTourFirstFindReq] = useState<{ resume: boolean; nonce: number } | null>(null);
+
   const closeTour = useCallback(() => {
+    tourTimersRef.current.forEach((t) => window.clearTimeout(t));
+    tourTimersRef.current = [];
+    setTourFirstFindReq(null);
     setTourOpen(false);
     setTourPoints([]);
     setTourHiddenTraces([]);
@@ -1593,14 +1622,25 @@ export default function App() {
   const FROZEN_HIDDEN = [TRACE.startPoint, TRACE.posA, TRACE.posB];
 
   const enterDilemmaAct = () => {
+    // A step owns everything until the next step: kill any delayed
+    // handleStep/resume a previous step scheduled, or it fires into the
+    // frame this step is about to stage.
+    clearTourTimers();
+    setTourFirstFindReq(null);
     setTourSpinNonce((n) => n + 1);
     setTourSpinAllowed(true);
     setTourPauseAtFirstFind(false);
     if (activePreset !== 'pd') {
       handleLoadPreset('pd');
-      setX0('0.217');
-      setY0('0.217');
     }
+    // ALWAYS re-assert the start point and mover — not just on preset switch.
+    // The visitor can edit them mid-tour, and a step's animation must not
+    // depend on that: same entry, same run, every time. (Setting the same
+    // value is a no-op; a changed value triggers the re-freeze reset, which
+    // the staged steps do anyway.)
+    setX0('0.217');
+    setY0('0.217');
+    setFirstMover('A');
     setStepMode('shrink');
     setTrackingMode('both');
     setTourPoints([]);
@@ -1615,6 +1655,9 @@ export default function App() {
    * they are the thing being watched.
    */
   const enterMixedAct = (extraHidden: string[] = []) => {
+    // Same ownership rule as enterDilemmaAct: cancel anything in flight.
+    clearTourTimers();
+    setTourFirstFindReq(null);
     setTourSpinNonce((n) => n + 1);
     setTourSpinAllowed(true);
     setTourPauseAtFirstFind(false);
@@ -1628,11 +1671,14 @@ export default function App() {
     setShrinkStepRaw('0.300');
     if (activePreset !== 'penalty') {
       handleLoadPreset('penalty');
-      // Far from the equilibrium at (0.1, 0.3), so the chase has distance to
-      // run and the position markers start well clear of the NE diamonds.
-      setX0('0.800');
-      setY0('0.200');
     }
+    // ALWAYS re-assert start point and mover, not just on preset switch —
+    // mid-tour edits must not change what a step's animation looks like.
+    // Far from the equilibrium at (0.1, 0.3), so the chase has distance to
+    // run and the position markers start well clear of the NE diamonds.
+    setX0('0.800');
+    setY0('0.200');
+    setFirstMover('A');
     // Deliberately does NOT set the convergence method. It used to force
     // 'shrink' here, so every step had to re-assert 'regret' or be silently
     // flipped back — which is what happened on the last step and left the
@@ -1853,7 +1899,6 @@ export default function App() {
         enterMixedAct();
         setStepMode('regret');
         setTourPoints([]);
-        tourPausedRunRef.current = false;
         setTourPauseAtFirstFind(true);
         // 1x so the few-dozen-step run (λ = 0.3, set by enterMixedAct) plays
         // at a readable pace. Restored on tour close.
@@ -1868,7 +1913,7 @@ export default function App() {
         // a change in TILT, which a straight-down camera cannot show.
         moveCamera(CAMERA.mixedOpen, 800);
         handleReset();
-        window.setTimeout(() => handleStep(true), 350);
+        tourDefer(() => handleStep(true), 350);
       },
     },
     {
@@ -1880,39 +1925,19 @@ export default function App() {
         + 'indifference, found rather than declared. The other line still leans — its corridor is still '
         + 'closing, and the search carries on there.',
       onEnter: () => {
-        // Continuity when the tour just paused the run: keep the exact frame
-        // the visitor watched stop — one line genuinely flat, the other
-        // genuinely still leaning in its contracted corridor. The spy payoffs
-        // make that separation real (the start sits near x*, far from y*), so
-        // nothing shown here is an idealisation. enterMixedAct leaves domains
-        // and paths alone, so keeping the frame just means not resetting.
-        const pausedByTour = tourPausedRunRef.current;
+        // Unconditional: ALWAYS rebuild the run and jump to the first-find
+        // frame — the exact step the pause on the previous step lands on
+        // (the run is deterministic, so this IS that frame, contracted
+        // corridors and drawn paths included, not a staged lookalike).
+        // Earlier versions kept the live frame when the pause had fired and
+        // staged an approximation otherwise, which meant what this step
+        // showed depended on how fast the visitor clicked.
         enterMixedAct();
         setStepMode('regret');
         setTourPoints([]);
-        if (pausedByTour) {
-          setSimState((prev) => ({ ...prev, running: false }));
-        } else if (mixedNE) {
-          // Skipped ahead before the first find (or arrived from elsewhere):
-          // stage the state the run would have paused on. y* sits 3x nearer
-          // the corridor midpoint than x*, so y declares first; the x-corridor
-          // is staged PARTIALLY contracted (decay factor f = declare-threshold
-          // over y*'s midpoint distance, ~0.29 for this preset) so B's line
-          // shows the same ~10% residual lean the live run pauses with.
-          handleReset();
-          const f = 0.29;
-          setSimState((prev) => ({
-            ...prev,
-            running: false,
-            converged: false,
-            discoveredMixedX: null,
-            discoveredMixedY: mixedNE.y,
-            foundAxis: 'y',
-            domYLo: mixedNE.y, domYHi: mixedNE.y,
-            domXLo: r3(mixedNE.x * (1 - f)),
-            domXHi: r3(mixedNE.x + (1 - mixedNE.x) * f),
-          }));
-        }
+        setSpeed(1);
+        handleReset();
+        setTourFirstFindReq({ resume: false, nonce: Date.now() });
         moveCamera(CAMERA.edgeOn, 1100);
       },
     },
@@ -1925,27 +1950,19 @@ export default function App() {
         + 'the second coordinate is discovered too. The equilibrium is now fully found.',
       onEnter: () => {
         // Start EXACTLY at the first-find frame — the same step the
-        // "1st NE Coord" button names (24 on this game) — and play onward to
-        // the second discovery. Resuming from the live simState proved
-        // fragile: enterMixedAct nulls the discovered coordinates, so a
-        // previous step can leave the picture right but the state wrong. The
-        // NE snapshot is recorded by the run itself and immune to whatever
-        // the steps in between did to the live state.
+        // "1st NE Coord" button names (24 on this game) — then resume and
+        // play to the second discovery. Unconditional rebuild, same as the
+        // previous step: earlier versions reused the live run's snapshot
+        // when one existed and ran afresh from step 0 otherwise, so clicking
+        // past the run early produced a different animation than waiting.
         enterMixedAct();
         setStepMode('regret');
         setTourPoints([]);
         setTourHiddenTraces([]);
         setTourSpinAllowed(false);
-        if (neSnapshotRef.current && thinHistoryRef.current.length > 0) {
-          handleJumpToNE();
-          // Let the jump's state land, then play from there.
-          window.setTimeout(() => setSimState((prev) => ({ ...prev, running: true })), 400);
-        } else {
-          // Skipped ahead with no recorded run: run afresh. Without the
-          // first-find pause armed it plays through both discoveries.
-          handleReset();
-          window.setTimeout(() => handleStep(true), 350);
-        }
+        setSpeed(1);
+        handleReset();
+        setTourFirstFindReq({ resume: true, nonce: Date.now() });
       },
     },
     {
@@ -1968,7 +1985,7 @@ export default function App() {
             discoveredMixedY: mixedNE.y,
             foundAxis: 'y',
           }));
-          setTourPoints([{ x: mixedNE.x, y: mixedNE.y }]);
+          setTourPoints([{ x: mixedNE.x, y: mixedNE.y, accent: 'purple' }]);
         }
         moveCamera(CAMERA.interior, 1200);
       },
@@ -1999,7 +2016,7 @@ export default function App() {
             discoveredMixedY: mixedNE.y,
             foundAxis: 'y',
           }));
-          setTourPoints([{ x: mixedNE.x, y: mixedNE.y }]);
+          setTourPoints([{ x: mixedNE.x, y: mixedNE.y, accent: 'purple' }]);
         }
         moveCamera(CAMERA.interior, 700);
       },
@@ -2042,6 +2059,24 @@ export default function App() {
     setJumpInput(String(paused.stepCount));
     setLogEntries(prev => [...prev, `→ Jumped to step ${paused.stepCount} (first NE coordinate found)`]);
   };
+
+  // Fulfil a pending first-find staging request (see the comment at the
+  // declaration). Waits for initialized=false so it runs strictly after the
+  // requesting step's handleReset — and after the x0/y0 re-freeze effect,
+  // which is declared earlier and therefore runs first in the same commit.
+  useEffect(() => {
+    if (!tourFirstFindReq || initialized) return;
+    const { resume } = tourFirstFindReq;
+    setTourFirstFindReq(null);
+    handleStep(false);   // initialize: precomputes the run + the NE snapshot
+    handleJumpToNE();    // land on the first-find frame, paths and all
+    if (resume) {
+      // A beat on the found frame before it moves, so the viewer can see
+      // where the playback picks up from.
+      tourDefer(() => setSimState((prev) => ({ ...prev, running: true })), 400);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourFirstFindReq, initialized]);
 
   // ── Step-input Jump ────────────────────────────────────────────────────────
   const handleJump = () => {
