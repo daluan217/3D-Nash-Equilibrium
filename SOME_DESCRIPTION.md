@@ -52,10 +52,10 @@ So **a best response is always a pure strategy**. Self-interest alone can only p
 
 | | Prisoner's Dilemma | Penalty Kick |
 |---|---|---|
-| Row payoffs | `[[3, 0], [5, 1]]` | `[[-6, 3], [1, 0]]` |
-| Twist $T_A$ | $-1$ | $-10$ |
-| $y^{*}$ | $-1$ — **off the board** | $3/10$ |
-| Equilibrium | a corner: both confess | interior: $(1/10,\ 3/10)$ |
+| Row payoffs | `[[3, 0], [5, 1]]` | `[[-12, 8], [2, 0]]` |
+| Twist $T_A$ | $-1$ | $-22$ |
+| $y^{*}$ | $-1$ — **off the board** | $4/11$ |
+| Equilibrium | a corner: both confess | interior: $(1/11,\ 4/11)$ |
 
 The dilemma comes first on purpose. Its $y^{*}$ lies outside $[0,1]$, so its surface never levels anywhere on the board — nothing to balance, no reason to mix, and the equilibrium is stuck in a corner worse for both than the one they can't reach. That contrast is what the mixed case needs.
 

@@ -1542,22 +1542,13 @@ export default function App() {
   const tourPausedRunRef = useRef(false);
   useEffect(() => {
     if (!tourPauseAtFirstFind || !simState.running) return;
-    // Regret mode records discovery only at full convergence (both coordinates
-    // at once), so watching discoveredMixed* here never fires mid-run. Watch
-    // the live indifference signals instead, with EXACTLY the thresholds the
-    // plot uses to rename a strategy line to "indifferent" — so the run pauses
-    // on the same frame the visitor sees the first line go flat.
-    const dY = payoffs.a11 - payoffs.a12 - payoffs.a21 + payoffs.a22;
-    const dX = payoffs.b11 - payoffs.b12 - payoffs.b21 + payoffs.b22;
-    const yRep = simState.discoveredMixedY ?? (simState.domYLo + simState.domYHi) / 2;
-    const xRep = simState.discoveredMixedX ?? (simState.domXLo + simState.domXHi) / 2;
-    const sA = yRep * (payoffs.a11 - payoffs.a21) + (1 - yRep) * (payoffs.a12 - payoffs.a22);
-    const sB = xRep * (payoffs.b11 - payoffs.b12) + (1 - xRep) * (payoffs.b21 - payoffs.b22);
-    const aFlat = Math.abs(sA) < Math.max(1e-4, Math.abs(dY) * 0.01);
-    const bFlat = Math.abs(sB) < Math.max(1e-4, Math.abs(dX) * 0.01);
-    // One line flat, not both: if they flattened in the same frame there is no
-    // "first" to pause on, and the run may as well finish.
-    if ((aFlat || bFlat) && !(aFlat && bFlat)) {
+    // Fire on the DECLARATION itself. Regret mode now declares coordinates
+    // individually, so the moment a coordinate is found is one frame: the log
+    // line prints, the corridor collapses, the line snaps level, and the
+    // 1st-NE-Coord snapshot points here — pausing on the same frame keeps
+    // every indicator telling one story. (An older version watched the
+    // rename thresholds because declaration only happened at convergence.)
+    if ((simState.discoveredMixedX !== null) !== (simState.discoveredMixedY !== null)) {
       tourPausedRunRef.current = true;
       setSimState((prev) => ({ ...prev, running: false }));
     }
@@ -1627,11 +1618,14 @@ export default function App() {
     setTourSpinNonce((n) => n + 1);
     setTourSpinAllowed(true);
     setTourPauseAtFirstFind(false);
-    // λ = 0.5 paces the sequential search for watching: the first corridor
-    // declares at ~57 steps instead of ~270 at the 0.1 default, with the line
-    // still flattening in ~9 visible increments rather than snapping.
-    setShrinkStep(0.5);
-    setShrinkStepRaw('0.500');
+    // λ = 0.3 for the whole act — ONE value, set here and nowhere else. The
+    // run, the scrub history, the jump-box replay and the 1st-NE-Coord
+    // snapshot all step with the live shrinkStep, so two different λs in the
+    // act put the button, the pause and the replay on different timelines
+    // (measured: jump-to-47 landed on a converged frame 30 because the replay
+    // contracted faster than the history it replayed).
+    setShrinkStep(0.3);
+    setShrinkStepRaw('0.300');
     if (activePreset !== 'penalty') {
       handleLoadPreset('penalty');
       // Far from the equilibrium at (0.1, 0.3), so the chase has distance to
@@ -1835,9 +1829,8 @@ export default function App() {
       target: 'coords',
       title: 'Each player gets a shrinking corridor',
       body:
-        'Every player also carries a boundary — a range of mixes still worth considering. As regret falls the '
-        + 'corridor contracts from both sides, and the search takes them one at a time: the steeper line '
-        + 'first, while the other holds.',
+        'Every player also carries a boundary — a range of mixes still worth considering. As regret falls, '
+        + 'both corridors contract from both sides at once. But they do not finish together.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -1854,23 +1847,17 @@ export default function App() {
       body:
         'The search is running. Self-interest alone always points at a corner — the best reply to any '
         + 'opponent mix is a pure strategy, never a blend — so it can never name an interior point. The '
-        + 'contracting boundary carries the search inward instead: the steeper line flattens step by step '
-        + 'while the other keeps its lean. The moment the first line goes flat, the run pauses.',
+        + 'contracting boundaries carry the search inward instead: both lines flatten together, and the one '
+        + 'that began nearer level reaches indifference first. The moment it does, the run pauses.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
         setTourPoints([]);
         tourPausedRunRef.current = false;
         setTourPauseAtFirstFind(true);
-        // 1x and a heavier step for the tour's run. At the app's defaults
-        // (5x, lambda = 0.1) the search took 272 steps and the first line only
-        // flattened 85 seconds in; lambda = 0.3 contracts the corridors fast
-        // enough that the whole run is a few dozen steps, which 1x then plays
-        // at a readable pace. Both restored on tour close — later steps freeze
-        // the sim anyway.
+        // 1x so the few-dozen-step run (λ = 0.3, set by enterMixedAct) plays
+        // at a readable pace. Restored on tour close.
         setSpeed(1);
-        setShrinkStep(0.3);
-        setShrinkStepRaw('0.300');
         // The markers come back ON here: this is the only step where anything is
         // moving, and they are what the visitor is being asked to watch — and
         // the idle spin stays off for the same reason, including after the run
@@ -1890,8 +1877,8 @@ export default function App() {
       body:
         'The run paused the moment this happened: one line has gone completely FLAT, and its coordinate is '
         + 'found. No lean means no regret left; every mix now pays that player exactly the same. That is '
-        + 'indifference, found rather than declared. The other line still leans at full strength — its '
-        + 'corridor is untouched, and the search turns there next.',
+        + 'indifference, found rather than declared. The other line still leans — its corridor is still '
+        + 'closing, and the search carries on there.',
       onEnter: () => {
         // Continuity when the tour just paused the run: keep the exact frame
         // the visitor watched stop — one line genuinely flat, the other
@@ -1907,22 +1894,58 @@ export default function App() {
           setSimState((prev) => ({ ...prev, running: false }));
         } else if (mixedNE) {
           // Skipped ahead before the first find (or arrived from elsewhere):
-          // stage the state the run would have paused on. The search contracts
-          // the steeper line's corridor first — B's, on this game — so x is the
-          // coordinate that gets found.
+          // stage the state the run would have paused on. y* sits 3x nearer
+          // the corridor midpoint than x*, so y declares first; the x-corridor
+          // is staged PARTIALLY contracted (decay factor f = declare-threshold
+          // over y*'s midpoint distance, ~0.29 for this preset) so B's line
+          // shows the same ~10% residual lean the live run pauses with.
           handleReset();
+          const f = 0.29;
           setSimState((prev) => ({
             ...prev,
             running: false,
             converged: false,
-            discoveredMixedX: mixedNE.x,
-            discoveredMixedY: null,
-            foundAxis: 'x',
-            domXLo: mixedNE.x, domXHi: mixedNE.x,
-            domYLo: 0, domYHi: 1,
+            discoveredMixedX: null,
+            discoveredMixedY: mixedNE.y,
+            foundAxis: 'y',
+            domYLo: mixedNE.y, domYHi: mixedNE.y,
+            domXLo: r3(mixedNE.x * (1 - f)),
+            domXHi: r3(mixedNE.x + (1 - mixedNE.x) * f),
           }));
         }
         moveCamera(CAMERA.edgeOn, 1100);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'Now watch the second coordinate',
+      body:
+        'The first coordinate is locked — its corridor is closed for good. The run resumes: the other '
+        + 'corridor keeps contracting, its line eases the rest of the way down, and the moment it lands flat '
+        + 'the second coordinate is discovered too. The equilibrium is now fully found.',
+      onEnter: () => {
+        // Start EXACTLY at the first-find frame — the same step the
+        // "1st NE Coord" button names (24 on this game) — and play onward to
+        // the second discovery. Resuming from the live simState proved
+        // fragile: enterMixedAct nulls the discovered coordinates, so a
+        // previous step can leave the picture right but the state wrong. The
+        // NE snapshot is recorded by the run itself and immune to whatever
+        // the steps in between did to the live state.
+        enterMixedAct();
+        setStepMode('regret');
+        setTourPoints([]);
+        setTourHiddenTraces([]);
+        setTourSpinAllowed(false);
+        if (neSnapshotRef.current && thinHistoryRef.current.length > 0) {
+          handleJumpToNE();
+          // Let the jump's state land, then play from there.
+          window.setTimeout(() => setSimState((prev) => ({ ...prev, running: true })), 400);
+        } else {
+          // Skipped ahead with no recorded run: run afresh. Without the
+          // first-find pause armed it plays through both discoveries.
+          handleReset();
+          window.setTimeout(() => handleStep(true), 350);
+        }
       },
     },
     {
@@ -2865,9 +2888,11 @@ export default function App() {
                   </button>
                 </>
               )}
-              {/* In regret mode both coordinates lock together (no Phase 1→2 handoff),
-                  so the "1st NE coordinate" marker coincides with convergence — hide it. */}
-              {mixedNE && stepMode !== 'regret' && (
+              {/* Enabled in BOTH modes: regret used to lock the two coordinates
+                  atomically (so this marker coincided with convergence and was
+                  hidden there), but it now declares them individually — the
+                  first find is a real, distinct moment in either mode. */}
+              {mixedNE && (
                 <button
                   onClick={handleJumpToNE}
                   disabled={!neSnapshot}

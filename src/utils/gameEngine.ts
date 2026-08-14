@@ -68,21 +68,24 @@ export const PRESETS: Record<string, PresetGame> = {
   penalty: {
     key: 'penalty',
     name: 'Penalty Kick',
-    // Built for the guided tour's regret act. The strategy lines are drawn at
-    // the corridors' midpoints (0.5), so their initial lean is |dY|*|0.5-root|:
-    // here dY = -10 with roots y* = 0.3 and x* = 0.1, giving leans of 2 and 4 —
-    // both unmistakable — while the roots' different distances from 0.5 make
-    // A's line flatten first and B's keep leaning, which is the tour's
-    // "first coordinate found" beat. Spy vs. Analyst (lean 1) was too subtle.
-    a11: -6, b11: 6,  a12: 3, b12: -3,
-    a21: 1, b21: -1,  a22: 0, b22: 0,
+    // Built for the guided tour's regret act, tuned by brute force for the
+    // parallel-contraction dynamics: dY = -22 with roots y* = 4/11 and
+    // x* = 1/11. The strategy lines sit at the corridor midpoints (0.5), so
+    // A's line starts leaning 3 payoff units (12.5% of the z-range) and B's 9
+    // (37.5%) — and because y* is 3x nearer the midpoint than x*, y declares
+    // first (4% regret-declare threshold) while B's line still holds ~2.5
+    // units of lean (10%). Both leaning at the start, one still leaning at
+    // the first find: measured as the practical maximum for a zero-sum 2x2
+    // under these dynamics (equalized optimum ~13%).
+    a11: -12, b11: 12,  a12: 8, b12: -8,
+    a21: 2, b21: -2,  a22: 0, b22: 0,
     row1Label: 'Aim Left', row2Label: 'Aim Right',
     col1Label: 'Dive Left', col2Label: 'Dive Right',
     desc: '<strong>Penalty Kick:</strong> A kicker picks a side to shoot (Row 1 = Aim Left, Row 2 = Aim Right); '
         + 'the goalie simultaneously picks a side to dive (Col 1 = Dive Left, Col 2 = Dive Right). '
         + 'The kicker\'s left-side strike is lethal when the goalie guesses wrong but easily smothered when read; '
         + 'the right side is safer but weaker. Zero-sum with no pure Nash Equilibrium — both players must mix. '
-        + 'Payoffs (clockwise from top-left): (−6,6), (3,−3), (0,0), (1,−1).'
+        + 'Payoffs (clockwise from top-left): (−12,12), (8,−8), (0,0), (2,−2).'
   },
   custom: {
     key: 'custom',
@@ -744,35 +747,42 @@ export function doStep(
         }
         s.cycleCount++;
         s.visitedPositions = [];
-        // ── Steepest line first: contract ONE corridor at a time ─────────────
-        // Both corridors used to contract every cycle, which made the two
-        // strategy lines flatten in lockstep: each signal decays by the same
-        // (1-λ) per cycle, so at the first declaration the other line's lean
-        // was always ~0 (measured 0.2-0.3% of the payoff range across games).
-        // Sequencing by initial steepness — |s(0.5)|, a constant of the payoffs,
-        // no root knowledge — keeps the waiting line at its FULL lean until its
-        // own search begins, so "first coordinate found, now searching the
-        // second" is something a viewer can actually see. A line that is born
-        // indifferent (root at the midpoint, e.g. Cops & Robbers' y* = 0.5)
-        // still declares immediately via its own criterion below, whether or
-        // not it is the active corridor.
-        const xActive = s.discoveredMixedX === null
-          && (s.discoveredMixedY !== null || Math.abs(sBfn(0.5)) >= Math.abs(sAfn(0.5)));
-        const yActive = s.discoveredMixedY === null && !xActive;
-        if (xActive) { s.domXLo = regretGlide(s.domXLo, sBfn, Dx); s.domXHi = regretGlide(s.domXHi, sBfn, Dx); }
-        if (yActive) { s.domYLo = regretGlide(s.domYLo, sAfn, Dy); s.domYHi = regretGlide(s.domYHi, sAfn, Dy); }
+        // Both corridors contract IN PARALLEL, every cycle. A brief revision
+        // contracted one at a time ("steepest first") so the waiting line kept
+        // its lean until its turn — but a line frozen mid-search reads as
+        // rigged, and the same separation falls out honestly from the
+        // declaration criterion below: with a widened declare threshold, the
+        // coordinate whose root sits nearer the corridor midpoint reaches
+        // indifference first while the other still has visible lean left.
+        if (s.discoveredMixedX === null) { s.domXLo = regretGlide(s.domXLo, sBfn, Dx); s.domXHi = regretGlide(s.domXHi, sBfn, Dx); }
+        if (s.discoveredMixedY === null) { s.domYLo = regretGlide(s.domYLo, sAfn, Dy); s.domYHi = regretGlide(s.domYHi, sAfn, Dy); }
         s.stratX = r3((s.domXLo + s.domXHi) / 2);
         s.stratY = r3((s.domYLo + s.domYHi) / 2);
         // A domain has converged once its remaining regret span is negligible.
         // Pin it to the neighbouring grid point with the smallest LIVE regret
         // (so a half-grid midpoint like r3(0.1675) can't round to the wrong cell) —
         // still read purely off the signal, not a precomputed root.
-        const snapToIndifference = (mid: number, sfn: (v: number) => number): number => {
-          const cands = [r3(mid - 0.001), r3(mid), r3(mid + 0.001)].filter(v => v >= 0 && v <= 1);
-          return cands.reduce((best, v) => Math.abs(sfn(v)) < Math.abs(sfn(best)) ? v : best, r3(mid));
+        /**
+         * Declare once the midpoint's signal is within a few percent of zero,
+         * and LAND by one undamped Newton step — exact for a linear signal, so
+         * the declared value is the true root, not a 4%-off approximation. The
+         * old criterion (|s| < |D|*0.00065) required the corridor to grind to
+         * within a pixel of the root before declaring; by then the OTHER
+         * line's lean had decayed by the same factor and the "first
+         * coordinate found" moment showed nothing left to contrast against
+         * (measured 0.2-0.3% of range, every game). Declaring at 4% keeps the
+         * other line's lean visible at the first find — that is the entire
+         * reason for the constant. Still blind: signal and slope both come
+         * from the payoffs alone. The ±1-grid scan guards r3 rounding.
+         */
+        const REGRET_DECLARE = 0.04;
+        const landOnIndifference = (mid: number, sfn: (v: number) => number, slope: number): number => {
+          const landed = r3(Math.max(0, Math.min(1, mid - sfn(mid) / slope)));
+          const cands = [r3(landed - 0.001), landed, r3(landed + 0.001)].filter(v => v >= 0 && v <= 1);
+          return cands.reduce((best, v) => Math.abs(sfn(v)) < Math.abs(sfn(best)) ? v : best, landed);
         };
-        const xDone = Math.abs(s.domXHi - s.domXLo) < 0.0015 || Math.abs(sBfn(s.stratX)) < EPS_B;
-        const yDone = Math.abs(s.domYHi - s.domYLo) < 0.0015 || Math.abs(sAfn(s.stratY)) < EPS_A;
+        const xDone = Math.abs(s.domXHi - s.domXLo) < 0.0015 || Math.abs(sBfn(s.stratX)) < Math.abs(Dx) * REGRET_DECLARE;
+        const yDone = Math.abs(s.domYHi - s.domYLo) < 0.0015 || Math.abs(sAfn(s.stratY)) < Math.abs(Dy) * REGRET_DECLARE;
         // Declare EACH coordinate the moment its own criterion fires, exactly
         // like shrink mode does. This used to declare both atomically "to avoid
         // a transient exactly-one-found state" — but that transient IS the
@@ -781,7 +791,7 @@ export function doStep(
         // dead no matter the game. The ghost renderer (the reason for the old
         // caution) is shrink-phase furniture and is now gated off in regret.
         if (xDone) {
-          s.stratX = snapToIndifference(s.stratX, sBfn); s.domXLo = s.stratX; s.domXHi = s.stratX;
+          s.stratX = landOnIndifference(s.stratX, sBfn, Dx); s.domXLo = s.stratX; s.domXHi = s.stratX;
           if (s.discoveredMixedX === null) {
             s.discoveredMixedX = s.stratX;
             if (s.foundAxis === null) s.foundAxis = 'x';
@@ -789,7 +799,7 @@ export function doStep(
           }
         }
         if (yDone) {
-          s.stratY = snapToIndifference(s.stratY, sAfn); s.domYLo = s.stratY; s.domYHi = s.stratY;
+          s.stratY = landOnIndifference(s.stratY, sAfn, Dy); s.domYLo = s.stratY; s.domYHi = s.stratY;
           if (s.discoveredMixedY === null) {
             s.discoveredMixedY = s.stratY;
             if (s.foundAxis === null) s.foundAxis = 'y';
