@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment, ReportEnvelope, type SuggestedScenario } from './types';
 import {
   PRESETS,
@@ -16,6 +16,8 @@ import {
   buildPolyStr,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
+import { Walkthrough, type TourStep } from './components/Walkthrough';
+import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
   Play,
   Pause,
@@ -1452,6 +1454,25 @@ export default function App() {
     setJumpInput('');
   };
 
+  /**
+   * Re-freeze the simulation whenever the start point is edited.
+   *
+   * Typing a new x0/y0 only cleared `initialized`, which tells the NEXT run to
+   * start fresh but leaves the picture showing the OLD position — so the markers
+   * sat at the previous start until you pressed Run or Reset, and the number in
+   * the box disagreed with the dot on the surface. handleReset rebuilds the
+   * frozen, ready-to-run state from the current fields, which is exactly what
+   * the edit is asking for.
+   *
+   * Runs after the state update rather than inside the input handler, because
+   * handleReset reads x0/y0 from the render it was created in and would
+   * otherwise reset to the value being replaced.
+   */
+  useEffect(() => {
+    handleReset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [x0, y0]);
+
   // ── Play/Pause toggle ──────────────────────────────────────────────────────
   const togglePlay = () => {
     if (!initialized) {
@@ -1465,6 +1486,372 @@ export default function App() {
     }
     setSimState((prev: SimState) => ({ ...prev, running: !prev.running }));
   };
+
+  /* ── Guided tour ──────────────────────────────────────────────────────────
+   *
+   * A general introduction to mixed equilibria, staged on a concrete game. The
+   * point it exists to land is the one the picture makes and prose usually
+   * cannot: a player's equilibrium mixture is computed from the OPPONENT's
+   * payoffs, so it holds the opponent indifferent rather than serving the
+   * player's own interest.
+   *
+   * Steps point at live elements by `data-tour`, and a couple of them drive the
+   * app so the visitor sees the thing being described rather than reading about
+   * it. Shown once, then remembered — the header keeps a control to replay it.
+   */
+  const [tourOpen, setTourOpen] = useState(false);
+  /**
+   * Points the tour is currently talking about, drawn on the surfaces with each
+   * player's payoff labelled. Empty except while a step is discussing one.
+   */
+  const [tourPoints, setTourPoints] = useState<{ x: number; y: number }[]>([]);
+  /** Trace names the current tour step wants switched off. Held in state (not
+   *  rebuilt inline) so its identity is stable between steps. */
+  const [tourHiddenTraces, setTourHiddenTraces] = useState<string[]>([]);
+  /** Bumped on every step so the idle spin restarts; and cleared on the one step
+   *  that runs the simulation, where a turning camera would fight the markers. */
+  const [tourSpinNonce, setTourSpinNonce] = useState(0);
+  const [tourSpinAllowed, setTourSpinAllowed] = useState(true);
+
+  /**
+   * Runs on EVERY load, including a refresh — but not for a signed-in visitor.
+   *
+   * Gated on `authToken` rather than on `user`, because the token is read from
+   * localStorage synchronously while `user` only arrives after /api/auth/me
+   * answers. Waiting for `user` would flash the tour at returning members for a
+   * few hundred milliseconds on every page load.
+   */
+  useEffect(() => {
+    if (authToken) return;
+    const t = setTimeout(() => setTourOpen(true), 700);
+    return () => clearTimeout(t);
+  }, [authToken]);
+
+  const closeTour = useCallback(() => {
+    setTourOpen(false);
+    setTourPoints([]);
+    setTourHiddenTraces([]);
+  }, []);
+
+  /**
+   * Rebuilt every render ON PURPOSE — do not memoise this.
+   *
+   * The steps close over handleReset/handleStep/handleLoadPreset, which in turn
+   * read the CURRENT payoffs, start coordinates and equilibria. Wrapping the
+   * array in useMemo with an empty dependency list froze the first render's
+   * closures, so the "watch greedy play" step ran the simulation against the
+   * preset that happened to be loaded at mount (Battle of the Sexes) instead of
+   * the game the tour had just switched to. It converged to a corner in three
+   * steps and the chase sat motionless — the one step whose entire job is to
+   * move. Walkthrough keeps the active index in its own state and keys its
+   * effects on step.target, so a fresh array each render costs nothing.
+   */
+  /**
+   * Put the app into the state an act ASSUMES, from whatever state it is in.
+   *
+   * Act setup used to live only on the first step of each act, which worked
+   * going forwards and broke going back: stepping back into the dilemma left
+   * the mixed game's payoffs and surfaces on screen, because nothing on those
+   * earlier steps ever said "be the Prisoner's Dilemma". Every step now declares
+   * its act, so each one is reachable from either direction.
+   *
+   * The preset is only reloaded when it is actually wrong — reloading on every
+   * step would throw away the discovered-equilibrium state that the indifference
+   * steps deliberately stage.
+   */
+  const FROZEN_HIDDEN = [TRACE.startPoint, TRACE.posA, TRACE.posB];
+
+  const enterDilemmaAct = () => {
+    setTourSpinNonce((n) => n + 1);
+    setTourSpinAllowed(true);
+    if (activePreset !== 'pd') {
+      handleLoadPreset('pd');
+      setX0('0.217');
+      setY0('0.217');
+    }
+    setStepMode('shrink');
+    setTrackingMode('both');
+    setTourPoints([]);
+    setSimState((prev) => ({ ...prev, discoveredMixedX: null, discoveredMixedY: null, foundAxis: null }));
+    setTourHiddenTraces(FROZEN_HIDDEN);
+  };
+
+  /**
+   * The mixed act, frozen. Position markers stay hidden here for the same reason
+   * they do in the dilemma: nothing is running, so a pair of dots parked at the
+   * start point is furniture. The final step turns them back on, because there
+   * they are the thing being watched.
+   */
+  const enterMixedAct = (extraHidden: string[] = []) => {
+    setTourSpinNonce((n) => n + 1);
+    setTourSpinAllowed(true);
+    if (activePreset !== 'spy') {
+      handleLoadPreset('spy');
+      // Far from the equilibrium at (0.167, 0.333): the default 0.217 start sits
+      // almost on top of it, leaving the chase no distance to run.
+      setX0('0.800');
+      setY0('0.800');
+    }
+    setStepMode('shrink');
+    setTrackingMode('both');
+    setSimState((prev) => ({ ...prev, discoveredMixedX: null, discoveredMixedY: null, foundAxis: null }));
+    setTourHiddenTraces([...FROZEN_HIDDEN, ...extraHidden]);
+  };
+
+  const tourSteps: TourStep[] = [
+    // ── Act 1: the familiar game ─────────────────────────────────────────────
+    // Almost everyone has met the Prisoner's Dilemma, so it costs nothing to
+    // explain and buys a reader who already knows the answer — and can therefore
+    // check the PICTURE against what they already believe. It also sets up the
+    // contrast the rest depends on: its surface never goes level, so there is
+    // nothing to balance and no reason to mix.
+    {
+      target: 'matrix',
+      title: 'Start somewhere familiar',
+      body:
+        'The Prisoner\'s Dilemma. Two suspects, each choosing to stay silent or confess, with no chance to '
+        + 'talk first. Look at the four cells — that table is the whole game.',
+      onEnter: () => {
+        enterDilemmaAct();
+        moveCamera(CAMERA.overview, 600);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'The same game, as a shape',
+      body:
+        'Here is that table drawn as a surface. Height is what a player expects to earn, and the two floor '
+        + 'axes are how often each of them stays silent. Both players\' surfaces are shown at once, so you '
+        + 'can see what a choice does to each of them.',
+      onEnter: () => {
+        enterDilemmaAct();
+        moveCamera(CAMERA.overview, 800);
+      },
+    },
+    {
+      // Sits between the surface being introduced and the corners being toured,
+      // because "where does that shape come from" is the question a reader asks
+      // the moment they see it, and every later step leans on the answer.
+      target: 'ep',
+      title: 'Where the shape comes from',
+      body:
+        'Each player\'s height is one formula. Take every cell of the table, multiply its payoff by how likely '
+        + 'that cell is — x times y for the top-left, and so on for the other three — and add the four up. '
+        + 'That single expression in x and y is what gets plotted. It is why the surface is straight along '
+        + 'each axis on its own and only bends where the two probabilities multiply together.',
+      onEnter: () => {
+        enterDilemmaAct();
+        moveCamera(CAMERA.overview, 700);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'The corner where they cooperate',
+      body:
+        'Swinging round to the corner where both stay silent. Both surfaces sit high here — three each, the '
+        + 'best combined outcome in the game. Remember this corner.',
+      onEnter: () => {
+        enterDilemmaAct();
+        setTourPoints([{ x: 1, y: 1 }]);
+        moveCamera(CAMERA.cornerRow1Col1, 1100);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'And the corner they actually reach',
+      body:
+        'Now the opposite corner, where both confess. Both surfaces are lower — one each. This is the '
+        + 'equilibrium: the only cell where neither player can improve by changing their mind alone.',
+      onEnter: () => {
+        enterDilemmaAct();
+        setTourPoints([{ x: 0, y: 0 }]);
+        moveCamera(CAMERA.cornerRow2Col2, 1300);
+      },
+    },
+    {
+      // Targets the PLOT, not the equilibrium readout. The claim here is a
+      // comparison between two heights, and pointing at the text panel scrolls
+      // the surfaces off screen — leaving the labelled corners, which are the
+      // entire evidence for the sentence, invisible.
+      target: 'plot',
+      title: 'The stable corner is the worse corner',
+      body:
+        'Both players would rather be at the first corner, and neither can get there. Stability and efficiency '
+        + 'are different things — the equilibrium is simply where nobody can gain by moving alone, whether or '
+        + 'not it is good for them.',
+      onEnter: () => {
+        enterDilemmaAct();
+        setTourPoints([{ x: 1, y: 1 }, { x: 0, y: 0 }]);
+        moveCamera(CAMERA.overview, 900);
+      },
+    },
+
+    // ── Act 2: no dominant move, so the surface must go level ────────────────
+    {
+      target: 'matrix',
+      title: 'Now take the dominance away',
+      body:
+        'A spy chooses whether to leak; an analyst chooses whether to publish. This time neither side has a '
+        + 'move that is always best, and what helps one hurts the other. No corner can hold still.',
+      onEnter: () => {
+        enterMixedAct();
+        setTourPoints([]);
+        moveCamera(CAMERA.mixedOpen, 900);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'A surface with a twist in it',
+      body:
+        'Same kind of picture, different shape. This one runs straight along each axis but bends through a '
+        + 'single twist — and that twist is the strategic interaction itself.',
+      onEnter: () => {
+        enterMixedAct();
+        setTourPoints([]);
+        moveCamera(CAMERA.mixedOpen, 900);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'The first coordinate locks in',
+      body:
+        'The search pins one coordinate first. Along the dark navy line B\'s payoff is perfectly flat — every '
+        + 'mix pays B the same, so B is indifferent. Notice what did that: it is A\'s probability, not B\'s. '
+        + 'The other line still tilts, and that tilt is exactly the regret left over.',
+      onEnter: () => {
+        // Stage the half-solved state the caption describes rather than waiting
+        // for a run to reach it. Locking x* alone leaves B's line flat and A's
+        // tilted; A's tilted line is hidden because only B is flat here, and a
+        // second line on screen argues against the sentence being read.
+        enterMixedAct([TRACE.strategyA]);
+        setStepMode('regret');
+        setTourPoints([]);
+        if (mixedNE) {
+          setSimState((prev) => ({
+            ...prev,
+            discoveredMixedX: mixedNE.x,
+            discoveredMixedY: null,
+            foundAxis: 'x',
+            domYLo: 0, domYHi: 1,
+          }));
+        }
+        moveCamera(CAMERA.edgeOn, 1200);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'Both flat at once',
+      body:
+        'Now the second coordinate locks too, and the dark red line appears: A is indifferent along it. Two '
+        + 'flat lines, each one held level by the OTHER player\'s mix. Where they cross is the mixed '
+        + 'equilibrium — not a number you solve for, a place you can look at.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        if (mixedNE) {
+          setSimState((prev) => ({
+            ...prev,
+            discoveredMixedX: mixedNE.x,
+            discoveredMixedY: mixedNE.y,
+            foundAxis: 'y',
+          }));
+          setTourPoints([{ x: mixedNE.x, y: mixedNE.y }]);
+        }
+        moveCamera(CAMERA.interior, 1200);
+      },
+    },
+    {
+      target: 'ne',
+      title: 'The coordinates come out crossed',
+      body:
+        'Here is the surprise. The probability that flattens your surface is built from your OPPONENT\'s '
+        + 'payoffs. Your own numbers never appear anywhere in your own equilibrium mix.',
+    },
+    {
+      target: 'ne',
+      title: 'Your mixing is for them',
+      body:
+        'So equilibrium mixing does nothing for you. It is a service you perform for your opponent — holding '
+        + 'them perfectly balanced — while their mixing does the same for you.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        if (mixedNE) {
+          setSimState((prev) => ({
+            ...prev,
+            discoveredMixedX: mixedNE.x,
+            discoveredMixedY: mixedNE.y,
+            foundAxis: 'y',
+          }));
+          setTourPoints([{ x: mixedNE.x, y: mixedNE.y }]);
+        }
+        moveCamera(CAMERA.interior, 700);
+      },
+    },
+
+    // ── Act 3: why a boundary is what makes convergence possible ─────────────
+    {
+      target: 'method',
+      title: 'That tilt had a name',
+      body:
+        'The lean in those strategy lines is Opponent Regret: how much better a player could still have done '
+        + 'against what the other one actually played. A flat line means zero regret left, which is what the '
+        + 'flat spot meant all along.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        setTourPoints([]);
+        moveCamera(CAMERA.topDown, 1000);
+      },
+    },
+    {
+      target: 'coords',
+      title: 'Each player gets a shrinking corridor',
+      body:
+        'Every player carries a boundary — a range of mixes still worth considering. As the opponent\'s regret '
+        + 'falls, that range contracts. Seen from above, the two corridors close in from both sides.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        setTourPoints([]);
+        moveCamera(CAMERA.topDown, 800);
+      },
+    },
+    {
+      target: 'controls',
+      title: 'The boundary is what makes it converge',
+      body:
+        'Press Run. Self-interest alone always points at a corner — the best reply to any opponent mix is a '
+        + 'pure strategy, never a blend — so it can never name an interior point. The contracting boundary is '
+        + 'what carries the search onto the equilibrium and holds it there.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        setTourPoints([]);
+        // The markers come back ON here: this is the only step where anything is
+        // moving, and they are what the visitor is being asked to watch — and
+        // the idle spin stays off for the same reason, including after the run
+        // converges, so the result can be read against a still camera.
+        setTourHiddenTraces([]);
+        setTourSpinAllowed(false);
+        handleReset();
+        window.setTimeout(() => handleStep(true), 350);
+      },
+    },
+    {
+      target: 'matrix',
+      title: 'Now change the game',
+      body:
+        'The equilibrium sits exactly where each player\'s own incentive goes quiet. Edit any payoff and watch '
+        + 'the flat spot move somewhere new.',
+      onEnter: () => {
+        enterMixedAct();
+        setTourHiddenTraces([]);
+        setTourPoints([]);
+        moveCamera(CAMERA.overview, 900);
+      },
+    },
+  ];
 
   // ── Trajectory Backstep ───────────────────────────────────────────────────
   const handleBackstep = () => {
@@ -1688,6 +2075,14 @@ export default function App() {
             {/* Tagline is hidden on phones — the header would otherwise dominate the viewport */}
             <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Best-response dynamics on 3D expected-payoff surfaces — watch the search corridor contract onto the Nash equilibrium.
+              {' '}
+              <button
+                type="button"
+                onClick={() => setTourOpen(true)}
+                className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+              >
+                Take the tour
+              </button>
             </p>
           </div>
           {isTouchDevice ? (
@@ -1932,7 +2327,7 @@ export default function App() {
               <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
             </div>
 
-            <div className="grid grid-cols-[auto_1fr_1fr] gap-3 text-center items-center">
+            <div data-tour="matrix" className="grid grid-cols-[auto_1fr_1fr] gap-3 text-center items-center">
               <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
               <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col1}>B: {activeLabels.col1}</div>
               <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col2}>B: {activeLabels.col2}</div>
@@ -2030,7 +2425,7 @@ export default function App() {
           </div>
 
           {/* Expected math formulations */}
-          <div className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3">
+          <div data-tour="ep" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
               Expected-Payoff Functions
             </span>
@@ -2050,7 +2445,7 @@ export default function App() {
           </div>
 
           {/* Configuration Parameters Panel */}
-          <div ref={paramsPanelRef} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
+          <div ref={paramsPanelRef} data-tour="coords" className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
             <div className="text-slate-800 dark:text-slate-200 font-semibold text-sm border-b border-slate-100 dark:border-slate-800 pb-2">
               Simulation Coordinates & Parameters
             </div>
@@ -2187,7 +2582,7 @@ export default function App() {
             </div>
 
             {/* Convergence method */}
-            <div>
+            <div data-tour="method">
               <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Convergence Method</label>
               <div className="grid grid-cols-2 gap-2">
                 {([
@@ -2277,6 +2672,10 @@ export default function App() {
             payoffs={payoffs}
             simState={simState}
             trackingMode={trackingMode}
+            tourPoints={tourPoints}
+            hiddenTraces={tourHiddenTraces}
+            idleSpin={tourOpen && tourSpinAllowed && !simState.running}
+            spinNonce={tourSpinNonce}
             allNE={allNE}
             isDark={darkMode}
             stepMode={stepMode}
@@ -2346,7 +2745,7 @@ export default function App() {
           </div>
 
           {/* Simulation Controls Dashboard */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
+          <div data-tour="controls" className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
 
             {/* Play trigger buttons row */}
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -2507,7 +2906,7 @@ export default function App() {
             </div>
 
             <div className="space-y-3">
-              <div>
+              <div data-tour="ne">
                 <strong className="text-slate-700 dark:text-slate-200">Calculated Nash Equilibria:</strong>
                 <ul className="list-disc pl-5 mt-1 text-slate-600 dark:text-slate-300 space-y-1">
                   {allNE.map((ne, idx) => (
@@ -2692,6 +3091,8 @@ export default function App() {
       </footer>
 
       {expandedLogOverlay}
+
+      <Walkthrough steps={tourSteps} open={tourOpen} onClose={closeTour} />
 
       {isAuthModalOpen && (
         <div
