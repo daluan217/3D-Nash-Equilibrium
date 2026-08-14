@@ -479,9 +479,25 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         bgcolor: isDark ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.85)',
         bordercolor: isDark ? '#334155' : '#e2e8f0',
         borderwidth: 1,
+        // `itemsizing` keeps glyph widths fixed so only text decides the box.
+        itemsizing: 'constant',
         font: {
           size: 10,
-          color: isDark ? '#f8fafc' : '#0f172a'
+          color: isDark ? '#f8fafc' : '#0f172a',
+          /**
+           * The family is PINNED, and that is the actual fix for the clipped
+           * "Current position (A)" label on iOS. Plotly sizes the legend box by
+           * measuring the label text, then the browser renders that text in
+           * whatever the default stack resolves to — with no family set, those
+           * two steps can resolve differently, and on iOS the rendered text came
+           * out wider than the measured box and clipped through its border. It
+           * never reproduced in desktop Chromium or WebKit, whose fallback
+           * metrics happen to agree. Pinning one family makes measurement and
+           * rendering identical everywhere, so the box cannot clip its own
+           * contents. The A-vs-B asymmetry in the report was Plotly sizing the
+           * box independently per tracking mode — the traces are symmetric.
+           */
+          family: 'Helvetica, Arial, sans-serif'
         }
       },
       font: {
