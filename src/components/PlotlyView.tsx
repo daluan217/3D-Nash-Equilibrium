@@ -453,32 +453,53 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           } as any);
         }
       } else {
-        const callout = isDark ? '#FACC15' : '#CA8A04';
-        const calloutRing = isDark ? '#1f2937' : '#ffffff';
-        // Gold diamonds sit at their EXACT payoff height — no tie-lift. At a
-        // symmetric point EA = EB, and the lifted per-player pair printed TWO
-        // gold diamonds a sliver apart on top of the pure-NE diamond: three
-        // glyphs for one point. When the heights coincide, draw ONE diamond
-        // and hang both labels off it.
+        // Built EXACTLY like the pure/mixed NE markers in plotting.ts, so the
+        // dilemma's callouts read as the same visual language: a twin-diamond
+        // pair at A's and B's payoff heights, joined by a vertical connecting
+        // line, at the SAME size as the NE diamonds. In a symmetric game both
+        // heights coincide, the line degenerates to a point and the twins
+        // overprint into one diamond — the identical-sprite tie is invisible,
+        // same as the NE twins.
         //
-        // Size 13 on purpose, larger than the pure-NE diamond (10.5 + ring):
-        // opaque gold beats the translucent NE diamond deterministically at
-        // equal depth (see plotting.ts), and being bigger it covers the green
-        // completely — the corner reads as one gold marker, not gold-on-green.
-        const goldSize = 13;
-        const sameHeight = Math.abs(zAraw - zBraw) < span * 0.001;
-        const goldPts: [number, string, boolean][] = sameHeight
-          ? [[r3(zAraw), `A = ${labelA}`, true], [r3(zAraw), `B = ${labelB}`, false]]
-          : [[r3(zAraw), `A = ${labelA}`, true], [r3(zBraw), `B = ${labelB}`, false]];
-        for (const [i, [z, label, isA]] of goldPts.entries()) {
-          if (!(sameHeight && i > 0)) {
-            traces.push({
-              type: 'scatter3d', mode: 'markers',
-              x: [pt.x], y: [pt.y], z: [z],
-              marker: { size: goldSize, color: callout, symbol: 'diamond', line: { color: calloutRing, width: 2 } },
-              hoverinfo: 'skip', showlegend: false, cliponaxis: false,
-            } as any);
-          }
+        // Colour says what the point IS: a callout sitting ON an equilibrium
+        // keeps the Pure-NE green — that point is the equilibrium, and
+        // repainting it gold divorced it from the marker in the legend. The
+        // opaque green twins overprint the translucent NE diamond beneath
+        // seamlessly (same size, same colour). Non-equilibrium points — the
+        // collaboration corner, the example point — stay gold.
+        const diamondColor = onNE ? '#4ca47a' : (isDark ? '#FACC15' : '#CA8A04');
+        const textColor = onNE
+          ? (isDark ? '#4ca47a' : '#35855f')
+          : (isDark ? '#FACC15' : '#CA8A04');
+        const calloutRing = onNE ? '#ffffff' : (isDark ? '#1f2937' : '#ffffff');
+        const ringWidth = onNE ? 1 : 2;
+        const goldSize = isMobile ? 8.5 : 10.5;
+        const zGa = r3(zAraw);
+        const zGb = r3(zBraw);
+        const zLo = Math.min(zGa, zGb);
+        const zHi = Math.max(zGa, zGb);
+        const GOLD_STEPS = 15;
+        const lineZ: number[] = [], lineX: number[] = [], lineY: number[] = [];
+        for (let si = 0; si <= GOLD_STEPS; si++) {
+          lineZ.push(zLo + (zHi - zLo) * si / GOLD_STEPS);
+          lineX.push(pt.x);
+          lineY.push(pt.y);
+        }
+        traces.push({
+          type: 'scatter3d', mode: 'lines',
+          x: lineX, y: lineY, z: lineZ,
+          line: { color: diamondColor, width: 6, dash: 'solid' },
+          hoverinfo: 'skip', showlegend: false,
+        } as any);
+        traces.push({
+          type: 'scatter3d', mode: 'markers',
+          x: [pt.x, pt.x], y: [pt.y, pt.y], z: [zGa, zGb],
+          marker: { size: goldSize, color: diamondColor, symbol: 'diamond', line: { color: calloutRing, width: ringWidth } },
+          hoverinfo: 'skip', showlegend: false, cliponaxis: false,
+        } as any);
+        const goldPts: [number, string, boolean][] =
+          [[zGa, `A = ${labelA}`, true], [zGb, `B = ${labelB}`, false]];
+        for (const [z, label, isA] of goldPts) {
           // The labels are scene ANNOTATIONS, not trace text: gl3d perspective-
           // scales trace text glyphs with depth, so on the two-corner step the
           // far corner's "A = 1 / B = 1" rendered visibly smaller than the near
@@ -498,7 +519,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
             // label straddling the diamond at some cameras.
             yanchor: isA ? 'bottom' : 'top',
             yshift: isA ? 12 : -12,
-            font: { size: 16, color: callout, family: 'ui-monospace, monospace' },
+            font: { size: 16, color: textColor, family: 'ui-monospace, monospace' },
           });
         }
       }
