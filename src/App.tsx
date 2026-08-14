@@ -1721,46 +1721,147 @@ export default function App() {
         moveCamera(CAMERA.mixedOpen, 900);
       },
     },
+    // ── Act 3: regret — teach the lean BEFORE naming it ──────────────────────
+    // The order is deliberate: show one leaning line, then both, then give the
+    // lean its name at the method toggle, run the search and watch the leans
+    // flatten, and only then present flatness as indifference. An earlier cut
+    // presented the flat lines first and mentioned "the lean" afterwards — a
+    // reference to something the reader had never been shown.
     {
       target: 'plot',
-      title: 'The first coordinate locks in',
+      title: 'A leaning line is an instruction',
       body:
-        'The search pins one coordinate first. Along the dark navy line B\'s payoff is perfectly flat — every '
-        + 'mix pays B the same, so B is indifferent. Notice what did that: it is A\'s probability, not B\'s. '
-        + 'The other line still tilts, and that tilt is exactly the regret left over.',
+        'This line is A\'s payoff as A alone varies their mix, with B held still. It LEANS — and a leaning '
+        + 'line is an instruction: slide to its high end. The high end is always a corner, all-in on one '
+        + 'option, never a blend. As long as the line leans, A wants a corner.',
       onEnter: () => {
-        // Stage the half-solved state the caption describes rather than waiting
-        // for a run to reach it. Locking x* alone leaves B's line flat and A's
-        // tilted; A's tilted line is hidden because only B is flat here, and a
-        // second line on screen argues against the sentence being read.
-        enterMixedAct([TRACE.strategyA]);
+        // Regret mode with NOTHING solved: the strategy lines render at the
+        // domain midpoints, tilted. B's line is hidden so the first lean is
+        // read on its own; running:false because the visitor may arrive here
+        // by stepping Back from the run.
+        enterMixedAct([TRACE.strategyB]);
+        setStepMode('regret');
+        // Full reset, not just running:false — arriving here by stepping Back
+        // from the run otherwise keeps its path stripes and corridor residue
+        // on screen, burying the one line this step exists to show.
+        handleReset();
+        setTourPoints([]);
+        moveCamera(CAMERA.edgeOn, 1100);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'The other line leans too',
+      body:
+        'B\'s line does the same job along B\'s own axis, and it also leans — so B is pulled to a corner at '
+        + 'ITS high end. Two leaning lines, two players each being pulled away from the middle. Nothing in '
+        + 'this picture, so far, would ever produce a mixture.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        handleReset();
+        setTourPoints([]);
+        moveCamera(CAMERA.mixedOpen, 1100);
+      },
+    },
+    {
+      target: 'method',
+      title: 'The lean has a name',
+      body:
+        'That lean is Opponent Regret: how much better a player could still do against what the other one is '
+        + 'actually playing. The steeper the line, the more is left on the table. This method watches the lean '
+        + 'itself, and moves the players step by step so that it shrinks.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        handleReset();
+        setTourPoints([]);
+      },
+    },
+    {
+      target: 'coords',
+      title: 'Each player gets a shrinking corridor',
+      body:
+        'Every player also carries a boundary — a range of mixes still worth considering. As the opponent\'s '
+        + 'regret falls, that range contracts. Seen from above, the two corridors close in from both sides.',
+      onEnter: () => {
+        enterMixedAct();
+        setStepMode('regret');
+        handleReset();
+        setTourPoints([]);
+        moveCamera(CAMERA.topDown, 900);
+      },
+    },
+    {
+      target: 'controls',
+      title: 'Watch the leans flatten',
+      body:
+        'Press Run. Self-interest alone always points at a corner — the best reply to any opponent mix is a '
+        + 'pure strategy, never a blend — so it can never name an interior point. The contracting boundary '
+        + 'carries the search inward instead, and step by step both lines lose their lean.',
+      onEnter: () => {
+        enterMixedAct();
         setStepMode('regret');
         setTourPoints([]);
+        // The markers come back ON here: this is the only step where anything is
+        // moving, and they are what the visitor is being asked to watch — and
+        // the idle spin stays off for the same reason, including after the run
+        // converges, so the result can be read against a still camera.
+        setTourHiddenTraces([]);
+        setTourSpinAllowed(false);
+        // Side-on rather than top-down: the flattening the caption promises is
+        // a change in TILT, which a straight-down camera cannot show.
+        moveCamera(CAMERA.mixedOpen, 800);
+        handleReset();
+        window.setTimeout(() => handleStep(true), 350);
+      },
+    },
+    {
+      target: 'plot',
+      title: 'The first lean disappears',
+      body:
+        'The search has pinned one coordinate — and look at what that did: one line has gone completely FLAT. '
+        + 'No lean means no regret left; every mix now pays that player exactly the same. That is '
+        + 'indifference, found rather than declared. The other line still leans, so the search is not done.',
+      onEnter: () => {
+        // Staged rather than caught mid-run, and BOTH lines stay visible now:
+        // the flat-against-leaning contrast is the point, where an earlier cut
+        // hid the leaning line because the lean had not been introduced yet.
+        // running:false stops the live run this step usually follows.
+        enterMixedAct();
+        setStepMode('regret');
+        setTourPoints([]);
+        handleReset();
         if (mixedNE) {
           setSimState((prev) => ({
             ...prev,
+            running: false,
+            converged: false,
             discoveredMixedX: mixedNE.x,
             discoveredMixedY: null,
             foundAxis: 'x',
             domYLo: 0, domYHi: 1,
           }));
         }
-        moveCamera(CAMERA.edgeOn, 1200);
+        moveCamera(CAMERA.edgeOn, 1100);
       },
     },
     {
       target: 'plot',
-      title: 'Both flat at once',
+      title: 'Both flat: the crossing is the equilibrium',
       body:
-        'Now the second coordinate locks too, and the dark red line appears: A is indifferent along it. Two '
-        + 'flat lines, each one held level by the OTHER player\'s mix. Where they cross is the mixed '
-        + 'equilibrium — not a number you solve for, a place you can look at.',
+        'Now the second coordinate locks and the other line lies flat as well. Follow the two flat lines to '
+        + 'where they cross in the xy-plane below — that crossing is the mixed Nash equilibrium. No lean left '
+        + 'for anyone: nobody can gain by moving alone.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
+        handleReset();
         if (mixedNE) {
           setSimState((prev) => ({
             ...prev,
+            running: false,
+            converged: false,
             discoveredMixedX: mixedNE.x,
             discoveredMixedY: mixedNE.y,
             foundAxis: 'y',
@@ -1786,9 +1887,12 @@ export default function App() {
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
+        handleReset();
         if (mixedNE) {
           setSimState((prev) => ({
             ...prev,
+            running: false,
+            converged: false,
             discoveredMixedX: mixedNE.x,
             discoveredMixedY: mixedNE.y,
             foundAxis: 'y',
@@ -1796,61 +1900,6 @@ export default function App() {
           setTourPoints([{ x: mixedNE.x, y: mixedNE.y }]);
         }
         moveCamera(CAMERA.interior, 700);
-      },
-    },
-
-    // ── Act 3: why a boundary is what makes convergence possible ─────────────
-    {
-      target: 'method',
-      // Defines regret FROM the flatness just shown, and points forward to the
-      // tilt rather than back at it. The earlier wording ("that tilt had a
-      // name") referred to a lean the reader had never seen: the steps before
-      // this one show flat lines only, and the sloped strategy lines do not
-      // appear until the next step.
-      title: 'Measuring what is left',
-      body:
-        'Watch both lines lean again. That lean is Opponent Regret: how much better a player could still have '
-        + 'done against what the other one actually played. On the flat lines a moment ago it was exactly zero '
-        + '— nothing left to gain by changing your mind. The steeper the lean, the more is still on the table.',
-      onEnter: () => {
-        enterMixedAct();
-        setStepMode('regret');
-        setTourPoints([]);
-        moveCamera(CAMERA.topDown, 1000);
-      },
-    },
-    {
-      target: 'coords',
-      title: 'Each player gets a shrinking corridor',
-      body:
-        'Every player also carries a boundary — a range of mixes still worth considering. As the opponent\'s '
-        + 'regret falls, that range contracts. Seen from above, the two corridors close in from both sides.',
-      onEnter: () => {
-        enterMixedAct();
-        setStepMode('regret');
-        setTourPoints([]);
-        moveCamera(CAMERA.topDown, 800);
-      },
-    },
-    {
-      target: 'controls',
-      title: 'The boundary is what makes it converge',
-      body:
-        'Press Run. Self-interest alone always points at a corner — the best reply to any opponent mix is a '
-        + 'pure strategy, never a blend — so it can never name an interior point. The contracting boundary is '
-        + 'what carries the search onto the equilibrium and holds it there.',
-      onEnter: () => {
-        enterMixedAct();
-        setStepMode('regret');
-        setTourPoints([]);
-        // The markers come back ON here: this is the only step where anything is
-        // moving, and they are what the visitor is being asked to watch — and
-        // the idle spin stays off for the same reason, including after the run
-        // converges, so the result can be read against a still camera.
-        setTourHiddenTraces([]);
-        setTourSpinAllowed(false);
-        handleReset();
-        window.setTimeout(() => handleStep(true), 350);
       },
     },
     {
