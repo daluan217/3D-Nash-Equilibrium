@@ -2067,7 +2067,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col antialiased">
       {/* ── Heading Banner ── */}
       <header
-        className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle"
+        className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle${tourOpen ? ' [@media(max-height:560px)]:!static' : ''}`}
         style={isElectron ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
       >
         {/* Vertical space for macOS traffic-light buttons — title sits below them, no horizontal offset needed */}
@@ -3694,7 +3694,10 @@ export default function App() {
         />
       )}
 
-      {/* Bottom-left feedback launcher */}
+      {/* Bottom-left feedback launcher. Hidden during the tour: it floats over
+          the corner of the plot the spotlight keeps landing on, and a stray
+          call-to-action inside a guided walkthrough reads as part of the tour. */}
+      {!tourOpen && (
       <button
         onClick={openFeedback}
         title="Send feedback"
@@ -3703,6 +3706,7 @@ export default function App() {
         <MessageSquare className="w-4 h-4" />
         <span className="hidden sm:inline">Feedback</span>
       </button>
+      )}
 
       {isFeedbackOpen && (
         <div
