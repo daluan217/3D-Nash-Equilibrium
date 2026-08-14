@@ -281,6 +281,18 @@ export function makeTraces(
       const xi = i / FLAT_STEPS;
       fXa.push(xi); fYa.push(yStar); fZa.push(r3(EA(xi, yStar, g)));
     }
+    // White casing under the indifference/strategy lines. They lie on top of
+    // the A-Moves/B-Moves path stripes and were getting lost in them; a halo
+    // separates them from any clutter, on either theme, without dimming or
+    // removing the movement paths themselves.
+    // The casing carries the SAME name as its line (with showlegend off) so
+    // the tour's hide-by-name treats them as one object — a casing named '_'
+    // stayed behind as an orphan white stripe when its line was hidden.
+    traces.push({
+      type: 'scatter3d', mode: 'lines', name: 'A indifferent (y = y*)', showlegend: false,
+      hoverinfo: 'skip', x: fXa, y: fYa, z: fZa,
+      line: { color: 'rgba(255,255,255,0.9)', width: 16 }
+    });
     traces.push({
       type: 'scatter3d',
       mode: 'lines',
@@ -289,7 +301,7 @@ export function makeTraces(
       x: fXa,
       y: fYa,
       z: fZa,
-      line: { color: '#7B241C', width: 7 }
+      line: { color: '#7B241C', width: 10 }
     });
 
     // E[B](x*, y) swept over y: flat because B is indifferent at x* — dark blue
@@ -299,6 +311,11 @@ export function makeTraces(
       fXb.push(xStar); fYb.push(yi); fZb.push(r3(EB(xStar, yi, g)));
     }
     traces.push({
+      type: 'scatter3d', mode: 'lines', name: 'B indifferent (x = x*)', showlegend: false,
+      hoverinfo: 'skip', x: fXb, y: fYb, z: fZb,
+      line: { color: 'rgba(255,255,255,0.9)', width: 16 }
+    });
+    traces.push({
       type: 'scatter3d',
       mode: 'lines',
       name: 'B indifferent (x = x*)',
@@ -306,7 +323,7 @@ export function makeTraces(
       x: fXb,
       y: fYb,
       z: fZb,
-      line: { color: '#1A3A5C', width: 7 }
+      line: { color: '#2563eb', width: 10 }
     });
   }
 
@@ -344,9 +361,16 @@ export function makeTraces(
       traces.push({
         type: 'scatter3d', mode: 'lines',
         name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at current y)',
+        showlegend: false,
+        hoverinfo: 'skip', x: xs, y: ys, z: zs,
+        line: { color: 'rgba(255,255,255,0.9)', width: aFlat ? 16 : 13 }
+      });
+      traces.push({
+        type: 'scatter3d', mode: 'lines',
+        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at current y)',
         showlegend: true,
         x: xs, y: ys, z: zs,
-        line: { color: '#7B241C', width: aFlat ? 7 : 5 }
+        line: { color: '#7B241C', width: aFlat ? 10 : 8 }
       });
     }
     if (trackingMode === 'B' || trackingMode === 'both') {
@@ -358,9 +382,16 @@ export function makeTraces(
       traces.push({
         type: 'scatter3d', mode: 'lines',
         name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at current x)',
+        showlegend: false,
+        hoverinfo: 'skip', x: xs, y: ys, z: zs,
+        line: { color: 'rgba(255,255,255,0.9)', width: bFlat ? 16 : 13 }
+      });
+      traces.push({
+        type: 'scatter3d', mode: 'lines',
+        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at current x)',
         showlegend: true,
         x: xs, y: ys, z: zs,
-        line: { color: '#1A3A5C', width: bFlat ? 7 : 5 }
+        line: { color: '#2563eb', width: bFlat ? 10 : 8 }
       });
     }
   }
@@ -514,8 +545,15 @@ export function makeTraces(
   allNE.forEach(ne => {
     if (ne.type === 'pure') {
       if (trackingMode === 'both') {
-        const zAp = EA(ne.x, ne.y, g);
-        const zBp = EB(ne.x, ne.y, g);
+        let zAp = EA(ne.x, ne.y, g);
+        let zBp = EB(ne.x, ne.y, g);
+        // In a symmetric game both surfaces pay the same at a pure NE, so the
+        // trace's two diamonds land on the identical 3D point and depth-tie —
+        // they flicker against each other as the view turns. Split them by a
+        // hair; equal payoffs still READ as one diamond.
+        const spanNE = Math.max(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22)
+                     - Math.min(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22) || 1;
+        if (Math.abs(zAp - zBp) < spanNE * 0.001) { zAp += spanNE * 0.004; zBp -= spanNE * 0.004; }
         const zLo = Math.min(zAp, zBp);
         const zHi = Math.max(zAp, zBp);
         const COORD_STEPS = 15;
@@ -564,8 +602,11 @@ export function makeTraces(
       }
       pureShown = true;
     } else {
-      const zA = EA(ne.x, ne.y, g);
-      const zB = EB(ne.x, ne.y, g);
+      let zA = EA(ne.x, ne.y, g);
+      let zB = EB(ne.x, ne.y, g);
+      const spanNE2 = Math.max(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22)
+                    - Math.min(g.a11,g.a12,g.a21,g.a22,g.b11,g.b12,g.b21,g.b22) || 1;
+      if (Math.abs(zA - zB) < spanNE2 * 0.001) { zA += spanNE2 * 0.004; zB -= spanNE2 * 0.004; }
       if (trackingMode === 'both') {
         const zLo = Math.min(zA, zB);
         const zHi = Math.max(zA, zB);
@@ -620,6 +661,16 @@ export function makeTraces(
   // ── Tracking spheres (the large display balls) ────────────────────────────
   // Drawn LAST so that at convergence they render on top of the NE diamond,
   // leaving only the diamond's corners protruding (see diamondSize note above).
+  //
+  // When a sphere sits EXACTLY on an equilibrium marker the two billboards
+  // depth-tie, and which one wins flips with the camera angle — the sphere
+  // flickered in and out of the diamond while the view spun. A lift of 0.6%
+  // of the z-span breaks the tie invisibly; draw order alone cannot, because
+  // WebGL resolves equal depths per-fragment, not per-trace.
+  const zSpanAll = Math.max(g.a11, g.a12, g.a21, g.a22, g.b11, g.b12, g.b21, g.b22)
+                 - Math.min(g.a11, g.a12, g.a21, g.a22, g.b11, g.b12, g.b21, g.b22) || 1;
+  const onNE = allNE.some(n => Math.abs(n.x - px) < 1e-3 && Math.abs(n.y - py) < 1e-3);
+  const zLift = onNE ? zSpanAll * 0.006 : 0;
   if (trackingMode === 'A' || trackingMode === 'both') {
     traces.push({
       type: 'scatter3d',
@@ -628,7 +679,7 @@ export function makeTraces(
       showlegend: trackingMode === 'A' || trackingMode === 'both',
       x: [px],
       y: [py],
-      z: [eA],
+      z: [eA + zLift],
       marker: { size: sphereSize, color: '#d52c1a', line: { color: 'white', width: 2 } }
     });
   }
@@ -640,7 +691,7 @@ export function makeTraces(
       showlegend: trackingMode === 'B' || trackingMode === 'both',
       x: [px],
       y: [py],
-      z: [eB],
+      z: [eB + zLift],
       marker: { size: sphereSize, color: '#2980B9', line: { color: 'white', width: 2 } }
     });
   }

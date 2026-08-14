@@ -396,16 +396,38 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
      * than scene.annotations so the label is anchored in 3D and travels with the
      * surface as the camera rotates. */
     for (const pt of tourPoints) {
-      const zA = r3(EA(pt.x, pt.y, payoffs));
-      const zB = r3(EB(pt.x, pt.y, payoffs));
-      // ONE annotation colour for both, deliberately not a player colour.
-      // These were rose and blue, which read as A's and B's live position
-      // markers (#d52c1a / #2980B9) — a callout that looks like a data series
-      // is worse than no callout. Yellow is the only hue the plot does not
-      // already spend on something, and the label text carries whose payoff it
-      // is, so the marker never has to.
-      const callout = isDark ? '#FACC15' : '#CA8A04';
-      const calloutRing = isDark ? '#1f2937' : '#ffffff';
+      // When a callout sits exactly on an equilibrium marker — the mixed-NE
+      // steps put it there on purpose, and the dilemma's corners ARE pure-NE
+      // diamonds — the two billboards depth-tie and flicker against each other
+      // as the idle spin turns. Lift A's callout a hair above and B's a hair
+      // below; the labels already read top-left/bottom-right, so the split
+      // matches how they are read.
+      const onNE = allNE.some((n) => Math.abs(n.x - pt.x) < 1e-3 && Math.abs(n.y - pt.y) < 1e-3);
+      const span = Math.max(payoffs.a11, payoffs.a12, payoffs.a21, payoffs.a22, payoffs.b11, payoffs.b12, payoffs.b21, payoffs.b22)
+                 - Math.min(payoffs.a11, payoffs.a12, payoffs.a21, payoffs.a22, payoffs.b11, payoffs.b12, payoffs.b21, payoffs.b22) || 1;
+      const zAraw = EA(pt.x, pt.y, payoffs);
+      const zBraw = EB(pt.x, pt.y, payoffs);
+      // Lift when the callout shares a point with an NE diamond — and also
+      // when it shares one with ITS OWN TWIN: at a symmetric game's corners
+      // EA = EB, so A's and B's callouts coincide and flicker against each
+      // other exactly like the NE case.
+      let calloutLift = onNE ? span * 0.008 : 0;
+      if (Math.abs(zAraw - zBraw) < span * 0.001) calloutLift = Math.max(calloutLift, span * 0.004);
+      // The lift positions the MARKER; the LABEL prints the true payoff. An
+      // earlier cut fed the lifted height into the text and the equilibrium
+      // read "A = 0.919" where the payoff is 0.727 — a made-up number on the
+      // one element whose whole job is stating an exact value.
+      const zA = r3(zAraw + calloutLift);
+      const zB = r3(zBraw - calloutLift);
+      const labelA = r3(zAraw);
+      const labelB = r3(zBraw);
+      // Text-only annotations in the Mixed-NE purple: the equilibrium diamonds
+      // already mark the spot, so a second glyph on the same point was one
+      // marker too many — and colouring the text like the diamonds says
+      // outright which markers the numbers belong to. (Earlier cuts used
+      // yellow diamonds+text; deliberately not a player colour, so the note
+      // never reads as a data series.)
+      const callout = isDark ? '#c084fc' : '#8E44AD';
       // Off to the RIGHT, not stacked above and below. Centred labels landed on
       // top of the mixed-NE diamond once the mixed act zoomed in, and in a
       // symmetric game both players share a z, so 'top'/'bottom' would still
@@ -413,12 +435,11 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // A goes up-LEFT and B down-RIGHT: splitting horizontally as well as
       // vertically, because on a wide payoff axis two callouts half a unit
       // apart land on the same pixel row and overprint into garbage.
-      for (const [z, who, pos] of [[zA, 'A', 'top left'], [zB, 'B', 'bottom right']] as const) {
+      for (const [z, label, who, pos] of [[zA, labelA, 'A', 'top left'], [zB, labelB, 'B', 'bottom right']] as const) {
         traces.push({
-          type: 'scatter3d', mode: 'markers+text',
+          type: 'scatter3d', mode: 'text',
           x: [pt.x], y: [pt.y], z: [z],
-          marker: { size: 8, color: callout, symbol: 'diamond', line: { color: calloutRing, width: 2 } },
-          text: [`${who} = ${z}`], textposition: pos,
+          text: [`${who} = ${label}`], textposition: pos,
           textfont: { size: 13, color: callout, family: 'ui-monospace, monospace' },
           hoverinfo: 'skip', showlegend: false, cliponaxis: false,
         } as any);
