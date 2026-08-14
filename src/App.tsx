@@ -1731,9 +1731,10 @@ export default function App() {
       target: 'plot',
       title: 'A leaning line is an instruction',
       body:
-        'This line is A\'s payoff as A alone varies their mix, with B held still. It LEANS — and a leaning '
-        + 'line is an instruction: slide to its high end. The high end is always a corner, all-in on one '
-        + 'option, never a blend. As long as the line leans, A wants a corner.',
+        'Take an example point, away from any equilibrium: both players at an even half-half mix — the marked '
+        + 'spot. This line is A\'s payoff as A alone varies their mix, with B held still there. It LEANS — and '
+        + 'a leaning line is an instruction: slide to its high end. The high end is always a corner, all-in '
+        + 'on one option, never a blend. As long as the line leans, A wants a corner.',
       onEnter: () => {
         // Regret mode with NOTHING solved: the strategy lines render at the
         // domain midpoints, tilted. B's line is hidden so the first lean is
@@ -1745,7 +1746,11 @@ export default function App() {
         // from the run otherwise keeps its path stripes and corridor residue
         // on screen, burying the one line this step exists to show.
         handleReset();
-        setTourPoints([]);
+        // The example point the caption talks through, marked with its payoffs
+        // exactly like the dilemma corners were. After a reset the strategy
+        // lines are drawn at the domain midpoints, so (0.5, 0.5) is not a
+        // stand-in for the example — it IS the point the lines pass through.
+        setTourPoints([{ x: 0.5, y: 0.5 }]);
         moveCamera(CAMERA.edgeOn, 1100);
       },
     },
@@ -1753,14 +1758,14 @@ export default function App() {
       target: 'plot',
       title: 'The other line leans too',
       body:
-        'B\'s line does the same job along B\'s own axis, and it also leans — so B is pulled to a corner at '
-        + 'ITS high end. Two leaning lines, two players each being pulled away from the middle. Nothing in '
-        + 'this picture, so far, would ever produce a mixture.',
+        'Through the same marked point, B\'s line does the same job along B\'s own axis — and it also leans, '
+        + 'so B is pulled to a corner at ITS high end. Two leaning lines through one point, two players each '
+        + 'being pulled away from the middle. Nothing in this picture, so far, would ever produce a mixture.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
         handleReset();
-        setTourPoints([]);
+        setTourPoints([{ x: 0.5, y: 0.5 }]);
         moveCamera(CAMERA.mixedOpen, 1100);
       },
     },
