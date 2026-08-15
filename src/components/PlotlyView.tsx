@@ -46,6 +46,23 @@ interface PlotlyViewProps {
    * taking manual control of one step does not silence the rest of the tour.
    */
   spinNonce?: number;
+  /**
+   * How long to wait before the FIRST turn each time the spin (re)starts.
+   * 0 = spin straight away (fresh page, new game). Greater than 0 = hold off
+   * that long first — used when a run pauses or finishes, where the visitor
+   * is likely mid-inspection and the camera must not move the picture the
+   * instant they stop it.
+   */
+  spinDelayMs?: number;
+  /**
+   * 0 (default): the first press on the plot takes the wheel for good and
+   * only the Resume button brings the spin back (the tour's behaviour — a
+   * camera that wanders off while a reader studies their own view is worse
+   * than one that never moved). Greater than 0: nothing is permanent —
+   * interacting with the graph just halts the spin and starts a countdown,
+   * and after this many ms without further graph activity it turns again.
+   */
+  spinAutoResumeMs?: number;
 }
 
 /** Trace names the tour switches on and off. Kept here so the strings cannot
@@ -172,7 +189,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   tourPoints = [],
   hiddenTraces = [],
   idleSpin = false,
-  spinNonce = 0
+  spinNonce = 0,
+  spinDelayMs = 0,
+  spinAutoResumeMs = 0
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotId = PLOT_ID;
@@ -195,7 +214,19 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const resumeSpin = () => {
     spinPausedRef.current = false;
     setSpinPaused(false);
+    // In auto-resume mode the button is a "skip the wait" shortcut.
+    nextSpinAtRef.current = 0;
+    setSpinWaiting(false);
+    spinWaitingRef.current = false;
   };
+  /** Auto-resume mode: the clock time before which the spin may not turn.
+   *  Graph activity pushes it forward; the Resume button zeroes it. */
+  const nextSpinAtRef = useRef(0);
+  /** True while the spin is halted awaiting the inactivity countdown — this
+   *  is what shows the Resume button in auto-resume mode. Mirrored in a ref
+   *  so the rAF loop and event handlers can flip it without re-render races. */
+  const [spinWaiting, setSpinWaiting] = useState(false);
+  const spinWaitingRef = useRef(false);
 
   // Set up robust ResizeObserver to force Plotly bounds to sync with fluid flex columns
   useEffect(() => {
@@ -284,6 +315,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // Every step starts spinning again, which is why spinNonce is a dependency.
     spinPausedRef.current = false;
     setSpinPaused(false);
+    nextSpinAtRef.current = performance.now() + spinDelayMs;
+    spinWaitingRef.current = spinDelayMs > 0;
+    setSpinWaiting(spinDelayMs > 0);
 
     let raf = 0;
     let last = performance.now();
@@ -318,15 +352,57 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       if (typeof x !== 'number' || !insidePlot(x, y)) return;
       pauseSpin();
     };
-    document.addEventListener('mousedown', takeOver, true);
-    document.addEventListener('touchstart', takeOver, true);
-    document.addEventListener('wheel', takeOver, true);
+    /**
+     * Auto-resume mode has no permanent takeover: activity over the GRAPH —
+     * the same coordinate hit-test as takeOver, so overlays can't swallow it —
+     * halts the spin and restarts the countdown, and the spin quietly returns
+     * once the graph has been left alone for the full interval.
+     *
+     * Cursor movement only counts while the spin is already waiting: a
+     * pointer merely crossing the picture must not stop an active turn (and
+     * must not undo the Resume button the instant the cursor leaves it), but
+     * while the countdown runs, hovering the graph keeps pushing it back —
+     * the visitor is still looking.
+     */
+    const noteActivity = (e: Event) => {
+      const pt = e as MouseEvent & { touches?: TouchList };
+      const x = pt.touches?.[0]?.clientX ?? pt.clientX;
+      const y = pt.touches?.[0]?.clientY ?? pt.clientY;
+      if (typeof x !== 'number' || !insidePlot(x, y)) return;
+      const now = performance.now();
+      if (e.type === 'mousemove' && now >= nextSpinAtRef.current) return;
+      nextSpinAtRef.current = now + spinAutoResumeMs;
+      if (!spinWaitingRef.current) {
+        spinWaitingRef.current = true;
+        setSpinWaiting(true);
+      }
+    };
+    if (spinAutoResumeMs > 0) {
+      document.addEventListener('mousemove', noteActivity, true);
+      document.addEventListener('mousedown', noteActivity, true);
+      document.addEventListener('wheel', noteActivity, true);
+      document.addEventListener('touchstart', noteActivity, true);
+      document.addEventListener('touchmove', noteActivity, true);
+    } else {
+      document.addEventListener('mousedown', takeOver, true);
+      document.addEventListener('touchstart', takeOver, true);
+      document.addEventListener('wheel', takeOver, true);
+    }
 
     const tick = (now: number) => {
       const dt = now - last;
       last = now;
       since += dt;
-      if (!spinPausedRef.current && !cameraBusy && since >= FRAME) {
+      const held = now < nextSpinAtRef.current;
+      if (!held && spinWaitingRef.current) {
+        spinWaitingRef.current = false;
+        setSpinWaiting(false);
+      }
+      // While ineligible (visitor active, camera glide in flight, taken over)
+      // the accumulator must stay flat — otherwise the first eligible frame
+      // applies the whole banked interval as one violent jump.
+      if (spinPausedRef.current || cameraBusy || held) since = 0;
+      if (!spinPausedRef.current && !cameraBusy && !held && since >= FRAME) {
         const cam = (document.getElementById(plotId) as any)?._fullLayout?.scene?.camera;
         if (cam?.eye) {
           const a = RATE * (since / 1000);
@@ -351,9 +427,14 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       document.removeEventListener('mousedown', takeOver, true);
       document.removeEventListener('touchstart', takeOver, true);
       document.removeEventListener('wheel', takeOver, true);
+      document.removeEventListener('mousemove', noteActivity, true);
+      document.removeEventListener('mousedown', noteActivity, true);
+      document.removeEventListener('wheel', noteActivity, true);
+      document.removeEventListener('touchstart', noteActivity, true);
+      document.removeEventListener('touchmove', noteActivity, true);
       rebindPlotInput();
     };
-  }, [idleSpin, spinNonce]);
+  }, [idleSpin, spinNonce, spinDelayMs, spinAutoResumeMs]);
 
   // Purge Plotly ONLY when component is unmounted
   useEffect(() => {
@@ -704,7 +785,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         </button>
       </div>
 
-      {idleSpin && spinPaused && (
+      {idleSpin && (spinPaused || spinWaiting) && (
         <button
           type="button"
           onClick={resumeSpin}
