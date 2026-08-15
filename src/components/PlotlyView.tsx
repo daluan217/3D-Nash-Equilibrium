@@ -322,8 +322,22 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     let raf = 0;
     let last = performance.now();
     let since = 0;
+    /** Adaptive back-off: no frame before this clock time (see tick). */
+    let coolUntil = 0;
     const RATE = 0.16;   // radians per second — a full turn takes about 40s
     const FRAME = 33;    // ms between relayouts; every frame would be wasteful
+    // The gap is a multiple of the frame's MEASURED cost, but the measurement
+    // only sees the synchronous slice — Plotly also queues style/paint work
+    // that lands after the call returns (observed: the true long-task cost is
+    // about twice the synchronous one). 5× the synchronous slice ≈ 2.5× the
+    // real cost, which holds the spin near a third of the main thread.
+    //
+    // Touch devices only. On desktop a frame costs ~3ms and the fixed 33ms
+    // cadence never saturated anything, so it keeps the original ungated
+    // spin (spread 0 → coolUntil is always in the past) — same gate as the
+    // marker sizing, not window width alone, so a narrow desktop window
+    // doesn't lose smoothness.
+    const COST_SPREAD = navigator.maxTouchPoints > 0 && window.innerWidth < 1400 ? 5 : 0;
 
     /**
      * Listen on the DOCUMENT in the capture phase and hit-test by coordinate,
@@ -400,13 +414,16 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       }
       // While ineligible (visitor active, camera glide in flight, taken over)
       // the accumulator must stay flat — otherwise the first eligible frame
-      // applies the whole banked interval as one violent jump.
+      // applies the whole banked interval as one violent jump. A COOLDOWN is
+      // different: the accumulator keeps counting there, so the next frame
+      // rotates by the full elapsed angle and the turn stays time-true.
       if (spinPausedRef.current || cameraBusy || held) since = 0;
-      if (!spinPausedRef.current && !cameraBusy && !held && since >= FRAME) {
+      if (!spinPausedRef.current && !cameraBusy && !held && now >= coolUntil && since >= FRAME) {
         const cam = (document.getElementById(plotId) as any)?._fullLayout?.scene?.camera;
         if (cam?.eye) {
           const a = RATE * (since / 1000);
           const { x, y, z } = cam.eye;
+          const t0 = performance.now();
           Plotly.relayout(plotId, {
             'scene.camera.eye': {
               x: x * Math.cos(a) - y * Math.sin(a),
@@ -415,6 +432,19 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
             },
           });
           rebindPlotInput();
+          /**
+           * Pay for what the frame actually cost. Both relayouts above are
+           * SYNCHRONOUS full re-renders; on a desktop they take a couple of
+           * milliseconds, but on a phone — worse with scene annotations,
+           * which are re-projected on every relayout — a single frame can
+           * cost 100–240ms. At a fixed 33ms cadence the spin then owns ~100%
+           * of the main thread and taps on the page queue for seconds (the
+           * tour's Next button on mobile went dead exactly this way). Waiting
+           * out COST_SPREAD× the measured cost before the next frame caps the
+           * spin's share of the thread at ~1/(1+COST_SPREAD) ≈ 30% on ANY
+           * device, while a fast machine still gets the full frame rate.
+           */
+          coolUntil = performance.now() + (performance.now() - t0) * COST_SPREAD;
         }
         since = 0;
       }
