@@ -1445,6 +1445,10 @@ export default function App() {
 
     setLogEntries(['Set starting point and first mover, then click Run or Step.']);
     setInitialized(false);
+    // A reset is a fresh picture — restart the idle spin immediately, even if
+    // earlier graph activity had halted it or its countdown was mid-flight.
+    // (Covers preset loads too: handleLoadPreset funnels through here.)
+    setTourSpinNonce((n) => n + 1);
     thinHistoryRef.current = [];
     scrubPosRef.current = 0;
     initStateRef.current = null;
@@ -1588,6 +1592,11 @@ export default function App() {
     setTourPoints([]);
     setTourHiddenTraces([]);
     setTourPauseAtFirstFind(false);
+    // Restart the idle spin: the click that closed the tour may have landed
+    // inside the plot and taken the wheel, and the effect's deps don't change
+    // on tour exit — without a nonce bump the always-on spin would stay dead.
+    setTourSpinNonce((n) => n + 1);
+    setTourSpinAllowed(true);
     setSpeed(5);
     setShrinkStep(0.1);
     setShrinkStepRaw('0.100');
@@ -2876,8 +2885,18 @@ export default function App() {
             trackingMode={trackingMode}
             tourPoints={tourPoints}
             hiddenTraces={tourHiddenTraces}
-            idleSpin={tourOpen && tourSpinAllowed && !simState.running}
+            // The spin runs whenever the simulation isn't — in the tour it is
+            // additionally gated per-step (tourSpinAllowed). Outside the tour
+            // nothing is permanent: graph activity halts the spin and it
+            // returns by itself after 10s of inactivity. A fresh or newly
+            // loaded game spins straight away (spinDelayMs 0 — handleReset
+            // bumps the nonce so this restarts on every load); a PAUSED or
+            // finished run first waits out the same 10s, since the visitor
+            // is likely mid-inspection.
+            idleSpin={tourOpen ? tourSpinAllowed && !simState.running : !simState.running}
             spinNonce={tourSpinNonce}
+            spinDelayMs={!tourOpen && initialized ? 10000 : 0}
+            spinAutoResumeMs={tourOpen ? 0 : 10000}
             allNE={allNE}
             isDark={darkMode}
             stepMode={stepMode}
