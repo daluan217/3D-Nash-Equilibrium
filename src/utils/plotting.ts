@@ -53,8 +53,8 @@ export function makeTraces(
   // smaller than the diamond and rendered AFTER it, so at convergence the sphere
   // sits on top with just the diamond's corners poking out around it — the
   // equilibrium stays pinpointed and both markers are visible.
-  const diamondSize = isMobile ? 8.5 : 10.5;
-  const sphereSize = isMobile ? 7 : 8;
+  const diamondSize = isMobile ? 7 : 10.5;
+  const sphereSize = isMobile ? 5.5 : 8;
   // Phase 2 ghost (search) markers stay smaller than the current-position
   // spheres so the size hierarchy reads ghost < sphere < diamond at every
   // breakpoint.
@@ -561,28 +561,35 @@ export function makeTraces(
           lineX.push(ne.x);
           lineY.push(ne.y);
         }
-        // Vertical line connecting payoff A and payoff B for pure NE
-        traces.push({
-          type: 'scatter3d',
-          mode: 'lines',
-          name: pureShown ? '_' : 'Pure NE',
-          showlegend: !pureShown,
-          legendgroup: 'pureNE',
-          x: lineX,
-          y: lineY,
-          z: lineZ,
-          line: { color: '#4ca47a', width: 6, dash: 'solid' }
-        });
+        // The connecting line must render BEHIND the diamonds, never through
+        // them. Both are translucent (opacity 0.99 → translucent pass, strict
+        // LESS depth test), so the tie-break is draw order: the diamonds are
+        // pushed FIRST and write their depth, and the line — drawn second —
+        // is culled wherever it ties with a diamond sprite. An opaque line
+        // (the old order) won every tie and punched through the diamond face.
         traces.push({
           type: 'scatter3d',
           mode: 'markers',
-          name: '_',
-          showlegend: false,
+          name: pureShown ? '_' : 'Pure NE',
+          showlegend: !pureShown,
           legendgroup: 'pureNE',
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zAp, zBp],
           marker: { size: diamondSize, color: '#4ca47a', symbol: 'diamond', opacity: 0.99, line: { color: 'white', width: 1 } }
+        });
+        // Vertical line connecting payoff A and payoff B for pure NE
+        traces.push({
+          type: 'scatter3d',
+          mode: 'lines',
+          name: '_',
+          showlegend: false,
+          legendgroup: 'pureNE',
+          x: lineX,
+          y: lineY,
+          z: lineZ,
+          opacity: 0.99,
+          line: { color: '#4ca47a', width: 6, dash: 'solid' }
         });
       } else {
         const zP = trackingMode === 'B' ? EB(ne.x, ne.y, g) : EA(ne.x, ne.y, g);
@@ -614,28 +621,32 @@ export function makeTraces(
           lineX.push(ne.x);
           lineY.push(ne.y);
         }
-        // Vertical dashed line connecting payoff A and payoff B for mixed NE
-        traces.push({
-          type: 'scatter3d',
-          mode: 'lines',
-          name: mixedShown ? '_' : 'Mixed NE',
-          showlegend: !mixedShown,
-          legendgroup: 'mixedNE',
-          x: lineX,
-          y: lineY,
-          z: lineZ,
-          line: { color: '#8E44AD', width: 6, dash: 'solid' }
-        });
+        // Diamonds BEFORE the line — same draw-order tie-break as the pure-NE
+        // markers above: the translucent line drawn second loses depth ties
+        // to the diamond sprites instead of punching through them.
         traces.push({
           type: 'scatter3d',
           mode: 'markers',
-          name: '_',
-          showlegend: false,
+          name: mixedShown ? '_' : 'Mixed NE',
+          showlegend: !mixedShown,
           legendgroup: 'mixedNE',
           x: [ne.x, ne.x],
           y: [ne.y, ne.y],
           z: [zA, zB],
           marker: { size: diamondSize, color: '#8E44AD', symbol: 'diamond', opacity: 0.99, line: { color: 'white', width: 1 } }
+        });
+        // Vertical dashed line connecting payoff A and payoff B for mixed NE
+        traces.push({
+          type: 'scatter3d',
+          mode: 'lines',
+          name: '_',
+          showlegend: false,
+          legendgroup: 'mixedNE',
+          x: lineX,
+          y: lineY,
+          z: lineZ,
+          opacity: 0.99,
+          line: { color: '#8E44AD', width: 6, dash: 'solid' }
         });
       } else {
         const zVal = trackingMode === 'B' ? zB : zA;

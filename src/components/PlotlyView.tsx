@@ -473,7 +473,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           : (isDark ? '#FACC15' : '#CA8A04');
         const calloutRing = onNE ? '#ffffff' : (isDark ? '#1f2937' : '#ffffff');
         const ringWidth = onNE ? 1 : 2;
-        const goldSize = isMobile ? 8.5 : 10.5;
+        const goldSize = isMobile ? 7 : 10.5;
         const zGa = r3(zAraw);
         const zGb = r3(zBraw);
         const zLo = Math.min(zGa, zGb);
@@ -486,16 +486,20 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           lineY.push(pt.y);
         }
         traces.push({
-          type: 'scatter3d', mode: 'lines',
-          x: lineX, y: lineY, z: lineZ,
-          line: { color: diamondColor, width: 6, dash: 'solid' },
-          hoverinfo: 'skip', showlegend: false,
-        } as any);
-        traces.push({
           type: 'scatter3d', mode: 'markers',
           x: [pt.x, pt.x], y: [pt.y, pt.y], z: [zGa, zGb],
           marker: { size: goldSize, color: diamondColor, symbol: 'diamond', line: { color: calloutRing, width: ringWidth } },
           hoverinfo: 'skip', showlegend: false, cliponaxis: false,
+        } as any);
+        // Translucent (0.99) so the line renders in the translucent pass and
+        // loses depth ties to the OPAQUE callout diamonds — the line reads as
+        // passing behind/through the diamonds, never over their faces.
+        traces.push({
+          type: 'scatter3d', mode: 'lines',
+          x: lineX, y: lineY, z: lineZ,
+          opacity: 0.99,
+          line: { color: diamondColor, width: 6, dash: 'solid' },
+          hoverinfo: 'skip', showlegend: false,
         } as any);
         const goldPts: [number, string, boolean][] =
           [[zGa, `A = ${labelA}`, true], [zGb, `B = ${labelB}`, false]];
