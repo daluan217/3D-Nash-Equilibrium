@@ -2969,6 +2969,17 @@ export default function App() {
             spinNonce={tourSpinNonce}
             spinDelayMs={!tourOpen && initialized ? 10000 : 0}
             spinAutoResumeMs={tourOpen ? 0 : 10000}
+            // Pressing anywhere on the graph pauses a running simulation —
+            // reaching into the picture means the visitor wants to inspect
+            // it, not race the markers. No auto-resume (unlike the spin's
+            // countdown): Run continues exactly where it stopped. Gated off
+            // during the tour, whose scripted playback a stray press would
+            // desync.
+            onGraphPress={() => {
+              if (!tourOpen && simStateRef.current.running) {
+                setSimState((prev) => ({ ...prev, running: false }));
+              }
+            }}
             allNE={allNE}
             isDark={darkMode}
             stepMode={stepMode}
