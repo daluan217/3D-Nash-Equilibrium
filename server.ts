@@ -710,7 +710,11 @@ async function startServer() {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Vary", "Origin");
       }
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+      // PATCH is how the client updates a saved game in place (scenario keep,
+      // rename); leaving it out of the preflight answer breaks those calls for
+      // every cross-origin client (the Electron app) while the same-origin
+      // website works — the failure reads as "couldn't reach the server".
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-secret");
     }
 
