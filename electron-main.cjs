@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, dialog } = require('electron');
+const { app, BrowserWindow, shell, dialog, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
 
 // Override the package.json "name" so the macOS app menu (About/Hide/Quit)
@@ -83,16 +83,32 @@ if (!gotTheLock) {
     console.error("Failed to start the integrated backend Express server:", err);
   }
 
+  // The renderer reports its theme (App.tsx darkMode effect, via the preload
+  // bridge) so the native window background always matches the page. Without
+  // this the native color shows as a white strip whenever a drag-resize
+  // outpaces the repaint. Registered once, resolves the window per-sender.
+  ipcMain.on('set-background-color', (event, color) => {
+    if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) return;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) win.setBackgroundColor(color);
+  });
+
   function createWindow(portToUse) {
     const finalPort = portToUse || expressPort;
     const windowOptions = {
       width: 1200,
       height: 800,
       title: "Nash Equilibrium Simulator",
+      // Pre-load guess only: the app persists its own theme in localStorage,
+      // which main cannot read before the page runs, so start from the OS
+      // preference and let the renderer correct it on mount. Colors mirror
+      // the page root (bg-slate-50 / dark:bg-slate-950).
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#020617' : '#f8fafc',
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        preload: path.join(__dirname, 'electron-preload.cjs'),
       }
     };
 

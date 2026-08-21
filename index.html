@@ -9,6 +9,16 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192x192.png" />
     <link rel="apple-touch-icon" sizes="192x192" href="/favicon-192x192.png" />
     <title>Nash Equilibrium Simulator</title>
+    <!-- Apply the persisted theme BEFORE first paint. React re-applies it on
+         mount, but that is too late to stop a light flash (and a light
+         resize-strip) in dark mode while the bundle loads. -->
+    <script>
+      try {
+        if (localStorage.getItem('nash_sim_theme') === 'dark') {
+          document.documentElement.classList.add('dark');
+        }
+      } catch (e) {}
+    </script>
     <!-- Google Analytics -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-9LRR4211HX"></script>
     <script>

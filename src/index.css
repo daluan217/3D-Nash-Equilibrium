@@ -135,6 +135,21 @@
   font-family: var(--font-sans);
 }
 
+/*
+ * html AND body both need the theme background. The area a drag-resize
+ * exposes is painted with the root elements' background before the app's
+ * root <div> repaints; with only a light body color (and none on html),
+ * dark mode flashed a white strip along the growing edge — in the browser
+ * and in the desktop app alike. Must mirror the root div's
+ * bg-slate-50 / dark:bg-slate-950 pair.
+ */
+html {
+  background: var(--color-slate-50);
+}
+html.dark {
+  background: var(--color-slate-950);
+}
+
 body {
   font-family: var(--font-sans);
   background: var(--color-slate-50);
@@ -143,6 +158,10 @@ body {
   padding: 0;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+.dark body {
+  background: var(--color-slate-950);
+  color: var(--color-slate-100);
 }
 
 /* Consistent, visible keyboard-focus indicator across the entire surface */
