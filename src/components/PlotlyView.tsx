@@ -228,20 +228,60 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const [spinWaiting, setSpinWaiting] = useState(false);
   const spinWaitingRef = useRef(false);
 
+  /**
+   * Deadline until which the idle spin must stay quiet because the container
+   * is mid-resize. The spin's per-frame relayout is normally a few ms, but
+   * during a live drag-resize it becomes a 200ms+ synchronous re-render —
+   * the page then can't produce frames at the new window size and the
+   * browser fills the exposed strip with its own canvas color (white/gray,
+   * Firefox-private purple) for the whole drag. Measured: with the spin
+   * running a resize storm shows 200–260ms frames; with it quiet, zero.
+   */
+  const resizeBusyUntilRef = useRef(0);
+
   // Set up robust ResizeObserver to force Plotly bounds to sync with fluid flex columns
   useEffect(() => {
     const Plotly = (window as any).Plotly;
     if (!containerRef.current) return;
 
+    /**
+     * Debounced on purpose — this is the drag-resize "color flash" fix.
+     *
+     * A gl3d Plots.resize costs ~100ms+, and a live drag fires this observer
+     * continuously. Resizing the plot on every event starves the main thread,
+     * the page stops producing frames at the new window size, and the browser
+     * fills the exposed strip with its own canvas color for the WHOLE drag —
+     * white/gray in most engines, Firefox-private purple. No CSS can style
+     * that canvas; the only real fix is keeping mid-drag repaints cheap so
+     * the browser never falls behind. The plot holds its stale size until
+     * events go quiet (its panel's own themed background covers the gap),
+     * then does one real resize.
+     */
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Signal the idle spin to hold: its relayout mid-resize is what starves
+    // the frame budget (see resizeBusyUntilRef). Cleared by time, so a
+    // one-off layout change costs at most a quarter-second of spin.
+    const holdSpin = () => { resizeBusyUntilRef.current = performance.now() + 250; };
     const observer = new ResizeObserver(() => {
-      if (Plotly && document.getElementById(plotId)) {
-        Plotly.Plots.resize(plotId);
-      }
+      holdSpin();
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (Plotly && document.getElementById(plotId)) {
+          Plotly.Plots.resize(plotId);
+        }
+      }, 150);
     });
     observer.observe(containerRef.current);
+    // The observer callback runs AFTER the frame's rAF callbacks, so the
+    // first drag step would still pay one expensive spin frame. The window
+    // resize event dispatches BEFORE rAF in the same frame, closing that
+    // gap for window drags (panel-only resizes keep the one-frame cost).
+    window.addEventListener('resize', holdSpin);
 
     return () => {
+      clearTimeout(timer);
       observer.disconnect();
+      window.removeEventListener('resize', holdSpin);
     };
   }, []);
 
@@ -417,8 +457,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // applies the whole banked interval as one violent jump. A COOLDOWN is
       // different: the accumulator keeps counting there, so the next frame
       // rotates by the full elapsed angle and the turn stays time-true.
-      if (spinPausedRef.current || cameraBusy || held) since = 0;
-      if (!spinPausedRef.current && !cameraBusy && !held && now >= coolUntil && since >= FRAME) {
+      const resizeBusy = now < resizeBusyUntilRef.current;
+      if (spinPausedRef.current || cameraBusy || held || resizeBusy) since = 0;
+      if (!spinPausedRef.current && !cameraBusy && !held && !resizeBusy && now >= coolUntil && since >= FRAME) {
         const cam = (document.getElementById(plotId) as any)?._fullLayout?.scene?.camera;
         if (cam?.eye) {
           const a = RATE * (since / 1000);
