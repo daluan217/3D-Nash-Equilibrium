@@ -145,9 +145,19 @@
  */
 html {
   background: var(--color-slate-50);
+  /*
+   * color-scheme is the half Firefox needs: its live-resize pre-paint uses
+   * the browser's DEFAULT canvas color for the declared scheme, not the
+   * page's background property — without "dark" here, dark mode still
+   * flashed white on the growing edge in Firefox even after html/body got
+   * dark backgrounds. Also switches scrollbars and native widget chrome to
+   * the matching palette.
+   */
+  color-scheme: light;
 }
 html.dark {
   background: var(--color-slate-950);
+  color-scheme: dark;
 }
 
 body {
