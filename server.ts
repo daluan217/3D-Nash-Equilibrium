@@ -22,7 +22,7 @@ import dotenv from "dotenv";
 // first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE } from "./src/utils/gameEngine";
 import { validateReport } from "./src/utils/nashValidator";
-import { generateReport, hasCredentials, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
+import { generateReport, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
 import type { ReportEnvelope } from "./src/types";
 
 // Load environment variables from .env file
@@ -821,6 +821,15 @@ async function startServer() {
     // anyone bill the expensive one. The eval sweep calls generateReport
     // directly, so it varies the model without this route needing to accept it.
     const { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
+
+    // The prompt already forbids inventing a story for a game that has one,
+    // but that is an instruction, not a guarantee — models drift. Enforce it:
+    // when a usable scenario was supplied, drop any suggestion so the client
+    // is never offered a replacement it didn't ask for. A user who WANTS a
+    // fresh invention asks for one by omitting the scenario from the request.
+    if (report?.suggestedScenario && scenarioIsUsable(scenario)) {
+      report.suggestedScenario = null;
+    }
 
     if (!report) {
       const envelope: ReportEnvelope = {

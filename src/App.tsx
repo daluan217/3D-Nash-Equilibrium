@@ -73,6 +73,44 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
   return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+/**
+ * Color player-relevant phrases in model- or user-written PLAIN TEXT.
+ *
+ * Built-in preset descriptions carry trusted app-authored HTML spans, but the
+ * AI explanation and user descriptions are rendered as text precisely so they
+ * cannot inject markup. This applies the same player-a / player-b coloring as
+ * a deterministic post-pass: known terms are matched (case-insensitively, at
+ * word boundaries, longest first) and wrapped in React elements — the text
+ * itself is never interpreted as HTML.
+ */
+function ColorCoded({ text, aTerms, bTerms }: { text: string; aTerms: string[]; bTerms: string[] }) {
+  const nodes = useMemo(() => {
+    const entries = [
+      ...aTerms.map((t) => ({ t, cls: 'text-player-a-600 dark:text-player-a-400 font-semibold' })),
+      ...bTerms.map((t) => ({ t, cls: 'text-player-b-600 dark:text-player-b-400 font-semibold' })),
+    ]
+      // Single characters ("A") are ambiguous with articles; require 2+ chars.
+      .filter((e) => e.t && e.t.trim().length >= 2)
+      .sort((p, q) => q.t.length - p.t.length);
+    if (entries.length === 0 || !text) return [text];
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?<![\\w])(?:${entries.map((e) => esc(e.t)).join('|')})(?![\\w])`, 'gi');
+    const out: React.ReactNode[] = [];
+    let last = 0;
+    let k = 0;
+    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      const hit = m[0];
+      const entry = entries.find((e) => e.t.toLowerCase() === hit.toLowerCase());
+      out.push(<span key={k++} className={entry?.cls}>{hit}</span>);
+      last = m.index + hit.length;
+    }
+    out.push(text.slice(last));
+    return out;
+  }, [text, aTerms, bTerms]);
+  return <>{nodes}</>;
+}
+
 interface ThinSnapshot {
   cx: number; cy: number;
   calcX: number | null; calcY: number | null;
@@ -188,6 +226,12 @@ export default function App() {
       document.documentElement.classList.remove('dark');
       localStorage.setItem('nash_sim_theme', 'light');
     }
+    // Desktop app: keep the NATIVE window background in step with the theme.
+    // It is what shows through when a drag-resize outpaces the repaint, so a
+    // stale value flashes a white strip in dark mode. Colors mirror the page
+    // root (bg-slate-50 / dark:bg-slate-950). No-op in the browser.
+    (window as { nashDesktop?: { setBackgroundColor: (c: string) => void } })
+      .nashDesktop?.setBackgroundColor(darkMode ? '#020617' : '#f8fafc');
   }, [darkMode]);
 
   // ── Authentication & Saved Games States ────────────────────────────────────
@@ -677,14 +721,22 @@ export default function App() {
     setIsSaveModalOpen(true);
   };
 
-  const fetchLlmExplanation = async () => {
+  /**
+   * `freshScenario` is the user OPTING IN to a brand-new invented story: the
+   * request simply omits the scenario, so the model writes as if the game had
+   * none and returns its invention in suggestedScenario — which the UI then
+   * offers, never applies. The default path always sends the scenario, and the
+   * server hard-drops any suggestion the model returns despite one being
+   * supplied, so an existing description is only ever replaced by choice.
+   */
+  const fetchLlmExplanation = async (freshScenario = false) => {
     setLlmLoading(true);
     setLlmError(false);
     try {
       const res = await fetch(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payoffs, scenario: scenarioForReport }),
+        body: JSON.stringify(freshScenario ? { payoffs } : { payoffs, scenario: scenarioForReport }),
       });
       if (!res.ok) throw new Error(String(res.status));
       setLlmEnvelope((await res.json()) as ReportEnvelope);
@@ -1371,6 +1423,25 @@ export default function App() {
     col1: scenarioForReport?.col1 || 'Col 1',
     col2: scenarioForReport?.col2 || 'Col 2',
   }), [scenarioForReport]);
+
+  /**
+   * Terms ColorCoded highlights in AI/user text, per player. Inherits
+   * scenarioForReport's matches-the-matrix gate the same way activeLabels
+   * does: edit the payoffs away from the preset and the actor nouns stop
+   * being colored in the same instant the story stops being sent.
+   */
+  const colorTerms = useMemo(() => {
+    const a = ['Player A', 'Row 1', 'Row 2'];
+    const b = ['Player B', 'Col 1', 'Col 2'];
+    if (scenarioForReport) {
+      for (const t of [scenarioForReport.row1, scenarioForReport.row2]) if (t) a.push(t);
+      for (const t of [scenarioForReport.col1, scenarioForReport.col2]) if (t) b.push(t);
+      const p = mergedPresets[activePreset];
+      if (p?.actorA) a.push(...p.actorA);
+      if (p?.actorB) b.push(...p.actorB);
+    }
+    return { a, b };
+  }, [scenarioForReport, mergedPresets, activePreset]);
 
 
   // ── Preset loader action ───────────────────────────────────────────────────
@@ -2513,7 +2584,8 @@ export default function App() {
             {selectedPreset?.desc && (
               selectedCustomGame ? (
                 <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
-                  <strong>Custom - {selectedCustomGame.name}:</strong> {selectedPreset.desc}
+                  <strong>Custom - {selectedCustomGame.name}:</strong>{' '}
+                  <ColorCoded text={selectedPreset.desc} aTerms={colorTerms.a} bTerms={colorTerms.b} />
                 </div>
               ) : (
                 <div
@@ -3209,13 +3281,31 @@ export default function App() {
                     <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 shrink-0" />
                     Plain-English Explanation
                   </strong>
-                  <button
-                    onClick={fetchLlmExplanation}
-                    disabled={llmLoading}
-                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {llmLoading ? 'Analyzing…' : llmEnvelope ? 'Regenerate' : 'Explain this game'}
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {/*
+                      Opt-in path to a NEW invented story for a game that already
+                      has one: the request omits the scenario, so the model
+                      invents and the suggestion card below offers it — nothing
+                      is replaced unless the user saves it.
+                    */}
+                    {scenarioForReport && (
+                      <button
+                        onClick={() => fetchLlmExplanation(true)}
+                        disabled={llmLoading}
+                        title="Invent a brand-new scenario for these payoffs — you choose whether to keep it."
+                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-slate-50/60 dark:bg-slate-900/40 hover:bg-slate-100 dark:hover:bg-slate-800/60 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        New AI scenario
+                      </button>
+                    )}
+                    <button
+                      onClick={() => fetchLlmExplanation()}
+                      disabled={llmLoading}
+                      className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {llmLoading ? 'Analyzing…' : llmEnvelope ? 'Regenerate' : 'Explain this game'}
+                    </button>
+                  </div>
                 </div>
 
                 {llmLoading && (
@@ -3226,7 +3316,25 @@ export default function App() {
 
                 {!llmLoading && llmVerified && llmEnvelope?.report && (
                   <div className="space-y-2">
-                    <p className="text-slate-600 dark:text-slate-300">{llmEnvelope.report.prose}</p>
+                    <p className="text-slate-600 dark:text-slate-300">
+                      {/* A fresh invention's prose uses the suggestion's own
+                          option names, so those join the highlight terms. */}
+                      <ColorCoded
+                        text={llmEnvelope.report.prose}
+                        aTerms={[
+                          ...colorTerms.a,
+                          ...(llmEnvelope.report.suggestedScenario
+                            ? [llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean)
+                            : []),
+                        ]}
+                        bTerms={[
+                          ...colorTerms.b,
+                          ...(llmEnvelope.report.suggestedScenario
+                            ? [llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean)
+                            : []),
+                        ]}
+                      />
+                    </p>
                     <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">
                       <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
                       <span>
@@ -3236,10 +3344,12 @@ export default function App() {
                     </div>
 
                     {/*
-                      Only appears when this game had no scenario of its own, so the
-                      explanation above was written against an invented one. Saving it
-                      is what makes the next explanation reuse this story instead of
-                      inventing a different one.
+                      Appears when the explanation above was written against an
+                      INVENTED story: either the game had no scenario of its own,
+                      or the user pressed "New AI scenario" to ask for one. Saving
+                      is always the user's choice — for a saved game it replaces
+                      the description in place, for a preset it saves a custom
+                      copy; declining leaves everything untouched.
                     */}
                     {llmEnvelope.report.suggestedScenario && (
                       <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
@@ -3250,12 +3360,20 @@ export default function App() {
                           {llmEnvelope.report.suggestedScenario.name}
                         </p>
                         <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300">
-                          {llmEnvelope.report.suggestedScenario.description}
+                          <ColorCoded
+                            text={llmEnvelope.report.suggestedScenario.description ?? ''}
+                            aTerms={['Player A', llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean) as string[]}
+                            bTerms={['Player B', llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean) as string[]}
+                          />
                         </p>
                         <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                          A: {llmEnvelope.report.suggestedScenario.row1} / {llmEnvelope.report.suggestedScenario.row2}
+                          <span className="text-player-a-600 dark:text-player-a-400 font-semibold">
+                            A: {llmEnvelope.report.suggestedScenario.row1} / {llmEnvelope.report.suggestedScenario.row2}
+                          </span>
                           {'  ·  '}
-                          B: {llmEnvelope.report.suggestedScenario.col1} / {llmEnvelope.report.suggestedScenario.col2}
+                          <span className="text-player-b-600 dark:text-player-b-400 font-semibold">
+                            B: {llmEnvelope.report.suggestedScenario.col1} / {llmEnvelope.report.suggestedScenario.col2}
+                          </span>
                         </p>
                         <button
                           type="button"
