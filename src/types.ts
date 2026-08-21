@@ -26,6 +26,14 @@ export interface PresetGame {
   a22?: number;
   b22?: number;
   desc: string;
+  /**
+   * Actor nouns for color-coding model-written prose ("robber", "goalie").
+   * The AI explanation is rendered as plain text (it may never emit HTML), so
+   * player coloring is applied client-side by matching these terms; actorA is
+   * the row player (player-a rose), actorB the column player (player-b blue).
+   */
+  actorA?: string[];
+  actorB?: string[];
   row1Label?: string;
   row2Label?: string;
   col1Label?: string;

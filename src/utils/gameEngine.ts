@@ -5,6 +5,17 @@
 
 import { GamePayoffs, SimState, NashEquilibrium, PresetGame, PathSegment } from '../types';
 
+/**
+ * Player-colored spans for preset descriptions. TRUSTED, app-authored HTML —
+ * these strings are injected via dangerouslySetInnerHTML, which is exactly why
+ * user- and model-written text never goes through this path (it is rendered as
+ * plain text and colored by the ColorCoded component instead).
+ * Classes match the matrix editor's player coloring and adapt to dark mode,
+ * unlike the hard-coded hex spans they replace.
+ */
+const spanA = (t: string) => `<span class="text-player-a-600 dark:text-player-a-400 font-semibold">${t}</span>`;
+const spanB = (t: string) => `<span class="text-player-b-600 dark:text-player-b-400 font-semibold">${t}</span>`;
+
 export const PRESETS: Record<string, PresetGame> = {
   search: {
     key: 'search',
@@ -13,11 +24,12 @@ export const PRESETS: Record<string, PresetGame> = {
     a21: 0, b21: 0,   a22: 1, b22: -1,
     row1Label: 'Search L', row2Label: 'Search R',
     col1Label: 'Hide L',   col2Label: 'Hide R',
-    desc: '<strong>Search Game:</strong> A searcher chooses to look Left (Row 1) or Right (Row 2); '
-        + 'a hider simultaneously picks Left (Col 1) or Right (Col 2). '
-        + 'The searcher wins 2 by finding the hider at the left door, and 1 at the right door. '
-        + 'The hider\'s payoffs are the exact negatives (zero-sum). Neither player has a dominant strategy; both must randomize. '
-        + 'The unique Nash Equilibrium is mixed: Searcher plays Left with probability 1/3, Hider hides Left with probability 1/3. '
+    actorA: ['searcher'], actorB: ['hider'],
+    desc: `<strong>Search Game:</strong> A ${spanA('searcher')} chooses to look ${spanA('Left (Row 1)')} or ${spanA('Right (Row 2)')}; `
+        + `a ${spanB('hider')} simultaneously picks ${spanB('Left (Col 1)')} or ${spanB('Right (Col 2)')}. `
+        + `The ${spanA('searcher')} wins 2 by finding the ${spanB('hider')} at the left door, and 1 at the right door. `
+        + `The ${spanB("hider's")} payoffs are the exact negatives (zero-sum). Neither player has a dominant strategy; both must randomize. `
+        + `The unique Nash Equilibrium is mixed: ${spanA('Searcher plays Left with probability 1/3')}, ${spanB('Hider hides Left with probability 1/3')}. `
         + 'Notice the flat spot in both expected-payoff surfaces at (x*, y*)=(1/3, 1/3).'
   },
   bos: {
@@ -25,11 +37,13 @@ export const PRESETS: Record<string, PresetGame> = {
     name: 'Battle of the Sexes',
     a11: 2, b11: 1,  a12: 0, b12: 0,
     a21: 0, b21: 0,  a22: 1, b22: 2,
+    actorA: ['Opera'], actorB: ['Football'],
     desc: '<strong>Battle of the Sexes:</strong> Two partners want to spend the evening together but prefer different activities. '
-        + '<span style="color:#C0392B;font-weight:600;">Player A</span> prefers the Opera (Row 1), '
-        + '<span style="color:#1A5276;font-weight:600;">Player B</span> prefers Football (Col 2). '
+        + `${spanA('Player A')} prefers the ${spanA('Opera (Row 1)')}, `
+        + `${spanB('Player B')} prefers ${spanB('Football (Col 2)')}. `
         + 'Being together matters to both, but each would rather be at their favourite venue. '
-        + 'Payoffs: (Opera,Opera)=(2,1), (Opera,Football)=(0,0), (Football,Opera)=(0,0), (Football,Football)=(1,2).'
+        + `Payoffs: (Opera,Opera)=(${spanA('2')},${spanB('1')}), (Opera,Football)=(${spanA('0')},${spanB('0')}), `
+        + `(Football,Opera)=(${spanA('0')},${spanB('0')}), (Football,Football)=(${spanA('1')},${spanB('2')}).`
   },
   pd: {
     key: 'pd',
@@ -37,33 +51,36 @@ export const PRESETS: Record<string, PresetGame> = {
     a11: 3, b11: 3,  a12: 0, b12: 5,
     a21: 5, b21: 0,  a22: 1, b22: 1,
     desc: '<strong>Prisoner\'s Dilemma:</strong> Two suspects are arrested and held in separate cells. '
-        + 'Each can Cooperate (Row 1/Col 1) with their partner by remaining silent, or Defect (Row 2/Col 2) by confessing. '
-        + 'Defecting is a strictly dominant strategy for both players, leading them inexorably to the unique dominant strategy Nash Equilibrium of mutual defection (1,1), '
-        + 'even though mutual cooperation would have yielded a much higher payoff (3,3) for both.'
+        + `Each can Cooperate (${spanA('Row 1')}/${spanB('Col 1')}) with their partner by remaining silent, or Defect (${spanA('Row 2')}/${spanB('Col 2')}) by confessing. `
+        + 'Defecting is a strictly dominant strategy for both players, leading them inexorably to the unique dominant strategy Nash Equilibrium of '
+        + `mutual defection (${spanA('1')},${spanB('1')}), `
+        + `even though mutual cooperation would have yielded a much higher payoff (${spanA('3')},${spanB('3')}) for both.`
   },
   cnr: {
     key: 'cnr',
     name: 'Cops & Robbers',
     a11: 3, b11: 2,  a12: 3, b12: 3,
     a21: 2, b21: 4,  a22: 4, b22: 1,
-    desc: '<strong>Cops &amp; Robbers:</strong> A robber chooses to Stay at Home (Row 1) or Commit a Crime (Row 2). '
-        + 'A cop simultaneously decides to Patrol (Col 1) or Eat Donuts (Col 2). '
-        + 'The robber wants to commit crime undetected, while the cop wants to patrol and catch them. '
-        + '<span style="color:#C0392B;font-weight:600;">Robber\'s payoff</span> is maximized (4) when they commit crime while the cop eats donuts; '
-        + '<span style="color:#1A5276;font-weight:600;">cop\'s payoff</span> is maximized (4) when patrolling while a crime is committed. '
-        + 'Payoffs (clockwise from top-left): (3,2), (3,3), (4,1), (2,4).'
+    actorA: ['robber'], actorB: ['cop'],
+    desc: `<strong>Cops &amp; Robbers:</strong> A ${spanA('robber')} chooses to ${spanA('Stay at Home (Row 1)')} or ${spanA('Commit a Crime (Row 2)')}. `
+        + `A ${spanB('cop')} simultaneously decides to ${spanB('Patrol (Col 1)')} or ${spanB('Eat Donuts (Col 2)')}. `
+        + `The ${spanA('robber')} wants to commit crime undetected, while the ${spanB('cop')} wants to patrol and catch them. `
+        + `${spanA("Robber's payoff")} is maximized (${spanA('4')}) when they commit crime while the cop eats donuts; `
+        + `${spanB("cop's payoff")} is maximized (${spanB('4')}) when patrolling while a crime is committed. `
+        + `Payoffs (clockwise from top-left): (${spanA('3')},${spanB('2')}), (${spanA('3')},${spanB('3')}), (${spanA('4')},${spanB('1')}), (${spanA('2')},${spanB('4')}).`
   },
   spy: {
     key: 'spy',
     name: 'Spy vs. Analyst',
     a11: 3, b11: -3,  a12: -2, b12: 2,
     a21: -1, b21: 1,  a22: 0, b22: 0,
-    desc: '<strong>Spy vs. Analyst:</strong> A spy chooses to leak classified intel (Row 1) or stay silent (Row 2). '
-        + 'An analyst simultaneously decides to publish a story (Col 1) or hold it (Col 2). '
-        + 'The spy gains from publication when leaking but loses credibility if silent and published. '
-        + 'The analyst profits from a confirmed scoop but risks backlash if they publish without a leak. '
+    actorA: ['spy'], actorB: ['analyst'],
+    desc: `<strong>Spy vs. Analyst:</strong> A ${spanA('spy')} chooses to ${spanA('leak classified intel (Row 1)')} or ${spanA('stay silent (Row 2)')}. `
+        + `An ${spanB('analyst')} simultaneously decides to ${spanB('publish a story (Col 1)')} or ${spanB('hold it (Col 2)')}. `
+        + `The ${spanA('spy')} gains from publication when leaking but loses credibility if silent and published. `
+        + `The ${spanB('analyst')} profits from a confirmed scoop but risks backlash if they publish without a leak. `
         + 'This zero-sum-adjacent game has no pure Nash Equilibrium — both players must mix their strategies. '
-        + 'Payoffs (clockwise from top-left): (3,−3), (−2,2), (0,0), (−1,1).'
+        + `Payoffs (clockwise from top-left): (${spanA('3')},${spanB('−3')}), (${spanA('−2')},${spanB('2')}), (${spanA('0')},${spanB('0')}), (${spanA('−1')},${spanB('1')}).`
   },
   penalty: {
     key: 'penalty',
@@ -81,11 +98,12 @@ export const PRESETS: Record<string, PresetGame> = {
     a21: 2, b21: -2,  a22: 0, b22: 0,
     row1Label: 'Aim Left', row2Label: 'Aim Right',
     col1Label: 'Dive Left', col2Label: 'Dive Right',
-    desc: '<strong>Penalty Kick:</strong> A kicker picks a side to shoot (Row 1 = Aim Left, Row 2 = Aim Right); '
-        + 'the goalie simultaneously picks a side to dive (Col 1 = Dive Left, Col 2 = Dive Right). '
-        + 'The kicker\'s left-side strike is lethal when the goalie guesses wrong but easily smothered when read; '
+    actorA: ['kicker'], actorB: ['goalie'],
+    desc: `<strong>Penalty Kick:</strong> A ${spanA('kicker')} picks a side to shoot (${spanA('Row 1 = Aim Left')}, ${spanA('Row 2 = Aim Right')}); `
+        + `the ${spanB('goalie')} simultaneously picks a side to dive (${spanB('Col 1 = Dive Left')}, ${spanB('Col 2 = Dive Right')}). `
+        + `The ${spanA("kicker's")} left-side strike is lethal when the ${spanB('goalie')} guesses wrong but easily smothered when read; `
         + 'the right side is safer but weaker. Zero-sum with no pure Nash Equilibrium — both players must mix. '
-        + 'Payoffs (clockwise from top-left): (−12,12), (8,−8), (0,0), (2,−2).'
+        + `Payoffs (clockwise from top-left): (${spanA('−12')},${spanB('12')}), (${spanA('8')},${spanB('−8')}), (${spanA('0')},${spanB('0')}), (${spanA('2')},${spanB('−2')}).`
   },
   custom: {
     key: 'custom',
