@@ -63,6 +63,14 @@ interface PlotlyViewProps {
    * and after this many ms without further graph activity it turns again.
    */
   spinAutoResumeMs?: number;
+  /**
+   * Fired on any press (mousedown/touchstart) that lands over the plot,
+   * using the same rectangle hit-test the idle spin relies on — Plotly's
+   * own handlers and overlays make element-containment unreliable here.
+   * The app uses it to pause a running simulation the moment the visitor
+   * reaches into the picture.
+   */
+  onGraphPress?: () => void;
 }
 
 /** Trace names the tour switches on and off. Kept here so the strings cannot
@@ -191,7 +199,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   idleSpin = false,
   spinNonce = 0,
   spinDelayMs = 0,
-  spinAutoResumeMs = 0
+  spinAutoResumeMs = 0,
+  onGraphPress
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotId = PLOT_ID;
@@ -282,6 +291,39 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       clearTimeout(timer);
       observer.disconnect();
       window.removeEventListener('resize', holdSpin);
+    };
+  }, []);
+
+  // Latest onGraphPress without re-registering the document listeners below.
+  const onGraphPressRef = useRef(onGraphPress);
+  useEffect(() => { onGraphPressRef.current = onGraphPress; }, [onGraphPress]);
+
+  /**
+   * Press-anywhere-on-the-graph notifications. Independent of the idle spin's
+   * listeners on purpose: those only exist while the spin is eligible (sim
+   * frozen), and this must fire precisely when it is not — mid-run, so the
+   * app can pause playback the moment the visitor reaches into the picture.
+   * Same document-capture + rectangle hit-test approach as the spin, for the
+   * same reason: Plotly's handlers and overlays swallow element-level events.
+   */
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onPress = (e: Event) => {
+      if (!onGraphPressRef.current) return;
+      const pt = e as MouseEvent & { touches?: TouchList };
+      const x = pt.touches?.[0]?.clientX ?? pt.clientX;
+      const y = pt.touches?.[0]?.clientY ?? pt.clientY;
+      if (typeof x !== 'number' || typeof y !== 'number') return;
+      const r = container.getBoundingClientRect();
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
+      onGraphPressRef.current();
+    };
+    document.addEventListener('mousedown', onPress, true);
+    document.addEventListener('touchstart', onPress, true);
+    return () => {
+      document.removeEventListener('mousedown', onPress, true);
+      document.removeEventListener('touchstart', onPress, true);
     };
   }, []);
 
