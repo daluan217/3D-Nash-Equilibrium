@@ -315,6 +315,25 @@ export default function App() {
   const [editLoading, setEditLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
+  /**
+   * Set when the visitor jumps from the save modal to sign in. The save modal
+   * has to CLOSE for that jump (both modals sit at z-50, so the later-rendered
+   * save dialog would paint over the auth dialog), and this is what brings it
+   * back — fields intact — the moment a token lands. Cleared whenever the auth
+   * modal is dismissed without signing in.
+   */
+  const resumeSaveAfterAuthRef = useRef(false);
+  useEffect(() => {
+    // Watching the token rather than any one success handler means the save
+    // modal comes back regardless of which path produced the sign-in (login,
+    // or register + verification).
+    if (authToken && resumeSaveAfterAuthRef.current) {
+      resumeSaveAfterAuthRef.current = false;
+      setSaveError('');
+      setIsSaveModalOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken]);
 
   // Feedback Modal States
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
@@ -710,9 +729,11 @@ export default function App() {
     }
 
     // Preset or unsaved matrix: there is nothing to patch, so route through the
-    // existing save-as-new flow with the story prefilled.
+    // existing save-as-new flow with the story prefilled. Clamped to the
+    // textarea/server limit: prefilling PAST maxLength locks the field (a
+    // controlled textarea over its cap rejects every keystroke).
     setSaveName(sc.name ?? '');
-    setSaveDesc(description);
+    setSaveDesc(description.slice(0, 800));
     setSaveLabels({
       row1: sc.row1 ?? '', row2: sc.row2 ?? '',
       col1: sc.col1 ?? '', col2: sc.col2 ?? '',
@@ -1041,6 +1062,14 @@ export default function App() {
       setSaveError('Please enter a game name.');
       return;
     }
+    // Signed out: don't send a doomed request whose 401 surfaces as the
+    // baffling "Invalid or expired session." — say what to actually do.
+    // The banner renders this case as an invitation with a Sign In button,
+    // not an error (see the !authToken branch at the saveError render).
+    if (!authToken) {
+      setSaveError('Sign in or create an account to save this game.');
+      return;
+    }
     setSaveError('');
     setSaveLoading(true);
     try {
@@ -1133,7 +1162,7 @@ export default function App() {
       if (e.key !== 'Escape') return;
       if (isFeedbackOpen) closeFeedback();
       else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); }
-      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); }
+      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
@@ -3449,7 +3478,7 @@ export default function App() {
       {isAuthModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
-          onClick={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); }}
+          onClick={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; }}
         >
           <div
             role="dialog"
@@ -3471,6 +3500,7 @@ export default function App() {
                   setIsAuthModalOpen(false);
                   setAuthError('');
                   setAuthSuccess('');
+                  resumeSaveAfterAuthRef.current = false;
                 }}
                 aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
@@ -3795,7 +3825,10 @@ export default function App() {
                   placeholder="What is this game about?"
                   value={editDesc}
                   onChange={(e) => setEditDesc(e.target.value)}
-                  maxLength={250}
+                  // Same 800 as the save modal and the server clamp — an
+                  // AI-kept description can legitimately be this long, and a
+                  // lower cap here would lock editing of exactly those games.
+                  maxLength={800}
                 />
               </div>
 
@@ -3891,10 +3924,33 @@ export default function App() {
             </div>
 
             {saveError && (
-              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                <span>{saveError}</span>
-              </div>
+              // Signed out, any save problem: the remedy is signing in, so this
+              // renders as an invitation with the door held open — not a red
+              // error about sessions the visitor never had.
+              !authToken ? (
+                <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                  <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
+                  <div className="flex flex-col items-start gap-2">
+                    <span>{saveError} Your matrix, name and description will stay right here.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resumeSaveAfterAuthRef.current = true;
+                        setIsSaveModalOpen(false);
+                        setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
+                      }}
+                      className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                    >
+                      Sign In / Sign Up
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+                  <span>{saveError}</span>
+                </div>
+              )
             )}
 
             <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
@@ -3928,7 +3984,12 @@ export default function App() {
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   value={saveDesc}
                   onChange={(e) => setSaveDesc(e.target.value)}
-                  maxLength={250}
+                  // Matches the server's clamp (cleanText(description, 800)).
+                  // A cap BELOW what prefill can supply locks the field: a
+                  // controlled textarea already over maxLength rejects every
+                  // keystroke, which read as "can't edit the description"
+                  // when an AI-invented scenario prefilled ~300+ chars.
+                  maxLength={800}
                 />
               </div>
 

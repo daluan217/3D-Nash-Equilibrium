@@ -24,6 +24,5 @@ CODEX.md
 .codex/
 .claude/
 .playwright-mcp/
-ensemble/
 _gen/exemplars/*.json
 .freebuff/
