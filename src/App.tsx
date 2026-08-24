@@ -729,9 +729,11 @@ export default function App() {
     }
 
     // Preset or unsaved matrix: there is nothing to patch, so route through the
-    // existing save-as-new flow with the story prefilled.
+    // existing save-as-new flow with the story prefilled. Clamped to the
+    // textarea/server limit: prefilling PAST maxLength locks the field (a
+    // controlled textarea over its cap rejects every keystroke).
     setSaveName(sc.name ?? '');
-    setSaveDesc(description);
+    setSaveDesc(description.slice(0, 800));
     setSaveLabels({
       row1: sc.row1 ?? '', row2: sc.row2 ?? '',
       col1: sc.col1 ?? '', col2: sc.col2 ?? '',
@@ -3823,7 +3825,10 @@ export default function App() {
                   placeholder="What is this game about?"
                   value={editDesc}
                   onChange={(e) => setEditDesc(e.target.value)}
-                  maxLength={250}
+                  // Same 800 as the save modal and the server clamp — an
+                  // AI-kept description can legitimately be this long, and a
+                  // lower cap here would lock editing of exactly those games.
+                  maxLength={800}
                 />
               </div>
 
@@ -3979,7 +3984,12 @@ export default function App() {
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   value={saveDesc}
                   onChange={(e) => setSaveDesc(e.target.value)}
-                  maxLength={250}
+                  // Matches the server's clamp (cleanText(description, 800)).
+                  // A cap BELOW what prefill can supply locks the field: a
+                  // controlled textarea already over maxLength rejects every
+                  // keystroke, which read as "can't edit the description"
+                  // when an AI-invented scenario prefilled ~300+ chars.
+                  maxLength={800}
                 />
               </div>
 
