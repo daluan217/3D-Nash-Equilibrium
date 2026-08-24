@@ -26,3 +26,4 @@ CODEX.md
 .playwright-mcp/
 ensemble/
 _gen/exemplars/*.json
+.freebuff/

@@ -22,6 +22,8 @@
  * wrong" is more informative than "wrong".
  */
 import 'dotenv/config';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { callProvider, type ReasoningEffort } from '../src/utils/providers';
 import { enumerateNE, type MNGame } from './mnsolver';
 
@@ -372,15 +374,23 @@ async function askOne(model: string, level: Level, g: Game, reasoning: Reasoning
       const shapeOk = M.length === m && M.every((row) => row.length === n && row.every(Number.isFinite));
       if (!shapeOk || xs.length !== m || xs.some((v: number | null) => v === null)) return { ...miss, ...use };
 
+      // Formalization is judged on the MATRIX alone, before any strategy
+      // checks: a model that read the game perfectly but returned a
+      // non-normalised mixture failed to SOLVE, not to READ. Folding that
+      // failure into formalOk (as an earlier version did) contaminates the
+      // decomposition this instrument exists to keep separate.
+      const formalOk = M.every((row, i) => row.every((v, j) => v === g.A[i][j]));
+
       const x = xs as number[];
       const total = x.reduce((a, b) => a + b, 0);
       // Renormalise only for rounding drift; a genuinely non-normalised answer
-      // is a wrong answer, not a formatting quirk.
-      if (!(total > 0.98 && total < 1.02)) return { ...miss, ...use, parsed: true };
+      // is a wrong answer, not a formatting quirk — parsed, formalization
+      // still credited, solution failed. (The 2x2 ladder has no analogous
+      // branch: its answer is a single probability with nothing to sum.)
+      if (!(total > 0.98 && total < 1.02) || x.some((v) => v < -1e-6)) {
+        return { ...miss, ...use, parsed: true, formalOk };
+      }
       const xn = x.map((v) => v / total);
-      if (xn.some((v) => v < -1e-6)) return { ...miss, ...use, parsed: true };
-
-      const formalOk = M.every((row, i) => row.every((v, j) => v === g.A[i][j]));
       const solutionOk = xn.every((v, i) => Math.abs(v - g.xStar[i]) <= 0.02);
       const exploit = g.value - guaranteed(g.A, xn);
 
@@ -438,6 +448,16 @@ const PASSES = Number(process.env.L_N || 2);
    */
   const paired: Record<string, Record<string, number[]>> = {};
 
+  /**
+   * Every call's full row, persisted to JSON at the end. A 520-call run whose
+   * only record is terminal scrollback cannot be re-analysed, re-plotted, or
+   * audited when a number in the writeup is questioned — which is exactly what
+   * happened to the 2x2 run. Mirrors src/evals/run.ts's EVAL_OUT pattern.
+   */
+  const outRows: Record<string, unknown>[] = [];
+  const outPath = process.env.L_OUT
+    || `_gen/results/ladder_mn-${new Date().toISOString().slice(0, 10)}.json`;
+
   for (const model of MODELS) {
     for (const eff of EFFORTS) {
       for (const level of LEVELS) {
@@ -453,6 +473,7 @@ const PASSES = Number(process.env.L_N || 2);
           for (let p = 0; p < PASSES; p++) {
             const r = await askOne(model, level, g, eff, frame);
             n++;
+            outRows.push({ model, effort: eff, level, frame, game: g.name, pass: p + 1, ...r });
             if (process.env.L_DETAIL) {
               if (!r.parsed) {
                 console.log(
@@ -541,4 +562,17 @@ const PASSES = Number(process.env.L_N || 2);
   split near half is consistent with no effect regardless of the mean, and a
   mean driven by one game is visible as a lopsided median.`);
   }
+
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify({
+    meta: {
+      date: new Date().toISOString(),
+      size: SIZE, support: SUPPORT, maxTokens: MAX_TOKENS,
+      seed: Number(process.env.GEN_SEED || 20260811),
+      models: MODELS, efforts: EFFORTS, levels: LEVELS, frames: FRAMES, passes: PASSES,
+      games: games.map((g) => ({ name: g.name, A: g.A, xStar: g.xStar, value: g.value })),
+    },
+    rows: outRows,
+  }, null, 1));
+  console.log(`\nresults written: ${outPath} (${outRows.length} rows)`);
 })();

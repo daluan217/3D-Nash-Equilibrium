@@ -11,7 +11,7 @@
     "preview": "NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist db.json",
     "lint": "tsc --noEmit",
-    "test": "tsx src/test.ts && tsx src/fuzz.test.ts && tsx src/cors.contract.test.ts",
+    "test": "tsx src/test.ts && tsx src/fuzz.test.ts && tsx src/cors.contract.test.ts && tsx _gen/mnsolver.selftest.ts",
     "eval": "tsx src/evals/run.ts",
     "prepare": "git config core.hooksPath .githooks || true",
     "electron:start": "npm run build && electron .",
