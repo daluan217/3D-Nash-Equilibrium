@@ -1810,7 +1810,7 @@ export default function App() {
       title: 'Start somewhere familiar',
       body:
         'The Prisoner\'s Dilemma. Two suspects, each choosing to stay silent or confess, with no chance to '
-        + 'talk first. Look at the four cells — that table is the whole game.',
+        + 'talk first. Look at the four cells: that table is the whole game.',
       onEnter: () => {
         enterDilemmaAct();
         moveCamera(CAMERA.overview, 600);
@@ -1821,8 +1821,8 @@ export default function App() {
       title: 'The same game, as a shape',
       body:
         'Here is that table drawn as a surface. Height is what a player expects to earn, and the two floor '
-        + 'axes are how often each of them stays silent. Both players\' surfaces are shown at once, so you '
-        + 'can see what a choice does to each of them.',
+        + 'axes are how often each of them stays silent. The plot draws both players\' surfaces together, '
+        + 'so you can see what one choice does to each of them.',
       onEnter: () => {
         enterDilemmaAct();
         moveCamera(CAMERA.overview, 800);
@@ -1836,7 +1836,7 @@ export default function App() {
       title: 'Where the shape comes from',
       body:
         'Each player\'s height is one formula. Take every cell of the table, multiply its payoff by how likely '
-        + 'that cell is — x times y for the top-left, and so on for the other three — and add the four up. '
+        + 'that cell is (x times y for the top-left, and so on for the other three), and add the four up. '
         + 'That single expression in x and y is what gets plotted. It is why the surface is straight along '
         + 'each axis on its own and only bends where the two probabilities multiply together.',
       onEnter: () => {
@@ -1848,8 +1848,8 @@ export default function App() {
       target: 'plot',
       title: 'The corner where they cooperate',
       body:
-        'Swinging round to the corner where both stay silent. Both surfaces sit high here — three each, the '
-        + 'best combined outcome in the game. Remember this corner.',
+        'Swing round to the corner where both stay silent. Both surfaces sit high here, three each, the best '
+        + 'combined outcome in the game. Remember this corner.',
       onEnter: () => {
         enterDilemmaAct();
         setTourPoints([{ x: 1, y: 1 }]);
@@ -1860,7 +1860,7 @@ export default function App() {
       target: 'plot',
       title: 'And the corner they actually reach',
       body:
-        'Now the opposite corner, where both confess. Both surfaces are lower — one each. This is the '
+        'Now the opposite corner, where both confess. Both surfaces are lower, one each. This is the '
         + 'equilibrium: the only cell where neither player can improve by changing their mind alone.',
       onEnter: () => {
         enterDilemmaAct();
@@ -1876,9 +1876,9 @@ export default function App() {
       target: 'plot',
       title: 'The stable corner is the worse corner',
       body:
-        'Both players would rather be at the first corner, and neither can get there. Stability and efficiency '
-        + 'are different things — the equilibrium is simply where nobody can gain by moving alone, whether or '
-        + 'not it is good for them.',
+        'Both players would rather be at the first corner, and neither can get there. An equilibrium is just '
+        + 'the cell where nobody can gain by moving alone. Nothing about that makes it a good outcome, and '
+        + 'here it is the worse one.',
       onEnter: () => {
         enterDilemmaAct();
         setTourPoints([{ x: 1, y: 1 }, { x: 0, y: 0 }]);
@@ -1893,7 +1893,7 @@ export default function App() {
       body:
         'A penalty kick: the kicker picks a side to shoot, the goalie picks a side to dive, at the same '
         + 'instant. This time neither side has a move that is always best, and what helps one hurts the '
-        + 'other. No corner can hold still.',
+        + 'other, so no corner can hold still.',
       onEnter: () => {
         enterMixedAct();
         // Shrink here only because the regret renderer would draw strategy lines,
@@ -1908,7 +1908,7 @@ export default function App() {
       title: 'A surface with a twist in it',
       body:
         'Same kind of picture, different shape. This one runs straight along each axis but bends through a '
-        + 'single twist — and that twist is the strategic interaction itself.',
+        + 'single twist. The twist is where the two players\' choices interact.',
       onEnter: () => {
         enterMixedAct();
         // Shrink here only because the regret renderer would draw strategy lines,
@@ -1928,10 +1928,10 @@ export default function App() {
       target: 'plot',
       title: 'A leaning line is an instruction',
       body:
-        'Take an example point, away from any equilibrium: both players at an even half-half mix — the marked '
-        + 'spot. This line is A\'s payoff as A alone varies their mix, with B held still there. It LEANS — and '
-        + 'a leaning line is an instruction: slide to its high end. The high end is always a corner, all-in '
-        + 'on one option, never a blend. As long as the line leans, A wants a corner.',
+        'Take an example point, away from any equilibrium: both players at an even half-half mix, the marked '
+        + 'spot. This line is A\'s payoff as A alone varies their mix, with B held still there. It leans, '
+        + 'and a leaning line is an instruction: slide to its high end. The high end is always a corner, '
+        + 'all-in on one option, never a blend. As long as the line leans, A wants a corner.',
       onEnter: () => {
         // Regret mode with NOTHING solved: the strategy lines render at the
         // domain midpoints, tilted. B's line is hidden so the first lean is
@@ -1955,9 +1955,9 @@ export default function App() {
       target: 'plot',
       title: 'The other line leans too',
       body:
-        'Through the same marked point, B\'s line does the same job along B\'s own axis — and it also leans, '
-        + 'so B is pulled to a corner at ITS high end. Two leaning lines through one point, two players each '
-        + 'being pulled away from the middle. Nothing in this picture, so far, would ever produce a mixture.',
+        'Through the same marked point, B\'s line does the same job along B\'s own axis. It also leans, so B '
+        + 'is pulled to a corner at its own high end. Two leaning lines through one point, two players each '
+        + 'pulled away from the middle. Nothing in this picture, so far, would ever produce a mixture.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -1984,7 +1984,7 @@ export default function App() {
       target: 'coords',
       title: 'Each player gets a shrinking corridor',
       body:
-        'Every player also carries a boundary — a range of mixes still worth considering. As regret falls, '
+        'Every player also carries a boundary: a range of mixes still worth considering. As regret falls, '
         + 'both corridors contract from both sides at once. But they do not finish together.',
       onEnter: () => {
         enterMixedAct();
@@ -2000,10 +2000,10 @@ export default function App() {
       target: 'plot',
       title: 'Watch the leans flatten',
       body:
-        'The search is running. Self-interest alone always points at a corner — the best reply to any '
-        + 'opponent mix is a pure strategy, never a blend — so it can never name an interior point. The '
-        + 'contracting boundaries carry the search inward instead: both lines flatten together, and the one '
-        + 'that began nearer level reaches indifference first. The moment it does, the run pauses.',
+        'The search is running. Self-interest alone always points at a corner (the best reply to any opponent '
+        + 'mix is a pure strategy, never a blend), so it can never name an interior point. The contracting '
+        + 'boundaries carry the search inward instead: both lines flatten together, and the one that began '
+        + 'nearer level reaches indifference first. The moment it does, the run pauses.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -2029,9 +2029,9 @@ export default function App() {
       target: 'plot',
       title: 'The first lean disappears',
       body:
-        'The run paused the moment this happened: one line has gone completely FLAT, and its coordinate is '
+        'The run paused the moment this happened: one line has gone completely flat, and its coordinate is '
         + 'found. No lean means no regret left; every mix now pays that player exactly the same. That is '
-        + 'indifference, found rather than declared. The other line still leans — its corridor is still '
+        + 'indifference, found rather than declared. The other line still leans, its corridor is still '
         + 'closing, and the search carries on there.',
       onEnter: () => {
         // Unconditional: ALWAYS rebuild the run and jump to the first-find
@@ -2054,9 +2054,9 @@ export default function App() {
       target: 'plot',
       title: 'Now watch the second coordinate',
       body:
-        'The first coordinate is locked — its corridor is closed for good. The run resumes: the other '
-        + 'corridor keeps contracting, its line eases the rest of the way down, and the moment it lands flat '
-        + 'the second coordinate is discovered too. The equilibrium is now fully found.',
+        'The first coordinate is locked, and its corridor is closed for good. The run resumes: the other '
+        + 'corridor keeps contracting, its line eases the rest of the way down, and the moment it lands '
+        + 'flat the second coordinate is discovered too. The equilibrium is now fully found.',
       onEnter: () => {
         // Start EXACTLY at the first-find frame — the same step the
         // "1st NE Coord" button names (24 on this game) — then resume and
@@ -2079,8 +2079,8 @@ export default function App() {
       title: 'Both flat: the crossing is the equilibrium',
       body:
         'Now the second coordinate locks and the other line lies flat as well. Follow the two flat lines to '
-        + 'where they cross in the xy-plane below — that crossing is the mixed Nash equilibrium. No lean left '
-        + 'for anyone: nobody can gain by moving alone.',
+        + 'where they cross in the xy-plane below. That crossing is the mixed Nash equilibrium: no lean '
+        + 'left for anyone, so nobody can gain by moving alone.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
@@ -2103,15 +2103,15 @@ export default function App() {
       target: 'ne',
       title: 'The coordinates come out crossed',
       body:
-        'Here is the surprise. The probability that flattens your surface is built from your OPPONENT\'s '
-        + 'payoffs. Your own numbers never appear anywhere in your own equilibrium mix.',
+        'The probability that flattens your surface is built from your opponent\'s payoffs. Your own numbers '
+        + 'never enter your own equilibrium mix.',
     },
     {
       target: 'ne',
       title: 'Your mixing is for them',
       body:
-        'So equilibrium mixing does nothing for you. It is a service you perform for your opponent — holding '
-        + 'them perfectly balanced — while their mixing does the same for you.',
+        'So equilibrium mixing does nothing for you. It is a service you perform for your opponent, holding '
+        + 'them perfectly balanced, while their mixing does the same for you.',
       onEnter: () => {
         enterMixedAct();
         setStepMode('regret');
