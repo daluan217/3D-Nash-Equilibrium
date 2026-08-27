@@ -297,7 +297,7 @@ Rules:
 - If a scenario is supplied, use its names for the players' options instead of "Row 1"/"Col 2" wherever that reads better, and leave suggestedScenario out. If none is supplied, invent one that fits the payoffs, write the explanation in its terms, and return it in suggestedScenario. Never let an invented story contradict the payoffs or the equilibria.
 - When you invent a scenario, restate the description's factual claims in suggestedScenario.storyClaims so they can be checked: every action-pair whose payoffs the description cites goes in cellCitations with the exact matrix values, and every "X works best against Y" or "prefers X when the opponent does Y" claim goes in bestReplies. A claim made in the description but missing from storyClaims, or declared wrongly, causes the whole story to be discarded — when unsure which cell a sentence refers to, reread the matrix rather than guess. If the description cites no payoffs and makes no better-against claims, set storyClaims to null.
 - In an invented description, never characterize what happens when specific options meet in words alone ("pays off", "is punished", "works well"): any sentence about a particular action combination's outcome must state that cell's exact payoff numbers, and that cell must appear in cellCitations. If you prefer not to cite numbers, make no outcome claims — describe only who the players are and what their options mean. Sentences like "the quitter loses and the cooperator gains" are better-against claims: declare them in bestReplies, and verify the direction against the matrix rather than against how such stories usually go — the numbers you were given always win.
-- Whenever a better-against sentence states the payoffs it compares ("gets 9 rather than −9"), copy those exact numbers into that bestReplies entry's bestPays/altPays; set both null when the sentence cites no numbers. Each cited number must belong to the exact cell being compared — re-check the row AND column before writing it.
+- Whenever a better-against sentence states the payoffs it compares ("gets 9 rather than −9"), copy those exact numbers into that bestReplies entry's bestPays/altPays; set both null when the sentence cites no numbers. Each cited number must belong to the exact cell being compared — copy it from the supplied best-reply table's matching line, never derive it from the matrix yourself.
 - Declarations must match the text in BOTH directions, and you must re-read the description and prose sentence by sentence against your declarations before answering: an entry for a claim the text never makes is as fatal as a missing entry, so when a declaration has no sentence that states it, delete the declaration — do not keep it "to be safe".
 - You are also given the GEOMETRY of the two expected-payoff surfaces the reader is looking at. Where it helps, describe the equilibrium in those terms: indifference is a level shelf where a surface stops tilting; the equilibrium is the joint flat spot where both surfaces are level at once; strategic interaction is the warp in the surface; a best response is which way a slice tilts. Use these ONLY where the supplied geometry says they apply — if it tells you there is no flat shelf, or no interior flat spot, or that the game is not zero-sum, do not describe one.
 - Fill in geometryClaims to match what the supplied geometry states, and make sure your prose agrees with it. These are copied, not worked out: every one of them is stated for you above. If your explanation does not discuss the shape of the surfaces at all, set geometryClaims to null rather than guessing.
@@ -367,6 +367,31 @@ function scenarioBlock(sc?: Scenario): string {
     + ' numbers and cite the cell, or leave the outcome unsaid.';
 }
 
+/**
+ * The four best-reply comparisons, precomputed and worded, so the model COPIES
+ * them instead of deriving them. Every direction error, phantom declaration,
+ * and welded payoff the adversarial QA ever caught was the model doing one of
+ * exactly these four lookups on reflex and pattern-matching its way to the
+ * wrong cell — B's side especially. Reflex-mode nano is a poor reasoner but a
+ * reliable copier (the per-option equilibrium spell-out proved it), so the
+ * whole table is handed over as material.
+ */
+function bestReplyTable(g: GamePayoffs): string[] {
+  const line = (oppDesc: string, o1: string, p1: number, o2: string, p2: number) => {
+    const verdict = Math.abs(p1 - p2) < 1e-9
+      ? `they tie at ${p1}`
+      : p1 > p2 ? `${o1} is better` : `${o2} is better`;
+    return `  ${oppDesc}: ${o1} pays ${p1}, ${o2} pays ${p2} — ${verdict}.`;
+  };
+  return [
+    'Best-reply table (authoritative — every "better against" statement and every bestReplies entry must be copied from these four lines, never derived):',
+    line("A against B's Col 1", 'Row 1', g.a11, 'Row 2', g.a21),
+    line("A against B's Col 2", 'Row 1', g.a12, 'Row 2', g.a22),
+    line("B against A's Row 1", 'Col 1', g.b11, 'Col 2', g.b12),
+    line("B against A's Row 2", 'Col 1', g.b21, 'Col 2', g.b22),
+  ];
+}
+
 export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): string {
   const equilibria = computeAllNE(g);
   const indifference = computeIndifference(g);
@@ -397,6 +422,8 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
     const sc0 = scenarioBlock(scenario);
     return [
       ...matrix,
+      '',
+      ...bestReplyTable(g),
       ...(sc0 ? ['', sc0] : []),
       '',
       geometryBriefing(g),
@@ -413,6 +440,8 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
   const sc = scenarioBlock(scenario);
   return [
     ...matrix,
+    '',
+    ...bestReplyTable(g),
     ...(sc ? ['', sc] : []),
     '',
     geometryBriefing(g),
