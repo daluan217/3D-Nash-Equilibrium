@@ -218,6 +218,42 @@ export interface SuggestedScenario {
   col1?: string;
   col2?: string;
   description?: string;
+  /**
+   * The factual claims the invented description makes, restated as data so
+   * `validateScenario` can check them as lookups — the same design as
+   * geometryClaims: "does this sentence claim X?" is semantic and undecidable,
+   * "does this declared claim match the matrix?" is a comparison. Null is the
+   * escape hatch for a description that makes no payoff or better-against
+   * claims. The server drops any suggestion whose declared claims are false,
+   * so an unverified story is never offered or prefilled.
+   */
+  storyClaims?: ScenarioStoryClaims | null;
+}
+
+/** One "the payoffs at (row, col) are (a, b)" statement made by the story. */
+export interface ScenarioCellCitation {
+  /** 1 or 2 — which of A's options the sentence names. */
+  row: number;
+  /** 1 or 2 — which of B's options the sentence names. */
+  col: number;
+  /** A's payoff in that cell, exactly as the description states it. */
+  a: number;
+  /** B's payoff in that cell. */
+  b: number;
+}
+
+/** One "player's OPTION does best against the opponent's OPTION" statement. */
+export interface ScenarioBestReply {
+  player: 'A' | 'B';
+  /** 1 or 2 — the opponent option held fixed by the claim. */
+  opponentOption: number;
+  /** 1 or 2 — the option claimed better for the player. */
+  bestOption: number;
+}
+
+export interface ScenarioStoryClaims {
+  cellCitations: ScenarioCellCitation[];
+  bestReplies: ScenarioBestReply[];
 }
 
 /** Why a single claim failed, so the eval can bucket failures by cause. */

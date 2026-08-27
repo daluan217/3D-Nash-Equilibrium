@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GamePayoffs, SimState, NashEquilibrium, PathSegment, LlmReport, MismatchKind } from './types';
+import { GamePayoffs, SimState, NashEquilibrium, PathSegment, LlmReport, MismatchKind, SuggestedScenario } from './types';
 import { doStep, PRESETS, computeAllNE, EA, EB, r3 } from './utils/gameEngine';
 import { describeGeometry } from './utils/geometry';
-import { validateReport } from './utils/nashValidator';
+import { validateReport, validateScenario } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -424,6 +424,68 @@ function testProseNumericChecks() {
     'approx-cited real payoff must pass');
 }
 
+/**
+ * validateScenario against the failure patterns the adversarial QA caught
+ * live: a story pairing options exactly backwards (the BoS "Upload works best
+ * against Stream" inversion), a real payoff pair cited against the wrong cell
+ * (the "Patrol and Warn … 2 and 7" misattribution), and payoff-anchored
+ * numbers in a description with nothing declared. Each is undecidable from
+ * the sentence but a lookup from the declared claim.
+ */
+function testScenarioStoryClaims() {
+  const BOS: GamePayoffs =
+    { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 };
+  const PD: GamePayoffs =
+    { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const TIED_COL1: GamePayoffs = // A's rows tie against Col 1 — weak claims allowed
+    { a11: 5, a12: 3, a21: 5, a22: 1, b11: 2, b12: 1, b21: 4, b22: 3 };
+
+  const sc = (over: Partial<SuggestedScenario>): SuggestedScenario => ({
+    name: 'T', row1: 'R1', row2: 'R2', col1: 'C1', col2: 'C2',
+    description: 'A neutral story with no numbers.', storyClaims: null, ...over,
+  });
+
+  // The live BoS inversion: claiming A's Row 2 does better against B's Col 1.
+  assert(!validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'A', opponentOption: 1, bestOption: 2 },
+  ] } }), BOS).ok, 'backwards best-reply (the BoS inversion) must fail');
+  assert(validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'A', opponentOption: 1, bestOption: 1 },
+    { player: 'B', opponentOption: 2, bestOption: 2 },
+  ] } }), BOS).ok, 'truthful best-replies must pass');
+
+  // The live misattribution: a real payoff pair declared against the wrong cell.
+  assert(!validateScenario(sc({ storyClaims: { cellCitations: [
+    { row: 2, col: 1, a: 1, b: 1 }, // (1,1) is Row2/Col2's pair, not Row2/Col1's (5,0)
+  ], bestReplies: [] } }), PD).ok, 'real pair cited against the wrong cell must fail');
+  assert(validateScenario(sc({ storyClaims: { cellCitations: [
+    { row: 2, col: 1, a: 5, b: 0 },
+    { row: 1, col: 1, a: 3, b: 3 },
+  ], bestReplies: [] } }), PD).ok, 'truthful citations must pass');
+
+  // A tie is a weakly-best claim, not a lie.
+  assert(validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'A', opponentOption: 1, bestOption: 1 },
+    { player: 'A', opponentOption: 1, bestOption: 2 },
+  ] } }), TIED_COL1).ok, 'either option may be claimed best when the column ties');
+
+  // Undeclared payoff-anchored citation in the description.
+  assert(!validateScenario(sc({ description: 'If B confesses, staying silent gives A=0 instead.' }),
+    PD).ok, 'anchored payoff in the description with nothing declared must fail');
+  assert(validateScenario(sc({
+    description: 'If B confesses, staying silent gives A=0 instead.',
+    storyClaims: { cellCitations: [{ row: 1, col: 2, a: 0, b: 5 }], bestReplies: [] },
+  }), PD).ok, 'the same sentence with a covering citation must pass');
+
+  // Malformed indices fail rather than silently skipping.
+  assert(!validateScenario(sc({ storyClaims: { cellCitations: [
+    { row: 3, col: 1, a: 3, b: 3 },
+  ], bestReplies: [] } }), PD).ok, 'a citation naming a nonexistent cell must fail');
+
+  // The escape hatch: a claim-free story declares nothing and passes.
+  assert(validateScenario(sc({}), PD).ok, 'a story with no claims and null storyClaims must pass');
+}
+
 function runTests() {
   testSolverCanonicalGames();
   testZeroSumSearchFamily();
@@ -432,6 +494,7 @@ function runTests() {
   testGeometryOracleAgreesWithSolver();
   testGeometryValidatorChecks();
   testProseNumericChecks();
+  testScenarioStoryClaims();
   console.log('All game-engine regression tests passed.');
 }
 
