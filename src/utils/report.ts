@@ -80,7 +80,7 @@ const REPORT_SCHEMA: Record<string, unknown> = {
     },
     suggestedScenario: {
       type: ['object', 'null'],
-      required: ['name', 'row1', 'row2', 'col1', 'col2', 'description'],
+      required: ['name', 'row1', 'row2', 'col1', 'col2', 'description', 'storyClaims'],
       description:
         'ONLY when the game had no scenario attached: a short concrete story ' +
         'fitting these payoffs. Omit entirely when a scenario was supplied.',
@@ -95,6 +95,56 @@ const REPORT_SCHEMA: Record<string, unknown> = {
           description:
             'Two or three plain sentences setting up the situation and what each ' +
             'player is choosing between. Do not state the equilibrium.',
+        },
+        /**
+         * The description's factual claims, restated as data — same design as
+         * geometryClaims. A QA sweep found ~1 in 4 invented stories asserting a
+         * backwards pairing or citing a payoff against the wrong cell; those
+         * sentences are undecidable by regex, but a declared claim is a lookup.
+         * Nullable: a story that makes no such claims declares nothing.
+         */
+        storyClaims: {
+          type: ['object', 'null'],
+          required: ['cellCitations', 'bestReplies'],
+          description:
+            'Every factual claim your description makes about the payoffs, restated ' +
+            'as data so it can be checked. Set null ONLY if the description cites no ' +
+            'payoff numbers and never says one option works better against another.',
+          properties: {
+            cellCitations: {
+              type: 'array',
+              description:
+                'One entry per action-pair whose payoffs the description states, ' +
+                'e.g. "if A patrols and B warns, they get 8 and 3" -> the (row, col) ' +
+                'of Patrol/Warn with a=8, b=3, exactly as in the matrix.',
+              items: {
+                type: 'object',
+                required: ['row', 'col', 'a', 'b'],
+                properties: {
+                  row: { type: 'number', description: "1 or 2: which of A's options the sentence names." },
+                  col: { type: 'number', description: "1 or 2: which of B's options the sentence names." },
+                  a: { type: 'number', description: "A's payoff in that cell." },
+                  b: { type: 'number', description: "B's payoff in that cell." },
+                },
+              },
+            },
+            bestReplies: {
+              type: 'array',
+              description:
+                'One entry per "X works best / does better against Y" claim, e.g. ' +
+                '"Upload works best against Compress" -> player A, the opponent ' +
+                'option held fixed, and the option claimed better.',
+              items: {
+                type: 'object',
+                required: ['player', 'opponentOption', 'bestOption'],
+                properties: {
+                  player: { type: 'string', enum: ['A', 'B'] },
+                  opponentOption: { type: 'number', description: '1 or 2: the opponent option held fixed.' },
+                  bestOption: { type: 'number', description: '1 or 2: the option claimed better for this player.' },
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -173,6 +223,7 @@ Rules:
 - Write for a reader who knows what a payoff matrix is and does not yet have intuition for mixed strategies. Two to four sentences. Plain prose, no markdown, no headings, no LaTeX.
 - Never claim an equilibrium exists that you were not given, and never describe a pure equilibrium in a game that has none. If the solver found no pure equilibria, say plainly that the game has none and explain why the players must mix.
 - If a scenario is supplied, use its names for the players' options instead of "Row 1"/"Col 2" wherever that reads better, and leave suggestedScenario out. If none is supplied, invent one that fits the payoffs, write the explanation in its terms, and return it in suggestedScenario. Never let an invented story contradict the payoffs or the equilibria.
+- When you invent a scenario, restate the description's factual claims in suggestedScenario.storyClaims so they can be checked: every action-pair whose payoffs the description cites goes in cellCitations with the exact matrix values, and every "X works best against Y" or "prefers X when the opponent does Y" claim goes in bestReplies. A claim made in the description but missing from storyClaims, or declared wrongly, causes the whole story to be discarded — when unsure which cell a sentence refers to, reread the matrix rather than guess. If the description cites no payoffs and makes no better-against claims, set storyClaims to null.
 - You are also given the GEOMETRY of the two expected-payoff surfaces the reader is looking at. Where it helps, describe the equilibrium in those terms: indifference is a level shelf where a surface stops tilting; the equilibrium is the joint flat spot where both surfaces are level at once; strategic interaction is the warp in the surface; a best response is which way a slice tilts. Use these ONLY where the supplied geometry says they apply — if it tells you there is no flat shelf, or no interior flat spot, or that the game is not zero-sum, do not describe one.
 - Fill in geometryClaims to match what the supplied geometry states, and make sure your prose agrees with it. These are copied, not worked out: every one of them is stated for you above. If your explanation does not discuss the shape of the surfaces at all, set geometryClaims to null rather than guessing.`;
 
@@ -233,7 +284,9 @@ function scenarioBlock(sc?: Scenario): string {
   return 'This game has no scenario attached. Invent a short, concrete one that fits these payoffs'
     + ' — who the two players are and what their two options are — write the explanation using it,'
     + ' and return it in suggestedScenario so it can be offered to the user. The story must not'
-    + ' contradict the payoffs or the equilibria you were given.';
+    + ' contradict the payoffs or the equilibria you were given. Declare every payoff number and'
+    + ' every better-against claim the description makes in storyClaims (or set it to null if it'
+    + ' makes none) — undeclared or wrongly declared claims get the story discarded.';
 }
 
 export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): string {

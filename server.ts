@@ -21,7 +21,7 @@ import dotenv from "dotenv";
 // resolver requires explicit extensions and throws ERR_MODULE_NOT_FOUND on the
 // first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE } from "./src/utils/gameEngine";
-import { validateReport } from "./src/utils/nashValidator";
+import { validateReport, validateScenario } from "./src/utils/nashValidator";
 import { generateReport, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
 import type { ReportEnvelope } from "./src/types";
 
@@ -820,7 +820,7 @@ async function startServer() {
     // Model is server-controlled on purpose — a client-supplied model would let
     // anyone bill the expensive one. The eval sweep calls generateReport
     // directly, so it varies the model without this route needing to accept it.
-    const { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
+    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
 
     // The prompt already forbids inventing a story for a game that has one,
     // but that is an instruction, not a guarantee — models drift. Enforce it:
@@ -829,6 +829,29 @@ async function startServer() {
     // fresh invention asks for one by omitting the scenario from the request.
     if (report?.suggestedScenario && scenarioIsUsable(scenario)) {
       report.suggestedScenario = null;
+    }
+
+    // Story-claims gate: an invented scenario whose declared claims contradict
+    // the matrix (or whose description cites payoffs it never declared) is
+    // never offered — it would otherwise be prefilled into the save form and
+    // persisted as the game's permanent description. One retry, because an
+    // invention was explicitly wanted (no usable scenario was supplied) and a
+    // silent drop turns "New AI scenario" into a button that sometimes does
+    // nothing; the second report replaces the first only if its own story
+    // passes, and it still runs the full validation below. Opt-out mirrors
+    // NASH_PROSE_CHECKS so the gate's effect is measurable in isolation.
+    if (process.env.NASH_SCENARIO_CHECKS !== '0' && report?.suggestedScenario) {
+      const first = validateScenario(report.suggestedScenario, payoffs);
+      if (!first.ok) {
+        console.warn(`[report] invented scenario failed story checks — retrying once: ${first.issues.join('; ')}`);
+        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
+        const sc2 = second.report?.suggestedScenario;
+        if (second.report && sc2 && validateScenario(sc2, payoffs).ok) {
+          ({ report, failure } = second);
+        } else {
+          report.suggestedScenario = null;
+        }
+      }
     }
 
     if (!report) {

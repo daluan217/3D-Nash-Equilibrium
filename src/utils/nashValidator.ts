@@ -34,6 +34,7 @@ import type {
   Mismatch,
   MismatchKind,
   NashEquilibrium,
+  SuggestedScenario,
   ValidationResult,
 } from '../types';
 import { computeAllNE, computeIndifference, regretA, regretB } from './gameEngine';
@@ -284,6 +285,93 @@ function checkGeometry(
       expected: null,
       detail: `report declares ${r.claimed ? r.yes : r.no}, but ${r.actual ? r.yes : r.no}`,
     }));
+}
+
+export interface ScenarioValidation {
+  ok: boolean;
+  /** Human-readable reasons, empty when ok. */
+  issues: string[];
+}
+
+/**
+ * Checks an INVENTED scenario's declared story claims against the matrix.
+ *
+ * Same design as checkGeometry: "does this sentence claim Upload beats
+ * Compress?" is a semantic judgement no regex can make (see the removed
+ * /pure/ check above), so the model is required to restate each claim as
+ * data — a (row, col) → (a, b) citation, or a (player, opponent option,
+ * better option) best-reply — where checking is a lookup. A QA sweep found
+ * ~1 in 4 invented descriptions asserting a backwards pairing or citing a
+ * real payoff pair against the wrong cell, all invisible to the numeric
+ * allowlist because the numbers themselves were real.
+ *
+ * Deliberately NOT part of validateReport: the report's prose is already
+ * validated, and a bad optional story should cost the story, not demote the
+ * whole report to the deterministic panel. Keeping it separate also leaves
+ * the eval sweep's consistency metric untouched — the server gates on this,
+ * the eval never crosses it.
+ *
+ * Residual (stated honestly): a claim the model makes in the description but
+ * fails to DECLARE is only caught when it is payoff-anchored ("A=9"); a bare
+ * "they get 8 and 3" or an undeclared "works best against" needs the model
+ * to follow the declaration rule, which the prompt demands and the server's
+ * one retry backs up.
+ */
+export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): ScenarioValidation {
+  const issues: string[] = [];
+  const cellA = (r: number, c: number) => (r === 1 ? (c === 1 ? g.a11 : g.a12) : (c === 1 ? g.a21 : g.a22));
+  const cellB = (r: number, c: number) => (r === 1 ? (c === 1 ? g.b11 : g.b12) : (c === 1 ? g.b21 : g.b22));
+  const opt12 = (n: unknown): n is 1 | 2 => n === 1 || n === 2;
+  // Same tolerance shape as checkProse: tight, the citation restates a matrix
+  // number the model was handed verbatim.
+  const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
+
+  const claims = sc.storyClaims ?? null;
+  if (claims) {
+    for (const c of claims.cellCitations ?? []) {
+      if (!opt12(c.row) || !opt12(c.col)) {
+        issues.push(`citation names cell (Row ${c.row}, Col ${c.col}), which does not exist`);
+        continue;
+      }
+      if (!Number.isFinite(c.a) || !Number.isFinite(c.b) || !near(c.a, cellA(c.row, c.col)) || !near(c.b, cellB(c.row, c.col))) {
+        issues.push(
+          `story says cell (Row ${c.row}, Col ${c.col}) pays (${c.a}, ${c.b}); the matrix says (${cellA(c.row, c.col)}, ${cellB(c.row, c.col)})`,
+        );
+      }
+    }
+    for (const r of claims.bestReplies ?? []) {
+      if ((r.player !== 'A' && r.player !== 'B') || !opt12(r.opponentOption) || !opt12(r.bestOption)) {
+        issues.push(`best-reply claim is malformed (player=${r.player}, opponent=${r.opponentOption}, best=${r.bestOption})`);
+        continue;
+      }
+      const other = r.bestOption === 1 ? 2 : 1;
+      // A's option indexes rows against B's fixed column; B's indexes columns
+      // against A's fixed row.
+      const mine = r.player === 'A' ? cellA(r.bestOption, r.opponentOption) : cellB(r.opponentOption, r.bestOption);
+      const alt = r.player === 'A' ? cellA(other, r.opponentOption) : cellB(r.opponentOption, other);
+      // Strictly worse fails; a tie passes (a weakly-best claim is not a lie).
+      if (mine < alt - 1e-9) {
+        issues.push(
+          `story says ${r.player}'s option ${r.bestOption} does better against opponent option ${r.opponentOption}, but it pays ${mine} vs ${alt}`,
+        );
+      }
+    }
+  }
+
+  // Undeclared-citation guard: any payoff-anchored number in the description
+  // ("A=9", "E[B]≈3") must be covered by a declared citation, otherwise the
+  // declaration rule was skipped and nothing above ever looked at that claim.
+  const declared = claims ? (claims.cellCitations ?? []).flatMap((c) => [c.a, c.b]) : [];
+  const desc = sc.description ?? '';
+  for (const m of desc.matchAll(/(?:\bE\[[AB]\]|\b[AB])\s*[=≈≃~]\s*(-?\d+(?:\.\d+)?)/g)) {
+    const v = Number(m[1]);
+    if (!Number.isFinite(v)) continue;
+    if (!declared.some((a) => Math.abs(a - v) <= Math.max(0.05, Math.abs(a) * 0.02))) {
+      issues.push(`description cites ${m[0].replace(/\s+/g, ' ')} but no declared cellCitation covers it`);
+    }
+  }
+
+  return { ok: issues.length === 0, issues };
 }
 
 export function validateReport(report: LlmReport, g: GamePayoffs): ValidationResult {
