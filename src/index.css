@@ -60,9 +60,13 @@
      descriptions, scenario cards; keep the saturated steps for UI chrome
      like matrix headers, paths, and legends. -ink for light, -ink-dark for
      dark backgrounds. */
-  --color-player-a-ink: color-mix(in oklab, var(--color-red-500) 55%, var(--color-slate-500));
+  /* Light-mode inks mix toward slate-600 (not -500) for WCAG AA: measured
+     5.1:1 (a) / 5.0:1 (b) on white and 4.88/4.81 on slate-50, vs 4.17 for
+     the slate-500 mix — AA needs 4.5 at this text size. Dark inks were
+     already 10+:1 and stay on slate-300. */
+  --color-player-a-ink: color-mix(in oklab, var(--color-red-500) 55%, var(--color-slate-600));
   --color-player-a-ink-dark: color-mix(in oklab, var(--color-red-300) 55%, var(--color-slate-300));
-  --color-player-b-ink: color-mix(in oklab, var(--color-blue-500) 55%, var(--color-slate-500));
+  --color-player-b-ink: color-mix(in oklab, var(--color-blue-500) 55%, var(--color-slate-600));
   --color-player-b-ink-dark: color-mix(in oklab, var(--color-blue-300) 55%, var(--color-slate-300));
 
   /* mixed NE = purple */
