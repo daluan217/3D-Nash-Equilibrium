@@ -219,6 +219,35 @@ export function computeIndifference(g: GamePayoffs): IndifferenceStatus {
   };
 }
 
+// ── Random game generation ───────────────────────────────────────────────────
+// Rejection-sample integer matrices until the SOLVER (not a heuristic) agrees
+// the game has the requested equilibrium structure:
+//   'pure'  — at least one pure NE, so best-response dynamics settle on a corner.
+//   'mixed' — no pure NE at all and a fully-interior mixed NE, the cycling
+//             games where the ghost-coordinate machinery earns its keep.
+// Ties in a player's own payoffs are rejected up front: a tie makes a best
+// response weak, which admits NE continua that computeAllNE's corner+interior
+// model cannot enumerate — exactly the games the report validator refuses.
+export function generateRandomGame(kind: 'pure' | 'mixed'): GamePayoffs {
+  for (let tries = 0; tries < 5000; tries++) {
+    const cell = () => Math.floor(Math.random() * 19) - 9; // integers in [-9, 9]
+    const g: GamePayoffs = {
+      a11: cell(), a12: cell(), a21: cell(), a22: cell(),
+      b11: cell(), b12: cell(), b21: cell(), b22: cell(),
+    };
+    if (g.a11 === g.a21 || g.a12 === g.a22 || g.b11 === g.b12 || g.b21 === g.b22) continue;
+    const nes = computeAllNE(g);
+    const pureCount = nes.filter((n) => n.type === 'pure').length;
+    const hasMixed = nes.some((n) => n.type === 'mixed');
+    if (kind === 'mixed' ? pureCount === 0 && hasMixed : pureCount > 0) return g;
+  }
+  // Statistically unreachable (each draw succeeds well over 10% of the time);
+  // matching pennies / prisoner's dilemma keep the return type total anyway.
+  return kind === 'mixed'
+    ? { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 }
+    : { a11: -1, a12: -3, a21: 0, a22: -2, b11: -1, b12: 0, b21: -3, b22: -2 };
+}
+
 export function chooseBestPureNEForMover(mover: 'A' | 'B', pureNEs: NashEquilibrium[]): NashEquilibrium | null {
   if (pureNEs.length === 0) return null;
   if (pureNEs.length === 1) return pureNEs[0];

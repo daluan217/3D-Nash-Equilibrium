@@ -14,6 +14,7 @@ import {
   computeIndifference,
   doStep,
   buildPolyStr,
+  generateRandomGame,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -302,6 +303,12 @@ export default function App() {
   /** Option names for the save dialog: typed by the user, or prefilled from an
    *  invented scenario the user chose to keep. */
   const [saveLabels, setSaveLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
+  // "Generate a game for me" inside the save modal: which equilibrium
+  // structure to roll, whether a roll+AI-description round trip is in flight,
+  // and the outcome line shown under the controls.
+  const [generateKind, setGenerateKind] = useState<'pure' | 'mixed'>('pure');
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [generateNote, setGenerateNote] = useState('');
 
   // Edit dialog for an already-saved game. Separate state from the save dialog
   // rather than shared: the two are open in different situations and reusing
@@ -1053,6 +1060,66 @@ export default function App() {
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  // Stale-note guard: reopening the save modal should not resurrect the
+  // outcome line from a generation done minutes ago.
+  useEffect(() => { if (isSaveModalOpen) setGenerateNote(''); }, [isSaveModalOpen]);
+
+  /**
+   * Roll a fresh random game with the chosen equilibrium structure, put it on
+   * the board, then ask the AI to invent a scenario for it (the same
+   * omit-the-scenario request "New AI scenario" uses) and prefill the save
+   * form with the invention. The matrix is applied BEFORE the model call and
+   * kept even if that call fails — the game is real either way; only the
+   * story is best-effort.
+   */
+  const handleGenerateGame = async () => {
+    setGenerateLoading(true);
+    setGenerateNote('');
+    setSaveError('');
+    const g = generateRandomGame(generateKind);
+    // Mirror handleLoadPreset: board payoffs, their editable string twins,
+    // preset highlight off, sim rebuilt from the start point.
+    setActivePreset('custom');
+    setPayoffs(g);
+    setRawPayoffs({
+      a11: String(g.a11), b11: String(g.b11),
+      a12: String(g.a12), b12: String(g.b12),
+      a21: String(g.a21), b21: String(g.b21),
+      a22: String(g.a22), b22: String(g.b22),
+    });
+    handleReset();
+    const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
+    try {
+      const res = await fetch(getApiUrl('/api/report'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payoffs: g }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const env = (await res.json()) as ReportEnvelope;
+      // Prefill only from a validated invention — an unvalidated story could
+      // contradict the very equilibria the user just asked for.
+      const sc = env.source === 'llm' && env.validation?.ok ? env.report?.suggestedScenario : null;
+      if (sc) {
+        setSaveName((sc.name ?? '').slice(0, 40));
+        setSaveDesc((sc.description ?? '').slice(0, 800));
+        setSaveLabels({
+          row1: sc.row1 ?? '', row2: sc.row2 ?? '',
+          col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+        });
+        setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
+      } else {
+        setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+      }
+      setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium.`]);
+    } catch {
+      setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+      setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
+    } finally {
+      setGenerateLoading(false);
     }
   };
 
@@ -3902,7 +3969,7 @@ export default function App() {
             aria-modal="true"
             aria-label="Save custom game"
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
@@ -3961,6 +4028,46 @@ export default function App() {
                 <div>(Row 2, Col 1) = ({payoffs.a21}, {payoffs.b21})</div>
                 <div>(Row 2, Col 2) = ({payoffs.a22}, {payoffs.b22})</div>
               </div>
+            </div>
+
+            {/* Generate-a-game-for-me. Rolls a solver-verified random matrix
+                with the chosen equilibrium structure onto the board (replacing
+                the payload above), then prefills the form from an AI-invented
+                scenario. Styled indigo like the app's other AI affordances. */}
+            <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2">
+              <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                …or generate a new game
+              </span>
+              <p className="text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+                Rolls a fresh random matrix with the equilibrium type you pick and has the AI write
+                a scenario for it. Replaces the matrix shown above.
+              </p>
+              <div className="flex gap-2">
+                <select
+                  value={generateKind}
+                  onChange={(e) => setGenerateKind(e.target.value as 'pure' | 'mixed')}
+                  disabled={generateLoading}
+                  aria-label="Equilibrium type to generate"
+                  className="flex-1 px-2.5 py-1.5 text-xs bg-white dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
+                >
+                  <option value="pure">Pure-strategy equilibrium</option>
+                  <option value="mixed">Mixed-strategy equilibrium</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleGenerateGame}
+                  disabled={generateLoading}
+                  className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  {generateLoading ? 'Generating…' : 'Generate'}
+                </button>
+              </div>
+              {generateNote && (
+                <p className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
+                  {generateNote}
+                </p>
+              )}
             </div>
 
             <form onSubmit={handleSaveGameSubmit} className="flex flex-col gap-3.5">

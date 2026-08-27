@@ -23,7 +23,7 @@
  */
 
 import { GamePayoffs, SimState, NashEquilibrium, PathSegment } from './types';
-import { doStep, PRESETS, computeAllNE, EA, EB, r3, regretA, regretB } from './utils/gameEngine';
+import { doStep, PRESETS, computeAllNE, EA, EB, r3, regretA, regretB, generateRandomGame } from './utils/gameEngine';
 import { buildSurfaces, makeTraces } from './utils/plotting';
 
 // ── Oracle ────────────────────────────────────────────────────────────────────
@@ -413,6 +413,41 @@ function main() {
     const F = newFindings();
     for (let i = 0; i < count; i++) auditGame(gen(kind), F, simConfigs);
     totalFails += report(`RANDOM ${kind} (${count} games)`, F);
+  }
+
+  // generateRandomGame contract: every 'pure' roll has ≥1 pure NE, every
+  // 'mixed' roll has NO pure NE plus an interior mixed NE, and no roll ever
+  // contains a within-player payoff tie (weak best responses admit NE continua
+  // the solver's corner+interior model cannot enumerate). Checked against the
+  // independent oracle, not against computeAllNE, which the generator itself
+  // consults — using it here would make the check circular.
+  {
+    const rolls = FULL ? 1000 : 200;
+    const problems: string[] = [];
+    for (const kind of ['pure', 'mixed'] as const) {
+      for (let i = 0; i < rolls; i++) {
+        const g = generateRandomGame(kind);
+        if (g.a11 === g.a21 || g.a12 === g.a22 || g.b11 === g.b12 || g.b21 === g.b22) {
+          problems.push(`${kind}: payoff tie in ${gstr(g)}`);
+          continue;
+        }
+        const o = oracleNEs(g);
+        if (kind === 'pure' && o.pure.length === 0) {
+          problems.push(`pure: no pure NE in ${gstr(g)}`);
+        }
+        if (kind === 'mixed' && (o.pure.length > 0 || !o.mixed)) {
+          problems.push(`mixed: pure=${o.pure.length} mixed=${!!o.mixed} in ${gstr(g)}`);
+        }
+      }
+    }
+    console.log(`\n=== GENERATE RANDOM GAME (${rolls} rolls per kind) ===`);
+    if (problems.length === 0) {
+      console.log('✓ no issues');
+    } else {
+      totalFails += 1;
+      console.log(`✗ ${problems.length} bad roll(s):`);
+      for (const m of problems.slice(0, 8)) console.log(`    - ${m}`);
+    }
   }
 
   console.log(`\n${'='.repeat(50)}`);

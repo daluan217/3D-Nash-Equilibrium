@@ -459,6 +459,15 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       When the simulation reaches a Nash Equilibrium, both players are playing optimal strategies and the system stabilizes. The simulation shows "Converged" in the top right when this happens.
                     </p>
                   </div>
+
+                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
+                    <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
+                      Opponent Regret Mode
+                    </h4>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
+                      An alternative convergence method for mixed-strategy games (switch under <span className="font-bold text-slate-700 dark:text-slate-200">Convergence Method</span>). Instead of shrinking a corridor, each step moves a player's strategy in proportion to the opponent's <em>regret</em> — how much better they could do against the current mix. While regret remains, the strategy lines lean; when a line goes flat, that player is indifferent between their options, which is exactly the mixed-equilibrium condition. Each coordinate declares on its own as its line flattens.
+                    </p>
+                  </div>
                 </div>
 
                 {/* Sub-section: Controls & Settings */}
