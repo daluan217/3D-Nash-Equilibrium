@@ -384,6 +384,46 @@ function testGeometryValidatorChecks() {
   );
 }
 
+/**
+ * The prose numeric scan across its operator forms. Two tolerance tiers exist
+ * on purpose: "=" asserts a value (tight), "≈ ≃ ~" announces a rounding
+ * (looser but bounded) — the QA sweep caught the model writing "x≈0.909" in
+ * the wild, which the old '='-only regexes never saw. E[A]/E[B] forms are the
+ * other closed gap: `\b([AB])=` can never match past the bracket.
+ */
+function testProseNumericChecks() {
+  const MP: GamePayoffs =
+    { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 }; // x*=y*=0.5
+  const PD: GamePayoffs =
+    { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }; // NE (0,0), eA=eB=1
+
+  const reportWith = (g: GamePayoffs, prose: string): LlmReport => ({
+    claimedEquilibria: computeAllNE(g).map(n => ({ type: n.type, x: n.x, y: n.y })),
+    prose,
+  });
+  const proseKinds = (g: GamePayoffs, prose: string) =>
+    validateReport(reportWith(g, prose), g).mismatches
+      .filter(m => m.kind.startsWith('prose-')).map(m => m.kind);
+
+  // Approx operator: bounded, not blind. A rounded citation passes; a wrong
+  // value hiding behind "≈" still flags.
+  assert(proseKinds(MP, 'The mixed point sits near x ≈ 0.52.').length === 0,
+    'x ≈ 0.52 for x*=0.5 is a rounding, not a lie — must pass');
+  assert(proseKinds(MP, 'The mixed point sits near x≈0.7.').includes('prose-bad-coordinate'),
+    'x≈0.7 for x*=0.5 must flag even with the approx operator');
+  // The exact operator keeps its tight tolerance — same value, harder claim.
+  assert(proseKinds(MP, 'The mixed point is exactly x=0.52.').includes('prose-bad-coordinate'),
+    'x=0.52 asserted exactly must flag where x ≈ 0.52 passed');
+
+  // E[A]/E[B] citations were structurally invisible to \b([AB])= before.
+  assert(proseKinds(PD, 'At the equilibrium E[A]=1.000 and E[B]=1.000.').length === 0,
+    'true E[A]/E[B] equilibrium payoffs must pass');
+  assert(proseKinds(PD, 'At the equilibrium E[A]=9.9.').includes('prose-bad-payoff'),
+    'an invented E[A] value must flag');
+  assert(proseKinds(PD, 'Defecting still pays A ≈ 1 at the end.').length === 0,
+    'approx-cited real payoff must pass');
+}
+
 function runTests() {
   testSolverCanonicalGames();
   testZeroSumSearchFamily();
@@ -391,6 +431,7 @@ function runTests() {
   testGhostCorridorInvariant();
   testGeometryOracleAgreesWithSolver();
   testGeometryValidatorChecks();
+  testProseNumericChecks();
   console.log('All game-engine regression tests passed.');
 }
 

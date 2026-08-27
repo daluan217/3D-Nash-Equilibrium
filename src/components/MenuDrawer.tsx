@@ -615,7 +615,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                               )}
                             </div>
                             <p
-                              className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed"
+                              className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed break-words"
                               dangerouslySetInnerHTML={{ __html: preset.desc }}
                             />
 
@@ -716,7 +716,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                   </button>
                                 </div>
                               </div>
-                              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed">
+                              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed break-words">
                                 <ColorCoded text={game.desc} aTerms={game.aTerms} bTerms={game.bTerms} />
                               </p>
 

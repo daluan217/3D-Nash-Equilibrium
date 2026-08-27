@@ -34,8 +34,11 @@ const TOKEN_RULES: Array<{ re: RegExp; cls: string }> = [
   { re: /\bCol(?:umn)?\s?[12]\b/gi, cls: B_TOKEN_CLS },
   { re: /\bA\s*[=≈≃~]\s*-?\d+(?:\.\d+)?/g, cls: A_TOKEN_CLS },
   { re: /\bB\s*[=≈≃~]\s*-?\d+(?:\.\d+)?/g, cls: B_TOKEN_CLS },
-  { re: /\bx\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\*|\bx\b/g, cls: A_TOKEN_CLS },
-  { re: /\by\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\*|\by\b/g, cls: B_TOKEN_CLS },
+  // Bare x/y (the last alternative) guards against the letter used as a
+  // times sign or a compound: "2 x 2" (digit neighbors) and "x-axis" stay
+  // gray; "x≈0.909" is consumed by the value alternatives before this one.
+  { re: /\bx\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\*|(?<!\d\s)\bx\b(?!-)(?!\s\d)/g, cls: A_TOKEN_CLS },
+  { re: /\by\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\*|(?<!\d\s)\by\b(?!-)(?!\s\d)/g, cls: B_TOKEN_CLS },
 ];
 
 /**

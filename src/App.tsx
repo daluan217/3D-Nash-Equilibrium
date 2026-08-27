@@ -2657,7 +2657,7 @@ export default function App() {
             {/* Selected Preset Narrative Card */}
             {selectedPreset?.desc && (
               selectedCustomGame ? (
-                <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
+                <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
                   <strong>Custom - {selectedCustomGame.name}:</strong>{' '}
                   <ColorCoded text={selectedPreset.desc} aTerms={colorTerms.a} bTerms={colorTerms.b} />
                 </div>
@@ -3328,6 +3328,12 @@ export default function App() {
                 </div>
               )}
 
+              {/* Category narrative. Suppressed on degenerate (flat-payoff)
+                  games: the amber notice above is the accurate story there,
+                  and these branches would assert structure (first-mover
+                  advantage, unique attractors) that a continuum of equilibria
+                  contradicts on the same screen. */}
+              {!indifferenceStatus.any && (
               <div className="text-slate-500 dark:text-slate-400">
                 {pureNEs.length === 0 && mixedNE ? (
                   <p>
@@ -3353,16 +3359,30 @@ export default function App() {
                     )}
                   </div>
                 ) : pureNEs.length > 1 ? (
+                  // This branch is only reachable with NO interior mixed NE
+                  // (the >=1 && mixedNE arm above catches the rest), so the
+                  // copy must not mention one — the old text referenced "the
+                  // mixed NE" and named pureNEs[0] as the destination, which
+                  // is corner-enumeration order, not where dynamics actually
+                  // land. The committed-NE line states the real tie-break.
                   <div>
                     <p className="mb-2">
-                      Multiple pure equilibria coexist. The first-mover can secure a first-mover advantage, committing to play the target Row or Column that maximizes their own payoffs.
+                      Multiple pure equilibria coexist with no interior mixed NE. Which corner the
+                      trajectories settle on depends on the starting point and on who moves first.
                     </p>
-                    <p>
-                      Over time, any best-response steps from outer starting sectors migrate away from the mixed NE and lock into the <strong className="text-slate-800 dark:text-slate-200 font-medium"><ColorCoded text={pureNEs[0].label} /></strong>.
-                    </p>
+                    {committedNE && (
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
+                        <ColorCoded
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          aTerms={colorTerms.a}
+                          bTerms={colorTerms.b}
+                        />
+                      </p>
+                    )}
                   </div>
                 ) : null}
               </div>
+              )}
 
               {/* Plain-English explanation. The solver computes; the model only
                   narrates, and its claims are checked against the solver before
@@ -3448,10 +3468,10 @@ export default function App() {
                         <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
                           Scenario written for this game
                         </p>
-                        <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200">
+                        <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words">
                           {llmEnvelope.report.suggestedScenario.name}
                         </p>
-                        <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300">
+                        <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300 break-words">
                           <ColorCoded
                             text={llmEnvelope.report.suggestedScenario.description ?? ''}
                             aTerms={[llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean) as string[]}
