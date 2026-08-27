@@ -533,6 +533,23 @@ export function validateReport(report: LlmReport, g: GamePayoffs): ValidationRes
   const checks: string[] = [];
   const mismatches: Mismatch[] = [];
 
+  // Shape guard: a provider that ignores the schema (probed live with
+  // Phi-4-mini — suggestedScenario as a bare string, no claimedEquilibria at
+  // all) must fail validation, not crash the route. Everything below assumes
+  // claimedEquilibria is an array and prose a string.
+  if (!Array.isArray(report.claimedEquilibria) || typeof (report.prose ?? '') !== 'string') {
+    return {
+      ok: false,
+      checks: ['FAIL: report shape is malformed (claimedEquilibria missing or not an array)'],
+      mismatches: [{
+        kind: 'omitted',
+        claimed: null,
+        expected: null,
+        detail: 'report shape is malformed — no claim list to validate',
+      }],
+    };
+  }
+
   const truth = computeAllNE(g);
   const indifference = computeIndifference(g);
   // A player with flat payoffs is indifferent between their own actions, so a
