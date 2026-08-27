@@ -141,7 +141,14 @@ function checkProse(
   if (!degenerate) {
     const allowedX = [0, 1, ...truth.map((t) => t.x)];
     const allowedY = [0, 1, ...truth.map((t) => t.y)];
-    for (const m of prose.matchAll(/\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
+    // The lookbehind skips complement notation: "1−x=0.833" is a TRUE
+    // statement about Row 2's share, but the bare regex saw "x=0.833" inside
+    // it and demoted correct prose (caught live on Spy vs. Analyst — a
+    // checker false positive latent since the check shipped). A minus before
+    // the letter means the citation is about 1−x/1−y, which the equilibrium
+    // coordinate allowlist must not judge; a bare wrong "x=0.833" still
+    // flags exactly as before.
+    for (const m of prose.matchAll(/(?<![−-]\s?)\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
       const axis = m[1].toLowerCase();
       const value = Number(m[3]);
       if (!Number.isFinite(value)) continue;

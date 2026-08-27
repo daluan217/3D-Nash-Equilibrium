@@ -415,6 +415,19 @@ function testProseNumericChecks() {
   assert(proseKinds(MP, 'The mixed point is exactly x=0.52.').includes('prose-bad-coordinate'),
     'x=0.52 asserted exactly must flag where x ≈ 0.52 passed');
 
+  // Complement notation is not a coordinate citation: "1−x=0.833" on a game
+  // with x*=0.667 is a true statement about Row 2's share, and the bare
+  // regex demoted exactly this phrasing live (Spy vs. Analyst). The guard
+  // must skip the complement while still flagging a bare wrong x=.
+  const BOS_MIX: GamePayoffs =
+    { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 }; // x*=2/3, y*=1/3
+  assert(proseKinds(BOS_MIX, 'A mixes with x=0.667, so 1−x=0.333 falls on Row 2.').length === 0,
+    'complement notation (1−x=…) must not be judged as an x citation');
+  assert(proseKinds(BOS_MIX, 'A mixes with x=0.667, so 1 - x = 0.333 falls on Row 2.').length === 0,
+    'spaced ASCII complement (1 - x = …) must not be judged either');
+  assert(proseKinds(BOS_MIX, 'The mix has x=0.333 on Row 1.').includes('prose-bad-coordinate'),
+    'a bare wrong x= must still flag with the complement guard in place');
+
   // E[A]/E[B] citations were structurally invisible to \b([AB])= before.
   assert(proseKinds(PD, 'At the equilibrium E[A]=1.000 and E[B]=1.000.').length === 0,
     'true E[A]/E[B] equilibrium payoffs must pass');
