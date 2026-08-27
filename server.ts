@@ -25,15 +25,17 @@ import { validateReport, validateScenario, validateProseClaims } from "./src/uti
 import { generateReport, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
 
-// Production reasoning effort for the explainer. 'low' per the 2026-08-27
-// A/B on the adversarial failure families: nano at default effort (0
-// thinking tokens) passed the declaration-fidelity gates 2/8 first-try;
-// at 'low' 7/8 with the miss safely withheld, for ~3-5s added latency —
-// Daniel's call, trading a little tail for the flawless bar. Set here at
-// the ROUTE, not inside generateReport, so the eval harness keeps
+// Production reasoning effort for the explainer. UNSET (provider default)
+// since the materialized best-reply table landed: the 2026-08-27 follow-up
+// A/B measured zero-effort+table at 7/8 on the baseline families in 7.0s —
+// identical fidelity to 'low' without the table (7/8, 10.3s) — and
+// low+table added latency (10.7s) with no measurable gain, because the
+// table replaces exactly the derivations the thinking was doing. The env
+// override remains the escape hatch if fidelity ever regresses. Set here
+// at the ROUTE, not inside generateReport, so the eval harness keeps
 // measuring the model's unmodified default unless a sweep opts in.
-const REPORT_REASONING: ReasoningEffort =
-  (process.env.REPORT_REASONING as ReasoningEffort) || "low";
+const REPORT_REASONING: ReasoningEffort | undefined =
+  (process.env.REPORT_REASONING as ReasoningEffort) || undefined;
 import type { ReportEnvelope } from "./src/types";
 
 // Load environment variables from .env file
