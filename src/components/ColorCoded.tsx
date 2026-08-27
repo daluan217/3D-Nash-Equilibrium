@@ -24,14 +24,17 @@ const B_TOKEN_CLS = 'text-player-b-ink dark:text-player-b-ink-dark font-medium';
  * "A city clerk…".
  */
 const TOKEN_RULES: Array<{ re: RegExp; cls: string }> = [
-  { re: /E\[A\](?:\s*=\s*-?\d+(?:\.\d+)?)?/g, cls: A_TOKEN_CLS },
-  { re: /E\[B\](?:\s*=\s*-?\d+(?:\.\d+)?)?/g, cls: B_TOKEN_CLS },
+  // Values arrive with "=" from the solver but the model also writes "≈"
+  // (and friends) when it rounds — the whole "x≈0.909" must color as one
+  // token, not just the letter.
+  { re: /E\[A\](?:\s*[=≈≃~]\s*-?\d+(?:\.\d+)?)?/g, cls: A_TOKEN_CLS },
+  { re: /E\[B\](?:\s*[=≈≃~]\s*-?\d+(?:\.\d+)?)?/g, cls: B_TOKEN_CLS },
   { re: /\bRow\s?[12]\b/gi, cls: A_TOKEN_CLS },
   { re: /\bCol(?:umn)?\s?[12]\b/gi, cls: B_TOKEN_CLS },
-  { re: /\bA\s*=\s*-?\d+(?:\.\d+)?/g, cls: A_TOKEN_CLS },
-  { re: /\bB\s*=\s*-?\d+(?:\.\d+)?/g, cls: B_TOKEN_CLS },
-  { re: /\bx\s?\*\s*=\s*-?\d+(?:\.\d+)?|\bx\s*=\s*-?\d+(?:\.\d+)?|\bx\*|\bx\b/g, cls: A_TOKEN_CLS },
-  { re: /\by\s?\*\s*=\s*-?\d+(?:\.\d+)?|\by\s*=\s*-?\d+(?:\.\d+)?|\by\*|\by\b/g, cls: B_TOKEN_CLS },
+  { re: /\bA\s*[=≈≃~]\s*-?\d+(?:\.\d+)?/g, cls: A_TOKEN_CLS },
+  { re: /\bB\s*[=≈≃~]\s*-?\d+(?:\.\d+)?/g, cls: B_TOKEN_CLS },
+  { re: /\bx\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\*|\bx\b/g, cls: A_TOKEN_CLS },
+  { re: /\by\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\*|\by\b/g, cls: B_TOKEN_CLS },
   { re: /(?<=[a-z,;:)]\s)A(?=[\s,.:;!?')]|'s)|\bA(?='s)/g, cls: A_TOKEN_CLS },
   { re: /(?<=[a-z,;:)]\s)B(?=[\s,.:;!?')]|'s)|\bB(?='s)/g, cls: B_TOKEN_CLS },
 ];
