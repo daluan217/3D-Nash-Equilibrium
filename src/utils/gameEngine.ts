@@ -13,8 +13,8 @@ import { GamePayoffs, SimState, NashEquilibrium, PresetGame, PathSegment } from 
  * Classes match the matrix editor's player coloring and adapt to dark mode,
  * unlike the hard-coded hex spans they replace.
  */
-const spanA = (t: string) => `<span class="text-player-a-600 dark:text-player-a-400 font-semibold">${t}</span>`;
-const spanB = (t: string) => `<span class="text-player-b-600 dark:text-player-b-400 font-semibold">${t}</span>`;
+const spanA = (t: string) => `<span class="text-player-a-ink dark:text-player-a-ink-dark font-semibold">${t}</span>`;
+const spanB = (t: string) => `<span class="text-player-b-ink dark:text-player-b-ink-dark font-semibold">${t}</span>`;
 
 export const PRESETS: Record<string, PresetGame> = {
   search: {

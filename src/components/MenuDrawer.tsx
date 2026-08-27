@@ -7,6 +7,7 @@ import React, { useState, useMemo } from 'react';
 import { GamePayoffs, PresetGame } from '../types';
 import { PRESETS, computeAllNE } from '../utils/gameEngine';
 import { GameGraphMiniature } from './GameGraphMiniature';
+import { ColorCoded } from './ColorCoded';
 import {
   X,
   HelpCircle,
@@ -102,6 +103,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       name: g.name,
       desc: g.description,
       payoffs: g.payoffs as GamePayoffs,
+      // Option labels feed ColorCoded so a saved game's own nouns get the
+      // same player coloring its description enjoys in the main panel.
+      aTerms: ['Player A', g.row1Label, g.row2Label].filter(Boolean) as string[],
+      bTerms: ['Player B', g.col1Label, g.col2Label].filter(Boolean) as string[],
     }));
   }, [userCustomGames]);
 
@@ -624,9 +629,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 {eqList.map((eq, i) => (
                                   <li key={i}>
                                     <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
-                                      {eq.label}
+                                      <ColorCoded text={eq.label} />
                                     </strong>{' '}
-                                    val (E[A]={eq.eA.toFixed(2)}, E[B]={eq.eB.toFixed(2)})
+                                    val (<ColorCoded text={`E[A]=${eq.eA.toFixed(2)}, E[B]=${eq.eB.toFixed(2)}`} />)
                                   </li>
                                 ))}
                                 {eqList.length === 0 && (
@@ -712,7 +717,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 </div>
                               </div>
                               <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed">
-                                {game.desc}
+                                <ColorCoded text={game.desc} aTerms={game.aTerms} bTerms={game.bTerms} />
                               </p>
 
                               {/* Plotted NE */}
@@ -725,9 +730,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                   {eqList.map((eq, i) => (
                                     <li key={i}>
                                       <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
-                                        {eq.label}
+                                        <ColorCoded text={eq.label} />
                                       </strong>{' '}
-                                      val (E[A]={eq.eA.toFixed(2)}, E[B]={eq.eB.toFixed(2)})
+                                      val (<ColorCoded text={`E[A]=${eq.eA.toFixed(2)}, E[B]=${eq.eB.toFixed(2)}`} />)
                                     </li>
                                   ))}
                                   {eqList.length === 0 && (

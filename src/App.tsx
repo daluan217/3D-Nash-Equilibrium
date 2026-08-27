@@ -61,6 +61,7 @@ import {
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
+import { ColorCoded } from './components/ColorCoded';
 import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
@@ -84,33 +85,8 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
  * word boundaries, longest first) and wrapped in React elements — the text
  * itself is never interpreted as HTML.
  */
-function ColorCoded({ text, aTerms, bTerms }: { text: string; aTerms: string[]; bTerms: string[] }) {
-  const nodes = useMemo(() => {
-    const entries = [
-      ...aTerms.map((t) => ({ t, cls: 'text-player-a-600 dark:text-player-a-400 font-semibold' })),
-      ...bTerms.map((t) => ({ t, cls: 'text-player-b-600 dark:text-player-b-400 font-semibold' })),
-    ]
-      // Single characters ("A") are ambiguous with articles; require 2+ chars.
-      .filter((e) => e.t && e.t.trim().length >= 2)
-      .sort((p, q) => q.t.length - p.t.length);
-    if (entries.length === 0 || !text) return [text];
-    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`(?<![\\w])(?:${entries.map((e) => esc(e.t)).join('|')})(?![\\w])`, 'gi');
-    const out: React.ReactNode[] = [];
-    let last = 0;
-    let k = 0;
-    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-      if (m.index > last) out.push(text.slice(last, m.index));
-      const hit = m[0];
-      const entry = entries.find((e) => e.t.toLowerCase() === hit.toLowerCase());
-      out.push(<span key={k++} className={entry?.cls}>{hit}</span>);
-      last = m.index + hit.length;
-    }
-    out.push(text.slice(last));
-    return out;
-  }, [text, aTerms, bTerms]);
-  return <>{nodes}</>;
-}
+// ColorCoded moved to its own component so the workspace-center library
+// (MenuDrawer) can color saved-game text with the exact same rules.
 
 interface ThinSnapshot {
   cx: number; cy: number;
@@ -3313,10 +3289,13 @@ export default function App() {
                 <ul className="list-disc pl-5 mt-1 text-slate-600 dark:text-slate-300 space-y-1">
                   {allNE.map((ne, idx) => (
                     <li key={idx}>
+                      {/* ColorCoded inside: nested spans recolor the Row/Col
+                          and coordinate pieces while the outer class keeps
+                          the label's own weight and base hue. */}
                       <span className={`font-semibold ${ne.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400' : 'text-slate-800 dark:text-slate-100'}`}>
-                        {ne.label}
+                        <ColorCoded text={ne.label} />
                       </span>{' '}
-                      with values E[A]={ne.eA.toFixed(3)}, E[B]={ne.eB.toFixed(3)}
+                      with values <ColorCoded text={`E[A]=${ne.eA.toFixed(3)}, E[B]=${ne.eB.toFixed(3)}`} />
                     </li>
                   ))}
                   {allNE.length === 0 && (
@@ -3363,7 +3342,11 @@ export default function App() {
                     </p>
                     {committedNE && (
                       <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
-                        Player {firstMover} initiates and commits to: {committedNE.label} (payoff A = {committedNE.eA.toFixed(3)}, B = {committedNE.eB.toFixed(3)}).
+                        <ColorCoded
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          aTerms={colorTerms.a}
+                          bTerms={colorTerms.b}
+                        />
                       </p>
                     )}
                   </div>
@@ -3373,7 +3356,7 @@ export default function App() {
                       Multiple pure equilibria coexist. The first-mover can secure a first-mover advantage, committing to play the target Row or Column that maximizes their own payoffs.
                     </p>
                     <p>
-                      Over time, any best-response steps from outer starting sectors migrate away from the mixed NE and lock into the <strong className="text-slate-800 dark:text-slate-200 font-medium">{pureNEs[0].label}</strong>.
+                      Over time, any best-response steps from outer starting sectors migrate away from the mixed NE and lock into the <strong className="text-slate-800 dark:text-slate-200 font-medium"><ColorCoded text={pureNEs[0].label} /></strong>.
                     </p>
                   </div>
                 ) : null}
@@ -3474,11 +3457,11 @@ export default function App() {
                           />
                         </p>
                         <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                          <span className="text-player-a-600 dark:text-player-a-400 font-semibold">
+                          <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
                             A: {llmEnvelope.report.suggestedScenario.row1} / {llmEnvelope.report.suggestedScenario.row2}
                           </span>
                           {'  ·  '}
-                          <span className="text-player-b-600 dark:text-player-b-400 font-semibold">
+                          <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
                             B: {llmEnvelope.report.suggestedScenario.col1} / {llmEnvelope.report.suggestedScenario.col2}
                           </span>
                         </p>
