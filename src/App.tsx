@@ -673,54 +673,25 @@ export default function App() {
     const description = `${sc.description ?? ''}${
       [sc.row1, sc.row2, sc.col1, sc.col2].some(Boolean) ? labelSentence : ''
     }`.trim();
-    const labelFields = {
-      row1Label: sc.row1,
-      row2Label: sc.row2,
-      col1Label: sc.col1,
-      col2Label: sc.col2,
-    };
-
-    // Already a saved game of this user's: update it in place, so the scenario
-    // sticks to the game they have rather than spawning a duplicate.
+    // Already a saved game of this user's: route the suggestion through the
+    // EDIT dialog prefilled, exactly like the save-as-new path routes through
+    // the save dialog — the user reviews and can rewrite any of it before it
+    // lands (Daniel's call: keeping a scenario should never skip the editable
+    // form). The PATCH happens in handleEditGameSubmit as with any other edit,
+    // and the explanation regenerates there from what was actually submitted.
     const existing = userCustomGames.find((g) => g.id === activePreset);
     if (existing && authToken) {
-      try {
-        const res = await fetch(getApiUrl(`/api/games/${existing.id}`), {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-          // `name` was missing here, so accepting a suggestion on an ALREADY
-          // SAVED game kept its story and its option labels but silently threw
-          // away the title the model proposed — the game stayed "Untitled" while
-          // its description talked about couriers. The save-as-new path had
-          // always used sc.name, so the two routes disagreed about what
-          // "keep this scenario" means. They now save the same four things.
-          body: JSON.stringify({ name: sc.name, description, ...labelFields }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          setUserCustomGames((prev) => prev.map((g) => (g.id === existing.id ? data.game : g)));
-          const renamed = sc.name && sc.name !== existing.name;
-          setLogEntries((prev) => [
-            ...prev,
-            `✓ Scenario saved to "${data.game.name}"`
-            + `${renamed ? ` (renamed from "${existing.name}")` : ''}`
-            + `${hasAllLabels ? ' — options renamed to match.' : '.'}`,
-          ]);
-          // The explanation on screen was written for a game WITHOUT this
-          // story (that's why a suggestion existed to save). Rewrite it in the
-          // kept scenario's terms right away — passed explicitly, because
-          // scenarioForReport won't see the save until the next render.
-          void fetchLlmExplanation(false, {
-            name: sc.name, row1: sc.row1, row2: sc.row2, col1: sc.col1, col2: sc.col2, description,
-          });
-          return;
-        }
-        setLogEntries((prev) => [...prev, `✗ Couldn't save scenario: ${data.error ?? 'unknown error'}`]);
-        return;
-      } catch {
-        setLogEntries((prev) => [...prev, "✗ Couldn't reach the server to save the scenario."]);
-        return;
-      }
+      setEditGameId(existing.id);
+      setEditName((sc.name ?? existing.name).slice(0, 40));
+      setEditDesc(description.slice(0, 800));
+      setEditLabels({
+        row1: sc.row1 ?? '', row2: sc.row2 ?? '',
+        col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+      });
+      setEditError('');
+      regenExplanationAfterSaveRef.current = true;
+      setIsEditModalOpen(true);
+      return;
     }
 
     // Preset or unsaved matrix: there is nothing to patch, so route through the
@@ -1026,9 +997,29 @@ export default function App() {
         setIsEditModalOpen(false);
         setLogEntries((prev) => [...prev, `✓ Updated "${data.game.name}".`]);
         // The explanation was written about the OLD story, so it no longer
-        // describes what the panel now says. Same reasoning as clearing it when
-        // the payoffs change.
-        setLlmEnvelope(null);
+        // describes what the panel now says. A kept-scenario save goes one
+        // step further than clearing: it regenerates from the fields as
+        // submitted (the user may have rewritten the AI's draft in this
+        // dialog), passed explicitly because scenarioForReport won't see the
+        // update until the next render. Guard mirrors scenarioIsUsable so an
+        // emptied-out form clears rather than triggering a fresh invention.
+        if (regenExplanationAfterSaveRef.current) {
+          regenExplanationAfterSaveRef.current = false;
+          const labels = [editLabels.row1, editLabels.row2, editLabels.col1, editLabels.col2].map((l) => l.trim());
+          const desc = editDesc.trim();
+          if (labels.every(Boolean) || desc.split(/\s+/).length >= 12) {
+            void fetchLlmExplanation(false, {
+              name: editName.trim() || undefined,
+              row1: labels[0] || undefined, row2: labels[1] || undefined,
+              col1: labels[2] || undefined, col2: labels[3] || undefined,
+              description: desc || undefined,
+            });
+          } else {
+            setLlmEnvelope(null);
+          }
+        } else {
+          setLlmEnvelope(null);
+        }
       } else {
         setEditError(data.error || 'Failed to update game.');
       }
@@ -1065,12 +1056,16 @@ export default function App() {
   // outcome line from a generation done minutes ago.
   useEffect(() => {
     if (isSaveModalOpen) setGenerateNote('');
-    // Modal closed without saving: a later unrelated save must not fire the
-    // kept-scenario regeneration. The sign-in detour is the exception — the
-    // modal closes for auth and comes back to finish the same save, so the
-    // flag rides along with resumeSaveAfterAuthRef.
-    else if (!resumeSaveAfterAuthRef.current) regenExplanationAfterSaveRef.current = false;
-  }, [isSaveModalOpen]);
+    // Both dialogs closed without saving: a later unrelated save or edit must
+    // not fire the kept-scenario regeneration. The sign-in detour is the
+    // exception — the save modal closes for auth and comes back to finish the
+    // same save, so the flag rides along with resumeSaveAfterAuthRef. (A
+    // successful submit consumes the flag itself before closing, so this only
+    // ever cancels.)
+    else if (!isEditModalOpen && !resumeSaveAfterAuthRef.current) {
+      regenExplanationAfterSaveRef.current = false;
+    }
+  }, [isSaveModalOpen, isEditModalOpen]);
 
   /**
    * Roll a fresh random game with the chosen equilibrium structure, put it on
