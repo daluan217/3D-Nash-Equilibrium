@@ -379,8 +379,16 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
 
   const claims = sc.storyClaims ?? null;
+  // Same shape guards as validateProseClaims: a provider without strict
+  // structured outputs can hand these back as non-arrays, and the gate must
+  // fail, not throw.
+  const citationList = Array.isArray(claims?.cellCitations) ? claims.cellCitations : null;
+  const storyReplyList = Array.isArray(claims?.bestReplies) ? claims.bestReplies : null;
+  if (claims && (citationList === null || storyReplyList === null)) {
+    issues.push('storyClaims fields are not arrays — malformed declaration shape');
+  }
   if (claims) {
-    for (const c of claims.cellCitations ?? []) {
+    for (const c of citationList ?? []) {
       if (!isOpt12(c.row) || !isOpt12(c.col)) {
         issues.push(`citation names cell (Row ${c.row}, Col ${c.col}), which does not exist`);
         continue;
@@ -391,13 +399,13 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
         );
       }
     }
-    issues.push(...bestReplyIssues(claims.bestReplies ?? [], g, 'story'));
+    issues.push(...bestReplyIssues(storyReplyList ?? [], g, 'story'));
   }
 
   // Undeclared-citation guard: any payoff-anchored number in the description
   // ("A=9", "E[B]≈3") must be covered by a declared citation, otherwise the
   // declaration rule was skipped and nothing above ever looked at that claim.
-  const declared = claims ? (claims.cellCitations ?? []).flatMap((c) => [c.a, c.b]) : [];
+  const declared = (citationList ?? []).flatMap((c) => [c.a, c.b]);
   const desc = sc.description ?? '';
 
   // Wordless outcome talk: a CONDITIONAL sentence attributing gain/loss to a
@@ -410,7 +418,7 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   // AND empty bestReplies — so zero-sum framing sentences ("what hurts A
   // helps B") and any story that quantifies itself never trip it.
   const OUTCOME_TALK = /\b(?:if|when|while)\b[^.!?]{0,140}?\b(?:pays? off|loses?|gains?|wins?|profits?|suffers?|is (?:punished|rewarded))\b/i;
-  if (OUTCOME_TALK.test(desc) && !/\d/.test(desc) && (claims?.bestReplies ?? []).length === 0) {
+  if (OUTCOME_TALK.test(desc) && !/\d/.test(desc) && (storyReplyList ?? []).length === 0) {
     issues.push(
       'description attributes gains/losses to an action combination without numbers or declared best-reply claims — unverifiable',
     );
@@ -460,6 +468,15 @@ export function validateProseClaims(
 ): ScenarioValidation {
   const issues: string[] = [];
 
+  // Shape guards, not just null guards: a provider without strict structured
+  // outputs (probed live with Phi-4) can return these fields as non-arrays,
+  // and a crashed validator would 500 the route instead of failing the gate.
+  const actionList = Array.isArray(claims?.equilibriumActions) ? claims.equilibriumActions : null;
+  const replyList = Array.isArray(claims?.bestReplies) ? claims.bestReplies : null;
+  if (claims && (actionList === null || replyList === null)) {
+    issues.push('proseClaims fields are not arrays — malformed declaration shape');
+  }
+
   // Undeclared-comparison screen — the dual of the scenario's wordless-
   // outcome screen, and the missing-declaration half of the declaration-
   // fidelity pair: a plain-BoS draw was SHOWN saying "B wants Tone 2 against
@@ -470,7 +487,7 @@ export function validateProseClaims(
   // withheld as unverifiable (server retry as recovery). Exemption is any
   // non-empty bestReplies — partial coverage can't be mapped sentence-to-
   // entry, and the declared-set path is where compliance already lives.
-  if ((claims?.bestReplies ?? []).length === 0 && prose) {
+  if ((replyList ?? []).length === 0 && prose) {
     const VERB = /\b(?:prefers?|wants?|favou?rs?|does\s+(?:best|better)|works\s+(?:best|better)|best\s+(?:response|reply|move|option)|best\s+off|better\s+off)\b/i;
     const FRAME = /\b(?:against|versus|vs\.?|when\s+(?:the\s+opponent|[AB])\b|if\s+(?:the\s+opponent|[AB])\b|no\s+matter\s+(?:what|whether|which))\b/i;
     for (const sentence of prose.split(/(?<=[.!?])\s+/)) {
@@ -484,7 +501,7 @@ export function validateProseClaims(
   }
 
   if (!degenerate && claims) {
-    for (const a of claims.equilibriumActions ?? []) {
+    for (const a of actionList ?? []) {
       if ((a.player !== 'A' && a.player !== 'B') || !isOpt12(a.option)) {
         issues.push(`equilibrium-action claim is malformed (player=${a.player}, option=${a.option})`);
         continue;
@@ -508,7 +525,7 @@ export function validateProseClaims(
       }
     }
   }
-  issues.push(...bestReplyIssues(claims?.bestReplies ?? [], g, 'prose'));
+  issues.push(...bestReplyIssues(replyList ?? [], g, 'prose'));
   return { ok: issues.length === 0, issues };
 }
 
