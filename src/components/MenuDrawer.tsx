@@ -105,8 +105,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       payoffs: g.payoffs as GamePayoffs,
       // Option labels feed ColorCoded so a saved game's own nouns get the
       // same player coloring its description enjoys in the main panel.
-      aTerms: ['Player A', g.row1Label, g.row2Label].filter(Boolean) as string[],
-      bTerms: ['Player B', g.col1Label, g.col2Label].filter(Boolean) as string[],
+      aTerms: [g.row1Label, g.row2Label].filter(Boolean) as string[],
+      bTerms: [g.col1Label, g.col2Label].filter(Boolean) as string[],
     }));
   }, [userCustomGames]);
 

@@ -1503,8 +1503,10 @@ export default function App() {
    * being colored in the same instant the story stops being sent.
    */
   const colorTerms = useMemo(() => {
-    const a = ['Player A', 'Row 1', 'Row 2'];
-    const b = ['Player B', 'Col 1', 'Col 2'];
+    // "Player A"/"Player B" used to be terms here; Daniel had them dropped —
+    // with the bare letters already gray, the phrases read as leftover noise.
+    const a = ['Row 1', 'Row 2'];
+    const b = ['Col 1', 'Col 2'];
     if (scenarioForReport) {
       for (const t of [scenarioForReport.row1, scenarioForReport.row2]) if (t) a.push(t);
       for (const t of [scenarioForReport.col1, scenarioForReport.col2]) if (t) b.push(t);
@@ -3452,8 +3454,8 @@ export default function App() {
                         <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300">
                           <ColorCoded
                             text={llmEnvelope.report.suggestedScenario.description ?? ''}
-                            aTerms={['Player A', llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean) as string[]}
-                            bTerms={['Player B', llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean) as string[]}
+                            aTerms={[llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean) as string[]}
+                            bTerms={[llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean) as string[]}
                           />
                         </p>
                         <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">

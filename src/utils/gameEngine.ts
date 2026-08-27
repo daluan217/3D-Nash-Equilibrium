@@ -39,8 +39,8 @@ export const PRESETS: Record<string, PresetGame> = {
     a21: 0, b21: 0,  a22: 1, b22: 2,
     actorA: ['Opera'], actorB: ['Football'],
     desc: '<strong>Battle of the Sexes:</strong> Two partners want to spend the evening together but prefer different activities. '
-        + `${spanA('Player A')} prefers the ${spanA('Opera (Row 1)')}, `
-        + `${spanB('Player B')} prefers ${spanB('Football (Col 2)')}. `
+        + `Player A prefers the ${spanA('Opera (Row 1)')}, `
+        + `Player B prefers ${spanB('Football (Col 2)')}. `
         + 'Being together matters to both, but each would rather be at their favourite venue. '
         + `Payoffs: (Opera,Opera)=(${spanA('2')},${spanB('1')}), (Opera,Football)=(${spanA('0')},${spanB('0')}), `
         + `(Football,Opera)=(${spanA('0')},${spanB('0')}), (Football,Football)=(${spanA('1')},${spanB('2')}).`

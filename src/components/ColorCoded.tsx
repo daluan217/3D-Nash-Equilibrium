@@ -7,7 +7,7 @@ import React, { useMemo } from 'react';
 
 // Matte ink classes (defined in index.css): player hue knocked toward slate
 // so highlights read as part of the sentence, not stickers on it. Terms
-// (option names, "Player A") keep semibold so they stay scannable; structural
+// (scenario option names) keep semibold so they stay scannable; structural
 // tokens (Row 2, E[A]=…, x*=…) take medium so dense numeric runs stay calm.
 const A_TERM_CLS = 'text-player-a-ink dark:text-player-a-ink-dark font-semibold';
 const B_TERM_CLS = 'text-player-b-ink dark:text-player-b-ink-dark font-semibold';
