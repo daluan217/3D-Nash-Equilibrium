@@ -394,7 +394,22 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
     '',
     'Solver output (authoritative — x is A\'s probability of Row 1, y is B\'s probability of Col 1):',
     equilibria.length
-      ? equilibria.map((e) => `  ${e.type} at x=${e.x}, y=${e.y} (payoffs A=${e.eA}, B=${e.eB})`).join('\n')
+      // Each equilibrium is ALSO spelled out per option, because every
+      // direction error the adversarial QA ever caught (seven across three
+      // rounds, zero on A's side) was the model fumbling B's y=P(Col 1)
+      // convention — writing "Col 2 with probability 0.8333" when Col 1
+      // carries it. The framing pilot's lesson applies: instructions about
+      // the convention don't take, but material handed over as computed fact
+      // does. So the 1−x/1−y arithmetic is done HERE, never by the model.
+      ? equilibria.map((e) => {
+          const base = `  ${e.type} at x=${e.x}, y=${e.y} (payoffs A=${e.eA}, B=${e.eB})`;
+          if (e.type === 'pure') {
+            return `${base} — that is: A plays Row ${e.x === 1 ? 1 : 2}, B plays Col ${e.y === 1 ? 1 : 2}`;
+          }
+          const w = (p: number) => Number(p.toFixed(4));
+          return `${base} — that is: A plays Row 1 with probability ${w(e.x)} and Row 2 with probability ${w(1 - e.x)}; `
+            + `B plays Col 1 with probability ${w(e.y)} and Col 2 with probability ${w(1 - e.y)}`;
+        }).join('\n')
       : '  none enumerated',
     '',
     'This game is not degenerate; the solver output above is complete.',
