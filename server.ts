@@ -849,8 +849,10 @@ async function startServer() {
     const assess = (r: NonNullable<typeof report>) => {
       const scenarioOk = !scenarioGateOn || !r.suggestedScenario
         || validateScenario(r.suggestedScenario, payoffs).ok;
-      const proseOk = !proseGateOn || !r.proseClaims
-        || validateProseClaims(r.proseClaims, payoffs, groundTruth, degenerate).ok;
+      // Run even when proseClaims is null: the undeclared-comparison screen
+      // is exactly for prose that makes claims while declaring nothing.
+      const proseOk = !proseGateOn
+        || validateProseClaims(r.proseClaims ?? null, r.prose ?? '', payoffs, groundTruth, degenerate).ok;
       // Prose outranks the optional story when choosing between candidates.
       return { scenarioOk, proseOk, rank: (proseOk ? 2 : 0) + (scenarioOk ? 1 : 0) };
     };

@@ -537,8 +537,8 @@ function testProseActionClaims() {
   const MP: GamePayoffs =
     { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 };
 
-  const check = (claims: Parameters<typeof validateProseClaims>[0], g: GamePayoffs, degenerate = false) =>
-    validateProseClaims(claims, g, computeAllNE(g), degenerate);
+  const check = (claims: Parameters<typeof validateProseClaims>[0], g: GamePayoffs, degenerate = false, prose = '') =>
+    validateProseClaims(claims, prose, g, computeAllNE(g), degenerate);
 
   // The exact live error: naming Col 1 as B's equilibrium action.
   assert(!check({ equilibriumActions: [{ player: 'B', option: 1 }], bestReplies: [] }, SPECIMEN).ok,
@@ -580,6 +580,28 @@ function testProseActionClaims() {
   // Claim-free declarations pass.
   assert(check({ equilibriumActions: [], bestReplies: [] }, SPECIMEN).ok,
     'empty declarations must pass');
+
+  // ── Round-6 closure: the undeclared-comparison screen ────────────────────
+  // A plain-BoS draw was SHOWN saying "B wants Tone 2 against A's Talk"
+  // (inverted) because proseClaims was null and passed vacuously. Prose that
+  // pairs a preference verb with an opponent frame while declaring no
+  // bestReplies is unverifiable and therefore withheld.
+  const FP_BOS_SENTENCE =
+    'B similarly faces a choice where it wants Tone 2 against A\'s Talk and prefers Tone 1 against A\'s Listen.';
+  assert(!check(null, BOS, false, FP_BOS_SENTENCE).ok,
+    'a better-against sentence with NULL declarations must be withheld');
+  assert(!check({ equilibriumActions: [], bestReplies: [] }, BOS, false, FP_BOS_SENTENCE).ok,
+    'the same sentence with empty bestReplies must be withheld');
+  assert(check({ equilibriumActions: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1 },
+  ] }, BOS, false, FP_BOS_SENTENCE).ok,
+    'declared (and true) bestReplies exempt the sentence — the declared path checks it');
+  assert(check(null, BOS, false,
+    'When B plays y=0.333, A is indifferent between Row 1 and Row 2, so mixing is stable.').ok,
+    'indifference prose without preference verbs must not trip the screen');
+  assert(check(null, BOS, false,
+    'Both players would rather coordinate than miss each other, and the equilibria reward matching.').ok,
+    'coordination flavor without an opponent frame must not trip the screen');
 }
 
 function runTests() {

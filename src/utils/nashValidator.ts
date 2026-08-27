@@ -445,13 +445,38 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
  * declared-claims design can close.
  */
 export function validateProseClaims(
-  claims: ProseActionClaims,
+  claims: ProseActionClaims | null,
+  prose: string,
   g: GamePayoffs,
   truth: NashEquilibrium[],
   degenerate: boolean,
 ): ScenarioValidation {
   const issues: string[] = [];
-  if (!degenerate) {
+
+  // Undeclared-comparison screen — the dual of the scenario's wordless-
+  // outcome screen, and the missing-declaration half of the declaration-
+  // fidelity pair: a plain-BoS draw was SHOWN saying "B wants Tone 2 against
+  // A's Talk" (both directions inverted) because proseClaims was null and a
+  // null declaration passes vacuously. A sentence that pairs a preference
+  // verb with an opponent frame IS a better-against claim; with no declared
+  // bestReplies at all there is nothing to check it against, so it is
+  // withheld as unverifiable (server retry as recovery). Exemption is any
+  // non-empty bestReplies — partial coverage can't be mapped sentence-to-
+  // entry, and the declared-set path is where compliance already lives.
+  if ((claims?.bestReplies ?? []).length === 0 && prose) {
+    const VERB = /\b(?:prefers?|wants?|favou?rs?|does\s+(?:best|better)|works\s+(?:best|better)|best\s+(?:response|reply|move|option)|best\s+off|better\s+off)\b/i;
+    const FRAME = /\b(?:against|versus|vs\.?|when\s+(?:the\s+opponent|[AB])\b|if\s+(?:the\s+opponent|[AB])\b|no\s+matter\s+(?:what|whether|which))\b/i;
+    for (const sentence of prose.split(/(?<=[.!?])\s+/)) {
+      if (VERB.test(sentence) && FRAME.test(sentence)) {
+        issues.push(
+          `prose makes a better-against claim ("${sentence.trim().slice(0, 90)}…") but declares no bestReplies — unverifiable`,
+        );
+        break;
+      }
+    }
+  }
+
+  if (!degenerate && claims) {
     for (const a of claims.equilibriumActions ?? []) {
       if ((a.player !== 'A' && a.player !== 'B') || !isOpt12(a.option)) {
         issues.push(`equilibrium-action claim is malformed (player=${a.player}, option=${a.option})`);
@@ -476,7 +501,7 @@ export function validateProseClaims(
       }
     }
   }
-  issues.push(...bestReplyIssues(claims.bestReplies ?? [], g, 'prose'));
+  issues.push(...bestReplyIssues(claims?.bestReplies ?? [], g, 'prose'));
   return { ok: issues.length === 0, issues };
 }
 

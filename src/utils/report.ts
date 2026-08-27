@@ -26,7 +26,7 @@
 import type { GamePayoffs, LlmReport } from '../types';
 import { computeAllNE, computeIndifference } from './gameEngine';
 import { geometryBriefing } from './geometry';
-import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure } from './providers';
+import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
 
 /**
  * Chosen from eval data, not preference — see src/evals/ and the sweep of
@@ -459,9 +459,20 @@ export { hasCredentials };
  */
 export async function generateReport(
   g: GamePayoffs,
-  opts: { model?: string; framingGuidance?: string; styleExemplars?: string[]; scenario?: Scenario } = {},
+  opts: {
+    model?: string; framingGuidance?: string; styleExemplars?: string[]; scenario?: Scenario;
+    /**
+     * Thinking level for the report call. Defaults to the provider's own
+     * default (nano effectively answers on reflex), which is where every
+     * declaration-fidelity error the adversarial QA found lives — the
+     * REPORT_REASONING env lets a deploy raise it without a code change,
+     * trading the tail latency that originally picked this model.
+     */
+    reasoning?: ReasoningEffort;
+  } = {},
 ): Promise<GenerateResult> {
   const model = opts.model || DEFAULT_MODEL;
+  const reasoning = opts.reasoning ?? (process.env.REPORT_REASONING as ReasoningEffort | undefined);
 
   // `framingGuidance` is an EXPERIMENTAL hook, appended rather than substituted
   // so the production rules above always still apply. Production passes nothing
@@ -515,6 +526,7 @@ export async function generateReport(
     model,
     systemPrompt,
     userPrompt: buildGroundingPayload(g, opts.scenario),
+    reasoning,
     schema: REPORT_SCHEMA,
     // Roomy on purpose: current models think by default, and thinking tokens
     // count against this budget on every provider. Too tight a cap makes the
