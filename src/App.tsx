@@ -636,6 +636,11 @@ export default function App() {
   // renders identically to "never asked", so the user cannot tell a dead
   // request from an untouched panel.
   const [llmError, setLlmError] = useState(false);
+  // "New AI scenario" while a validated explanation is on screen uses the
+  // slim scenario-only endpoint (about half the tokens and latency of a full
+  // report) and swaps just the suggestion card — its own loading flag keeps
+  // the prose visible during the wait.
+  const [scenarioLoading, setScenarioLoading] = useState(false);
 
   // Model prose renders ONLY when the server validated it against the solver.
   // Every other outcome — refusal, truncation, rate limit, hallucinated
@@ -730,10 +735,17 @@ export default function App() {
     setLlmLoading(true);
     setLlmError(false);
     try {
+      // bypassCache: an explicit re-request (Regenerate, or any fresh
+      // invention) must roll a new report; a FIRST explain is the cache's
+      // customer — identical preset matrices serve instantly.
       const res = await fetch(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(freshScenario ? { payoffs } : { payoffs, scenario: scenarioOverride ?? scenarioForReport }),
+        body: JSON.stringify(
+          freshScenario
+            ? { payoffs, bypassCache: true }
+            : { payoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
+        ),
       });
       if (!res.ok) throw new Error(String(res.status));
       setLlmEnvelope((await res.json()) as ReportEnvelope);
@@ -744,6 +756,38 @@ export default function App() {
       setLlmError(true);
     } finally {
       setLlmLoading(false);
+    }
+  };
+
+  /**
+   * "New AI scenario" — slim path. With a validated explanation already on
+   * screen, only a fresh STORY is wanted: the scenario-only endpoint returns
+   * it in roughly half the time of a full report, and the suggestion card is
+   * swapped in place while the prose stays put. Without a verified envelope
+   * (nothing on screen to keep) it falls back to the full fresh-invention
+   * report, exactly as before.
+   */
+  const fetchFreshScenario = async () => {
+    if (!llmVerified || !llmEnvelope?.report) return fetchLlmExplanation(true);
+    setScenarioLoading(true);
+    try {
+      const res = await fetch(getApiUrl('/api/report'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payoffs, scenarioOnly: true }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const data = (await res.json()) as { scenario: SuggestedScenario | null };
+      if (data.scenario) {
+        setLlmEnvelope((prev) =>
+          prev?.report ? { ...prev, report: { ...prev.report, suggestedScenario: data.scenario } } : prev);
+      } else {
+        setLogEntries((prev) => [...prev, "✗ Couldn't invent a verified scenario just now — try again."]);
+      }
+    } catch {
+      setLogEntries((prev) => [...prev, "✗ Couldn't reach the server for a new scenario."]);
+    } finally {
+      setScenarioLoading(false);
     }
   };
 
@@ -3446,12 +3490,12 @@ export default function App() {
                     */}
                     {scenarioForReport && (
                       <button
-                        onClick={() => fetchLlmExplanation(true)}
-                        disabled={llmLoading}
+                        onClick={() => void fetchFreshScenario()}
+                        disabled={llmLoading || scenarioLoading}
                         title="Invent a brand-new scenario for these payoffs — you choose whether to keep it."
                         className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-slate-50/60 dark:bg-slate-900/40 hover:bg-slate-100 dark:hover:bg-slate-800/60 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                       >
-                        New AI scenario
+                        {scenarioLoading ? 'Inventing…' : 'New AI scenario'}
                       </button>
                     )}
                     <button

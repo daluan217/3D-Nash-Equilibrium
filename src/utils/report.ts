@@ -23,7 +23,7 @@
  * cross-family comparison meaningful. All vendor dialect lives in providers.ts.
  */
 
-import type { GamePayoffs, LlmReport } from '../types';
+import type { GamePayoffs, LlmReport, SuggestedScenario } from '../types';
 import { computeAllNE, computeIndifference } from './gameEngine';
 import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
@@ -277,6 +277,58 @@ const REPORT_SCHEMA: Record<string, unknown> = {
     },
   },
 };
+
+/**
+ * The scenario-only call: same suggestedScenario definition as the full
+ * report (one source of truth — this references INTO REPORT_SCHEMA), nothing
+ * else. "New AI scenario" wants a fresh story for a game whose explanation
+ * is already on screen and validated; regenerating the whole report costs
+ * ~650 output tokens at ~95 tok/s where the story alone costs ~300, so the
+ * dedicated call roughly halves that button's latency and its retry.
+ */
+const SCENARIO_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['suggestedScenario'],
+  properties: {
+    suggestedScenario: (REPORT_SCHEMA.properties as Record<string, Record<string, unknown>>).suggestedScenario,
+  },
+};
+
+const SCENARIO_SYSTEM_PROMPT = `You are inventing a short, concrete scenario for a 2x2 normal-form game — who the two players are and what their two options mean. You will be given the payoff matrix, the solver's equilibria, and a best-reply table, all authoritative.
+
+Rules (the same discipline as the full report path):
+- The story must fit and never contradict the payoffs or the equilibria. Option labels are 1-3 words; the description is two or three plain sentences and does not state the equilibrium.
+- Restate the description's factual claims in storyClaims so they can be checked: every action-pair whose payoffs the description cites goes in cellCitations with the exact matrix values, and every "X works best against Y" or "the quitter loses"-style claim goes in bestReplies — copied from the supplied best-reply table, never derived. When a sentence states the payoffs it compares, copy them into bestPays/altPays; otherwise null.
+- Never characterize what happens when specific options meet in words alone: state that cell's exact numbers and cite the cell, or leave the outcome unsaid.
+- Declarations must match the text in both directions: delete any entry no sentence states, and declare every claim a sentence makes. If the description makes no payoff or better-against claims, set storyClaims to null.`;
+
+export interface GenerateScenarioResult {
+  scenario: SuggestedScenario | null;
+  failure: ProviderFailure | null;
+}
+
+/** The slim invention call behind "New AI scenario" — see SCENARIO_SCHEMA. */
+export async function generateScenario(
+  g: GamePayoffs,
+  opts: { model?: string; reasoning?: ReasoningEffort } = {},
+): Promise<GenerateScenarioResult> {
+  const res = await callProvider({
+    model: opts.model || DEFAULT_MODEL,
+    systemPrompt: SCENARIO_SYSTEM_PROMPT,
+    // No scenario passed on purpose: the payload's invention block applies.
+    userPrompt: buildGroundingPayload(g),
+    reasoning: opts.reasoning,
+    schema: SCENARIO_SCHEMA,
+    maxOutputTokens: 2048,
+  });
+  if (res.failure || !res.text) return { scenario: null, failure: res.failure ?? 'unparseable' };
+  try {
+    const parsed = JSON.parse(res.text) as { suggestedScenario?: SuggestedScenario | null };
+    return { scenario: parsed.suggestedScenario ?? null, failure: null };
+  } catch {
+    return { scenario: null, failure: 'unparseable' };
+  }
+}
 
 /**
  * Identical for every model in the sweep — the rubric is part of the
