@@ -60,7 +60,7 @@ const REPORT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   // Strict structured output requires EVERY property to be listed here;
   // optionality is expressed by allowing null, not by omission.
-  required: ['claimedEquilibria', 'suggestedScenario', 'geometryClaims', 'prose'],
+  required: ['claimedEquilibria', 'suggestedScenario', 'geometryClaims', 'proseClaims', 'prose'],
   properties: {
     claimedEquilibria: {
       type: 'array',
@@ -196,6 +196,58 @@ const REPORT_SCHEMA: Record<string, unknown> = {
         },
       },
     },
+    /**
+     * The prose's action-level claims, declared so they can be checked — the
+     * companion to geometryClaims for WHO-PLAYS-WHAT statements. A QA audit
+     * caught validated prose naming the wrong option beside correct
+     * coordinates ("B plays Silent with probability 1 (y=0)" when y=0 was
+     * the other column); which label a sentence names is semantic, but a
+     * declared option index is a lookup. Nullable for the same reason
+     * geometryClaims is.
+     */
+    proseClaims: {
+      type: ['object', 'null'],
+      required: ['equilibriumActions', 'bestReplies'],
+      description:
+        "Your prose's action-level claims restated as data. Set null ONLY if " +
+        'the prose never names which option a player uses at an equilibrium ' +
+        'and never says one option does better than the other.',
+      properties: {
+        equilibriumActions: {
+          type: 'array',
+          description:
+            'One entry each time the prose says a player uses a specific ' +
+            'option at an equilibrium — with certainty OR with some mixed ' +
+            'probability: the player and the option NUMBER the named label ' +
+            'corresponds to. Remember x is A\'s probability of Row 1 (x=1 ' +
+            'pure Row 1, x=0 pure Row 2) and y is B\'s of Col 1.',
+          items: {
+            type: 'object',
+            required: ['player', 'option'],
+            properties: {
+              player: { type: 'string', enum: ['A', 'B'] },
+              option: { type: 'number', description: '1 or 2: the option the prose names for this player.' },
+            },
+          },
+        },
+        bestReplies: {
+          type: 'array',
+          description:
+            'One entry per "X does better against Y" claim in the prose. A ' +
+            'dominance claim ("X is better no matter what the opponent does") ' +
+            'is TWO entries, one per opposing option.',
+          items: {
+            type: 'object',
+            required: ['player', 'opponentOption', 'bestOption'],
+            properties: {
+              player: { type: 'string', enum: ['A', 'B'] },
+              opponentOption: { type: 'number', description: '1 or 2: the opponent option held fixed.' },
+              bestOption: { type: 'number', description: '1 or 2: the option claimed better for this player.' },
+            },
+          },
+        },
+      },
+    },
     prose: {
       type: 'string',
       description:
@@ -225,7 +277,8 @@ Rules:
 - If a scenario is supplied, use its names for the players' options instead of "Row 1"/"Col 2" wherever that reads better, and leave suggestedScenario out. If none is supplied, invent one that fits the payoffs, write the explanation in its terms, and return it in suggestedScenario. Never let an invented story contradict the payoffs or the equilibria.
 - When you invent a scenario, restate the description's factual claims in suggestedScenario.storyClaims so they can be checked: every action-pair whose payoffs the description cites goes in cellCitations with the exact matrix values, and every "X works best against Y" or "prefers X when the opponent does Y" claim goes in bestReplies. A claim made in the description but missing from storyClaims, or declared wrongly, causes the whole story to be discarded — when unsure which cell a sentence refers to, reread the matrix rather than guess. If the description cites no payoffs and makes no better-against claims, set storyClaims to null.
 - You are also given the GEOMETRY of the two expected-payoff surfaces the reader is looking at. Where it helps, describe the equilibrium in those terms: indifference is a level shelf where a surface stops tilting; the equilibrium is the joint flat spot where both surfaces are level at once; strategic interaction is the warp in the surface; a best response is which way a slice tilts. Use these ONLY where the supplied geometry says they apply — if it tells you there is no flat shelf, or no interior flat spot, or that the game is not zero-sum, do not describe one.
-- Fill in geometryClaims to match what the supplied geometry states, and make sure your prose agrees with it. These are copied, not worked out: every one of them is stated for you above. If your explanation does not discuss the shape of the surfaces at all, set geometryClaims to null rather than guessing.`;
+- Fill in geometryClaims to match what the supplied geometry states, and make sure your prose agrees with it. These are copied, not worked out: every one of them is stated for you above. If your explanation does not discuss the shape of the surfaces at all, set geometryClaims to null rather than guessing.
+- Restate your prose's action-level claims in proseClaims so they can be checked. Every time the prose names which option a player uses at an equilibrium (including "plays X with probability 1"), add an equilibriumActions entry with that player and the option NUMBER the named label maps to — before writing it, verify the label against the coordinates you were given: x=1 means A plays Row 1, x=0 means Row 2; y=1 means B plays Col 1, y=0 means Col 2. Every "X does better against Y" claim goes in bestReplies, and a dominance claim is two entries (one per opposing option). A claim made in prose but missing here, or declared wrongly, causes the whole explanation to be withheld. If the prose makes no such claims, set proseClaims to null.`;
 
 /** Everything the model is allowed to know. Ground truth, nothing else. */
 /**

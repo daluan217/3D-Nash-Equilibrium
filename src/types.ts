@@ -182,6 +182,13 @@ export interface LlmReport {
   claimedEquilibria: ClaimedEquilibrium[];
   prose: string;
   /**
+   * Null when the prose makes no action-level claims. Validated by
+   * validateProseClaims OUTSIDE validateReport (server gate, not eval
+   * metric); a report whose declared prose actions contradict the solver is
+   * demoted to the deterministic panel rather than shown.
+   */
+  proseClaims?: ProseActionClaims | null;
+  /**
    * Null when the model declined to describe the geometry, which is allowed —
    * the checks exist to catch FALSE assertions, not to compel assertions.
    */
@@ -256,6 +263,32 @@ export interface ScenarioStoryClaims {
   bestReplies: ScenarioBestReply[];
 }
 
+/**
+ * The action-level claims the EXPLANATION PROSE makes, restated as data.
+ *
+ * Closes the QA audit's F2 finding: validated prose could name the wrong
+ * action next to correct coordinates ("B plays Silent with probability 1
+ * (y=0)" when y=0 is the OTHER column) — every number checks out while the
+ * words contradict them. Which label a sentence names is semantic, so the
+ * model declares the option INDEX it means and checking becomes a lookup,
+ * exactly like storyClaims. Null is the escape hatch for prose that never
+ * names a player's equilibrium action and never says one option beats
+ * another.
+ */
+export interface ProseActionClaims {
+  /**
+   * One entry per statement that a player uses a specific option at an
+   * equilibrium — pure ("plays X", "with probability 1") or mixed ("plays X
+   * with probability 0.8"). Valid iff some equilibrium gives that option
+   * positive probability, so a true mixed-lean statement always passes while
+   * naming an option the equilibrium never plays (the live Silent/Broadcast
+   * catch) fails.
+   */
+  equilibriumActions: { player: 'A' | 'B'; option: number }[];
+  /** Same shape and semantics as the scenario's bestReplies. */
+  bestReplies: ScenarioBestReply[];
+}
+
 /** Why a single claim failed, so the eval can bucket failures by cause. */
 export type MismatchKind =
   | 'out-of-range'      // x or y outside [0,1], or not finite
@@ -307,5 +340,9 @@ export interface ReportEnvelope {
     | 'unparseable'
     | 'rate-limited'
     | 'validation-failed'
+    // The declared prose action claims contradicted the solver (after one
+    // retry): the numbers were right but the words were not, so the prose is
+    // withheld the way a hallucinated equilibrium would be.
+    | 'prose-claims-failed'
     | 'error';
 }

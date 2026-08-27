@@ -6,7 +6,7 @@
 import { GamePayoffs, SimState, NashEquilibrium, PathSegment, LlmReport, MismatchKind, SuggestedScenario } from './types';
 import { doStep, PRESETS, computeAllNE, EA, EB, r3 } from './utils/gameEngine';
 import { describeGeometry } from './utils/geometry';
-import { validateReport, validateScenario } from './utils/nashValidator';
+import { validateReport, validateScenario, validateProseClaims } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -486,6 +486,67 @@ function testScenarioStoryClaims() {
   assert(validateScenario(sc({}), PD).ok, 'a story with no claims and null storyClaims must pass');
 }
 
+/**
+ * validateProseClaims against the F2 specimen caught live: validated prose
+ * said "B plays Silent with probability 1 (y=0)" on a game where y=0 was the
+ * OTHER column, and read its own cited numbers backwards ("Silent gives B 3
+ * or 0 versus Broadcast's 5 or 1" — concluding Silent was best). Every
+ * number was right; only the declared lookups can see the words were not.
+ */
+function testProseActionClaims() {
+  // The live matrix: unique pure NE at (x=0, y=0) — A's Row 2, B's Col 2.
+  const SPECIMEN: GamePayoffs =
+    { a11: 4, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const BOS: GamePayoffs =
+    { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 };
+  const MP: GamePayoffs =
+    { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 };
+
+  const check = (claims: Parameters<typeof validateProseClaims>[0], g: GamePayoffs, degenerate = false) =>
+    validateProseClaims(claims, g, computeAllNE(g), degenerate);
+
+  // The exact live error: naming Col 1 as B's equilibrium action.
+  assert(!check({ equilibriumActions: [{ player: 'B', option: 1 }], bestReplies: [] }, SPECIMEN).ok,
+    "the Silent specimen — B's option 1 at equilibrium — must fail");
+  assert(check({ equilibriumActions: [{ player: 'A', option: 2 }, { player: 'B', option: 2 }], bestReplies: [] }, SPECIMEN).ok,
+    'the true equilibrium actions must pass');
+
+  // Its companion inversion: claiming Col 1 beats Col 2 for B (3 vs 5).
+  assert(!check({ equilibriumActions: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1 },
+  ] }, SPECIMEN).ok, "the specimen's backwards best-reply must fail");
+  assert(check({ equilibriumActions: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 2 },
+    { player: 'B', opponentOption: 2, bestOption: 2 },
+  ] }, SPECIMEN).ok, "B's true dominance (both columns) must pass");
+
+  // Multiple pure equilibria: naming either coordination corner is true.
+  assert(check({ equilibriumActions: [
+    { player: 'A', option: 1 }, { player: 'A', option: 2 },
+  ], bestReplies: [] }, BOS).ok, 'both BoS corners are real equilibrium actions');
+
+  // Mixed-only game: both options carry positive probability, so a claim
+  // about either is true — the calibration pilot demoted 100% of mixed games
+  // under the stricter pure-NE-only rule (the model declares entries for
+  // "plays X with probability 0.8" statements), which is why the semantics
+  // are positive-probability, not pure-only.
+  assert(check({ equilibriumActions: [
+    { player: 'A', option: 1 }, { player: 'B', option: 2 },
+  ], bestReplies: [] }, MP).ok, 'mixed-lean action claims on a mixed game must pass');
+
+  // Degenerate games skip the action check (the continuum makes it ill-posed).
+  assert(check({ equilibriumActions: [{ player: 'A', option: 1 }], bestReplies: [] }, MP, true).ok,
+    'degenerate games must skip equilibrium-action checks');
+
+  // Malformed indices fail rather than silently skipping.
+  assert(!check({ equilibriumActions: [{ player: 'A', option: 3 }], bestReplies: [] }, SPECIMEN).ok,
+    'a malformed option index must fail');
+
+  // Claim-free declarations pass.
+  assert(check({ equilibriumActions: [], bestReplies: [] }, SPECIMEN).ok,
+    'empty declarations must pass');
+}
+
 function runTests() {
   testSolverCanonicalGames();
   testZeroSumSearchFamily();
@@ -495,6 +556,7 @@ function runTests() {
   testGeometryValidatorChecks();
   testProseNumericChecks();
   testScenarioStoryClaims();
+  testProseActionClaims();
   console.log('All game-engine regression tests passed.');
 }
 

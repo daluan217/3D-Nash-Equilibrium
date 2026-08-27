@@ -34,6 +34,7 @@ import type {
   Mismatch,
   MismatchKind,
   NashEquilibrium,
+  ProseActionClaims,
   SuggestedScenario,
   ValidationResult,
 } from '../types';
@@ -293,6 +294,39 @@ export interface ScenarioValidation {
   issues: string[];
 }
 
+// Cell accessors and the shared best-reply check, used by both the scenario
+// story gate and the prose action gate — one comparison, one tolerance, so
+// the two gates can never disagree about what "does better against" means.
+const cellAOf = (g: GamePayoffs, r: number, c: number) => (r === 1 ? (c === 1 ? g.a11 : g.a12) : (c === 1 ? g.a21 : g.a22));
+const cellBOf = (g: GamePayoffs, r: number, c: number) => (r === 1 ? (c === 1 ? g.b11 : g.b12) : (c === 1 ? g.b21 : g.b22));
+const isOpt12 = (n: unknown): n is 1 | 2 => n === 1 || n === 2;
+
+function bestReplyIssues(
+  replies: Array<{ player: string; opponentOption: number; bestOption: number }>,
+  g: GamePayoffs,
+  source: 'story' | 'prose',
+): string[] {
+  const issues: string[] = [];
+  for (const r of replies) {
+    if ((r.player !== 'A' && r.player !== 'B') || !isOpt12(r.opponentOption) || !isOpt12(r.bestOption)) {
+      issues.push(`best-reply claim is malformed (player=${r.player}, opponent=${r.opponentOption}, best=${r.bestOption})`);
+      continue;
+    }
+    const other = r.bestOption === 1 ? 2 : 1;
+    // A's option indexes rows against B's fixed column; B's indexes columns
+    // against A's fixed row.
+    const mine = r.player === 'A' ? cellAOf(g, r.bestOption, r.opponentOption) : cellBOf(g, r.opponentOption, r.bestOption);
+    const alt = r.player === 'A' ? cellAOf(g, other, r.opponentOption) : cellBOf(g, r.opponentOption, other);
+    // Strictly worse fails; a tie passes (a weakly-best claim is not a lie).
+    if (mine < alt - 1e-9) {
+      issues.push(
+        `${source} says ${r.player}'s option ${r.bestOption} does better against opponent option ${r.opponentOption}, but it pays ${mine} vs ${alt}`,
+      );
+    }
+  }
+  return issues;
+}
+
 /**
  * Checks an INVENTED scenario's declared story claims against the matrix.
  *
@@ -319,9 +353,6 @@ export interface ScenarioValidation {
  */
 export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): ScenarioValidation {
   const issues: string[] = [];
-  const cellA = (r: number, c: number) => (r === 1 ? (c === 1 ? g.a11 : g.a12) : (c === 1 ? g.a21 : g.a22));
-  const cellB = (r: number, c: number) => (r === 1 ? (c === 1 ? g.b11 : g.b12) : (c === 1 ? g.b21 : g.b22));
-  const opt12 = (n: unknown): n is 1 | 2 => n === 1 || n === 2;
   // Same tolerance shape as checkProse: tight, the citation restates a matrix
   // number the model was handed verbatim.
   const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
@@ -329,33 +360,17 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   const claims = sc.storyClaims ?? null;
   if (claims) {
     for (const c of claims.cellCitations ?? []) {
-      if (!opt12(c.row) || !opt12(c.col)) {
+      if (!isOpt12(c.row) || !isOpt12(c.col)) {
         issues.push(`citation names cell (Row ${c.row}, Col ${c.col}), which does not exist`);
         continue;
       }
-      if (!Number.isFinite(c.a) || !Number.isFinite(c.b) || !near(c.a, cellA(c.row, c.col)) || !near(c.b, cellB(c.row, c.col))) {
+      if (!Number.isFinite(c.a) || !Number.isFinite(c.b) || !near(c.a, cellAOf(g, c.row, c.col)) || !near(c.b, cellBOf(g, c.row, c.col))) {
         issues.push(
-          `story says cell (Row ${c.row}, Col ${c.col}) pays (${c.a}, ${c.b}); the matrix says (${cellA(c.row, c.col)}, ${cellB(c.row, c.col)})`,
+          `story says cell (Row ${c.row}, Col ${c.col}) pays (${c.a}, ${c.b}); the matrix says (${cellAOf(g, c.row, c.col)}, ${cellBOf(g, c.row, c.col)})`,
         );
       }
     }
-    for (const r of claims.bestReplies ?? []) {
-      if ((r.player !== 'A' && r.player !== 'B') || !opt12(r.opponentOption) || !opt12(r.bestOption)) {
-        issues.push(`best-reply claim is malformed (player=${r.player}, opponent=${r.opponentOption}, best=${r.bestOption})`);
-        continue;
-      }
-      const other = r.bestOption === 1 ? 2 : 1;
-      // A's option indexes rows against B's fixed column; B's indexes columns
-      // against A's fixed row.
-      const mine = r.player === 'A' ? cellA(r.bestOption, r.opponentOption) : cellB(r.opponentOption, r.bestOption);
-      const alt = r.player === 'A' ? cellA(other, r.opponentOption) : cellB(r.opponentOption, other);
-      // Strictly worse fails; a tie passes (a weakly-best claim is not a lie).
-      if (mine < alt - 1e-9) {
-        issues.push(
-          `story says ${r.player}'s option ${r.bestOption} does better against opponent option ${r.opponentOption}, but it pays ${mine} vs ${alt}`,
-        );
-      }
-    }
+    issues.push(...bestReplyIssues(claims.bestReplies ?? [], g, 'story'));
   }
 
   // Undeclared-citation guard: any payoff-anchored number in the description
@@ -371,6 +386,67 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     }
   }
 
+  return { ok: issues.length === 0, issues };
+}
+
+/**
+ * Checks the PROSE's declared action-level claims against the solver.
+ *
+ * Closes the F2 finding: prose whose every number validated could still name
+ * the wrong action beside a correct coordinate ("B plays Silent with
+ * probability 1 (y=0)" when y=0 is the other column, observed live). Which
+ * label a sentence names is a semantic judgement, so — as with storyClaims
+ * and geometryClaims — the model declares the option INDEX it means and the
+ * check is a lookup: an equilibriumAction (player, option) is true iff some
+ * equilibrium gives that option positive probability (x is A's probability
+ * of Row 1, y is B's of Col 1), and bestReplies use the same shared
+ * comparison as the scenario gate.
+ *
+ * Kept OUTSIDE validateReport for the same reasons as validateScenario: the
+ * eval's consistency metric must not shift, and the server decides the
+ * consequence (retry once, then withhold the prose). Skipped on degenerate
+ * games, where the continuum makes "the equilibrium action" ill-posed —
+ * mirroring checkProse's coordinate skip.
+ *
+ * Residual (stated honestly): the gate catches a model that consistently
+ * BELIEVES the wrong mapping (it declares what it wrote, the lookup fails —
+ * the observed failure mode). A model that declares correctly while wording
+ * the prose wrongly slips through; that mismatch is the semantic gap no
+ * declared-claims design can close.
+ */
+export function validateProseClaims(
+  claims: ProseActionClaims,
+  g: GamePayoffs,
+  truth: NashEquilibrium[],
+  degenerate: boolean,
+): ScenarioValidation {
+  const issues: string[] = [];
+  if (!degenerate) {
+    for (const a of claims.equilibriumActions ?? []) {
+      if ((a.player !== 'A' && a.player !== 'B') || !isOpt12(a.option)) {
+        issues.push(`equilibrium-action claim is malformed (player=${a.player}, option=${a.option})`);
+        continue;
+      }
+      // Valid iff SOME equilibrium gives this option positive probability.
+      // The calibration pilot showed the model declares entries for
+      // mixed-probability statements too ("A plays Row 1 with probability
+      // 0.8" → declares (A, 1)); a pure-NE-only rule demoted every mixed
+      // game — 100% false positives. Positive-probability semantics keep
+      // full power where it matters (a pure NE at x=0 still refuses (A, 1),
+      // which is the live Silent/Broadcast catch) and never punish a true
+      // statement about a mixed equilibrium, where both options are played.
+      const matches = truth.some((t) => {
+        const pOption1 = a.player === 'A' ? t.x : t.y;
+        return (a.option === 1 ? pOption1 : 1 - pOption1) > 1e-3;
+      });
+      if (!matches) {
+        issues.push(
+          `prose says ${a.player} plays option ${a.option} at an equilibrium, but every equilibrium gives that option probability 0`,
+        );
+      }
+    }
+  }
+  issues.push(...bestReplyIssues(claims.bestReplies ?? [], g, 'prose'));
   return { ok: issues.length === 0, issues };
 }
 

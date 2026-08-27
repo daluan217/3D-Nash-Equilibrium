@@ -20,8 +20,8 @@ import dotenv from "dotenv";
 // `npm run dev` uses tsx, NOT node --experimental-strip-types, whose native ESM
 // resolver requires explicit extensions and throws ERR_MODULE_NOT_FOUND on the
 // first src/ import. esbuild (production) and vite (client) both resolve these.
-import { computeAllNE } from "./src/utils/gameEngine";
-import { validateReport, validateScenario } from "./src/utils/nashValidator";
+import { computeAllNE, computeIndifference } from "./src/utils/gameEngine";
+import { validateReport, validateScenario, validateProseClaims } from "./src/utils/nashValidator";
 import { generateReport, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
 import type { ReportEnvelope } from "./src/types";
 
@@ -831,26 +831,49 @@ async function startServer() {
       report.suggestedScenario = null;
     }
 
-    // Story-claims gate: an invented scenario whose declared claims contradict
-    // the matrix (or whose description cites payoffs it never declared) is
-    // never offered — it would otherwise be prefilled into the save form and
-    // persisted as the game's permanent description. One retry, because an
-    // invention was explicitly wanted (no usable scenario was supplied) and a
-    // silent drop turns "New AI scenario" into a button that sometimes does
-    // nothing; the second report replaces the first only if its own story
-    // passes, and it still runs the full validation below. Opt-out mirrors
-    // NASH_PROSE_CHECKS so the gate's effect is measurable in isolation.
-    if (process.env.NASH_SCENARIO_CHECKS !== '0' && report?.suggestedScenario) {
-      const first = validateScenario(report.suggestedScenario, payoffs);
-      if (!first.ok) {
-        console.warn(`[report] invented scenario failed story checks — retrying once: ${first.issues.join('; ')}`);
+    // Declared-claims gates — the scenario's story (storyClaims) and the
+    // prose's action statements (proseClaims), each checked as lookups the
+    // way geometryClaims are. ONE retry covers both (never more than two
+    // model calls per request); the second report replaces the first only
+    // when it scores strictly better. Final consequences differ by artifact:
+    // a bad story costs the suggestion (it would otherwise be prefilled into
+    // the save form and persisted), bad prose actions cost the prose itself —
+    // demoted to the deterministic panel below, exactly like a hallucinated
+    // equilibrium, because "right numbers, wrong words" is still wrong.
+    // Per-gate opt-outs mirror NASH_PROSE_CHECKS so each gate's effect is
+    // measurable in isolation. The eval sweep calls generateReport directly
+    // and never crosses either gate.
+    const degenerate = computeIndifference(payoffs).any;
+    const scenarioGateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
+    const proseGateOn = process.env.NASH_PROSE_ACTION_CHECKS !== '0';
+    const assess = (r: NonNullable<typeof report>) => {
+      const scenarioOk = !scenarioGateOn || !r.suggestedScenario
+        || validateScenario(r.suggestedScenario, payoffs).ok;
+      const proseOk = !proseGateOn || !r.proseClaims
+        || validateProseClaims(r.proseClaims, payoffs, groundTruth, degenerate).ok;
+      // Prose outranks the optional story when choosing between candidates.
+      return { scenarioOk, proseOk, rank: (proseOk ? 2 : 0) + (scenarioOk ? 1 : 0) };
+    };
+    let proseClaimsFailed = false;
+    if (report) {
+      let gates = assess(report);
+      if (gates.rank < 3) {
+        console.warn(`[report] declared-claims gate failed (scenarioOk=${gates.scenarioOk}, proseOk=${gates.proseOk}) — retrying once`);
         const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
-        const sc2 = second.report?.suggestedScenario;
-        if (second.report && sc2 && validateScenario(sc2, payoffs).ok) {
-          ({ report, failure } = second);
-        } else {
-          report.suggestedScenario = null;
+        if (second.report) {
+          // Same enforcement as the first attempt: never offer a replacement
+          // scenario the user didn't ask for.
+          if (second.report.suggestedScenario && scenarioIsUsable(scenario)) {
+            second.report.suggestedScenario = null;
+          }
+          const g2 = assess(second.report);
+          if (g2.rank > gates.rank) {
+            ({ report, failure } = second);
+            gates = g2;
+          }
         }
+        if (report && !gates.scenarioOk) report.suggestedScenario = null;
+        proseClaimsFailed = !gates.proseOk;
       }
     }
 
@@ -866,7 +889,19 @@ async function startServer() {
     }
 
     const validation = validateReport(report, payoffs);
-    const envelope: ReportEnvelope = validation.ok
+    // proseClaimsFailed outranks a passing validation: the numeric checks
+    // can all be green while the declared actions contradict the solver
+    // ("right numbers, wrong words") — that prose is withheld the same way
+    // a hallucinated equilibrium is.
+    const envelope: ReportEnvelope = proseClaimsFailed
+      ? {
+          source: "deterministic",
+          report,
+          validation,
+          groundTruth,
+          fallbackReason: "prose-claims-failed",
+        }
+      : validation.ok
       ? { source: "llm", report, validation, groundTruth }
       : {
           source: "deterministic",
