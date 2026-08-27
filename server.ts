@@ -22,7 +22,7 @@ import dotenv from "dotenv";
 // first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE, computeIndifference } from "./src/utils/gameEngine";
 import { validateReport, validateScenario, validateProseClaims } from "./src/utils/nashValidator";
-import { generateReport, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
+import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
@@ -36,6 +36,21 @@ import type { ReasoningEffort } from "./src/utils/providers";
 // measuring the model's unmodified default unless a sweep opts in.
 const REPORT_REASONING: ReasoningEffort | undefined =
   (process.env.REPORT_REASONING as ReasoningEffort) || undefined;
+
+// Validated-report cache. The same eight numbers always have the same
+// equilibria, and only envelopes that passed EVERY gate are stored — so a
+// hit serves certified content instantly and for free. The six standard
+// presets are the common case (identical matrix + scenario on every visitor).
+// Explicit Regenerate clicks send bypassCache so the button still rolls a
+// fresh report (the cache is then overwritten with the new validated one);
+// scenario-only invention requests never touch the cache — freshness is
+// their point. In-memory on purpose: it dies with the process, which caps
+// staleness at one deploy cycle.
+const reportCache = new Map<string, object>();
+const REPORT_CACHE_MAX = 200;
+const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number; b11: number; b12: number; b21: number; b22: number }, sc?: Scenario) =>
+  JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
+    sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope } from "./src/types";
 
 // Load environment variables from .env file
@@ -815,6 +830,33 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid payoff matrix." });
     }
 
+    // The slim path behind "New AI scenario": the explanation on screen is
+    // already validated, so only a fresh STORY is wanted — ~300 output
+    // tokens instead of ~650, roughly halving that button's latency and its
+    // retry. Same story-claims gate, one retry, suggestion withheld on a
+    // double failure. Never cached: freshness is the request.
+    if (req.body?.scenarioOnly === true) {
+      if (!hasCredentials(DEFAULT_MODEL)) {
+        return res.json({ scenario: null, failure: "no-key" });
+      }
+      let { scenario: invented, failure } = await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING });
+      if (invented && process.env.NASH_SCENARIO_CHECKS !== '0' && !validateScenario(invented, payoffs).ok) {
+        const second = await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING });
+        invented = second.scenario && validateScenario(second.scenario, payoffs).ok ? second.scenario : null;
+        if (!invented) failure = "validation-failed" as typeof failure;
+      }
+      return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
+    }
+
+    // Cache: serve a previously validated envelope for the identical
+    // (matrix, scenario) instantly. bypassCache comes from an explicit
+    // Regenerate click, which must roll fresh (and then overwrites the entry).
+    const cacheKey = reportCacheKey(payoffs, scenario);
+    if (req.body?.bypassCache !== true) {
+      const hit = reportCache.get(cacheKey);
+      if (hit) return res.json(hit);
+    }
+
     const groundTruth = computeAllNE(payoffs);
 
     // No key for the configured model's provider: local Electron mode, or an
@@ -925,6 +967,17 @@ async function startServer() {
           groundTruth,
           fallbackReason: "validation-failed",
         };
+
+    // Only fully-verified envelopes are worth serving twice. Insertion-order
+    // eviction keeps the map bounded; the presets are re-cached on their
+    // next request if ever evicted.
+    if (envelope.source === "llm" && envelope.validation?.ok) {
+      if (reportCache.size >= REPORT_CACHE_MAX) {
+        const oldest = reportCache.keys().next().value;
+        if (oldest !== undefined) reportCache.delete(oldest);
+      }
+      reportCache.set(cacheKey, envelope);
+    }
     return res.json(envelope);
   });
 
