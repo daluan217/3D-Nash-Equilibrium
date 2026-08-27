@@ -17,11 +17,12 @@ const B_TOKEN_CLS = 'text-player-b-ink dark:text-player-b-ink-dark font-medium';
 /**
  * Structural game-notation tokens, colored in EVERY ColorCoded text without
  * callers naming them: row/column references, per-player payoff citations,
- * and strategy coordinates (x belongs to A, y to B). The bare-letter rules
- * accept "A"/"B" only mid-sentence after a lowercase word (or as a
- * possessive), which is always the player — a sentence-initial "A" could be
- * the article, so it deliberately stays uncolored rather than risk painting
- * "A city clerk…".
+ * and strategy coordinates (x belongs to A, y to B). Bare "A"/"B" letters
+ * are deliberately NOT colored: every sentence of an explanation mentions
+ * the players, so coloring each mention turns signal into texture — and the
+ * bare letter is never what a reader needs help cross-referencing. The
+ * highlights kept here are the multi-character tokens people trace between
+ * the prose, the payoff matrix, and the graph.
  */
 const TOKEN_RULES: Array<{ re: RegExp; cls: string }> = [
   // Values arrive with "=" from the solver but the model also writes "≈"
@@ -35,8 +36,6 @@ const TOKEN_RULES: Array<{ re: RegExp; cls: string }> = [
   { re: /\bB\s*[=≈≃~]\s*-?\d+(?:\.\d+)?/g, cls: B_TOKEN_CLS },
   { re: /\bx\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\bx\*|\bx\b/g, cls: A_TOKEN_CLS },
   { re: /\by\s?\*\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\s*[=≈≃~]\s*-?\d+(?:\.\d+)?|\by\*|\by\b/g, cls: B_TOKEN_CLS },
-  { re: /(?<=[a-z,;:)]\s)A(?=[\s,.:;!?')]|'s)|\bA(?='s)/g, cls: A_TOKEN_CLS },
-  { re: /(?<=[a-z,;:)]\s)B(?=[\s,.:;!?')]|'s)|\bB(?='s)/g, cls: B_TOKEN_CLS },
 ];
 
 /**
