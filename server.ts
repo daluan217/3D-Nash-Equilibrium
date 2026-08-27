@@ -23,6 +23,17 @@ import dotenv from "dotenv";
 import { computeAllNE, computeIndifference } from "./src/utils/gameEngine";
 import { validateReport, validateScenario, validateProseClaims } from "./src/utils/nashValidator";
 import { generateReport, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
+import type { ReasoningEffort } from "./src/utils/providers";
+
+// Production reasoning effort for the explainer. 'low' per the 2026-08-27
+// A/B on the adversarial failure families: nano at default effort (0
+// thinking tokens) passed the declaration-fidelity gates 2/8 first-try;
+// at 'low' 7/8 with the miss safely withheld, for ~3-5s added latency —
+// Daniel's call, trading a little tail for the flawless bar. Set here at
+// the ROUTE, not inside generateReport, so the eval harness keeps
+// measuring the model's unmodified default unless a sweep opts in.
+const REPORT_REASONING: ReasoningEffort =
+  (process.env.REPORT_REASONING as ReasoningEffort) || "low";
 import type { ReportEnvelope } from "./src/types";
 
 // Load environment variables from .env file
@@ -820,7 +831,7 @@ async function startServer() {
     // Model is server-controlled on purpose — a client-supplied model would let
     // anyone bill the expensive one. The eval sweep calls generateReport
     // directly, so it varies the model without this route needing to accept it.
-    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
+    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING });
 
     // The prompt already forbids inventing a story for a game that has one,
     // but that is an instruction, not a guarantee — models drift. Enforce it:
@@ -861,7 +872,7 @@ async function startServer() {
       let gates = assess(report);
       if (gates.rank < 3) {
         console.warn(`[report] declared-claims gate failed (scenarioOk=${gates.scenarioOk}, proseOk=${gates.proseOk}) — retrying once`);
-        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario });
+        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING });
         if (second.report) {
           // Same enforcement as the first attempt: never offer a replacement
           // scenario the user didn't ask for.
