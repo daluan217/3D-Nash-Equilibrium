@@ -110,33 +110,45 @@ function checkProse(
   ];
   // Absolute floor plus a relative term so large payoffs aren't held to an
   // unreasonably tight match when the model rounds them for readability.
-  const near = (v: number, allowed: number[]) =>
-    allowed.some((a) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005));
+  // An approx operator (≈ ≃ ~ — observed live: "x≈0.909") announces a rounded
+  // value, so it earns a looser but still bounded tolerance; without that,
+  // "x ≈ 0.33" for x*=1/3 would flag and corrupt the metric with a false
+  // positive, which this file's philosophy forbids.
+  const near = (v: number, allowed: number[], approx = false) =>
+    allowed.some((a) =>
+      Math.abs(a - v) <= (approx ? Math.max(0.05, Math.abs(a) * 0.02) : Math.max(0.01, Math.abs(a) * 0.005)));
 
-  for (const m of prose.matchAll(/\b([AB])\s*=\s*(-?\d+(?:\.\d+)?)/g)) {
-    const value = Number(m[2]);
-    if (!Number.isFinite(value) || near(value, allowedPayoffs)) continue;
+  // E[A]/E[B] forms are matched too — `\b([AB])=` can never see them (the `]`
+  // blocks the word boundary), so those citations went unvalidated. Their
+  // legitimate values (equilibrium payoffs) are already in the allowlist; a
+  // model citing an off-equilibrium expectation would flag, but zero E[]-with-
+  // value citations appeared across a 54-call QA sweep, so the false-positive
+  // exposure is nil in practice.
+  for (const m of prose.matchAll(/(?:\bE\[([AB])\]|\b([AB]))\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/g)) {
+    const value = Number(m[4]);
+    if (!Number.isFinite(value) || near(value, allowedPayoffs, m[3] !== '=')) continue;
+    const who = m[1] ? `E[${m[1]}]` : m[2];
     out.push({
       kind: 'prose-bad-payoff',
       claimed: null,
       expected: null,
-      detail: `prose cites ${m[1]}=${m[2]}, which is not a payoff anywhere in this game`,
+      detail: `prose cites ${who}=${m[4]}, which is not a payoff anywhere in this game`,
     });
   }
 
   if (!degenerate) {
     const allowedX = [0, 1, ...truth.map((t) => t.x)];
     const allowedY = [0, 1, ...truth.map((t) => t.y)];
-    for (const m of prose.matchAll(/\b([xy])\s*\*?\s*=\s*(-?\d+(?:\.\d+)?)/gi)) {
+    for (const m of prose.matchAll(/\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
       const axis = m[1].toLowerCase();
-      const value = Number(m[2]);
+      const value = Number(m[3]);
       if (!Number.isFinite(value)) continue;
-      if (near(value, axis === 'x' ? allowedX : allowedY)) continue;
+      if (near(value, axis === 'x' ? allowedX : allowedY, m[2] !== '=')) continue;
       out.push({
         kind: 'prose-bad-coordinate',
         claimed: null,
         expected: null,
-        detail: `prose cites ${axis}=${m[2]}, which is not an equilibrium coordinate`,
+        detail: `prose cites ${axis}=${m[3]}, which is not an equilibrium coordinate`,
       });
     }
 

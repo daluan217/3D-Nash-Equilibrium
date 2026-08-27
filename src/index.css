@@ -54,6 +54,17 @@
   --color-player-b-900: var(--color-blue-900);
   --color-player-b-950: var(--color-blue-950);
 
+  /* Matte prose-highlight inks: the player hues knocked toward slate so a
+     colored word sits IN a sentence instead of on top of it. Use these (not
+     the -400/-600 steps) whenever coloring running text — report prose,
+     descriptions, scenario cards; keep the saturated steps for UI chrome
+     like matrix headers, paths, and legends. -ink for light, -ink-dark for
+     dark backgrounds. */
+  --color-player-a-ink: color-mix(in oklab, var(--color-red-500) 55%, var(--color-slate-500));
+  --color-player-a-ink-dark: color-mix(in oklab, var(--color-red-300) 55%, var(--color-slate-300));
+  --color-player-b-ink: color-mix(in oklab, var(--color-blue-500) 55%, var(--color-slate-500));
+  --color-player-b-ink-dark: color-mix(in oklab, var(--color-blue-300) 55%, var(--color-slate-300));
+
   /* mixed NE = purple */
   --color-ne-mixed-50: var(--color-purple-50);
   --color-ne-mixed-100: var(--color-purple-100);

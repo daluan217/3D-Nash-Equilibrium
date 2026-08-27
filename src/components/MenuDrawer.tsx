@@ -7,6 +7,7 @@ import React, { useState, useMemo } from 'react';
 import { GamePayoffs, PresetGame } from '../types';
 import { PRESETS, computeAllNE } from '../utils/gameEngine';
 import { GameGraphMiniature } from './GameGraphMiniature';
+import { ColorCoded } from './ColorCoded';
 import {
   X,
   HelpCircle,
@@ -102,6 +103,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       name: g.name,
       desc: g.description,
       payoffs: g.payoffs as GamePayoffs,
+      // Option labels feed ColorCoded so a saved game's own nouns get the
+      // same player coloring its description enjoys in the main panel.
+      aTerms: [g.row1Label, g.row2Label].filter(Boolean) as string[],
+      bTerms: [g.col1Label, g.col2Label].filter(Boolean) as string[],
     }));
   }, [userCustomGames]);
 
@@ -459,6 +464,15 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       When the simulation reaches a Nash Equilibrium, both players are playing optimal strategies and the system stabilizes. The simulation shows "Converged" in the top right when this happens.
                     </p>
                   </div>
+
+                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950/20 shadow-xs space-y-1">
+                    <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs md:text-sm">
+                      Opponent Regret Mode
+                    </h4>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-semibold">
+                      An alternative convergence method for mixed-strategy games (switch under <span className="font-bold text-slate-700 dark:text-slate-200">Convergence Method</span>). Instead of shrinking a corridor, each step moves a player's strategy in proportion to the opponent's <em>regret</em> — how much better they could do against the current mix. While regret remains, the strategy lines lean; when a line goes flat, that player is indifferent between their options, which is exactly the mixed-equilibrium condition. Each coordinate declares on its own as its line flattens.
+                    </p>
+                  </div>
                 </div>
 
                 {/* Sub-section: Controls & Settings */}
@@ -601,7 +615,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                               )}
                             </div>
                             <p
-                              className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed"
+                              className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed break-words"
                               dangerouslySetInnerHTML={{ __html: preset.desc }}
                             />
 
@@ -615,9 +629,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 {eqList.map((eq, i) => (
                                   <li key={i}>
                                     <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
-                                      {eq.label}
+                                      <ColorCoded text={eq.label} />
                                     </strong>{' '}
-                                    val (E[A]={eq.eA.toFixed(2)}, E[B]={eq.eB.toFixed(2)})
+                                    val (<ColorCoded text={`E[A]=${eq.eA.toFixed(2)}, E[B]=${eq.eB.toFixed(2)}`} />)
                                   </li>
                                 ))}
                                 {eqList.length === 0 && (
@@ -702,8 +716,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                   </button>
                                 </div>
                               </div>
-                              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed">
-                                {game.desc}
+                              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed break-words">
+                                <ColorCoded text={game.desc} aTerms={game.aTerms} bTerms={game.bTerms} />
                               </p>
 
                               {/* Plotted NE */}
@@ -716,9 +730,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                   {eqList.map((eq, i) => (
                                     <li key={i}>
                                       <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
-                                        {eq.label}
+                                        <ColorCoded text={eq.label} />
                                       </strong>{' '}
-                                      val (E[A]={eq.eA.toFixed(2)}, E[B]={eq.eB.toFixed(2)})
+                                      val (<ColorCoded text={`E[A]=${eq.eA.toFixed(2)}, E[B]=${eq.eB.toFixed(2)}`} />)
                                     </li>
                                   ))}
                                   {eqList.length === 0 && (

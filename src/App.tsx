@@ -14,6 +14,7 @@ import {
   computeIndifference,
   doStep,
   buildPolyStr,
+  generateRandomGame,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -60,6 +61,7 @@ import {
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
+import { ColorCoded } from './components/ColorCoded';
 import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
@@ -83,33 +85,8 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
  * word boundaries, longest first) and wrapped in React elements — the text
  * itself is never interpreted as HTML.
  */
-function ColorCoded({ text, aTerms, bTerms }: { text: string; aTerms: string[]; bTerms: string[] }) {
-  const nodes = useMemo(() => {
-    const entries = [
-      ...aTerms.map((t) => ({ t, cls: 'text-player-a-600 dark:text-player-a-400 font-semibold' })),
-      ...bTerms.map((t) => ({ t, cls: 'text-player-b-600 dark:text-player-b-400 font-semibold' })),
-    ]
-      // Single characters ("A") are ambiguous with articles; require 2+ chars.
-      .filter((e) => e.t && e.t.trim().length >= 2)
-      .sort((p, q) => q.t.length - p.t.length);
-    if (entries.length === 0 || !text) return [text];
-    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`(?<![\\w])(?:${entries.map((e) => esc(e.t)).join('|')})(?![\\w])`, 'gi');
-    const out: React.ReactNode[] = [];
-    let last = 0;
-    let k = 0;
-    for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-      if (m.index > last) out.push(text.slice(last, m.index));
-      const hit = m[0];
-      const entry = entries.find((e) => e.t.toLowerCase() === hit.toLowerCase());
-      out.push(<span key={k++} className={entry?.cls}>{hit}</span>);
-      last = m.index + hit.length;
-    }
-    out.push(text.slice(last));
-    return out;
-  }, [text, aTerms, bTerms]);
-  return <>{nodes}</>;
-}
+// ColorCoded moved to its own component so the workspace-center library
+// (MenuDrawer) can color saved-game text with the exact same rules.
 
 interface ThinSnapshot {
   cx: number; cy: number;
@@ -302,6 +279,12 @@ export default function App() {
   /** Option names for the save dialog: typed by the user, or prefilled from an
    *  invented scenario the user chose to keep. */
   const [saveLabels, setSaveLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
+  // "Generate a game for me" inside the save modal: which equilibrium
+  // structure to roll, whether a roll+AI-description round trip is in flight,
+  // and the outcome line shown under the controls.
+  const [generateKind, setGenerateKind] = useState<'pure' | 'mixed'>('pure');
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [generateNote, setGenerateNote] = useState('');
 
   // Edit dialog for an already-saved game. Separate state from the save dialog
   // rather than shared: the two are open in different situations and reusing
@@ -1056,6 +1039,66 @@ export default function App() {
     }
   };
 
+  // Stale-note guard: reopening the save modal should not resurrect the
+  // outcome line from a generation done minutes ago.
+  useEffect(() => { if (isSaveModalOpen) setGenerateNote(''); }, [isSaveModalOpen]);
+
+  /**
+   * Roll a fresh random game with the chosen equilibrium structure, put it on
+   * the board, then ask the AI to invent a scenario for it (the same
+   * omit-the-scenario request "New AI scenario" uses) and prefill the save
+   * form with the invention. The matrix is applied BEFORE the model call and
+   * kept even if that call fails — the game is real either way; only the
+   * story is best-effort.
+   */
+  const handleGenerateGame = async () => {
+    setGenerateLoading(true);
+    setGenerateNote('');
+    setSaveError('');
+    const g = generateRandomGame(generateKind);
+    // Mirror handleLoadPreset: board payoffs, their editable string twins,
+    // preset highlight off, sim rebuilt from the start point.
+    setActivePreset('custom');
+    setPayoffs(g);
+    setRawPayoffs({
+      a11: String(g.a11), b11: String(g.b11),
+      a12: String(g.a12), b12: String(g.b12),
+      a21: String(g.a21), b21: String(g.b21),
+      a22: String(g.a22), b22: String(g.b22),
+    });
+    handleReset();
+    const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
+    try {
+      const res = await fetch(getApiUrl('/api/report'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payoffs: g }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const env = (await res.json()) as ReportEnvelope;
+      // Prefill only from a validated invention — an unvalidated story could
+      // contradict the very equilibria the user just asked for.
+      const sc = env.source === 'llm' && env.validation?.ok ? env.report?.suggestedScenario : null;
+      if (sc) {
+        setSaveName((sc.name ?? '').slice(0, 40));
+        setSaveDesc((sc.description ?? '').slice(0, 800));
+        setSaveLabels({
+          row1: sc.row1 ?? '', row2: sc.row2 ?? '',
+          col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+        });
+        setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
+      } else {
+        setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+      }
+      setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium.`]);
+    } catch {
+      setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+      setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
+    } finally {
+      setGenerateLoading(false);
+    }
+  };
+
   const handleSaveGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!saveName.trim()) {
@@ -1460,8 +1503,10 @@ export default function App() {
    * being colored in the same instant the story stops being sent.
    */
   const colorTerms = useMemo(() => {
-    const a = ['Player A', 'Row 1', 'Row 2'];
-    const b = ['Player B', 'Col 1', 'Col 2'];
+    // "Player A"/"Player B" used to be terms here; Daniel had them dropped —
+    // with the bare letters already gray, the phrases read as leftover noise.
+    const a = ['Row 1', 'Row 2'];
+    const b = ['Col 1', 'Col 2'];
     if (scenarioForReport) {
       for (const t of [scenarioForReport.row1, scenarioForReport.row2]) if (t) a.push(t);
       for (const t of [scenarioForReport.col1, scenarioForReport.col2]) if (t) b.push(t);
@@ -2612,7 +2657,7 @@ export default function App() {
             {/* Selected Preset Narrative Card */}
             {selectedPreset?.desc && (
               selectedCustomGame ? (
-                <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
+                <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
                   <strong>Custom - {selectedCustomGame.name}:</strong>{' '}
                   <ColorCoded text={selectedPreset.desc} aTerms={colorTerms.a} bTerms={colorTerms.b} />
                 </div>
@@ -3246,10 +3291,13 @@ export default function App() {
                 <ul className="list-disc pl-5 mt-1 text-slate-600 dark:text-slate-300 space-y-1">
                   {allNE.map((ne, idx) => (
                     <li key={idx}>
+                      {/* ColorCoded inside: nested spans recolor the Row/Col
+                          and coordinate pieces while the outer class keeps
+                          the label's own weight and base hue. */}
                       <span className={`font-semibold ${ne.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400' : 'text-slate-800 dark:text-slate-100'}`}>
-                        {ne.label}
+                        <ColorCoded text={ne.label} />
                       </span>{' '}
-                      with values E[A]={ne.eA.toFixed(3)}, E[B]={ne.eB.toFixed(3)}
+                      with values <ColorCoded text={`E[A]=${ne.eA.toFixed(3)}, E[B]=${ne.eB.toFixed(3)}`} />
                     </li>
                   ))}
                   {allNE.length === 0 && (
@@ -3280,6 +3328,12 @@ export default function App() {
                 </div>
               )}
 
+              {/* Category narrative. Suppressed on degenerate (flat-payoff)
+                  games: the amber notice above is the accurate story there,
+                  and these branches would assert structure (first-mover
+                  advantage, unique attractors) that a continuum of equilibria
+                  contradicts on the same screen. */}
+              {!indifferenceStatus.any && (
               <div className="text-slate-500 dark:text-slate-400">
                 {pureNEs.length === 0 && mixedNE ? (
                   <p>
@@ -3296,21 +3350,39 @@ export default function App() {
                     </p>
                     {committedNE && (
                       <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
-                        Player {firstMover} initiates and commits to: {committedNE.label} (payoff A = {committedNE.eA.toFixed(3)}, B = {committedNE.eB.toFixed(3)}).
+                        <ColorCoded
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          aTerms={colorTerms.a}
+                          bTerms={colorTerms.b}
+                        />
                       </p>
                     )}
                   </div>
                 ) : pureNEs.length > 1 ? (
+                  // This branch is only reachable with NO interior mixed NE
+                  // (the >=1 && mixedNE arm above catches the rest), so the
+                  // copy must not mention one — the old text referenced "the
+                  // mixed NE" and named pureNEs[0] as the destination, which
+                  // is corner-enumeration order, not where dynamics actually
+                  // land. The committed-NE line states the real tie-break.
                   <div>
                     <p className="mb-2">
-                      Multiple pure equilibria coexist. The first-mover can secure a first-mover advantage, committing to play the target Row or Column that maximizes their own payoffs.
+                      Multiple pure equilibria coexist with no interior mixed NE. Which corner the
+                      trajectories settle on depends on the starting point and on who moves first.
                     </p>
-                    <p>
-                      Over time, any best-response steps from outer starting sectors migrate away from the mixed NE and lock into the <strong className="text-slate-800 dark:text-slate-200 font-medium">{pureNEs[0].label}</strong>.
-                    </p>
+                    {committedNE && (
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
+                        <ColorCoded
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          aTerms={colorTerms.a}
+                          bTerms={colorTerms.b}
+                        />
+                      </p>
+                    )}
                   </div>
                 ) : null}
               </div>
+              )}
 
               {/* Plain-English explanation. The solver computes; the model only
                   narrates, and its claims are checked against the solver before
@@ -3396,22 +3468,22 @@ export default function App() {
                         <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
                           Scenario written for this game
                         </p>
-                        <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200">
+                        <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words">
                           {llmEnvelope.report.suggestedScenario.name}
                         </p>
-                        <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300">
+                        <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300 break-words">
                           <ColorCoded
                             text={llmEnvelope.report.suggestedScenario.description ?? ''}
-                            aTerms={['Player A', llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean) as string[]}
-                            bTerms={['Player B', llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean) as string[]}
+                            aTerms={[llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean) as string[]}
+                            bTerms={[llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean) as string[]}
                           />
                         </p>
                         <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                          <span className="text-player-a-600 dark:text-player-a-400 font-semibold">
+                          <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
                             A: {llmEnvelope.report.suggestedScenario.row1} / {llmEnvelope.report.suggestedScenario.row2}
                           </span>
                           {'  ·  '}
-                          <span className="text-player-b-600 dark:text-player-b-400 font-semibold">
+                          <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
                             B: {llmEnvelope.report.suggestedScenario.col1} / {llmEnvelope.report.suggestedScenario.col2}
                           </span>
                         </p>
@@ -3902,7 +3974,7 @@ export default function App() {
             aria-modal="true"
             aria-label="Save custom game"
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
@@ -3961,6 +4033,46 @@ export default function App() {
                 <div>(Row 2, Col 1) = ({payoffs.a21}, {payoffs.b21})</div>
                 <div>(Row 2, Col 2) = ({payoffs.a22}, {payoffs.b22})</div>
               </div>
+            </div>
+
+            {/* Generate-a-game-for-me. Rolls a solver-verified random matrix
+                with the chosen equilibrium structure onto the board (replacing
+                the payload above), then prefills the form from an AI-invented
+                scenario. Styled indigo like the app's other AI affordances. */}
+            <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2">
+              <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                …or generate a new game
+              </span>
+              <p className="text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+                Rolls a fresh random matrix with the equilibrium type you pick and has the AI write
+                a scenario for it. Replaces the matrix shown above.
+              </p>
+              <div className="flex gap-2">
+                <select
+                  value={generateKind}
+                  onChange={(e) => setGenerateKind(e.target.value as 'pure' | 'mixed')}
+                  disabled={generateLoading}
+                  aria-label="Equilibrium type to generate"
+                  className="flex-1 px-2.5 py-1.5 text-xs bg-white dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
+                >
+                  <option value="pure">Pure-strategy equilibrium</option>
+                  <option value="mixed">Mixed-strategy equilibrium</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleGenerateGame}
+                  disabled={generateLoading}
+                  className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  {generateLoading ? 'Generating…' : 'Generate'}
+                </button>
+              </div>
+              {generateNote && (
+                <p className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
+                  {generateNote}
+                </p>
+              )}
             </div>
 
             <form onSubmit={handleSaveGameSubmit} className="flex flex-col gap-3.5">
