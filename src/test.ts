@@ -6,7 +6,7 @@
 import { GamePayoffs, SimState, NashEquilibrium, PathSegment, LlmReport, MismatchKind, SuggestedScenario } from './types';
 import { doStep, PRESETS, computeAllNE, EA, EB, r3 } from './utils/gameEngine';
 import { describeGeometry } from './utils/geometry';
-import { validateReport, validateScenario } from './utils/nashValidator';
+import { validateReport, validateScenario, validateProseClaims } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -415,6 +415,19 @@ function testProseNumericChecks() {
   assert(proseKinds(MP, 'The mixed point is exactly x=0.52.').includes('prose-bad-coordinate'),
     'x=0.52 asserted exactly must flag where x ≈ 0.52 passed');
 
+  // Complement notation is not a coordinate citation: "1−x=0.833" on a game
+  // with x*=0.667 is a true statement about Row 2's share, and the bare
+  // regex demoted exactly this phrasing live (Spy vs. Analyst). The guard
+  // must skip the complement while still flagging a bare wrong x=.
+  const BOS_MIX: GamePayoffs =
+    { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 }; // x*=2/3, y*=1/3
+  assert(proseKinds(BOS_MIX, 'A mixes with x=0.667, so 1−x=0.333 falls on Row 2.').length === 0,
+    'complement notation (1−x=…) must not be judged as an x citation');
+  assert(proseKinds(BOS_MIX, 'A mixes with x=0.667, so 1 - x = 0.333 falls on Row 2.').length === 0,
+    'spaced ASCII complement (1 - x = …) must not be judged either');
+  assert(proseKinds(BOS_MIX, 'The mix has x=0.333 on Row 1.').includes('prose-bad-coordinate'),
+    'a bare wrong x= must still flag with the complement guard in place');
+
   // E[A]/E[B] citations were structurally invisible to \b([AB])= before.
   assert(proseKinds(PD, 'At the equilibrium E[A]=1.000 and E[B]=1.000.').length === 0,
     'true E[A]/E[B] equilibrium payoffs must pass');
@@ -484,6 +497,124 @@ function testScenarioStoryClaims() {
 
   // The escape hatch: a claim-free story declares nothing and passes.
   assert(validateScenario(sc({}), PD).ok, 'a story with no claims and null storyClaims must pass');
+
+  // ── Round-5 closures ──────────────────────────────────────────────────────
+  // Compared-payoff declarations: "B gets 9 by playing Col 1 rather than −9"
+  // was shown live on THRESH (b11=−1) — both numbers real, allowlists blind,
+  // the pairing wrong. Declared pays are checked against the compared cells.
+  const THRESH: GamePayoffs =
+    { a11: -1, a12: 1, a21: 1, a22: -1, b11: -1, b12: -9, b21: 9, b22: -9 };
+  assert(!validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1, bestPays: 9, altPays: -9 },
+  ] } }), THRESH).ok, 'the live wrong-row payoff weld (bestPays 9 vs actual −1) must fail');
+  assert(validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1, bestPays: -1, altPays: -9 },
+  ] } }), THRESH).ok, 'the true compared payoffs must pass');
+  assert(validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1, bestPays: null, altPays: null },
+  ] } }), THRESH).ok, 'null pays keep the direction-only check');
+
+  // Wordless outcome talk: the live "the quitter loses and the cooperator
+  // gains" inversion (QUITGAME rewards quitting) is conditional outcome talk
+  // in a digit-free description with no declared best-replies — unverifiable
+  // by every other check, so it is withheld.
+  const QUITGAME: GamePayoffs =
+    { a11: 4, a12: -6, a21: 6, a22: 0, b11: 4, b12: 6, b21: -6, b22: 0 };
+  const QUIT_DESC = 'Two partners decide whether to cooperate or quit. If one quits while the other cooperates, the quitter loses and the cooperator gains.';
+  assert(!validateScenario(sc({ description: QUIT_DESC, storyClaims: { cellCitations: [
+    { row: 1, col: 1, a: 4, b: 4 },
+  ], bestReplies: [] } }), QUITGAME).ok, 'wordless conditional outcome talk with no declared best-replies must fail');
+  assert(validateScenario(sc({ description: QUIT_DESC, storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'A', opponentOption: 1, bestOption: 2 },
+  ] } }), QUITGAME).ok, 'the same sentence WITH a declared (and true) best-reply must pass');
+  assert(validateScenario(sc({ description: 'This is zero-sum: what hurts A helps B.' }), QUITGAME).ok,
+    'zero-sum framing without a conditional outcome claim must not trip the screen');
+  assert(validateScenario(sc({ description: 'If one quits while the other cooperates, the quitter gains 6 and the cooperator loses 6.', storyClaims: { cellCitations: [
+    { row: 2, col: 1, a: 6, b: -6 }, { row: 1, col: 2, a: -6, b: 6 },
+  ], bestReplies: [] } }), QUITGAME).ok, 'a quantified outcome sentence must not trip the screen');
+}
+
+/**
+ * validateProseClaims against the F2 specimen caught live: validated prose
+ * said "B plays Silent with probability 1 (y=0)" on a game where y=0 was the
+ * OTHER column, and read its own cited numbers backwards ("Silent gives B 3
+ * or 0 versus Broadcast's 5 or 1" — concluding Silent was best). Every
+ * number was right; only the declared lookups can see the words were not.
+ */
+function testProseActionClaims() {
+  // The live matrix: unique pure NE at (x=0, y=0) — A's Row 2, B's Col 2.
+  const SPECIMEN: GamePayoffs =
+    { a11: 4, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const BOS: GamePayoffs =
+    { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 };
+  const MP: GamePayoffs =
+    { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 };
+
+  const check = (claims: Parameters<typeof validateProseClaims>[0], g: GamePayoffs, degenerate = false, prose = '') =>
+    validateProseClaims(claims, prose, g, computeAllNE(g), degenerate);
+
+  // The exact live error: naming Col 1 as B's equilibrium action.
+  assert(!check({ equilibriumActions: [{ player: 'B', option: 1 }], bestReplies: [] }, SPECIMEN).ok,
+    "the Silent specimen — B's option 1 at equilibrium — must fail");
+  assert(check({ equilibriumActions: [{ player: 'A', option: 2 }, { player: 'B', option: 2 }], bestReplies: [] }, SPECIMEN).ok,
+    'the true equilibrium actions must pass');
+
+  // Its companion inversion: claiming Col 1 beats Col 2 for B (3 vs 5).
+  assert(!check({ equilibriumActions: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1 },
+  ] }, SPECIMEN).ok, "the specimen's backwards best-reply must fail");
+  assert(check({ equilibriumActions: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 2 },
+    { player: 'B', opponentOption: 2, bestOption: 2 },
+  ] }, SPECIMEN).ok, "B's true dominance (both columns) must pass");
+
+  // Multiple pure equilibria: naming either coordination corner is true.
+  assert(check({ equilibriumActions: [
+    { player: 'A', option: 1 }, { player: 'A', option: 2 },
+  ], bestReplies: [] }, BOS).ok, 'both BoS corners are real equilibrium actions');
+
+  // Mixed-only game: both options carry positive probability, so a claim
+  // about either is true — the calibration pilot demoted 100% of mixed games
+  // under the stricter pure-NE-only rule (the model declares entries for
+  // "plays X with probability 0.8" statements), which is why the semantics
+  // are positive-probability, not pure-only.
+  assert(check({ equilibriumActions: [
+    { player: 'A', option: 1 }, { player: 'B', option: 2 },
+  ], bestReplies: [] }, MP).ok, 'mixed-lean action claims on a mixed game must pass');
+
+  // Degenerate games skip the action check (the continuum makes it ill-posed).
+  assert(check({ equilibriumActions: [{ player: 'A', option: 1 }], bestReplies: [] }, MP, true).ok,
+    'degenerate games must skip equilibrium-action checks');
+
+  // Malformed indices fail rather than silently skipping.
+  assert(!check({ equilibriumActions: [{ player: 'A', option: 3 }], bestReplies: [] }, SPECIMEN).ok,
+    'a malformed option index must fail');
+
+  // Claim-free declarations pass.
+  assert(check({ equilibriumActions: [], bestReplies: [] }, SPECIMEN).ok,
+    'empty declarations must pass');
+
+  // ── Round-6 closure: the undeclared-comparison screen ────────────────────
+  // A plain-BoS draw was SHOWN saying "B wants Tone 2 against A's Talk"
+  // (inverted) because proseClaims was null and passed vacuously. Prose that
+  // pairs a preference verb with an opponent frame while declaring no
+  // bestReplies is unverifiable and therefore withheld.
+  const FP_BOS_SENTENCE =
+    'B similarly faces a choice where it wants Tone 2 against A\'s Talk and prefers Tone 1 against A\'s Listen.';
+  assert(!check(null, BOS, false, FP_BOS_SENTENCE).ok,
+    'a better-against sentence with NULL declarations must be withheld');
+  assert(!check({ equilibriumActions: [], bestReplies: [] }, BOS, false, FP_BOS_SENTENCE).ok,
+    'the same sentence with empty bestReplies must be withheld');
+  assert(check({ equilibriumActions: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1 },
+  ] }, BOS, false, FP_BOS_SENTENCE).ok,
+    'declared (and true) bestReplies exempt the sentence — the declared path checks it');
+  assert(check(null, BOS, false,
+    'When B plays y=0.333, A is indifferent between Row 1 and Row 2, so mixing is stable.').ok,
+    'indifference prose without preference verbs must not trip the screen');
+  assert(check(null, BOS, false,
+    'Both players would rather coordinate than miss each other, and the equilibria reward matching.').ok,
+    'coordination flavor without an opponent frame must not trip the screen');
 }
 
 function runTests() {
@@ -495,6 +626,7 @@ function runTests() {
   testGeometryValidatorChecks();
   testProseNumericChecks();
   testScenarioStoryClaims();
+  testProseActionClaims();
   console.log('All game-engine regression tests passed.');
 }
 

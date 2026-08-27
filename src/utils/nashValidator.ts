@@ -34,6 +34,7 @@ import type {
   Mismatch,
   MismatchKind,
   NashEquilibrium,
+  ProseActionClaims,
   SuggestedScenario,
   ValidationResult,
 } from '../types';
@@ -140,7 +141,14 @@ function checkProse(
   if (!degenerate) {
     const allowedX = [0, 1, ...truth.map((t) => t.x)];
     const allowedY = [0, 1, ...truth.map((t) => t.y)];
-    for (const m of prose.matchAll(/\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
+    // The lookbehind skips complement notation: "1−x=0.833" is a TRUE
+    // statement about Row 2's share, but the bare regex saw "x=0.833" inside
+    // it and demoted correct prose (caught live on Spy vs. Analyst — a
+    // checker false positive latent since the check shipped). A minus before
+    // the letter means the citation is about 1−x/1−y, which the equilibrium
+    // coordinate allowlist must not judge; a bare wrong "x=0.833" still
+    // flags exactly as before.
+    for (const m of prose.matchAll(/(?<![−-]\s?)\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
       const axis = m[1].toLowerCase();
       const value = Number(m[3]);
       if (!Number.isFinite(value)) continue;
@@ -293,6 +301,53 @@ export interface ScenarioValidation {
   issues: string[];
 }
 
+// Cell accessors and the shared best-reply check, used by both the scenario
+// story gate and the prose action gate — one comparison, one tolerance, so
+// the two gates can never disagree about what "does better against" means.
+const cellAOf = (g: GamePayoffs, r: number, c: number) => (r === 1 ? (c === 1 ? g.a11 : g.a12) : (c === 1 ? g.a21 : g.a22));
+const cellBOf = (g: GamePayoffs, r: number, c: number) => (r === 1 ? (c === 1 ? g.b11 : g.b12) : (c === 1 ? g.b21 : g.b22));
+const isOpt12 = (n: unknown): n is 1 | 2 => n === 1 || n === 2;
+
+function bestReplyIssues(
+  replies: Array<{ player: string; opponentOption: number; bestOption: number; bestPays?: number | null; altPays?: number | null }>,
+  g: GamePayoffs,
+  source: 'story' | 'prose',
+): string[] {
+  const issues: string[] = [];
+  const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
+  for (const r of replies) {
+    if ((r.player !== 'A' && r.player !== 'B') || !isOpt12(r.opponentOption) || !isOpt12(r.bestOption)) {
+      issues.push(`best-reply claim is malformed (player=${r.player}, opponent=${r.opponentOption}, best=${r.bestOption})`);
+      continue;
+    }
+    const other = r.bestOption === 1 ? 2 : 1;
+    // A's option indexes rows against B's fixed column; B's indexes columns
+    // against A's fixed row.
+    const mine = r.player === 'A' ? cellAOf(g, r.bestOption, r.opponentOption) : cellBOf(g, r.opponentOption, r.bestOption);
+    const alt = r.player === 'A' ? cellAOf(g, other, r.opponentOption) : cellBOf(g, r.opponentOption, other);
+    // Strictly worse fails; a tie passes (a weakly-best claim is not a lie).
+    if (mine < alt - 1e-9) {
+      issues.push(
+        `${source} says ${r.player}'s option ${r.bestOption} does better against opponent option ${r.opponentOption}, but it pays ${mine} vs ${alt}`,
+      );
+    }
+    // Declared compared payoffs must belong to the compared cells. Catches
+    // the live seam where "gets 9 rather than −9" cited two REAL payoffs
+    // (so every allowlist passed) welded onto the wrong row.
+    if (r.bestPays !== null && r.bestPays !== undefined && (!Number.isFinite(r.bestPays) || !near(r.bestPays, mine))) {
+      issues.push(
+        `${source} pairs ${r.player}'s option ${r.bestOption} against opponent option ${r.opponentOption} with payoff ${r.bestPays}; that cell pays ${mine}`,
+      );
+    }
+    if (r.altPays !== null && r.altPays !== undefined && (!Number.isFinite(r.altPays) || !near(r.altPays, alt))) {
+      issues.push(
+        `${source} pairs the alternative option ${other} against opponent option ${r.opponentOption} with payoff ${r.altPays}; that cell pays ${alt}`,
+      );
+    }
+  }
+  return issues;
+}
+
 /**
  * Checks an INVENTED scenario's declared story claims against the matrix.
  *
@@ -319,9 +374,6 @@ export interface ScenarioValidation {
  */
 export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): ScenarioValidation {
   const issues: string[] = [];
-  const cellA = (r: number, c: number) => (r === 1 ? (c === 1 ? g.a11 : g.a12) : (c === 1 ? g.a21 : g.a22));
-  const cellB = (r: number, c: number) => (r === 1 ? (c === 1 ? g.b11 : g.b12) : (c === 1 ? g.b21 : g.b22));
-  const opt12 = (n: unknown): n is 1 | 2 => n === 1 || n === 2;
   // Same tolerance shape as checkProse: tight, the citation restates a matrix
   // number the model was handed verbatim.
   const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
@@ -329,33 +381,17 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   const claims = sc.storyClaims ?? null;
   if (claims) {
     for (const c of claims.cellCitations ?? []) {
-      if (!opt12(c.row) || !opt12(c.col)) {
+      if (!isOpt12(c.row) || !isOpt12(c.col)) {
         issues.push(`citation names cell (Row ${c.row}, Col ${c.col}), which does not exist`);
         continue;
       }
-      if (!Number.isFinite(c.a) || !Number.isFinite(c.b) || !near(c.a, cellA(c.row, c.col)) || !near(c.b, cellB(c.row, c.col))) {
+      if (!Number.isFinite(c.a) || !Number.isFinite(c.b) || !near(c.a, cellAOf(g, c.row, c.col)) || !near(c.b, cellBOf(g, c.row, c.col))) {
         issues.push(
-          `story says cell (Row ${c.row}, Col ${c.col}) pays (${c.a}, ${c.b}); the matrix says (${cellA(c.row, c.col)}, ${cellB(c.row, c.col)})`,
+          `story says cell (Row ${c.row}, Col ${c.col}) pays (${c.a}, ${c.b}); the matrix says (${cellAOf(g, c.row, c.col)}, ${cellBOf(g, c.row, c.col)})`,
         );
       }
     }
-    for (const r of claims.bestReplies ?? []) {
-      if ((r.player !== 'A' && r.player !== 'B') || !opt12(r.opponentOption) || !opt12(r.bestOption)) {
-        issues.push(`best-reply claim is malformed (player=${r.player}, opponent=${r.opponentOption}, best=${r.bestOption})`);
-        continue;
-      }
-      const other = r.bestOption === 1 ? 2 : 1;
-      // A's option indexes rows against B's fixed column; B's indexes columns
-      // against A's fixed row.
-      const mine = r.player === 'A' ? cellA(r.bestOption, r.opponentOption) : cellB(r.opponentOption, r.bestOption);
-      const alt = r.player === 'A' ? cellA(other, r.opponentOption) : cellB(r.opponentOption, other);
-      // Strictly worse fails; a tie passes (a weakly-best claim is not a lie).
-      if (mine < alt - 1e-9) {
-        issues.push(
-          `story says ${r.player}'s option ${r.bestOption} does better against opponent option ${r.opponentOption}, but it pays ${mine} vs ${alt}`,
-        );
-      }
-    }
+    issues.push(...bestReplyIssues(claims.bestReplies ?? [], g, 'story'));
   }
 
   // Undeclared-citation guard: any payoff-anchored number in the description
@@ -363,6 +399,22 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   // declaration rule was skipped and nothing above ever looked at that claim.
   const declared = claims ? (claims.cellCitations ?? []).flatMap((c) => [c.a, c.b]) : [];
   const desc = sc.description ?? '';
+
+  // Wordless outcome talk: a CONDITIONAL sentence attributing gain/loss to a
+  // specific action combination, in a digit-free description with no declared
+  // best-reply claims, is invisible to every check above — the live "the
+  // quitter loses and the cooperator gains" inversion (a moral prior imported
+  // over the actual numbers) rode exactly this shape. Unverifiable is treated
+  // as unshowable; the server's retry usually lands a compliant draw. Kept
+  // deliberately narrow — conditional frame AND outcome verb AND no digits
+  // AND empty bestReplies — so zero-sum framing sentences ("what hurts A
+  // helps B") and any story that quantifies itself never trip it.
+  const OUTCOME_TALK = /\b(?:if|when|while)\b[^.!?]{0,140}?\b(?:pays? off|loses?|gains?|wins?|profits?|suffers?|is (?:punished|rewarded))\b/i;
+  if (OUTCOME_TALK.test(desc) && !/\d/.test(desc) && (claims?.bestReplies ?? []).length === 0) {
+    issues.push(
+      'description attributes gains/losses to an action combination without numbers or declared best-reply claims — unverifiable',
+    );
+  }
   for (const m of desc.matchAll(/(?:\bE\[[AB]\]|\b[AB])\s*[=≈≃~]\s*(-?\d+(?:\.\d+)?)/g)) {
     const v = Number(m[1]);
     if (!Number.isFinite(v)) continue;
@@ -371,6 +423,92 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     }
   }
 
+  return { ok: issues.length === 0, issues };
+}
+
+/**
+ * Checks the PROSE's declared action-level claims against the solver.
+ *
+ * Closes the F2 finding: prose whose every number validated could still name
+ * the wrong action beside a correct coordinate ("B plays Silent with
+ * probability 1 (y=0)" when y=0 is the other column, observed live). Which
+ * label a sentence names is a semantic judgement, so — as with storyClaims
+ * and geometryClaims — the model declares the option INDEX it means and the
+ * check is a lookup: an equilibriumAction (player, option) is true iff some
+ * equilibrium gives that option positive probability (x is A's probability
+ * of Row 1, y is B's of Col 1), and bestReplies use the same shared
+ * comparison as the scenario gate.
+ *
+ * Kept OUTSIDE validateReport for the same reasons as validateScenario: the
+ * eval's consistency metric must not shift, and the server decides the
+ * consequence (retry once, then withhold the prose). Skipped on degenerate
+ * games, where the continuum makes "the equilibrium action" ill-posed —
+ * mirroring checkProse's coordinate skip.
+ *
+ * Residual (stated honestly): the gate catches a model that consistently
+ * BELIEVES the wrong mapping (it declares what it wrote, the lookup fails —
+ * the observed failure mode). A model that declares correctly while wording
+ * the prose wrongly slips through; that mismatch is the semantic gap no
+ * declared-claims design can close.
+ */
+export function validateProseClaims(
+  claims: ProseActionClaims | null,
+  prose: string,
+  g: GamePayoffs,
+  truth: NashEquilibrium[],
+  degenerate: boolean,
+): ScenarioValidation {
+  const issues: string[] = [];
+
+  // Undeclared-comparison screen — the dual of the scenario's wordless-
+  // outcome screen, and the missing-declaration half of the declaration-
+  // fidelity pair: a plain-BoS draw was SHOWN saying "B wants Tone 2 against
+  // A's Talk" (both directions inverted) because proseClaims was null and a
+  // null declaration passes vacuously. A sentence that pairs a preference
+  // verb with an opponent frame IS a better-against claim; with no declared
+  // bestReplies at all there is nothing to check it against, so it is
+  // withheld as unverifiable (server retry as recovery). Exemption is any
+  // non-empty bestReplies — partial coverage can't be mapped sentence-to-
+  // entry, and the declared-set path is where compliance already lives.
+  if ((claims?.bestReplies ?? []).length === 0 && prose) {
+    const VERB = /\b(?:prefers?|wants?|favou?rs?|does\s+(?:best|better)|works\s+(?:best|better)|best\s+(?:response|reply|move|option)|best\s+off|better\s+off)\b/i;
+    const FRAME = /\b(?:against|versus|vs\.?|when\s+(?:the\s+opponent|[AB])\b|if\s+(?:the\s+opponent|[AB])\b|no\s+matter\s+(?:what|whether|which))\b/i;
+    for (const sentence of prose.split(/(?<=[.!?])\s+/)) {
+      if (VERB.test(sentence) && FRAME.test(sentence)) {
+        issues.push(
+          `prose makes a better-against claim ("${sentence.trim().slice(0, 90)}…") but declares no bestReplies — unverifiable`,
+        );
+        break;
+      }
+    }
+  }
+
+  if (!degenerate && claims) {
+    for (const a of claims.equilibriumActions ?? []) {
+      if ((a.player !== 'A' && a.player !== 'B') || !isOpt12(a.option)) {
+        issues.push(`equilibrium-action claim is malformed (player=${a.player}, option=${a.option})`);
+        continue;
+      }
+      // Valid iff SOME equilibrium gives this option positive probability.
+      // The calibration pilot showed the model declares entries for
+      // mixed-probability statements too ("A plays Row 1 with probability
+      // 0.8" → declares (A, 1)); a pure-NE-only rule demoted every mixed
+      // game — 100% false positives. Positive-probability semantics keep
+      // full power where it matters (a pure NE at x=0 still refuses (A, 1),
+      // which is the live Silent/Broadcast catch) and never punish a true
+      // statement about a mixed equilibrium, where both options are played.
+      const matches = truth.some((t) => {
+        const pOption1 = a.player === 'A' ? t.x : t.y;
+        return (a.option === 1 ? pOption1 : 1 - pOption1) > 1e-3;
+      });
+      if (!matches) {
+        issues.push(
+          `prose says ${a.player} plays option ${a.option} at an equilibrium, but every equilibrium gives that option probability 0`,
+        );
+      }
+    }
+  }
+  issues.push(...bestReplyIssues(claims?.bestReplies ?? [], g, 'prose'));
   return { ok: issues.length === 0, issues };
 }
 
