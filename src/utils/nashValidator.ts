@@ -302,11 +302,12 @@ const cellBOf = (g: GamePayoffs, r: number, c: number) => (r === 1 ? (c === 1 ? 
 const isOpt12 = (n: unknown): n is 1 | 2 => n === 1 || n === 2;
 
 function bestReplyIssues(
-  replies: Array<{ player: string; opponentOption: number; bestOption: number }>,
+  replies: Array<{ player: string; opponentOption: number; bestOption: number; bestPays?: number | null; altPays?: number | null }>,
   g: GamePayoffs,
   source: 'story' | 'prose',
 ): string[] {
   const issues: string[] = [];
+  const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
   for (const r of replies) {
     if ((r.player !== 'A' && r.player !== 'B') || !isOpt12(r.opponentOption) || !isOpt12(r.bestOption)) {
       issues.push(`best-reply claim is malformed (player=${r.player}, opponent=${r.opponentOption}, best=${r.bestOption})`);
@@ -321,6 +322,19 @@ function bestReplyIssues(
     if (mine < alt - 1e-9) {
       issues.push(
         `${source} says ${r.player}'s option ${r.bestOption} does better against opponent option ${r.opponentOption}, but it pays ${mine} vs ${alt}`,
+      );
+    }
+    // Declared compared payoffs must belong to the compared cells. Catches
+    // the live seam where "gets 9 rather than −9" cited two REAL payoffs
+    // (so every allowlist passed) welded onto the wrong row.
+    if (r.bestPays !== null && r.bestPays !== undefined && (!Number.isFinite(r.bestPays) || !near(r.bestPays, mine))) {
+      issues.push(
+        `${source} pairs ${r.player}'s option ${r.bestOption} against opponent option ${r.opponentOption} with payoff ${r.bestPays}; that cell pays ${mine}`,
+      );
+    }
+    if (r.altPays !== null && r.altPays !== undefined && (!Number.isFinite(r.altPays) || !near(r.altPays, alt))) {
+      issues.push(
+        `${source} pairs the alternative option ${other} against opponent option ${r.opponentOption} with payoff ${r.altPays}; that cell pays ${alt}`,
       );
     }
   }
@@ -378,6 +392,22 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   // declaration rule was skipped and nothing above ever looked at that claim.
   const declared = claims ? (claims.cellCitations ?? []).flatMap((c) => [c.a, c.b]) : [];
   const desc = sc.description ?? '';
+
+  // Wordless outcome talk: a CONDITIONAL sentence attributing gain/loss to a
+  // specific action combination, in a digit-free description with no declared
+  // best-reply claims, is invisible to every check above — the live "the
+  // quitter loses and the cooperator gains" inversion (a moral prior imported
+  // over the actual numbers) rode exactly this shape. Unverifiable is treated
+  // as unshowable; the server's retry usually lands a compliant draw. Kept
+  // deliberately narrow — conditional frame AND outcome verb AND no digits
+  // AND empty bestReplies — so zero-sum framing sentences ("what hurts A
+  // helps B") and any story that quantifies itself never trip it.
+  const OUTCOME_TALK = /\b(?:if|when|while)\b[^.!?]{0,140}?\b(?:pays? off|loses?|gains?|wins?|profits?|suffers?|is (?:punished|rewarded))\b/i;
+  if (OUTCOME_TALK.test(desc) && !/\d/.test(desc) && (claims?.bestReplies ?? []).length === 0) {
+    issues.push(
+      'description attributes gains/losses to an action combination without numbers or declared best-reply claims — unverifiable',
+    );
+  }
   for (const m of desc.matchAll(/(?:\bE\[[AB]\]|\b[AB])\s*[=≈≃~]\s*(-?\d+(?:\.\d+)?)/g)) {
     const v = Number(m[1]);
     if (!Number.isFinite(v)) continue;

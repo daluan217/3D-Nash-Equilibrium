@@ -256,6 +256,15 @@ export interface ScenarioBestReply {
   opponentOption: number;
   /** 1 or 2 — the option claimed better for the player. */
   bestOption: number;
+  /**
+   * When the sentence states the payoffs being compared, they are declared
+   * here so the number-to-cell pairing is checkable — "B gets 9 by playing
+   * Col 1 rather than −9" was shown live with both numbers real but welded
+   * onto the wrong row, which a game-wide allowlist can never see. Null when
+   * the sentence cites no numbers.
+   */
+  bestPays?: number | null;
+  altPays?: number | null;
 }
 
 export interface ScenarioStoryClaims {

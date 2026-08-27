@@ -131,16 +131,26 @@ const REPORT_SCHEMA: Record<string, unknown> = {
             bestReplies: {
               type: 'array',
               description:
-                'One entry per "X works best / does better against Y" claim, e.g. ' +
-                '"Upload works best against Compress" -> player A, the opponent ' +
-                'option held fixed, and the option claimed better.',
+                'One entry per claim that one option does better than the other ' +
+                'against a fixed opponent option — "works best against", "the ' +
+                'quitter loses / the cooperator gains", "prefers X when Y".',
               items: {
                 type: 'object',
-                required: ['player', 'opponentOption', 'bestOption'],
+                required: ['player', 'opponentOption', 'bestOption', 'bestPays', 'altPays'],
                 properties: {
                   player: { type: 'string', enum: ['A', 'B'] },
                   opponentOption: { type: 'number', description: '1 or 2: the opponent option held fixed.' },
                   bestOption: { type: 'number', description: '1 or 2: the option claimed better for this player.' },
+                  bestPays: {
+                    type: ['number', 'null'],
+                    description:
+                      "The payoff the sentence states for the better option (copy the exact number it cites); null if the sentence cites no numbers.",
+                  },
+                  altPays: {
+                    type: ['number', 'null'],
+                    description:
+                      'The payoff the sentence states for the other option; null if not cited.',
+                  },
                 },
               },
             },
@@ -238,11 +248,21 @@ const REPORT_SCHEMA: Record<string, unknown> = {
             'is TWO entries, one per opposing option.',
           items: {
             type: 'object',
-            required: ['player', 'opponentOption', 'bestOption'],
+            required: ['player', 'opponentOption', 'bestOption', 'bestPays', 'altPays'],
             properties: {
               player: { type: 'string', enum: ['A', 'B'] },
               opponentOption: { type: 'number', description: '1 or 2: the opponent option held fixed.' },
               bestOption: { type: 'number', description: '1 or 2: the option claimed better for this player.' },
+              bestPays: {
+                type: ['number', 'null'],
+                description:
+                  "The payoff the sentence states for the better option (copy the exact number it cites); null if the sentence cites no numbers.",
+              },
+              altPays: {
+                type: ['number', 'null'],
+                description:
+                  'The payoff the sentence states for the other option; null if not cited.',
+              },
             },
           },
         },
@@ -276,7 +296,8 @@ Rules:
 - Never claim an equilibrium exists that you were not given, and never describe a pure equilibrium in a game that has none. If the solver found no pure equilibria, say plainly that the game has none and explain why the players must mix.
 - If a scenario is supplied, use its names for the players' options instead of "Row 1"/"Col 2" wherever that reads better, and leave suggestedScenario out. If none is supplied, invent one that fits the payoffs, write the explanation in its terms, and return it in suggestedScenario. Never let an invented story contradict the payoffs or the equilibria.
 - When you invent a scenario, restate the description's factual claims in suggestedScenario.storyClaims so they can be checked: every action-pair whose payoffs the description cites goes in cellCitations with the exact matrix values, and every "X works best against Y" or "prefers X when the opponent does Y" claim goes in bestReplies. A claim made in the description but missing from storyClaims, or declared wrongly, causes the whole story to be discarded — when unsure which cell a sentence refers to, reread the matrix rather than guess. If the description cites no payoffs and makes no better-against claims, set storyClaims to null.
-- In an invented description, never characterize what happens when specific options meet in words alone ("pays off", "is punished", "works well"): any sentence about a particular action combination's outcome must state that cell's exact payoff numbers, and that cell must appear in cellCitations. If you prefer not to cite numbers, make no outcome claims — describe only who the players are and what their options mean.
+- In an invented description, never characterize what happens when specific options meet in words alone ("pays off", "is punished", "works well"): any sentence about a particular action combination's outcome must state that cell's exact payoff numbers, and that cell must appear in cellCitations. If you prefer not to cite numbers, make no outcome claims — describe only who the players are and what their options mean. Sentences like "the quitter loses and the cooperator gains" are better-against claims: declare them in bestReplies, and verify the direction against the matrix rather than against how such stories usually go — the numbers you were given always win.
+- Whenever a better-against sentence states the payoffs it compares ("gets 9 rather than −9"), copy those exact numbers into that bestReplies entry's bestPays/altPays; set both null when the sentence cites no numbers. Each cited number must belong to the exact cell being compared — re-check the row AND column before writing it.
 - Declarations must match the text in BOTH directions, and you must re-read the description and prose sentence by sentence against your declarations before answering: an entry for a claim the text never makes is as fatal as a missing entry, so when a declaration has no sentence that states it, delete the declaration — do not keep it "to be safe".
 - You are also given the GEOMETRY of the two expected-payoff surfaces the reader is looking at. Where it helps, describe the equilibrium in those terms: indifference is a level shelf where a surface stops tilting; the equilibrium is the joint flat spot where both surfaces are level at once; strategic interaction is the warp in the surface; a best response is which way a slice tilts. Use these ONLY where the supplied geometry says they apply — if it tells you there is no flat shelf, or no interior flat spot, or that the game is not zero-sum, do not describe one.
 - Fill in geometryClaims to match what the supplied geometry states, and make sure your prose agrees with it. These are copied, not worked out: every one of them is stated for you above. If your explanation does not discuss the shape of the surfaces at all, set geometryClaims to null rather than guessing.

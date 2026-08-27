@@ -484,6 +484,41 @@ function testScenarioStoryClaims() {
 
   // The escape hatch: a claim-free story declares nothing and passes.
   assert(validateScenario(sc({}), PD).ok, 'a story with no claims and null storyClaims must pass');
+
+  // ── Round-5 closures ──────────────────────────────────────────────────────
+  // Compared-payoff declarations: "B gets 9 by playing Col 1 rather than −9"
+  // was shown live on THRESH (b11=−1) — both numbers real, allowlists blind,
+  // the pairing wrong. Declared pays are checked against the compared cells.
+  const THRESH: GamePayoffs =
+    { a11: -1, a12: 1, a21: 1, a22: -1, b11: -1, b12: -9, b21: 9, b22: -9 };
+  assert(!validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1, bestPays: 9, altPays: -9 },
+  ] } }), THRESH).ok, 'the live wrong-row payoff weld (bestPays 9 vs actual −1) must fail');
+  assert(validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1, bestPays: -1, altPays: -9 },
+  ] } }), THRESH).ok, 'the true compared payoffs must pass');
+  assert(validateScenario(sc({ storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'B', opponentOption: 1, bestOption: 1, bestPays: null, altPays: null },
+  ] } }), THRESH).ok, 'null pays keep the direction-only check');
+
+  // Wordless outcome talk: the live "the quitter loses and the cooperator
+  // gains" inversion (QUITGAME rewards quitting) is conditional outcome talk
+  // in a digit-free description with no declared best-replies — unverifiable
+  // by every other check, so it is withheld.
+  const QUITGAME: GamePayoffs =
+    { a11: 4, a12: -6, a21: 6, a22: 0, b11: 4, b12: 6, b21: -6, b22: 0 };
+  const QUIT_DESC = 'Two partners decide whether to cooperate or quit. If one quits while the other cooperates, the quitter loses and the cooperator gains.';
+  assert(!validateScenario(sc({ description: QUIT_DESC, storyClaims: { cellCitations: [
+    { row: 1, col: 1, a: 4, b: 4 },
+  ], bestReplies: [] } }), QUITGAME).ok, 'wordless conditional outcome talk with no declared best-replies must fail');
+  assert(validateScenario(sc({ description: QUIT_DESC, storyClaims: { cellCitations: [], bestReplies: [
+    { player: 'A', opponentOption: 1, bestOption: 2 },
+  ] } }), QUITGAME).ok, 'the same sentence WITH a declared (and true) best-reply must pass');
+  assert(validateScenario(sc({ description: 'This is zero-sum: what hurts A helps B.' }), QUITGAME).ok,
+    'zero-sum framing without a conditional outcome claim must not trip the screen');
+  assert(validateScenario(sc({ description: 'If one quits while the other cooperates, the quitter gains 6 and the cooperator loses 6.', storyClaims: { cellCitations: [
+    { row: 2, col: 1, a: 6, b: -6 }, { row: 1, col: 2, a: -6, b: 6 },
+  ], bestReplies: [] } }), QUITGAME).ok, 'a quantified outcome sentence must not trip the screen');
 }
 
 /**
