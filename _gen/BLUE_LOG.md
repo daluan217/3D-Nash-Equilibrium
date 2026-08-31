@@ -254,30 +254,67 @@ so their first denominator (318) was a partial file; corrected here at source.
 One occurrence, so an order of magnitude and not a number — but the mechanism is
 not rate-dependent, since any misspelled JSON key lands in the same place.
 
-### RED 2's "Skilift" determinism — REFUTED, and the real defect is worse
+### RED 2's "Skilift" determinism — REFUTED, then jointly resolved
 
-Filed as "3 of 3, deterministic, one specific wrong string". Five draws on the
-same domain, same prompt, temp 0.8, against blue's `-c 4096` instance:
+Filed as "3 of 3, deterministic". Blue ran 5 draws on a FIXED game (so only the
+sampler varied) and got four different manglings, never the reported string.
+Red then ran 20 draws on that one domain:
 
-    1  "Skis-Lift Grooming"
-    2  " Ski-Lift Grooming"     <- correct spelling, LEADING SPACE
-    3  "Skim-Lift Grooming"
-    4  "Skim-Lift Grooming"
-    5  "Skylift Grooming"
+    9x  "Skilift Grooming"          2x  "Skis-Lift Grooming"
+    2x  "Skim-Lift Grooming"        2x  "Ski-Lift Grooming"  (correct)
+    1x each: " Ski-Lift Grooming", "Skyscraper Grooming", "Skier Grooming",
+             "Skylift Grooming", "Skier Lift Grooming"
+    mangled 17/20 = 85%   —   NINE distinct spellings in twenty draws
 
-"Skilift Grooming" — the exact reported string — did not appear once. So the
-determinism claim is refuted by four counterexamples. What is TRUE and stronger:
-this domain reliably produces a mangled name, 4 of 5, in four different ways.
+Both halves were wrong about something and the joint result is better than
+either. Determinism is refuted (nine spellings). But "Skilift Grooming" is not a
+fluke either — it is the MODE at 45%, which is exactly why three consecutive
+corpus draws hit it and why a strong mode was mistaken for determinism.
 
-The distinction changes the fix. A deterministic single-string failure invites a
-substitution table and reads as a tokenizer quirk. A different mangle every draw
-is a model that cannot spell the word, which cannot be patched that way — same
-class as "Thaing"/"Thaning".
+Blue's 4/5 and red's 17/20 = 85% agree closely across two different servers and
+two different context sizes (`-c 4096` vs `-c 16384`), which also rules out
+context size as a factor in token-level spelling.
 
-Not filed, recorded only: draw 2's leading space. Checked red's corpus first —
-untrimmed name or label in 0 of 199 local and 0 of 80 cloud, so one occurrence
-against 279 is almost certainly chance. Noted because nothing in the pipeline
-trims those fields.
+The fix consequence stands: a different mangle each draw cannot be patched with
+a substitution table. "Skyscraper Grooming" is the one to show a mathematician.
+
+**The leading space REPRODUCED** — once in red's twenty, against 0 untrimmed
+fields in 289 corpus draws (names, all four labels, descriptions; also 0
+double-spaces). Two sightings, both on this domain, none elsewhere. No longer
+obviously chance; possibly whatever makes this token hard also perturbs the
+whitespace. Still not filed as its own defect — but it is now an observation
+with a denominator rather than an anecdote.
+
+### Copy-edit rate — which number to quote, and why
+
+Red hand-scored "would an editor mark this up", criteria and denominator fixed
+before scoring, domain drift excluded so it does not double-count off-domain.
+
+    unblinded   LOCAL 33.3%  CLOUD 13.3%   p = 0.011      <- QUOTE THIS ONE
+    blinded     LOCAL 53.3%  CLOUD  8.3%   p = 4.9e-08
+
+The blind pass shuffled 120 draws with a fixed seed, stripped model labels, and
+unblinded only afterwards. The gap did not narrow — it went from 20 points to
+45 — and the disagreements are lopsided in the *anti*-confirmatory direction:
+14 local and 2 cloud flagged only when blind, against 5 cloud and 2 local
+flagged only when unblinded. Knowing the condition made the scorer GENTLER on
+local, the opposite of the expected bias.
+
+**Blue's call: quote the unblinded 33.3% / 13.3% as the headline.** Red flagged,
+unprompted, that the two passes differ in TWO ways — blinding, and a more
+literal application of the written criteria (every lower-case paraphrase flagged
+consistently; mismatched-axis pairs like "Early Harvest / Full Harvest" no longer
+flagged). Those cannot be cleanly separated, and the criteria change plausibly
+correlates with condition — if local produces more lower-case paraphrases, a
+stricter rule hits local harder for reasons that have nothing to do with
+blinding. The two passes are also not independent: same scorer, second look at
+items already read, so 80.8% agreement is an upper bound on reproducibility and
+the blind CIs do not carry scorer variance.
+
+So the blinded pass is CORROBORATION that the gap is not an artifact of knowing
+the condition. It is not the number to defend in an argument. The floor is
+33.3% / 13.3% at p = 0.011, and that already answers the question a person
+actually asks.
 
 ### F12 — reviving the dead guard would NOT catch it
 
