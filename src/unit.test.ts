@@ -791,6 +791,24 @@ function testFmtPayoffSubResolution() {
   assert(texPayoff(-0.0003333) === '\\text{greater than -0.001}',
     `texPayoff must wrap prose for LaTeX, got "${texPayoff(-0.0003333)}"`);
 
+  // THE NO-OP GUARD. computeAllNE stores eA/eB already r3-rounded, and -0 === 0
+  // in JavaScript, so fmtPayoff(ne.eA) takes its exact-zero branch and answers
+  // "0" — a false zero with better spelling. The formatter can only tell the
+  // truth if it is handed the UNROUNDED value, so the display must recompute
+  // from the equilibrium's own coordinates. This pins that: the stored value
+  // lies, the recomputed one does not.
+  {
+    const g = { a11: -0.003, a12: 0, a21: 0.002, a22: -0.001,
+                b11: -0.003, b12: -0.002, b21: -0.002, b22: -0.003 };
+    const mixed = computeAllNE(g).find((n) => n.type === 'mixed');
+    assert(!!mixed, 'fixture must have a mixed equilibrium');
+    assert(fmtPayoff(mixed!.eA) === '0',
+      'the STORED payoff is pre-rounded to -0, so formatting it can only ever say "0"');
+    const honest = fmtPayoff(EA(mixed!.x, mixed!.y, g));
+    assert(honest === 'greater than -0.001',
+      `recomputing at the same profile must recover the truth, got "${honest}"`);
+  }
+
   console.log('✓ fmtPayoff: sub-resolution payoffs never render as zero');
 }
 
