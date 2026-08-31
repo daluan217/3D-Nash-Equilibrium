@@ -1,0 +1,70 @@
+name: Live smoke
+
+# The POST-DEPLOY layer of the testing pyramid. Everything in Test runs on a
+# GitHub runner against the build artifact; this workflow verifies what the
+# user actually receives — the live nash-equilibrium-simulator.com — after a
+# merge to main deploys (web + API behind one domain). Read-only: no accounts,
+# no saved games, no model calls.
+#
+# Three triggers:
+#   workflow_run — Test succeeded on main (i.e. a merge just shipped). Downloads
+#                  the bundle that Test built, polls the live site until it
+#                  serves THAT commit's hashed asset (the deploy landed, not a
+#                  stale cache), then runs the live checks.
+#   schedule     — nightly monitor: the same checks without the hash wait,
+#                  catching outages and drift between ships.
+#   dispatch     — the same, on demand.
+on:
+  workflow_run:
+    workflows: ['Test']
+    types: [completed]
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # workflow_run also fires on Test failures — only a green Test on main is
+    # a deploy worth verifying. Scheduled/dispatch runs take the monitor path.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.head_branch == 'main')
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read the repo version (informational comparison)
+        run: echo "REPO_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+
+      # The bundle that the triggering Test run built — its index.html names
+      # the exact hashed asset the live deploy must eventually serve.
+      - name: Download the bundle built by the Test run
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          name: dist
+          path: dist
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the live site (deploy-verify mode)
+        if: github.event_name == 'workflow_run'
+        run: node src/e2e/live-smoke.mjs
+        env:
+          LIVE_BASE: https://nash-equilibrium-simulator.com
+          EXPECTED_INDEX: dist/index.html
+          EXPECTED_VERSION: ${{ env.REPO_VERSION }}
+          LIVE_WAIT_MINUTES: '15'
+
+      - name: Verify the live site (monitor mode)
+        if: github.event_name != 'workflow_run'
+        run: node src/e2e/live-smoke.mjs
+        env:
+          LIVE_BASE: https://nash-equilibrium-simulator.com
+          EXPECTED_VERSION: ${{ env.REPO_VERSION }}
