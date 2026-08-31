@@ -80,7 +80,12 @@ if (unexpected.length > 0) {
 // ── every ${_SUB} must actually be declared ─────────────────────────────────
 // An undeclared substitution resolves to an empty string, which is how a
 // variable can be "present" in production and still carry nothing.
-const subsBlock = cloudbuild.slice(cloudbuild.indexOf('\nsubstitutions:'));
+// indexOf returning -1 would slice to the last character and silently leave
+// `declared` empty, turning every ${_SUB} into a misleading "not declared"
+// failure. Fail on the real cause instead.
+const subsAt = cloudbuild.indexOf('\nsubstitutions:');
+if (subsAt < 0) fail('cloudbuild.yaml has no substitutions: block');
+const subsBlock = cloudbuild.slice(subsAt);
 const declared = new Set([...subsBlock.matchAll(/^ {2}(_[A-Z0-9_]+):/gm)].map((m) => m[1]));
 for (const [name, value] of valueOf) {
   const ref = value.match(/^\$\{(_[A-Z0-9_]+)\}$/);
