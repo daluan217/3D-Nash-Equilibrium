@@ -181,6 +181,84 @@ same category of error this log exists to correct.
 
 ---
 
+## 2026-08-31 — FIX WINDOW 1: three gate fixes
+
+Daniel's ruling arrived during this window and defines the instrument set:
+
+> "I do not want the model to be rewritten deterministically before display.
+> Rung 3 is the lowest rung I would go. All remaining inaccuracies need to be
+> fixed without jeopardizing any more prose."
+
+So post-hoc rewriting of model output is CLOSED — not a flag, not a follow-up.
+The permitted instruments are gates that REJECT a bad draw, prompt/schema
+changes that prevent it, and retraining. That makes the validator the primary
+path for every truthfulness defect, and makes its false-positive rate the number
+that matters most.
+
+### What landed
+
+| | defect | fix |
+|---|---|---|
+| **F11** | an option label MISSING passes every gate, and the save path writes literal "undefined" into the user's description | presence check in `validateScenario` (falsy test, not `=== ''`) + `useSuggestedScenario` builds the sentence per PAIR |
+| **F1** | matching language on a game whose every pure NE is a MISMATCH | `diag === pure.length \|\| anti === pure.length` → `diag === pure.length` |
+| **F12** | cross-attribution through the LETTER form ("Player A chooses when to release water", where Release Water is B's) | new screen beside the role-noun one, inside `validateScenario` |
+
+All three landed INSIDE `validateScenario`, deliberately: RED 1's oracle calls
+only `validateScenario` / `scenarioIsClaimFree` / `validateProseDirections`, so a
+new exported function would have left the oracle reporting a red acceptance test
+for a working fix — the fourth-instance shape landing in the acceptance test.
+
+### RED 1's oracle (their file, unmodified, run against my tree)
+
+    BEFORE  holes 13/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+    AFTER   holes 11/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+
+### Mutation evidence — each fix proven necessary by its own fixture
+
+| mutation | result |
+|---|---|
+| F1: revert to the `\|\|` form | F1 positive PASSES → 1 failure |
+| F11: rewrite the presence test as `v === ''` | BOTH F11 positives PASS → 2 failures |
+| F12: disable the `isTheirs` test | F12 positive PASSES → 1 failure |
+| all restored | all 9 fixtures behave as specified |
+
+The F11 mutation is the one worth keeping: `=== ''` is the spelling a careless
+fix would use, and it reports CLEAN on the exact draw it was written for,
+because the observed defect had col2 ABSENT rather than empty.
+
+### False positives — 0, and what that does not prove
+
+Replayed all 291 stored scenarios in both red corpora through the pre-fix and
+post-fix validators side by side: **0 newly rejected, 0 newly accepted**, local
+and cloud alike.
+
+Stated honestly: those corpora contain none of the three positives, so the zero
+means "adds no false positive", NOT "the checks work". The known-positive
+fixtures carry that half. RED 1's 341-draw corpus contains the real F11 and F12
+draws and is the acceptance test I cannot run on myself — they are replaying it.
+
+### One hole deliberately left open
+
+RED 1's hole #1 ("ANTI-COORD + coordinate their choices") still reaches the user,
+and it is NOT the shape defect. Its wording matches no branch of `COORD_TALK` —
+that vocabulary needs "want/incentive to coordinate", "coordination
+game/problem", or "matching the opponent's choice". Bare "coordinate their
+choices" is outside it, so no shape fix can ever close it.
+
+Widening the vocabulary was declined in this window for two reasons: bare
+"coordinate" is near-vacuous and is one of the model's stock closers, so it is
+exactly the word-list move that risks false positives against correct input; and
+changing vocabulary and shape predicate together would confound them, leaving
+any new false positive unattributable. Refiled to RED 1 as its own finding
+needing its own controls.
+
+### Gate
+
+lint 0 · `npm test` exit 0 (incl. the new section) · 86,236 tie-prose renderings,
+0 failures · e2e run separately.
+
+---
+
 ## 2026-08-31 — triage results: what blue reproduced independently
 
 A red-team finding is a claim until someone else runs it. Each of these was

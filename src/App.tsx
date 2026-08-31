@@ -698,12 +698,26 @@ export default function App() {
     const hasAllLabels = [sc.row1, sc.row2, sc.col1, sc.col2].every(Boolean);
     // Only when the labels have no field of their own to live in. With all four
     // present they are saved structurally and the description stays prose.
-    const labelSentence = hasAllLabels
-      ? ''
-      : ` A chooses between ${sc.row1} and ${sc.row2}; B chooses between ${sc.col1} and ${sc.col2}.`;
-    const description = `${sc.description ?? ''}${
-      [sc.row1, sc.row2, sc.col1, sc.col2].some(Boolean) ? labelSentence : ''
-    }`.trim();
+    //
+    // THE FALLBACK USED TO INTERPOLATE THE HOLE IT EXISTS TO COVER (RED 1 F11).
+    // This branch runs precisely when a label is MISSING, and it then wrote
+    // `${sc.col2}` into the sentence regardless — so the draw that emitted col1
+    // plus invented keys day1/day2 saved the user the sentence "B chooses
+    // between Night Work and undefined." The branch written to handle the
+    // missing-label case was the one that printed it.
+    //
+    // Built per PAIR now, so a partial draw keeps whatever it actually supplied.
+    // Note what is deliberately NOT done: the guard below was
+    // `[row1,row2,col1,col2].some(Boolean)`, and tightening THAT to
+    // `hasAllLabels` would have silently dropped the labels a partial draw did
+    // provide — trading a visible "undefined" for invisible data loss, which is
+    // the worse of the two failures because nothing on screen reveals it.
+    const pair = (who: string, a?: string, b?: string) =>
+      a && b ? `${who} chooses between ${a} and ${b}` : '';
+    const parts = hasAllLabels
+      ? []
+      : [pair('A', sc.row1, sc.row2), pair('B', sc.col1, sc.col2)].filter(Boolean);
+    const description = `${sc.description ?? ''}${parts.length ? ` ${parts.join('; ')}.` : ''}`.trim();
     // Already a saved game of this user's: route the suggestion through the
     // EDIT dialog prefilled, exactly like the save-as-new path routes through
     // the save dialog — the user reviews and can rewrite any of it before it

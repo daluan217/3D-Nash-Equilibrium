@@ -32,6 +32,7 @@ import {
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { tieProse } from './utils/tieProse';
+import { validateScenario } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -788,7 +789,96 @@ function runUnitTests() {
   testCameraRelayoutPredicate();
   testScenarioDomains();
   testFmtPayoffSubResolution();
+  testGateFixesAugust31();
   console.log('All unit tests passed.');
+}
+
+/**
+ * THE THREE GATE FIXES OF THE 2026-08-31 FIX WINDOW.
+ *
+ * Every check below ships with at least one KNOWN-POSITIVE draw it must flag,
+ * asserted in the same run as its negative control. That rule is not stylistic:
+ * four separate guards were found this round to be structurally unable to fire
+ * — one whose inputs the schema forbids, one formatter applied to an
+ * already-rounded value, one port assertion the kernel answers misleadingly, and
+ * one inside the red team's own instrument whose scan window had eaten the
+ * evidence and reported a clean zero. CLAUDE.md already records the same shape
+ * in `_gen/verify_geom.ts`. A green number from a check that cannot fire is
+ * worse than no check, so each fixture here is a draw observed in the wild.
+ */
+function testGateFixesAugust31() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const MATCH: GamePayoffs = { a11: 2, a12: 0, a21: 0, a22: 1, b11: 2, b12: 0, b21: 0, b22: 1 };
+  const PD_LOCAL: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+
+  // ── F11: an option with no name at all ────────────────────────────────────
+  // Verbatim draw: the model emitted col1 plus INVENTED keys day1/day2, so col2
+  // is ABSENT rather than empty. Every distinctness check short-circuits on a
+  // falsy label, so nothing examined it and the whole gate passed. Downstream it
+  // reached the user's SAVED description as "...and undefined".
+  const saffron: any = {
+    name: 'Saffron Harvest Labour', row1: 'Early Harvest', row2: 'Late Harvest',
+    col1: 'Night Work', day1: 'Morning Work', day2: 'Evening Work', storyClaims: null,
+    description: 'A farmer chooses between Early Harvest and Late Harvest for his saffron crop. A nearby worker chooses between Night Work and Day Work for the same harvest period.',
+  };
+  assert(!validateScenario(saffron, PD_LOCAL).ok,
+    'F11: a scenario whose col2 is ABSENT must be rejected — the observed draw invented day1/day2');
+  // The distinction that IS the defect: a check written against `=== ""` reports
+  // clean on the very draw it was written for.
+  assert(!validateScenario({ ...saffron, col2: '   ' }, PD_LOCAL).ok,
+    'F11: a whitespace-only label must be rejected too');
+  assert(validateScenario({ ...saffron, col2: 'Day Work' }, PD_LOCAL).ok,
+    'F11 CONTROL: with all four labels present the same scenario must pass');
+
+  // ── F1: matching language on a game whose every pure NE is a MISMATCH ─────
+  // The shape gate read `diag === pure.length || anti === pure.length`, which
+  // conflates "has a matching-or-mismatching structure" with "matching language
+  // is true here" — so the screen skipped exactly the games where it is false.
+  const coordSc = (d: string) => ({
+    name: 'X', row1: 'Morning Harvest', row2: 'Evening Harvest',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const MATCH_TALK = "Both cooperatives want to match the opponent's choice for the drying season.";
+  assert(!validateScenario(coordSc(MATCH_TALK), ANTI).ok,
+    'F1: matching language must be caught where every pure equilibrium is a MISMATCH');
+  // The pair that matters: same sentence, different matrix. Only the game differs.
+  assert(validateScenario(coordSc(MATCH_TALK), MATCH).ok,
+    'F1 CONTROL: the identical sentence on a genuine matching game must still pass');
+  assert(validateScenario(coordSc('A seaweed cooperative picks a drying slot while a neighbouring firm picks a window.'), ANTI).ok,
+    'F1 CONTROL: plain scene-setting on the mismatch game must still pass');
+
+  // ── F12: cross-attribution through the LETTER form ───────────────────────
+  // The role-noun misattribution check fires only on declared actor nouns and
+  // has never executed on a model-invented scenario, because the cloud schema
+  // forbids actorA/actorB. The letter form went unscreened because it was
+  // assumed unambiguous; this is the counterexample.
+  const orchard = {
+    name: 'Orchard Frost Watch', row1: 'Early Harvest', row2: 'Late Harvest',
+    col1: 'Release Water', col2: 'Hold Water', storyClaims: null,
+  };
+  const S12 = 'An orchard manager, Player A, chooses between Early Harvest and Late Harvest for the season. A regional water cooperative, Player B, chooses between Release Water and Hold Water for the same fields.';
+  assert(!validateScenario({ ...orchard, description: `${S12} Player A chooses when to release water, and Player B chooses how to manage it.` } as any, ANTI).ok,
+    'F12: "Player A chooses when to release water" must be caught — Release Water is B\'s option');
+  // The negative half matters as much: this is the CORRECT letter prose and it
+  // appears in most letter-using draws. A screen that flags it is unshippable.
+  assert(validateScenario({ ...orchard, description: S12 } as any, ANTI).ok,
+    'F12 CONTROL: correct letter prose naming each player\'s own options must pass');
+  assert(validateScenario({ ...orchard, description: `${S12} Player A chooses Early Harvest.` } as any, ANTI).ok,
+    'F12 CONTROL: a letter naming its OWN option must pass');
+
+  // ── F11, the save path (App.tsx useSuggestedScenario) ────────────────────
+  // Source-level, in the style of the other App.tsx invariants here: the
+  // fallback sentence must be built from the pairs that EXIST. Asserting on the
+  // source is the only way to guard a branch that lives inside a component.
+  const appSrc = readFileForContract('src/App.tsx', 'utf8');
+  assert(/const pair = \(who: string, a\?: string, b\?: string\) =>\s*\n?\s*a && b \?/.test(appSrc),
+    'F11 save path: the label sentence must be built per PAIR, so a partial draw keeps what it supplied');
+  assert(!/B chooses between \$\{sc\.col1\} and \$\{sc\.col2\}/.test(appSrc),
+    'F11 save path: the old template interpolated a missing label straight into the saved description');
+  assert(!/\[sc\.row1, sc\.row2, sc\.col1, sc\.col2\]\.some\(Boolean\) \? labelSentence/.test(appSrc),
+    'F11 save path: the some(Boolean) guard gated a sentence only built correctly when all four were present');
+
+  console.log('✓ gate fixes 2026-08-31: F11 missing label (gate + save path), F1 shape gate, F12 letter-form attribution');
 }
 
 try {

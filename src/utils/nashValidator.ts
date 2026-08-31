@@ -449,6 +449,29 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   // and are ignored.
   {
     const base = (l?: string) => (l ?? '').replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    // PRESENCE BEFORE DISTINCTNESS. Every check below asks whether two labels
+    // DIFFER, and each one short-circuits on a falsy label — so a player with an
+    // option that has no name at all was examined by nothing. Caught in the wild
+    // (RED 1 F11): the model emitted col1 plus invented keys day1/day2, leaving
+    // col2 ABSENT, and the whole gate passed it. The suggestion card then renders
+    // "B: Night Work / ", and useSuggestedScenario (App.tsx) interpolates the
+    // hole into what the user SAVES — "B chooses between Night Work and
+    // undefined."
+    //
+    // The test must be falsy, not `=== ''`: the observed defect had col2
+    // MISSING rather than empty, and a check written against the empty string
+    // would have reported clean on the exact draw it was written for.
+    //
+    // OFFLINE-ONLY in practice — the cloud path sends strict structured outputs
+    // with additionalProperties:false, which rejects both the missing key and
+    // the invented ones. The local llama-server honours no schema, so `required`
+    // is advisory there and this is the only thing standing in the way.
+    for (const key of ['row1', 'row2', 'col1', 'col2'] as const) {
+      const v = sc[key];
+      if (typeof v !== 'string' || !v.trim()) {
+        issues.push(`option label ${key} is missing — every option must be named`);
+      }
+    }
     if (base(sc.row1) && base(sc.row1) === base(sc.row2)) issues.push(`row labels are not distinct ("${sc.row1}" / "${sc.row2}")`);
     if (base(sc.col1) && base(sc.col1) === base(sc.col2)) issues.push(`column labels are not distinct ("${sc.col1}" / "${sc.col2}")`);
     const cells = [[g.a11, g.b11], [g.a12, g.b12], [g.a21, g.b21], [g.a22, g.b22]];
@@ -543,6 +566,51 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   }
 
 
+  // THE LETTER FORM of the same misattribution (RED 1 F12).
+  //
+  // The check above only ever fires on ROLE NOUNS, by construction — it exists
+  // for descriptions that name the players as "the gatekeeper" INSTEAD of as A
+  // and B, and it is gated on actorA/actorB being declared. The letter form was
+  // left unscreened because it was assumed unambiguous, and that assumption was
+  // measured rather than argued ("when the model names the letters it gets the
+  // mapping right") until a counterexample turned up: "Player A chooses when to
+  // release water", where Release Water is B's column.
+  //
+  // Two reasons this is worth screening where the role-noun version struggles.
+  // "Player A" is an unambiguous token, so there is no actor mapping and no
+  // dependence on actorA/actorB — fields the cloud schema forbids, which is why
+  // the check above has never executed on a model-invented scenario. And the
+  // lookup is the same shape the file already trusts elsewhere: does the option
+  // named next belong to the other player?
+  //
+  // ANCHORING IS THE WHOLE DIFFICULTY. "An orchard manager, Player A, chooses
+  // between Early Harvest and Late Harvest" is CORRECT prose and appears in most
+  // letter-using draws, so the screen must key on a letter ADJACENT to a
+  // choosing verb and then on the option actually named — never on the letters
+  // appearing somewhere in the sentence. The enumerating form ("chooses between
+  // X and Y") is skipped outright: it names both of that player's own options
+  // and is the shape correct prose takes.
+  {
+    const LETTER_VERB = String.raw`(?:choos\w*|us\w*|play\w*|pick\w*|select\w*|takes?|opts?\s+for|goes?\s+(?:with|for))`;
+    const ownLabels = { A: [sc.row1, sc.row2], B: [sc.col1, sc.col2] } as const;
+    const re = new RegExp(
+      String.raw`\b(?:player\s+)?([AB])\b\s+${LETTER_VERB}\s+(?:when\s+to\s+|whether\s+to\s+|how\s+to\s+|to\s+)?(?:the\s+|an?\s+)?([\w' -]{2,40}?)\s*(?=[,.;]|\band\b|\bwhile\b|\bwith\b|$)`,
+      'g',
+    );
+    for (const m of desc.matchAll(re)) {
+      const who = m[1] as 'A' | 'B';
+      const named = m[2].trim();
+      // "between X and Y" enumerates that player's OWN pair — the correct form.
+      if (/^between\b/i.test(named)) continue;
+      const theirs = ownLabels[who === 'A' ? 'B' : 'A'];
+      const isTheirs = theirs.some((l) => l && new RegExp(`^(?:${labelPattern(l)})$`, 'i').test(named));
+      const isMine = ownLabels[who].some((l) => l && new RegExp(`^(?:${labelPattern(l)})$`, 'i').test(named));
+      if (isTheirs && !isMine) {
+        issues.push(`description has Player ${who} choosing "${named}", which is player ${who === 'A' ? 'B' : 'A'}'s option`);
+      }
+    }
+  }
+
   // Wordless outcome talk: a CONDITIONAL sentence attributing gain/loss to a
   // specific action combination, in a digit-free description with no declared
   // best-reply claims, is invisible to every check above — the live "the
@@ -623,11 +691,32 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     const pure = computeAllNE(g).filter((t) => t.type === 'pure');
     const diag = pure.filter((t) => (t.x === 1 && t.y === 1) || (t.x === 0 && t.y === 0)).length;
     const anti = pure.filter((t) => (t.x === 1 && t.y === 0) || (t.x === 0 && t.y === 1)).length;
-    const coordinationShape = pure.length >= 2 && (diag === pure.length || anti === pure.length);
+    // THE OR WAS THE HOLE (RED 1 F1). This read `diag === pure.length || anti
+    // === pure.length`, which conflates two different questions: "does this game
+    // have a matching-or-mismatching structure?" and "is MATCHING language true
+    // here?". On a game whose every pure equilibrium is a MISMATCH the first is
+    // yes and the second is no — and the `||` made the screen skip exactly those
+    // games. "Both cooperatives want to match the opponent's choice" passed the
+    // gate clean on A=[[0,3],[2,0]] B=[[0,2],[3,0]].
+    //
+    // Matching language is warranted only when the matching diagonal IS the
+    // whole pure equilibrium set, which is the precise mirror of the
+    // anti-coordination screen below — that one already fires only when
+    // `diag === pure.length`. Restoring the symmetry is the entire fix.
+    //
+    // This can only WIDEN the screen onto all-mismatch games, where matching
+    // language is false by construction, so it adds no false positive: every
+    // other game reaches the same verdict it did before.
+    const matchingShape = pure.length >= 2 && diag === pure.length;
     const COORD_TALK = /\b(?:(?:incentive|reason|want|wants|try|tries|aim|aims|prefer|prefers)\s+to\s+(?:match|coordinate|mirror|align\s+with|copy|imitate)|coordinat(?:e|ion)\s+(?:game|problem)|match(?:ing)?\s+(?:the\s+)?(?:opponent|other)['’]?s?\s+(?:likely\s+)?(?:choice|move|action|pick))\b/i;
     const NEGATED = /\b(?:no|not|never|little|without|rather\s+than)\s+(?:\w+\s+){0,2}(?:incentive|reason|want|need)/i;
-    if (!coordinationShape && COORD_TALK.test(desc) && !NEGATED.test(desc)) {
-      issues.push('description frames the game as coordination (matching the opponent), but its pure equilibria do not sit on matching or mismatching pairs');
+    if (!matchingShape && COORD_TALK.test(desc) && !NEGATED.test(desc)) {
+      // The wording had to change with the predicate. It used to read "do not
+      // sit on matching OR MISMATCHING pairs", which was true of the old
+      // `||` condition and is now false of the commonest case this screen
+      // catches — an all-MISMATCH game, whose equilibria do sit on mismatching
+      // pairs. An issue string is a claim about the game like any other.
+      issues.push('description frames the game as coordination (matching the opponent), but its pure equilibria do not all sit on matching pairs');
     }
     // The mirror case (C13 draw 25): a pure COORDINATION game — every pure
     // equilibrium on the matching diagonal — described as one where you want
