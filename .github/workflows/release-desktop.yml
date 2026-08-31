@@ -49,7 +49,18 @@ jobs:
        github.event.workflow_run.event == 'workflow_run')
     runs-on: macos-latest
     steps:
+      # workflow_run resets GITHUB_SHA to the DEFAULT BRANCH HEAD, not the
+      # commit that was verified. Without an explicit ref, a merge landing on
+      # main between Live smoke finishing and this job starting would be built
+      # into the DMG having never been smoke-tested — the exact hole this whole
+      # gating chain exists to close. head_sha is the verified commit (checked
+      # against a real run: Live smoke's head_sha == the Test commit's sha);
+      # the fallback covers workflow_dispatch, where the event object is empty.
+      # No step here pushes to git (the DMG goes to GCS), so drop the token.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:
