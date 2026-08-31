@@ -1,7 +1,7 @@
 {
   "name": "nash-equilibrium-simulator",
   "private": true,
-  "version": "0.0.95",
+  "version": "0.0.96",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -77,9 +77,19 @@
     "files": [
       "dist/**/*",
       "electron-main.cjs",
+      "electron-llama.cjs",
       "electron-preload.cjs",
       "db.json"
     ],
-    "asar": true
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "local-model",
+        "to": "local-model",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   }
 }

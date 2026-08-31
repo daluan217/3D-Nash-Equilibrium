@@ -45,13 +45,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build macOS DMG
-        # Build the bundle, then package. --publish never stops electron-builder
-        # from trying to push a GitHub release (we upload to GCS ourselves).
-        run: |
-          npm run build
-          npx electron-builder --publish never
-
+      # Auth happens BEFORE the build now: the DMG ships the offline explainer
+      # (Daniel's one-package decision, 2026-08-31), and the model comes out of
+      # GCS at build time — a 600MB GGUF has no business in git.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -59,6 +55,39 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Bundle the offline explainer (llama-server + model)
+        env:
+          # The shipping local model. Swap this one line to ship a different one.
+          MODEL_URI: gs://nash-finetune-d-nash-equilibrium/gguf_scenario/nash-scenario-domain-0.6b-Q8_0.gguf
+          # Pinned llama.cpp release for the server binary; bump deliberately.
+          LLAMA_TAG: b10727
+        run: |
+          set -euo pipefail
+          mkdir -p local-model
+          echo "fetching model: $MODEL_URI"
+          gcloud storage cp "$MODEL_URI" local-model/
+          echo "fetching llama-server ($LLAMA_TAG, macos-arm64)"
+          curl -fsSL -o /tmp/llama.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/llama-$LLAMA_TAG-bin-macos-arm64.tar.gz"
+          tar -xzf /tmp/llama.tar.gz -C /tmp
+          # The release layout is FLAT: llama-$LLAMA_TAG/{llama-server,*.dylib}.
+          # llama-server is a thin shim that resolves its dylibs via @rpath next
+          # to itself, so the binary and every dylib travel together.
+          cp "/tmp/llama-$LLAMA_TAG/llama-server" local-model/
+          cp "/tmp/llama-$LLAMA_TAG/"*.dylib local-model/
+          chmod +x local-model/llama-server
+          ls -la local-model/ | awk '{print $5, $9}'
+          # Refuse to ship a bundle that cannot possibly work.
+          test -s local-model/llama-server
+          ls local-model/*.gguf >/dev/null
+
+      - name: Build macOS DMG
+        # Build the bundle, then package. --publish never stops electron-builder
+        # from trying to push a GitHub release (we upload to GCS ourselves).
+        run: |
+          npm run build
+          npx electron-builder --publish never
 
       - name: Upload DMG and version manifest to GCS
         env:

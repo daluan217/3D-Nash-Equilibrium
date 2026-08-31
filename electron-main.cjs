@@ -76,12 +76,27 @@ if (!gotTheLock) {
     }
   };
 
+  // Boot the bundled offline model FIRST, then the Express server — the server
+  // reads REPORT_MODEL and the rung-3 flags at module load, so the environment
+  // must be settled before require(). If the bundle is missing or unhealthy the
+  // app runs exactly as before: the report route falls back to its documented
+  // deterministic path. The window is NOT held hostage to the model loading;
+  // llama-server warms up in the background of the app's own startup.
+  const { startLocalModel, stopLocalModel } = require('./electron-llama.cjs');
+  const localModelReady = startLocalModel(console).catch((err) => {
+    console.error('[local-model] failed to start:', err);
+    return false;
+  });
+  app.on('will-quit', () => stopLocalModel());
+
   // Boot our compiled full-stack Express server inside Electron
-  try {
-    require('./dist/server.cjs');
-  } catch (err) {
-    console.error("Failed to start the integrated backend Express server:", err);
-  }
+  localModelReady.then(() => {
+    try {
+      require('./dist/server.cjs');
+    } catch (err) {
+      console.error("Failed to start the integrated backend Express server:", err);
+    }
+  });
 
   // The renderer reports its theme (App.tsx darkMode effect, via the preload
   // bridge) so the native window background always matches the page. Without

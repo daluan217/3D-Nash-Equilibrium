@@ -31,3 +31,4 @@ _gen/exemplars/*.json
 # Untracked from the tree on 2026-08-29; it remains in history at cfc7637 and
 # three later commits, which was accepted rather than rewriting public main.
 SOME_DESCRIPTION.md
+local-model/
