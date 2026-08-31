@@ -87,6 +87,18 @@ async function startLocalModel(log = console) {
     // artifact it writes lands in its own directory, not the app root.
     cwd: dir,
   });
+  // An unhandled 'error' on a ChildProcess THROWS, which would take the whole
+  // Electron main process down — the opposite of this module's contract. spawn
+  // fails for mundane, shippable reasons: the exec bit lost in packaging, a
+  // quarantine flag, an arch mismatch on someone else's Mac. Record it and let
+  // the health poll below report failure, so the app falls back to the
+  // deterministic report exactly as it does when no bundle is present.
+  let spawnFailed = null;
+  child.on('error', (err) => {
+    spawnFailed = err;
+    log.error('[local-model] llama-server could not start:', err.message);
+    child = null;
+  });
   child.stderr.on('data', (d) => {
     const line = d.toString();
     if (/error|failed/i.test(line)) log.error('[llama-server]', line.trim().slice(0, 300));
@@ -97,6 +109,11 @@ async function startLocalModel(log = console) {
   });
 
   const healthy = await waitHealthy(LLAMA_PORT, 60_000);
+  if (spawnFailed) {
+    log.error('[local-model] offline explainer disabled (spawn failed)');
+    stopLocalModel();
+    return false;
+  }
   if (!healthy) {
     log.error('[local-model] llama-server never became healthy — offline explainer disabled');
     stopLocalModel();

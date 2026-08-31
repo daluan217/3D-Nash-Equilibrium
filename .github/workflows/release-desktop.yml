@@ -67,6 +67,12 @@ jobs:
           MODEL_URI: gs://nash-finetune-d-nash-equilibrium/gguf_scenario/nash-scenario-domain-0.6b-Q4_K_M.gguf
           # Pinned llama.cpp release for the server binary; bump deliberately.
           LLAMA_TAG: b10727
+          # ...and pinned by CONTENT, not just by tag. This binary is copied
+          # into a signed application we hand to users, so a tag that silently
+          # changed underneath us — or a download tampered with in transit —
+          # must fail the build rather than ship. Recompute with:
+          #   shasum -a 256 llama-<tag>-bin-macos-arm64.tar.gz
+          LLAMA_SHA256: 35dff6db3b8a94ca64047223fea43c1bd574bf5af0030f37e6a0d92c53fa529e
         run: |
           set -euo pipefail
           mkdir -p local-model
@@ -75,6 +81,8 @@ jobs:
           echo "fetching llama-server ($LLAMA_TAG, macos-arm64)"
           curl -fsSL -o /tmp/llama.tar.gz \
             "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/llama-$LLAMA_TAG-bin-macos-arm64.tar.gz"
+          echo "$LLAMA_SHA256  /tmp/llama.tar.gz" | shasum -a 256 -c - \
+            || { echo "::error::llama.cpp archive digest mismatch — refusing to package it"; exit 1; }
           tar -xzf /tmp/llama.tar.gz -C /tmp
           # The release layout is FLAT: llama-$LLAMA_TAG/{llama-server,*.dylib}.
           # llama-server is a thin shim that resolves its dylibs via @rpath next
