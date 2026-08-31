@@ -218,6 +218,40 @@ Everyday domains still hand player A a timing decision more than three times in
 four. So off-domain and the monoculture are **two defects needing two fixes**;
 pruning the list addresses the first and leaves the second almost untouched.
 
+### RED 1 F11 — a missing option label reaches the user's saved data
+
+**CONFIRMED**, `_gen/blue_triage_f11.mjs`. The real draw (local model, Prisoner's
+Dilemma, domain "saffron harvest labour") emitted `col1` plus hallucinated keys
+`day1`/`day2`, leaving **`col2` undefined**:
+
+    validateScenario.ok     = true   (issues: [])
+    scenarioIsClaimFree.ok  = true
+    validateProseDirections = []
+    => SHIPPING GATE PASSES = true
+
+There is no presence check for the four option labels anywhere in the gate. The
+label-hygiene block tests DISTINCTNESS and short-circuits on a falsy first
+label, so a missing label is never examined at all.
+
+The save path then interpolates it verbatim:
+
+> "…for the same harvest period. A chooses between Early Harvest and Late
+> Harvest; B chooses between Night Work and **undefined**."
+
+The irony is worth recording because it is where a fix must look: `hasAllLabels`
+is false EXACTLY when a label is missing, and the fallback sentence is emitted
+EXACTLY in that case. The branch that exists to handle the missing-label case is
+the one that prints "undefined". Fixing the template alone still leaves the
+blank on the suggestion card; fixing the gate alone leaves the template one bad
+draw from doing it again.
+
+**Offline-only.** The cloud path sends `strict: true` with
+`additionalProperties: false`, which rejects both the missing `col2` and the
+invented `day1`/`day2`. The local llama-server is not a strict structured-outputs
+provider, so the schema's `required` is advisory there. Rate 1 in 303 gate-passing
+local draws (0.33%) — one occurrence, so an order of magnitude, not a number;
+but the mechanism is not rate-dependent, since any misspelled JSON key lands here.
+
 ### Measurement hygiene: latency in this window is VOID
 
 Load average **55** with four llama-servers and four agents running scans
