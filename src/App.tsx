@@ -81,6 +81,7 @@ import {
 
 import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
+import { colorTermsFor } from './utils/colorTerms';
 import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
@@ -1742,16 +1743,10 @@ export default function App() {
   const colorTerms = useMemo(() => {
     // "Player A"/"Player B" used to be terms here; Daniel had them dropped —
     // with the bare letters already gray, the phrases read as leftover noise.
-    const a = ['Row 1', 'Row 2'];
-    const b = ['Col 1', 'Col 2'];
-    if (scenarioForReport) {
-      for (const t of [scenarioForReport.row1, scenarioForReport.row2]) if (t) a.push(t);
-      for (const t of [scenarioForReport.col1, scenarioForReport.col2]) if (t) b.push(t);
-      const p = mergedPresets[activePreset];
-      if (p?.actorA) a.push(...p.actorA);
-      if (p?.actorB) b.push(...p.actorB);
-    }
-    return { a, b };
+    // The structural Row/Col terms live in colorTermsFor so the suggestion card
+    // and the saved description cannot disagree about how much text is colored.
+    const p = scenarioForReport ? mergedPresets[activePreset] : undefined;
+    return colorTermsFor(scenarioForReport, p?.actorA ?? [], p?.actorB ?? []);
   }, [scenarioForReport, mergedPresets, activePreset]);
 
 
@@ -3817,10 +3812,16 @@ export default function App() {
                           {llmEnvelope.report.suggestedScenario.name}
                         </p>
                         <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300 break-words">
+                          {/* Same terms this description will get once it is
+                              saved as the game's own (colorTermsFor is the one
+                              definition). Passing only the four option names
+                              here made the card color LESS than the identical
+                              text did a click later, which read as the save
+                              having changed the writing. */}
                           <ColorCoded
                             text={llmEnvelope.report.suggestedScenario.description ?? ''}
-                            aTerms={[llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean) as string[]}
-                            bTerms={[llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean) as string[]}
+                            aTerms={colorTermsFor(llmEnvelope.report.suggestedScenario).a}
+                            bTerms={colorTermsFor(llmEnvelope.report.suggestedScenario).b}
                           />
                         </p>
                         <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">

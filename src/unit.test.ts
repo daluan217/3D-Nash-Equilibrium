@@ -17,6 +17,7 @@
  */
 
 import { GamePayoffs } from './types';
+import { colorTermsFor, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import {
   EA, EB, regretA, regretB, r3,
   parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepSize, commitStepIndex,
@@ -450,6 +451,71 @@ function testGroundingPayload() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// 16. COLOR-CODING TERM PARITY
+//
+// The same scenario text appears on two surfaces: the "Scenario written for
+// this game" suggestion card, and — after the user keeps it — the saved game's
+// description. Each call site used to build its own term list, and they did not
+// match: the card passed the four option names, the saved description passed
+// those PLUS the structural Row/Col terms. Identical prose, visibly different
+// amounts of colored text, flipping at the instant of the save.
+//
+// These assert the shapes that made that possible, so the two surfaces cannot
+// drift apart again.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testColorTermParity() {
+  const sc = { row1: 'Ship Early', row2: 'Hold Back', col1: 'Audit Now', col2: 'Wait' };
+
+  // The card (no actor nouns) and a saved game (also no actor nouns, since
+  // actorA/actorB belong to built-in presets) must produce IDENTICAL terms.
+  const card = colorTermsFor(sc);
+  const saved = colorTermsFor(sc, [], []);
+  assert(JSON.stringify(card) === JSON.stringify(saved),
+    `card and saved terms differ: ${JSON.stringify(card)} vs ${JSON.stringify(saved)}`);
+
+  // The structural terms are present on BOTH — this is the exact asymmetry
+  // that shipped: the card was missing them.
+  for (const t of STRUCTURAL_A_TERMS) {
+    assert(card.a.includes(t), `player-A terms must always include "${t}"`);
+  }
+  for (const t of STRUCTURAL_B_TERMS) {
+    assert(card.b.includes(t), `player-B terms must always include "${t}"`);
+  }
+
+  // Option names land on the right player.
+  assert(card.a.includes('Ship Early') && card.a.includes('Hold Back'),
+    'row labels must be player-A terms');
+  assert(card.b.includes('Audit Now') && card.b.includes('Wait'),
+    'col labels must be player-B terms');
+  assert(!card.a.includes('Audit Now'), 'col labels must not leak into player-A terms');
+
+  // A game with no scenario still colors structural notation, and nothing else:
+  // a null scenario must not silently drop Row/Col highlighting.
+  const none = colorTermsFor(null);
+  assert(none.a.length === STRUCTURAL_A_TERMS.length && none.b.length === STRUCTURAL_B_TERMS.length,
+    `a scenario-less game should carry only structural terms, got ${JSON.stringify(none)}`);
+
+  // Missing/empty labels are dropped rather than colored as empty strings —
+  // an empty term would build a regex alternative that matches everywhere.
+  const partial = colorTermsFor({ row1: 'Only One', row2: '', col1: null, col2: undefined });
+  assert(partial.a.includes('Only One'), 'a present label must survive');
+  assert(!partial.a.some((t) => t === ''), 'empty labels must never become terms');
+  assert(partial.b.length === STRUCTURAL_B_TERMS.length,
+    `absent col labels must add nothing, got ${JSON.stringify(partial.b)}`);
+
+  // Actor nouns are additive and preset-only; they must never be attributed to
+  // the wrong player.
+  const withActors = colorTermsFor(sc, ['the striker'], ['the keeper']);
+  assert(withActors.a.includes('the striker') && !withActors.b.includes('the striker'),
+    'actorA nouns belong to player A only');
+  assert(withActors.b.includes('the keeper') && !withActors.a.includes('the keeper'),
+    'actorB nouns belong to player B only');
+
+  console.log('✓ color-coding term parity: card and saved description derive identical terms');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 
 function runUnitTests() {
   testComputeMixedNEClosedForms();
@@ -467,6 +533,7 @@ function runUnitTests() {
   testRandomGameContract();
   testTieProseUnitTable();
   testGroundingPayload();
+  testColorTermParity();
   console.log('All unit tests passed.');
 }
 
