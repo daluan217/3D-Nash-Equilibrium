@@ -146,6 +146,88 @@ Baseline gate on this branch: `npm run lint` exit 0, `npm test` passes
 
 ---
 
+## 2026-08-31 — blue's first root cause was WRONG; red refuted it with data
+
+Recorded because a retracted hypothesis is worth as much as a confirmed one,
+and because the refutation changed what a fix should aim at.
+
+Blue proposed, from the shared-label examples ("Early Dye"/"Late Dye" as BOTH
+players' options), that the model has a single contrast axis and applies it to
+both players at once. RED 2 measured it: row and column share an axis in only
+**7.6%** of local draws. 92% already give the two players different axes, so a
+fix aimed at blue's version would chase 8% and leave the 69% untouched.
+
+The real shape is per-ROW-SLOT and corpus-level: **player A is handed a TIMING
+decision in 83% of local draws, against 64% on cloud.** The shared-label cases
+are a special case of that, not its cause — when the model does reuse an axis,
+it reuses the timing one it was going to give A anyway.
+
+### Calibrating blue's classifier against red's hand labels
+
+`_gen/blue_axis_check.mjs`, run over red's corpus:
+
+| | blue (5 coarse families) | red (hand-labelled) |
+|---|---|---|
+| ROW axis TIME/SPEED, local | 80.7% | 83% |
+| ROW axis TIME/SPEED, cloud | 53.8% | 64% |
+| row/col share an axis, local | **23.6%** | **7.6%** |
+
+The TIME/SPEED share tracks — within ~2 points locally, right direction and a
+wider gap on cloud — so it goes into the series. The same-axis number does NOT:
+five coarse buckets put genuinely different decisions in one family and it
+over-reads by 3x. It is reported as an explicit UPPER BOUND labelled "trust
+red's", never under red's name. Reporting 23.6% beside red's label would be the
+same category of error this log exists to correct.
+
+---
+
+## 2026-08-31 — triage results: what blue reproduced independently
+
+A red-team finding is a claim until someone else runs it. Each of these was
+re-coded from the filed description rather than run through red's harness.
+
+| finding | filed | blue's independent reproduction |
+|---|---|---|
+| RED 1 F1 — anti-coordination games get no coordination screen | claim | **CONFIRMED.** On `A=[[0,3],[2,0]] B=[[0,2],[3,0]]` both pure NE are mismatches, so `anti === pure.length` makes `coordinationShape` TRUE and the screen is skipped. "Both cooperatives want to match the opponent's choice" passes clean. |
+| RED 1 F10 — actorA/actorB never declared | claim | **CONFIRMED AND WIDER.** 0 of 140 local AND 0 of 80 cloud. Then verified red's upgrade by reading the schema: `SCENARIO_SCHEMA` references `REPORT_SCHEMA.properties.suggestedScenario`, which has no actorA/actorB at any nesting; `providers.ts` grafts `additionalProperties:false` onto every object node and sends `strict:true`. So the fields are FORBIDDEN on the cloud path — while `report.ts:423` tells the model "you MUST list those nouns in actorA and actorB". The prompt demands data the schema rejects, and `nashValidator.ts:526` gates the whole misattribution check on it. Dead code on every path. |
+| RED 2 — specialised domains drive off-domain stories | claim | **CONFIRMED to the decimal.** Independently coded, including my own Fisher exact rather than quoting red's. |
+| blue's own "single contrast axis for both players" | blue's hypothesis | **REFUTED by red.** See above. |
+| blue's own "still gains 0.000 by switching" self-contradiction | blue's hypothesis | **NOT REPRODUCED** in 2,944 converged runs. |
+
+### RED 2's specialised-domain finding, reproduced
+
+| | blue | red |
+|---|---|---|
+| SPECIALISED domains off-domain (local) | 14/59 = **23.7%** | 23.7% |
+| EVERYDAY domains off-domain (local) | 6/110 = 5.5% | 4.7% |
+| Fisher two-sided p | **8.35e-4** | 4e-4 |
+| row pair EXACTLY "Early Harvest"/"Late Harvest" | 16.0% | 16.4% |
+| description says cooperative/co-op | 27.8% | 28.5% |
+| CLOUD, both buckets | **0.0%** | 0.0% |
+
+(The p-values differ by ~2x — a tie-inclusion convention — and both are
+decisively below 0.001. Blue's is computed in `_gen/blue_triage_specialised.mjs`.)
+
+**Blue's addition, which changes the recommendation:** pruning the specialised
+domains would NOT fix the monoculture. Row-axis TIME/SPEED by bucket:
+
+    SPECIALISED  54/59  = 91.5%
+    EVERYDAY     86/112 = 76.8%
+
+Everyday domains still hand player A a timing decision more than three times in
+four. So off-domain and the monoculture are **two defects needing two fixes**;
+pruning the list addresses the first and leaves the second almost untouched.
+
+### Measurement hygiene: latency in this window is VOID
+
+Load average **55** with four llama-servers and four agents running scans
+concurrently. Defect RATES are unaffected (they do not depend on machine load),
+but every latency figure measured in this window — mine and everyone's — is a
+statement about contention, not about the model. Do not compare run 2/3 p50 or
+p90 against any quiet-machine baseline.
+
+---
+
 ## Open leads handed to red (evidence in blue's hands, investigation in theirs)
 
 - **RED 1 — `fmtPayoff` applied at 2 of 10 payoff-printing sites.** The
