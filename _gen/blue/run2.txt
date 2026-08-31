@@ -1,0 +1,22 @@
+### redteam_local N=120 @8123 (-c 4096, no --parallel = desktop flags)  2026-08-31T22:37:55Z
+
+══════ RED TEAM — local scenario writer ══════
+games 120 (held-out + 6 adversarial shapes) · parsed 120 · shipping-gate pass 116/120 = 96.7%
+latency p50 4.52s  p90 7.52s
+
+  10x  BOTH PLAYERS share an option name (reader cannot tell whose move it is)   (8.3% of draws)
+        [held-out] row:"Early Dye"/"Late Dye"  col:"Early Dye"/"Late Dye"
+        [held-out] row:"Early Dye"/"Late Dye"  col:"Early Dye"/"Late Dye"
+        [held-out] row:"Early Booking"/"Late Booking"  col:"Early Booking"/"Late Booking"
+   4x  SHIPPING GATE rejects (no scenario shown to the user)   (3.3% of draws)
+        [held-out] description frames the game as coordination (matching the opponent), but its pure equilibria do not sit on matching or mismatching pairs
+        [held-out] column labels are not distinct ("Shared Window" / "Shared Window")
+        [held-out] column labels are not distinct ("Shared Window" / "Shared Window")
+   3x  description never mentions any option label   (2.5% of draws)
+        [held-out] A bell foundry chooses whether to cast its bell in the morning or the evening. A distributor chooses whether t
+        [held-out] A farmer is deciding whether to plant early or late in the cranberry bog. The nearby water manager is choosing
+        [held-out] A regional poultry cooperative chooses whether to Release its new flocks early or late in the season. A neighb
+   1x  degenerate repetition in a label/name   (0.8% of draws)
+        [held-out] Reserved Reserve
+
+### domain_model_eval N=60 @8123  2026-08-31T22:47:55Z
