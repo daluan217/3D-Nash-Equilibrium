@@ -144,16 +144,281 @@ export function r3(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
+// ── Typed-field input ────────────────────────────────────────────────────────
+/**
+ * The ONE conversion from a typed or pasted field to a number.
+ *
+ * Every numeric control used to answer "is this string a number?" for itself,
+ * and the same question got wrong answers pointing in OPPOSITE directions:
+ *
+ *  - The matrix editor's onChange normalised unicode minus signs; its onBlur
+ *    did not. A pasted "−4" (U+2212, what PDF/Word/LaTeX produce) was
+ *    accepted on change — every panel recomputed and named the equilibrium for
+ *    −4 — then silently reset to 0 on the way out of the cell, which is what
+ *    clicking Run does before the run starts. On A=[[−4,4],[2,0]],
+ *    B=[[1,0],[0,2]] the report went from the true (x*=0.667, y*=0.400,
+ *    E[A]=0.800) to a different game's (0.667, 0.667, 1.333).
+ *
+ *  - The start-point fields used `parseFloat(x0) || 0.217`, and 0 is falsy. So
+ *    x0 = 0 — advertised by the input's own min="0.0", and where the down
+ *    button lands from 0.010 — ran from 0.217, and the log opened
+ *    "Start (0.217, 0.500)" above a box reading 0.
+ *
+ * Both vanish once there is exactly one parser AND it signals "not a number" as
+ * `null` rather than as a substitute value: a legitimate 0 can never be mistaken
+ * for absent, and a normalisation cannot be present at one site and missing at
+ * the next. Callers choose their own fallback, explicitly.
+ *
+ * parseFloat semantics are kept deliberately: Number() would read "" as 0 and
+ * "0x10" as 16. Only the normalisation and the null contract are new.
+ */
+// U+2212 minus, U+2013/2014/2015 dashes, U+2012 figure dash, U+2010/2011
+// hyphens, U+2043 hyphen bullet, U+02D7 modifier minus, U+FF0D fullwidth,
+// U+FE63/FE58 small forms. Escapes, not glyphs: the literal characters are
+// mutually indistinguishable in a monospace diff, and this file has been bitten
+// by that five times.
+const NUMERIC_INPUT_MINUS = /[\u2212\u2013\u2014\u2015\u2012\u2010\u2011\u2043\u02D7\uFF0D\uFE63\uFE58]/g;
+const NUMERIC_INPUT_PLUS = /[\uFF0B\uFE62]/g;
+
+export function parseNumericInput(raw: string | null | undefined): number | null {
+  if (typeof raw !== 'string') return null;
+  const canonical = raw.replace(NUMERIC_INPUT_MINUS, '-').replace(NUMERIC_INPUT_PLUS, '+');
+  const v = parseFloat(canonical);
+  return Number.isFinite(v) ? v : null;
+}
+
+/** What a matrix cell commits, given exactly the string the input holds. */
+export function commitPayoffInput(raw: string | null | undefined): number {
+  const v = parseNumericInput(raw);
+  return Math.max(-100, Math.min(100, r3(v === null ? 0 : v)));
+}
+
+/**
+ * What a start coordinate commits. Only a genuinely unparseable field falls
+ * back — 0 is a legal start point, not a missing one.
+ */
+export function commitStartCoordinate(raw: string | null | undefined, fallback = 0.217): number {
+  const v = parseNumericInput(raw);
+  return Math.max(0, Math.min(1, v === null ? fallback : v));
+}
+
+/**
+ * What the shrink step / regret weight commits. Non-positive is not a legal
+ * setting for either mode, so an unusable field keeps the value in force.
+ */
+export function commitStepSize(raw: string | null | undefined, current: number): number {
+  const v = parseNumericInput(raw);
+  if (v === null || v <= 0) return current;
+  return Math.min(0.999, Math.max(0.001, r3(v)));
+}
+
+/** What the "Go to step" box commits: a step index, or null if unusable. */
+export function commitStepIndex(raw: string | null | undefined): number | null {
+  const v = parseNumericInput(raw);
+  return v === null ? null : Math.trunc(v);
+}
+
+/**
+ * The minus-sign normaliser for PROSE, which needs a narrower rule than a
+ * numeric field does.
+ *
+ * The validators used to decide this per regex, so the set of characters
+ * treated as a minus varied by call site — and failed in both directions:
+ * three checks missed 100% of false claims written with any unicode minus
+ * (measured, 400/400 x 5 spellings), while the comparative check, whose class
+ * omits U+2014/U+FF0D/U+2010, read "—4" as 4 and flagged 35% of TRUE claims
+ * as false.
+ *
+ * In prose an en/em dash is usually punctuation, so normalising it blindly
+ * would invent negative numbers. U+2212/U+FF0D/U+2010/U+2011/U+02D7 can only be
+ * arithmetic or a hyphen and convert unconditionally; an en/em dash converts
+ * only in SIGN POSITION — after start, whitespace or an opening/operator
+ * character, and immediately before a digit. So "3–5" stays a range and
+ * "5 — and" stays punctuation. \s already covers U+00A0 and U+202F.
+ */
+const PROSE_UNAMBIGUOUS_MINUS = /[\u2212\uFF0D\u2010\u2011\u02D7]/g;
+const PROSE_SIGNED_DASH = /(^|[\s(\[{$=≈≃~,:;])[\u2013\u2014\u2015\u2012](?=\d)/g;
+
+export function normalizeProseMinus(text: string): string {
+  if (typeof text !== 'string') return text;
+  return text.replace(PROSE_UNAMBIGUOUS_MINUS, '-').replace(PROSE_SIGNED_DASH, '$1-');
+}
+
+/**
+ * How much regret a QUANTISED coordinate can carry while still naming a genuine
+ * equilibrium.
+ *
+ * The simulation reports coordinates through `r3`, so each is up to 5e-4 from
+ * the true value. Regret is bilinear, so that displacement admits a residual of
+ * roughly (coordinate error) x (payoff spread) per player. Comparing against a
+ * flat 1e-6 — as this check first did — declared the app's OWN flagship preset
+ * "Settled (not an NE)": the Search Game's (1/3, 1/3) carries 6.67e-4 of purely
+ * quantisation-induced regret, and 87.8% of converged mixed runs tripped it,
+ * including guided-tour step 15. Scale the tolerance to the thing that causes
+ * it instead of guessing a constant.
+ */
+export function neTolerance(g: GamePayoffs): number {
+  return Math.max(neTolerancePlayer(g, 'A'), neTolerancePlayer(g, 'B'));
+}
+
+/**
+ * Tolerance for ONE player, scaled by THAT player's own payoff range.
+ *
+ * The global-spread version was not invariant under rescaling a SINGLE player's
+ * payoffs: on A=[[0,100],[0,-100]], B=[[0,0.399],[10,9.99]] the spread came from
+ * A's ±100, inflating the tolerance applied to B's regret 100x (0.02 -> 0.4) and
+ * certifying (1,1) — where B gains 0.399 by switching — as a pure equilibrium.
+ * Divide A's payoffs by 100 (which cannot move either player's equilibrium set)
+ * and the identical point was correctly refused. A player's own regret must be
+ * judged against a tolerance built from that player's own payoffs.
+ */
+export function neTolerancePlayer(g: GamePayoffs, who: 'A' | 'B'): number {
+  const vals = who === 'A' ? [g.a11, g.a12, g.a21, g.a22] : [g.b11, g.b12, g.b21, g.b22];
+  const spread = Math.max(...vals) - Math.min(...vals);
+  return Math.max(1e-9, 4 * 5e-4 * spread);
+}
+
+
+/**
+ * The solution-concept noun for a realised profile, decided from the
+ * COORDINATES rather than from which code path arrived or from the nearest
+ * listed equilibrium.
+ *
+ * EXACT vertex test — deliberately NOT the 3dp-rounded one. Deciding this on
+ * rounded values announced "PURE STRATEGY NASH EQUILIBRIUM REACHED" on
+ * A=[[100,0],[-100,0.09]], B=[[0,0.09],[100,-100]], whose unique equilibrium is
+ * strictly mixed at x*=200/200.09, y*=0.09/200.09 and which has NO pure
+ * equilibrium at all (every corner has a deviator). Both coordinates round to a
+ * vertex, so the rounded test called it pure. That is the exact collapse
+ * `fmtProb` refuses to perform three lines up; performing it here handed the
+ * user a false solution concept. Rounding is for DISPLAY, never for deciding
+ * what is true — render the coordinates with `fmtProb` so the printed numbers
+ * ("more than 0.999") agree with the noun instead of contradicting it.
+ */
+/**
+ * The equilibrium the run converged to — exact coordinates, exact concept.
+ *
+ * Naming the point the run STOPPED at is wrong: the shrink search can lock on
+ * the domain boundary at (1,0) while the only equilibrium is mixed at 0.99937,
+ * and the regret there IS the rounding error (0.00062 of coordinate x a slope
+ * of 40 = 0.025), so it passes the gate and the box announced a PURE
+ * equilibrium on a game with none.
+ *
+ * Recovering it by testing whether `r3(cx)` matched `r3(mixedNE.x)` was worse —
+ * a coincidence test that failed in both directions: it missed on the boundary
+ * lock (reprinting the same lie) and it hit SPURIOUSLY when a genuine pure NE
+ * at (1,1) shared three decimals with the mixed NE, printing the mixed NE's
+ * coordinates beside the pure point's payoffs.
+ *
+ * One rule instead: project the exact converged point onto the exact
+ * equilibrium set and report the nearest member. At a true pure NE the distance
+ * is 0 and the point names itself; near a mixed NE the projection lands on the
+ * mixed NE. No rounding participates in the decision.
+ */
+export function resolveProfile(g: GamePayoffs, s: Pick<SimState, 'exactX' | 'exactY'>): { x: number; y: number; concept: 'pure' | 'mixed' } {
+  const px = s.exactX, py = s.exactY;
+  let best: { x: number; y: number; d: number } | null = null;
+  for (const r of equilibriumSet(g)) {
+    const x = Math.max(r.x0, Math.min(r.x1, px));
+    const y = Math.max(r.y0, Math.min(r.y1, py));
+    const d = Math.hypot(x - px, y - py);
+    if (!best || d < best.d) best = { x, y, d };
+  }
+  if (!best) return { x: px, y: py, concept: profileConcept(px, py) };
+  return { x: best.x, y: best.y, concept: profileConcept(best.x, best.y) };
+}
+
+
+
+export function profileConcept(x: number, y: number): 'pure' | 'mixed' {
+  const atVertex = (v: number) => v === 0 || v === 1;
+  return atVertex(x) && atVertex(y) ? 'pure' : 'mixed';
+}
+
+/**
+ * Which players are ACTUALLY indifferent at (x, y).
+ *
+ * The converged box used to assume that a "mixed" profile means both players
+ * are indifferent, and printed both indifference equations. On a CONTINUUM only
+ * one player is indifferent — the other strictly prefers the pure strategy it
+ * is sitting on, which is precisely why it sits there. That box printed
+ * "A indifferent: E[Row 1] = 3.783 ≈ E[Row 2] = -0.698" — a 4.481 gap asserted
+ * as an approximate equality. Ask, never assume.
+ */
+/**
+ * `fmtProb` for KaTeX. Its non-numeric forms ("more than 0.999") are PROSE, and
+ * dropping prose into math mode renders it as concatenated italic variables —
+ * "x∗=morethan0.999". Wrap those in \text{} so the honest form stays readable;
+ * plain numbers pass through as maths.
+ */
+export function texProb(v: number): string {
+  const s = fmtProb(v);
+  return /^-?[0-9.]+$/.test(s) ? s : `\\text{${s}}`;
+}
+
+export function indifferenceAt(g: GamePayoffs, x: number, y: number): { a: boolean; b: boolean } {
+  // Per-player: the combined tolerance let A's +/-100 spread decide that B was
+  // "indifferent" across a gap of 0.3599 — 90% of B's entire payoff range.
+  const tolA = neTolerancePlayer(g, 'A');
+  const tolB = neTolerancePlayer(g, 'B');
+  const eRow1 = y * g.a11 + (1 - y) * g.a12;
+  const eRow2 = y * g.a21 + (1 - y) * g.a22;
+  const eCol1 = x * g.b11 + (1 - x) * g.b21;
+  const eCol2 = x * g.b12 + (1 - x) * g.b22;
+  return { a: Math.abs(eRow1 - eRow2) <= tolA, b: Math.abs(eCol1 - eCol2) <= tolB };
+}
+
 // ── NE computation ───────────────────────────────────────────────────────────
 export function computeMixedNE(g: GamePayoffs): { x: number; y: number } | null {
   const dY = g.a11 - g.a12 - g.a21 + g.a22;
   const dX = g.b11 - g.b21 - g.b12 + g.b22;
   if (Math.abs(dY) < 1e-9 || Math.abs(dX) < 1e-9) return null;
-  const yS = r3((g.a22 - g.a12) / dY);
-  const xS = r3((g.b22 - g.b21) / dX);
-  if (xS <= 0 || xS >= 1 || yS <= 0 || yS >= 1) return null;
-  return { x: xS, y: yS };
+  const yE = (g.a22 - g.a12) / dY;
+  const xE = (g.b22 - g.b21) / dX;
+  // Test the EXACT coordinate, then round only for reporting. Testing the
+  // ROUNDED one deleted genuine equilibria: on a=[[-2,5],[-1,3]],
+  // b=[[8.002,8],[3,7]] the equilibrium sits at x* = 0.9995002 with regret
+  // exactly 0, but r3 lifts it to 1.000 so "xS >= 1" fired and the app told the
+  // user "No standard NE found in real dimensions" while the prose named it.
+  // Same 3-decimal blind spot as the renderer's probability bug, one layer down.
+  if (xE <= 0 || xE >= 1 || yE <= 0 || yE >= 1) return null;
+  // EXACT coordinates, not rounded. Rounding here made the reported tuple
+  // (x, y, eA, eB) describe a point that is not the equilibrium, and it was the
+  // root of the prose/solver digit disagreement: the prose computed payoffs at
+  // the exact point while the label computed them at the rounded one, so the
+  // same quantity was reported as 2.316 and 2.315. One source of truth now —
+  // the exact equilibrium — with rounding applied only at DISPLAY, identically
+  // on both surfaces, so they cannot disagree.
+  return { x: xE, y: yE };
 }
+
+/**
+ * Display formatter for a probability, shared by the solver's label and the
+ * template prose so the two can never print the same quantity differently.
+ * Never collapses a strictly-interior probability onto 0 or 1 — that turned a
+ * mixed equilibrium into a pure profile that is not an equilibrium.
+ */
+export function fmtProb(v: number): string {
+  if (v === 0 || v === 1) return String(v);
+  const s = r3(v);
+  if (s === 0) return 'less than 0.001';
+  if (s === 1) return 'more than 0.999';
+  return String(s);
+}
+
+// NOTE (adversarial round 1, 2026-08-29): the mixed NE is reported at 3-dp
+// ROUNDED coordinates, and eA/eB are the expected payoffs AT THAT ROUNDED
+// PROFILE — so the tuple (x, y, eA, eB) is self-consistent, which `npm test`'s
+// soundness check enforces. The template prose instead states the payoff at the
+// EXACT equilibrium, so the two can differ in the third decimal: on
+// {a:[[6,-4],[-1,8]], b:[[-9,6],[-1,-8]]} the prose says E[A] = 2.316 (44/19)
+// and the solver label says 2.315 (at 0.318, 0.632).
+// Computing eA/eB from exact coordinates while displaying rounded ones was
+// tried and REVERTED: it made the reported tuple inconsistent and failed 99
+// test groups. Reporting exact coordinates instead would change which
+// equilibria survive the strict 0<x<1 gate (see evals/golden.ts). Both numbers
+// are defensible and internally consistent; this is a display difference, not
+// a false statement.
 
 export function computeAllNE(g: GamePayoffs): NashEquilibrium[] {
   const nes: NashEquilibrium[] = [];
@@ -187,7 +452,7 @@ export function computeAllNE(g: GamePayoffs): NashEquilibrium[] {
       x: mn.x,
       y: mn.y,
       type: 'mixed',
-      label: `Mixed NE (x*=${mn.x.toFixed(3)}, y*=${mn.y.toFixed(3)})`,
+      label: `Mixed NE (x*=${fmtProb(mn.x)}, y*=${fmtProb(mn.y)})`,
       eA: r3(EA(mn.x, mn.y, g)),
       eB: r3(EB(mn.x, mn.y, g))
     });
@@ -217,6 +482,140 @@ export function computeIndifference(g: GamePayoffs): IndifferenceStatus {
     any: aIndifferent || bIndifferent,
     both: aIndifferent && bIndifferent,
   };
+}
+
+/**
+ * Exact Nash-equilibrium SET for a 2x2 game, continua included.
+ *
+ * computeAllNE enumerates corners plus the interior mixed point, which is
+ * complete only when no player has a weak best reply. With a payoff tie the
+ * equilibrium set can be a segment (a whole edge) or the entire unit square,
+ * and prose written from the corner list is then describing a fraction of the
+ * truth. This returns the set as a union of axis-aligned rectangles in
+ * (x, y) = (P[A plays Row 1], P[B plays Col 1]) space; a point is a degenerate
+ * rectangle, an edge is a rectangle of zero width.
+ *
+ * Best replies come from the sign of a linear function:
+ *   DA(y) = y*(a11-a21) + (1-y)*(a12-a22)   > 0 -> x = 1, < 0 -> x = 0, = 0 -> any x
+ *   DB(x) = x*(b11-b12) + (1-x)*(b21-b22)   > 0 -> y = 1, < 0 -> y = 0, = 0 -> any y
+ */
+export interface Rect { x0: number; x1: number; y0: number; y1: number }
+
+const NE_EPS = 1e-9;
+
+/** Rectangles covering { (x,y) : x is a best reply to y }. */
+function brA(g: GamePayoffs): Rect[] {
+  const slope = (g.a11 - g.a21) - (g.a12 - g.a22);   // DA(y) = slope*y + c
+  const c = g.a12 - g.a22;
+  const out: Rect[] = [];
+  if (Math.abs(slope) < NE_EPS) {
+    if (Math.abs(c) < NE_EPS) return [{ x0: 0, x1: 1, y0: 0, y1: 1 }];   // indifferent everywhere
+    return [c > 0 ? { x0: 1, x1: 1, y0: 0, y1: 1 } : { x0: 0, x1: 0, y0: 0, y1: 1 }];
+  }
+  const root = -c / slope;                                            // DA(root) = 0
+  const interior = root > NE_EPS && root < 1 - NE_EPS;
+  const onSquare = root >= -NE_EPS && root <= 1 + NE_EPS;                   // a root AT y=0 or y=1 is
+  const sgnAt = (y: number) => slope * y + c;                         // still a real indifference
+  for (const [lo, hi] of (interior ? [[0, root], [root, 1]] : [[0, 1]]) as [number, number][]) {
+    const mid = (lo + hi) / 2;
+    const x = sgnAt(mid) > 0 ? 1 : 0;
+    out.push({ x0: x, x1: x, y0: lo, y1: hi });
+  }
+  if (onSquare) { const r = Math.min(1, Math.max(0, root)); out.push({ x0: 0, x1: 1, y0: r, y1: r }); }
+  return out;
+}
+
+/** Rectangles covering { (x,y) : y is a best reply to x }. */
+function brB(g: GamePayoffs): Rect[] {
+  const slope = (g.b11 - g.b12) - (g.b21 - g.b22);
+  const c = g.b21 - g.b22;
+  const out: Rect[] = [];
+  if (Math.abs(slope) < NE_EPS) {
+    if (Math.abs(c) < NE_EPS) return [{ x0: 0, x1: 1, y0: 0, y1: 1 }];
+    return [c > 0 ? { x0: 0, x1: 1, y0: 1, y1: 1 } : { x0: 0, x1: 1, y0: 0, y1: 0 }];
+  }
+  const root = -c / slope;
+  const interior = root > NE_EPS && root < 1 - NE_EPS;
+  const onSquare = root >= -NE_EPS && root <= 1 + NE_EPS;
+  const sgnAt = (x: number) => slope * x + c;
+  for (const [lo, hi] of (interior ? [[0, root], [root, 1]] : [[0, 1]]) as [number, number][]) {
+    const mid = (lo + hi) / 2;
+    const y = sgnAt(mid) > 0 ? 1 : 0;
+    out.push({ x0: lo, x1: hi, y0: y, y1: y });
+  }
+  if (onSquare) { const r = Math.min(1, Math.max(0, root)); out.push({ x0: r, x1: r, y0: 0, y1: 1 }); }
+  return out;
+}
+
+const intersect = (p: Rect, q: Rect): Rect | null => {
+  const x0 = Math.max(p.x0, q.x0), x1 = Math.min(p.x1, q.x1);
+  const y0 = Math.max(p.y0, q.y0), y1 = Math.min(p.y1, q.y1);
+  return x0 <= x1 + NE_EPS && y0 <= y1 + NE_EPS ? { x0, x1: Math.max(x0, x1), y0, y1: Math.max(y0, y1) } : null;
+};
+const contains = (big: Rect, small: Rect) =>
+  big.x0 <= small.x0 + NE_EPS && big.x1 >= small.x1 - NE_EPS && big.y0 <= small.y0 + NE_EPS && big.y1 >= small.y1 - NE_EPS;
+
+export function equilibriumSet(g: GamePayoffs): Rect[] {
+  const parts: Rect[] = [];
+  for (const p of brA(g)) for (const q of brB(g)) { const r = intersect(p, q); if (r) parts.push(r); }
+  // Drop any component contained in another (a corner sitting on an edge).
+  return parts.filter((r, i) => !parts.some((o, j) => j !== i && contains(o, r) && (o.x1 - o.x0 + o.y1 - o.y0 > r.x1 - r.x0 + r.y1 - r.y0 + NE_EPS)))
+    .filter((r, i, a) => a.findIndex((o) => Math.abs(o.x0 - r.x0) < NE_EPS && Math.abs(o.x1 - r.x1) < NE_EPS && Math.abs(o.y0 - r.y0) < NE_EPS && Math.abs(o.y1 - r.y1) < NE_EPS) === i);
+}
+
+export const kindOf = (r: Rect): 'point' | 'segment' | 'area' =>
+  r.x1 - r.x0 < NE_EPS && r.y1 - r.y0 < NE_EPS ? 'point' : (r.x1 - r.x0 > NE_EPS && r.y1 - r.y0 > NE_EPS ? 'area' : 'segment');
+
+/**
+ * Plain-language description of the equilibrium COMPONENTS that the corner
+ * model cannot express — the segments and areas returned by equilibriumSet.
+ * Isolated points are already listed by computeAllNE, so they are skipped:
+ * this exists to stop the report from silently under-reporting a continuum
+ * (a whole edge is an equilibrium set on 3 of every 4 games with a payoff tie).
+ * x = P(A plays Row 1), y = P(B plays Col 1), matching computeAllNE's labels.
+ */
+export function describeContinua(g: GamePayoffs): string[] {
+  // Use the SHARED formatter. This function carried its own copy, so every
+  // invariant won for `tieProse` and the solver label skipped it: pct(0.00049975)
+  // returned "0", and the line then claimed "x anywhere from 0 to 1" on a set
+  // that starts at 0.00049975 — at (0,1) regretB is 0.1, so the stated interval
+  // began at a NON-equilibrium. Found by an adversarial red team; 3.3% of random
+  // 3-dp matrices with a continuum print an interior coordinate as 0 or 1.
+  const pct = fmtProb;
+  // `fmtProb` may return a THRESHOLD phrase rather than a number, which reads
+  // wrong after "=" ("y = less than 0.001"). Use a preposition in that form.
+  const at = (axis: string, v: number) => {
+    const t = fmtProb(v);
+    return t.startsWith('less') ? `${axis} below 0.001`
+      : t.startsWith('more') ? `${axis} above 0.999`
+      : `${axis} = ${t}`;
+  };
+  const fixedRow = (x: number) => `Row ${x === 1 ? '1' : '2'}`;
+  const fixedCol = (y: number) => `Col ${y === 1 ? '1' : '2'}`;
+  const out: string[] = [];
+  for (const r of equilibriumSet(g)) {
+    const kind = kindOf(r);
+    if (kind === 'point') continue;
+    if (kind === 'area') {
+      out.push('Every pair of mixtures in the whole [0, 1] × [0, 1] space is an equilibrium — both players are indifferent everywhere.');
+      continue;
+    }
+    const xFixed = r.x1 - r.x0 < NE_EPS;
+    if (xFixed) {
+      const aPart = r.x0 === 0 || r.x0 === 1 ? `A plays ${fixedRow(r.x0)}` : `A mixes at ${at('x', r.x0)}`;
+      const bPart = r.y0 === 0 && r.y1 === 1
+        ? 'B plays ANY mixture (y anywhere in [0, 1])'
+        : `B mixes with y anywhere from ${pct(r.y0)} to ${pct(r.y1)}`;
+      out.push(`A continuum of equilibria: ${aPart} while ${bPart}.`);
+    } else {
+      const bPart = r.y0 === 0 || r.y0 === 1 ? `B plays ${fixedCol(r.y0)}` : `B mixes at ${at('y', r.y0)}`;
+      const aPart = r.x0 === 0 && r.x1 === 1
+        ? 'A plays ANY mixture (x anywhere in [0, 1])'
+        : `A mixes with x anywhere from ${pct(r.x0)} to ${pct(r.x1)}`;
+      out.push(`A continuum of equilibria: ${bPart} while ${aPart}.`);
+    }
+  }
+  return out;
 }
 
 // ── Random game generation ───────────────────────────────────────────────────
@@ -604,58 +1003,6 @@ export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
   state.calcY = r3(newY);
 }
 
-// ── Snapshot creator ─────────────────────────────────────────────────────────
-export function createSnapshot(s: SimState): Omit<SimState, 'running' | 'historyStack'> {
-  const segCloneA = s.pathSegmentsA.map(seg => ({ xs: seg.xs.slice(), ys: seg.ys.slice(), zs: seg.zs.slice(), mover: seg.mover }));
-  const segCloneB = s.pathSegmentsB.map(seg => ({ xs: seg.xs.slice(), ys: seg.ys.slice(), zs: seg.zs.slice(), mover: seg.mover }));
-  const ghostSegCloneA = s.ghostPathSegmentsA.map(seg => ({ xs: seg.xs.slice(), ys: seg.ys.slice(), zs: seg.zs.slice(), mover: seg.mover }));
-  const ghostSegCloneB = s.ghostPathSegmentsB.map(seg => ({ xs: seg.xs.slice(), ys: seg.ys.slice(), zs: seg.zs.slice(), mover: seg.mover }));
-  return {
-    cx: s.cx,
-    cy: s.cy,
-    calcX: s.calcX,
-    calcY: s.calcY,
-    displayX: s.displayX,
-    displayY: s.displayY,
-    startX: s.startX,
-    startY: s.startY,
-    domainLo: s.domainLo,
-    domainHi: s.domainHi,
-    domXLo: s.domXLo,
-    domXHi: s.domXHi,
-    domYLo: s.domYLo,
-    domYHi: s.domYHi,
-    stratX: s.stratX,
-    stratY: s.stratY,
-    cycleCount: s.cycleCount,
-    visitedPositions: s.visitedPositions.slice(),
-    ghostVisitedPositions: s.ghostVisitedPositions.slice(),
-    discoveredMixedX: s.discoveredMixedX,
-    discoveredMixedY: s.discoveredMixedY,
-    foundAxis: s.foundAxis,
-    converged: s.converged,
-    stepCount: s.stepCount,
-    pathSegmentsA: segCloneA,
-    pathSegmentsB: segCloneB,
-    phase1PtsA: s.phase1PtsA,
-    phase1PtsB: s.phase1PtsB,
-    ghostPathSegmentsA: ghostSegCloneA,
-    ghostPathSegmentsB: ghostSegCloneB,
-    cyclePattern: s.cyclePattern ? { ...s.cyclePattern } : null,
-    bisecting: s.bisecting,
-    bisectGoodLo: s.bisectGoodLo,
-    bisectGoodHi: s.bisectGoodHi,
-    bisectBadLo: s.bisectBadLo,
-    bisectBadHi: s.bisectBadHi,
-    ghostCyclePattern: s.ghostCyclePattern ? { ...s.ghostCyclePattern } : null,
-    ghostBisecting: s.ghostBisecting,
-    ghostBisectGoodLo: s.ghostBisectGoodLo,
-    ghostBisectGoodHi: s.ghostBisectGoodHi,
-    ghostBisectBadLo: s.ghostBisectBadLo,
-    ghostBisectBadHi: s.ghostBisectBadHi,
-  };
-}
-
 // ── Step logic ───────────────────────────────────────────────────────────────
 export function doStep(
   g: GamePayoffs,
@@ -671,8 +1018,23 @@ export function doStep(
 ) {
   if (s.converged) return;
 
-  // Save historical snapshot
-  s.historyStack.push(createSnapshot(s));
+  // The convergence delta check below needs exactly TWO NUMBERS: this step's
+  // pre-move position. It used to get them from `s.historyStack.push(
+  // createSnapshot(s))` — a deep clone of the entire trajectory, twelve array
+  // clones per path segment across four segment arrays. Shrink mode opens a new
+  // segment every step, so step k cloned ~k segments: O(N^2) allocation, run
+  // SYNCHRONOUSLY inside a click handler. Measured on
+  // A=[[7,-6],[-7,0]] B=[[-7,-4],[1,-6]] at the slider's own minimum lambda:
+  // 69MB at 500 steps, 559MB at 1500, 2.7GB at 3000, and an OOM at 5000 even
+  // with an 8GB heap. In the browser the renderer died outright, with ZERO
+  // console errors — a single Step click was enough, which is what isolates it
+  // to this precompute rather than to Plotly.
+  //
+  // Nothing else in the codebase ever read the stack: App.tsx only ever wrote
+  // `historyStack: []`, and Back/"Go to step" are implemented by replayToStep,
+  // not by undo. So the stack had exactly one consumer, reading exactly the
+  // element it had just pushed.
+  const prevCx = s.cx, prevCy = s.cy;
 
   const pureNEs = allNE.filter(n => n.type === 'pure');
   const mixedNE = allNE.find(n => n.type === 'mixed');
@@ -842,7 +1204,11 @@ export function doStep(
           if (s.discoveredMixedX === null) {
             s.discoveredMixedX = s.stratX;
             if (s.foundAxis === null) s.foundAxis = 'x';
-            addLog('✓ x-coordinate discovered: ' + s.stratX.toFixed(3));
+            // The Newton landing can sit exactly ON a grid endpoint (0) while
+            // the coordinate it discovered is 0.0004 — state the exact root,
+            // as every other discovery message does.
+            const _rx = computeMixedNE(g);
+            addLog('✓ x-coordinate discovered: ' + fmtProb(_rx ? _rx.x : s.stratX));
           }
         }
         if (yDone) {
@@ -850,7 +1216,8 @@ export function doStep(
           if (s.discoveredMixedY === null) {
             s.discoveredMixedY = s.stratY;
             if (s.foundAxis === null) s.foundAxis = 'y';
-            addLog('✓ y-coordinate discovered: ' + s.stratY.toFixed(3));
+            const _ry = computeMixedNE(g);
+            addLog('✓ y-coordinate discovered: ' + fmtProb(_ry ? _ry.y : s.stratY));
           }
         }
         addLog(`↺ Cycle ${s.cycleCount} → A∈[${r3(s.domXLo).toFixed(3)},${r3(s.domXHi).toFixed(3)}] B∈[${r3(s.domYLo).toFixed(3)},${r3(s.domYHi).toFixed(3)}] (regretλ=${r3(lambda)})`);
@@ -872,7 +1239,12 @@ export function doStep(
         const sB3 = nx * (g.b11 - g.b12) + (1 - nx) * (g.b21 - g.b22);
         if (Math.abs(sB3) < EPS_B && s.discoveredMixedX === null) {
           s.discoveredMixedX = r3(nx);
-          addLog('✓ x-coordinate discovered: ' + s.discoveredMixedX.toFixed(3));
+          // Speak from the EXACT solver root, not the grid landing: discovery
+          // fires when the landing is within tolerance of the root, so nx can
+          // BE 0.000 (a grid point) while the coordinate it discovered is
+          // 0.0004 — printing the landing calls a mixed coordinate 0.
+          const _p1x = computeMixedNE(g);
+          addLog('✓ x-coordinate discovered: ' + fmtProb(_p1x ? _p1x.x : nx));
         }
       } else {
         const sB3 = nx * (g.b11 - g.b12) + (1 - nx) * (g.b21 - g.b22);
@@ -880,7 +1252,8 @@ export function doStep(
         const sA3 = ny * (g.a11 - g.a21) + (1 - ny) * (g.a12 - g.a22);
         if (Math.abs(sA3) < EPS_A && s.discoveredMixedY === null) {
           s.discoveredMixedY = r3(ny);
-          addLog('✓ y-coordinate discovered: ' + s.discoveredMixedY.toFixed(3));
+          const _p1y = computeMixedNE(g);
+          addLog('✓ y-coordinate discovered: ' + fmtProb(_p1y ? _p1y.y : ny));
         }
       }
       s.calcX = r3(nx);
@@ -893,15 +1266,55 @@ export function doStep(
         s.phase1PtsB = s.pathSegmentsB.reduce((n, seg) => n + seg.xs.length, 0);
         // Use the Phase 1 domain as the starting corridor if it brackets the
         // second NE coordinate (opposite signs of the indifference function at
-        // lo and hi). If Phase 1 collapsed the domain with a large step and the
-        // bracket is lost, fall back to [0, 1].
+        // lo and hi). If the bracket is lost, EXTEND ONLY the bound on the
+        // root's side — never the whole corridor back to [0,1].
+        //
+        // The [0,1] reset erased Phase 1's work on camera: on the tab-wedge
+        // fixture A=[[7,-6],[-7,0]] B=[[-7,-4],[1,-6]] (x*=0.7, y*=0.3) Phase 1
+        // contracts the domain to exactly [y*, x*] = [0.3, 0.7] — the second
+        // root sits ON the lo boundary, so fn(lo)·fn(hi) = 0 and the old
+        // `>= 0` test read a PERFECT bracket as lost, snapping the corridor
+        // back to the full cube right after the green box had narrowed. It
+        // also made the run 3500 steps longer than the geometry needs, which
+        // is why that fixture "needs exactly 5000".
+        //
+        // A boundary root needs no reset at all: ghostStep's first flip to
+        // that boundary is within the discovery tolerance and declares the
+        // coordinate. The tolerance here is the SAME one ghostStep uses, so
+        // "keep the corridor" and "discovery will fire" can never disagree.
+        // When the root is strictly outside AND far from both bounds, the
+        // indifference line is linear with a root strictly inside (0,1) —
+        // this path only runs for games with an interior mixed NE — so the
+        // root lies beyond the bound with the smaller |fn|; extending just
+        // that bound to 0 or 1 always restores a bracket while the other
+        // bound keeps everything Phase 1 narrowed.
         const _axis = s.discoveredMixedX !== null ? 'x' : 'y';
         const _fn = _axis === 'x'
           ? (v: number) => v * (g.a11 - g.a21) + (1 - v) * (g.a12 - g.a22)
           : (v: number) => v * (g.b11 - g.b12) + (1 - v) * (g.b21 - g.b22);
-        if (_fn(s.domainLo) * _fn(s.domainHi) >= 0) {
-          s.domainLo = 0;
-          s.domainHi = 1;
+        const _det = _axis === 'x'
+          ? g.a11 - g.a12 - g.a21 + g.a22
+          : g.b11 - g.b12 - g.b21 + g.b22;
+        const _eps = Math.abs(_det) > 1e-9 ? Math.abs(_det) * 0.00065 : 0.00065;
+        const _sLo = _fn(s.domainLo);
+        const _sHi = _fn(s.domainHi);
+        if (Math.abs(_sLo) >= _eps && Math.abs(_sHi) >= _eps && _sLo * _sHi > 0) {
+          if (Math.abs(_sLo) < Math.abs(_sHi)) s.domainLo = 0;
+          else s.domainHi = 1;
+          // VERIFY the extension restored a bracket. It always does when the
+          // corridor has positive width (proof above), but Phase 1 can also
+          // contract the corridor all the way to a POINT — A[[0,1],[5,-3]]
+          // B[[-3,-5],[-5,-3]] narrows to [0.5, 0.5] with the second root
+          // y*=0.444 on the far side of the point: both |fn| are equal, the
+          // tie-break extends the wrong side, and ghost bisection then cycles
+          // on a bracket-less corridor forever (caught by the fuzz suite).
+          // A point corridor carries no narrowing information to preserve, so
+          // widening fully is honest — and a linear fn with an interior root
+          // always brackets over [0,1].
+          if (_fn(s.domainLo) * _fn(s.domainHi) > 0) {
+            s.domainLo = 0;
+            s.domainHi = 1;
+          }
         }
         s.calcX = s.domainHi;
         s.calcY = s.domainHi;
@@ -950,11 +1363,16 @@ export function doStep(
         });
       }
 
+      // The stored coordinate is r3-collapsed, so printing it directly calls a
+      // sub-resolution root (y* = 0.0004) "0.000". Speak from the EXACT solver
+      // root, exactly as the convergence message below does; fall back to the
+      // stored value only if the closed form is unavailable.
+      const _gExact = computeMixedNE(g);
       if (s.discoveredMixedY !== null && s.foundAxis === 'x') {
-        addLog('✓ y-coordinate discovered: ' + s.discoveredMixedY.toFixed(3));
+        addLog('✓ y-coordinate discovered: ' + fmtProb(_gExact ? _gExact.y : s.discoveredMixedY));
       }
       if (s.discoveredMixedX !== null && s.foundAxis === 'y') {
-        addLog('✓ x-coordinate discovered: ' + s.discoveredMixedX.toFixed(3));
+        addLog('✓ x-coordinate discovered: ' + fmtProb(_gExact ? _gExact.x : s.discoveredMixedX));
       }
 
       // Large sphere: locked coord stays fixed; unfound coord snaps visually
@@ -1005,6 +1423,10 @@ export function doStep(
   s.displayY = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(ny);
   s.cx = s.displayX;
   s.cy = s.displayY;
+  // Keep the UNROUNDED coordinate. r3 here is a display decision; recording only
+  // the rounded value left downstream code unable to tell 0.99937 from 1.
+  s.exactX = s.discoveredMixedX !== null ? s.discoveredMixedX : nx;
+  s.exactY = s.discoveredMixedY !== null ? s.discoveredMixedY : ny;
 
   const eA = r3(EA(s.cx, s.cy, g));
   const eB = r3(EB(s.cx, s.cy, g));
@@ -1016,9 +1438,10 @@ export function doStep(
 
   // Check convergence conditions
   if (pureNEs.length > 0) {
-    const prev = s.historyStack[s.historyStack.length - 1];
-    const dx = Math.abs(s.cx - (prev ? prev.cx : s.cx));
-    const dy = Math.abs(s.cy - (prev ? prev.cy : s.cy));
+    // Identical values to the old snapshot read: the snapshot was taken at the
+    // top of THIS call, before any mutation, so prev.cx was s.cx at that moment.
+    const dx = Math.abs(s.cx - prevCx);
+    const dy = Math.abs(s.cy - prevCy);
     // Require both players to have moved at least once (stepCount >= 2) before
     // declaring convergence. Otherwise, if the first mover starts exactly on its
     // own indifference line (sA=0 / sB=0 → it legitimately doesn't move), this
@@ -1028,7 +1451,18 @@ export function doStep(
       s.converged = true;
       const finalEA = r3(EA(s.cx, s.cy, g));
       const finalEB = r3(EB(s.cx, s.cy, g));
-      addLog(`━━ Pure NE: x=${s.cx.toFixed(3)}, y=${s.cy.toFixed(3)}  E[A]=${finalEA.toFixed(3)}  E[B]=${finalEB.toFixed(3)}`);
+      // STATIONARY IS NOT EQUILIBRIUM. Check the independent regret oracle
+      // before using the words "Nash equilibrium": the path can go stationary
+      // at a point a player would leave (regret 18 on the fixture in types.ts).
+      const rq = Math.max(Math.abs(regretA(s.cx, s.cy, g)), Math.abs(regretB(s.cx, s.cy, g)));
+      s.convergedIsNE = Math.abs(regretA(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'A')
+        && Math.abs(regretB(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'B');
+      // The noun comes from WHERE IT LANDED, not from the fact that this is the
+      // pure/shrink branch. This path can converge onto a continuum at a
+      // strictly interior probability, where "Pure NE" is simply false.
+      addLog(s.convergedIsNE
+        ? `━━ ${profileConcept(s.cx, s.cy) === 'pure' ? 'Pure' : 'Mixed'} NE: x=${fmtProb(s.cx)}, y=${fmtProb(s.cy)}  E[A]=${finalEA.toFixed(3)}  E[B]=${finalEB.toFixed(3)}`
+        : `━━ Settled at x=${fmtProb(s.cx)}, y=${fmtProb(s.cy)} — NOT an equilibrium (a player still gains ${rq.toFixed(3)} by switching)  E[A]=${finalEA.toFixed(3)}  E[B]=${finalEB.toFixed(3)}`);
       onConverged();
       return;
     }
@@ -1038,10 +1472,25 @@ export function doStep(
       s.cy = s.discoveredMixedY;
       s.displayX = s.cx;
       s.displayY = s.cy;
+      s.exactX = s.discoveredMixedX;
+      s.exactY = s.discoveredMixedY;
       s.converged = true;
       const finalEA = r3(EA(s.cx, s.cy, g));
       const finalEB = r3(EB(s.cx, s.cy, g));
-      addLog(`━━ Mixed NE: x=${s.cx.toFixed(3)}, y=${s.cy.toFixed(3)}  E[A]=${finalEA.toFixed(3)}  E[B]=${finalEB.toFixed(3)}`);
+      const rqm = Math.max(Math.abs(regretA(s.cx, s.cy, g)), Math.abs(regretB(s.cx, s.cy, g)));
+      s.convergedIsNE = Math.abs(regretA(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'A')
+        && Math.abs(regretB(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'B');
+      // Format from the EXACT solver coordinate, not from s.cx: the state is
+      // already r3-collapsed, so fmtProb(s.cx) was a dead no-op — a sub-
+      // resolution x printed as "0", reading as a pure strategy. And the log
+      // must fork on the flag exactly as the pure branch does; it previously
+      // always said "Mixed NE" regardless.
+      const exact = computeMixedNE(g);
+      const lx = fmtProb(exact ? exact.x : s.cx);
+      const ly = fmtProb(exact ? exact.y : s.cy);
+      addLog(s.convergedIsNE
+        ? `━━ Mixed NE: x=${lx}, y=${ly}  E[A]=${finalEA.toFixed(3)}  E[B]=${finalEB.toFixed(3)}`
+        : `━━ Settled at x=${lx}, y=${ly} — NOT an equilibrium (a player still gains ${rqm.toFixed(3)} by switching)  E[A]=${finalEA.toFixed(3)}  E[B]=${finalEB.toFixed(3)}`);
       onConverged();
       return;
     }
@@ -1071,6 +1520,8 @@ export function doStep(
       s.cycleCount++;
       s.visitedPositions = [];
       applyBisectCycleStep(s, g, defaultShrinkStep, mover);
+      s.exactX = s.discoveredMixedX !== null ? s.discoveredMixedX : Math.max(s.domainLo, Math.min(s.domainHi, s.exactX));
+      s.exactY = s.discoveredMixedY !== null ? s.discoveredMixedY : Math.max(s.domainLo, Math.min(s.domainHi, s.exactY));
       s.cx = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
       s.cy = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
       addLog(`↺ Cycle ${s.cycleCount} → domain [${r3(s.domainLo).toFixed(3)},${r3(s.domainHi).toFixed(3)}]${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
@@ -1079,4 +1530,105 @@ export function doStep(
     }
     s.visitedPositions.push(posKey);
   }
+}
+
+// ── Precomputed run history ──────────────────────────────────────────────────
+/**
+ * These three are pure simulation helpers with no React in them. They live here
+ * rather than in App.tsx so the step cap and its truncation report can be
+ * exercised by a unit test with an injected cap — the real cap now has roughly
+ * 4x headroom over the worst reachable run (measured max 4,754 steps across
+ * ~8,400 configurations), so the truncation path is unreachable from the UI and
+ * would otherwise be untested code that renders user-visible text.
+ */
+/**
+ * Was 5000, which the crash fixture converges at EXACTLY step 5000 — so the
+ * moment the O(N^2) snapshot cost was fixed and that run could finish, the cap
+ * would have cut it one step short and shown a full progress bar with Step
+ * disabled: a completed-looking UI over an unfinished run.
+ */
+export const DEFAULT_MAX_STEPS = 20000;
+
+export interface ThinSnapshot {
+  cx: number; cy: number;
+  calcX: number | null; calcY: number | null;
+  discoveredMixedX: number | null; discoveredMixedY: number | null;
+  foundAxis: 'x' | 'y' | null;
+  domainLo: number; domainHi: number;
+  converged: boolean; stepCount: number; cycleCount: number;
+}
+
+export function toThin(s: SimState): ThinSnapshot {
+  return {
+    cx: s.cx, cy: s.cy, calcX: s.calcX, calcY: s.calcY,
+    discoveredMixedX: s.discoveredMixedX, discoveredMixedY: s.discoveredMixedY,
+    foundAxis: s.foundAxis,
+    domainLo: s.domainLo, domainHi: s.domainHi,
+    converged: s.converged, stepCount: s.stepCount, cycleCount: s.cycleCount,
+  };
+}
+
+export function precomputeThinHistory(
+  initState: SimState,
+  payoffs: GamePayoffs, firstMover: 'A' | 'B', shrinkStep: number,
+  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null,
+  stepMode: 'shrink' | 'regret' = 'shrink',
+  maxSteps: number = DEFAULT_MAX_STEPS
+): { snaps: ThinSnapshot[], neState: SimState | null, truncated: boolean } {
+  const snaps: ThinSnapshot[] = [toThin(initState)];
+  const state: SimState = {
+    ...initState,
+    visitedPositions: [...initState.visitedPositions],
+    ghostVisitedPositions: [...initState.ghostVisitedPositions],
+    pathSegmentsA: initState.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+    pathSegmentsB: initState.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+    phase1PtsA: null, phase1PtsB: null,
+    ghostPathSegmentsA: [], ghostPathSegmentsB: []
+  };
+  let neState: SimState | null = null;
+  // Was 5000, which the red-team's own crash fixture converges at EXACTLY step
+  // 5000 — so the moment the O(N^2) snapshot cost was fixed and that run could
+  // finish, the cap would have silently cut it one step short and shown
+  // "4999 / 4999" with Step disabled and no pill: a completed-looking progress
+  // bar over an unfinished run. Fixing the crash would have converted a dead
+  // defect into a live one. At ~3us/step post-fix, 20000 costs ~60ms.
+  const MAX_STEPS = maxSteps;
+  while (!state.converged && snaps.length < MAX_STEPS) {
+    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; }, stepMode);
+    snaps.push(toThin(state));
+    if (neState === null && (state.discoveredMixedX !== null || state.discoveredMixedY !== null)) {
+      neState = {
+        ...state,
+        visitedPositions: [...state.visitedPositions],
+        ghostVisitedPositions: [...state.ghostVisitedPositions],
+        pathSegmentsA: state.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+        pathSegmentsB: state.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+        ghostPathSegmentsA: [], ghostPathSegmentsB: [], running: false
+      };
+    }
+  }
+  // A cap is still a cap. Report when it bound, so the caller can say so rather
+  // than let a full-looking progress bar imply the run finished.
+  return { snaps, neState, truncated: !state.converged };
+}
+
+export function replayToStep(
+  initState: SimState, targetStep: number,
+  payoffs: GamePayoffs, firstMover: 'A' | 'B', shrinkStep: number,
+  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null,
+  stepMode: 'shrink' | 'regret' = 'shrink'
+): SimState {
+  const state: SimState = {
+    ...initState,
+    visitedPositions: [...initState.visitedPositions],
+    ghostVisitedPositions: [...initState.ghostVisitedPositions],
+    pathSegmentsA: initState.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+    pathSegmentsB: initState.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+    phase1PtsA: null, phase1PtsB: null,
+    ghostPathSegmentsA: [], ghostPathSegmentsB: []
+  };
+  for (let i = 0; i < targetStep; i++) {
+    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; }, stepMode);
+  }
+  return state;
 }

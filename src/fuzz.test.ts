@@ -71,7 +71,7 @@ function isDegenerate(g: GamePayoffs): boolean {
 // ── State helpers (mirror src/test.ts) ──────────────────────────────────────────
 function createInitialState(startX: number, startY: number, g: GamePayoffs): SimState {
   return {
-    cx: startX, cy: startY, calcX: startX, calcY: startY,
+    cx: startX, cy: startY, exactX: startX, exactY: startY, calcX: startX, calcY: startY,
     displayX: startX, displayY: startY, startX, startY,
     domainLo: 0, domainHi: 1, domXLo: 0, domXHi: 1, domYLo: 0, domYHi: 1,
     stratX: startX, stratY: startY, cycleCount: 0,
@@ -86,7 +86,6 @@ function createInitialState(startX: number, startY: number, g: GamePayoffs): Sim
     bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
     ghostCyclePattern: null, ghostBisecting: false,
     ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
-    historyStack: [],
   };
 }
 
@@ -135,7 +134,6 @@ function runSim(
       // most recent snapshot (historyStack[len-1]) to measure step-to-step delta.
       // Keep a short tail so that lookup still works, while avoiding the quadratic
       // memory blowup of retaining every per-step deep clone.
-      if (state.historyStack.length > 4) state.historyStack.splice(0, state.historyStack.length - 4);
       if (!finite(state.cx) || !finite(state.cy)) { nanFound = true; break; }
     }
   } catch (err: any) {
