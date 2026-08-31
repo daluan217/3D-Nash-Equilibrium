@@ -2709,6 +2709,68 @@ function testTourMoverArgumentStaysSafe() {
   console.log('✓ latent-hazard guard: the tour never stages a mover change, so changeFirstMover cannot reset mid-act');
 }
 
+function testPerformanceBudgets() {
+  // Wall-clock budgets are deliberately ~500x the local measurement: GitHub's
+  // 2-core runners vary several-fold, and a tight budget would flake long
+  // before it caught anything. What each budget IS calibrated to catch is an
+  // ORDER-OF-MAGNITUDE complexity regression — the tab wedge was exactly that
+  // (a per-step O(N) copy turning a 1504-step run into an O(N²) heap bomb),
+  // and it shipped because no test measured any wall clock at all. The
+  // complexity-shape guards elsewhere (testRedTeamRound15BreakA's
+  // early/late ratio, testNoQuadraticSnapshotting) stay the primary defense;
+  // these budgets are the absolute backstop.
+  const BUDGET_SOLVER_MS = 5_000;        // local: ~10ms for 20k games
+  const BUDGET_PRECOMPUTE_MS = 5_000;    // local: tens of ms for 1504 steps
+  const BUDGET_BATTERY_MS = 30_000;      // local: well under a second
+
+  // 1. solver throughput — 20k random games through the full NE finder
+  let seed = 0x5EED;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const games: GamePayoffs[] = [];
+  for (let i = 0; i < 20_000; i++) {
+    const v = () => Math.round((rnd() * 2 - 1) * 10);
+    games.push({ a11: v(), a12: v(), a21: v(), a22: v(), b11: v(), b12: v(), b21: v(), b22: v() });
+  }
+  let t0 = process.hrtime.bigint();
+  let neCount = 0;
+  for (const g of games) neCount += computeAllNE(g).length;
+  const solverMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert(solverMs < BUDGET_SOLVER_MS,
+    `solver throughput regressed: 20k games took ${solverMs.toFixed(0)}ms (budget ${BUDGET_SOLVER_MS}ms; local baseline ~10ms)`);
+  assert(neCount > 20_000, `the sweep must actually exercise the solver (found ${neCount} NEs)`);
+
+  // 2. precomputeThinHistory on the crash fixture — the exact call the tab
+  //    wedge lived in (1504 steps of full state snapshots)
+  const g2: GamePayoffs = { a11: 7, b11: -7, a12: -6, b12: -4, a21: -7, b21: 1, a22: 0, b22: -6 };
+  const all2 = computeAllNE(g2);
+  t0 = process.hrtime.bigint();
+  const hist = precomputeThinHistory(createInitialState(0.217, 0.217, g2), g2, 'A', 0.001, all2, null, 'shrink');
+  const preMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert(preMs < BUDGET_PRECOMPUTE_MS,
+    `precomputeThinHistory regressed: 1504-step precompute took ${preMs.toFixed(0)}ms (budget ${BUDGET_PRECOMPUTE_MS}ms)`);
+  assert(hist.snaps.length > 1_400, `the precompute must cover the run (got ${hist.snaps.length} snapshots)`);
+
+  // 3. end-to-end battery — 200 random games must each converge inside the
+  //    step cap, together in reasonable time. This is the budget that catches
+  //    a step-count explosion (a corridor bug that turns 1,000-step runs into
+  //    20,000-step cap-outs) even when each step stays cheap.
+  t0 = process.hrtime.bigint();
+  let totalSteps = 0;
+  for (let i = 0; i < 200; i++) {
+    const g = games[i * 7 % games.length];
+    const st = simulate(g, { shrinkStep: 0.1, maxSteps: DEFAULT_MAX_STEPS });
+    totalSteps += st.stepCount;
+  }
+  const batteryMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert(batteryMs < BUDGET_BATTERY_MS,
+    `simulation battery regressed: 200 games took ${batteryMs.toFixed(0)}ms (budget ${BUDGET_BATTERY_MS}ms)`);
+  assert(totalSteps < 200 * DEFAULT_MAX_STEPS,
+    `the battery hit the step cap on some game (total ${totalSteps} steps) — a convergence regression, not a perf one`);
+
+  console.log(`✓ performance budgets: solver 20k=${solverMs.toFixed(0)}ms, precompute=${preMs.toFixed(0)}ms, `
+    + `200-game battery=${batteryMs.toFixed(0)}ms (${totalSteps} steps total)`);
+}
+
 function runTests() {
   testSolverCanonicalGames();
   testZeroSumSearchFamily();
@@ -2755,6 +2817,7 @@ function runTests() {
   testTourMoverArgumentStaysSafe();
   testJointPayoffClaim();
   testTieProse();
+  testPerformanceBudgets();
   console.log('All game-engine regression tests passed.');
 }
 

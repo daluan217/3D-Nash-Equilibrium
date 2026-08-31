@@ -65,8 +65,15 @@ if (!(await waitReady())) {
   }
 }
 
-const browser = await chromium.launch();
+// CI resilience: GitHub's 2-core runners render WebGL through SwiftShader, so
+// the whole app runs many times slower than locally — a healthy click can
+// measure 4s and a busy frame can stall one for 30s+. All waits below are
+// poll-based or generously bounded; the defect classes this suite guards
+// ("never responds", "never converges", "wrong text") fail ANY bound.
+const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+page.setDefaultTimeout(120000);
+page.setDefaultNavigationTimeout(120000);
 const consoleErrors = [];
 page.on('console', (m) => {
   if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200));
@@ -97,6 +104,7 @@ async function setSpeed(v) {
 }
 const startLine = () => page.evaluate(() =>
   [...document.querySelectorAll('p')].map((p) => (p.textContent || '').trim()).find((t) => /^Start \(/.test(t)) || '');
+void startLine;
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.locator('[aria-label="Close tour"]').click({ timeout: 5000 }).catch(() => {});
@@ -142,8 +150,13 @@ try {
   // ══ 4. start point of 0 (round 14: log said Start (0.217) over a box reading 0)
   {
     await $.x0.fill('0'); await $.x0.blur(); await page.waitForTimeout(200);
-    await $.step.click(); await page.waitForTimeout(500);
-    const line = await startLine();
+    await $.step.click();
+    // poll, don't sleep: on CI's SwiftShader runner the step can take seconds
+    // to reach the log
+    const line = await page.waitForFunction(() => {
+      const t = [...document.querySelectorAll('p')].map((p) => (p.textContent || '').trim()).find((l) => /^Start \(/.test(l));
+      return /^Start \(0\.000/.test(t || '') ? t : null;
+    }, null, { timeout: 90000 }).then((h) => h.jsonValue()).catch(() => '');
     record('x0=0 + Step opens the log "Start (0.000, …)"', /^Start \(0\.000/.test(line), line);
     await $.reset.click(); await page.waitForTimeout(300);
   }
@@ -156,11 +169,14 @@ try {
     await page.waitForTimeout(300);
     await $.stepSize.fill('0.001'); await $.stepSize.blur(); await page.waitForTimeout(200);
     const t0 = Date.now();
-    await $.step.click(); await page.waitForTimeout(50);
+    await $.step.click();
+    // poll for the progress readout instead of a fixed 50ms sleep — the click
+    // resolves before React paints on a slow runner
+    const prog = await page.waitForFunction(() => {
+      const els = [...document.querySelectorAll('span')].filter((e) => /^\d+ \/ \d+$/.test((e.textContent || '').trim()));
+      return els.length ? els.map((e) => e.textContent.trim()) : null;
+    }, null, { timeout: 90000 }).then((h) => h.jsonValue()).catch(() => []);
     const ms = Date.now() - t0;
-    const prog = await page.evaluate(() =>
-      [...document.querySelectorAll('span')].filter((e) => /^\d+ \/ \d+$/.test((e.textContent || '').trim()))
-        .map((e) => e.textContent.trim()));
     // The functional wedge guard is the progress check below (the original
     // defect NEVER advanced). This timing bound only catches "the tab froze
     // for good" — 10s because GitHub's 2-core runners measure 4s for a
@@ -226,6 +242,75 @@ try {
     const computed = /authoritative|computed/i.test(body);
     record('report renders the computed Pure NE (Row2, Col2) for the fixture', hasNE);
     record('no-key path shows the deterministic report as authoritative', computed);
+  }
+  // ══ 10. matrix edit after a jump clears the run (round 14: "Search Game,
+  //      Run to 49/49, Go to step 0, edit b22" left a STALE certified run on
+  //      the new game)
+  {
+    await $.reset.click();
+    await page.waitForTimeout(300);
+    await page.getByRole('button', { name: 'Search Game' }).first().click();
+    await page.waitForTimeout(500);
+    await $.run.click();
+    await page.waitForSelector('text=Converged', { timeout: 240000 });
+    const jump = page.locator('xpath=//span[contains(text(),"Go to step")]/following-sibling::input[1]');
+    await jump.fill('0');
+    await page.getByRole('button', { name: 'Go', exact: true }).click();
+    await page.waitForTimeout(400);
+    await $.matrix.nth(7).fill('-4');
+    await $.matrix.nth(7).blur();
+    await page.waitForTimeout(400);
+    const lines = await $.logLines.count();
+    const pill = await page.locator('text=Converged').count();
+    record('matrix edit after Go-to-step-0 clears the run', lines === 1 && pill === 0,
+      `${lines} log lines, Converged pill=${pill}`);
+  }
+
+  // ══ 11. the PURE settlement branch (check 6 exercises the mixed one; BoS
+  //      settles at a corner — the wording and the realised payoff here are
+  //      their own code path, one a red team falsified with a wrong number)
+  {
+    await $.reset.click();
+    await page.waitForTimeout(300);
+    await page.getByRole('button', { name: 'Battle of the Sexes' }).first().click();
+    await page.waitForTimeout(500);
+    await $.run.click();
+    await page.waitForSelector('text=Converged', { timeout: 240000 });
+    await page.waitForTimeout(600);
+    const body = await page.evaluate(() => document.body.innerText);
+    record('BoS converges with the pure-settlement wording',
+      body.includes('Mover priority settled') && /realised -?\d/.test(body.replace('realized', 'realised')));
+  }
+
+  // ══ 12. theme round-trip (the light/dark pairing convention — a panel left
+  //      dark "by omission" in light mode is this repo's classic regression)
+  {
+    const before = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+    await page.locator('[aria-label="Toggle dark mode"]').first().click();
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => ({
+      dark: document.documentElement.classList.contains('dark'),
+      stored: localStorage.getItem('nash_sim_theme'),
+    }));
+    record('theme toggle flips the dark class and persists it',
+      after.dark === !before && (after.stored === 'dark' || after.stored === 'light'),
+      JSON.stringify(after));
+    // restore the starting theme for anything running after this suite
+    if (after.dark !== before) {
+      await page.locator('[aria-label="Toggle dark mode"]').first().click();
+      await page.waitForTimeout(200);
+    }
+  }
+
+  // ══ 13. Reset returns the app to a fresh state (guards the default-game
+  //      restore path after two presets, a manual matrix, and a report)
+  {
+    await $.reset.click();
+    await page.waitForTimeout(400);
+    const lines = await $.logLines.count();
+    const pill = await page.locator('text=Converged').count();
+    record('Reset clears the log and the Converged pill', lines === 1 && pill === 0,
+      `${lines} log lines, Converged pill=${pill}`);
   }
 } catch (e) {
   record('suite completed without a script error', false, e.message.slice(0, 200));
