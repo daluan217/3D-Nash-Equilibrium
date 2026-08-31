@@ -61,6 +61,11 @@ jobs:
           EXPECTED_INDEX: dist/index.html
           EXPECTED_VERSION: ${{ env.REPO_VERSION }}
           LIVE_WAIT_MINUTES: '15'
+          # Deploy-verify only: a merge is exactly when a --set-env-vars
+          # regression would land, so this run pays for the two model calls
+          # that prove the rung-3 flags and provider creds survived it. The
+          # nightly monitor below stays model-free.
+          LIVE_DEEP: '1'
 
       - name: Verify the live site (monitor mode)
         if: github.event_name != 'workflow_run'
