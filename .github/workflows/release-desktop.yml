@@ -59,7 +59,12 @@ jobs:
       - name: Bundle the offline explainer (llama-server + model)
         env:
           # The shipping local model. Swap this one line to ship a different one.
-          MODEL_URI: gs://nash-finetune-d-nash-equilibrium/gguf_scenario/nash-scenario-domain-0.6b-Q8_0.gguf
+          # Q4_K_M over Q8_0 on measurement, not guesswork: identical yield
+          # (96.7%), identical diversity (60/60 distinct, 1.7% top share),
+          # identical domain adherence (100%) on the same 60 held-out games —
+          # and faster (p50 1.27s vs 1.46s) at 378MB vs 610MB. A ~510MB DMG
+          # instead of ~740MB, for free. Swap one line to ship the Q8.
+          MODEL_URI: gs://nash-finetune-d-nash-equilibrium/gguf_scenario/nash-scenario-domain-0.6b-Q4_K_M.gguf
           # Pinned llama.cpp release for the server binary; bump deliberately.
           LLAMA_TAG: b10727
         run: |
