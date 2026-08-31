@@ -11,7 +11,7 @@
     "preview": "NODE_ENV=production node dist/server.cjs",
     "clean": "rm -rf dist db.json",
     "lint": "tsc --noEmit",
-    "test": "tsx src/unit.test.ts && tsx src/test.ts && tsx src/fuzz.test.ts && tsx src/cors.contract.test.ts && V_N=4000 tsx _gen/verify_tieprose.ts",
+    "test": "tsx src/unit.test.ts && tsx src/test.ts && tsx src/fuzz.test.ts && tsx src/cors.contract.test.ts && tsx src/cloudbuild.contract.test.ts && V_N=4000 tsx _gen/verify_tieprose.ts",
     "test:integration": "node src/integration/api.test.mjs",
     "test:e2e": "node src/e2e/smoke.mjs",
     "test:live": "node src/e2e/live-smoke.mjs",

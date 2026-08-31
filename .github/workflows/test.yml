@@ -193,3 +193,70 @@ jobs:
             /tmp/e2e_smoke_failure.html
           retention-days: 7
           if-no-files-found: ignore
+
+  # The container Cloud Run actually runs. Until now nothing built it before
+  # production did: Cloud Build builds this Dockerfile on push to main, main
+  # auto-deploys, so a Dockerfile that does not build — or builds an image that
+  # does not start — took the live site down with no gate in front of it. The
+  # four jobs above all test the SOURCE; this tests the artifact.
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the image Cloud Build would build
+        run: docker build -t nash-ci:test .
+
+      # Cloud Run INJECTS $PORT and expects the container to listen on it.
+      # 8080 is deliberately not the Dockerfile's EXPOSE 3000: a server that
+      # hardcoded its port would pass a test run on 3000 and fail in
+      # production. No application env vars are supplied either — that is a
+      # fresh deploy whose environment went missing, and the container must
+      # still start and serve rather than crash-loop. (2026-08-31: production
+      # ran for 12 minutes with most of its environment gone. It stayed up.
+      # This keeps that true.)
+      - name: Start it the way Cloud Run does
+        run: |
+          docker run -d --name nash-ci -e PORT=8080 -p 8080:8080 nash-ci:test
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/api/health >/dev/null 2>&1; then
+              echo "container answered /api/health after ~$((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the container never answered on \$PORT within 120s"
+          docker logs nash-ci || true
+          exit 1
+
+      - name: The container serves the built frontend
+        run: |
+          set -euo pipefail
+          body=$(curl -fsS http://localhost:8080/)
+          echo "$body" | grep -q 'assets/index-' \
+            || { echo "::error::the page does not reference a built asset — dist/ is missing from the image"; exit 1; }
+          asset=$(echo "$body" | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)
+          curl -fsS "http://localhost:8080/$asset" > /dev/null \
+            || { echo "::error::the hashed bundle $asset 404s inside the image"; exit 1; }
+          echo "serves $asset"
+
+      # No provider key is present in the image, so the report route must take
+      # its documented deterministic path rather than erroring. This is the
+      # same contract the e2e job asserts, checked against the real container.
+      - name: The report route degrades to the deterministic path
+        run: |
+          set -euo pipefail
+          out=$(curl -fsS -X POST http://localhost:8080/api/report \
+            -H 'content-type: application/json' \
+            -d '{"payoffs":{"a11":-2,"a12":1,"a21":1,"a22":0,"b11":1,"b12":-2,"b21":-2,"b22":1}}')
+          echo "$out" | grep -q '"source":"deterministic"' \
+            || { echo "::error::unkeyed container did not fall back to the deterministic report"; echo "$out" | head -c 400; exit 1; }
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker logs nash-ci || true
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f nash-ci || true

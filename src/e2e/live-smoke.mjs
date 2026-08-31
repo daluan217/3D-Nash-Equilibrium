@@ -3,9 +3,11 @@
  * Everything else in the pyramid runs on GitHub runners against the build
  * artifact. This script verifies what the USER actually gets: the live
  * nash-equilibrium-simulator.com after the Netlify/Cloud Run deploy lands.
- * Read-only by design — no accounts are created, no game is saved, no model
- * is called (the report route is probed with an INVALID matrix, which
- * exercises routing and validation without spending a token).
+ * Read-only by design — no accounts are created and no game is saved. The
+ * default pass calls no model either (the report route is probed with an
+ * INVALID matrix, which exercises routing and validation without spending a
+ * token). LIVE_DEEP=1 adds the deploy-config checks, which DO spend two small
+ * model calls; the deploy-verify run sets it, the nightly monitor does not.
  *
  * Deploy verification: when EXPECTED_INDEX points at the index.html built by
  * the triggering Test run, the script polls the live site until it serves
@@ -126,6 +128,58 @@ if (process.env.EXPECTED_INDEX) {
   const methods = r.headers.get('access-control-allow-methods') || '';
   record('live CORS preflight allows PATCH (desktop save path)',
     r.status === 200 && methods.includes('PATCH'), `status=${r.status} methods=${methods}`);
+}
+
+// ══ 7. DEPLOY CONFIG, verified by behaviour rather than by reading env vars
+//      (LIVE_DEEP=1 — spends two small model calls, so the deploy-verify run
+//      sets it and the nightly monitor does not).
+//
+//      This is the only check in the pyramid that can see an env-var
+//      regression. `gcloud run deploy --set-env-vars` REPLACES the service's
+//      whole environment, so a name dropped from cloudbuild.yaml disappears
+//      from production silently — the site still loads, /api/health still
+//      answers 200, and the report surface just quietly falls back a rung.
+//      src/cloudbuild.contract.test.ts guards the FILE; this guards the
+//      SERVICE, which the Cloud Build trigger UI can still override.
+if (process.env.LIVE_DEEP === '1') {
+  // A non-tie fixture: reaches the payoff-template path, so `template` here
+  // can only mean NASH_PAYOFF_TEMPLATE=1 is actually set on the revision.
+  const rep = await fetch(`${BASE}/api/report`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ payoffs: { a11: -2, a12: 1, a21: 1, a22: 0, b11: 1, b12: -2, b21: -2, b22: 1 } }),
+  });
+  const j = await rep.json().catch(() => ({}));
+  record('live report runs the rung-3 templated path (NASH_PAYOFF_TEMPLATE=1)',
+    rep.status === 200 && j.source === 'template', `status=${rep.status} source=${j.source}`);
+
+  // A scenario comes back only when the provider credentials survived the
+  // deploy AND REPORT_MODEL names a reachable model. "template prose, no
+  // scenario" is the exact shape production degraded to on 2026-08-31.
+  //
+  // Check the SHAPE, not just truthiness: every field of SuggestedScenario is
+  // optional and validateScenario does not require them, so `{}` and `[]` are
+  // both truthy and would let this check pass on a scenario the UI cannot use.
+  // The four option names are the load-bearing ones — they label the matrix and
+  // drive the color-coding — so they must be non-empty strings.
+  const sc = j.report?.suggestedScenario;
+  const scLabels = ['row1', 'row2', 'col1', 'col2'];
+  const scOk = !!sc && typeof sc === 'object' && !Array.isArray(sc)
+    && scLabels.every((k) => typeof sc[k] === 'string' && sc[k].trim().length > 0);
+  record('live report still invents a usable scenario (provider creds + REPORT_MODEL intact)',
+    scOk,
+    scOk ? `scenario "${sc.name ?? '(unnamed)'}" with all four labels`
+      : `UNUSABLE — got ${JSON.stringify(sc)?.slice(0, 120) ?? 'nothing'}; creds or REPORT_MODEL may be lost in the deploy`);
+
+  // b11 === b12 forces the tie branch, which a different flag governs.
+  const tie = await fetch(`${BASE}/api/report`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ payoffs: { a11: 2, a12: 0, a21: 1, a22: 3, b11: 1, b12: 1, b21: 0, b22: 2 } }),
+  });
+  const tj = await tie.json().catch(() => ({}));
+  record('live tie game takes the templated tie path (NASH_LLM_TIES=template)',
+    tie.status === 200 && tj.source === 'template', `status=${tie.status} source=${tj.source}`);
 }
 
 const fails = results.filter((r) => !r.pass);

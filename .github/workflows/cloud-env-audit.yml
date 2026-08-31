@@ -1,0 +1,168 @@
+name: Cloud Run env audit
+
+# The layer of the pyramid that watches the DEPLOYED service rather than the
+# repo. Everything else — unit, build, integration, e2e, live smoke — verifies
+# code and behaviour. None of them can see that production is missing an
+# environment variable, because a missing variable does not throw: auth quietly
+# stops persisting sessions, mail quietly stops sending, and the report surface
+# quietly falls back a rung while every HTTP check still returns 200.
+#
+# That is not theoretical. On 2026-08-31 a hand-run
+# `gcloud run services update --set-env-vars` REPLACED the service's whole
+# environment (the flag does not merge) and production ran for ~12 minutes with
+# no AUTH_SECRET, GCS_BUCKET_NAME, SMTP_* or provider credentials. Nothing in CI
+# noticed; a human did.
+#
+# Two guards now exist, and they cover different halves:
+#   src/cloudbuild.contract.test.ts  — the repo's deploy config (credential-free,
+#                                      runs on every PR in `npm test`)
+#   this workflow                    — the live service (needs GCP credentials)
+#
+# The second is necessary because the Cloud Build trigger UI can override any
+# substitution, and a human can always run gcloud by hand. Only the deployed
+# service knows what production actually has.
+#
+# NAMES ONLY: the audit compares variable names against
+# deploy/cloudrun-env-manifest.txt and never reads a value, so its output is
+# safe in a public log.
+#
+# DEPLOY TOPOLOGY, since it cost an hour to find: a push to main fires the
+# Cloud Build trigger `2ndTrigger`, which lives in **us-west2** — not global,
+# not us-east1 where the Cloud Run service runs. `gcloud builds triggers list`
+# and `gcloud builds list` both return "Listed 0 items" unless you pass
+# --region=us-west2, which makes the whole pipeline look like it does not
+# exist. The trigger runs cloudbuild.yaml on branch ^main$ as the compute
+# service account. It defines 9 substitutions; _REPORT_MODEL, _SMTP_HOST and
+# _SMTP_PORT are NOT among them, so those take cloudbuild.yaml's defaults.
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # only used by the Workload Identity Federation path
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Preferred: Workload Identity Federation (no long-lived key material).
+      GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      # Fallback: a service-account JSON key, if WIF is not set up.
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      SERVICE: nash-equilibrium-backend
+      REGION: us-east1
+      PROJECT: d-nash-equilibrium
+      # Kept as an env var rather than inline: a `python3 -c` heredoc indented
+      # to match the YAML block would raise IndentationError on its first line.
+      REVS_PY: |
+        import json, sys
+        d = json.load(sys.stdin)
+        print(' '.join(sorted({
+            t['revisionName'] for t in d.get('status', {}).get('traffic', [])
+            if t.get('percent', 0) and t.get('revisionName')
+        })))
+    steps:
+      - uses: actions/checkout@v5
+
+      # Secrets are not readable in a job-level `if:`, so the credential check
+      # is a step that publishes an output the later steps gate on. Without
+      # credentials the job SKIPS rather than fails: this workflow must be
+      # mergeable before Daniel has wired up GCP auth, and a red X on a
+      # never-configured job would just train everyone to ignore it.
+      - name: Check for GCP credentials
+        id: creds
+        run: |
+          if [ -n "$GCP_WIF_PROVIDER" ] && [ -n "$GCP_SERVICE_ACCOUNT" ]; then
+            echo "mode=wif" >> "$GITHUB_OUTPUT"
+          elif [ -n "$GCP_SA_KEY" ]; then
+            echo "mode=key" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::No GCP credentials configured — skipping the live env audit. \
+            Set GCP_WIF_PROVIDER + GCP_SERVICE_ACCOUNT (preferred) or GCP_SA_KEY to enable it."
+          fi
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        if: steps.creds.outputs.mode == 'wif'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (service-account key)
+        if: steps.creds.outputs.mode == 'key'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        if: steps.creds.outputs.mode != 'none'
+        uses: google-github-actions/setup-gcloud@v2
+
+      # The describe call is the only place credentials are used, and it asks
+      # for env[].name — never env[].value. Nothing secret can reach the log.
+      # TWO things must match the manifest, and the 2026-08-31 incident is
+      # precisely why they are checked separately:
+      #
+      #   spec.template          what the NEXT deploy will create
+      #   status.traffic[]       what users are being served RIGHT NOW
+      #
+      # A traffic rollback repairs serving while leaving the stored template
+      # broken (that is exactly how the incident was mitigated, and why the
+      # spec had to be fixed afterwards too). A bad deploy does the reverse.
+      # Auditing only one of them would call each of those situations healthy.
+      - name: Audit the deployed environment against the manifest
+        if: steps.creds.outputs.mode != 'none'
+        run: |
+          set -uo pipefail
+          rc=0
+
+          # Capture separately from the pipe so a credentials/permission error
+          # is reported as itself rather than as "the service has no env vars".
+          if ! svc=$(gcloud run services describe "$SERVICE" \
+                --region "$REGION" --project "$PROJECT" --format=json 2>&1); then
+            echo "::error::Could not read the Cloud Run service. If this says PERMISSION_DENIED, \
+            the CI service account needs roles/run.viewer on $PROJECT — GCP_SA_KEY was created for \
+            GCS uploads (release-desktop.yml) and has no project-level Cloud Run access by default."
+            echo "$svc"
+            exit 1
+          fi
+
+          echo "── template (what the next deploy will create)"
+          printf '%s' "$svc" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(e['name'] for e in d['spec']['template']['spec']['containers'][0].get('env',[])))" \
+            | node src/deploy/env-audit.mjs || rc=1
+
+          # Every revision with a non-zero share, not just the newest: a split
+          # or a rollback can serve an environment the template knows nothing
+          # about.
+          revs=$(printf '%s' "$svc" | python3 -c "$REVS_PY")
+          if [ -z "$revs" ]; then
+            echo "::error::No revision is receiving traffic — the service is not serving."
+            exit 1
+          fi
+          for rev in $revs; do
+            echo "── serving revision $rev"
+            if ! names=$(gcloud run revisions describe "$rev" \
+                  --region "$REGION" --project "$PROJECT" \
+                  --format='value(spec.containers[0].env[].name)' 2>&1); then
+              echo "::error::Could not read revision $rev"; echo "$names"; rc=1; continue
+            fi
+            printf '%s' "$names" | node src/deploy/env-audit.mjs || rc=1
+          done
+
+          exit $rc
+
+      # A drifted service is only half the story: the revision serving traffic
+      # may not be the newest one (that is how the 2026-08-31 incident was
+      # mitigated). Surfacing it keeps a silent rollback from looking healthy.
+      - name: Report the revision actually serving traffic
+        if: steps.creds.outputs.mode != 'none'
+        run: |
+          gcloud run services describe "$SERVICE" \
+            --region "$REGION" --project "$PROJECT" \
+            --format='value(status.traffic[].revisionName,status.traffic[].percent)'
