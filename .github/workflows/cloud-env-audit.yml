@@ -25,6 +25,15 @@ name: Cloud Run env audit
 # NAMES ONLY: the audit compares variable names against
 # deploy/cloudrun-env-manifest.txt and never reads a value, so its output is
 # safe in a public log.
+#
+# DEPLOY TOPOLOGY, since it cost an hour to find: a push to main fires the
+# Cloud Build trigger `2ndTrigger`, which lives in **us-west2** — not global,
+# not us-east1 where the Cloud Run service runs. `gcloud builds triggers list`
+# and `gcloud builds list` both return "Listed 0 items" unless you pass
+# --region=us-west2, which makes the whole pipeline look like it does not
+# exist. The trigger runs cloudbuild.yaml on branch ^main$ as the compute
+# service account. It defines 9 substitutions; _REPORT_MODEL, _SMTP_HOST and
+# _SMTP_PORT are NOT among them, so those take cloudbuild.yaml's defaults.
 on:
   schedule:
     - cron: '17 4 * * *'
@@ -90,11 +99,19 @@ jobs:
       - name: Audit the deployed environment against the manifest
         if: steps.creds.outputs.mode != 'none'
         run: |
-          set -o pipefail
-          gcloud run services describe "$SERVICE" \
-            --region "$REGION" --project "$PROJECT" \
-            --format='value(spec.template.spec.containers[0].env[].name)' \
-            | node src/deploy/env-audit.mjs
+          set -uo pipefail
+          # Capture separately from the pipe so a credentials/permission error
+          # is reported as itself rather than as "the service has no env vars".
+          if ! names=$(gcloud run services describe "$SERVICE" \
+                --region "$REGION" --project "$PROJECT" \
+                --format='value(spec.template.spec.containers[0].env[].name)' 2>&1); then
+            echo "::error::Could not read the Cloud Run service. If this says PERMISSION_DENIED, \
+            the CI service account needs roles/run.viewer on $PROJECT — GCP_SA_KEY was created for \
+            GCS uploads (release-desktop.yml) and has no project-level Cloud Run access by default."
+            echo "$names"
+            exit 1
+          fi
+          printf '%s' "$names" | node src/deploy/env-audit.mjs
 
       # A drifted service is only half the story: the revision serving traffic
       # may not be the newest one (that is how the 2026-08-31 incident was
