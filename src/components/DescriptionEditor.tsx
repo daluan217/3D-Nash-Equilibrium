@@ -7,6 +7,8 @@ import React, { useRef, useState } from 'react';
 import { ColorCoded } from './ColorCoded';
 import {
   cleanUserColorTerms,
+  cleanUserColorTermPair,
+  mergeDescriptionTerms,
   USER_TERMS_MAX,
   USER_TERM_MAX_LEN,
 } from '../utils/colorTerms';
@@ -34,6 +36,8 @@ export function DescriptionEditor({
   termsA,
   termsB,
   onTermsChange,
+  baseA = [],
+  baseB = [],
   placeholder = 'What is this game about?',
   maxLength = 800,
 }: {
@@ -42,6 +46,12 @@ export function DescriptionEditor({
   termsA: string[];
   termsB: string[];
   onTermsChange: (a: string[], b: string[]) => void;
+  /** The terms the app colours automatically (structural notation and the
+   *  game's option names). Passed in so the preview renders EXACTLY what the
+   *  saved description will — without them a phrase that is also an automatic
+   *  term previews in the user's colour and then saves in the other one. */
+  baseA?: string[];
+  baseB?: string[];
   placeholder?: string;
   maxLength?: number;
 }) {
@@ -65,8 +75,8 @@ export function DescriptionEditor({
     }
     const nextA = player === 'A' ? [...termsA, term] : termsA.filter((t) => t.toLowerCase() !== term.toLowerCase());
     const nextB = player === 'B' ? [...termsB, term] : termsB.filter((t) => t.toLowerCase() !== term.toLowerCase());
-    const cleanA = cleanUserColorTerms(nextA);
-    const cleanB = cleanUserColorTerms(nextB);
+    // As a pair, so a phrase can never end up owned by both players.
+    const { a: cleanA, b: cleanB } = cleanUserColorTermPair(nextA, nextB);
     if (
       (player === 'A' && !cleanA.some((t) => t.toLowerCase() === term.toLowerCase()))
       || (player === 'B' && !cleanB.some((t) => t.toLowerCase() === term.toLowerCase()))
@@ -150,7 +160,13 @@ export function DescriptionEditor({
           {/* The preview is the honest answer to "what will this look like":
               it runs the same ColorCoded the saved description will. */}
           <p className="mt-1.5 rounded-lg bg-slate-50 p-2 text-[12px] leading-relaxed text-slate-600 dark:bg-slate-950/40 dark:text-slate-300">
-            <ColorCoded text={value} aTerms={termsA} bTerms={termsB} />
+            {/* Merged exactly as the saved description merges, so what this
+                preview shows is what the game will show. */}
+            <ColorCoded
+              text={value}
+              aTerms={mergeDescriptionTerms({ a: baseA, b: baseB }, termsA, termsB).a}
+              bTerms={mergeDescriptionTerms({ a: baseA, b: baseB }, termsA, termsB).b}
+            />
           </p>
         </>
       )}

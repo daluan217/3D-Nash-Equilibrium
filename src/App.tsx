@@ -4271,6 +4271,8 @@ export default function App() {
                   termsA={editTerms.a}
                   termsB={editTerms.b}
                   onTermsChange={(a, b) => setEditTerms({ a, b })}
+                  baseA={colorTerms.a}
+                  baseB={colorTerms.b}
                   maxLength={800}
                 />
               </div>
@@ -4473,6 +4475,8 @@ export default function App() {
                   termsA={saveTerms.a}
                   termsB={saveTerms.b}
                   onTermsChange={(a, b) => setSaveTerms({ a, b })}
+                  baseA={colorTerms.a}
+                  baseB={colorTerms.b}
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   maxLength={800}
                 />

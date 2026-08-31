@@ -58,7 +58,7 @@ const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number;
   JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
     sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
-import { cleanUserColorTerms } from "./src/utils/colorTerms";
+import { cleanUserColorTermPair } from "./src/utils/colorTerms";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -380,11 +380,12 @@ function cleanLabels(body: any, allowClear = false): Partial<Pick<SavedGame, "ro
  */
 function cleanColorTerms(body: any, allowClear = false): Partial<Pick<SavedGame, "colorTermsA" | "colorTermsB">> {
   const out: Partial<Pick<SavedGame, "colorTermsA" | "colorTermsB">> = {};
-  for (const key of ["colorTermsA", "colorTermsB"] as const) {
-    if (!(key in (body ?? {}))) continue;
-    const cleaned = cleanUserColorTerms(body?.[key]);
-    if (cleaned.length > 0 || allowClear) out[key] = cleaned;
-  }
+  // Cleaned as a PAIR: a phrase belongs to one player, and cleaning the lists
+  // independently would let a direct PATCH store it in both, after which the
+  // colour depends on which list the renderer scans first.
+  const pair = cleanUserColorTermPair(body?.colorTermsA, body?.colorTermsB);
+  if ("colorTermsA" in (body ?? {}) && (pair.a.length > 0 || allowClear)) out.colorTermsA = pair.a;
+  if ("colorTermsB" in (body ?? {}) && (pair.b.length > 0 || allowClear)) out.colorTermsB = pair.b;
   return out;
 }
 

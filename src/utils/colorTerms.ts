@@ -108,6 +108,56 @@ export function cleanUserColorTerms(input: unknown): string[] {
 }
 
 /**
+ * Clean BOTH user lists together, keeping ownership exclusive.
+ *
+ * A phrase must belong to one player. Cleaning the lists independently lets the
+ * same phrase sit in both — the editor never produces that, but a direct PATCH
+ * can — and then the colour depends on which list the renderer happens to scan
+ * first, which is not a decision anyone made. Player A wins the tie: arbitrary,
+ * but deterministic and identical on the client and the server.
+ */
+export function cleanUserColorTermPair(
+  a: unknown,
+  b: unknown,
+): { a: string[]; b: string[] } {
+  const cleanA = cleanUserColorTerms(a);
+  const ownedByA = new Set(cleanA.map((t) => t.toLowerCase()));
+  return {
+    a: cleanA,
+    b: cleanUserColorTerms(b).filter((t) => !ownedByA.has(t.toLowerCase())),
+  };
+}
+
+/**
+ * Merge the app's automatic terms with the user's explicit ones.
+ *
+ * An explicit assignment WINS: if the user marked "Row 1" for player B, the
+ * phrase is removed from player A's automatic list entirely rather than being
+ * ordered behind it. Ordering alone cannot express this — ColorCoded builds its
+ * entry list as every A term followed by every B term, so an A entry always
+ * resolves an exact tie no matter how each list is sorted internally. Removing
+ * the loser makes the ownership a property of the data instead of a property of
+ * whichever list happened to be scanned first.
+ *
+ * Exported so the editor's preview and the saved description can merge
+ * identically; a preview that disagrees with the save is the exact defect class
+ * this whole change set exists to remove.
+ */
+export function mergeDescriptionTerms(
+  base: { a: readonly string[]; b: readonly string[] },
+  userA: readonly string[],
+  userB: readonly string[],
+): { a: string[]; b: string[] } {
+  const user = cleanUserColorTermPair([...userA], [...userB]);
+  const claimed = new Set([...user.a, ...user.b].map((t) => t.toLowerCase()));
+  const keep = (t: string) => !claimed.has(t.toLowerCase());
+  return {
+    a: [...user.a, ...base.a.filter(keep)],
+    b: [...user.b, ...base.b.filter(keep)],
+  };
+}
+
+/**
  * Terms for a saved game's OWN description: the structural/scenario terms plus
  * whatever the user marked. Separate from `colorTermsFor` so that using the
  * wrong one on model prose is a visible mistake at the call site rather than a
@@ -120,9 +170,5 @@ export function descriptionColorTerms(
   userA: readonly string[] = [],
   userB: readonly string[] = [],
 ): { a: string[]; b: string[] } {
-  const base = colorTermsFor(sc, actorA, actorB);
-  return {
-    a: [...base.a, ...cleanUserColorTerms([...userA])],
-    b: [...base.b, ...cleanUserColorTerms([...userB])],
-  };
+  return mergeDescriptionTerms(colorTermsFor(sc, actorA, actorB), userA, userB);
 }

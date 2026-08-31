@@ -17,7 +17,7 @@
  */
 
 import { GamePayoffs } from './types';
-import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
+import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import { readFileSync as readFileForContract } from 'node:fs';
 import {
   EA, EB, regretA, regretB, r3,
@@ -582,6 +582,31 @@ function testUserColorTerms() {
     + 'Any other field here reaches the model prompt.');
   assert(!/\.\.\./.test(m![1]),
     'cleanScenario must not spread the client object into the prompt scenario');
+
+  // ── ownership is exclusive ──
+  // A phrase belongs to one player. The editor never produces both, but a
+  // direct PATCH can, and then the colour depends on which list the renderer
+  // scans first — a decision nobody made.
+  const pair = cleanUserColorTermPair(['Shared', 'OnlyA'], ['Shared', 'OnlyB']);
+  assert(pair.a.includes('Shared') && !pair.b.includes('Shared'),
+    'a phrase claimed by both players must resolve to exactly one (A wins)');
+  assert(pair.a.includes('OnlyA') && pair.b.includes('OnlyB'),
+    'non-conflicting terms survive on both sides');
+  assert(cleanUserColorTermPair(['x'], ['X']).b.length === 0,
+    'the conflict check is case-insensitive');
+
+  // ── the user's explicit choice outranks an automatic term ──
+  // "Row 1" is coloured for player A automatically. A user who deliberately
+  // marks it for player B must SEE player B — in the editor preview and in the
+  // saved description alike, since both render through descriptionColorTerms.
+  const overlap = descriptionColorTerms(sc, [], [], [], ['Row 1']);
+  assert(overlap.b.includes('Row 1'), "the user's assignment must be honoured");
+  assert(!overlap.a.includes('Row 1'),
+    'the automatic owner must be REMOVED, not merely ordered behind: ColorCoded scans every '
+    + 'A term before any B term, so an A entry would win the tie however the lists are sorted');
+  // The other automatic terms are untouched.
+  assert(overlap.a.includes('Row 2') && overlap.b.includes('Col 1'),
+    'reassigning one phrase must not disturb the rest');
 
   console.log('✓ user colour terms: cleaning rules hold and never cross into model prose');
 }
