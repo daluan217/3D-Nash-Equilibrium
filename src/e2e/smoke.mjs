@@ -28,6 +28,16 @@ function record(name, pass, detail) {
 // ── boot the production server (unless one is already listening) ────────────
 let server = null;
 const userData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-'));
+// Kill AND await the child's exit: process.exit() right after kill() lets a
+// retry invocation (CI runs `smoke.mjs || smoke.mjs`) race the dying server
+// for the port — waitReady would then see the OLD server still listening.
+async function killServer() {
+  if (!server) return;
+  if (server.exitCode !== null || server.signalCode !== null) return; // already exited
+  const exited = new Promise((res) => server.once('exit', res));
+  if (!server.kill('SIGKILL')) return; // couldn't signal (already dead / EPERM)
+  await exited; // SIGKILL cannot be ignored
+}
 async function waitReady() {
   for (let i = 0; i < 60; i++) {
     try {
@@ -60,7 +70,7 @@ if (!(await waitReady())) {
   server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
   if (!(await waitReady())) {
     console.error('FAIL server never became ready');
-    server?.kill('SIGKILL');
+    await killServer();
     process.exit(2);
   }
 }
@@ -107,8 +117,33 @@ const startLine = () => page.evaluate(() =>
 void startLine;
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
-  await page.locator('[aria-label="Close tour"]').click({ timeout: 5000 }).catch(() => {});
+  await dismissTour();
   await page.waitForTimeout(400);
+}
+/* The tour auto-opens ~700ms after every anonymous load (by design), and a
+ * fresh CI browser is always anonymous. Dismiss it through the
+ * viewport-anchored Exit button — the callout card's own X moves with the
+ * spotlight, and the tour's step-1 smooth-scroll can leave it unstable or
+ * off-screen (observed on CI: spotlight at top:-210px, X unreachable, and
+ * every later control click then timed out under the tour scrim). */
+async function dismissTour() {
+  try {
+    await page.locator('[aria-label="Exit tour"]').click({ timeout: 20000 });
+  } catch {
+    await page.keyboard.press('Escape');
+  }
+  // Fail LOUDLY if the tour survived: proceeding with it open turns every
+  // later click into an unrelated 120s actionability timeout (the exact
+  // flake this guards against). Poll for closure rather than one count():
+  // React lands the close asynchronously after the click resolves.
+  let dismissed = false;
+  try {
+    await page.waitForFunction(() =>
+      !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+      null, { timeout: 10000 });
+    dismissed = true;
+  } catch { /* still open after 10s — a real failure */ }
+  if (!dismissed) throw new Error('guided tour still open after Exit click + Escape');
 }
 
 try {
@@ -313,6 +348,15 @@ try {
       `${lines} log lines, Converged pill=${pill}`);
   }
 } catch (e) {
+  // Capture the failure state BEFORE closing the browser — a click timeout
+  // with no console errors is unactionable without seeing what the page
+  // looked like (what overlay was up, whether the button was even there).
+  await page.screenshot({ path: '/tmp/e2e_smoke_failure.png', fullPage: true }).catch(() => {});
+  try {
+    const fs = await import('node:fs');
+    fs.writeFileSync('/tmp/e2e_smoke_failure.html',
+      await page.content().catch(() => '<unavailable>'));
+  } catch { /* evidence capture must never mask the original failure */ }
   record('suite completed without a script error', false, e.message.slice(0, 200));
 }
 
@@ -326,7 +370,7 @@ const relevantErrors = consoleErrors.filter((t) =>
 record('no console/page errors across the whole suite', relevantErrors.length === 0,
   relevantErrors.slice(0, 3).join(' | '));
 
-if (server) server.kill('SIGKILL');
+await killServer();
 try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effort */ }
 
 const fails = results.filter((r) => !r.pass);
