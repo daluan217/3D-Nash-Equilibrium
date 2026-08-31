@@ -139,7 +139,58 @@ if (reportRef) {
   fail('REPORT_MODEL deploys empty; the report route would silently fall back to DEFAULT_MODEL');
 }
 
+// ── the images: block must name tags the build actually produces ────────────
+// Cloud Build resolves `images:` AFTER every step has run, so a tag listed
+// there but never built fails the whole build at the very end — minutes of
+// work, and no deploy.
+const builtTags = new Set<string>();
+for (const m of cloudbuild.matchAll(/'-t'\s*\n\s*-\s*'([^']+)'/g)) builtTags.add(m[1]);
+const imagesBlock = cloudbuild.match(/^images:\n((?:\s*-\s*'[^']+'\n?)+)/m);
+const listed = imagesBlock
+  ? [...imagesBlock[1].matchAll(/-\s*'([^']+)'/g)].map((x) => x[1])
+  : [];
+if (listed.length === 0) fail('cloudbuild.yaml declares no images: block');
+for (const img of listed) {
+  if (!builtTags.has(img)) {
+    fail(
+      `images: lists ${img}, which no build step tags (built: ${[...builtTags].join(', ') || 'none'}). `
+      + 'Cloud Build resolves images: last, so this fails the build after every step has run.',
+    );
+  }
+}
+
+// ── no real secret may sit in a substitution default ────────────────────────
+// The substitutions are placeholders on purpose; the real values live in the
+// Cloud Build trigger. This repo is public, so a pasted key here is a
+// disclosure, not a config mistake.
+for (const m of subsBlock.matchAll(/^ {2}(_[A-Z0-9_]+):\s*'([^']*)'\s*$/gm)) {
+  const [, key, val] = m;
+  if (/^(sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{30}|AIza[0-9A-Za-z_-]{30})/.test(val)
+      || /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(val)
+      || (/(SECRET|PASS|API_KEY|TOKEN)$/.test(key) && val.length >= 16 && !/your-|placeholder|example|CHANGE|xxx/i.test(val))) {
+    fail(`substitution ${key} looks like a REAL secret value. This file is public — keep the value in the Cloud Build trigger.`);
+  }
+}
+
+// ── the image must be production by construction ────────────────────────────
+// The server only serves dist/ when NODE_ENV=production; without it every
+// frontend request 404s while /api/health keeps answering 200, so no health
+// check can see the outage. NODE_ENV used to arrive only through the deploy's
+// --set-env-vars, which replaces the whole environment — one dropped name and
+// the entire website goes dark (revision 00168-wln, from the 2026-08-31
+// wipe, was missing exactly this). It is baked into the image now; this keeps
+// it there.
+const dockerfile = readFileSync('Dockerfile', 'utf8');
+if (!/^ENV NODE_ENV=production\s*$/m.test(dockerfile)) {
+  fail(
+    'Dockerfile must set ENV NODE_ENV=production in the runtime stage. Without it the container '
+    + 'serves 404 for the whole frontend whenever the deploy environment loses NODE_ENV, and '
+    + '/api/health still returns 200 so nothing notices.',
+  );
+}
+
 console.log(
   `✓ cloudbuild contract: ${actual.size} env names match deploy/cloudrun-env-manifest.txt; `
-  + 'rung-3 flags literal, REPORT_MODEL non-empty, substitutions all declared',
+  + 'rung-3 flags literal, REPORT_MODEL non-empty, substitutions declared, images: tags built, '
+  + 'no secret-shaped defaults, image is NODE_ENV=production by construction',
 );

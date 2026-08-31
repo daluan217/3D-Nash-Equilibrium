@@ -24,6 +24,21 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+# Production by construction, not by deployment.
+#
+# The server only serves dist/ when NODE_ENV=production; otherwise it expects a
+# Vite dev middleware and every frontend request 404s while /api/health happily
+# keeps answering 200 — an outage no health check can see. NODE_ENV used to
+# arrive ONLY through cloudbuild.yaml's --set-env-vars, and that flag REPLACES
+# the whole environment on every deploy, so one dropped name would have taken
+# the entire website down. It is not hypothetical: revision 00168-wln, from the
+# 2026-08-31 env-wipe, was missing NODE_ENV.
+#
+# Baking it into the image means the container cannot be demoted out of
+# production mode by anything that happens to the deploy environment. The
+# deploy still sets it, and the env manifest still requires it.
+ENV NODE_ENV=production
+
 # Copy package files
 COPY package*.json ./
 
