@@ -38,6 +38,16 @@ export interface PresetGame {
   row2Label?: string;
   col1Label?: string;
   col2Label?: string;
+  /**
+   * Phrases the USER marked in their own description to be colored for a
+   * player. Stored as phrases, not character ranges, so later edits to the
+   * text cannot slide the highlight onto the wrong words.
+   *
+   * These colour the description ONLY. They are never applied to model-written
+   * prose and never sent to the model — see src/utils/colorTerms.ts.
+   */
+  colorTermsA?: string[];
+  colorTermsB?: string[];
 }
 
 export interface PathSegment {
