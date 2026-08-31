@@ -358,11 +358,25 @@ export interface GenerateScenarioResult {
 /** The slim invention call behind "New AI scenario" — see SCENARIO_SCHEMA. */
 export async function generateScenario(
   g: GamePayoffs,
-  opts: { model?: string; reasoning?: ReasoningEffort } = {},
+  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string } = {},
 ): Promise<GenerateScenarioResult> {
+  // `domain` steers WHICH setting the invention uses, and nothing else.
+  //
+  // Left to itself the model returns the same few worlds: measured over 60
+  // held-out games, luna named "Satellite Scheduling" in 13 of them (21.7%),
+  // and the local distill collapses harder still. Diversity is not something a
+  // sampler can be tuned into — warming it barely moved the local model — but
+  // WHICH world to use is a free choice the caller can simply make, and the
+  // caller can rotate it. That turns the top-name share into roughly 1/|list|
+  // by construction instead of a property of the model's priors.
+  //
+  // Deliberately additive and inert: no domain, no change to the prompt.
+  const systemPrompt = opts.domain
+    ? `${SCENARIO_SYSTEM_PROMPT}\n\nSET THIS SCENARIO IN THIS DOMAIN: ${opts.domain}. Use that domain and no other. Everything else above still applies.`
+    : SCENARIO_SYSTEM_PROMPT;
   const res = await callProvider({
     model: opts.model || DEFAULT_MODEL,
-    systemPrompt: SCENARIO_SYSTEM_PROMPT,
+    systemPrompt,
     // No scenario passed on purpose: the payload's invention block applies.
     userPrompt: buildGroundingPayload(g),
     reasoning: opts.reasoning,

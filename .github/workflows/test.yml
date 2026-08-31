@@ -260,3 +260,52 @@ jobs:
       - name: Stop the container
         if: always()
         run: docker rm -f nash-ci || true
+
+  # Phones and tablets. Every job above drives a 1440x1000 desktop viewport, so
+  # nothing in CI could see a layout that overflows on a phone, a control too
+  # small for a thumb, or the thing a desktop runner structurally cannot show:
+  # a device with a fraction of the compute. This runs the real production
+  # bundle on three device profiles and then again under 4x CPU throttling
+  # (Lighthouse's "mobile" setting).
+  #
+  # Budgets are deliberately loose — CI renders WebGL through SwiftShader on two
+  # cores, so exact milliseconds are noise. These catch "the app no longer works
+  # on a phone", not a 200ms regression.
+  mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the bundle built by the build job
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install headless Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the device + compute suite
+        id: mobile
+        run: |
+          if node src/e2e/mobile.mjs; then
+            echo "mobile_outcome=pass" >> "$GITHUB_OUTPUT"
+          elif node src/e2e/mobile.mjs; then
+            echo "mobile_outcome=pass-after-retry" >> "$GITHUB_OUTPUT"
+          else
+            echo "mobile_outcome=fail" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+        env:
+          MOBILE_PORT: '3097'
+          MOBILE_BASE: http://localhost:3097

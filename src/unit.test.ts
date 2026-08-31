@@ -17,6 +17,8 @@
  */
 
 import { GamePayoffs } from './types';
+import { isCameraRelayout } from './components/PlotlyView';
+import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import { readFileSync as readFileForContract } from 'node:fs';
 import {
@@ -451,6 +453,45 @@ function testGroundingPayload() {
     'sub-resolution payload must never call a probability a terminal 0 or 1');
 }
 
+
+function testCameraRelayoutPredicate() {
+  // Plotly reports camera interaction with GRANULAR keys. This is the whole
+  // defect: the listener tested for 'scene.camera', which Plotly never emits,
+  // so the stored pose stopped tracking the user's view and every Plotly.react
+  // shipped a stale camera. A wheel/pinch ZOOM is the interaction that made it
+  // visible — it arrives as 'scene.camera.eye' and nothing else.
+  const mustSync: Array<[Record<string, unknown>, string]> = [
+    [{ 'scene.camera.eye': { x: 1, y: 1, z: 1 } }, 'a drag or a wheel zoom (the real-world payload)'],
+    [{ 'scene.camera': { eye: { x: 1, y: 1, z: 1 } } }, 'a whole-camera relayout'],
+    [{ 'scene.camera.eye.x': 1.5 }, 'a single-component update'],
+    [{ 'scene.camera.center': { x: 0, y: 0, z: 0 } }, 'a pan, which moves center rather than eye'],
+    [{ 'scene.dragmode': 'turntable', 'scene.camera.eye': { x: 1, y: 1, z: 1 } }, 'a camera key alongside others'],
+  ];
+  for (const [payload, why] of mustSync) {
+    assert(isCameraRelayout(payload),
+      `isCameraRelayout must return true for ${why}: ${JSON.stringify(payload)}`);
+  }
+
+  const mustNotSync: Array<[Record<string, unknown> | null | undefined, string]> = [
+    [{ 'scene.dragmode': 'turntable' }, 'rebinding the drag controller'],
+    [{ width: 800, height: 600 }, 'a resize'],
+    [{ 'scene.annotations': [] }, 'tour callouts'],
+    [{}, 'an empty payload'],
+    [null, 'null'],
+    [undefined, 'undefined'],
+    // Guards the boundary between the exact key and the dotted prefix: a key
+    // that merely STARTS WITH the string but is a different attribute must not
+    // count, or the predicate would resync on unrelated scene changes.
+    [{ 'scene.cameraFoo': 1 }, 'a different attribute sharing the prefix'],
+  ];
+  for (const [payload, why] of mustNotSync) {
+    assert(!isCameraRelayout(payload),
+      `isCameraRelayout must return false for ${why}: ${JSON.stringify(payload)}`);
+  }
+
+  console.log('✓ camera relayout predicate: granular scene.camera.* keys count as camera changes');
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 16. COLOR-CODING TERM PARITY
 //
@@ -611,6 +652,62 @@ function testUserColorTerms() {
   console.log('✓ user colour terms: cleaning rules hold and never cross into model prose');
 }
 
+
+function testScenarioDomains() {
+  // The product target: no single scenario name may dominate. Rotating the
+  // SETTING bounds the top-name share at roughly 1/|DOMAINS|, so the list
+  // length is the guarantee — assert it against the target itself rather than
+  // a magic number, so shrinking the list fails here instead of silently
+  // degrading diversity in production.
+  const TARGET_TOP_SHARE = 0.05;
+  assert(SCENARIO_DOMAINS.length >= Math.ceil(1 / TARGET_TOP_SHARE),
+    `need at least ${Math.ceil(1 / TARGET_TOP_SHARE)} domains to keep the top share under `
+    + `${TARGET_TOP_SHARE * 100}%, have ${SCENARIO_DOMAINS.length}`);
+
+  // A duplicate silently doubles one domain's share — the exact defect this
+  // list exists to prevent, reintroduced by a careless edit.
+  const seen = new Set(SCENARIO_DOMAINS.map((d) => d.toLowerCase().trim()));
+  assert(seen.size === SCENARIO_DOMAINS.length,
+    `SCENARIO_DOMAINS has duplicates: ${SCENARIO_DOMAINS.length} entries, ${seen.size} distinct`);
+
+  for (const d of SCENARIO_DOMAINS) {
+    assert(d.trim().length >= 3, `domain too short to be a setting: "${d}"`);
+    // A domain carrying a number or a comparative would push a CLAIM into a
+    // rung-3 description, which must be pure scene-setting — the claim-free
+    // gate would then drop the scenario and the user would get no story.
+    assert(!/\d/.test(d), `domain must not carry a number: "${d}"`);
+    // Trailing \b matters: without it "wins?" matches the "win" inside
+    // "windows" and rejects a perfectly good setting. `equilibri` is left
+    // unanchored on purpose so it catches equilibrium/equilibria alike.
+    assert(!(/\b(?:best|better|worse|optimal|wins?|beats?|dominant)\b/i.test(d) || /equilibri/i.test(d)),
+      `domain must not assert anything decidable: "${d}"`);
+  }
+
+  // The picker must stay in range at both ends, including a sloppy pick().
+  const first = pickScenarioDomain(() => 0);
+  const last = pickScenarioDomain(() => 0.999999999);
+  assert(first === SCENARIO_DOMAINS[0], 'pick()=0 must select the first domain');
+  assert(last === SCENARIO_DOMAINS[SCENARIO_DOMAINS.length - 1],
+    'pick()->1 must select the last domain, not run off the end');
+  assert(typeof pickScenarioDomain(() => 1) === 'string', 'pick()=1 must not return undefined');
+  assert(typeof pickScenarioDomain(() => -0.5) === 'string', 'a negative pick must not return undefined');
+
+  // And the distribution has to actually deliver the target over a realistic
+  // number of requests, not merely in principle.
+  const counts = new Map<string, number>();
+  const N = 4000;
+  for (let i = 0; i < N; i++) {
+    const d = pickScenarioDomain();
+    counts.set(d, (counts.get(d) ?? 0) + 1);
+  }
+  const top = Math.max(...counts.values()) / N;
+  assert(top < TARGET_TOP_SHARE,
+    `top domain share ${(top * 100).toFixed(2)}% over ${N} picks exceeds the ${TARGET_TOP_SHARE * 100}% target`);
+
+  console.log(`✓ scenario domains: ${SCENARIO_DOMAINS.length} distinct settings, top share `
+    + `${(top * 100).toFixed(2)}% over ${N} picks (target < ${TARGET_TOP_SHARE * 100}%)`);
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 
 function runUnitTests() {
@@ -631,6 +728,8 @@ function runUnitTests() {
   testGroundingPayload();
   testColorTermParity();
   testUserColorTerms();
+  testCameraRelayoutPredicate();
+  testScenarioDomains();
   console.log('All unit tests passed.');
 }
 

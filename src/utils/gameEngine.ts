@@ -974,7 +974,7 @@ export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
       // Check discovery of y*: does newY make Player A indifferent?
       const sAcheck = newY * (g.a11 - g.a21) + (1 - newY) * (g.a12 - g.a22);
       if (Math.abs(sAcheck) < EPS_A && state.discoveredMixedY === null) {
-        state.discoveredMixedY = r3(newY);
+        state.discoveredMixedY = newY;
       }
     } else {
       // Player A moves and reacts on x-axis by best-responding to current y
@@ -990,7 +990,11 @@ export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
       // Check discovery of x*: does newX make Player B indifferent?
       const sBcheck = newX * (g.b11 - g.b12) + (1 - newX) * (g.b21 - g.b22);
       if (Math.abs(sBcheck) < EPS_B && state.discoveredMixedX === null) {
-        state.discoveredMixedX = r3(newX);
+        // EXACT, not r3: this coordinate positions the current-position marker, and
+// rounding it here put the sphere ~5e-4 from the NE diamond at convergence
+// (visibly off-centre, and depth-flickering because the two no longer shared
+// a depth). Rounding for READOUT happens where displayX is written.
+        state.discoveredMixedX = newX;
       }
     } else {
       // Player B moves and reacts on y-axis by best-responding to current x
@@ -1238,7 +1242,7 @@ export function doStep(
         nx = sA3 > 0 ? s.domainHi : s.domainLo;
         const sB3 = nx * (g.b11 - g.b12) + (1 - nx) * (g.b21 - g.b22);
         if (Math.abs(sB3) < EPS_B && s.discoveredMixedX === null) {
-          s.discoveredMixedX = r3(nx);
+          s.discoveredMixedX = nx;   // exact — see the note above
           // Speak from the EXACT solver root, not the grid landing: discovery
           // fires when the landing is within tolerance of the root, so nx can
           // BE 0.000 (a grid point) while the coordinate it discovered is
@@ -1251,7 +1255,7 @@ export function doStep(
         ny = sB3 > 0 ? s.domainHi : s.domainLo;
         const sA3 = ny * (g.a11 - g.a21) + (1 - ny) * (g.a12 - g.a22);
         if (Math.abs(sA3) < EPS_A && s.discoveredMixedY === null) {
-          s.discoveredMixedY = r3(ny);
+          s.discoveredMixedY = ny;   // exact — see the note above
           const _p1y = computeMixedNE(g);
           addLog('✓ y-coordinate discovered: ' + fmtProb(_p1y ? _p1y.y : ny));
         }
@@ -1419,8 +1423,8 @@ export function doStep(
   }
 
   // ── Update display position ──────────────────────────────────────────────
-  s.displayX = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(nx);
-  s.displayY = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(ny);
+  s.displayX = r3(s.discoveredMixedX !== null ? s.discoveredMixedX : nx);
+  s.displayY = r3(s.discoveredMixedY !== null ? s.discoveredMixedY : ny);
   s.cx = s.displayX;
   s.cy = s.displayY;
   // Keep the UNROUNDED coordinate. r3 here is a display decision; recording only
