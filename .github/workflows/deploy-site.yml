@@ -1,0 +1,85 @@
+name: Deploy site
+
+# THE PRODUCTION DEPLOY GATE.
+#
+# Until now the Cloud Build trigger fired on `push` to main, which meant the
+# live site deployed IN PARALLEL with the very test run that was checking the
+# merge commit. Branch protection guarantees each PR was green on its own, but
+# it cannot speak for the merge commit: two PRs that pass separately can break
+# together, and that combination reached users before any job had an opinion
+# about it. A direct push to main deployed with no checks at all.
+#
+# Now the build is started by THIS workflow, and only after Test succeeds on
+# main. The Cloud Build trigger itself is disabled, so this is the single door
+# to production. The chain, end to end:
+#
+#   push to main -> Test (unit/build/integration/e2e/container/mobile)
+#                -> Deploy site (this) -> Cloud Build -> Cloud Run
+#                -> Live smoke (verifies the deploy actually serves this commit)
+#                -> Release desktop (the DMG ships only after that)
+#
+# If this workflow is ever broken, deploys STOP rather than proceeding
+# unchecked, which is the correct direction to fail. To ship manually in that
+# case: gcloud builds triggers run 2ndTrigger --region us-west2 --sha <sha>
+on:
+  workflow_run:
+    workflows: ['Test']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit SHA to deploy (defaults to main)'
+        required: false
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false   # never cancel a half-finished production deploy
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only a GREEN Test run, only on main. A failed or cancelled run must not
+    # reach production, and neither must a green run on a branch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Start the Cloud Build deploy for this exact commit
+        env:
+          # The trigger lives in us-west2 — NOT global, and not us-east1 where
+          # the Cloud Run service runs. `gcloud builds triggers list` answers
+          # "Listed 0 items" without this region and the pipeline looks absent.
+          REGION: us-west2
+          TRIGGER: 2ndTrigger
+          SHA: ${{ github.event.workflow_run.head_sha || inputs.sha }}
+        run: |
+          set -euo pipefail
+          sha="${SHA:-}"
+          if [ -z "$sha" ]; then
+            sha=$(GH_TOKEN='${{ github.token }}' gh api repos/${{ github.repository }}/commits/main --jq .sha)
+          fi
+          # Refuse to deploy something we cannot name. An empty SHA would make
+          # `triggers run` build whatever the branch points at, which is the
+          # untested-merge hazard this workflow exists to close.
+          [ -n "$sha" ] || { echo "::error::could not resolve a commit SHA to deploy"; exit 1; }
+          echo "deploying commit $sha"
+          # Build the SAME commit the tests passed on, not whatever main points
+          # at now — a merge landing during the test run must not ride along
+          # untested.
+          gcloud builds triggers run "$TRIGGER" \
+            --region "$REGION" --project d-nash-equilibrium --sha "$sha" --format='value(metadata.build.id)'
+        # gh is preinstalled on ubuntu-latest; token only needed for the fallback
+        continue-on-error: false

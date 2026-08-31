@@ -37,7 +37,16 @@ jobs:
       || (github.event.workflow_run.conclusion == 'success'
           && github.event.workflow_run.head_branch == 'main')
     steps:
+      # Under workflow_run GITHUB_SHA is the DEFAULT BRANCH HEAD, not the commit
+      # the triggering Test run built. Unpinned, this reads package.json and runs
+      # live-smoke.mjs from whatever landed on main most recently, while comparing
+      # against the bundle from a different commit — the version mismatch would
+      # read as a stale deploy. On the nightly/dispatch runs there is no
+      # workflow_run event, so the fallback is the right ref for a monitor.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Read the repo version (informational comparison)
         run: echo "REPO_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
