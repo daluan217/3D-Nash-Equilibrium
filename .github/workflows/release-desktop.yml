@@ -10,9 +10,16 @@ name: Build & Publish macOS DMG
 # never reach the DMG download. workflow_run only triggers from the default
 # branch, which is exactly the ship path; workflow_dispatch stays for manual
 # rebuilds of a known-good main.
+# The DMG ships only AFTER the live site has been verified, not merely after
+# the tests passed. Daniel's rule, and the reason is the desktop app's whole
+# value: it is the offline copy of a product whose online copy we have just
+# confirmed works. Releasing on Test alone would ship a desktop build whose
+# matching deploy might never have come up — Live smoke is the workflow that
+# waits for the deploy to actually serve this commit's asset hash and then
+# checks the live surfaces, so that is what this waits on.
 on:
   workflow_run:
-    workflows: ['Test']
+    workflows: ['Live smoke']
     types: [completed]
   workflow_dispatch:
 
@@ -29,10 +36,17 @@ jobs:
     # the ship gate itself: publish only when the pyramid that ran on the same
     # commit SUCCEEDED (workflow_run also fires on failure — without this the
     # gate would be decorative). Manual dispatch of a known-good main is allowed.
+    # `event == 'workflow_run'` is load-bearing, not belt-and-braces. Live smoke
+    # has three triggers: the deploy-verify run that Test starts after a merge,
+    # a NIGHTLY schedule, and manual dispatch. Without this clause the nightly
+    # monitor — which passes every night against a site nobody just changed —
+    # would cut a fresh DMG release at 03:41 every morning. We ship only on the
+    # run that actually verified THIS commit's deploy.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.event == 'workflow_run')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
