@@ -156,9 +156,20 @@ if (process.env.LIVE_DEEP === '1') {
   // A scenario comes back only when the provider credentials survived the
   // deploy AND REPORT_MODEL names a reachable model. "template prose, no
   // scenario" is the exact shape production degraded to on 2026-08-31.
-  record('live report still invents a scenario (provider creds + REPORT_MODEL intact)',
-    !!j.report?.suggestedScenario,
-    j.report?.suggestedScenario ? 'scenario present' : 'MISSING — creds or REPORT_MODEL lost in the deploy');
+  //
+  // Check the SHAPE, not just truthiness: every field of SuggestedScenario is
+  // optional and validateScenario does not require them, so `{}` and `[]` are
+  // both truthy and would let this check pass on a scenario the UI cannot use.
+  // The four option names are the load-bearing ones — they label the matrix and
+  // drive the color-coding — so they must be non-empty strings.
+  const sc = j.report?.suggestedScenario;
+  const scLabels = ['row1', 'row2', 'col1', 'col2'];
+  const scOk = !!sc && typeof sc === 'object' && !Array.isArray(sc)
+    && scLabels.every((k) => typeof sc[k] === 'string' && sc[k].trim().length > 0);
+  record('live report still invents a usable scenario (provider creds + REPORT_MODEL intact)',
+    scOk,
+    scOk ? `scenario "${sc.name ?? '(unnamed)'}" with all four labels`
+      : `UNUSABLE — got ${JSON.stringify(sc)?.slice(0, 120) ?? 'nothing'}; creds or REPORT_MODEL may be lost in the deploy`);
 
   // b11 === b12 forces the tie branch, which a different flag governs.
   const tie = await fetch(`${BASE}/api/report`, {

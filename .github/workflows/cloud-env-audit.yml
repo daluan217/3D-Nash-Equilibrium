@@ -56,6 +56,15 @@ jobs:
       SERVICE: nash-equilibrium-backend
       REGION: us-east1
       PROJECT: d-nash-equilibrium
+      # Kept as an env var rather than inline: a `python3 -c` heredoc indented
+      # to match the YAML block would raise IndentationError on its first line.
+      REVS_PY: |
+        import json, sys
+        d = json.load(sys.stdin)
+        print(' '.join(sorted({
+            t['revisionName'] for t in d.get('status', {}).get('traffic', [])
+            if t.get('percent', 0) and t.get('revisionName')
+        })))
     steps:
       - uses: actions/checkout@v5
 
@@ -96,22 +105,57 @@ jobs:
 
       # The describe call is the only place credentials are used, and it asks
       # for env[].name — never env[].value. Nothing secret can reach the log.
+      # TWO things must match the manifest, and the 2026-08-31 incident is
+      # precisely why they are checked separately:
+      #
+      #   spec.template          what the NEXT deploy will create
+      #   status.traffic[]       what users are being served RIGHT NOW
+      #
+      # A traffic rollback repairs serving while leaving the stored template
+      # broken (that is exactly how the incident was mitigated, and why the
+      # spec had to be fixed afterwards too). A bad deploy does the reverse.
+      # Auditing only one of them would call each of those situations healthy.
       - name: Audit the deployed environment against the manifest
         if: steps.creds.outputs.mode != 'none'
         run: |
           set -uo pipefail
+          rc=0
+
           # Capture separately from the pipe so a credentials/permission error
           # is reported as itself rather than as "the service has no env vars".
-          if ! names=$(gcloud run services describe "$SERVICE" \
-                --region "$REGION" --project "$PROJECT" \
-                --format='value(spec.template.spec.containers[0].env[].name)' 2>&1); then
+          if ! svc=$(gcloud run services describe "$SERVICE" \
+                --region "$REGION" --project "$PROJECT" --format=json 2>&1); then
             echo "::error::Could not read the Cloud Run service. If this says PERMISSION_DENIED, \
             the CI service account needs roles/run.viewer on $PROJECT — GCP_SA_KEY was created for \
             GCS uploads (release-desktop.yml) and has no project-level Cloud Run access by default."
-            echo "$names"
+            echo "$svc"
             exit 1
           fi
-          printf '%s' "$names" | node src/deploy/env-audit.mjs
+
+          echo "── template (what the next deploy will create)"
+          printf '%s' "$svc" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(e['name'] for e in d['spec']['template']['spec']['containers'][0].get('env',[])))" \
+            | node src/deploy/env-audit.mjs || rc=1
+
+          # Every revision with a non-zero share, not just the newest: a split
+          # or a rollback can serve an environment the template knows nothing
+          # about.
+          revs=$(printf '%s' "$svc" | python3 -c "$REVS_PY")
+          if [ -z "$revs" ]; then
+            echo "::error::No revision is receiving traffic — the service is not serving."
+            exit 1
+          fi
+          for rev in $revs; do
+            echo "── serving revision $rev"
+            if ! names=$(gcloud run revisions describe "$rev" \
+                  --region "$REGION" --project "$PROJECT" \
+                  --format='value(spec.containers[0].env[].name)' 2>&1); then
+              echo "::error::Could not read revision $rev"; echo "$names"; rc=1; continue
+            fi
+            printf '%s' "$names" | node src/deploy/env-audit.mjs || rc=1
+          done
+
+          exit $rc
 
       # A drifted service is only half the story: the revision serving traffic
       # may not be the newest one (that is how the 2026-08-31 incident was
