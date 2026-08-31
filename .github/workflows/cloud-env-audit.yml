@@ -157,12 +157,64 @@ jobs:
 
           exit $rc
 
-      # A drifted service is only half the story: the revision serving traffic
-      # may not be the newest one (that is how the 2026-08-31 incident was
-      # mitigated). Surfacing it keeps a silent rollback from looking healthy.
-      - name: Report the revision actually serving traffic
+      # A drifted environment is only half the story. The other half is WHICH
+      # revision users reach, and that is not the same question.
+      #
+      # `gcloud run services update-traffic --to-revisions NAME=100` — the
+      # standard way to roll back an incident — switches the service out of
+      # serve-latest and PINS traffic to that revision by name. The pin
+      # survives every later deploy. On 2026-08-31 that pin was left in place
+      # after the env-wipe rollback, so the next merge to main built a healthy
+      # new revision that received 0% of traffic: Cloud Build green, Cloud Run
+      # green, main "deployed", and users still on the previous code. Nothing
+      # anywhere reported a problem, because nothing was broken — it just was
+      # not being served.
+      #
+      # So: if the newest ready revision is not receiving traffic, fail. A
+      # deliberate pin has to be made deliberate, by pinning to the revision
+      # that is actually current.
+      - name: The newest ready revision must be the one serving traffic
         if: steps.creds.outputs.mode != 'none'
         run: |
+          set -uo pipefail
           gcloud run services describe "$SERVICE" \
             --region "$REGION" --project "$PROJECT" \
             --format='value(status.traffic[].revisionName,status.traffic[].percent)'
+
+          latest=$(gcloud run revisions list --service "$SERVICE" \
+            --region "$REGION" --project "$PROJECT" \
+            --filter='status.conditions.type=Ready AND status.conditions.status=True' \
+            --sort-by=~metadata.creationTimestamp --limit 1 --format='value(name)')
+          serving=$(gcloud run services describe "$SERVICE" \
+            --region "$REGION" --project "$PROJECT" \
+            --format='value(status.traffic[].revisionName)' | tr ';' '\n')
+
+          if [ -z "$latest" ]; then
+            echo "::error::could not determine the newest ready revision"; exit 1
+          fi
+          if ! printf '%s\n' "$serving" | grep -qx "$latest"; then
+            echo "::error::the newest ready revision ($latest) is receiving NO traffic. \
+            Traffic is pinned to: $(printf '%s ' $serving). Deploys are building revisions \
+            nobody reaches. Fix with: gcloud run services update-traffic $SERVICE \
+            --region $REGION --to-latest"
+            exit 1
+          fi
+          echo "newest ready revision $latest is serving"
+
+      # Serve-latest is the deploy model this project relies on: a push to main
+      # is expected to reach users without anyone touching Cloud Run. A pinned
+      # spec.traffic silently ends that, so name it even when the pinned
+      # revision happens to be current.
+      - name: Warn if traffic is pinned by revision name
+        if: steps.creds.outputs.mode != 'none'
+        run: |
+          pinned=$(gcloud run services describe "$SERVICE" \
+            --region "$REGION" --project "$PROJECT" \
+            --format='value(spec.traffic[].revisionName)')
+          if [ -n "$pinned" ]; then
+            echo "::warning::spec.traffic pins revision(s) by name ($pinned) instead of \
+            following the latest revision. The next deploy will build a revision that \
+            receives no traffic. Restore with --to-latest."
+          else
+            echo "spec.traffic follows the latest revision"
+          fi
