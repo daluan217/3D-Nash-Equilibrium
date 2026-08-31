@@ -161,10 +161,12 @@ try {
     const prog = await page.evaluate(() =>
       [...document.querySelectorAll('span')].filter((e) => /^\d+ \/ \d+$/.test((e.textContent || '').trim()))
         .map((e) => e.textContent.trim()));
-    // 3s, not 2: the first Step click pays the precompute + first-interaction
-    // cost (observed 1.4s cold locally). The defect class this guards is
-    // "permanently wedged — never responds", which fails any threshold.
-    record('tab-wedge fixture: Step responds instantly', ms < 3000, `${ms}ms`);
+    // The functional wedge guard is the progress check below (the original
+    // defect NEVER advanced). This timing bound only catches "the tab froze
+    // for good" — 10s because GitHub's 2-core runners measure 4s for a
+    // healthy first Step click (precompute + first interaction); local runs
+    // do it in 0.4s.
+    record('tab-wedge fixture: Step responds instantly', ms < 10000, `${ms}ms`);
     record('tab-wedge fixture: progress reads 1 / 1504', prog.some((p) => p === '1 / 1504'), JSON.stringify(prog));
     await $.reset.click(); await page.waitForTimeout(300);
     await $.stepSize.fill('0.1'); await $.stepSize.blur(); await page.waitForTimeout(200);
