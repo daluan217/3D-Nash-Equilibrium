@@ -81,7 +81,8 @@ import {
 
 import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor } from './utils/colorTerms';
+import { colorTermsFor, descriptionColorTerms } from './utils/colorTerms';
+import { DescriptionEditor } from './components/DescriptionEditor';
 import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
@@ -224,6 +225,9 @@ export default function App() {
   /** Option names for the save dialog: typed by the user, or prefilled from an
    *  invented scenario the user chose to keep. */
   const [saveLabels, setSaveLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
+  /** The user's own colour highlights for the description they are writing.
+   *  Never sent to the model — see src/utils/colorTerms.ts. */
+  const [saveTerms, setSaveTerms] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });
   // "Generate a game for me" inside the save modal: which equilibrium
   // structure to roll, whether a roll+AI-description round trip is in flight,
   // and the outcome line shown under the controls.
@@ -239,6 +243,7 @@ export default function App() {
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [editLabels, setEditLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
+  const [editTerms, setEditTerms] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });
   const [editError, setEditError] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -1152,6 +1157,7 @@ export default function App() {
     setEditGameId(game.id);
     setEditName(game.name ?? '');
     setEditDesc(game.description ?? '');
+    setEditTerms({ a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] });
     setEditLabels({
       row1: game.row1Label ?? '', row2: game.row2Label ?? '',
       col1: game.col1Label ?? '', col2: game.col2Label ?? '',
@@ -1181,6 +1187,8 @@ export default function App() {
           row2Label: editLabels.row2.trim(),
           col1Label: editLabels.col1.trim(),
           col2Label: editLabels.col2.trim(),
+          colorTermsA: editTerms.a,
+          colorTermsB: editTerms.b,
           allowClear: true,
         }),
       });
@@ -1347,7 +1355,11 @@ export default function App() {
           row1Label: saveLabels.row1.trim(),
           row2Label: saveLabels.row2.trim(),
           col1Label: saveLabels.col1.trim(),
-          col2Label: saveLabels.col2.trim()
+          col2Label: saveLabels.col2.trim(),
+          // The user's own highlights. Deliberately NOT part of the scenario
+          // sent to the model — they colour this description and nothing else.
+          colorTermsA: saveTerms.a,
+          colorTermsB: saveTerms.b
         })
       });
       const data = await res.json();
@@ -1377,6 +1389,7 @@ export default function App() {
         setIsSaveModalOpen(false);
         setSaveName('');
         setSaveDesc('');
+        setSaveTerms({ a: [], b: [] });
         setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });
         setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
       } else {
@@ -1678,6 +1691,8 @@ export default function App() {
         row2Label: g.row2Label,
         col1Label: g.col1Label,
         col2Label: g.col2Label,
+        colorTermsA: g.colorTermsA,
+        colorTermsB: g.colorTermsB,
       };
     });
     return merged;
@@ -2950,7 +2965,16 @@ export default function App() {
               selectedCustomGame ? (
                 <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
                   <strong>Custom - {selectedCustomGame.name}:</strong>{' '}
-                  <ColorCoded text={selectedPreset.desc} aTerms={colorTerms.a} bTerms={colorTerms.b} />
+                  {/* descriptionColorTerms, not colorTermsFor: this is the
+                      user's OWN description, so their highlights apply here —
+                      and only here. The AI explanation below deliberately
+                      keeps using colorTerms, so a user's choices can never
+                      alter how the model's prose is coloured. */}
+                  <ColorCoded
+                    text={selectedPreset.desc}
+                    aTerms={descriptionColorTerms(scenarioForReport, mergedPresets[activePreset]?.actorA ?? [], mergedPresets[activePreset]?.actorB ?? [], selectedPreset.colorTermsA ?? [], selectedPreset.colorTermsB ?? []).a}
+                    bTerms={descriptionColorTerms(scenarioForReport, mergedPresets[activePreset]?.actorA ?? [], mergedPresets[activePreset]?.actorB ?? [], selectedPreset.colorTermsA ?? [], selectedPreset.colorTermsB ?? []).b}
+                  />
                 </div>
               ) : (
                 <div
@@ -4238,14 +4262,15 @@ export default function App() {
 
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
-                <textarea
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
-                  placeholder="What is this game about?"
+                {/* Same 800 as the save modal and the server clamp — an
+                    AI-kept description can legitimately be this long, and a
+                    lower cap here would lock editing of exactly those games. */}
+                <DescriptionEditor
                   value={editDesc}
-                  onChange={(e) => setEditDesc(e.target.value)}
-                  // Same 800 as the save modal and the server clamp — an
-                  // AI-kept description can legitimately be this long, and a
-                  // lower cap here would lock editing of exactly those games.
+                  onChange={setEditDesc}
+                  termsA={editTerms.a}
+                  termsB={editTerms.b}
+                  onTermsChange={(a, b) => setEditTerms({ a, b })}
                   maxLength={800}
                 />
               </div>
@@ -4437,16 +4462,18 @@ export default function App() {
 
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
-                <textarea
-                  className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
-                  placeholder="Explain the background storyline or payoff choices of this strategic profile."
+                {/* Matches the server's clamp (cleanText(description, 800)).
+                    A cap BELOW what prefill can supply locks the field: a
+                    controlled textarea already over maxLength rejects every
+                    keystroke, which read as "can't edit the description"
+                    when an AI-invented scenario prefilled ~300+ chars. */}
+                <DescriptionEditor
                   value={saveDesc}
-                  onChange={(e) => setSaveDesc(e.target.value)}
-                  // Matches the server's clamp (cleanText(description, 800)).
-                  // A cap BELOW what prefill can supply locks the field: a
-                  // controlled textarea already over maxLength rejects every
-                  // keystroke, which read as "can't edit the description"
-                  // when an AI-invented scenario prefilled ~300+ chars.
+                  onChange={setSaveDesc}
+                  termsA={saveTerms.a}
+                  termsB={saveTerms.b}
+                  onTermsChange={(a, b) => setSaveTerms({ a, b })}
+                  placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   maxLength={800}
                 />
               </div>

@@ -58,6 +58,7 @@ const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number;
   JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
     sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
+import { cleanUserColorTerms } from "./src/utils/colorTerms";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -88,6 +89,19 @@ interface SavedGame {
   row2Label?: string;
   col1Label?: string;
   col2Label?: string;
+  /**
+   * Phrases the USER chose to have colored as player A / player B in their own
+   * description. Stored as phrases rather than character ranges because the
+   * description is plain text that can be edited afterwards — offsets would
+   * slide onto the wrong words, a phrase does not.
+   *
+   * These decorate the user's description and nothing else. They are NEVER put
+   * into a model prompt and never applied to model-written prose: the labels
+   * above are the fields the explainer reads, and these are deliberately not
+   * among them. src/unit.test.ts asserts that separation.
+   */
+  colorTermsA?: string[];
+  colorTermsB?: string[];
 }
 
 interface User {
@@ -348,6 +362,28 @@ function cleanLabels(body: any, allowClear = false): Partial<Pick<SavedGame, "ro
     // edit dialog is the opposite case: it sends every field every time, and a
     // user who deletes a wrong label means it. Only that caller opts in.
     if (v || (allowClear && key in (body ?? {}))) out[key] = v;
+  }
+  return out;
+}
+
+/**
+ * The user's own colour terms off a request body, cleaned by the SAME shared
+ * rules the client applies before sending them (src/utils/colorTerms.ts), so
+ * the two ends cannot disagree about what a valid term is.
+ *
+ * Follows cleanLabels' supplied-vs-cleared convention: an absent key is "not
+ * supplied" and leaves the stored terms alone, while the edit dialog — which
+ * sends every field — opts into clearing so a user who removes their last term
+ * actually loses it.
+ *
+ * Unlike the labels, these never reach the model prompt.
+ */
+function cleanColorTerms(body: any, allowClear = false): Partial<Pick<SavedGame, "colorTermsA" | "colorTermsB">> {
+  const out: Partial<Pick<SavedGame, "colorTermsA" | "colorTermsB">> = {};
+  for (const key of ["colorTermsA", "colorTermsB"] as const) {
+    if (!(key in (body ?? {}))) continue;
+    const cleaned = cleanUserColorTerms(body?.[key]);
+    if (cleaned.length > 0 || allowClear) out[key] = cleaned;
   }
   return out;
 }
@@ -1730,7 +1766,8 @@ async function startServer() {
       description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
       payoffs: cleanMatrix,
       createdAt: new Date().toISOString(),
-      ...cleanLabels(req.body)
+      ...cleanLabels(req.body),
+      ...cleanColorTerms(req.body, true)
     };
 
     db.games.push(newGame);
@@ -1773,12 +1810,14 @@ async function startServer() {
     const nextName = cleanText(req.body?.name, 80);
     const nextDescription = cleanText(req.body?.description, 800);
     const nextLabels = cleanLabels(req.body, allowClear);
+    const nextTerms = cleanColorTerms(req.body, allowClear);
     // Labels count as an update in their own right. Keeping an invented
     // scenario means writing its four option names onto the game, and that has
     // to be a valid PATCH on its own — otherwise a scenario whose description
     // came back empty would be rejected as "nothing to update" and the labels
     // would be lost with it.
-    if (!nextName && !nextDescription && Object.keys(nextLabels).length === 0) {
+    if (!nextName && !nextDescription && Object.keys(nextLabels).length === 0
+        && Object.keys(nextTerms).length === 0) {
       return res.status(400).json({ error: "Nothing to update." });
     }
     if (nextName) game.name = nextName;
@@ -1786,7 +1825,7 @@ async function startServer() {
     // means "not supplied", but an edit that deliberately empties the box must
     // be able to remove the text.
     if (nextDescription || (allowClear && "description" in req.body)) game.description = nextDescription;
-    Object.assign(game, nextLabels);
+    Object.assign(game, nextLabels, nextTerms);
     saveDB(db);
 
     res.json({ success: true, message: "Game updated.", game });

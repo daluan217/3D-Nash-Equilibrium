@@ -17,7 +17,8 @@
  */
 
 import { GamePayoffs } from './types';
-import { colorTermsFor, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
+import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
+import { readFileSync as readFileForContract } from 'node:fs';
 import {
   EA, EB, regretA, regretB, r3,
   parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepSize, commitStepIndex,
@@ -515,6 +516,76 @@ function testColorTermParity() {
   console.log('✓ color-coding term parity: card and saved description derive identical terms');
 }
 
+
+function testUserColorTerms() {
+  // ── the cleaning rules (client and server share this exact function) ──
+  const table: Array<[unknown, string[], string]> = [
+    [['Ship Early'], ['Ship Early'], 'a normal phrase survives'],
+    [['  padded  '], ['padded'], 'surrounding whitespace is trimmed'],
+    [['two\nlines'], ['two lines'], 'a selection across a line break collapses to one space'],
+    [['A'], [], 'single characters are refused — ambiguous with the article'],
+    [[''], [], 'the empty string is refused — it would match at every position'],
+    [['   '], [], 'whitespace-only is refused'],
+    [['dup', 'DUP'], ['dup'], 'duplicates are dropped case-insensitively'],
+    [[42, 'ok'], ['ok'], 'non-strings are ignored'],
+    ['not an array', [], 'a non-array yields nothing'],
+    [null, [], 'null yields nothing'],
+  ];
+  for (const [input, expected, why] of table) {
+    const got = cleanUserColorTerms(input);
+    assert(JSON.stringify(got) === JSON.stringify(expected),
+      `cleanUserColorTerms(${JSON.stringify(input)}): ${why} — expected ${JSON.stringify(expected)}, got ${JSON.stringify(got)}`);
+  }
+
+  // Length and count caps.
+  const long = 'x'.repeat(USER_TERM_MAX_LEN + 40);
+  assert(cleanUserColorTerms([long])[0].length === USER_TERM_MAX_LEN,
+    'an over-long term is clamped, not dropped');
+  const many = Array.from({ length: USER_TERMS_MAX + 7 }, (_, i) => `term ${i}`);
+  assert(cleanUserColorTerms(many).length === USER_TERMS_MAX,
+    `at most ${USER_TERMS_MAX} terms are kept`);
+
+  // ── THE BOUNDARY ──
+  // The user's highlights colour the user's description. They must not appear
+  // in the terms used for model-written prose: colorTermsFor is what the AI
+  // explanation renders with, descriptionColorTerms is what the description
+  // renders with, and only the latter may carry them.
+  const sc = { row1: 'Ship Early', row2: 'Hold Back', col1: 'Audit Now', col2: 'Wait' };
+  const forProse = colorTermsFor(sc);
+  const forDesc = descriptionColorTerms(sc, [], [], ['my phrase'], ['their phrase']);
+  assert(!forProse.a.includes('my phrase') && !forProse.b.includes('my phrase'),
+    'a user term must never reach the terms used for MODEL prose');
+  assert(!forProse.b.includes('their phrase'),
+    'a user term must never reach the terms used for MODEL prose');
+  assert(forDesc.a.includes('my phrase'), 'the description must carry the user\'s player-A terms');
+  assert(forDesc.b.includes('their phrase'), 'the description must carry the user\'s player-B terms');
+  // Everything colorTermsFor colours, descriptionColorTerms still colours.
+  for (const t of forProse.a) assert(forDesc.a.includes(t), `description lost structural term "${t}"`);
+  for (const t of forProse.b) assert(forDesc.b.includes(t), `description lost structural term "${t}"`);
+  // User terms are cleaned on the way in, so junk cannot slip through here
+  // either.
+  assert(!descriptionColorTerms(sc, [], [], ['', 'A'], []).a.some((t) => t === '' || t === 'A'),
+    'descriptionColorTerms must apply the same cleaning rules');
+
+  // ── the server-side half of the boundary ──
+  // cleanScenario builds the object that goes into the model prompt. It is a
+  // whitelist today; a spread or an extra field would carry the user's terms
+  // into the prompt, which is the one thing this feature must never do. Assert
+  // the shape at the source rather than trusting it stays that way.
+  const serverSrc = readFileForContract('server.ts', 'utf8');
+  const m = serverSrc.match(/const sc: Scenario = \{([\s\S]*?)\n  \};/);
+  assert(!!m, 'could not find the cleanScenario literal in server.ts');
+  const keys = [...m![1].matchAll(/^\s*([A-Za-z_][\w]*)\s*:/gm)].map((x) => x[1]).sort();
+  const allowed = ['col1', 'col2', 'description', 'name', 'row1', 'row2'];
+  assert(JSON.stringify(keys) === JSON.stringify(allowed),
+    `cleanScenario must build exactly ${allowed.join(', ')} — got ${keys.join(', ')}. `
+    + 'Any other field here reaches the model prompt.');
+  assert(!/\.\.\./.test(m![1]),
+    'cleanScenario must not spread the client object into the prompt scenario');
+
+  console.log('✓ user colour terms: cleaning rules hold and never cross into model prose');
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 
 function runUnitTests() {
@@ -534,6 +605,7 @@ function runUnitTests() {
   testTieProseUnitTable();
   testGroundingPayload();
   testColorTermParity();
+  testUserColorTerms();
   console.log('All unit tests passed.');
 }
 
