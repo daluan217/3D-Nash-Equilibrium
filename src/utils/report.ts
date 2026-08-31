@@ -24,7 +24,7 @@
  */
 
 import type { GamePayoffs, LlmReport, SuggestedScenario } from '../types';
-import { computeAllNE, computeIndifference } from './gameEngine';
+import { computeAllNE, computeIndifference, fmtProb } from './gameEngine';
 import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
 
@@ -43,8 +43,45 @@ import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailur
  * partly a FREE-TIER artifact and a paid key may look different, and the Azure
  * credits backing this deployment expire. Overridden per-request by the eval
  * sweep, and per-deploy by REPORT_MODEL.
+ *
+ * 2026-08-29 — SWITCHED nano -> mini on a 213-row head-to-head (same gate, run
+ * in parallel so latency is symmetric):
+ *
+ *     gpt-5.4-mini  209/213 = 98.1%  defect 1.88% [0.73, 4.73]  p50 2.9s  427 tok
+ *     gpt-5.4-nano  182/213 = 85.4%  defect 14.6% [10.4, 19.9]  p50 3.7s  467 tok
+ *
+ * Two-proportion z = 4.76, p = 1.9e-06 — a 7.7x reduction in defect rate, and
+ * mini is also FASTER and TERSER. It costs 3.50x nano ($37.36 vs $10.68 per
+ * 10,000 explanations), which is the only axis it loses on.
+ *
+ * The 40-row screen that preceded this read nano at 90% and mini at 95% and so
+ * understated the gap by more than half; 40 rows cannot separate 2 failures
+ * from 4. Do not re-decide this on a small battery.
  */
-export const DEFAULT_MODEL = process.env.REPORT_MODEL || 'gpt-5.4-nano';
+/**
+ * Rule 1 of the rung-1 block, A/B-able.
+ *
+ * Measured on gpt-5.4-mini's 213-row battery: mini complies near-perfectly with
+ * the other four rung-1 rules (across 705 sentences, rule 2 violated ONCE,
+ * rule 3 five times, rule 5 eight times) but IGNORES this one in 32.1% of
+ * reports — and a chained sentence appears in 100% of its failures against a
+ * 32.1% base rate among passes (one-sided Fisher p = 0.012). So this is the one
+ * rung-1 rule with headroom on this model, and 'strong' names the exact
+ * construction mini actually writes instead of describing the fault abstractly.
+ *
+ * NASH_RULE1: unset/'default' = the original wording; 'strong' = below; 'off' =
+ * omit the rule entirely (to test whether it does anything at all).
+ */
+const RULE1_DEFAULT = '- ONE CLAIM PER SENTENCE. Never chain two best-reply claims together ("A prefers X against Y and Z against W"): write them as separate sentences. Compressed multi-claim sentences are where your reasoning most often slips, and a reader cannot check them either.';
+const RULE1_STRONG = `- ONE CLAIM PER SENTENCE — THIS IS THE RULE YOU ARE MOST LIKELY TO BREAK. A sentence may contain AT MOST ONE of the words better, worse, prefers, favours, best reply, does better, dominant. If you are about to write a sentence with two of them, stop and split it into two sentences.
+  FORBIDDEN, and this exact shape is where your errors happen: "Search Ads is better against a Local Campaign, while Television Ads is better against a National Campaign." Also forbidden with "and", "whereas", "but", or a semicolon in place of "while".
+  REQUIRED instead: "Against a Local Campaign, A prefers Search Ads. Against a National Campaign, A prefers Television Ads."
+  Before you finish, re-read every sentence you wrote and count those words. Two in one sentence means you must split it.`;
+const RULE1 = process.env.NASH_RULE1 === 'strong' ? RULE1_STRONG
+  : process.env.NASH_RULE1 === 'off' ? ''
+  : RULE1_DEFAULT;
+
+export const DEFAULT_MODEL = process.env.REPORT_MODEL || 'gpt-5.4-mini';
 
 /**
  * Structured-output schema. Constrains SHAPE only.
@@ -294,17 +331,28 @@ const SCENARIO_SCHEMA: Record<string, unknown> = {
   },
 };
 
-const SCENARIO_SYSTEM_PROMPT = `You are inventing a short, concrete scenario for a 2x2 normal-form game — who the two players are and what their two options mean. You will be given the payoff matrix, the solver's equilibria, and a best-reply table, all authoritative.
+export const SCENARIO_SYSTEM_PROMPT = `RUNG-3 MODE (set when the caller renders the mathematics itself): if the request says the description must be claim-free, then write PURE SCENE-SETTING only — who the two players are and what each option means — with NO numbers and NO claims about preferences, responses, advantages or equilibria, and OMIT storyClaims entirely. The solver states all of that; a description asserting anything decidable is discarded.
+
+You are inventing a short, concrete scenario for a 2x2 normal-form game — who the two players are and what their two options mean. You will be given the payoff matrix, the solver's equilibria, and a best-reply table, all authoritative.
 
 Rules (the same discipline as the full report path):
 - The story must fit and never contradict the payoffs or the equilibria. Option labels are 1-3 words; the description is two or three plain sentences and does not state the equilibrium.
 - Restate the description's factual claims in storyClaims so they can be checked: every action-pair whose payoffs the description cites goes in cellCitations with the exact matrix values, and every "X works best against Y" or "the quitter loses"-style claim goes in bestReplies — copied from the supplied best-reply table, never derived. When a sentence states the payoffs it compares, copy them into bestPays/altPays; otherwise null.
 - Never characterize what happens when specific options meet in words alone: state that cell's exact numbers and cite the cell, or leave the outcome unsaid.
-- Declarations must match the text in both directions: delete any entry no sentence states, and declare every claim a sentence makes. If the description makes no payoff or better-against claims, set storyClaims to null.`;
+- Any sentence that says one option is better, worse, tempting, safer, riskier, or preferred MUST name the options with their exact labels, not a paraphrase ("Light inspection", not "when inspections are light") and not an invented role noun ("the pusher", "the yielding side"). A comparison that cannot be matched to a label cannot be checked, so it will be discarded even when correct.
+- Declarations must match the text in both directions: delete any entry no sentence states, and declare every claim a sentence makes. If the description makes no payoff or better-against claims, set storyClaims to null.
+- VARY THE DOMAIN. Left unguided this task collapses onto a handful of settings: 40% of a 1,140-scenario sample came back "Harbor Inspection" and 15% "Museum Security", and a model distilled on that wrote harbour inspections 90% of the time. Choose the setting from the SHAPE of this particular game rather than reaching for a default, and range widely — for example: farming and irrigation, airline scheduling, hospital staffing, orchestra programming, software release timing, fishing quotas, publishing deals, construction bidding, energy grid dispatch, school timetabling, freight routing, vaccine allocation, film distribution, sports tactics, retail pricing, spectrum auctions, water rights, restaurant sourcing, urban transit, archaeology permits, satellite scheduling, brewing, translation contracts, insurance underwriting, wildfire response, patent licensing, and many others. Inspection, security, customs and smuggling settings are heavily over-used: prefer something else unless the payoffs genuinely call for enforcement framing.`;
 
 export interface GenerateScenarioResult {
   scenario: SuggestedScenario | null;
   failure: ProviderFailure | null;
+  /**
+   * Token usage for the invention call. Absent until 2026-08-29: the scenario
+   * path is the ONLY call rung 3 makes, so without this its cost — and the
+   * reasoning tokens a thinking model spends on it — could not be measured at
+   * all. A yield harness printed structural zeros for every arm before this.
+   */
+  usage?: NormalizedUsage | null;
 }
 
 /** The slim invention call behind "New AI scenario" — see SCENARIO_SCHEMA. */
@@ -319,14 +367,22 @@ export async function generateScenario(
     userPrompt: buildGroundingPayload(g),
     reasoning: opts.reasoning,
     schema: SCENARIO_SCHEMA,
-    maxOutputTokens: 2048,
+    // 2048 was sized for a NON-reasoning call: the scenario body is ~200 tokens,
+    // so it looked generous. Reasoning tokens bill against this same budget, and
+    // once `reasoning` is on a call can spend the whole cap thinking and return
+    // truncated or empty JSON — the exact failure the report call's comment
+    // warns about, one function up. Measured on the rung-3 yield runs: 1.1% of
+    // luna@low calls and 1.7% of mini@low calls came back empty after ~11s (a
+    // full budget generated), versus ~2.3s for a healthy call. Those are lost
+    // stories caused by our cap, not by the model. Matched to the report call.
+    maxOutputTokens: 8192,
   });
-  if (res.failure || !res.text) return { scenario: null, failure: res.failure ?? 'unparseable' };
+  if (res.failure || !res.text) return { scenario: null, failure: res.failure ?? 'unparseable', usage: res.usage ?? null };
   try {
     const parsed = JSON.parse(res.text) as { suggestedScenario?: SuggestedScenario | null };
-    return { scenario: parsed.suggestedScenario ?? null, failure: null };
+    return { scenario: parsed.suggestedScenario ?? null, failure: null, usage: res.usage ?? null };
   } catch {
-    return { scenario: null, failure: 'unparseable' };
+    return { scenario: null, failure: 'unparseable', usage: res.usage ?? null };
   }
 }
 
@@ -334,7 +390,7 @@ export async function generateScenario(
  * Identical for every model in the sweep — the rubric is part of the
  * measurement, so it must not vary by provider.
  */
-const SYSTEM_PROMPT = `You are a game theorist explaining a 2x2 normal-form game to someone learning the subject.
+export const SYSTEM_PROMPT = `You are a game theorist explaining a 2x2 normal-form game to someone learning the subject.
 
 You will be given a payoff matrix AND the equilibria, already computed exactly by a solver. Your job is to EXPLAIN, never to derive.
 
@@ -350,10 +406,33 @@ Rules:
 - When you invent a scenario, restate the description's factual claims in suggestedScenario.storyClaims so they can be checked: every action-pair whose payoffs the description cites goes in cellCitations with the exact matrix values, and every "X works best against Y" or "prefers X when the opponent does Y" claim goes in bestReplies. A claim made in the description but missing from storyClaims, or declared wrongly, causes the whole story to be discarded — when unsure which cell a sentence refers to, reread the matrix rather than guess. If the description cites no payoffs and makes no better-against claims, set storyClaims to null.
 - In an invented description, never characterize what happens when specific options meet in words alone ("pays off", "is punished", "works well"): any sentence about a particular action combination's outcome must state that cell's exact payoff numbers, and that cell must appear in cellCitations. If you prefer not to cite numbers, make no outcome claims — describe only who the players are and what their options mean. Sentences like "the quitter loses and the cooperator gains" are better-against claims: declare them in bestReplies, and verify the direction against the matrix rather than against how such stories usually go — the numbers you were given always win.
 - Whenever a better-against sentence states the payoffs it compares ("gets 9 rather than −9"), copy those exact numbers into that bestReplies entry's bestPays/altPays; set both null when the sentence cites no numbers. Each cited number must belong to the exact cell being compared — copy it from the supplied best-reply table's matching line, never derive it from the matrix yourself.
+- If your description refers to the players by role nouns ("the gatekeeper", "the analyst") rather than as A and B, you MUST list those nouns in actorA and actorB. Without them a sentence like "the gatekeeper chooses Ford River" cannot be checked against the matrix, and assigning one player's option to the other is the most common remaining error in this report.
+- A dominant strategy makes a player's PREFERENCE independent of the opponent, never their PAYOFF. Write "A's best choice is the same whichever column B picks"; never "A's payoff doesn't depend on what B does" unless that row really is flat (both cells equal). The same care applies to "B's choice affects A's payoff": say it only when those two cells differ.
+- When you are asked ONLY for a scenario (no prose), the description must be PURE SCENE-SETTING: who the two players are and what each option means, in two or three sentences, with NO numbers and NO claims about the game — nothing about who prefers what, who responds to whom, what is better, or where the equilibrium lies. The solver states all of that. A description that asserts anything decidable is discarded.
+${RULE1}
+- NEVER CHARACTERISE THE GAME TYPE. Do not call it a coordination game, an anti-coordination game, a matching game, or say the players coordinate, mismatch, or that "coordination succeeds": name the equilibria instead ("the pure equilibria are (Row 1, Col 2) and (Row 2, Col 1)"). Whether the equilibria sit on matching or mismatching pairs is something the reader can see from the profiles you name.
+- USE "A" AND "B" IN ANY SENTENCE THAT MAKES A CLAIM. Role nouns ("the gatekeeper", "the analyst") are fine for scene-setting, but a sentence stating a preference, a payoff, a probability or an equilibrium must say A or B, so that which player is meant is never in doubt.
+- NEVER SHORTEN AN OPTION LABEL. If the option is "Hunt Stag", write "Hunt Stag", not "Stag" — including inside a comparison.
+- WHEN YOU STATE A MIXTURE, GIVE BOTH PROBABILITIES AND CHECK THEY SUM TO 1. Write "A plays Hunt Stag with probability 0.6 and Hunt Hare with probability 0.4"; before you finish, add the two numbers and confirm they make exactly 1.
+- A MIXED COORDINATE IS NEVER 0 OR 1. When the solver output says "less than 0.001" or "more than 0.999", copy that wording (or write "essentially never"/"almost always") — do NOT round it to "probability 0" or "probability 1": the profile at exactly 0 or 1 is provably not an equilibrium.
+- Any sentence that says one option is better, worse, tempting, safer, riskier, or preferred MUST name the options with their exact labels, spelled the way they appear above ("Light inspection", not "when inspections are light"; "Insist", not "the pusher" or "the yielding side"). A comparison written in paraphrase or in an invented role noun cannot be checked, so it will be discarded even when it is correct. Use "you" for neither player.
 - Declarations must match the text in BOTH directions, and you must re-read the description and prose sentence by sentence against your declarations before answering: an entry for a claim the text never makes is as fatal as a missing entry, so when a declaration has no sentence that states it, delete the declaration — do not keep it "to be safe".
 - You are also given the GEOMETRY of the two expected-payoff surfaces the reader is looking at. Where it helps, describe the equilibrium in those terms: indifference is a level shelf where a surface stops tilting; the equilibrium is the joint flat spot where both surfaces are level at once; strategic interaction is the warp in the surface; a best response is which way a slice tilts. Use these ONLY where the supplied geometry says they apply — if it tells you there is no flat shelf, or no interior flat spot, or that the game is not zero-sum, do not describe one.
 - Fill in geometryClaims to match what the supplied geometry states, and make sure your prose agrees with it. These are copied, not worked out: every one of them is stated for you above. If your explanation does not discuss the shape of the surfaces at all, set geometryClaims to null rather than guessing.
 - Restate your prose's action-level claims in proseClaims so they can be checked. Every time the prose names which option a player uses at an equilibrium (including "plays X with probability 1"), add an equilibriumActions entry with that player and the option NUMBER the named label maps to — before writing it, verify the label against the coordinates you were given: x=1 means A plays Row 1, x=0 means Row 2; y=1 means B plays Col 1, y=0 means Col 2. Every "X does better against Y" claim goes in bestReplies, and a dominance claim is two entries (one per opposing option). Declare ONLY claims your prose actually states — do not add entries for comparisons the prose never makes, and before each entry re-check the direction against the matrix. A claim made in prose but missing here, or declared wrongly, causes the whole explanation to be withheld. If the prose makes no such claims, set proseClaims to null.`;
+
+/**
+ * Compact system prompt for the LOCAL fine-tuned explainer (Electron).
+ *
+ * The full SYSTEM_PROMPT above is ~1,230 tokens of rules a cloud model must
+ * be told on every call. A model fine-tuned on gate-validated reports has
+ * those rules baked into its weights, so the local path sends only this
+ * identity line. Everything factual still arrives in the grounding payload,
+ * and nashValidator still gates every number exactly as it does for the
+ * cloud path. Halves training cost and saves ~3s of prompt processing per
+ * report on Apple-silicon inference.
+ */
+export const LOCAL_SYSTEM_PROMPT = `You are a game theorist explaining a 2x2 normal-form game to someone learning the subject. You are given the payoff matrix, the equilibria computed exactly by a solver, a best-reply table and the geometry of the expected-payoff surfaces; all of it is authoritative. Explain, never derive. Answer with the report JSON only.`;
 
 /** Everything the model is allowed to know. Ground truth, nothing else. */
 /**
@@ -508,13 +587,18 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
       // the convention don't take, but material handed over as computed fact
       // does. So the 1−x/1−y arithmetic is done HERE, never by the model.
       ? equilibria.map((e) => {
-          const base = `  ${e.type} at x=${e.x}, y=${e.y} (payoffs A=${e.eA}, B=${e.eB})`;
+          // MIXED coordinates go through fmtProb, never a fixed-precision
+          // number: an interior probability like 0.00004 at 4dp is "0", and a
+          // handover that says "probability 0" becomes model prose that names a
+          // pure profile which is provably not the equilibrium (the same
+          // collapse tieProse's prob() exists to prevent). Pure equilibria ARE
+          // exactly 0/1 and stay numeric.
+          const base = `  ${e.type} at x=${e.type === 'mixed' ? fmtProb(e.x) : e.x}, y=${e.type === 'mixed' ? fmtProb(e.y) : e.y} (payoffs A=${e.eA}, B=${e.eB})`;
           if (e.type === 'pure') {
             return `${base} — that is: A plays Row ${e.x === 1 ? 1 : 2}, B plays Col ${e.y === 1 ? 1 : 2}`;
           }
-          const w = (p: number) => Number(p.toFixed(4));
-          return `${base} — that is: A plays Row 1 with probability ${w(e.x)} and Row 2 with probability ${w(1 - e.x)}; `
-            + `B plays Col 1 with probability ${w(e.y)} and Col 2 with probability ${w(1 - e.y)}`;
+          return `${base} — that is: A plays Row 1 with probability ${fmtProb(e.x)} and Row 2 with probability ${fmtProb(1 - e.x)}; `
+            + `B plays Col 1 with probability ${fmtProb(e.y)} and Col 2 with probability ${fmtProb(1 - e.y)}`;
         }).join('\n')
       : '  none enumerated',
     '',
@@ -542,6 +626,13 @@ export async function generateReport(
   g: GamePayoffs,
   opts: {
     model?: string; framingGuidance?: string; styleExemplars?: string[]; scenario?: Scenario;
+    /**
+     * Replace the full rulebook with another system prompt — the local
+     * fine-tuned model is served with LOCAL_SYSTEM_PROMPT (the rules are in its
+     * weights). Everything else on the path — payload, schema, gates — is
+     * identical, so a local report is scored exactly like a cloud one.
+     */
+    systemPrompt?: string;
     /**
      * Thinking level for the report call. Defaults to the provider's own
      * default (nano effectively answers on reflex), which is where every
@@ -598,7 +689,7 @@ export async function generateReport(
     : '';
 
   const systemPrompt = [
-    SYSTEM_PROMPT,
+    opts.systemPrompt ?? SYSTEM_PROMPT,
     opts.framingGuidance ? `\n\n${opts.framingGuidance}` : '',
     exemplarBlock,
   ].join('');

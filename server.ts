@@ -21,8 +21,9 @@ import dotenv from "dotenv";
 // resolver requires explicit extensions and throws ERR_MODULE_NOT_FOUND on the
 // first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE, computeIndifference } from "./src/utils/gameEngine";
-import { validateReport, validateScenario, validateProseClaims } from "./src/utils/nashValidator";
-import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, type Scenario } from "./src/utils/report";
+import { tieProse, tieProseFull } from "./src/utils/tieProse";
+import { validateReport, validateScenario, validateProseClaims, validateProseDirections, scenarioIsClaimFree } from "./src/utils/nashValidator";
+import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
@@ -36,6 +37,11 @@ import type { ReasoningEffort } from "./src/utils/providers";
 // measuring the model's unmodified default unless a sweep opts in.
 const REPORT_REASONING: ReasoningEffort | undefined =
   (process.env.REPORT_REASONING as ReasoningEffort) || undefined;
+// REPORT_LOCAL_PROMPT=1 serves the fine-tuned local explainer: it was trained
+// with the compact LOCAL_SYSTEM_PROMPT (the rulebook is in its weights) and
+// only on the full-report task, so the scenario-only fast path is served by
+// an invention-mode report instead of the separate scenario prompt.
+const LOCAL_PROMPT = process.env.REPORT_LOCAL_PROMPT === '1' ? LOCAL_SYSTEM_PROMPT : undefined;
 
 // Validated-report cache. The same eight numbers always have the same
 // equilibria, and only envelopes that passed EVERY gate are stored — so a
@@ -51,7 +57,7 @@ const REPORT_CACHE_MAX = 200;
 const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number; b11: number; b12: number; b21: number; b22: number }, sc?: Scenario) =>
   JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
     sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
-import type { ReportEnvelope } from "./src/types";
+import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -359,12 +365,23 @@ function cleanScenario(value: any): Scenario | undefined {
   if (!value || typeof value !== "object") return undefined;
   const noTags = (v: unknown, n: number) =>
     cleanText(v, n).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  // Option labels are clamped to 40 characters and then PRINTED, so a bare
+  // slice cuts mid-word and the stub is repeated four or five times in one
+  // rendered paragraph ("Escalate the dispute to the regional arb" — rounds
+  // T1 and T2). Clamp at the last word boundary instead.
+  const label = (v: unknown) => {
+    const t = noTags(v, 60);
+    if (t.length <= 40) return t || undefined;
+    const cut = t.slice(0, 40);
+    const at = cut.lastIndexOf(' ');
+    return (at > 12 ? cut.slice(0, at) : cut).trim() || undefined;
+  };
   const sc: Scenario = {
     name: noTags(value.name, 80) || undefined,
-    row1: noTags(value.row1, 40) || undefined,
-    row2: noTags(value.row2, 40) || undefined,
-    col1: noTags(value.col1, 40) || undefined,
-    col2: noTags(value.col2, 40) || undefined,
+    row1: label(value.row1),
+    row2: label(value.row2),
+    col1: label(value.col1),
+    col2: label(value.col2),
     description: noTags(value.description, 1200) || undefined,
   };
   return Object.values(sc).some(Boolean) ? sc : undefined;
@@ -830,6 +847,138 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid payoff matrix." });
     }
 
+    // NASH_PAYOFF_TEMPLATE=1 — PROTOTYPE, default OFF. Rung 3 of the constraint
+    // ladder: render the mathematical sentences of ORDINARY games from the
+    // solver, exactly as tie games already are, and let the model supply only
+    // the scenario. Built so the tradeoff can be MEASURED rather than argued:
+    // across twelve adversarial rounds the templated surface produced one
+    // defect ever while free prose plateaued at 2-4%. Adopting this is a
+    // product decision — it trades some of the model's voice for that
+    // guarantee — so it stays behind a flag until that decision is made.
+    if (process.env.NASH_PAYOFF_TEMPLATE === '1') {
+      const p2 = payoffs;
+      const isTie = p2.a11 === p2.a21 || p2.a12 === p2.a22 || p2.b11 === p2.b12 || p2.b21 === p2.b22;
+      if (!isTie && req.body?.scenarioOnly !== true) {
+        let invented: SuggestedScenario | null = null;
+        if (!scenario && hasCredentials(DEFAULT_MODEL)) {
+          try {
+            const r = LOCAL_PROMPT
+              ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
+              : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING })).scenario;
+            // Under rung 3 the scenario must also be CLAIM-FREE: the solver
+            // states the mathematics, so a description that asserts anything
+            // decidable is both unnecessary and the only remaining defect
+            // surface (T1 measured it at 11.4%).
+            const claimFree = !!r && scenarioIsClaimFree(r);
+            const ok = !!r && validateScenario(r, payoffs).ok && (claimFree as any).ok !== false
+              && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(r.description ?? '', r, payoffs).length === 0);
+            if (r && ok) invented = r;
+            else if (r && (claimFree as any).ok === false) console.warn(`[report] rung-3 scenario dropped: ${(claimFree as any).reason}`);
+          } catch { invented = null; }
+        }
+        const labels2 = scenario ?? invented;
+        const truth2 = computeAllNE(payoffs);
+        return res.json({
+          source: 'template',
+          report: {
+            claimedEquilibria: truth2.map((n) => ({ type: n.type, x: n.x, y: n.y })),
+            prose: tieProseFull(payoffs, labels2 ?? null).prose,
+            // The renderer declares what it asserts, derived in the SAME pass as
+            // the prose so the two cannot drift. Was `null`, which made the
+            // DETERMINISTIC surface less verifiable than the model's.
+            proseClaims: tieProseFull(payoffs, labels2 ?? null).claims,
+            suggestedScenario: scenario ? undefined : invented ?? undefined,
+          },
+          groundTruth: truth2,
+          validation: null,
+        });
+      }
+    }
+
+    // Tie-game policy, set by NASH_LLM_TIES:
+    //   '0'        — withhold LLM prose entirely (the deterministic panel
+    //                explains ties and continua exactly). Both models
+    //                concentrate their residual errors here (rounds L1/L2/C1,
+    //                and L4: 7 of 17 tie prose surfaces wrong).
+    //   'template' — render the mathematical sentences from the solver and let
+    //                the model supply only the scenario.
+    // Anything else sends tie games to the model like any other game.
+    const tiePolicy = process.env.NASH_LLM_TIES;
+    if (tiePolicy === '0' || tiePolicy === 'template') {
+      const p = payoffs;
+      const tie = p.a11 === p.a21 || p.a12 === p.a22 || p.b11 === p.b12 || p.b21 === p.b22;
+      if (tie) {
+        // NASH_LLM_TIES=template: the model's DECLARATIONS on tie games are
+        // reliably exact (round L4: every declared claim true) while its free
+        // prose is not (7 of 17 tie prose surfaces wrong). So the mathematical
+        // sentences are rendered from the solver and the model is asked only
+        // for a scenario — the work it does well (L4 stories: 46/46 correct).
+        if (tiePolicy === 'template') {
+          // A supplied scenario is the user's own game description: the
+          // non-tie path never replaces it, and neither may this one. Only
+          // invent when nothing was supplied. (Round C14 draw 60: a `let
+          // scenario` here shadowed the request's scenario, so a user who
+          // supplied "Night Shift / Day Shift" was shown a mathematically
+          // perfect paragraph about options that were not in their game.)
+          let invented: SuggestedScenario | null = null;
+          if (!scenario && hasCredentials(DEFAULT_MODEL)) {
+            try {
+              const s = LOCAL_PROMPT
+                ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
+                : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING })).scenario;
+              // The scenario still faces its own gate; a failed story costs the
+              // labels, not the explanation.
+              // Same screen the non-tie path applies: the declarations gate,
+              // the CLAIM-FREE screen, AND the label-aware direction/dependence
+              // checks over the free description. C15 draw 56's story denied a
+              // payoff tie that the template paragraph beside it stated aloud.
+              //
+              // The claim-free screen was MISSING here until 2026-08-29, while
+              // this comment already claimed parity. Every claim-free rule —
+              // the payoff rules, "in response", "before B chooses" — silently
+              // did not apply to tie games, which are 12.7% of a random sample.
+              // Found by adversarial round #2: "The shop owner chooses between
+              // Open Records and Restrict Records when responding to the
+              // review" shipped on a tie game (b11 = b12 = -1) even though the
+              // screen drops that exact description.
+              const claimFreeOk = !!s && scenarioIsClaimFree(s).ok;
+              const storyOk = !!s && validateScenario(s, payoffs).ok && claimFreeOk
+                && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(s.description ?? '', s, payoffs).length === 0);
+              if (s && !claimFreeOk) console.warn(`[report] tie-path scenario dropped: ${scenarioIsClaimFree(s).reason}`);
+              if (s && storyOk) invented = s;
+            } catch { invented = null; }
+          }
+          // Labels for the rendered sentences: the user's own scenario first,
+          // an invented one only when they supplied none.
+          const labels = scenario ?? invented;
+          if (req.body?.scenarioOnly === true) {
+            return res.json(invented ? { scenario: invented } : { scenario: null, failure: scenario ? 'scenario-supplied' : 'validation-failed' });
+          }
+          const truth = computeAllNE(payoffs);
+          return res.json({
+            source: 'template',
+            report: {
+              claimedEquilibria: truth.map((n) => ({ type: n.type, x: n.x, y: n.y })),
+              prose: tieProseFull(payoffs, labels ?? null).prose,
+              proseClaims: tieProseFull(payoffs, labels ?? null).claims,
+              // Never offer a replacement the user did not ask for.
+              suggestedScenario: scenario ? undefined : invented ?? undefined,
+            },
+            groundTruth: truth,
+            validation: null,
+          });
+        }
+        if (req.body?.scenarioOnly === true) return res.json({ scenario: null, failure: 'tie-game' });
+        return res.json({
+          source: 'deterministic',
+          report: null,
+          groundTruth: computeAllNE(payoffs),
+          validation: null,
+          fallbackReason: 'tie-game',
+        });
+      }
+    }
+
     // The slim path behind "New AI scenario": the explanation on screen is
     // already validated, so only a fresh STORY is wanted — ~300 output
     // tokens instead of ~650, roughly halving that button's latency and its
@@ -839,10 +988,23 @@ async function startServer() {
       if (!hasCredentials(DEFAULT_MODEL)) {
         return res.json({ scenario: null, failure: "no-key" });
       }
-      let { scenario: invented, failure } = await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING });
-      if (invented && process.env.NASH_SCENARIO_CHECKS !== '0' && !validateScenario(invented, payoffs).ok) {
-        const second = await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING });
-        invented = second.scenario && validateScenario(second.scenario, payoffs).ok ? second.scenario : null;
+      // The tie path already refuses to replace a scenario the user supplied;
+      // the ordinary path did not, so scenarioOnly handed back a substitute
+      // (round T2). Never offer a replacement the user did not ask for.
+      if (scenarioIsUsable(scenario)) {
+        return res.json({ scenario: null, failure: "scenario-supplied" });
+      }
+      const invent = async () => {
+        if (!LOCAL_PROMPT) return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING });
+        const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
+        return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
+      };
+      let { scenario: invented, failure } = await invent();
+      const storyOk = (sc: NonNullable<typeof invented>) => validateScenario(sc, payoffs).ok
+        && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0);
+      if (invented && process.env.NASH_SCENARIO_CHECKS !== '0' && !storyOk(invented)) {
+        const second = await invent();
+        invented = second.scenario && storyOk(second.scenario) ? second.scenario : null;
         if (!invented) failure = "validation-failed" as typeof failure;
       }
       return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
@@ -875,7 +1037,7 @@ async function startServer() {
     // Model is server-controlled on purpose — a client-supplied model would let
     // anyone bill the expensive one. The eval sweep calls generateReport
     // directly, so it varies the model without this route needing to accept it.
-    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING });
+    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT });
 
     // The prompt already forbids inventing a story for a game that has one,
     // but that is an instruction, not a guarantee — models drift. Enforce it:
@@ -901,22 +1063,32 @@ async function startServer() {
     const degenerate = computeIndifference(payoffs).any;
     const scenarioGateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
     const proseGateOn = process.env.NASH_PROSE_ACTION_CHECKS !== '0';
+    // Label-aware direction check (opt-in, NASH_DIRECTION_CHECKS=1): reads
+    // the sentences themselves — "X is better / prefers X … against Y" — in
+    // the game's option words and verifies direction and strictness. Closes
+    // the "true declaration, wrong words" gap the declared-claims gates
+    // cannot see (observed on both the cloud and the local model).
+    const directionOn = process.env.NASH_DIRECTION_CHECKS === '1';
     const assess = (r: NonNullable<typeof report>) => {
       const scenarioOk = !scenarioGateOn || !r.suggestedScenario
-        || validateScenario(r.suggestedScenario, payoffs).ok;
+        || (validateScenario(r.suggestedScenario, payoffs).ok
+          && (!directionOn || validateProseDirections(r.suggestedScenario.description ?? '', r.suggestedScenario, payoffs).length === 0));
       // Run even when proseClaims is null: the undeclared-comparison screen
       // is exactly for prose that makes claims while declaring nothing.
+      const proseLabels = scenarioIsUsable(scenario) ? scenario : r.suggestedScenario;
       const proseOk = !proseGateOn
-        || validateProseClaims(r.proseClaims ?? null, r.prose ?? '', payoffs, groundTruth, degenerate).ok;
+        || (validateProseClaims(r.proseClaims ?? null, r.prose ?? '', payoffs, groundTruth, degenerate, directionOn ? proseLabels ?? null : undefined).ok
+          && (!directionOn || validateProseDirections(r.prose ?? '', proseLabels ?? null, payoffs).length === 0));
       // Prose outranks the optional story when choosing between candidates.
       return { scenarioOk, proseOk, rank: (proseOk ? 2 : 0) + (scenarioOk ? 1 : 0) };
     };
     let proseClaimsFailed = false;
+    let orphanedLabels = false;
     if (report) {
       let gates = assess(report);
       if (gates.rank < 3) {
         console.warn(`[report] declared-claims gate failed (scenarioOk=${gates.scenarioOk}, proseOk=${gates.proseOk}) — retrying once`);
-        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING });
+        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT });
         if (second.report) {
           // Same enforcement as the first attempt: never offer a replacement
           // scenario the user didn't ask for.
@@ -929,7 +1101,21 @@ async function startServer() {
             gates = g2;
           }
         }
-        if (report && !gates.scenarioOk) report.suggestedScenario = null;
+        if (report && !gates.scenarioOk) {
+          // The story is dropped, but the prose may be WRITTEN in its option
+          // names — round C14 draw 21 shipped "A uses Issue statement with
+          // probability 0.95 …" with no scenario on screen to say what an
+          // Issue statement is. An explanation about options the reader cannot
+          // see is withheld, the same as any other unshowable prose.
+          const dropped = report.suggestedScenario;
+          const names = [dropped?.row1, dropped?.row2, dropped?.col1, dropped?.col2]
+            .map((n) => (n ?? '').trim()).filter((n) => n.length > 2);
+          const prose = report.prose ?? '';
+          if (names.some((n) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i').test(prose))) {
+            orphanedLabels = true;
+          }
+          report.suggestedScenario = null;
+        }
         proseClaimsFailed = !gates.proseOk;
       }
     }
@@ -950,7 +1136,15 @@ async function startServer() {
     // can all be green while the declared actions contradict the solver
     // ("right numbers, wrong words") — that prose is withheld the same way
     // a hallucinated equilibrium is.
-    const envelope: ReportEnvelope = proseClaimsFailed
+    const envelope: ReportEnvelope = orphanedLabels
+      ? {
+          source: "deterministic",
+          report,
+          validation,
+          groundTruth,
+          fallbackReason: "orphaned-labels",
+        }
+      : proseClaimsFailed
       ? {
           source: "deterministic",
           report,

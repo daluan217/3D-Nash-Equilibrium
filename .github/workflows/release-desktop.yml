@@ -3,9 +3,17 @@ name: Build & Publish macOS DMG
 # Builds the macOS desktop app and uploads it to the GCS bucket so the website
 # always serves the latest version. A .dmg can only be built on macOS, so this
 # runs on a macOS runner (not Cloud Build, which is Linux).
+#
+# SHIP GATE: this publishes to live users, so it no longer fires on the raw
+# push to main — it fires when the Test workflow (the full unit → build → e2e
+# pyramid) completes successfully on main. A failing pyramid can therefore
+# never reach the DMG download. workflow_run only triggers from the default
+# branch, which is exactly the ship path; workflow_dispatch stays for manual
+# rebuilds of a known-good main.
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: ['Test']
+    types: [completed]
   workflow_dispatch:
 
 # Only one release build at a time; newer pushes cancel in-flight ones.
@@ -18,6 +26,13 @@ permissions:
 
 jobs:
   build-macos:
+    # the ship gate itself: publish only when the pyramid that ran on the same
+    # commit SUCCEEDED (workflow_run also fires on failure — without this the
+    # gate would be decorative). Manual dispatch of a known-good main is allowed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5

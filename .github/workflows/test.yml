@@ -1,20 +1,49 @@
 name: Test
 
-# Type-checks and runs both test suites (regression + property/fuzz) on every
-# push and PR. Node 20 matches the version release-desktop.yml already proves
-# green in Actions; CI never sees the local machine's default Node, so the
-# Node 26 Vite hang documented for local dev is not a concern here.
+# The testing pyramid. Four staged jobs, all REQUIRED before a merge to main
+# (and main auto-deploys — the web app via Netlify, the DMG via
+# release-desktop.yml, which itself now waits on this workflow):
+#
+#   unit        — type-check, unit tables (pure-function contracts), regression
+#                 suites, property/fuzz, tie-prose verifier
+#   build       — the production bundle itself (`npm run build`); catches the
+#                 Vite/esbuild breakage class CI could not see before
+#   integration — boots dist/server.cjs and exercises the real HTTP API:
+#                 auth lifecycle, saved-game CRUD, CORS preflight (the desktop
+#                 save path), clamping/validation, security headers
+#   e2e         — drives the REAL bundle in headless Chromium: cold load,
+#                 matrix input, solver convergence, the tab-wedge fixture,
+#                 regret mode, run-clearing invariants, and the no-key
+#                 deterministic report path. No LLM keys, no SMTP — deterministic.
+#
+# Cross-cutting guards: every job carries a timeout (a hung SwiftShader frame
+# must fail the check, not burn six hours of runner time), PR runs cancel
+# superseded ones, the unit job audits production dependencies at the critical
+# level, and the build job scans the bundle for secret-shaped strings and
+# enforces a size budget (Plotly already dominates it — the budget catches a
+# duplicate heavy import, not a few KB).
+#
+# Node 22 matches the version release-desktop.yml already proves green in
+# Actions; CI never sees the local machine's default Node, so the Node 26 Vite
+# hang documented for local dev is not a concern here.
 on:
   push:
     branches: [main, review-mirror]
   pull_request:
 
+# a new push to a PR supersedes its older runs — cancel them instead of
+# queueing stale results behind fresh ones
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -29,5 +58,107 @@ jobs:
       - name: Type-check
         run: npm run lint
 
+      - name: Audit production dependencies (critical advisories fail the build)
+        run: npm audit --omit=dev --audit-level=critical
+
       - name: Run test suites
         run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Scan the bundle for secret-shaped strings
+        run: |
+          if grep -rEn 'sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{30}|gho_[A-Za-z0-9]{30}|AIza[0-9A-Za-z_-]{30}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9_-]{20}' dist/ ; then
+            echo "::error::secret-shaped string found in the shipped bundle"
+            exit 1
+          fi
+          echo "bundle clean of secret-shaped strings"
+
+      - name: Enforce the bundle size budget (10 MB)
+        run: |
+          kb=$(du -sk dist/assets | cut -f1)
+          echo "dist/assets is ${kb} KB"
+          if [ "$kb" -gt 10240 ]; then
+            echo "::error::dist/assets exceeds the 10 MB budget — did a heavy dependency get imported twice?"
+            exit 1
+          fi
+
+      - name: Upload bundle for the e2e job
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 3
+          if-no-files-found: error
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the bundle built by the build job
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Boot the production server and run the API suite
+        run: node src/integration/api.test.mjs
+        env:
+          INTEGRATION_PORT: '3098'
+          INTEGRATION_BASE: http://localhost:3098
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the bundle built by the build job
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install headless Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Boot the production server and run the smoke suite
+        run: node src/e2e/smoke.mjs
+        env:
+          E2E_PORT: '3099'
+          E2E_BASE: http://localhost:3099

@@ -49,6 +49,14 @@ export interface PathSegment {
 
 export interface SimState {
   cx: number;
+  /** The coordinate BEFORE r3 display-rounding. `cx`/`cy` are rounded at the
+   *  moment they are written, which destroyed the only evidence of whether a
+   *  profile was truly at a vertex — three separate defects (a "PURE" label on
+   *  games with no pure equilibrium, twice) came from downstream code asking
+   *  the rounded value a question only the exact value can answer. Display from
+   *  cx/cy; decide anything true from these. */
+  exactX: number;
+  exactY: number;
   cy: number;
   calcX: number | null;
   calcY: number | null;
@@ -81,6 +89,17 @@ export interface SimState {
 
   running: boolean;
   converged: boolean;
+  /**
+   * Whether the converged point is ACTUALLY a Nash equilibrium, checked against
+   * the independent regret oracle. Convergence is declared on STATIONARITY
+   * (the step deltas fall below a threshold), and a best-response path can go
+   * stationary at a non-equilibrium: on a=[[9,-1],[-9,9]], b=[[-4,-7],[-2,-2]]
+   * it settles at (0,1) where regretA = 18, and the app announced "Pure Strategy
+   * Nash Equilibrium Reached" there while its own equilibrium list — y in
+   * [0, 0.357] — excluded that very point. Found by an adversarial red team;
+   * 0.73% of random integer games converge with regret > 0.1.
+   */
+  convergedIsNE?: boolean;
   stepCount: number;
 
   pathSegmentsA: PathSegment[];
@@ -107,7 +126,6 @@ export interface SimState {
   ghostBisectBadLo: number;
   ghostBisectBadHi: number;
 
-  historyStack: Omit<SimState, 'running' | 'historyStack'>[];
 }
 
 export interface NashEquilibrium {
@@ -225,6 +243,10 @@ export interface SuggestedScenario {
   col1?: string;
   col2?: string;
   description?: string;
+  /** Role nouns for the two players, as in `Scenario` — used for color-coding
+   *  and, in `validateScenario`, to attribute role-worded claims to a player. */
+  actorA?: string[];
+  actorB?: string[];
   /**
    * The factual claims the invented description makes, restated as data so
    * `validateScenario` can check them as lookups — the same design as
@@ -337,7 +359,13 @@ export interface ValidationResult {
 
 /** What POST /api/report returns. */
 export interface ReportEnvelope {
-  source: 'llm' | 'deterministic';
+  /**
+   * 'template' — the mathematical sentences were RENDERED from the solver
+   * (tie games under NASH_LLM_TIES=template); only the scenario, if any, came
+   * from the model. Shown like an LLM report because it is grounded by
+   * construction, but labelled so the reader knows what wrote it.
+   */
+  source: 'llm' | 'deterministic' | 'template';
   report: LlmReport | null;
   validation: ValidationResult | null;
   groundTruth: NashEquilibrium[];
@@ -353,5 +381,10 @@ export interface ReportEnvelope {
     // retry): the numbers were right but the words were not, so the prose is
     // withheld the way a hallucinated equilibrium would be.
     | 'prose-claims-failed'
+    // The invented scenario failed its gate and was dropped, but the prose was
+    // written in that story's option names — an explanation about options the
+    // reader can no longer see. Withheld rather than shown orphaned.
+    | 'orphaned-labels'
+    | 'tie-game'
     | 'error';
 }

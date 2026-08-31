@@ -11,10 +11,29 @@ import {
   EB,
   r3,
   computeAllNE,
+  describeContinua,
   computeIndifference,
   doStep,
   buildPolyStr,
   generateRandomGame,
+  equilibriumSet,
+  kindOf,
+  resolveProfile,
+  indifferenceAt,
+  texProb,
+  // The ONE string->number conversion for typed fields. Nothing in this file may
+  // call parseFloat / parseInt / Number / valueAsNumber on user-supplied text:
+  // two defects came from call sites each answering "is this a number?" for
+  // themselves — a pasted U+2212 minus lost on blur, and x0 = 0 discarded by a
+  // falsy-zero fallback. src/test.ts asserts no such call site survives.
+  commitPayoffInput,
+  commitStartCoordinate,
+  parseNumericInput,
+  commitStepSize,
+  commitStepIndex,
+  precomputeThinHistory,
+  replayToStep,
+  type ThinSnapshot,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -87,81 +106,6 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
  */
 // ColorCoded moved to its own component so the workspace-center library
 // (MenuDrawer) can color saved-game text with the exact same rules.
-
-interface ThinSnapshot {
-  cx: number; cy: number;
-  calcX: number | null; calcY: number | null;
-  discoveredMixedX: number | null; discoveredMixedY: number | null;
-  foundAxis: 'x' | 'y' | null;
-  domainLo: number; domainHi: number;
-  converged: boolean; stepCount: number; cycleCount: number;
-}
-
-function toThin(s: SimState): ThinSnapshot {
-  return {
-    cx: s.cx, cy: s.cy, calcX: s.calcX, calcY: s.calcY,
-    discoveredMixedX: s.discoveredMixedX, discoveredMixedY: s.discoveredMixedY,
-    foundAxis: s.foundAxis,
-    domainLo: s.domainLo, domainHi: s.domainHi,
-    converged: s.converged, stepCount: s.stepCount, cycleCount: s.cycleCount,
-  };
-}
-
-function precomputeThinHistory(
-  initState: SimState,
-  payoffs: GamePayoffs, firstMover: 'A' | 'B', shrinkStep: number,
-  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null,
-  stepMode: 'shrink' | 'regret' = 'shrink'
-): { snaps: ThinSnapshot[], neState: SimState | null } {
-  const snaps: ThinSnapshot[] = [toThin(initState)];
-  const state: SimState = {
-    ...initState,
-    visitedPositions: [...initState.visitedPositions],
-    ghostVisitedPositions: [...initState.ghostVisitedPositions],
-    pathSegmentsA: initState.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-    pathSegmentsB: initState.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-    phase1PtsA: null, phase1PtsB: null,
-    ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
-  };
-  let neState: SimState | null = null;
-  const MAX_STEPS = 5000;
-  while (!state.converged && snaps.length < MAX_STEPS) {
-    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; }, stepMode);
-    snaps.push(toThin(state));
-    if (neState === null && (state.discoveredMixedX !== null || state.discoveredMixedY !== null)) {
-      neState = {
-        ...state,
-        visitedPositions: [...state.visitedPositions],
-        ghostVisitedPositions: [...state.ghostVisitedPositions],
-        pathSegmentsA: state.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-        pathSegmentsB: state.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-        ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: [], running: false
-      };
-    }
-  }
-  return { snaps, neState };
-}
-
-function replayToStep(
-  initState: SimState, targetStep: number,
-  payoffs: GamePayoffs, firstMover: 'A' | 'B', shrinkStep: number,
-  allNE: NashEquilibrium[], committedNE: NashEquilibrium | null,
-  stepMode: 'shrink' | 'regret' = 'shrink'
-): SimState {
-  const state: SimState = {
-    ...initState,
-    visitedPositions: [...initState.visitedPositions],
-    ghostVisitedPositions: [...initState.ghostVisitedPositions],
-    pathSegmentsA: initState.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-    pathSegmentsB: initState.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-    phase1PtsA: null, phase1PtsB: null,
-    ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
-  };
-  for (let i = 0; i < targetStep; i++) {
-    doStep(payoffs, state, firstMover, shrinkStep, allNE, committedNE, () => {}, () => {}, () => { state.running = false; }, stepMode);
-  }
-  return state;
-}
 
 export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
@@ -409,6 +353,23 @@ export default function App() {
 
   // ── Simulation Settings State ──────────────────────────────────────────────
   const [firstMover, setFirstMover] = useState<'A' | 'B'>('A');
+  /**
+   * The parameters the CURRENT simState was produced with.
+   *
+   * Every panel that narrates a FINISHED run must read these, never live React
+   * state. Two defects came from the gap: editing a matrix cell repointed the
+   * geometry while the run stayed frozen, and clicking "Player B" under Who
+   * moves first rewrote the history of a run A had already completed — the box
+   * said "Player B moved first and realised 1.000" over a log that still read
+   * "Player A moves first", and the report committed to the opposite corner
+   * from the one the box named. Guarding each control that WRITES this state
+   * missed the mover toggle; guarding the READ covers every control at once,
+   * including ones added later.
+   */
+  const [runCtx, setRunCtx] = useState<{
+    payoffs: GamePayoffs; firstMover: 'A' | 'B'; shrinkStep: number;
+    stepMode: 'shrink' | 'regret'; allNE: NashEquilibrium[]; committedNE: NashEquilibrium | null;
+  } | null>(null);
   const [trackingMode, setTrackingMode] = useState<'A' | 'B' | 'both'>('A');
   const [shrinkStep, setShrinkStep] = useState<number>(0.1);
   const [shrinkStepRaw, setShrinkStepRaw] = useState<string>('0.100');
@@ -422,11 +383,38 @@ export default function App() {
 
   // Custom stepper for the start-point fields (replaces the native spinners)
   const stepStartPoint = (axis: 'x' | 'y', dir: 1 | -1) => {
-    const cur = parseFloat(axis === 'x' ? x0 : y0);
-    const base = isNaN(cur) ? 0.217 : cur;
+    const base = commitStartCoordinate(axis === 'x' ? x0 : y0);
     const next = Math.max(0, Math.min(1, Math.round((base + dir * 0.01) * 1000) / 1000));
     (axis === 'x' ? setX0 : setY0)(next.toFixed(3));
     setInitialized(false);
+  };
+
+  /**
+   * Write the COMMITTED start coordinate back into the field.
+   *
+   * Patch 1 gave every numeric field one parser, but only three of its four
+   * sites also wrote the committed value back. The matrix cells canonicalise on
+   * blur, the step-size box canonicalises on blur, and the x0/y0 SPINNER
+   * canonicalises (stepStartPoint already rounds and calls setX0) — but typing
+   * into x0/y0 did not, so the field kept the raw string forever while every
+   * computation used the clamped value. Typing "2" into a box whose own
+   * attributes say max="1.0" left it reading 2 while the readout showed 1.000
+   * and the log opened "Start (1.000, 0.217)"; clearing it left an invisible
+   * 0.217 the user never typed. Three panels, two start points, no correction
+   * on screen.
+   */
+  const commitStartField = (axis: 'x' | 'y') => {
+    const raw = axis === 'x' ? x0 : y0;
+    const committed = commitStartCoordinate(raw);
+    // Rewrite ONLY when the box MISREPRESENTS the value the run will use.
+    // Comparing against the formatted string instead rewrote "0.5" to "0.500" —
+    // same value, different text — which changes x0, which fires the [x0, y0]
+    // re-freeze effect, which resets the run. A blur that changed nothing would
+    // then wipe a finished run. That is the same hazard handlePayoffBlur guards
+    // with its value inequality; this is its sibling, and it was mine.
+    if (parseNumericInput(raw) !== committed) {
+      (axis === 'x' ? setX0 : setY0)(committed.toFixed(3));
+    }
   };
 
   // Initialize simulation running flag
@@ -436,6 +424,8 @@ export default function App() {
   const [simState, setSimState] = useState<SimState>({
     cx: 0.217,
     cy: 0.217,
+    exactX: 0.217,
+    exactY: 0.217,
     calcX: 0.217,
     calcY: 0.217,
     displayX: 0.217,
@@ -477,8 +467,7 @@ export default function App() {
     cyclePattern: null, bisecting: false,
     bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
     ghostCyclePattern: null, ghostBisecting: false,
-    ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
-    historyStack: []
+    ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1
   });
 
   const [logEntries, setLogEntries] = useState<string[]>([
@@ -487,6 +476,10 @@ export default function App() {
 
   // ── Timeline state ─────────────────────────────────────────────────────────
   const [thinHistory, setThinHistory] = useState<ThinSnapshot[]>([]);
+  // Whether the precompute hit its step cap instead of converging. Without this
+  // the UI showed a full progress bar and a disabled Step button, which reads as
+  // "finished" — the run had simply been cut off.
+  const [runTruncated, setRunTruncated] = useState<boolean>(false);
   const thinHistoryRef = useRef<ThinSnapshot[]>([]);
   const scrubPosRef = useRef<number>(0);
   const initStateRef = useRef<SimState | null>(null);
@@ -627,10 +620,31 @@ export default function App() {
 
   const indifferenceStatus = useMemo(() => computeIndifference(payoffs), [payoffs]);
 
+  // Equilibrium CONTINUA. computeAllNE enumerates corners plus the interior
+  // mixed point, which is the whole truth only when no player has a weak best
+  // reply; with a payoff tie the equilibrium set is often a whole edge, and on
+  // ~3 of every 4 tie games the corner list alone under-reports it. These lines
+  // are additive — allNE, the simulation and the plot are untouched.
+  const continua = useMemo(() => describeContinua(payoffs), [payoffs]);
+
   // ── Grounded LLM explanation ───────────────────────────────────────────────
   // On demand, never reactive: payoffs change on every slider drag, so fetching
   // per change would fire a model call per keystroke. The user asks for it.
   const [llmEnvelope, setLlmEnvelope] = useState<ReportEnvelope | null>(null);
+  // Whether the game ACTUALLY has a payoff tie, for the provenance line in the
+  // report panel. That line used to assert a tie unconditionally, which was true
+  // only while the tie path alone produced `source === 'template'`;
+  // NASH_PAYOFF_TEMPLATE=1 routes every game there.
+  const hasPayoffTie = payoffs.a11 === payoffs.a21 || payoffs.a12 === payoffs.a22
+    || payoffs.b11 === payoffs.b12 || payoffs.b21 === payoffs.b22;
+  // The category narrative below asserts structure ("exactly one pure NE",
+  // "always converges to the unique attractor") that a CONTINUUM contradicts.
+  // It gated on `computeIndifference`, which only detects a FULLY flat player,
+  // so a PARTIAL tie walked straight through: on a=[[-2,-2],[-2,-1]],
+  // b=[[-2,-1],[-1,-2]] the set is x in [0, 0.5] at y=1 and (0.3, 1) has zero
+  // regret for both players, so "always converge to the unique" is false while
+  // the continuum is listed three lines above. This is the test tieProse uses.
+  const hasEquilibriumContinuum = equilibriumSet(payoffs).some((r) => kindOf(r) !== 'point');
   const [llmLoading, setLlmLoading] = useState(false);
   // Tracked separately: without it a failed request clears the envelope and
   // renders identically to "never asked", so the user cannot tell a dead
@@ -646,8 +660,13 @@ export default function App() {
   // Every other outcome — refusal, truncation, rate limit, hallucinated
   // equilibrium, or no API key at all — leaves the deterministic report above as
   // the only answer shown. The fallback is the default, not the exception.
+  // 'template' reports (tie games under NASH_LLM_TIES=template) carry no
+  // validation object because there is nothing to validate: their sentences are
+  // rendered from the solver, so they are grounded by construction rather than
+  // by a gate. They display like a verified report.
   const llmVerified =
-    llmEnvelope?.source === 'llm' && llmEnvelope.validation?.ok === true && !!llmEnvelope.report;
+    (llmEnvelope?.source === 'llm' && llmEnvelope.validation?.ok === true && !!llmEnvelope.report)
+    || (llmEnvelope?.source === 'template' && !!llmEnvelope.report);
 
   // Any edit to the game invalidates prose written about the previous one.
   useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
@@ -812,6 +831,34 @@ export default function App() {
     });
   }, [pureNEs, firstMover]);
 
+  /**
+   * The run parameters, mirrored into a ref.
+   *
+   * `handleStep`'s init branch reads eight pieces of live React state to build
+   * and precompute a run. Any caller SCHEDULED BEFORE those values change
+   * captures the pre-update closure and stages the wrong run.
+   *
+   * The tour's "Watch the leans flatten" step does exactly that: its onEnter
+   * calls changeStepMode('regret') and then
+   * `tourDefer(() => handleStep(true), 350)`. The timer is created in the same
+   * tick as the setState, so it can NEVER observe the new mode — it is stale by
+   * construction, not by racing. On the normal path the mode is already 'regret'
+   * by then and the stale value happens to be right, which is why this was
+   * invisible; a visitor who touches the method button once on the previous step
+   * makes it wrong. The panel, the step-size label, the help text and the plot
+   * caption all said Opponent Regret while the staged run was Domain Shrink:
+   * denominator 58 and first-find 37 instead of 30 and 24, with the regret
+   * strategy lines not drawn at all under a caption saying to watch them flatten.
+   *
+   * A ref is the fix rather than a dependency array because the staleness is in
+   * a TIMER, not in an effect: reading current values at call time is exactly
+   * what a deferred caller needs, and it immunises every future tourDefer too.
+   */
+  const runParamsRef = useRef({ payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE, x0, y0 });
+  useEffect(() => {
+    runParamsRef.current = { payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE, x0, y0 };
+  });
+
   // Expected equations text
   const eqAStr = useMemo(() => {
     return buildPolyStr(
@@ -841,13 +888,104 @@ export default function App() {
     }, allNE[0]);
   }, [allNE, simState.cx, simState.cy]);
 
+  // The converged box's solution concept comes from the REALISED profile, never
+  // from `nearestNE` — that is the *nearest* equilibrium and can be arbitrarily
+  // far from where the run actually stopped. Two earlier defects in this same
+  // box came from borrowing its identity (the eA payoff, then the mover noun);
+  // this is the third: "Pure Strategy Nash Equilibrium Reached" printed above
+  // x*=1.000, y*=0.500 on a continuum where B is mixing 50/50.
+  // Resolve back to the solver's EXACT coordinates before naming anything.
+  // simState.cx/cy are r3-collapsed inside doStep, so asking them "is this a
+  // vertex?" answered yes for a mixed equilibrium at 0.99955 and printed PURE
+  // on a game with no pure equilibrium.
+  const resolved = useMemo(
+    () => resolveProfile(payoffs, simState),
+    [payoffs, simState]
+  );
+  const realisedConcept = resolved.concept;
 
+  // A finished run is STALE the moment the game or the turn order it ran under
+  // changes. Gating the box here covers every control at once — the matrix
+  // editor, the first-mover toggle, and anything added later — rather than
+  // relying on each writer remembering to reset.
+  const runStale = !runCtx
+    || runCtx.firstMover !== firstMover
+    || (Object.keys(runCtx.payoffs) as (keyof GamePayoffs)[]).some((k) => runCtx.payoffs[k] !== payoffs[k]);
+
+  // Which players are ACTUALLY indifferent here. A continuum point is "mixed"
+  // but only ONE player is indifferent on it; printing both indifference
+  // equations asserted E[Row 1] = 3.783 ≈ E[Row 2] = -0.698.
+  const indiff = useMemo(
+    () => indifferenceAt(payoffs, simState.cx, simState.cy),
+    [payoffs, simState.cx, simState.cy]
+  );
+
+
+
+  /**
+   * The ONE writer of `firstMover`.
+   *
+   * Turn order is part of a run's rules. Changing it left the timeline controls
+   * replaying the old mover's run beside a report that had already flipped to
+   * the new mover's committed corner: on Battle of the Sexes the report said
+   * "Player B initiates and commits to Pure NE (Row2, Col2)" while the log still
+   * read "Player A moves first", the markers sat on (Row1, Col1) and the pill
+   * still certified "✓ Converged".
+   *
+   * Deliberately NOT a useEffect on `firstMover`: the guided tour re-asserts the
+   * mover on every act entry (enterDilemmaAct, enterMixedAct), and an effect
+   * would fire there and wipe tour state mid-act. It would also fire only when
+   * the value actually changed, i.e. only for a visitor who toggled mid-tour —
+   * intermittently, in the one case nobody tests.
+   *
+   * The early return keeps those re-assertions a true no-op in the common case,
+   * and when the mover HAS genuinely changed, resetting is what the tour's own
+   * comment already claims happens ("a changed value triggers the re-freeze
+   * reset") — true for x0/y0 via their effect, and silently false here until now.
+   */
+  const changeFirstMover = (next: 'A' | 'B') => {
+    if (next === firstMover) return;
+    setFirstMover(next);
+    setInitialized(false);
+    if (runCtx) handleReset();
+  };
+
+  /**
+   * The ONE writer of `stepMode`, for the same reason as changeFirstMover.
+   *
+   * The convergence method is the third control that defines a run's rules,
+   * after the matrix and the turn order. Both steppers pass `fc.stepMode` from
+   * the frozen run context, so switching method mid-run left the button visibly
+   * active while every subsequent Step continued under the OLD method. Nothing
+   * false was printed — which is exactly what made it worth fixing: the control
+   * silently had no effect, and the user had no way to tell "this did nothing"
+   * from "this did something I cannot see".
+   *
+   * Same shape as changeFirstMover, and the same reason it is not a useEffect:
+   * the tour re-asserts the method on almost every step of the mixed act, and
+   * the unchanged-value early return keeps those re-assertions true no-ops.
+   */
+  const changeStepMode = (next: 'shrink' | 'regret') => {
+    if (next === stepMode) return;
+    setStepMode(next);
+    setInitialized(false);
+    if (runCtx) handleReset();
+  };
 
   // ── Interactive Single-Step Engine ─────────────────────────────────────────
   const handleStep = (startRunningAfter = false) => {
     if (!initialized) {
-      const startValX = Math.max(0, Math.min(1, parseFloat(x0) || 0.217));
-      const startValY = Math.max(0, Math.min(1, parseFloat(y0) || 0.217));
+      // Read the run parameters from the ref, never from this closure: a
+      // deferred caller (the tour's tourDefer staging) holds a closure from
+      // before its own onEnter's setState committed.
+      const rp = runParamsRef.current;
+      const { payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE } = rp;
+      // `parseFloat(x0) || 0.217` treated a legitimate 0 as a missing value: x0 = 0
+      // (advertised by the input's own min="0.0", and where the down button lands
+      // from 0.010) ran from 0.217, and the log opened "Start (0.217, 0.500)"
+      // above a box still reading 0.
+      const startValX = commitStartCoordinate(rp.x0);
+      const startValY = commitStartCoordinate(rp.y0);
 
       const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, payoffs))], mover: 'A' as const };
       const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, payoffs))], mover: 'A' as const };
@@ -855,6 +993,7 @@ export default function App() {
       const initState: SimState = {
         ...simState,
         cx: startValX, cy: startValY,
+        exactX: startValX, exactY: startValY,
         calcX: startValX, calcY: startValY,
         displayX: startValX, displayY: startValY,
         startX: startValX, startY: startValY,
@@ -868,11 +1007,11 @@ export default function App() {
         cyclePattern: null, bisecting: false,
         bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
         ghostCyclePattern: null, ghostBisecting: false,
-        ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
-        historyStack: []
+        ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1
       };
 
       setInitialized(true);
+      setRunCtx({ payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE });
       setLogEntries([`Start (${startValX.toFixed(3)}, ${startValY.toFixed(3)}) — Player ${firstMover} moves first`]);
       initStateRef.current = initState;
       neSnapshotRef.current = null;
@@ -880,7 +1019,8 @@ export default function App() {
       setJumpInput('');
 
       // Pre-compute thin snapshots — used for total step count and NE snapshot
-      const { snaps, neState } = precomputeThinHistory(initState, payoffs, firstMover, shrinkStep, allNE, committedNE, stepMode);
+      const { snaps, neState, truncated } = precomputeThinHistory(initState, payoffs, firstMover, shrinkStep, allNE, committedNE, stepMode);
+      setRunTruncated(truncated);
       thinHistoryRef.current = snaps;
       setThinHistory(snaps);
       if (neState) {
@@ -895,7 +1035,7 @@ export default function App() {
         pathSegmentsA: [{ ...initSegA, xs: [...initSegA.xs], ys: [...initSegA.ys], zs: [...initSegA.zs] }],
         pathSegmentsB: [{ ...initSegB, xs: [...initSegB.xs], ys: [...initSegB.ys], zs: [...initSegB.zs] }],
         phase1PtsA: null, phase1PtsB: null,
-    ghostPathSegmentsA: [], ghostPathSegmentsB: [], historyStack: []
+    ghostPathSegmentsA: [], ghostPathSegmentsB: []
       };
       const stepLogs: string[] = [];
       doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
@@ -927,12 +1067,20 @@ export default function App() {
       pathSegmentsA: prev.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
       pathSegmentsB: prev.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
       ghostPathSegmentsA: prev.ghostPathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-      ghostPathSegmentsB: prev.ghostPathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-      historyStack: []
+      ghostPathSegmentsB: prev.ghostPathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] }))
     };
     const stepLogs: string[] = [];
-    doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
-      (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, stepMode);
+    // ONE source of truth for the whole run, forward and backward. Freezing the
+    // replay while the forward stepper read LIVE controls let a run change its
+    // own rules mid-flight: the step-size box (the only control that never
+    // called setInitialized) altered dynamics on a run already in progress,
+    // while the precomputed history — which drives the progress denominator and
+    // the Step button — still described the abandoned trajectory. The app
+    // printed "Equilibrium reached" and disabled Step at a profile where a
+    // player gained 4 by switching.
+    const fc = runCtx ?? { payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE };
+    doStep(fc.payoffs, next, fc.firstMover, fc.shrinkStep, fc.allNE, fc.committedNE,
+      (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, fc.stepMode);
 
     simStateRef.current = next;
     setSimState(next);
@@ -967,12 +1115,12 @@ export default function App() {
         pathSegmentsA: prev.pathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
         pathSegmentsB: prev.pathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
         ghostPathSegmentsA: prev.ghostPathSegmentsA.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-        ghostPathSegmentsB: prev.ghostPathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
-        historyStack: []
+        ghostPathSegmentsB: prev.ghostPathSegmentsB.map((s): PathSegment => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] }))
       };
       const stepLogs: string[] = [];
-      doStep(payoffs, next, firstMover, shrinkStep, allNE, committedNE,
-        (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, stepMode);
+      const fc = runCtx ?? { payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE };
+      doStep(fc.payoffs, next, fc.firstMover, fc.shrinkStep, fc.allNE, fc.committedNE,
+        (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, fc.stepMode);
       simStateRef.current = next;
       setSimState(next);
       const nextPos = pos + 1;
@@ -1127,13 +1275,14 @@ export default function App() {
     // Mirror handleLoadPreset: board payoffs, their editable string twins,
     // preset highlight off, sim rebuilt from the start point.
     setActivePreset('custom');
-    setPayoffs(g);
-    setRawPayoffs({
-      a11: String(g.a11), b11: String(g.b11),
-      a12: String(g.a12), b12: String(g.b12),
-      a21: String(g.a21), b21: String(g.b21),
-      a22: String(g.a22), b22: String(g.b22),
-    });
+    // Both halves through the SAME commit function. Writing payoffs as raw
+    // numbers and rawPayoffs as String(v) left the two agreeing only while every
+    // incoming value already satisfied v === clamp(-100,100,r3(v)) — an invariant
+    // enforced in server.ts, on the far side of an HTTP boundary. A game saved
+    // before that clamp existed would make blur silently rewrite the matrix.
+    const gc = commitPayoffs(g);
+    setPayoffs(gc);
+    setRawPayoffs(rawOf(gc));
     handleReset();
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
     try {
@@ -1606,6 +1755,20 @@ export default function App() {
   }, [scenarioForReport, mergedPresets, activePreset]);
 
 
+  // Clamp a whole matrix through the one cell parser, and derive its editable
+  // string twin from the RESULT — so payoffs and rawPayoffs cannot disagree
+  // whatever a preset, a generated game or a saved game supplies.
+  const commitPayoffs = (g: GamePayoffs): GamePayoffs => ({
+    a11: commitPayoffInput(String(g.a11)), b11: commitPayoffInput(String(g.b11)),
+    a12: commitPayoffInput(String(g.a12)), b12: commitPayoffInput(String(g.b12)),
+    a21: commitPayoffInput(String(g.a21)), b21: commitPayoffInput(String(g.b21)),
+    a22: commitPayoffInput(String(g.a22)), b22: commitPayoffInput(String(g.b22)),
+  });
+  const rawOf = (g: GamePayoffs): Record<keyof GamePayoffs, string> => ({
+    a11: String(g.a11), b11: String(g.b11), a12: String(g.a12), b12: String(g.b12),
+    a21: String(g.a21), b21: String(g.b21), a22: String(g.a22), b22: String(g.b22),
+  });
+
   // ── Preset loader action ───────────────────────────────────────────────────
   const handleLoadPreset = (key: string) => {
     setActivePreset(key);
@@ -1618,29 +1781,32 @@ export default function App() {
           a21: preset.a21 ?? 0, b21: preset.b21 ?? 0,
           a22: preset.a22 ?? 0, b22: preset.b22 ?? 0,
         };
-        setPayoffs(payload);
-        setRawPayoffs({
-          a11: String(payload.a11), b11: String(payload.b11),
-          a12: String(payload.a12), b12: String(payload.b12),
-          a21: String(payload.a21), b21: String(payload.b21),
-          a22: String(payload.a22), b22: String(payload.b22),
-        });
+        // Same single commit path as the generator and the editor.
+        const clamped = commitPayoffs(payload);
+        setPayoffs(clamped);
+        setRawPayoffs(rawOf(clamped));
       }
     }
     handleReset();
   };
 
   // ── Reset entire simulation ────────────────────────────────────────────────
-  const handleReset = () => {
-    const startValX = Math.max(0, Math.min(1, parseFloat(x0) || 0.217));
-    const startValY = Math.max(0, Math.min(1, parseFloat(y0) || 0.217));
+  const handleReset = (overridePayoffs?: GamePayoffs) => {
+    const rp = overridePayoffs ?? payoffs;
+    setRunCtx(null);
+    // Same single parser as handleStep — the two must agree on where a run
+    // begins, or the markers sit somewhere the run never starts from.
+    const startValX = commitStartCoordinate(x0);
+    const startValY = commitStartCoordinate(y0);
 
-    const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, payoffs))], mover: 'A' as const };
-    const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, payoffs))], mover: 'A' as const };
+    const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, rp))], mover: 'A' as const };
+    const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, rp))], mover: 'A' as const };
 
     setSimState({
       cx: startValX,
       cy: startValY,
+      exactX: startValX,
+      exactY: startValY,
       calcX: startValX,
       calcY: startValY,
       displayX: startValX,
@@ -1672,8 +1838,7 @@ export default function App() {
       cyclePattern: null, bisecting: false,
       bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
       ghostCyclePattern: null, ghostBisecting: false,
-      ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
-      historyStack: []
+      ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1
     });
 
     setLogEntries(['Set starting point and first mover, then click Run or Step.']);
@@ -1687,6 +1852,7 @@ export default function App() {
     initStateRef.current = null;
     neSnapshotRef.current = null;
     setThinHistory([]);
+    setRunTruncated(false);
     setNeSnapshot(null);
     setJumpInput('');
   };
@@ -1882,8 +2048,8 @@ export default function App() {
     // the staged steps do anyway.)
     setX0('0.217');
     setY0('0.217');
-    setFirstMover('A');
-    setStepMode('shrink');
+    changeFirstMover('A');
+    changeStepMode('shrink');
     setTrackingMode('both');
     setTourPoints([]);
     setSimState((prev) => ({ ...prev, discoveredMixedX: null, discoveredMixedY: null, foundAxis: null }));
@@ -1920,7 +2086,7 @@ export default function App() {
     // run and the position markers start well clear of the NE diamonds.
     setX0('0.800');
     setY0('0.200');
-    setFirstMover('A');
+    changeFirstMover('A');
     // Deliberately does NOT set the convergence method. It used to force
     // 'shrink' here, so every step had to re-assert 'regret' or be silently
     // flipped back — which is what happened on the last step and left the
@@ -2031,7 +2197,7 @@ export default function App() {
         enterMixedAct();
         // Shrink here only because the regret renderer would draw strategy lines,
         // and these two steps are introducing the surface, not the method.
-        setStepMode('shrink');
+        changeStepMode('shrink');
         setTourPoints([]);
         moveCamera(CAMERA.mixedOpen, 900);
       },
@@ -2046,7 +2212,7 @@ export default function App() {
         enterMixedAct();
         // Shrink here only because the regret renderer would draw strategy lines,
         // and these two steps are introducing the surface, not the method.
-        setStepMode('shrink');
+        changeStepMode('shrink');
         setTourPoints([]);
         moveCamera(CAMERA.mixedOpen, 900);
       },
@@ -2071,7 +2237,7 @@ export default function App() {
         // read on its own; running:false because the visitor may arrive here
         // by stepping Back from the run.
         enterMixedAct([TRACE.strategyB]);
-        setStepMode('regret');
+        changeStepMode('regret');
         // Full reset, not just running:false — arriving here by stepping Back
         // from the run otherwise keeps its path stripes and corridor residue
         // on screen, burying the one line this step exists to show.
@@ -2093,7 +2259,7 @@ export default function App() {
         + 'pulled away from the middle. Nothing in this picture, so far, would ever produce a mixture.',
       onEnter: () => {
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         handleReset();
         setTourPoints([{ x: 0.5, y: 0.5 }]);
         moveCamera(CAMERA.mixedOpen, 1100);
@@ -2108,7 +2274,7 @@ export default function App() {
         + 'itself, and moves the players step by step so that it shrinks.',
       onEnter: () => {
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         handleReset();
         setTourPoints([]);
       },
@@ -2121,7 +2287,7 @@ export default function App() {
         + 'both corridors contract from both sides at once. But they do not finish together.',
       onEnter: () => {
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         handleReset();
         setTourPoints([]);
         moveCamera(CAMERA.topDown, 900);
@@ -2139,7 +2305,7 @@ export default function App() {
         + 'nearer level reaches indifference first. The moment it does, the run pauses.',
       onEnter: () => {
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         setTourPoints([]);
         setTourPauseAtFirstFind(true);
         // 1x so the few-dozen-step run (λ = 0.3, set by enterMixedAct) plays
@@ -2175,7 +2341,7 @@ export default function App() {
         // staged an approximation otherwise, which meant what this step
         // showed depended on how fast the visitor clicked.
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         setTourPoints([]);
         setSpeed(1);
         handleReset();
@@ -2198,7 +2364,7 @@ export default function App() {
         // when one existed and ran afresh from step 0 otherwise, so clicking
         // past the run early produced a different animation than waiting.
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         setTourPoints([]);
         setTourHiddenTraces([]);
         setTourSpinAllowed(false);
@@ -2216,7 +2382,7 @@ export default function App() {
         + 'left for anyone, so nobody can gain by moving alone.',
       onEnter: () => {
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         handleReset();
         if (mixedNE) {
           setSimState((prev) => ({
@@ -2247,7 +2413,7 @@ export default function App() {
         + 'them perfectly balanced, while their mixing does the same for you.',
       onEnter: () => {
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         handleReset();
         if (mixedNE) {
           setSimState((prev) => ({
@@ -2271,7 +2437,7 @@ export default function App() {
         + 'the flat spot move somewhere new.',
       onEnter: () => {
         enterMixedAct();
-        setStepMode('regret');
+        changeStepMode('regret');
         setTourHiddenTraces([]);
         setTourPoints([]);
         moveCamera(CAMERA.overview, 900);
@@ -2283,7 +2449,13 @@ export default function App() {
   const handleBackstep = () => {
     if (simState.running || !initStateRef.current || simState.stepCount <= 0) return;
     const targetStep = simState.stepCount - 1;
-    const replayed = replayToStep(initStateRef.current, targetStep, payoffs, firstMover, shrinkStep, allNE, committedNE, stepMode);
+    // Replay the run that ACTUALLY happened. Using the live firstMover made
+    // Back teleport onto the other player's trajectory — "Stepped back to step
+    // 2" landed on (0,0), a point the displayed run never occupied, while every
+    // log line above still read "Player A moves first".
+    if (!runCtx) return;
+    const replayed = replayToStep(initStateRef.current, targetStep, runCtx.payoffs, runCtx.firstMover,
+      runCtx.shrinkStep, runCtx.allNE, runCtx.committedNE, runCtx.stepMode);
     simStateRef.current = replayed;
     setSimState(replayed);
     scrubPosRef.current = targetStep;
@@ -2323,10 +2495,15 @@ export default function App() {
   // ── Step-input Jump ────────────────────────────────────────────────────────
   const handleJump = () => {
     if (!initStateRef.current || thinHistoryRef.current.length === 0) return;
-    const parsed = parseInt(jumpInput, 10);
-    if (isNaN(parsed)) return;
+    const parsed = commitStepIndex(jumpInput);
+    if (parsed === null) return;
     const clamped = Math.max(0, Math.min(thinHistoryRef.current.length - 1, parsed));
-    const replayed = replayToStep(initStateRef.current, clamped, payoffs, firstMover, shrinkStep, allNE, committedNE, stepMode);
+    // Same frozen set as Back. This read was missed entirely by the previous
+    // fix: "Go to step 3" replayed the CURRENT controls onto the old run's
+    // history, landing on points the log four lines above never visited.
+    if (!runCtx) return;
+    const replayed = replayToStep(initStateRef.current, clamped, runCtx.payoffs, runCtx.firstMover,
+      runCtx.shrinkStep, runCtx.allNE, runCtx.committedNE, runCtx.stepMode);
     simStateRef.current = replayed;
     setSimState(replayed);
     scrubPosRef.current = clamped;
@@ -2339,11 +2516,30 @@ export default function App() {
     setActivePreset('custom');
     setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
 
-    let v = parseFloat(valStr);
-    if (isNaN(v)) v = 0;
-    const clamped = Math.max(-100, Math.min(100, r3(v)));
-    setPayoffs((prev: GamePayoffs) => ({ ...prev, [field]: clamped }));
+    // One parser, shared with the blur handler. It normalises the minus signs a
+    // PDF or Word paste produces — without that the cell displays "−4" while
+    // parseFloat returns NaN -> 0, so the matrix on screen and the matrix every
+    // panel computes with are different games. Blur used to re-implement this
+    // conversion WITHOUT the normalisation and silently reset the cell to 0.
+    const clamped = commitPayoffInput(valStr);
+    const nextPayoffs = { ...payoffs, [field]: clamped };
+    setPayoffs(nextPayoffs);
     setInitialized(false);
+    // Editing the matrix invalidates the finished run. handleLoadPreset and
+    // handleGenerateGame both reset; the matrix editor did not, so a converged
+    // box survived the edit and then recomputed its coordinates against the NEW
+    // game while its payoffs, markers and log still described the OLD one —
+    // "PURE STRATEGY NASH EQUILIBRIUM REACHED, x*=1, y*=0" above a position
+    // marker sitting at (0,0). setInitialized(false) was not enough: the box
+    // gates on simState.converged, not on `initialized`.
+    // `runCtx !== null` is the direct answer to "is there a live run?"; the old
+    // `stepCount > 0` was a proxy that missed the stepCount===0-with-a-live-run
+    // state Back and "Go to step 0" produce. Red 14 break 1: Search Game, Run to
+    // 49/49, Go to step 0, edit b22 to -4, Go to step 49 -> the app certified
+    // "Mixed NE: x=0.333, y=0.333 E[A]=0.667 E[B]=-0.667" for a game whose real
+    // equilibrium is (2/3, 1/3), where B gains 4/3 by switching, and whose E[B]
+    // there is -2 exactly. The -0.667 was the pre-edit game leaking through.
+    if (runCtx) handleReset(nextPayoffs);
 
     // Cancel any existing inactivity timer for this field
     if (inactiveTimersRef.current[field]) {
@@ -2376,11 +2572,23 @@ export default function App() {
       clearTimeout(inactiveTimersRef.current[field]);
     }
 
-    let v = parseFloat(rawPayoffs[field]);
-    if (isNaN(v)) v = 0;
-    const clamped = Math.max(-100, Math.min(100, r3(v)));
-    setPayoffs((prev: GamePayoffs) => ({ ...prev, [field]: clamped }));
-    setRawPayoffs((prev) => ({ ...prev, [field]: String(clamped) }));
+    // Blur used to be a SECOND, independently written string->number conversion.
+    // It lacked updatePayoffField's minus-sign normalisation, so a pasted "−4"
+    // (U+2212) was accepted on change — every panel recomputed and reported the
+    // equilibrium for −4 — and was then silently reset to 0 on the way out of
+    // the cell, which is what clicking Run does before the run starts.
+    //
+    // Now there is one parser, and any blur that genuinely CHANGES a payoff goes
+    // through the one writer, so it cannot miss the run invalidation either. The
+    // inequality matters: without it, merely focusing a cell and leaving would
+    // reset a finished run.
+    const committed = commitPayoffInput(rawPayoffs[field]);
+    const canonical = String(committed);
+    if (payoffs[field] !== committed) {
+      updatePayoffField(field, canonical);
+    } else if (rawPayoffs[field] !== canonical) {
+      setRawPayoffs((prev) => ({ ...prev, [field]: canonical }));
+    }
   };
 
   // ── Simulation log panel ──────────────────────────────────────────────────
@@ -2783,7 +2991,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.a11}
                   onChange={(e) => updatePayoffField('a11', e.target.value)}
                   onBlur={() => handlePayoffBlur('a11')}
@@ -2793,7 +3001,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.b11}
                   onChange={(e) => updatePayoffField('b11', e.target.value)}
                   onBlur={() => handlePayoffBlur('b11')}
@@ -2804,7 +3012,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.a12}
                   onChange={(e) => updatePayoffField('a12', e.target.value)}
                   onBlur={() => handlePayoffBlur('a12')}
@@ -2814,7 +3022,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.b12}
                   onChange={(e) => updatePayoffField('b12', e.target.value)}
                   onBlur={() => handlePayoffBlur('b12')}
@@ -2828,7 +3036,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.a21}
                   onChange={(e) => updatePayoffField('a21', e.target.value)}
                   onBlur={() => handlePayoffBlur('a21')}
@@ -2838,7 +3046,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.b21}
                   onChange={(e) => updatePayoffField('b21', e.target.value)}
                   onBlur={() => handlePayoffBlur('b21')}
@@ -2849,7 +3057,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.a22}
                   onChange={(e) => updatePayoffField('a22', e.target.value)}
                   onBlur={() => handlePayoffBlur('a22')}
@@ -2859,7 +3067,7 @@ export default function App() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  pattern="[0-9.-]*"
+                  pattern="[0-9.\-]*"
                   value={rawPayoffs.b22}
                   onChange={(e) => updatePayoffField('b22', e.target.value)}
                   onBlur={() => handlePayoffBlur('b22')}
@@ -2910,6 +3118,7 @@ export default function App() {
                       setX0(e.target.value);
                       setInitialized(false);
                     }}
+                    onBlur={() => commitStartField('x')}
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-rose-200 focus:outline-none"
                   />
                   <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
@@ -2947,6 +3156,7 @@ export default function App() {
                       setY0(e.target.value);
                       setInitialized(false);
                     }}
+                    onBlur={() => commitStartField('y')}
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-accent-100 focus:outline-none"
                   />
                   <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
@@ -2982,10 +3192,7 @@ export default function App() {
                   return (
                     <button
                       key={player}
-                      onClick={() => {
-                        setFirstMover(player);
-                        setInitialized(false);
-                      }}
+                      onClick={() => changeFirstMover(player)}
                       className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all ${active
                           ? player === 'A'
                             ? 'bg-player-a-500 text-white border-player-a-500'
@@ -3038,7 +3245,7 @@ export default function App() {
                   return (
                     <button
                       key={key}
-                      onClick={() => { setStepMode(key); setInitialized(false); }}
+                      onClick={() => changeStepMode(key)}
                       className={`py-2 px-2 text-xs font-semibold rounded-xl border transition-all text-center ${active
                           ? 'bg-accent-600 text-white border-accent-600 shadow-xs'
                           : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
@@ -3066,12 +3273,10 @@ export default function App() {
                   value={shrinkStepRaw}
                   onChange={(e) => {
                     setShrinkStepRaw(e.target.value);
-                    const v = parseFloat(e.target.value);
-                    if (!isNaN(v) && v > 0) setShrinkStep(Math.min(0.999, Math.max(0.001, Math.round(v * 1000) / 1000)));
+                    setShrinkStep(commitStepSize(e.target.value, shrinkStep));
                   }}
                   onBlur={() => {
-                    const v = parseFloat(shrinkStepRaw);
-                    const clamped = isNaN(v) || v <= 0 ? shrinkStep : Math.min(0.999, Math.max(0.001, Math.round(v * 1000) / 1000));
+                    const clamped = commitStepSize(shrinkStepRaw, shrinkStep);
                     setShrinkStep(clamped);
                     setShrinkStepRaw(clamped.toFixed(3));
                   }}
@@ -3084,7 +3289,7 @@ export default function App() {
                 max="0.999"
                 step="0.001"
                 value={shrinkStep}
-                onChange={(e) => { const v = parseFloat(e.target.value); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); }}
+                onChange={(e) => { const v = commitStepSize(e.target.value, shrinkStep); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); }}
                 className="w-full accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
               <span className="text-xs text-slate-400 dark:text-slate-500 mt-1 block">
@@ -3144,7 +3349,11 @@ export default function App() {
             }}
             allNE={allNE}
             isDark={darkMode}
-            stepMode={stepMode}
+            // Frozen with the rest of the run context: switching method on a
+            // finished run redrew a trajectory that never used it — the regret
+            // box switches to the per-axis domain the shrink stepper never
+            // writes, so the drawn box snapped back to the full unit square.
+            stepMode={runCtx?.stepMode ?? stepMode}
           />
 
           {/* Progress bar + step input + NE jump — always visible once simulation starts */}
@@ -3204,9 +3413,14 @@ export default function App() {
                   {neSnapshot ? `1st NE Coord (step ${neSnapshot.stepCount})` : '1st NE Coord'}
                 </button>
               )}
+              {!simState.converged && runTruncated && thinHistory.length > 1 && (
+                <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium bg-amber-100/95 dark:bg-amber-950/90 text-amber-800 dark:text-amber-300 py-1 px-2.5 rounded-full border border-amber-200 dark:border-amber-800">
+                  <AlertTriangle className="w-3.5 h-3.5" /> Stopped at the {thinHistory.length - 1}-step limit — not an equilibrium
+                </span>
+              )}
               {simState.converged && (
                 <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium bg-emerald-100/95 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-300 py-1 px-2.5 rounded-full border border-emerald-200 dark:border-emerald-800 animate-fade-in">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Converged
+                  <CheckCircle2 className="w-3.5 h-3.5" /> {simState.convergedIsNE === false ? 'Settled (not an NE)' : 'Converged'}
                 </span>
               )}
             </div>
@@ -3253,7 +3467,7 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={handleReset}
+                  onClick={() => handleReset()}
                   className="flex items-center gap-1 mt-0.5 py-2 px-2 sm:px-3 text-xs sm:text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
                 >
                   <RotateCcw className="w-3.5 h-3.5" /> Reset
@@ -3268,7 +3482,7 @@ export default function App() {
                   min="1"
                   max="10"
                   value={speed}
-                  onChange={(e) => setSpeed(parseInt(e.target.value))}
+                  onChange={(e) => setSpeed(commitStepIndex(e.target.value) ?? 5)}
                   className="w-20 accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
                 />
                 <span className="text-xs font-mono text-slate-400 font-semibold">{speed}x</span>
@@ -3311,55 +3525,76 @@ export default function App() {
               </div>
             </div>
           </div>
-          {simState.converged && nearestNE && (
-            <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${nearestNE.type === 'mixed'
+          {/* `converged` means STATIONARY, not "is an equilibrium". A
+              best-response path can settle where a player still gains by
+              switching, and this box then announced a Nash equilibrium at a
+              point with regret 18. Gate on the regret-oracle result. */}
+          {simState.converged && simState.convergedIsNE !== false && !runStale && nearestNE && (
+            <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${realisedConcept === 'mixed'
                 ? 'bg-ne-mixed-50 dark:bg-ne-mixed-950/20 border-ne-mixed-200 dark:border-ne-mixed-800/60'
                 : 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60'
               }`}>
               <div className="flex items-center gap-2">
-                <span className={`p-1.5 rounded-lg ${nearestNE.type === 'mixed' ? 'bg-ne-mixed-100 dark:bg-ne-mixed-900/60 text-ne-mixed-700 dark:text-ne-mixed-300' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+                <span className={`p-1.5 rounded-lg ${realisedConcept === 'mixed' ? 'bg-ne-mixed-100 dark:bg-ne-mixed-900/60 text-ne-mixed-700 dark:text-ne-mixed-300' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
                   }`}>
                   <Award className="w-5 h-5" />
                 </span>
-                <span className={`text-sm font-bold uppercase tracking-wider ${nearestNE.type === 'mixed' ? 'text-ne-mixed-900 dark:text-ne-mixed-200' : 'text-emerald-900 dark:text-emerald-200'
+                <span className={`text-sm font-bold uppercase tracking-wider ${realisedConcept === 'mixed' ? 'text-ne-mixed-900 dark:text-ne-mixed-200' : 'text-emerald-900 dark:text-emerald-200'
                   }`}>
-                  {nearestNE.type === 'mixed' ? 'Mixed' : 'Pure'} Strategy Nash Equilibrium Reached
+                  {realisedConcept === 'mixed' ? 'Mixed' : 'Pure'} Strategy Nash Equilibrium Reached
                 </span>
               </div>
 
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 py-3 bg-white/75 dark:bg-slate-900/65 px-4 rounded-xl border border-slate-100 dark:border-slate-800 text-xs shadow-3xs">
                 <span className="text-player-a-600 dark:text-player-a-400">
-                  <MathTex tex={`x^* = ${simState.cx.toFixed(3)}`} />
+                  <MathTex tex={`x^* = ${texProb(resolved.x)}`} />
                 </span>
                 <span className="text-player-b-600 dark:text-player-b-400">
-                  <MathTex tex={`y^* = ${simState.cy.toFixed(3)}`} />
+                  <MathTex tex={`y^* = ${texProb(resolved.y)}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[A] = ${r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[A] = ${r3(EA(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[B] = ${r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[B] = ${r3(EB(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
                 </span>
               </div>
 
               <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-300 space-y-1">
-                {nearestNE.type === 'mixed' ? (
+                {realisedConcept === 'mixed' ? (
                   <>
                     <div>
-                      <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">A indifferent:</span>
-                      <MathTex tex={`\\mathbb{E}[\\text{Row 1}] = ${r3(simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12).toFixed(3)} \\approx \\mathbb{E}[\\text{Row 2}] = ${r3(simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22).toFixed(3)}`} />
+                      <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">
+                        {indiff.a ? 'A indifferent:' : 'A strictly prefers:'}
+                      </span>
+                      <MathTex tex={`\\mathbb{E}[\\text{Row 1}] = ${r3(simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12).toFixed(3)} ${indiff.a ? '\\approx' : (simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12 > simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22 ? '>' : '<')} \\mathbb{E}[\\text{Row 2}] = ${r3(simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22).toFixed(3)}`} />
                     </div>
                     <div>
-                      <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">B indifferent:</span>
-                      <MathTex tex={`\\mathbb{E}[\\text{Col 1}] = ${r3(simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21).toFixed(3)} \\approx \\mathbb{E}[\\text{Col 2}] = ${r3(simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22).toFixed(3)}`} />
+                      <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">
+                        {indiff.b ? 'B indifferent:' : 'B strictly prefers:'}
+                      </span>
+                      <MathTex tex={`\\mathbb{E}[\\text{Col 1}] = ${r3(simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21).toFixed(3)} ${indiff.b ? '\\approx' : (simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21 > simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22 ? '>' : '<')} \\mathbb{E}[\\text{Col 2}] = ${r3(simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22).toFixed(3)}`} />
                     </div>
                     <div className="text-xs text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
-                      Resolved via {simState.cycleCount} contraction cycles of search corridors.
+                      {/* The COUNT is real (the regret branch increments
+                          cycleCount too), but "search corridors" is the shrink
+                          method's furniture — the regret log has no corridor
+                          lines at all. Name what the run actually did. */}
+                      Resolved via {simState.cycleCount} {(runCtx?.stepMode ?? stepMode) === 'regret'
+                        ? 'regret contraction cycles' : 'contraction cycles of search corridors'}.
                     </div>
                   </>
                 ) : (
                   <div className="font-sans text-xs">
-                    Mover priority settled. Player {firstMover === 'A' ? 'A' : 'B'} moved first, committing to their optimal pure NE payoff of {firstMover === 'A' ? nearestNE.eA.toFixed(3) : nearestNE.eB.toFixed(3)}.
+                    {/* This printed nearestNE.eA — the payoff of the NEAREST
+                        equilibrium — not what the run actually realised. On the
+                        red-team fixture it claimed a committed payoff of 9.000
+                        two lines below a box showing E[A] = -9.000. */}
+                    {/* The NUMBER was corrected to the realised payoff, but the
+                        NOUN still claimed "optimal pure NE payoff" on runs that
+                        settled at a profile that is not a pure NE at all. Say
+                        what actually happened. */}
+                    Mover priority settled. Player {(runCtx?.firstMover ?? firstMover) === 'A' ? 'A' : 'B'} moved first and realised {((runCtx?.firstMover ?? firstMover) === 'A' ? EA(resolved.x, resolved.y, payoffs) : EB(resolved.x, resolved.y, payoffs)).toFixed(3)}.
                   </div>
                 )}
               </div>
@@ -3388,7 +3623,12 @@ export default function App() {
                       with values <ColorCoded text={`E[A]=${ne.eA.toFixed(3)}, E[B]=${ne.eB.toFixed(3)}`} />
                     </li>
                   ))}
-                  {allNE.length === 0 && (
+                  {continua.map((line, idx) => (
+                    <li key={`cont-${idx}`} className="text-ne-mixed-600 dark:text-ne-mixed-400">
+                      <ColorCoded text={line} />
+                    </li>
+                  ))}
+                  {allNE.length === 0 && continua.length === 0 && (
                     <li className="text-rose-500 font-medium">No standard NE found in real dimensions.</li>
                   )}
                 </ul>
@@ -3421,7 +3661,7 @@ export default function App() {
                   and these branches would assert structure (first-mover
                   advantage, unique attractors) that a continuum of equilibria
                   contradicts on the same screen. */}
-              {!indifferenceStatus.any && (
+              {!indifferenceStatus.any && !hasEquilibriumContinuum && (
               <div className="text-slate-500 dark:text-slate-400">
                 {pureNEs.length === 0 && mixedNE ? (
                   <p>
@@ -3516,6 +3756,23 @@ export default function App() {
 
                 {!llmLoading && llmVerified && llmEnvelope?.report && (
                   <div className="space-y-2">
+                    {llmEnvelope.source === 'template' && (
+                      // Say plainly who wrote what: on a tie game the sentences
+                      // are generated from the solver, and only the scenario
+                      // came from the model.
+                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                        {/* This said "this game has a payoff tie" unconditionally.
+                            True while only the tie path produced `template`, but
+                            NASH_PAYOFF_TEMPLATE=1 routes EVERY game here, so a
+                            textbook Prisoner's Dilemma was told it has a tie.
+                            Found by an adversarial red team; the 300-game campaign
+                            missed it because it verified the API response, not the
+                            rendered UI. */}
+                        {hasPayoffTie
+                          ? 'Generated from the solver — this game has a payoff tie'
+                          : 'Generated from the solver — the mathematics is derived, not written by the model'}
+                      </p>
+                    )}
                     <p className="text-slate-600 dark:text-slate-300">
                       {/* A fresh invention's prose uses the suggestion's own
                           option names, so those join the highlight terms. */}
