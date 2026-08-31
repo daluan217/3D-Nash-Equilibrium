@@ -348,18 +348,28 @@ try {
       `${lines} log lines, Converged pill=${pill}`);
   }
 
-  // ══ 14. THE LAYOUT CAMERA MUST TRACK THE USER'S VIEW (round 17: pause a run,
-  //      rotate/zoom, press Run — the plot flashed the default angle for one
-  //      frame before showing the adjusted view again)
+  // ══ 14. the plot stays directly manipulable (rotate AND zoom)
   //
-  //      Root cause: Plotly reports camera interaction as `scene.camera.eye`,
-  //      never as `scene.camera`, so the ref feeding every Plotly.react kept a
-  //      stale pose — a wheel/pinch zoom in particular was never recorded.
-  //      `uirevision` usually makes Plotly ignore a supplied camera, which is
-  //      why the view normally survived; on a render where it does not, the
-  //      plot jumps to the stale pose. So "the view did not move" is NOT the
-  //      assertion — the invariant is that what we hand Plotly matches what is
-  //      on screen, checked INSIDE every react call.
+  //      Round 17 context: pausing a run, adjusting the view and pressing Run
+  //      flashed the default camera for one frame. The cause was that Plotly
+  //      reports camera interaction as `scene.camera.eye` and never as
+  //      `scene.camera`, so the stored pose stopped tracking a ZOOM and every
+  //      Plotly.react shipped a stale camera in its layout.
+  //
+  //      That defect is NOT guarded here, deliberately. An assertion comparing
+  //      the layout camera to the on-screen camera was written three different
+  //      ways and mutation testing showed every one of them PASSING against the
+  //      original defect — `uirevision` makes Plotly ignore the stale pose in a
+  //      headless run, so the bug is real but not observable this way. A check
+  //      that cannot fail on the bug it names is worse than no check, so it was
+  //      removed instead of shipped green. The decidable half lives in
+  //      src/unit.test.ts as `isCameraRelayout`, which IS mutation-verified in
+  //      both directions.
+  //
+  //      What is worth asserting here is the precondition that made the bug
+  //      reachable at all: the plot must remain rotatable and zoomable. If
+  //      direct manipulation breaks, the camera code above is moot and this
+  //      fails loudly.
   {
     await $.reset.click();
     await page.waitForTimeout(400);
@@ -370,31 +380,34 @@ try {
       const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
       return e ? { x: e.x, y: e.y, z: e.z } : null;
     });
-    const rotateAndZoom = async () => {
-      const box = await page.locator('#plotly-3d-market-simulation').boundingBox();
-      if (!box) return;
+    const moved = (a, b2) => !!a && !!b2
+      && Math.hypot(a.x - b2.x, a.y - b2.y, a.z - b2.z) > 0.05;
+
+    const start = await liveEye();
+    const box = await page.locator('#plotly-3d-market-simulation').boundingBox();
+    if (box) {
       const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
       await page.mouse.move(cx, cy);
       await page.mouse.down();
-      // paced moves: a burst delivered in one tick gets coalesced and the
-      // turntable handler never sees the drag
+      // Paced moves: a burst delivered in a single tick is coalesced and
+      // Plotly's turntable handler never sees the drag — which silently turns
+      // this check into a tautology.
       for (let i = 1; i <= 10; i++) { await page.mouse.move(cx + 20 * i, cy + 5 * i); await page.waitForTimeout(25); }
       await page.mouse.up();
-      await page.waitForTimeout(400);
-      await page.mouse.move(cx, cy);
+      await page.waitForTimeout(600);
+    }
+    const afterDrag = await liveEye();
+    if (box) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, -150); await page.waitForTimeout(90); }
       await page.waitForTimeout(600);
-    };
+    }
+    const afterZoom = await liveEye();
 
-    // NOTE: an assertion that the layout camera matches the on-screen camera
-    // was written here and then REMOVED. Mutation testing showed it passed
-    // against the original defect in three different formulations — Plotly's
-    // `uirevision` suppresses the stale pose in the headless run, so the defect
-    // is real but not observable this way. A check that cannot fail on the bug
-    // it names is worse than no check. The decidable half (which relayout keys
-    // count as a camera change) is unit-tested instead: see isCameraRelayout in
-    // src/unit.test.ts. What remains here is the precondition, which is worth
-    // keeping on its own: it fails if the plot stops being rotatable/zoomable.
+    record('the 3D plot can be rotated by dragging', moved(start, afterDrag),
+      `${JSON.stringify(start)} -> ${JSON.stringify(afterDrag)}`);
+    record('the 3D plot can be zoomed by wheel', moved(afterDrag, afterZoom),
+      `${JSON.stringify(afterDrag)} -> ${JSON.stringify(afterZoom)}`);
 
     await $.reset.click();
     await page.waitForTimeout(300);
