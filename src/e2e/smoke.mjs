@@ -134,10 +134,16 @@ async function dismissTour() {
   }
   // Fail LOUDLY if the tour survived: proceeding with it open turns every
   // later click into an unrelated 120s actionability timeout (the exact
-  // flake this guards against).
-  if (await page.locator('[role="dialog"][aria-label="Guided tour"]').count()) {
-    throw new Error('guided tour still open after Exit click + Escape');
-  }
+  // flake this guards against). Poll for closure rather than one count():
+  // React lands the close asynchronously after the click resolves.
+  let dismissed = false;
+  try {
+    await page.waitForFunction(() =>
+      !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+      null, { timeout: 10000 });
+    dismissed = true;
+  } catch { /* still open after 10s — a real failure */ }
+  if (!dismissed) throw new Error('guided tour still open after Exit click + Escape');
 }
 
 try {
