@@ -28,6 +28,14 @@ function record(name, pass, detail) {
 // ── boot the production server (unless one is already listening) ────────────
 let server = null;
 const userData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-'));
+// Kill AND await the child's exit: process.exit() right after kill() lets a
+// retry invocation (CI runs `smoke.mjs || smoke.mjs`) race the dying server
+// for the port — waitReady would then see the OLD server still listening.
+async function killServer() {
+  if (!server) return;
+  server.kill('SIGKILL');
+  await new Promise((res) => server.once('exit', res)); // SIGKILL cannot be ignored
+}
 async function waitReady() {
   for (let i = 0; i < 60; i++) {
     try {
@@ -60,7 +68,7 @@ if (!(await waitReady())) {
   server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
   if (!(await waitReady())) {
     console.error('FAIL server never became ready');
-    server?.kill('SIGKILL');
+    await killServer();
     process.exit(2);
   }
 }
@@ -313,6 +321,15 @@ try {
       `${lines} log lines, Converged pill=${pill}`);
   }
 } catch (e) {
+  // Capture the failure state BEFORE closing the browser — a click timeout
+  // with no console errors is unactionable without seeing what the page
+  // looked like (what overlay was up, whether the button was even there).
+  await page.screenshot({ path: '/tmp/e2e_smoke_failure.png', fullPage: true }).catch(() => {});
+  try {
+    const fs = await import('node:fs');
+    fs.writeFileSync('/tmp/e2e_smoke_failure.html',
+      await page.content().catch(() => '<unavailable>'));
+  } catch { /* evidence capture must never mask the original failure */ }
   record('suite completed without a script error', false, e.message.slice(0, 200));
 }
 
@@ -326,7 +343,7 @@ const relevantErrors = consoleErrors.filter((t) =>
 record('no console/page errors across the whole suite', relevantErrors.length === 0,
   relevantErrors.slice(0, 3).join(' | '));
 
-if (server) server.kill('SIGKILL');
+await killServer();
 try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effort */ }
 
 const fails = results.filter((r) => !r.pass);

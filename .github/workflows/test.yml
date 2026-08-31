@@ -158,7 +158,23 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Boot the production server and run the smoke suite
-        run: node src/e2e/smoke.mjs
+        # One automatic retry: GitHub's 2-core SwiftShader runners
+        # occasionally stall a frame for minutes (observed: a 120s click
+        # actionability timeout with zero console errors, on a suite that
+        # passed identical code on the previous run). A real regression
+        # fails both attempts; a stalled runner gets a second chance.
+        run: node src/e2e/smoke.mjs || node src/e2e/smoke.mjs
         env:
           E2E_PORT: '3099'
           E2E_BASE: http://localhost:3099
+
+      - name: Upload failure evidence (screenshot + page HTML)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-evidence
+          path: |
+            /tmp/e2e_smoke_failure.png
+            /tmp/e2e_smoke_failure.html
+          retention-days: 7
+          if-no-files-found: ignore
