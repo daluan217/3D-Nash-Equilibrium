@@ -1,0 +1,63 @@
+# CodeRabbit configuration — see https://docs.coderabbit.io/reference/configuration
+#
+# The testing pyramid is this repo's ship gate (nothing merges without unit,
+# build, integration, and e2e all green), so the TESTS THEMSELVES deserve the
+# same review scrutiny as production code. These path instructions ask
+# CodeRabbit to critique the test cases, not just the code under test.
+reviews:
+  path_instructions:
+    - path: "src/unit.test.ts"
+      instructions: |
+        Unit-test tables for the solver and report surface. In addition to
+        the production code, review the TEST CASES themselves: are the
+        fixtures actually exercising the boundary they claim (e.g. does the
+        "A-indifferent" fixture really make A indifferent)? Are any
+        assertions tautological or weakened by overly-loose tolerances?
+        Suggest missing boundary cases, especially where a past defect
+        (Unicode minus, sub-resolution probabilities, tie prose) had none.
+    - path: "src/test.ts"
+      instructions: |
+        Regression + property/fuzz suites. Review the TEST CASES: does each
+        named regression test assert the exact defect text/shape that once
+        shipped wrong (this repo's rule: verbatim defect text, including
+        typography like U+2212)? Are fuzz iterations and random seeds
+        reproducible? Suggest invariants that are asserted nowhere yet.
+    - path: "src/fuzz.test.ts"
+      instructions: |
+        Fuzz suite. Review the TEST CASES: is the generator actually able to
+        reach the shapes it claims to cover (degenerate ties, sub-resolution
+        probabilities, continua)? Flag any filter that silently narrows the
+        input space and suggest seeds/fixtures for classes the generator
+        can't reach randomly.
+    - path: "src/cors.contract.test.ts"
+      instructions: |
+        CORS contract test. Review the TEST CASES: does the contract walk
+        EVERY client-side request verb (a past defect: PATCH added without
+        updating the allow-methods header)? Suggest how to keep the client
+        and server sides in lockstep.
+    - path: "src/integration/api.test.mjs"
+      instructions: |
+        API integration suite. Review the TEST CASES: are the security
+        checks (tampered tokens, admin fail-closed, rate limits) asserting
+        failure modes and not just status codes? Suggest missing ownership,
+        validation, and clamping cases; flag any check whose pass condition
+        could be satisfied by the wrong behavior.
+    - path: "src/e2e/*.mjs"
+      instructions: |
+        Browser smoke suites. Review the TEST CASES: are waits poll-based
+        rather than fixed sleeps (CI runners stall)? Does each check assert
+        on app state rather than button labels? Could any check pass while
+        the underlying defect is present? Suggest checks for defect classes
+        that have reached users but have no e2e guard yet.
+    - path: "_gen/verify_tieprose.ts"
+      instructions: |
+        The 86k-rendering tie-prose verifier (runs in npm test). Review the
+        TEST CASES: is the verifier mutation-tested (would it fail if the
+        renderer regressed)? Does it enumerate the rare shapes or only the
+        common ones? Suggest shapes it currently can't generate.
+    - path: "_gen/mnsolver.selftest.ts"
+      instructions: |
+        Solver oracle selftest (runs in npm test). Review the TEST CASES:
+        does it ASSERT (exit non-zero on disagreement) rather than print?
+        Is the cross-check game count large enough to catch rare solver
+        branches? Suggest degenerate fixtures (ties, zero rows).
