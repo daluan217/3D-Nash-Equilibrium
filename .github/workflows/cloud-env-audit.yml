@@ -185,17 +185,20 @@ jobs:
             --region "$REGION" --project "$PROJECT" \
             --filter='status.conditions.type=Ready AND status.conditions.status=True' \
             --sort-by=~metadata.creationTimestamp --limit 1 --format='value(name)')
-          serving=$(gcloud run services describe "$SERVICE" \
-            --region "$REGION" --project "$PROJECT" \
-            --format='value(status.traffic[].revisionName)' | tr ';' '\n')
+          # Reuse REVS_PY: status.traffic can list a revision with percent 0
+          # (Cloud Run keeps the entry after traffic moves off it), and taking
+          # every revisionName would let $latest match an entry receiving
+          # NOTHING — the guard would pass on exactly the situation it exists
+          # to catch.
+          serving=$(printf '%s' "$svc" | python3 -c "$REVS_PY" | tr ' ' '\n')
 
           if [ -z "$latest" ]; then
             echo "::error::could not determine the newest ready revision"; exit 1
           fi
           if ! printf '%s\n' "$serving" | grep -qx "$latest"; then
             echo "::error::the newest ready revision ($latest) is receiving NO traffic. \
-            Traffic is pinned to: $(printf '%s ' $serving). Deploys are building revisions \
-            nobody reaches. Fix with: gcloud run services update-traffic $SERVICE \
+            Traffic is pinned to: $(printf '%s ' "$serving" | tr '\n' ' '). Deploys are building \
+            revisions nobody reaches. Fix with: gcloud run services update-traffic $SERVICE \
             --region $REGION --to-latest"
             exit 1
           fi
