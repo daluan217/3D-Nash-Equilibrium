@@ -141,6 +141,25 @@ let cameraBusy = false;
  * longer acts on it. Re-issuing the CURRENT dragmode re-binds it. Plotly.react
  * does not (measured), so this is not interchangeable with a normal redraw.
  */
+/**
+ * Does this plotly_relayout payload represent a camera change?
+ *
+ * Pulled out as a pure function because getting it wrong is invisible at
+ * runtime and expensive: Plotly reports camera interaction with GRANULAR keys —
+ * a turntable drag and, crucially, a wheel/pinch zoom arrive as
+ * `scene.camera.eye`, and `scene.camera` is never emitted at all. The original
+ * listener tested only for `scene.camera`, so the stored pose silently stopped
+ * tracking the user's view, and every Plotly.react shipped a stale camera in
+ * its layout. `uirevision` normally makes Plotly ignore that, which is why it
+ * survived in most situations — and why a browser test asserting "the view did
+ * not move" passes against the defect. The decidable part is this predicate,
+ * so it is tested directly (src/unit.test.ts).
+ */
+export function isCameraRelayout(eventData: Record<string, unknown> | null | undefined): boolean {
+  if (!eventData) return false;
+  return Object.keys(eventData).some((k) => k === 'scene.camera' || k.startsWith('scene.camera.'));
+}
+
 export function rebindPlotInput(): void {
   const Plotly = (window as any).Plotly;
   const el = document.getElementById(PLOT_ID) as any;
@@ -821,9 +840,36 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     if (el2 && typeof el2.on === 'function') {
       try { el2.removeAllListeners('plotly_relayout'); } catch {}
       el2.on('plotly_relayout', (eventData: any) => {
-        if (eventData['scene.camera']) {
-          cameraRef.current = eventData['scene.camera'];
-        }
+        /*
+         * Plotly reports camera interaction with GRANULAR keys: a turntable
+         * drag and a wheel/pinch zoom both arrive as `scene.camera.eye`, and
+         * `scene.camera` is never emitted at all (verified against this build —
+         * the only keys the scene ever produced were `scene.camera.eye` and
+         * `scene.dragmode`).
+         *
+         * Listening only for `scene.camera` therefore meant this ref NEVER
+         * updated: it held DEFAULT_CAMERA for the life of the page, and every
+         * Plotly.react shipped that stale pose in the layout. `uirevision`
+         * normally makes Plotly ignore a supplied camera, which is why the view
+         * usually survived — but on a render where it does not, the plot jumps
+         * to the default angle for a frame before the live camera reasserts
+         * itself. That is the flash when resuming a paused run after rotating
+         * or zooming: the adjusted view, one frame of the default view, then
+         * the adjusted view again.
+         *
+         * Reading the pose back off _fullLayout rather than trusting the event
+         * payload keeps this correct whatever granularity Plotly reports, and
+         * captures center/up as well as eye — a pan changes center, and only
+         * eye was ever being stored.
+         */
+        if (!isCameraRelayout(eventData)) return;
+        const live = (document.getElementById(plotId) as any)?._fullLayout?.scene?.camera;
+        if (!live?.eye) return;
+        cameraRef.current = {
+          eye: { ...live.eye },
+          center: { ...(live.center ?? { x: 0, y: 0, z: 0 }) },
+          up: { ...(live.up ?? { x: 0, y: 0, z: 1 }) },
+        };
       });
 
       // The "A Moves"/"B Moves" legend entries are solid-color stub traces; the

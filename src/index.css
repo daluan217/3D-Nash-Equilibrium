@@ -235,4 +235,21 @@ input.no-native-spinner {
     min-width: 24px;
     min-height: 24px;
   }
+
+  /* Text and number fields sat at 23px — one pixel under, but under. The
+   * payoff-matrix cells are the most-tapped controls in the app. */
+  input[type="text"],
+  input[type="number"],
+  input[inputmode="decimal"] {
+    min-height: 24px;
+  }
+
+  /* Range sliders were the worst offenders: the styled track is 5px tall, and
+   * for a range input the track IS the target — there is no larger hit area
+   * behind it. Give the ELEMENT height for the thumb to be caught in while
+   * leaving the track's own painted height alone, so the control looks
+   * unchanged and simply becomes catchable. */
+  input[type="range"] {
+    min-height: 24px;
+  }
 }
