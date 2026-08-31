@@ -354,6 +354,12 @@ RED 2's, and is the specific false positive their own data predicts:
 Not implemented this window — changing vocabulary and shape predicate together
 would leave any new false positive unattributable.
 
+**TAKEN IN FIX WINDOW 2 (below).** Control 3 held. Control 2 had to be SPLIT:
+"PASSES on all-match" was not strong enough, because the sentence must also pass
+where the single pure equilibrium is a matching pair. And a fourth control the
+filing did not anticipate turned out to be a MEASURED false positive of the
+shape proposed here — see rt2#129.
+
 ---
 
 ## 2026-08-31 — RED 3 RETRACTED F1 AND F2: no desktop stop-ship
@@ -571,6 +577,133 @@ concurrently. Defect RATES are unaffected (they do not depend on machine load),
 but every latency figure measured in this window — mine and everyone's — is a
 statement about contention, not about the model. Do not compare run 2/3 p50 or
 p90 against any quiet-machine baseline.
+
+---
+
+## 2026-08-31 — FIX WINDOW 2: F1-vocab, the abstract-player coordination claim
+
+The screen F1 corrected in window 1 was right and unreachable: RED 1 measured
+its vocabulary against 341 real gate-passing draws and got ZERO. This window
+gives the same shape predicate the vocabulary the model actually uses.
+
+### What the discriminator is, and what it deliberately is not
+
+Not a word list. A bare "coordinate" screen has **11.9% precision** on local
+output — eight correct scenarios rejected per defect caught — and 7.6% of local
+draws contain the JOB TITLE "coordinator" and nothing else. With post-hoc
+rewriting closed by Daniel's ruling, a blunt gate is the one remaining way to
+make the product worse while trying to improve it.
+
+The discriminator is the SUBJECT, and specifically **subject-hood**, not
+proximity:
+
+    the two players | both parties …   (aux)*   coordinate / are coordinating
+                                       (aux)*  PLAN|AGREE|WANT (to|how|on)* coordinate
+                                       (aux)*  PLAN a|their COORDINATED <noun>
+
+The bridge between subject and verb is a CLOSED GRAMMATICAL CLASS — auxiliaries,
+modals, adverbs, verbs of intention. Any bridge carrying its own clause breaks
+subject-hood and the screen stays silent. "coordinator"/"coordinators" is
+unreachable by construction: the alternation ends at `(e|es|ing)` and
+`coordinated`, so the job title matches nothing at all.
+
+### The proximity draft was wrong, and the corpus said so
+
+The shape filed for this window — subject, then `[^.]{0,80}`, then `coordinat` —
+was implemented first and **produced a false positive on real output**:
+
+    rt2#129  "The two players are choosing how their shared grid will respond
+              to a COORDINATED demand period."
+
+The players' verb there is "are choosing"; "coordinated" modifies a noun in the
+world. That is the flat ACTIVITY tic — the very form the filing said must never
+be gated — reached anyway because an abstract subject happened to sit in front
+of it. Mutation-tested: the proximity draft wrongly flags **5 of 8** controls,
+including every negated claim. Fixed by the closed bridge class.
+
+### The shape predicate is NARROWER than the screen beside it, on purpose
+
+`!matchingShape` (pure >= 2 and all diagonal) is right for COORD_TALK, whose
+vocabulary asserts the game IS a coordination game. It is too strong here.
+"The two players coordinate their choices" asserts only that agreeing is what
+equilibrium play produces — **true as soon as ANY pure equilibrium sits on a
+matching pair**. So this screen fires only when `diag === 0`.
+
+That is not a technicality. Under `!matchingShape` the corpus produced three
+rejections — rt1#186, rt2#122, rt2#134 — of games whose single pure equilibrium
+IS a matching pair, under an issue string ("its pure equilibria do not all sit on
+matching pairs") that was **false about those games**. An issue string is a claim
+about the game like any other. Weaker claim, weaker falsification condition.
+
+### Evidence — fixture, reach, and false positives in ONE run
+
+`_gen/blue_w2_check.mjs`. Both required clauses, same run, because my own F1
+predicate had a green fixture and a green oracle and 0/341 reach.
+
+    KNOWN POSITIVES  9/9   the five real claim sentences + no-pure + one-mismatch
+                           + the "both" arm + the progressive form
+    CONTROLS        15/15  incl. red 2's load-bearing job-title sentence, the
+                           measured rt2#129 false positive, "are coordinators",
+                           "the coordinating body", and three negations
+    REACH            14 of 875 stored draws (1.60%)
+    newly rejected   13    (rt2#113 was already rejected by F12)
+    newly ACCEPTED    0
+    self-check        0 disagreements outside this screen
+
+All 14 hand-classified as true positives: every one says "the two players
+coordinate their <choices|actions|decisions|plans>" on a game where **no pure
+equilibrium is a matching pair**. By corpus: local 5/211, rt1 3/200, rt2 3/144,
+stakes-local 3/100, **cloud 0/220**. The local/cloud split is the same shape as
+every other defect in this round.
+
+The stakes corpora nearly went unmeasured: they store `spread`, not the matrix.
+It is fully recoverable (`_gen/rt2_stakes_scale.mjs` builds `game(k)` from it)
+and every one of those 240 matrices is matching-pennies, i.e. `diag === 0` —
+so they are the corpus MOST able to produce a false positive here. Skipping
+them for a missing key would have thrown away the strongest negative evidence
+available. Worth generalising: a corpus with no `game` field is not a corpus
+without a game.
+
+Note stakes#9 in the real hits — "A regional grid coordinator, Player B, …
+The two players coordinate their maintenance and dispatch decisions." A job
+title and a genuine claim in the SAME description, and the screen fired only on
+the claim. That is red 2's control, occurring in the wild rather than as a
+fixture.
+
+### Mutation evidence (`_gen/blue_w2_mutation.mjs`)
+
+    MUTANT A  the committed gate      -> all 5 positives slip through   (screen is what catches them)
+    MUTANT B  the proximity draft     -> wrongly flags 5 of 8 controls  (tightening was necessary)
+    MUTANT C  the bare word list      -> wrongly flags 8 of 8 controls  (red's 11.9% precision, reproduced)
+    DIRECTION same sentence, matrix alone flips the verdict, both ways
+
+Both mutants are materialised from git at run time rather than kept as a copy.
+A checked-in "before" snapshot goes stale silently, and the whole job of that
+mutant is to genuinely be the previous behaviour.
+
+### Independent check — RED 1's oracle, their file unmodified
+
+    BEFORE  holes 11/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+    AFTER   holes 10/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+
+The hole that closed is exactly the one they named: *ANTI-COORD + "coordinate
+their choices" (the model's own wording)*.
+
+### Gate
+
+lint 0 · `npm test` exit 0 (86,236 tie-prose renderings, 0 failures) · build 0 ·
+e2e 22/22 · acceptance 0 · mutation 0. Fixtures for both sides live in
+`src/unit.test.ts`, so they run in the shipping gate rather than only in a
+scratch file — the distinction this round has now been bitten by six times.
+
+### What is still open
+
+F1 is now reachable AND corrected, but "closed" would again be the wrong word.
+The screen covers the abstract-player form; the ACTIVITY form stays deliberately
+unscreened (flat across equilibrium shapes at 15.9 / 12.0 / 13.5 — a tic, not a
+claim), and RED 1's oracle still shows 10 holes reaching the user, including the
+NEGOTIATION form. Reach is 1.60% of draws; nothing here says the remaining
+9.1% of anti-coordination cases are handled.
 
 ---
 

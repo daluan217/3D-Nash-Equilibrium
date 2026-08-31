@@ -847,6 +847,58 @@ function testGateFixesAugust31() {
   assert(validateScenario(coordSc('A seaweed cooperative picks a drying slot while a neighbouring firm picks a window.'), ANTI).ok,
     'F1 CONTROL: plain scene-setting on the mismatch game must still pass');
 
+  // ── F1-vocab: the ABSTRACT-PLAYER form, which is what the model actually ──
+  // writes. The predicate above was correct and matched ZERO of 341 real draws,
+  // because COORD_TALK's vocabulary ("incentive to match the opponent's
+  // choice") is not this model's. "The two players coordinate their choices" is,
+  // and it asserts the same thing. Reach on 875 stored draws: 14 (1.60%) local,
+  // 0 cloud — see `_gen/blue_w2_check.mjs`, which measures reach and fixtures in
+  // the same run.
+  //
+  // THE DISCRIMINATOR IS SUBJECT-HOOD, NOT THE WORD. Gating on "coordinate"
+  // itself has 11.9% precision and rejects 7.6% of local draws for the JOB TITLE
+  // "coordinator" alone. Each negative below is the specific shape a looser rule
+  // over-reaches into; C6 is a MEASURED false positive of the proximity draft
+  // this replaced, not a hypothetical.
+  const ONE_MATCH: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const NO_PURE: GamePayoffs = { a11: 2, a12: 0, a21: 0, a22: 1, b11: 0, b12: 1, b21: 2, b22: 0 };
+  const CLAIM = 'The two players coordinate their choices for the drying season.';
+  assert(!validateScenario(coordSc(CLAIM), ANTI).ok,
+    'F1-vocab: "the two players coordinate their choices" must be caught where no pure equilibrium matches');
+  assert(!validateScenario(coordSc(CLAIM), NO_PURE).ok,
+    'F1-vocab: and where the game has no pure equilibrium at all');
+  assert(!validateScenario(coordSc('The two players are planning a coordinated drying schedule for their racks.'), ANTI).ok,
+    'F1-vocab: the intention form with a participle object must be caught');
+  assert(!validateScenario(coordSc('Both parties are coordinating their harvest and procurement plans.'), ANTI).ok,
+    'F1-vocab: the "both" subject arm must be caught — untested vocabulary is unshipped vocabulary');
+  // Only the matrix may change the verdict.
+  assert(validateScenario(coordSc(CLAIM), MATCH).ok,
+    'F1-vocab CONTROL: the identical sentence where both pure equilibria MATCH must pass');
+  assert(validateScenario(coordSc(CLAIM), ONE_MATCH).ok,
+    'F1-vocab CONTROL: and where the single pure equilibrium IS a matching pair — the issue string would be false there');
+  // The job title, which is a scenario noun and never a claim.
+  assert(validateScenario(coordSc('A shipyards and a harbor coordinator are coordinating dredging operations for a shared canal.'), ANTI).ok,
+    'F1-vocab CONTROL (red 2, load-bearing): a job title AND a named-actor coordination verb in one sentence must pass');
+  assert(validateScenario(coordSc('The two players are the shipyard and the harbor coordinator for the canal.'), ANTI).ok,
+    'F1-vocab CONTROL: an abstract subject whose PREDICATE is the job title must pass');
+  assert(validateScenario(coordSc('The two players are coordinators at the same depot, and each picks a shift.'), ANTI).ok,
+    'F1-vocab CONTROL: "are coordinators" is a noun, not the players coordinating');
+  // The flat ACTIVITY tic: uniform across equilibrium shapes, so gating it would
+  // be the word list this screen exists to avoid.
+  assert(validateScenario(coordSc('A ferry operator and a dock warden are coordinating a joint experiment for the season.'), ANTI).ok,
+    'F1-vocab CONTROL: the flat ACTIVITY form with named actors must pass');
+  assert(validateScenario(coordSc('The two players are choosing how their shared grid will respond to a coordinated demand period.'), ANTI).ok,
+    'F1-vocab CONTROL (rt2#129, a MEASURED false positive of the proximity draft): the players\' verb is "are choosing"');
+  assert(validateScenario(coordSc('The two players are the coordinating body for the canal traffic.'), ANTI).ok,
+    'F1-vocab CONTROL: "the coordinating body" — a determiner with no verb of intention before it');
+  // Negation is excluded structurally: "never"/"do"/"cannot" are not in the
+  // closed bridge class, so the subject never reaches the verb.
+  for (const neg of ['The two players never coordinate their choices here.',
+    'The two players do not coordinate their choices.',
+    'The two players cannot coordinate their choices.']) {
+    assert(validateScenario(coordSc(neg), ANTI).ok, `F1-vocab CONTROL: a negated claim must pass — ${neg}`);
+  }
+
   // ── F12: cross-attribution through the LETTER form ───────────────────────
   // The role-noun misattribution check fires only on declared actor nouns and
   // has never executed on a model-invented scenario, because the cloud schema

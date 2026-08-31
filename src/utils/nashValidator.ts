@@ -710,6 +710,73 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     const matchingShape = pure.length >= 2 && diag === pure.length;
     const COORD_TALK = /\b(?:(?:incentive|reason|want|wants|try|tries|aim|aims|prefer|prefers)\s+to\s+(?:match|coordinate|mirror|align\s+with|copy|imitate)|coordinat(?:e|ion)\s+(?:game|problem)|match(?:ing)?\s+(?:the\s+)?(?:opponent|other)['’]?s?\s+(?:likely\s+)?(?:choice|move|action|pick))\b/i;
     const NEGATED = /\b(?:no|not|never|little|without|rather\s+than)\s+(?:\w+\s+){0,2}(?:incentive|reason|want|need)/i;
+    // THE ABSTRACT-PLAYER FORM of the same false claim.
+    //
+    // COORD_TALK's vocabulary requires "want/incentive to coordinate",
+    // "coordination game/problem", or "matching the opponent's choice". The
+    // local model writes none of those — RED 1 measured COORD_TALK against 341
+    // real gate-passing draws and it matched ZERO. What the model actually
+    // writes is "the two players coordinate their choices", which asserts the
+    // same thing and was entirely unscreened.
+    //
+    // THE DISCRIMINATOR IS THE SUBJECT, NOT THE VERB, and that distinction is
+    // the whole reason this is shippable. Gating on "coordinate" itself has
+    // 11.9% precision — eight correct scenarios rejected per defect caught, and
+    // 7.6% of local draws rejected merely for containing the JOB TITLE
+    // "coordinator". Now that rewriting model output is closed and gates are the
+    // only instrument left, a blunt gate is the one way to make the product
+    // worse while trying to improve it.
+    //
+    // Measured on the corpus: every genuine claim carries an ABSTRACT-PLAYER
+    // subject ("the two players", "the two institutions"); not one of the 38
+    // vacuous uses does — those name real actors or use "coordinating" as a
+    // purpose adjunct. So the rule keys on a game-theoretic subject noun, never
+    // on a story noun: "cooperatives", "firms" and "operators" are deliberately
+    // NOT in the list, because those are what a scenario legitimately calls its
+    // characters.
+    //
+    // THE SUBJECT MUST GOVERN THE VERB, not merely precede it. A proximity
+    // window ("subject … within 80 characters … coordinat") reads the flat
+    // ACTIVITY form as a claim whenever an abstract subject happens to sit in
+    // front of it: measured false positive rt2#129, "The two players are
+    // choosing how their shared grid will respond to a COORDINATED demand
+    // period" — the players' verb there is "are choosing", and "coordinated"
+    // modifies a noun in the world. So the bridge between subject and verb is
+    // a CLOSED GRAMMATICAL CLASS (auxiliaries, modals, adverbs, and verbs of
+    // intention), never arbitrary text. Any bridge with its own clause breaks
+    // subject-hood and the screen stays silent.
+    //
+    // Three licensed forms, and nothing else:
+    //   1  the two players (aux)* coordinate | are coordinating
+    //   2  the two players (aux)* PLAN/AGREE/WANT (to|how|on)* coordinate
+    //   3  the two players (aux)* PLAN a|their COORDINATED <noun>
+    // Form 3 needs a verb of intention before the determiner precisely so that
+    // "the two players are THE COORDINATING body" cannot reach it.
+    //
+    // "coordinator"/"coordinators" is unreachable by construction: the verb
+    // alternation ends at (e|es|ing) and the participle at "coordinated", so
+    // the job title matches nothing. That is what keeps the 7.6% job-title
+    // rejection rate off this check.
+    const ABSTRACT_PLAYER = String.raw`(?:the\s+two|both)\s+(?:players?|parties|sides|institutions?|participants?|agents?|actors?)`;
+    const AUX = String.raw`(?:will|would|shall|should|must|can|could|may|might|are|is|were|was|also|then|now|still|already|simply|jointly|closely|each|both)`;
+    const INTENT = String.raw`(?:plans?|planning|try|tries|trying|aims?|aiming|seeks?|seeking|agrees?|agreeing|wants?|needs?|hopes?|hoping|intends?|attempts?|attempting|prepares?|preparing|arranges?|arranging|decides?|deciding|chooses?|choosing|works?|working)`;
+    const CO_VERB = String.raw`coordinat(?:e|es|ing)\b`;
+    const CO_PART = String.raw`coordinated\b`;
+    const ABSTRACT_COORD = new RegExp(
+      String.raw`\b${ABSTRACT_PLAYER}(?:\s+${AUX})*(?:\s+${CO_VERB}|(?:\s+${INTENT})(?:\s+(?:to|how|on|whether))*(?:\s+${CO_VERB}|\s+(?:a|an|the|their)\s+${CO_PART}))`, 'i');
+    // A WEAKER CLAIM FALSIFIED BY A WEAKER CONDITION. "Both want to coordinate"
+    // (COORD_TALK, below) asserts the game IS a coordination game, which needs
+    // two matching equilibria to be true. "The two players coordinate their
+    // choices" asserts only that agreeing is what equilibrium play produces —
+    // true as soon as ANY pure equilibrium sits on a matching pair. So this
+    // screen fires only when NONE does, which is strictly narrower than
+    // `!matchingShape` and keeps the issue string literally true of the game.
+    // Deliberately narrower: on the 635-draw corpus `!matchingShape` would also
+    // have rejected three scenarios whose single pure equilibrium IS a matching
+    // pair, under an issue string that was false about those games.
+    if (diag === 0 && ABSTRACT_COORD.test(desc) && !NEGATED.test(desc)) {
+      issues.push('description says the two players coordinate their choices, but no pure equilibrium of this game sits on a matching pair');
+    }
     if (!matchingShape && COORD_TALK.test(desc) && !NEGATED.test(desc)) {
       // The wording had to change with the predicate. It used to read "do not
       // sit on matching OR MISMATCHING pairs", which was true of the old
