@@ -105,11 +105,44 @@ The 0.02s p50 is the tell — impossible for a 700-token generation. Any local
 number measured against :8099 between ~18:30 and the coordinator's fix is void.
 The shipped desktop app is NOT exposed: it spawns `-c 4096` with no `--parallel`.
 
-### run 2 — :8123 (desktop flags)
+### run 2 — :8123 (desktop flags) — FIRST VALID BASELINE
 
-Pending; in flight at the time of writing. Machine is under load from four
-concurrent agents plus three llama-servers, so wall-clock latency in this run
-is not comparable to a quiet-machine baseline.
+Machine under load from four concurrent agents plus three llama-servers, so the
+latency figures are an upper bound, not a quiet-machine baseline.
+
+```
+redteam_local N=120 : parsed 120/120 · shipping-gate pass 116/120 = 96.7%
+                      latency p50 4.52s  p90 7.52s
+  10x  BOTH PLAYERS share an option name          8.3%   row+col both "Early Dye"/"Late Dye"
+   4x  SHIPPING GATE rejects                      3.3%   coordination framing; dup column labels
+   3x  description never mentions any option label 2.5%
+   1x  degenerate repetition in a label/name      0.8%   "Reserved Reserve"
+
+domain_model_eval N=60 :
+  yield through the real gates    59/60 = 98.3%   (unparseable 0)
+  latency                         p50 6.79s  p90 8.68s
+  domain adherence (HONEST)       53/60 = 88.3%   <- description+labels, name excluded
+  option-axis TOP modifier        "early" x45 = 37.5% of row labels   (target <= 5%)
+  -- harness-bounded --
+  name IS the domain title-cased  53/60 = 88.3%
+  distinct names                  60/60   (ceiling: 60 distinct domains drawn)
+  TOP name share                  1.7%
+  domain adherence (as before)    60/60 = 100.0%   <- inflated by 11.7 pts
+```
+
+**The option-axis number is the first honest diversity figure this harness has
+produced, and it fails the standing <=5% target by 7.5x.** "early" alone is the
+leading word of 37.5% of row labels. It corroborates RED 2's independently
+measured 69.0% Early/Late row-PAIR rate from a different corpus and a different
+detector, so two instruments now agree that the rotation did not diversify the
+stories. `distinct names 60/60 against a ceiling of 60 distinct domains drawn`
+is the tautology printing itself.
+
+Note the two adherence numbers disagree by 11.7 points on the same 60 draws.
+Both are computed in the same run; the gap IS the defect.
+
+Baseline gate on this branch: `npm run lint` exit 0, `npm test` passes
+(solver 20k=76ms, precompute=33ms, 200-game battery=30ms, 566 tie games clean).
 
 ---
 
