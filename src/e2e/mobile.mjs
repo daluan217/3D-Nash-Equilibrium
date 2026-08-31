@@ -111,14 +111,29 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
     small.length === 0, small.slice(0, 5).join(' | '));
 
   // The app has to actually work, not just lay out.
-  await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click().catch(() => {});
-  await page.waitForTimeout(600);
-  await page.getByRole('button', { name: /^Run$/, exact: true }).first().click().catch(() => {});
+  // Do NOT swallow these: a failed preset click leaves the DEFAULT game loaded,
+  // which converges perfectly well and would record a pass for a game this
+  // check never selected.
+  await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
+  await page.waitForFunction(() => {
+    const cells = [...document.querySelectorAll('input[inputmode="decimal"][class*="text-center"]')];
+    return cells.length >= 8 && cells[0].value === '3' && cells[1].value === '-3';
+  }, null, { timeout: 30000 }).then(() => true).catch(() => false);
+  const presetLoaded = await page.evaluate(() => {
+    const cells = [...document.querySelectorAll('input[inputmode="decimal"][class*="text-center"]')];
+    return cells.length >= 8 && cells[0].value === '3' && cells[1].value === '-3';
+  });
+  record(`[${label}] the preset actually loaded (precondition for convergence)`, presetLoaded);
+  await page.getByRole('button', { name: /^Run$/, exact: true }).first().click();
   const converged = await page.waitForSelector('text=Converged', { timeout: 240000 })
     .then(() => true).catch(() => false);
-  record(`[${label}] a preset runs to convergence on the device`, converged);
+  record(`[${label}] a preset runs to convergence on the device`, converged && presetLoaded);
 
-  const relevant = errors.filter((t) => !/googletagmanager|google-analytics|gtag|net::|ERR_/i.test(t));
+  // Exclude ONLY known third-party analytics. A blanket net::/ERR_ filter hid
+  // failures of our own bundle, API and assets — exactly the breakage this
+  // check exists to catch on a device.
+  const ANALYTICS = /googletagmanager|google-analytics|gtag|doubleclick|region1\.analytics/i;
+  const relevant = errors.filter((t) => !ANALYTICS.test(t));
   record(`[${label}] no console or page errors`, relevant.length === 0, relevant.slice(0, 2).join(' | '));
   await ctx.close();
 }
@@ -211,9 +226,16 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
 
   const t0 = Date.now();
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-  const plotUp = await page.waitForSelector('#' + PLOT, { timeout: 120000 }).then(() => true).catch(() => false);
+  // The host <div> is in the markup before Plotly ever runs, so waiting for the
+  // SELECTOR would pass while a throttled device failed to initialise the
+  // scene. Poll for the gl3d scene itself — that is the thing that has to
+  // exist for anything to be visible.
+  const plotUp = await page.waitForFunction((id) => {
+    const gd = document.getElementById(id);
+    return !!(gd && gd._fullLayout && gd._fullLayout.scene && gd._fullLayout.scene.camera);
+  }, PLOT, { timeout: 120000 }).then(() => true).catch(() => false);
   const tPlot = Date.now() - t0;
-  record('[4x CPU] the plot appears within 60s', plotUp && tPlot < 60000, `${tPlot}ms`);
+  record('[4x CPU] the 3D scene actually initialises within 60s', plotUp && tPlot < 60000, `${tPlot}ms`);
 
   const dismissed = await dismissTour(page);
   const tReady = Date.now() - t0;

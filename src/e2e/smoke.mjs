@@ -115,6 +115,16 @@ async function setSpeed(v) {
 const startLine = () => page.evaluate(() =>
   [...document.querySelectorAll('p')].map((p) => (p.textContent || '').trim()).find((t) => /^Start \(/.test(t)) || '');
 void startLine;
+/* Wait for the gl3d scene to be live rather than sleeping a fixed amount.
+ * A fixed sleep is both too short when CI's SwiftShader renderer stalls and
+ * wasted time when it does not, and the host <div> exists long before Plotly
+ * has a camera to read. */
+async function waitForScene(timeout = 60000) {
+  return page.waitForFunction(() => {
+    const gd = document.getElementById('plotly-3d-market-simulation');
+    return !!(gd && gd._fullLayout && gd._fullLayout.scene && gd._fullLayout.scene.camera);
+  }, null, { timeout }).then(() => true).catch(() => false);
+}
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await dismissTour();
@@ -372,9 +382,9 @@ try {
   //      fails loudly.
   {
     await $.reset.click();
-    await page.waitForTimeout(400);
     await page.locator('#plotly-3d-market-simulation').scrollIntoViewIfNeeded();
-    await page.waitForTimeout(600);
+    const sceneReady = await waitForScene();
+    record('the 3D scene is live before the camera checks (precondition)', sceneReady);
 
     const liveEye = () => page.evaluate(() => {
       const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
