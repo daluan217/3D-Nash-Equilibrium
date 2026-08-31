@@ -123,6 +123,73 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   await ctx.close();
 }
 
+// ── 1b. pinch-to-zoom, which is how a phone adjusts the view ────────────────
+// Two things have to happen on a two-finger pinch during a run: the run pauses,
+// exactly as a tap does, and the zoom actually reaches the camera.
+//
+// The zoom half was broken and invisible: the handlers were bound to the plot
+// container, and Plotly's own gl3d touch handlers sit on the canvas inside it
+// and stop propagation, so they were attached but never fired — pinch did
+// nothing at all, running or idle. Only a device test can see this; the desktop
+// smoke suite has no touch.
+{
+  const ctx = await browser.newContext({ ...devices['iPad (gen 7)'] });
+  const page = await ctx.newPage();
+  page.setDefaultTimeout(120000);
+  const cdp = await ctx.newCDPSession(page);
+
+  const eyeRadius = () => page.evaluate((id) => {
+    const e = document.getElementById(id)?._fullLayout?.scene?.camera?.eye;
+    return e ? Math.hypot(e.x, e.y, e.z) : null;
+  }, PLOT);
+  const isRunning = () => page.evaluate(() =>
+    [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await dismissTour(page);
+  await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click().catch(() => {});
+  await page.waitForTimeout(600);
+  // slowest speed, so the run is still going when the pinch lands
+  await page.evaluate(() => {
+    const el = [...document.querySelectorAll('input[type=range]')].find((e) => e.min === '1');
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(el, '1');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    [...document.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === 'Run')?.click();
+  });
+  await page.waitForTimeout(1500);
+
+  const wasRunning = await isRunning();
+  const before = await eyeRadius();
+  const box = await page.locator('#' + PLOT).boundingBox();
+  let pausedByPinch = null;
+  if (box) {
+    const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+    const pts = (d) => [{ x: cx - d, y: cy }, { x: cx + d, y: cy }];
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts(60) });
+    await page.waitForTimeout(150);
+    pausedByPinch = !(await isRunning());
+    for (let i = 1; i <= 6; i++) {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts(60 + i * 22) });
+      await page.waitForTimeout(70);
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(800);
+  }
+  const after = await eyeRadius();
+
+  record('[pinch] the run was actually going before the pinch (precondition)', wasRunning === true);
+  record('[pinch] a two-finger pinch pauses the run, like a tap', pausedByPinch === true);
+  record('[pinch] the pinch reaches the camera (view actually zooms)',
+    before !== null && after !== null && Math.abs(before - after) > 0.05,
+    `eye radius ${before?.toFixed(3)} -> ${after?.toFixed(3)}`);
+  await ctx.close();
+}
+
 // ── 2. the compute budget: a phone has far less of it ───────────────────────
 // 4x is Lighthouse's "mobile" setting. The interesting failures here are the
 // ones that make the app unusable rather than merely slower: a first paint that

@@ -340,40 +340,81 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     };
     document.addEventListener('mousedown', onPress, true);
     document.addEventListener('touchstart', onPress, true);
+    // ZOOM counts as reaching into the picture, exactly like a press.
+    //
+    // A trackpad pinch is not a touch gesture on the desktop: the browser
+    // delivers it as a `wheel` event with ctrlKey set, and a mouse wheel over
+    // the scene zooms the camera too. Listening only for mousedown/touchstart
+    // meant a pinch-zoom adjusted the view while the run kept stepping
+    // underneath it — the markers moved on while the visitor was trying to
+    // look. The spin's take-over handler has always included `wheel` for this
+    // same reason; pausing simply did not, which is the inconsistency.
+    //
+    // passive: a listener that only reads coordinates must never block the
+    // scroll or zoom it is observing.
+    document.addEventListener('wheel', onPress, { capture: true, passive: true });
     return () => {
       document.removeEventListener('mousedown', onPress, true);
       document.removeEventListener('touchstart', onPress, true);
+      document.removeEventListener('wheel', onPress, { capture: true } as any);
     };
   }, []);
 
 
-  // Pinch-to-zoom: scale camera eye vector on two-finger pinch
+  /**
+   * Pinch-to-zoom: scale the camera's eye vector on a two-finger gesture.
+   *
+   * Registered on the DOCUMENT in the capture phase and hit-tested by
+   * coordinate — the same approach as the press-to-pause handler above and the
+   * spin's take-over, for the same reason. Plotly's own gl3d touch handlers sit
+   * on the canvas inside this element and stop propagation, so listeners bound
+   * to the container never see the gesture: bound that way this handler was
+   * attached but silently never fired, and pinch did nothing at all, whether a
+   * run was going or not. Capture phase runs before Plotly can swallow it, and
+   * a rectangle test cannot be fooled by whatever is layered in between.
+   *
+   * Pausing a running simulation is NOT done here — the press handler above
+   * already fires on the same touchstart, so a pinch pauses exactly the way a
+   * tap does, and that behaviour is defined in one place.
+   */
   useEffect(() => {
-    const el = document.getElementById(plotId);
-    if (!el) return;
+    const container = containerRef.current;
+    if (!container) return;
 
-    const getDist = (t: TouchList) =>
+    const dist = (t: TouchList) =>
       Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 2) return;
-      pinchStartDist.current = getDist(e.touches);
-      const Plotly = (window as any).Plotly;
-      const plotEl = document.getElementById(plotId) as any;
-      const eye = plotEl?._fullLayout?.scene?.camera?.eye;
-      pinchStartEye.current = eye
-        ? { x: eye.x, y: eye.y, z: eye.z }
-        : { x: 1.5, y: 1.5, z: 1.5 };
+    const insidePlot = (t: TouchList) => {
+      const r = container.getBoundingClientRect();
+      // Both fingers must be on the picture, or a pinch that happens to graze
+      // the plot while zooming the PAGE would drive the camera.
+      for (let i = 0; i < 2; i++) {
+        const { clientX: x, clientY: y } = t[i];
+        if (x < r.left || x > r.right || y < r.top || y > r.bottom) return false;
+      }
+      return true;
     };
 
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 2 || pinchStartDist.current === null || !pinchStartEye.current) return;
-      e.preventDefault();
-      const ratio = pinchStartDist.current / getDist(e.touches);
+    const onTouchStart = (e: Event) => {
+      const te = e as TouchEvent;
+      if (te.touches.length !== 2 || !insidePlot(te.touches)) return;
+      pinchStartDist.current = dist(te.touches);
+      const eye = (document.getElementById(plotId) as any)?._fullLayout?.scene?.camera?.eye;
+      pinchStartEye.current = eye ? { x: eye.x, y: eye.y, z: eye.z } : { x: 1.5, y: 1.5, z: 1.5 };
+    };
+
+    const onTouchMove = (e: Event) => {
+      const te = e as TouchEvent;
+      if (te.touches.length !== 2 || pinchStartDist.current === null || !pinchStartEye.current) return;
+      if (!insidePlot(te.touches)) return;
+      const now = dist(te.touches);
+      if (now <= 0) return;
+      // Stop the browser turning this into a page zoom now that it is ours.
+      if (te.cancelable) te.preventDefault();
+      const ratio = pinchStartDist.current / now;
       const { x, y, z } = pinchStartEye.current;
       const Plotly = (window as any).Plotly;
       Plotly?.relayout(plotId, {
-        'scene.camera.eye': { x: x * ratio, y: y * ratio, z: z * ratio }
+        'scene.camera.eye': { x: x * ratio, y: y * ratio, z: z * ratio },
       });
     };
 
@@ -382,14 +423,17 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       pinchStartEye.current = null;
     };
 
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-    el.addEventListener('touchmove', onTouchMove, { passive: false });
-    el.addEventListener('touchend', onTouchEnd);
-
+    document.addEventListener('touchstart', onTouchStart, true);
+    // passive:false so preventDefault is honoured; capture so Plotly cannot
+    // consume the move first.
+    document.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+    document.addEventListener('touchend', onTouchEnd, true);
+    document.addEventListener('touchcancel', onTouchEnd, true);
     return () => {
-      el.removeEventListener('touchstart', onTouchStart);
-      el.removeEventListener('touchmove', onTouchMove);
-      el.removeEventListener('touchend', onTouchEnd);
+      document.removeEventListener('touchstart', onTouchStart, true);
+      document.removeEventListener('touchmove', onTouchMove, { capture: true } as any);
+      document.removeEventListener('touchend', onTouchEnd, true);
+      document.removeEventListener('touchcancel', onTouchEnd, true);
     };
   }, []);
 
@@ -870,6 +914,36 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           center: { ...(live.center ?? { x: 0, y: 0, z: 0 }) },
           up: { ...(live.up ?? { x: 0, y: 0, z: 1 }) },
         };
+
+        /*
+         * Correct Plotly's OWN memory of the camera, in place.
+         *
+         * `uirevision` tells Plotly to keep the view IT recorded across a
+         * Plotly.react and ignore whatever camera the layout carries. It does
+         * not record a wheel/pinch zoom, so its memory is the pose from before
+         * the zoom; the next react re-applies that older pose, it paints, and
+         * only the react after that restores the real view — the flash when a
+         * paused run is resumed. Keeping our own ref accurate is necessary but
+         * not sufficient, precisely because uirevision means Plotly never reads
+         * it.
+         *
+         * The memory Plotly consults is the graph div's own `layout`, so
+         * writing the live pose there makes it agree with the screen. This is a
+         * plain assignment: no relayout, no react, no React state change. An
+         * earlier attempt bumped `uirevision` instead, which worked but forced
+         * a full re-render after every gesture and made dragging feel like it
+         * caught — the cost has to be zero here, because this runs on every
+         * frame of every rotate.
+         */
+        const gd = document.getElementById(plotId) as any;
+        if (gd?.layout) {
+          if (!gd.layout.scene) gd.layout.scene = {};
+          gd.layout.scene.camera = {
+            eye: { ...live.eye },
+            center: { ...(live.center ?? { x: 0, y: 0, z: 0 }) },
+            up: { ...(live.up ?? { x: 0, y: 0, z: 1 }) },
+          };
+        }
       });
 
       // The "A Moves"/"B Moves" legend entries are solid-color stub traces; the
