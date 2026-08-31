@@ -34,6 +34,7 @@ import {
   precomputeThinHistory,
   replayToStep,
   type ThinSnapshot,
+  fmtPayoff,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -3531,7 +3532,7 @@ export default function App() {
                   Expected Payoff E[A]
                 </span>
                 <span className="text-sm font-bold text-player-a-500 font-mono">
-                  {r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}
+                  {fmtPayoff(EA(simState.cx, simState.cy, payoffs))}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -3539,7 +3540,7 @@ export default function App() {
                   Expected Payoff E[B]
                 </span>
                 <span className="text-sm font-bold text-player-b-600 dark:text-player-b-400 font-mono">
-                  {r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}
+                  {fmtPayoff(EB(simState.cx, simState.cy, payoffs))}
                 </span>
               </div>
             </div>

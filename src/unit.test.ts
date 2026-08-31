@@ -28,7 +28,7 @@ import {
   computeMixedNE, computeAllNE, fmtProb, texProb,
   profileConcept, resolveProfile, indifferenceAt,
   equilibriumSet, kindOf, describeContinua,
-  computeIndifference, generateRandomGame,
+  computeIndifference, generateRandomGame, fmtPayoff,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { tieProse } from './utils/tieProse';
@@ -554,6 +554,32 @@ function testColorTermParity() {
   assert(withActors.b.includes('the keeper') && !withActors.a.includes('the keeper'),
     'actorB nouns belong to player B only');
 
+  // ── a phrase BOTH players can play belongs to neither colour ──
+  // Symmetric games share option names by design: the Prisoner's Dilemma is
+  // "Cooperate" for Row 1 AND Col 1. That is correct input, so it must not be
+  // rejected — but ColorCoded scans every A term before any B term and takes
+  // the first match, so a shared phrase was always painted as A's: wrong half
+  // the time, exactly where the reader needs to know whose move it is.
+  const pd = colorTermsFor({ row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect' });
+  assert(!pd.a.some((t) => t.toLowerCase() === 'cooperate'),
+    'a shared option must not be coloured as player A');
+  assert(!pd.b.some((t) => t.toLowerCase() === 'cooperate'),
+    'a shared option must not be coloured as player B either — it is genuinely ambiguous');
+  assert(!pd.a.some((t) => t.toLowerCase() === 'defect') && !pd.b.some((t) => t.toLowerCase() === 'defect'),
+    'both shared options drop, not just the first');
+  // The unambiguous structure must survive: dropping shared options must not
+  // take the Row/Col notation with it.
+  for (const t of STRUCTURAL_A_TERMS) assert(pd.a.includes(t), `structural term "${t}" must survive`);
+  for (const t of STRUCTURAL_B_TERMS) assert(pd.b.includes(t), `structural term "${t}" must survive`);
+
+  // Case and padding must not smuggle an ambiguous term through.
+  const messy = colorTermsFor({ row1: '  Hold Plan ', row2: 'Flood Plan', col1: 'hold plan', col2: 'Divert' });
+  assert(!messy.a.some((t) => t.trim().toLowerCase() === 'hold plan')
+      && !messy.b.some((t) => t.trim().toLowerCase() === 'hold plan'),
+    'shared-option detection must be case- and whitespace-insensitive');
+  assert(messy.a.includes('Flood Plan') && messy.b.includes('Divert'),
+    'options owned by exactly one player keep their colour');
+
   console.log('✓ color-coding term parity: card and saved description derive identical terms');
 }
 
@@ -708,6 +734,37 @@ function testScenarioDomains() {
     + `${(top * 100).toFixed(2)}% over ${N} picks (target < ${TARGET_TOP_SHARE * 100}%)`);
 }
 
+
+function testFmtPayoffSubResolution() {
+  // The matrix accepts values down to 0.001 and clamps at +/-100, so an
+  // expected payoff — a weighted average of four cells — can be smaller than
+  // the display resolution. A bare toFixed(3) then printed "-0.000": it claims
+  // the payoff is nothing AND reads as a typo. fmtProb has guarded
+  // probabilities against exactly this since round 14; payoffs were not.
+  const table: Array<[number, string, string]> = [
+    [0, '0', 'an exact zero is a fact, and prints plainly'],
+    [-0, '0', 'negative zero must never reach the screen'],
+    [-33.333, '-33.333', 'ordinary magnitudes are unchanged'],
+    [2.5, '2.500', 'three decimals kept for alignment'],
+    [-0.003, '-0.003', 'the smallest representable payoff still prints'],
+    [0.0003333, 'less than 0.001', 'a positive value below resolution says so'],
+    [-0.0003333, 'greater than -0.001', 'and so does a negative one, with the correct direction'],
+    [-1e-9, 'greater than -0.001', 'however small'],
+  ];
+  for (const [v, want, why] of table) {
+    const got = fmtPayoff(v);
+    assert(got === want, `fmtPayoff(${v}): ${why} — expected "${want}", got "${got}"`);
+  }
+  // The property that matters: a NONZERO payoff must never be rendered as a
+  // bare zero, at any scale the matrix can produce.
+  for (const v of [1e-4, -1e-4, 5e-4, -5e-4, 9.9e-4, -9.9e-4]) {
+    const got = fmtPayoff(v);
+    assert(!/^-?0(\.0+)?$/.test(got),
+      `fmtPayoff(${v}) rendered a nonzero payoff as "${got}", which claims it is zero`);
+  }
+  console.log('✓ fmtPayoff: sub-resolution payoffs never render as zero');
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 
 function runUnitTests() {
@@ -730,6 +787,7 @@ function runUnitTests() {
   testUserColorTerms();
   testCameraRelayoutPredicate();
   testScenarioDomains();
+  testFmtPayoffSubResolution();
   console.log('All unit tests passed.');
 }
 
