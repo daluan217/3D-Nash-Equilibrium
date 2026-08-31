@@ -117,8 +117,27 @@ const startLine = () => page.evaluate(() =>
 void startLine;
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
-  await page.locator('[aria-label="Close tour"]').click({ timeout: 5000 }).catch(() => {});
+  await dismissTour();
   await page.waitForTimeout(400);
+}
+/* The tour auto-opens ~700ms after every anonymous load (by design), and a
+ * fresh CI browser is always anonymous. Dismiss it through the
+ * viewport-anchored Exit button — the callout card's own X moves with the
+ * spotlight, and the tour's step-1 smooth-scroll can leave it unstable or
+ * off-screen (observed on CI: spotlight at top:-210px, X unreachable, and
+ * every later control click then timed out under the tour scrim). */
+async function dismissTour() {
+  try {
+    await page.locator('[aria-label="Exit tour"]').click({ timeout: 20000 });
+  } catch {
+    await page.keyboard.press('Escape');
+  }
+  // Fail LOUDLY if the tour survived: proceeding with it open turns every
+  // later click into an unrelated 120s actionability timeout (the exact
+  // flake this guards against).
+  if (await page.locator('[role="dialog"][aria-label="Guided tour"]').count()) {
+    throw new Error('guided tour still open after Exit click + Escape');
+  }
 }
 
 try {
