@@ -33,8 +33,10 @@ const userData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-'));
 // for the port — waitReady would then see the OLD server still listening.
 async function killServer() {
   if (!server) return;
-  server.kill('SIGKILL');
-  await new Promise((res) => server.once('exit', res)); // SIGKILL cannot be ignored
+  if (server.exitCode !== null || server.signalCode !== null) return; // already exited
+  const exited = new Promise((res) => server.once('exit', res));
+  if (!server.kill('SIGKILL')) return; // couldn't signal (already dead / EPERM)
+  await exited; // SIGKILL cannot be ignored
 }
 async function waitReady() {
   for (let i = 0; i < 60; i++) {
