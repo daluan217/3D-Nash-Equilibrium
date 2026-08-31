@@ -252,10 +252,100 @@ changing vocabulary and shape predicate together would confound them, leaving
 any new false positive unattributable. Refiled to RED 1 as its own finding
 needing its own controls.
 
-### Gate
+### Gate — FULL, all green
 
 lint 0 · `npm test` exit 0 (incl. the new section) · 86,236 tie-prose renderings,
-0 failures · e2e run separately.
+0 failures · **e2e smoke 22/22 checks passed**.
+
+### Acceptance test — RED 1's replay, the one blue could not run on itself
+
+`_gen/rt_replay_prepost.mjs` loads red's PRE-fix validator and blue's POST-fix
+validator in one process over all 344 stored scenarios.
+
+    SELF-CHECK   replayed PRE verdict vs the verdict frozen at collection time
+                 344/344 agree — the baseline reproduces exactly
+    DELTA        newly REJECTED : 2      newly ACCEPTED : 0      threw : 0
+
+The two, and only the two:
+
+    rt2#113 "Orchard Frost Watch"   -> Player A choosing "release water" (B's option)
+    rt2#117 "Saffron Harvest Labour" -> option label col2 is missing
+
+Exactly the F12 and F11 draws. **Zero false positives across the 341 other
+gate-passing scenarios, spanning 32 matrix shapes.** Red ran the self-check
+first and reported it first: a replay that cannot reproduce its own baseline has
+no standing to judge the change.
+
+### F1 IS *NOT* CLOSED — predicate corrected, zero coverage on observed output
+
+RED 1 measured the reach of the gate's REAL trigger vocabulary, lifted verbatim
+from `nashValidator.ts` rather than paraphrased:
+
+    gate-passing draws                            : 341
+    draws matching the real COORD_TALK vocabulary :   0
+    draws matching the real ANTI_TALK vocabulary  :   0
+
+The shape fix is correct — the predicate genuinely was wrong and the
+hand-written probe proves it fires — but **its trigger vocabulary matches
+nothing this model produces**. On the observed distribution the corrected gate
+is unreachable. Logged as "predicate corrected; zero coverage on observed local
+output", never as "closed": 9.1% of anti-coordination cases keep shipping.
+
+**This is a FIFTH instance of the round's theme, and a different flavour.** The
+other four are checks that cannot fire because of a defect — inputs the schema
+forbids, a formatter fed an already-rounded value, a kernel answering a
+reasonable question misleadingly, a scan window that ate its evidence. This one
+is CORRECT and simply never meets its trigger. The defence differs too: the
+first four are caught by a known-positive fixture, which this fix has and passes.
+Only measuring the gate's REACH against real model output catches this one.
+
+### F1-vocab, filed for a later window (red's boundary, with data)
+
+Splitting "coordinate" by WHAT is coordinated, against equilibrium shape:
+
+| shape | n | "coordinate their MOVES" | "coordinating an ACTIVITY" |
+|---|---|---|---|
+| all-MISMATCH | 44 | **9.1%** | 15.9% |
+| all-MATCH | 75 | 1.3% | 12.0% |
+| other | 222 | 2.7% | 13.5% |
+
+The ACTIVITY form is FLAT across shapes (15.9 / 12.0 / 13.5) — a verbal tic, and
+gating it would be precisely the word list that risks rejecting correct output.
+The MOVES form is 9.1% where matching is false against 1.3% where it is true, a
+7x skew concentrated where it misleads. That is the defensible boundary: the
+thing coordinated is the players' own MOVES, not a noun in the world.
+
+Not implemented this window — changing vocabulary and shape predicate together
+would leave any new false positive unattributable.
+
+---
+
+## 2026-08-31 — RED 3 RETRACTED F1 AND F2: no desktop stop-ship
+
+Material to this branch's remit, so recorded here rather than left in messages.
+Six launches of the REAL packaged app, fresh user-data-dir each, scored against
+the shipped 60s budget, per-trial load recorded:
+
+    trial 1 (load 4.62) HEALTHY 15s (cold) · trials 2-6 (load 3.2-4.0) HEALTHY 1s
+    RESULT: 6 healthy / 0 failed
+
+F1 (quarantine SIGKILL) is retracted too: on a quiet box the quarantined binary
+behaves exactly like the de-quarantined one, and the real app started 3 of 3
+with quarantine re-applied to all 37 files and verified still present. The
+quarantine PROPAGATION fact stands — a real install does mark all 37 files — but
+it has no demonstrable consequence.
+
+Both original failures were measured at load 40-60. The earlier "load does not
+select the regime" conclusion came from comparing cold rounds against
+back-to-back warm rounds; like-for-like it is monotonic (load 60 → ~78s, load
+20 → 54s, load 6 → 15.7s). **Blue's original objection — that latency measured
+at load average 55 was void — was correct**, and this log's "latency in this
+window is VOID" entry stands as written. Nothing in this log ever recorded a
+mechanism for the bimodality, so nothing needed striking.
+
+What survives from RED 3: F3 (orphaned llama-server survives kill -9 at PPID 1,
+holding 889 MB and the port), F6 (dual-bind port hijack), F4 CORS, F8 CI gaps
+and the unpinned GGUF, F5 narrowed to one self-healing error page.
 
 ---
 
