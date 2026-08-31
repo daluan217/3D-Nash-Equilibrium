@@ -252,6 +252,48 @@ provider, so the schema's `required` is advisory there. Rate 1 in 303 gate-passi
 local draws (0.33%) — one occurrence, so an order of magnitude, not a number;
 but the mechanism is not rate-dependent, since any misspelled JSON key lands here.
 
+### RED 2's "Skilift" determinism — REFUTED, and the real defect is worse
+
+Filed as "3 of 3, deterministic, one specific wrong string". Five draws on the
+same domain, same prompt, temp 0.8, against blue's `-c 4096` instance:
+
+    1  "Skis-Lift Grooming"
+    2  " Ski-Lift Grooming"     <- correct spelling, LEADING SPACE
+    3  "Skim-Lift Grooming"
+    4  "Skim-Lift Grooming"
+    5  "Skylift Grooming"
+
+"Skilift Grooming" — the exact reported string — did not appear once. So the
+determinism claim is refuted by four counterexamples. What is TRUE and stronger:
+this domain reliably produces a mangled name, 4 of 5, in four different ways.
+
+The distinction changes the fix. A deterministic single-string failure invites a
+substitution table and reads as a tokenizer quirk. A different mangle every draw
+is a model that cannot spell the word, which cannot be patched that way — same
+class as "Thaing"/"Thaning".
+
+Not filed, recorded only: draw 2's leading space. Checked red's corpus first —
+untrimmed name or label in 0 of 199 local and 0 of 80 cloud, so one occurrence
+against 279 is almost certainly chance. Noted because nothing in the pipeline
+trims those fields.
+
+### F12 — reviving the dead guard would NOT catch it
+
+RED 1 filed the first cross-attribution instance ("Player A chooses when to
+release water", where Release Water is B's pair) as "exactly what the dead
+actorA/actorB guard was written to catch". Tested, not reasoned about:
+
+    PASSES  as the model emitted it (no actors)
+    PASSES  WITH actorA/actorB declared
+    CAUGHT  the same sentence using the ROLE NOUN instead of the letter
+
+The guard only ever fires on the role-noun form — by construction, since it
+exists for descriptions that use role nouns INSTEAD of letters. F12 attacks
+through the letter form, which nobody screens because it was assumed
+unambiguous. **Consequence: "add actorA/actorB to the schema so the guard runs"
+cannot be justified by F12** — the one real instance would still pass. The
+letter form is separately decidable and *easier* to check (no actor mapping).
+
 ### Measurement hygiene: latency in this window is VOID
 
 Load average **55** with four llama-servers and four agents running scans
