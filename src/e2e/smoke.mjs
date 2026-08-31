@@ -115,6 +115,16 @@ async function setSpeed(v) {
 const startLine = () => page.evaluate(() =>
   [...document.querySelectorAll('p')].map((p) => (p.textContent || '').trim()).find((t) => /^Start \(/.test(t)) || '');
 void startLine;
+/* Wait for the gl3d scene to be live rather than sleeping a fixed amount.
+ * A fixed sleep is both too short when CI's SwiftShader renderer stalls and
+ * wasted time when it does not, and the host <div> exists long before Plotly
+ * has a camera to read. */
+async function waitForScene(timeout = 60000) {
+  return page.waitForFunction(() => {
+    const gd = document.getElementById('plotly-3d-market-simulation');
+    return !!(gd && gd._fullLayout && gd._fullLayout.scene && gd._fullLayout.scene.camera);
+  }, null, { timeout }).then(() => true).catch(() => false);
+}
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await dismissTour();
@@ -347,6 +357,197 @@ try {
     record('Reset clears the log and the Converged pill', lines === 1 && pill === 0,
       `${lines} log lines, Converged pill=${pill}`);
   }
+
+  // ══ 14. the plot stays directly manipulable (rotate AND zoom)
+  //
+  //      Round 17 context: pausing a run, adjusting the view and pressing Run
+  //      flashed the default camera for one frame. The cause was that Plotly
+  //      reports camera interaction as `scene.camera.eye` and never as
+  //      `scene.camera`, so the stored pose stopped tracking a ZOOM and every
+  //      Plotly.react shipped a stale camera in its layout.
+  //
+  //      That defect is NOT guarded here, deliberately. An assertion comparing
+  //      the layout camera to the on-screen camera was written three different
+  //      ways and mutation testing showed every one of them PASSING against the
+  //      original defect — `uirevision` makes Plotly ignore the stale pose in a
+  //      headless run, so the bug is real but not observable this way. A check
+  //      that cannot fail on the bug it names is worse than no check, so it was
+  //      removed instead of shipped green. The decidable half lives in
+  //      src/unit.test.ts as `isCameraRelayout`, which IS mutation-verified in
+  //      both directions.
+  //
+  //      What is worth asserting here is the precondition that made the bug
+  //      reachable at all: the plot must remain rotatable and zoomable. If
+  //      direct manipulation breaks, the camera code above is moot and this
+  //      fails loudly.
+  {
+    await $.reset.click();
+    await page.locator('#plotly-3d-market-simulation').scrollIntoViewIfNeeded();
+    const sceneReady = await waitForScene();
+    record('the 3D scene is live before the camera checks (precondition)', sceneReady);
+
+    const liveEye = () => page.evaluate(() => {
+      const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+      return e ? { x: e.x, y: e.y, z: e.z } : null;
+    });
+    const moved = (a, b2) => !!a && !!b2
+      && Math.hypot(a.x - b2.x, a.y - b2.y, a.z - b2.z) > 0.05;
+
+    const start = await liveEye();
+    const box = await page.locator('#plotly-3d-market-simulation').boundingBox();
+    if (box) {
+      const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      // Paced moves: a burst delivered in a single tick is coalesced and
+      // Plotly's turntable handler never sees the drag — which silently turns
+      // this check into a tautology.
+      for (let i = 1; i <= 10; i++) { await page.mouse.move(cx + 20 * i, cy + 5 * i); await page.waitForTimeout(25); }
+      await page.mouse.up();
+      await page.waitForTimeout(600);
+    }
+    const afterDrag = await liveEye();
+    if (box) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, -150); await page.waitForTimeout(90); }
+      await page.waitForTimeout(600);
+    }
+    const afterZoom = await liveEye();
+
+    record('the 3D plot can be rotated by dragging', moved(start, afterDrag),
+      `${JSON.stringify(start)} -> ${JSON.stringify(afterDrag)}`);
+    record('the 3D plot can be zoomed by wheel', moved(afterDrag, afterZoom),
+      `${JSON.stringify(afterDrag)} -> ${JSON.stringify(afterZoom)}`);
+
+    await $.reset.click();
+    await page.waitForTimeout(300);
+  }
+
+  // ══ 15. NO CAMERA FLASH WHEN A PAUSED RUN RESUMES (round 17, reported from a
+  //      screen recording: pause mid-run by pressing the plot, rotate AND zoom,
+  //      press Run — the plot showed the PRE-ZOOM view for a frame before
+  //      snapping back to the adjusted one)
+  //
+  //      Cause: `uirevision` tells Plotly to keep the view it remembers across
+  //      a react and ignore the layout camera — and Plotly's memory never
+  //      recorded the wheel zoom, so a react re-applied the older pose. The
+  //      excursion lives entirely inside one blocked frame, so sampling the
+  //      camera from node misses it and "the view did not move" passes against
+  //      the bug (three such attempts did). Sample it INSIDE the react call
+  //      instead: that is where the stale pose is observable.
+  {
+    const view = page.viewportSize();
+    // Wide enough that the plot and the Run button are both on screen — if
+    // Playwright has to scroll to reach Run, the plot moves and the comparison
+    // is meaningless.
+    await page.setViewportSize({ width: 1710, height: 1100 });
+    await page.waitForTimeout(500);
+    await $.reset.click();
+    await page.waitForTimeout(400);
+    await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
+    await page.waitForTimeout(600);
+    await setSpeed(5);
+    await page.waitForTimeout(300);
+
+    const clickByText = (re) => page.evaluate((src) => {
+      const b = [...document.querySelectorAll('button')]
+        .find((e) => new RegExp(src).test((e.textContent || '').trim()));
+      b?.click();
+    }, re);
+
+    await clickByText('^Run$');
+    await page.waitForTimeout(1200);
+    const box = await page.locator('#plotly-3d-market-simulation').boundingBox();
+    if (box) {
+      const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+      await page.mouse.click(cx, cy);          // pause the run
+      await page.waitForTimeout(700);
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      for (let i = 1; i <= 10; i++) { await page.mouse.move(cx + 18 * i, cy + 5 * i); await page.waitForTimeout(25); }
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+      await page.mouse.move(cx, cy);
+      for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, -150); await page.waitForTimeout(100); }
+      await page.waitForTimeout(800);
+    }
+
+    const adjusted = await page.evaluate(() => {
+      const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+      return e ? { x: e.x, y: e.y, z: e.z } : null;
+    });
+
+    await page.evaluate(() => {
+      window.__flash = [];
+      const P = window.Plotly;
+      const orig = P.react.bind(P);
+      P.react = function (gd, data, layout, ...rest) {
+        const live = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        if (live) window.__flash.push({ x: live.x, y: live.y, z: live.z });
+        return orig(gd, data, layout, ...rest);
+      };
+    });
+    await clickByText('^(Run|Pause)$');   // resume the run
+    await page.waitForTimeout(2000);
+
+    const worst = await page.evaluate((a) => {
+      if (!a || !window.__flash.length) return { n: 0, max: -1 };
+      let max = 0;
+      for (const c of window.__flash) {
+        max = Math.max(max, Math.hypot(c.x - a.x, c.y - a.y, c.z - a.z));
+      }
+      return { n: window.__flash.length, max };
+    }, adjusted);
+
+    record('resuming a paused run keeps the adjusted camera (no pre-zoom flash)',
+      worst.n > 0 && worst.max < 0.15,
+      `${worst.n} react calls, worst deviation=${worst.max.toFixed(4)}`);
+
+    await $.reset.click();
+    await page.waitForTimeout(300);
+    await page.setViewportSize(view);
+    await page.waitForTimeout(300);
+  }
+
+  // ══ 16. ZOOMING PAUSES A RUNNING SIMULATION (reported: a trackpad pinch
+  //      adjusted the view while the run kept stepping underneath it)
+  //
+  //      Pressing the plot has always paused the run. Zooming did not, because
+  //      the handler listened for mousedown/touchstart only — and a trackpad
+  //      pinch is not a touch gesture on the desktop: the browser delivers it
+  //      as a `wheel` event with ctrlKey set. A plain wheel over the scene
+  //      zooms the camera too. Both are reaching into the picture, so both
+  //      pause, exactly as a press does.
+  {
+    await $.reset.click();
+    await page.waitForTimeout(400);
+    await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
+    await page.waitForTimeout(600);
+    await setSpeed(1);                       // slow, so the run is still going
+    await page.waitForTimeout(250);
+    await $.run.click();
+    await page.waitForTimeout(1400);
+
+    const isRunning = () => page.evaluate(() =>
+      [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+    const wasRunning = await isRunning();
+
+    const box = await page.locator('#plotly-3d-market-simulation').boundingBox();
+    if (box) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, -150); await page.waitForTimeout(90); }
+      await page.waitForTimeout(700);
+    }
+    const stillRunning = await isRunning();
+
+    // Without the precondition a broken Run button would make this pass by
+    // never having started.
+    record('the run was going before the zoom (precondition)', wasRunning === true);
+    record('zooming the scene pauses a running simulation', wasRunning === true && stillRunning === false);
+    await $.reset.click();
+    await page.waitForTimeout(300);
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page

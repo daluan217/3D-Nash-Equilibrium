@@ -217,3 +217,39 @@ input.no-native-spinner {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── touch target floor ──────────────────────────────────────────────────────
+ * WCAG 2.2 SC 2.5.8 (AA) puts the minimum interactive target at 24x24 CSS px.
+ * A device sweep (iPhone 14 Pro, Pixel 7, iPad gen 7) found three controls
+ * under it: the x0/y0 steppers at 25x20, and the "Take the tour" / "Sign in
+ * here" text buttons at 23px tall. Nothing else on the page failed — no
+ * horizontal scroll, the plot sized correctly, and the simulation ran to
+ * convergence on all three.
+ *
+ * Applied only under `pointer: coarse` so the desktop layout is byte-identical:
+ * a mouse hits a 20px target fine, a thumb does not. The stepper pair grows to
+ * 48px total, which still fits inside the 50px-tall start-point field, so
+ * nothing reflows. */
+@media (pointer: coarse) {
+  .tap-24 {
+    min-width: 24px;
+    min-height: 24px;
+  }
+
+  /* Text and number fields sat at 23px — one pixel under, but under. The
+   * payoff-matrix cells are the most-tapped controls in the app. */
+  input[type="text"],
+  input[type="number"],
+  input[inputmode="decimal"] {
+    min-height: 24px;
+  }
+
+  /* Range sliders were the worst offenders: the styled track is 5px tall, and
+   * for a range input the track IS the target — there is no larger hit area
+   * behind it. Give the ELEMENT height for the thumb to be caught in while
+   * leaving the track's own painted height alone, so the control looks
+   * unchanged and simply becomes catchable. */
+  input[type="range"] {
+    min-height: 24px;
+  }
+}

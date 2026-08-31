@@ -17,6 +17,7 @@
  */
 
 import { GamePayoffs } from './types';
+import { isCameraRelayout } from './components/PlotlyView';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import { readFileSync as readFileForContract } from 'node:fs';
 import {
@@ -451,6 +452,45 @@ function testGroundingPayload() {
     'sub-resolution payload must never call a probability a terminal 0 or 1');
 }
 
+
+function testCameraRelayoutPredicate() {
+  // Plotly reports camera interaction with GRANULAR keys. This is the whole
+  // defect: the listener tested for 'scene.camera', which Plotly never emits,
+  // so the stored pose stopped tracking the user's view and every Plotly.react
+  // shipped a stale camera. A wheel/pinch ZOOM is the interaction that made it
+  // visible — it arrives as 'scene.camera.eye' and nothing else.
+  const mustSync: Array<[Record<string, unknown>, string]> = [
+    [{ 'scene.camera.eye': { x: 1, y: 1, z: 1 } }, 'a drag or a wheel zoom (the real-world payload)'],
+    [{ 'scene.camera': { eye: { x: 1, y: 1, z: 1 } } }, 'a whole-camera relayout'],
+    [{ 'scene.camera.eye.x': 1.5 }, 'a single-component update'],
+    [{ 'scene.camera.center': { x: 0, y: 0, z: 0 } }, 'a pan, which moves center rather than eye'],
+    [{ 'scene.dragmode': 'turntable', 'scene.camera.eye': { x: 1, y: 1, z: 1 } }, 'a camera key alongside others'],
+  ];
+  for (const [payload, why] of mustSync) {
+    assert(isCameraRelayout(payload),
+      `isCameraRelayout must return true for ${why}: ${JSON.stringify(payload)}`);
+  }
+
+  const mustNotSync: Array<[Record<string, unknown> | null | undefined, string]> = [
+    [{ 'scene.dragmode': 'turntable' }, 'rebinding the drag controller'],
+    [{ width: 800, height: 600 }, 'a resize'],
+    [{ 'scene.annotations': [] }, 'tour callouts'],
+    [{}, 'an empty payload'],
+    [null, 'null'],
+    [undefined, 'undefined'],
+    // Guards the boundary between the exact key and the dotted prefix: a key
+    // that merely STARTS WITH the string but is a different attribute must not
+    // count, or the predicate would resync on unrelated scene changes.
+    [{ 'scene.cameraFoo': 1 }, 'a different attribute sharing the prefix'],
+  ];
+  for (const [payload, why] of mustNotSync) {
+    assert(!isCameraRelayout(payload),
+      `isCameraRelayout must return false for ${why}: ${JSON.stringify(payload)}`);
+  }
+
+  console.log('✓ camera relayout predicate: granular scene.camera.* keys count as camera changes');
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 16. COLOR-CODING TERM PARITY
 //
@@ -631,6 +671,7 @@ function runUnitTests() {
   testGroundingPayload();
   testColorTermParity();
   testUserColorTerms();
+  testCameraRelayoutPredicate();
   console.log('All unit tests passed.');
 }
 

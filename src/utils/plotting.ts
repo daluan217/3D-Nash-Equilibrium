@@ -59,8 +59,39 @@ export function makeTraces(
   // spheres so the size hierarchy reads ghost < sphere < diamond at every
   // breakpoint.
   const ghostSize = isMobile ? 5 : 6.5;
-  const px = s.displayX ?? s.cx;
-  const py = s.displayY ?? s.cy;
+  // GEOMETRY comes from the exact coordinate, never the r3-rounded one.
+  //
+  // cx/displayX are rounded for READOUT. Positioning a marker with them puts
+  // the current-position sphere up to 5e-4 away from where the simulation
+  // actually is — and at convergence that is 5e-4 away from the NE diamond,
+  // which sits on the exact equilibrium. Two visible symptoms came from it:
+  // the sphere and the diamond were plainly not concentric at convergence, and
+  // because their depths then differed by a hair instead of being identical,
+  // the depth test flipped between frames at some camera angles and the sphere
+  // flickered inside the diamond. types.ts says it directly: display from
+  // cx/cy, decide anything true from exactX/exactY — and where a marker sits
+  // in space is a truth, not a display.
+  let px = s.exactX ?? s.displayX ?? s.cx;
+  let py = s.exactY ?? s.displayY ?? s.cy;
+  // At CONVERGENCE, pin the marker to the equilibrium it converged on.
+  //
+  // Every step's coordinate goes through r3 for readout, and the next step is
+  // computed from that rounded value, so the settled position sits up to 5e-4
+  // from the exact equilibrium. The NE diamond is drawn on the exact
+  // coordinate, so the two markers were visibly off-centre — and, being at
+  // slightly different depths rather than the same one, which of them won the
+  // depth test flipped as the idle spin orbited the camera. That is the
+  // flicker: the sphere blinking inside the diamond while the graph turns.
+  //
+  // 1e-3 is deliberately just above r3's worst case (5e-4): it can only ever
+  // absorb the rounding the pipeline itself introduced, never bridge a real
+  // gap between where the run stopped and where the equilibrium is. The run
+  // has already declared it converged on this equilibrium; at a distance the
+  // readout cannot express, drawing them as one point is what that means.
+  if (s.converged) {
+    const settled = allNE.find((n) => Math.abs(n.x - px) < 1e-3 && Math.abs(n.y - py) < 1e-3);
+    if (settled) { px = settled.x; py = settled.y; }
+  }
   // Current-position sphere z: use the SAME unrounded EA/EB the NE diamond uses
   // (not r3-rounded). At convergence the sphere and diamond share coordinates, so
   // matching the z computation makes their depths bit-identical — then draw order

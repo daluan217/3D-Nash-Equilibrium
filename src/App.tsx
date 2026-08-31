@@ -2741,7 +2741,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setTourOpen(true)}
-                className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                className="tap-24 font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
               >
                 Take the tour
               </button>
@@ -2899,7 +2899,7 @@ export default function App() {
                     setAuthMode('login');
                     setIsAuthModalOpen(true);
                   }}
-                  className="font-bold text-accent-600 dark:text-accent-400 hover:underline cursor-pointer"
+                  className="tap-24 font-bold text-accent-600 dark:text-accent-400 hover:underline cursor-pointer"
                 >
                   Sign in here
                 </button>
@@ -3146,7 +3146,7 @@ export default function App() {
                       tabIndex={-1}
                       aria-label="Increase x₀"
                       onClick={() => stepStartPoint('x', 1)}
-                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-a-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                      className="tap-24 flex items-center justify-center px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-a-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                     >
                       <ChevronUp className="w-3 h-3" />
                     </button>
@@ -3155,7 +3155,7 @@ export default function App() {
                       tabIndex={-1}
                       aria-label="Decrease x₀"
                       onClick={() => stepStartPoint('x', -1)}
-                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-a-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                      className="tap-24 flex items-center justify-center px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-a-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                     >
                       <ChevronDown className="w-3 h-3" />
                     </button>
@@ -3184,7 +3184,7 @@ export default function App() {
                       tabIndex={-1}
                       aria-label="Increase y₀"
                       onClick={() => stepStartPoint('y', 1)}
-                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-b-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                      className="tap-24 flex items-center justify-center px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-b-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                     >
                       <ChevronUp className="w-3 h-3" />
                     </button>
@@ -3193,7 +3193,7 @@ export default function App() {
                       tabIndex={-1}
                       aria-label="Decrease y₀"
                       onClick={() => stepStartPoint('y', -1)}
-                      className="px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-b-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                      className="tap-24 flex items-center justify-center px-1 py-0.5 rounded-md leading-none text-slate-400 hover:text-player-b-500 hover:bg-slate-200/70 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                     >
                       <ChevronDown className="w-3 h-3" />
                     </button>
