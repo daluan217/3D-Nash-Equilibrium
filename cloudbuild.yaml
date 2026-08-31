@@ -25,7 +25,22 @@ steps:
       - '--region=us-east1'
       - '--platform=managed'
       - '--allow-unauthenticated'
-      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},ADMIN_SECRET=${_ADMIN_SECRET},AUTH_SECRET=${_AUTH_SECRET},TRUST_PROXY=${_TRUST_PROXY},AZURE_FOUNDRY_ENDPOINT=${_AZURE_FOUNDRY_ENDPOINT},AZURE_FOUNDRY_API_KEY=${_AZURE_FOUNDRY_API_KEY},REPORT_MODEL=${_REPORT_MODEL}'
+      # ⚠️  --set-env-vars REPLACES the service's ENTIRE env list on every
+      # deploy; it does NOT merge with what the running service already has.
+      # Anything missing from this one line is DELETED from production the
+      # moment a commit lands on main. On 2026-08-31 a hand-run
+      # `gcloud run services update --set-env-vars` proved this the hard way:
+      # 12 minutes with no AUTH_SECRET/SMTP/GCS in prod. This line is the
+      # single source of truth for the service's environment, and
+      # src/cloudbuild.contract.test.ts fails the build if it ever drifts
+      # from deploy/cloudrun-env-manifest.txt.
+      #
+      # The NASH_* report flags are deliberately LITERAL, not substitutions:
+      # they are feature flags, not secrets, and a literal cannot be silently
+      # blanked by an empty value in the Cloud Build trigger UI — which is
+      # exactly how REPORT_MODEL sat empty in prod (falling back to
+      # gpt-5.4-mini) while everyone believed the configured model was live.
+      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_USER=${_SMTP_USER},SMTP_PASS=${_SMTP_PASS},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},ADMIN_SECRET=${_ADMIN_SECRET},AUTH_SECRET=${_AUTH_SECRET},TRUST_PROXY=${_TRUST_PROXY},AZURE_FOUNDRY_ENDPOINT=${_AZURE_FOUNDRY_ENDPOINT},AZURE_FOUNDRY_API_KEY=${_AZURE_FOUNDRY_API_KEY},REPORT_MODEL=${_REPORT_MODEL},NASH_PAYOFF_TEMPLATE=1,NASH_LLM_TIES=template,NASH_DIRECTION_CHECKS=1'
       - '--memory=512Mi'
       - '--cpu=1'
       - '--timeout=3600'
@@ -66,6 +81,11 @@ substitutions:
   # confirm the model path is actually reachable.
   _AZURE_FOUNDRY_ENDPOINT: ''
   _AZURE_FOUNDRY_API_KEY: ''
-  # Optional per-deploy override of the report model. Empty falls back to
-  # DEFAULT_MODEL in src/utils/report.ts (gpt-5.4-nano, chosen from eval data).
-  _REPORT_MODEL: ''
+  # The report model. gpt-5.6-luna is what production runs (rung-3 scenario
+  # invention); it is NOT a secret, so the real value lives here in review,
+  # not in the trigger UI. An EMPTY value here or in the Cloud Build trigger
+  # silently falls back to DEFAULT_MODEL in src/utils/report.ts — invisible
+  # from the outside, which is how prod ran gpt-5.4-mini unnoticed. If the
+  # trigger UI still defines _REPORT_MODEL, its value WINS over this default:
+  # clear it there, or keep the two in sync.
+  _REPORT_MODEL: 'gpt-5.6-luna'

@@ -1,0 +1,43 @@
+# Cloud Run service environment — the authoritative list of variable NAMES.
+#
+# WHY THIS FILE EXISTS
+# cloudbuild.yaml deploys with `--set-env-vars`, which REPLACES the service's
+# entire environment on every push to main rather than merging into it. A name
+# dropped from that one line is deleted from production silently, and nothing
+# in the app fails loudly — auth degrades, mail stops, the report surface falls
+# back a rung. That happened on 2026-08-31 (12 minutes of production with no
+# AUTH_SECRET/SMTP/GCS) and it had a latent twin: cloudbuild.yaml carried only
+# 13 of the 16 names the live service was actually running.
+#
+# src/cloudbuild.contract.test.ts compares this list against the deploy line in
+# cloudbuild.yaml on every CI run and fails when they disagree in either
+# direction. Adding a variable to the service means adding it in BOTH places.
+#
+# NAMES ONLY. Never record a value here — several of these are secrets, and
+# this file is public.
+
+# --- runtime ---
+NODE_ENV
+TRUST_PROXY
+
+# --- auth + storage (secret-bearing) ---
+AUTH_SECRET
+ADMIN_SECRET
+GCS_BUCKET_NAME
+
+# --- outbound mail (secret-bearing) ---
+SMTP_HOST
+SMTP_PORT
+SMTP_USER
+SMTP_PASS
+SMTP_FROM
+
+# --- model provider (secret-bearing) ---
+AZURE_FOUNDRY_ENDPOINT
+AZURE_FOUNDRY_API_KEY
+
+# --- report surface (rung-3 config; NOT secret) ---
+REPORT_MODEL
+NASH_PAYOFF_TEMPLATE
+NASH_LLM_TIES
+NASH_DIRECTION_CHECKS
