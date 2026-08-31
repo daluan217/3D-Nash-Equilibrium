@@ -299,6 +299,33 @@ is CORRECT and simply never meets its trigger. The defence differs too: the
 first four are caught by a known-positive fixture, which this fix has and passes.
 Only measuring the gate's REACH against real model output catches this one.
 
+### HAZARD: an instrument mistaken for a gate (sixth instance of the theme)
+
+RED 2 advised blue to stand down on the F1-vocab defect — those five claim
+sentences were "already caught" by an existing meta-reference screen. Blue ran
+all five through the real gate on an all-mismatch matrix: **five for five REACH
+THE USER**, and no such screen exists in `nashValidator.ts`, `report.ts` or
+`server.ts`.
+
+Red then diagnosed it themselves, and the diagnosis is the valuable part: the
+"meta-reference, 11.9% local / 6.3% cloud" screen is a detector in
+`_gen/rt2_analyze.mjs` — their own probe. After a day of quoting its rate they
+had come to think of it as something that exists in the product.
+
+Sixth instance of this round's theme, and the sharpest, because the other five
+at least pointed at real code. This pointed at a scratch file and carried a
+recommendation to stop work. Had blue taken it, five claim-bearing scenarios
+would have stayed uncovered under a log note saying they were handled.
+
+**The hazard is sharpest for THIS branch**, which owns both the batteries and
+the gates. `_gen/redteam_local.mjs` reports nine finding classes and exactly ONE
+of them — "SHIPPING GATE rejects" — is product coverage; the other eight are
+measurements that reject nothing. That distinction is now written into the file's
+header rather than left implicit in a class name.
+
+RULE ADOPTED: never answer "is that covered?" from an instrument. Run the input
+through the gate. It is three lines, and nobody wrote them.
+
 ### F1-vocab, filed for a later window (red's boundary, with data)
 
 Splitting "coordinate" by WHAT is coordinated, against equilibrium shape:
@@ -314,6 +341,15 @@ gating it would be precisely the word list that risks rejecting correct output.
 The MOVES form is 9.1% where matching is false against 1.3% where it is true, a
 7x skew concentrated where it misleads. That is the defensible boundary: the
 thing coordinated is the players' own MOVES, not a noun in the world.
+
+Controls the screen must satisfy, if a later window takes it — the third is
+RED 2's, and is the specific false positive their own data predicts:
+  1. "are coordinating a joint experiment" PASSES on any matrix (the flat ACTIVITY form)
+  2. "the two players coordinate their choices" CAUGHT on all-mismatch, PASSES on all-match
+  3. "A shipyards and a harbor coordinator are coordinating dredging operations for a
+     shared canal" PASSES on every matrix — a job title AND a named-actor coordination
+     verb in one sentence, the shape a subject-based regex over-reaches into if the
+     subject pattern is loosened to allow a preceding noun phrase
 
 Not implemented this window — changing vocabulary and shape predicate together
 would leave any new false positive unattributable.

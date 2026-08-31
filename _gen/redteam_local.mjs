@@ -12,6 +12,29 @@
  * finding is a fact and a fix is verifiable. Findings are reported per class
  * with the offending text, because a rate without an example is not actionable.
  *
+ * ── THIS FILE IS AN INSTRUMENT. IT GATES NOTHING. ──────────────────────────
+ *
+ * Exactly ONE class below reports product coverage: "SHIPPING GATE rejects",
+ * which calls validateScenario / scenarioIsClaimFree / validateProseDirections
+ * and reports what the REAL gate did. Every other class — article errors,
+ * doubled words, missing terminal punctuation, shared option names, ignored
+ * domain — is a MEASUREMENT of what the model produces. None of them rejects
+ * anything. A draw this file flags still ships unless the gate independently
+ * refused it.
+ *
+ * Spelled out because the confusion is live and cost real work this round. RED 2
+ * told blue that a defect class was "already caught" by a meta-reference screen;
+ * blue ran the five sentences through the real gate and all five reached the
+ * user. The screen was a detector in red's own scratch directory that had never
+ * rejected anything — a measurement instrument remembered, after a day of
+ * quoting its rate, as a thing that exists in the product. Same shape as the
+ * validator guard whose inputs the schema forbids, and the prompt clause that
+ * demands them: an instruction, or an observation, mistaken for a gate.
+ *
+ * The hazard is sharpest for whoever maintains BOTH the batteries and the
+ * gates, which is this branch's remit. RULE: never answer "is that covered?"
+ * from this file. Run the input through the gate — it is three lines.
+ *
  *   LOCAL_URL=http://localhost:8099/v1/chat/completions N=120 npx tsx _gen/redteam_local.mjs
  */
 import { readFileSync } from 'node:fs';
