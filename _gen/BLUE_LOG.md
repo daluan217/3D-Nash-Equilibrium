@@ -248,9 +248,11 @@ draw from doing it again.
 **Offline-only.** The cloud path sends `strict: true` with
 `additionalProperties: false`, which rejects both the missing `col2` and the
 invented `day1`/`day2`. The local llama-server is not a strict structured-outputs
-provider, so the schema's `required` is advisory there. Rate 1 in 303 gate-passing
-local draws (0.33%) — one occurrence, so an order of magnitude, not a number;
-but the mechanism is not rate-dependent, since any misspelled JSON key lands here.
+provider, so the schema's `required` is advisory there. Rate 1 in **341**
+gate-passing local draws (0.3%) — RED 1's corpus-1 job finished after they filed,
+so their first denominator (318) was a partial file; corrected here at source.
+One occurrence, so an order of magnitude and not a number — but the mechanism is
+not rate-dependent, since any misspelled JSON key lands in the same place.
 
 ### RED 2's "Skilift" determinism — REFUTED, and the real defect is worse
 
@@ -293,6 +295,33 @@ through the letter form, which nobody screens because it was assumed
 unambiguous. **Consequence: "add actorA/actorB to the schema so the guard runs"
 cannot be justified by F12** — the one real instance would still pass. The
 letter form is separately decidable and *easier* to check (no actor mapping).
+
+### RED 3 F6 — Express and llama-server both bind :14322; the window loads llama.cpp
+
+Kept here because the guard spec is the interesting part and it generalises.
+
+`server.ts startListening()` retries `port+1` on EADDRINUSE when `IS_ELECTRON`,
+starting at 14321 — and the first fallback step is 14322, which is
+`LLAMA_PORT`. The two do NOT conflict, because the addresses differ: llama binds
+`127.0.0.1:14322`, Node binds `0.0.0.0:14322` with SO_REUSEADDR, and `lsof`
+shows both LISTENing at once. BSD prefers the specific bind on loopback, and
+`createWindow` does `loadURL('http://127.0.0.1:' + finalPort)` — so the window's
+request is answered by **llama.cpp's static web UI**. Electron logs no error
+because the load succeeds.
+
+**Why the obvious assertion would not catch it, and this is the point:** the OS
+reports no conflict — both binds SUCCEED. So "Express is not on the llama port",
+"the port is listening", or any connect-only probe all PASS while the defect is
+present. The only assertion that catches it is on the RESPONSE: after startup, a
+request to the port the window will actually load must be answered by *the app*
+(`/api/health` returning the app's shape), not merely connect.
+
+That is the third member of this round's recurring theme — a guard that looks
+present and is not — alongside the dead actorA/actorB check and the `fmtPayoff`
+no-op. All three would be reported green by a plausible test.
+
+Trigger for a regression test needs BOTH ports occupied simultaneously (two
+macOS accounts in the real world; `--user-data-dir` reproduces it).
 
 ### Measurement hygiene: latency in this window is VOID
 
