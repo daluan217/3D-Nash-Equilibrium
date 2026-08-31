@@ -430,6 +430,18 @@ export function fmtPayoff(v: number): string {
   return Object.is(s, -0) ? '0' : s.toFixed(3);
 }
 
+/**
+ * fmtPayoff for a MathTex context.
+ *
+ * fmtPayoff can return words ("less than 0.001"), and words dropped into a
+ * LaTeX string render as run-together italics. Wrap those in \\text{} and leave
+ * genuine numbers bare.
+ */
+export function texPayoff(v: number): string {
+  const s = fmtPayoff(v);
+  return /^-?[\d.]+$/.test(s) ? s : `\\text{${s}}`;
+}
+
 // NOTE (adversarial round 1, 2026-08-29): the mixed NE is reported at 3-dp
 // ROUNDED coordinates, and eA/eB are the expected payoffs AT THAT ROUNDED
 // PROFILE — so the tuple (x, y, eA, eB) is self-consistent, which `npm test`'s

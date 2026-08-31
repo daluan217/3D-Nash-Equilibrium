@@ -28,7 +28,7 @@ import {
   computeMixedNE, computeAllNE, fmtProb, texProb,
   profileConcept, resolveProfile, indifferenceAt,
   equilibriumSet, kindOf, describeContinua,
-  computeIndifference, generateRandomGame, fmtPayoff,
+  computeIndifference, generateRandomGame, fmtPayoff, texPayoff,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { tieProse } from './utils/tieProse';
@@ -580,6 +580,25 @@ function testColorTermParity() {
   assert(messy.a.includes('Flood Plan') && messy.b.includes('Divert'),
     'options owned by exactly one player keep their colour');
 
+  // A scenario that names one of A's options literally "Col 1" must not strip
+  // B's structural cue: the ambiguity is the scenario's, and the notation is
+  // the only unambiguous signal the reader has left.
+  const collide = colorTermsFor({ row1: 'Col 1', row2: 'Hold', col1: 'Col 1', col2: 'Divert' });
+  for (const t of STRUCTURAL_B_TERMS) assert(collide.b.includes(t),
+    `structural cue "${t}" must survive a scenario label that collides with it`);
+  for (const t of STRUCTURAL_A_TERMS) assert(collide.a.includes(t),
+    `structural cue "${t}" must survive a colliding scenario label`);
+  // The scenario's own colliding label drops from BOTH sides; what remains is
+  // the structural cue alone, and only for the player it structurally belongs
+  // to. So A — whose structural cues are Row 1/Row 2 — ends up with no
+  // "Col 1" at all, and B keeps exactly one: the notation, not the label.
+  assert(!collide.a.includes('Col 1'),
+    `A must not carry "Col 1": its colliding label dropped and it has no structural cue of that name (got ${JSON.stringify(collide.a)})`);
+  assert(collide.b.filter((t) => t === 'Col 1').length === 1,
+    `B must keep exactly one "Col 1" — the structural cue — not the label too (got ${JSON.stringify(collide.b)})`);
+  assert(collide.a.includes('Hold') && collide.b.includes('Divert'),
+    'non-colliding labels are unaffected');
+
   console.log('✓ color-coding term parity: card and saved description derive identical terms');
 }
 
@@ -762,6 +781,16 @@ function testFmtPayoffSubResolution() {
     assert(!/^-?0(\.0+)?$/.test(got),
       `fmtPayoff(${v}) rendered a nonzero payoff as "${got}", which claims it is zero`);
   }
+  // Words dropped bare into a LaTeX string render as run-together italics, so
+  // the MathTex sites need the prose form wrapped and genuine numbers left
+  // alone.
+  assert(texPayoff(-33.333) === '-33.333', 'texPayoff leaves a number bare for LaTeX');
+  assert(texPayoff(0) === '0', 'texPayoff leaves an exact zero bare');
+  assert(texPayoff(0.0003333) === '\\text{less than 0.001}',
+    `texPayoff must wrap prose for LaTeX, got "${texPayoff(0.0003333)}"`);
+  assert(texPayoff(-0.0003333) === '\\text{greater than -0.001}',
+    `texPayoff must wrap prose for LaTeX, got "${texPayoff(-0.0003333)}"`);
+
   console.log('✓ fmtPayoff: sub-resolution payoffs never render as zero');
 }
 

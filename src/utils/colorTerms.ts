@@ -46,15 +46,24 @@ export function colorTermsFor(
   actorA: readonly string[] = [],
   actorB: readonly string[] = [],
 ): { a: string[]; b: string[] } {
-  const a: string[] = [...STRUCTURAL_A_TERMS];
-  const b: string[] = [...STRUCTURAL_B_TERMS];
+  // Ambiguity is resolved over the SCENARIO's own words only. The structural
+  // cues are added afterwards and are never filtered: a scenario that labels
+  // one of A's options literally "Col 1" would otherwise make "Col 1" look
+  // shared and strip B's built-in notation cue — losing the one unambiguous
+  // signal the reader has, to resolve an ambiguity the scenario invented.
+  const aScenario: string[] = [];
+  const bScenario: string[] = [];
   if (sc) {
-    for (const t of [sc.row1, sc.row2]) if (t) a.push(t);
-    for (const t of [sc.col1, sc.col2]) if (t) b.push(t);
-    a.push(...actorA);
-    b.push(...actorB);
+    for (const t of [sc.row1, sc.row2]) if (t) aScenario.push(t);
+    for (const t of [sc.col1, sc.col2]) if (t) bScenario.push(t);
+    aScenario.push(...actorA);
+    bScenario.push(...actorB);
   }
-  return dropAmbiguous(a, b);
+  const scoped = dropAmbiguous(aScenario, bScenario);
+  return {
+    a: [...STRUCTURAL_A_TERMS, ...scoped.a],
+    b: [...STRUCTURAL_B_TERMS, ...scoped.b],
+  };
 }
 
 /**

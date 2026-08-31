@@ -35,6 +35,7 @@ import {
   replayToStep,
   type ThinSnapshot,
   fmtPayoff,
+  texPayoff,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -3573,10 +3574,10 @@ export default function App() {
                   <MathTex tex={`y^* = ${texProb(resolved.y)}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[A] = ${r3(EA(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[A] = ${texPayoff(EA(resolved.x, resolved.y, payoffs))}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[B] = ${r3(EB(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[B] = ${texPayoff(EB(resolved.x, resolved.y, payoffs))}`} />
                 </span>
               </div>
 
@@ -3614,7 +3615,7 @@ export default function App() {
                         NOUN still claimed "optimal pure NE payoff" on runs that
                         settled at a profile that is not a pure NE at all. Say
                         what actually happened. */}
-                    Mover priority settled. Player {(runCtx?.firstMover ?? firstMover) === 'A' ? 'A' : 'B'} moved first and realised {((runCtx?.firstMover ?? firstMover) === 'A' ? EA(resolved.x, resolved.y, payoffs) : EB(resolved.x, resolved.y, payoffs)).toFixed(3)}.
+                    Mover priority settled. Player {(runCtx?.firstMover ?? firstMover) === 'A' ? 'A' : 'B'} moved first and realised {fmtPayoff((runCtx?.firstMover ?? firstMover) === 'A' ? EA(resolved.x, resolved.y, payoffs) : EB(resolved.x, resolved.y, payoffs))}.
                   </div>
                 )}
               </div>
@@ -3640,7 +3641,7 @@ export default function App() {
                       <span className={`font-semibold ${ne.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400' : 'text-slate-800 dark:text-slate-100'}`}>
                         <ColorCoded text={ne.label} />
                       </span>{' '}
-                      with values <ColorCoded text={`E[A]=${ne.eA.toFixed(3)}, E[B]=${ne.eB.toFixed(3)}`} />
+                      with values <ColorCoded text={`E[A]=${fmtPayoff(ne.eA)}, E[B]=${fmtPayoff(ne.eB)}`} />
                     </li>
                   ))}
                   {continua.map((line, idx) => (
