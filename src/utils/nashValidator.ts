@@ -249,15 +249,65 @@ function checkGeometry(
     },
     {
       kind: 'geometry-bad-shelf',
-      // yStarInRange is false when twistA is 0 (yStar is NaN), so this single
-      // predicate covers both ways a shelf can fail to exist.
+      // THE FIELD THIS READS IS NOT `yStarInRange`, AND THAT IS THE FIX.
+      //
+      // The comment that stood here said `yStarInRange` "covers both ways a
+      // shelf can fail to exist". There is a THIRD way, and in it the shelf does
+      // not fail to exist — it is EVERYTHING. When twistA is 0 AND a11 === a21,
+      // A's surface is level along A's own axis at every y, so the whole board
+      // is a shelf; yStar is NaN, `yStarInRange` is false, and this row used to
+      // REJECT A TRUE CLAIM. Verified against the payoff definition rather than
+      // against the predicate: a=[[-5,-1],[-5,-1]] gives dE_A/dx = 0 at every y.
+      //
+      // Measured against sign-change ground truth read off E_A/E_B: the old
+      // predicate was wrong 0.273% of the time on int[-9,9] and 2.023% on
+      // int[-3,3]; `hasFlatShelfForA` is wrong 0 of 600,000 across three
+      // alphabets and identical wherever twistA is non-zero.
+      //
+      // THE TWO HALVES HAD TO LAND TOGETHER. geometry.ts's briefing states the
+      // same fact from the same predicate, so correcting only this row would
+      // have turned a false rejection into a false rejection the other way — the
+      // model told there is no shelf, then failed for agreeing. The predicate
+      // moved first (BLUE-MATH), and this row follows it in the same branch.
       claimed: claims.hasFlatShelfForA,
-      actual: geo.yStarInRange,
+      actual: geo.hasFlatShelfForA,
       yes: 'A has a flat shelf on the board',
       no: 'A has no flat shelf on the board',
     },
     {
       kind: 'geometry-bad-flatspot',
+      // NO EDIT NEEDED HERE, BECAUSE THE FIELD ITSELF WAS REDEFINED.
+      // `hasInteriorFlatSpot` was `inUnit(xStar) && inUnit(yStar)`, so when
+      // twistB is 0 and B is level along its own axis EVERYWHERE, xStar is NaN
+      // and a real joint flat spot read as none. a=[[-2,2],[4,-5]]
+      // b=[[3,3],[4,4]]: both surfaces are level at (any x, 7/13) and both
+      // regrets are zero there, and this row rejected the true claim. It is now
+      // `hasFlatShelfForA && hasFlatShelfForB`, wrong 0 of 600,000 against the
+      // same independent ground truth.
+      //
+      // HOW MUCH THE FIELD ACTUALLY MOVED, since a redefined field invalidates
+      // reach numbers measured against the old one. Before -> after, and the
+      // share of rows whose value CHANGED:
+      //   int[-9,9]  20.18% -> 20.43%,  0.247% moved
+      //   int[-3,3]  13.48% -> 15.03%,  1.557% moved
+      //   int[-1,1]   4.87% -> 11.10%,  6.231% moved
+      // and on `generateRandomGame`, the distribution the "New random game"
+      // button actually produces, it does not move AT ALL: 0.000% of rows change
+      // value on kind='pure' (level 14.74%), on kind='mixed' (level 100%), and
+      // on the 50/50 mix the button issues (level 56.75%), 40,000 draws each.
+      // That sampler rejects within-player ties, which is the same fact that
+      // makes the degenerate class unreachable there. The change is real on
+      // hand-typed matrices and NULL on generated ones.
+      //
+      // AN EARLIER VERSION OF THIS COMMENT SAID "0.00 points across all four
+      // kinds", WHICH WAS COVERAGE THIS MEASUREMENT DID NOT HAVE.
+      // `generateRandomGame` takes `'pure' | 'mixed'` and its body reads
+      // `kind === 'mixed' ? … : pureCount > 0`, so every other string lands in
+      // the 'pure' arm. I passed four invented names and measured ONE arm four
+      // times; the four matching 14.0% readings looked like agreement and were
+      // the same number. Re-run on the real arms, verified by passing a bogus
+      // kind and watching it reproduce the 'pure' level exactly. The 0.000%
+      // change survived; the word "four" did not.
       claimed: claims.equilibriumIsInteriorFlatSpot,
       actual: geo.hasInteriorFlatSpot,
       yes: 'the equilibrium is an interior joint flat spot',
@@ -560,8 +610,102 @@ const META_GAME_CAST = /\b(?:the\s+two\s+players|both\s+players|each\s+player)\b
 // and 0.0% cloud, and the only two draws it uniquely catches are already caught
 // by another form. W5's D4 refusal is the precedent: a zero rate is not grounds
 // for including a word whose shape collides.
+/**
+ * THE CAST NOUN IN A GAME-THEORETIC CONSTRUCTION — the exclusion above, kept,
+ * with the leak it was letting through now closed.
+ *
+ * The comment above is still right that the bare noun collides, and this rule
+ * does not reopen it. What it adds is the five constructions in which "player"
+ * cannot mean a performer: "the row player", "the first player", "X are the
+ * players", "the players' decisions", "either player". All are user-visible and
+ * gate-clean today:
+ *
+ *   "The players are two rival truffle cooperatives sharing access to a
+ *    high-value forest…"
+ *   "Two textile firms booking capacity at the same dyehouse are the players."
+ *   "Farmer A (the row player) chooses whether to plant Wheat or Barley."
+ *
+ * THE ARGUMENT FOR THE NARROW FORM RATHER THAN THE BARE NOUN IS A MEASUREMENT,
+ * not a preference. Over 7,989 unique draws that pass all three shipping gates,
+ * pooled from every corpus either team holds, the narrow form finds 19 and the
+ * bare noun finds the SAME 19 — hand-read, all 19 genuine register leaks, zero
+ * false positives either way. So refusing the collision costs nothing HERE.
+ *
+ * It is not free everywhere, and the two surfaces are priced differently on
+ * purpose. Over the wider pool that includes gate-FAILING output the bare noun
+ * finds 14 more ("Each player's choice concerns…", "the game's two-player,
+ * normal-form setup"), all real; `_gen/trainset_screens.ts` therefore uses the
+ * BARE noun, because a build-time screen that over-fires costs one row out of
+ * ~2,300 while this gate over-firing costs a user their generation.
+ */
+const META_CAST_CONSTRUCTION =
+  /\b(?:(?:row|column|col)\s+player|(?:first|second)\s+player|the\s+players\s+are|are\s+the\s+players|players['’]\s+(?:decisions?|choices?|moves?|actions?)|either\s+player|any\s+player|each\s+of\s+the\s+players)\b/i;
+/**
+ * The verb list is WIDER than it was, and the lookbehind is what makes that
+ * safe. Over the same 7,989 gate-passing draws the shipped list finds 0 and the
+ * widened one finds 3, all hand-read, all genuine, all local-model: "A manages
+ * a protected site and chooses between Patrol and Stay back", "A manages a gate
+ * and chooses whether to Open Gate or Close Gate", "A manages North Ridge
+ * Vineyard, while B manages South Ridge Vineyard".
+ *
+ * THE LOOKBEHIND IS LOAD-BEARING UNDER THE WIDENING, measured rather than
+ * assumed: dropping it takes those 3 to 743, and the 740 extra are the shape
+ * this file has always deliberately allowed — "Grower A chooses Early heat",
+ * "Foundry A chooses between Rush Casting", "Team A chooses between an Early
+ * Sweep". A capitalised noun in front of the letter makes it a designation.
+ */
 const META_BARE_LETTER =
-  /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have)\b/u;
+  /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have|books?|takes?|runs?|schedules?|sets?|opts?|holds?|weighs?|operates?|faces?|uses?|goes?|plans?|manages?|serves?|considers?)\b/u;
+/**
+ * THE BARE LETTER AS SUBJECT WITH ITS ROLE DEMOTED TO AN APPOSITIVE. Whatever
+ * verb list `META_BARE_LETTER` carries, this walks past it, because the letter
+ * is followed by a COMMA and the verb never sits where that rule looks:
+ *
+ *   "A volunteer ecologist chooses whether to conduct the bat survey during an
+ *    early or late evening window. B, THE PARK COORDINATOR, chooses whether to
+ *    assign a quiet route or a busy route for that night's survey."
+ *
+ * 21 of 8,194 unique gate-passing draws (0.256%), hand-read, 21/21 genuine,
+ * zero false positives. Found by RED-CLOUD; re-measured here rather than taken
+ * on report. The sources are cloud throughout, the production model included.
+ *
+ * WHY THIS IS THE BAD CLASS AND "Operator A chooses" IS NOT. In all 21 the
+ * asymmetry is total: the first party gets a real character ("A satellite
+ * operator", "A hospital charge nurse", "A local beekeeper") and the second IS
+ * the letter, with its role pushed into an aside. That is a party with no
+ * character at all, not the convention where a noun is primary and the letter
+ * only disambiguates. The lookbehind is what keeps the two apart, and it is
+ * measured: it excludes exactly ONE row on the same pool, "For Farmer A, the
+ * choices are to harvest now or wait another season", which is the good shape
+ * and is pinned as the control.
+ *
+ * TWO INDEPENDENT RE-MEASUREMENTS, and the broader form is the one shipped.
+ * ORACLE proposed a narrower shape that also requires the appositive to CLOSE
+ * with a comma and be followed by a verb, and measured it at 23/12,819. That
+ * form misses "B, a partner consortium sharing the telescope allocation, is
+ * choosing…", whose appositive runs past its 40-character window; the form here
+ * catches it, and all 21 of its matches were hand-read as genuine. Both teams
+ * observed the same regularity independently and it is the reason to believe
+ * the class: every single match is the letter B, never A. The first party is
+ * fully charactered and the second is demoted, which is precisely what the
+ * symmetric "Agency A / Operator B" convention cannot look like, since that
+ * convention necessarily uses both letters.
+ *
+ * HONEST NOTE ON THE LOOKBEHIND HERE. On ORACLE's pool the guard changes
+ * nothing at all — with and without it the rule returns the same rows — so
+ * unlike `META_BARE_LETTER`, where dropping it admits 740 good draws, here the
+ * guard is a SHAPE argument plus one real row on this pool, not a broadly
+ * measured one. It is kept on the D4 precedent this file already argues: a zero
+ * rate is not grounds for dropping a guard whose shape collides.
+ *
+ * DELIBERATELY NOT GATED: the PAIR form, "Two courier firms, A and B, are
+ * bidding…", 82 draws on the same pool. It is the same appositive naming
+ * introduced symmetrically, both parties equally charactered, and if "Firm A
+ * chooses X while Firm B chooses Y" is good output then so is this. RED-CLOUD
+ * declined to propose a rule for it and flagged its own uncertainty; the number
+ * is recorded so the refusal is on file with evidence rather than as an omission.
+ */
+const META_LETTER_IN_APPOSITION = /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB],\s+(?:the|a|an)\s+\w/u;
 const GAME_THEORY_VOCAB = /\b(?:payoffs?|equilibri\w+|strateg\w+|players?|matrix|matrices|dominant|zero[\s-]sum|simultaneous\w*|normal[\s-]form|best\s+response|moves?)\b/i;
 const GAME_PRODUCT_VOCAB = /\b(?:video\s?games?|game\s+studio|game\s+developer|gaming|console|arcade|board\s+games?|playtest\w*|publisher|storefront|featured\s+slot|download\w*|app\s+store|steam)\b/i;
 
@@ -661,6 +805,32 @@ function oneActorTakesASecondDecision(desc: string): boolean {
 function secondPairHandedToAPronoun(desc: string): boolean {
   const { nouns, pronouns } = describedCast(desc);
   return pronouns.some((p) => /^(?:it|he|she)$/.test(p)) && nouns.size < 2;
+}
+
+/**
+ * The second option pair handed back to the ONE NAMED ACTOR by repeating its
+ * noun. Same defect as `secondPairHandedToAPronoun`, and it walks straight
+ * through that rule because "the same director" is a noun, not a pronoun:
+ *
+ *   "A university library director chooses between Full Expansion and Steady
+ *    Release for a new book series. THE SAME DIRECTOR chooses between Open
+ *    Review and Group Review for evaluating the same publishing deal."
+ *
+ * 3 gate-passing draws in the pooled corpora, hand-read, all defects; the other
+ * two are "The same grocer chooses…" and "The same operator chooses…".
+ *
+ * THE CLAUSE ANCHOR IS LOAD-BEARING, measured both ways. Without the
+ * `(?:^|[.;!?]\s+)` prefix the rule finds 5, and the 2 extra are the shape where
+ * "the same" modifies a SCENE noun and the subject is a genuine second party:
+ * "A second team surveying THE SAME HABITAT chooses between Early Survey and
+ * Late Survey", "A coffee importer arranging THE SAME SUPPLY chooses between
+ * Reserve Contract and Spot Contract". Both are correct output and both are
+ * pinned as negative fixtures.
+ */
+const SAME_ACTOR_SECOND_PAIR =
+  /(?:^|[.;!?]\s+)the\s+same\s+[a-z][\w'’-]{2,}\s+(?:chooses|picks|decides|selects|takes|books|opts)\b/i;
+function theSameActorTakesTheSecondPair(desc: string): boolean {
+  return SAME_ACTOR_SECOND_PAIR.test(desc);
 }
 
 /**
@@ -1009,7 +1179,9 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
   const META: [RegExp | ((t: string) => boolean), string][] = [
     [META_PROMPT_CAST, "the prompt's own cast names (\"Player A\") in the story"],
     [META_BARE_LETTER, 'a bare letter standing in for a character'],
+    [META_LETTER_IN_APPOSITION, 'a bare letter as a character with its role demoted to an aside ("B, the park coordinator, chooses…")'],
     [META_GAME_CAST, 'the game\'s cast ("the two players") named in the story'],
+    [META_CAST_CONSTRUCTION, 'the game\'s cast noun in a game-theoretic construction ("the row player", "the players are…")'],
     [namesTheGameItself, 'the game itself named as an object in the story'],
     [META_PAYOFF, 'the payoff, the mathematical object, named in the story'],
   ];
@@ -1020,6 +1192,7 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
   const STRUCTURAL: [(t: string) => boolean, string][] = [
     [oneActorTakesASecondDecision, 'a second decision given to a player who already made one'],
     [secondPairHandedToAPronoun, "a second set of options given to a pronoun when only one player is named"],
+    [theSameActorTakesTheSecondPair, "a second set of options given back to the same named actor"],
     [assertsTheSameMove, "a claim that one player's move is the same as the other's"],
   ];
   for (const [fires, why] of STRUCTURAL) if (fires(desc)) return { ok: false, reason: why };
@@ -1130,6 +1303,14 @@ const BRACE_DEBRIS = /[{}]/;
  * It is kept because it is the second signal on the BOM row and costs nothing
  * (0 false positives across ~6,700 draws), not because it can be relied on to
  * catch the next instance. The structural rules above are what carry this class.
+ *
+ * THAT IS NOW OBSERVED RATHER THAN PREDICTED. A real debris row in
+ * scenario_raw_v2 narrates itself as "Wait malformed due accidental. Need final
+ * clean. Need no extra. Ensure JSON valid." — self-talk by any reading, and NOT
+ * ONE CLAUSE of it matches this list ("Need final clean" is not "need clean
+ * JSON"). The row is still caught, but by BRACE_DEBRIS and the foreign-script
+ * rule, both of which fire on it. A second model narrating itself a second way
+ * is exactly the failure this paragraph warned about, arriving one corpus later.
  *
  * The positive is FIRST-HAND: bank row "Side-Table Touch-Up" carries "Need clean
  * JSON" in its description. It was second-hand when the rule was written — the
@@ -1664,7 +1845,28 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   // 7", "earns -3") are citations too — C2 draw 18 said "B gets … only 2 when
   // Inspect meets Publicize" (cell pays 0) with storyClaims null. Probabilities
   // and dimensions ("2x2", "0.5") are not payoffs and are skipped.
-  for (const m of desc.matchAll(/\b(?:gets?|receives?|earns?|pays?|scores?|collects?|nets?|loses?)\b[^.;\d−–-]{0,25}?([-−–]?\d+)(?![.\d×x%])/gi)) {
+  //
+  // THE LOOKAHEAD USED TO EXCLUDE A FULL STOP, which made a payoff number at the
+  // END OF A SENTENCE invisible to the rule that exists to catch payoff numbers.
+  // Measured through this function on an ANTI matrix with storyClaims null:
+  //   "…and earns 9."                -> NOT SEEN
+  //   "…and earns 9 for the season." -> caught
+  //   "…and earns 9, then leaves."   -> caught
+  //   "…and earns 9"                 -> caught
+  // One keystroke, and it is the keystroke a model puts at the end of every
+  // sentence. What the exclusion was actually protecting is decimals and
+  // dimensions, so it now says exactly that: not a longer number, not a decimal
+  // or thousands separator, not a dimension or a percentage. "earns 2.5 per run"
+  // and "earns 100%" stay skipped; "earns 9." and "earns 12 tokens" are caught.
+  //
+  // LATENT AT RUNG 3, NOT DEAD. `scenarioIsClaimFree` rejects any description
+  // containing a numeral before this rule can be the reason a draw is blocked,
+  // so today the numeral screen carries it. The bug is reachable at rungs 0/1/2,
+  // where the model writes the numbers itself — which is where the rung-3 exit
+  // criterion points — and on that day nothing would have reported it, because a
+  // rule that cannot see the defect simply returns clean. Found by ORACLE while
+  // proving this rule unreachable at rung 3, not by looking for it.
+  for (const m of desc.matchAll(/\b(?:gets?|receives?|earns?|pays?|scores?|collects?|nets?|loses?)\b[^.;\d−–-]{0,25}?([-−–]?\d+)(?!\d)(?![.,]\d)(?![×x%])/gi)) {
     const v = Number(m[1]);   // already normalised at the entry point
     if (!Number.isFinite(v)) continue;
     const allCells = [g.a11, g.a12, g.a21, g.a22, g.b11, g.b12, g.b21, g.b22];
