@@ -110,6 +110,75 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
 // ColorCoded moved to its own component so the workspace-center library
 // (MenuDrawer) can color saved-game text with the exact same rules.
 
+/**
+ * Is this report envelope one we may show and prefill from?
+ *
+ * TWO call sites ask this and they had DRIFTED, which is the whole bug. The
+ * display path was taught about 'template' when the rung-3 flag shipped; the
+ * "generate a new game" dialog was not, and kept requiring source === 'llm'.
+ * Production runs rung 3, which NEVER emits 'llm' — so that dialog threw away
+ * a perfectly good scenario on every single generation and told the user "the
+ * AI scenario isn't available right now". Not intermittent: 100%, since the
+ * flag flip.
+ *
+ * 'template' envelopes carry NO validation object, and that is correct rather
+ * than missing: their sentences are rendered from the solver, so there are no
+ * model claims left to check, and the scenario they carry was already put
+ * through validateScenario + scenarioIsClaimFree + the direction checks
+ * SERVER-SIDE before being included. Requiring `validation.ok` of them asks for
+ * a receipt from a gate that had nothing to weigh.
+ *
+ * One predicate, so the next rung cannot desynchronise them again.
+ */
+export function envelopeIsTrustworthy(env: ReportEnvelope | null | undefined): boolean {
+  if (!env?.report) return false;
+  if (env.source === 'template') return true;
+  return env.source === 'llm' && env.validation?.ok === true;
+}
+
+/**
+ * A legend swatch drawn as a shape, not typed as an emoji.
+ *
+ * The legend used 🔴 🔵 🟣 for three of its entries. Emoji are rendered by the
+ * PLATFORM's font, so they carried a shading and outline nothing on the plot
+ * has, they changed appearance between macOS, Windows and Android, and none of
+ * them could take the app's own colours in dark mode. The purple one was also
+ * simply WRONG: a mixed equilibrium is drawn on the plot as a DIAMOND, exactly
+ * like a pure one, and only the colour distinguishes them — so the legend was
+ * teaching a reader to look for a circle that is not there.
+ *
+ * Every shape here mirrors what Plotly actually draws: a diamond for both
+ * equilibrium kinds, a dashed rectangle for the domain and corridor boxes, an
+ * open ring for the translucent ghost markers, a rule for the move paths, and
+ * a soft-cornered patch for a payoff SURFACE — a surface is a sheet, so a patch
+ * reads truer than a sphere ever did.
+ *
+ * Everything is stroked and filled with `currentColor`, so each entry inherits
+ * the colour token its own text already uses and both themes come out right
+ * without a second palette to keep in step.
+ */
+function LegendSwatch({ shape }: { shape: 'surface' | 'diamond' | 'ring' | 'dashed' | 'line' }) {
+  const common = { width: 11, height: 11, viewBox: '0 0 12 12', 'aria-hidden': true as const,
+    className: 'shrink-0 overflow-visible' };
+  switch (shape) {
+    case 'surface':
+      // A patch of sheet, lightly translucent like the plotted surfaces.
+      return <svg {...common}><rect x="0.5" y="1.5" width="11" height="9" rx="2" fill="currentColor" opacity="0.85" /></svg>;
+    case 'diamond':
+      // The plot draws BOTH equilibrium kinds as diamonds; colour is the only
+      // difference, which is why this shape is shared.
+      return <svg {...common}><path d="M6 0.5 11.5 6 6 11.5 0.5 6Z" fill="currentColor" /></svg>;
+    case 'ring':
+      // Ghost markers are translucent and hollow-reading on the plot.
+      return <svg {...common}><circle cx="6" cy="6" r="4.25" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>;
+    case 'dashed':
+      return <svg {...common}><rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" strokeDasharray="2.6 2" /></svg>;
+    case 'line':
+    default:
+      return <svg {...common}><line x1="0.5" y1="6" x2="11.5" y2="6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>;
+  }
+}
+
 export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
   const isElectronMac = isElectron && window.navigator?.userAgent?.toLowerCase().includes('mac');
@@ -671,9 +740,7 @@ export default function App() {
   // validation object because there is nothing to validate: their sentences are
   // rendered from the solver, so they are grounded by construction rather than
   // by a gate. They display like a verified report.
-  const llmVerified =
-    (llmEnvelope?.source === 'llm' && llmEnvelope.validation?.ok === true && !!llmEnvelope.report)
-    || (llmEnvelope?.source === 'template' && !!llmEnvelope.report);
+  const llmVerified = envelopeIsTrustworthy(llmEnvelope);
 
   // Any edit to the game invalidates prose written about the previous one.
   useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
@@ -1319,7 +1386,7 @@ export default function App() {
       const env = (await res.json()) as ReportEnvelope;
       // Prefill only from a validated invention — an unvalidated story could
       // contradict the very equilibria the user just asked for.
-      const sc = env.source === 'llm' && env.validation?.ok ? env.report?.suggestedScenario : null;
+      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;
       if (sc) {
         setSaveName((sc.name ?? '').slice(0, 40));
         setSaveDesc((sc.description ?? '').slice(0, 800));
@@ -3340,15 +3407,15 @@ export default function App() {
 
           {/* Plot Legend Info Line */}
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-xs text-slate-500 justify-center lg:justify-start">
-            <span className="flex items-center gap-1">🔴 E[A] Surface</span>
-            <span className="flex items-center gap-1">🔵 E[B] Surface</span>
-            <span className="flex items-center gap-1 text-player-a-500 font-medium">─ A Moves</span>
-            <span className="flex items-center gap-1 text-player-b-600 font-medium">─ B Moves</span>
-            <span className="flex items-center gap-1 font-semibold text-ne-pure">◆ Pure NE</span>
-            <span className="flex items-center gap-1 text-ne-mixed-600 font-bold">🟣 Mixed NE</span>
-            <span className="flex items-center gap-1 text-emerald-600">⬚ Domain</span>
-            <span className="flex items-center gap-1 text-orange-500">⬚ Search Corridor</span>
-            <span className="flex items-center gap-1 text-orange-500">○ Ghost positions</span>
+            <span className="flex items-center gap-1 text-player-a-600 dark:text-player-a-400"><LegendSwatch shape="surface" /> E[A] Surface</span>
+            <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400"><LegendSwatch shape="surface" /> E[B] Surface</span>
+            <span className="flex items-center gap-1 text-player-a-500 font-medium"><LegendSwatch shape="line" /> A Moves</span>
+            <span className="flex items-center gap-1 text-player-b-600 font-medium"><LegendSwatch shape="line" /> B Moves</span>
+            <span className="flex items-center gap-1 font-semibold text-ne-pure"><LegendSwatch shape="diamond" /> Pure NE</span>
+            <span className="flex items-center gap-1 text-ne-mixed-600 dark:text-ne-mixed-400 font-bold"><LegendSwatch shape="diamond" /> Mixed NE</span>
+            <span className="flex items-center gap-1 text-emerald-600"><LegendSwatch shape="dashed" /> Domain</span>
+            <span className="flex items-center gap-1 text-orange-500"><LegendSwatch shape="dashed" /> Search Corridor</span>
+            <span className="flex items-center gap-1 text-orange-500"><LegendSwatch shape="ring" /> Ghost positions</span>
           </div>
 
           {/* Plotly 3D visual component */}

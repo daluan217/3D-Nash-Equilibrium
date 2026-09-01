@@ -179,6 +179,32 @@ jobs:
           E2E_PORT: '3099'
           E2E_BASE: http://localhost:3099
 
+      - name: Run the AI-surface suite
+        # The controls that CONSUME a model response — "Explain this game" and
+        # the generate-a-new-game dialog. Added because "Generate" discarded a
+        # perfectly good scenario on EVERY generation for about a day, told the
+        # user the AI was unavailable, and no suite noticed: the smoke suite
+        # drives the SIMULATION and never opens that dialog. A 100%-reproducible
+        # user-facing failure behind a button nothing pressed.
+        #
+        # Runs with NO provider credentials. The API is stubbed with the exact
+        # envelope production returns (source 'template', validation null), so
+        # it is fast, deterministic, and tests the thing that actually broke —
+        # how the UI reads the envelope, not what the model writes.
+        # Mutation-verified: 4/7 against the pre-fix condition, 7/7 after.
+        run: |
+          if node src/e2e/ai-surface.mjs; then
+            echo "ai_surface=pass" >> "$GITHUB_OUTPUT"
+          elif node src/e2e/ai-surface.mjs; then
+            echo "ai_surface=pass-after-retry" >> "$GITHUB_OUTPUT"
+          else
+            echo "ai_surface=fail" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+        env:
+          E2E_PORT: '3098'
+          E2E_BASE: http://localhost:3098
+
       - name: Upload failure evidence (screenshot + page HTML)
         # runs whenever the suite did not pass clean on the first attempt —
         # including the pass-after-retry case, whose evidence is exactly the

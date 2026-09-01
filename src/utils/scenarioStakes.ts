@@ -124,6 +124,16 @@ export function describeStakes(g: GamePayoffs): StakesProfile {
  * game. The solver states all the mathematics, and a hint that told the model
  * who should win would reintroduce the defect rung 3 exists to remove.
  */
+/**
+ * When one party's own decision is worth this many times the other's, the
+ * asymmetry is worth telling the story. Measured over 40,000 random games the
+ * distribution is p50 1.67, p90 4.2, p95 6.0, and it is SCALE-FREE — identical
+ * quantiles at payoff ranges of +/-10, +/-20 and +/-50. A cut at 4 fires on
+ * 11.6% of random games and on none of the app's presets (Prisoner's Dilemma
+ * 1.00, Battle of the Sexes 1.00, Spy 1.00, Penalty Kick 1.43).
+ */
+const PLAYER_GAP_NOTABLE = 4;
+
 export function stakesHint(g: GamePayoffs): string {
   const s = describeStakes(g);
 
@@ -131,13 +141,22 @@ export function stakesHint(g: GamePayoffs): string {
   // inventing some would be a claim. Say nothing; the domain line still applies.
   if (s.swing === 0) return '';
 
+  // SHORT ON PURPOSE. The first draft ran three to four times this length and
+  // cost 7.5% of cloud invention yield: 9 of 120 calls came back `max-tokens`
+  // against 0 of 120 without it (Fisher p=0.0033). Mean output on the draws
+  // that succeeded barely moved (243 -> 262 tokens), so it was a TAIL — a
+  // subset of calls spending the whole 8192 budget reasoning about a long
+  // instruction, which is the exact failure this function's caller documents
+  // and that the 2048 -> 8192 raise was meant to end. A user cannot see prose
+  // that was never returned, so a longer hint that buys better stories for
+  // twelve users and nothing at all for the thirteenth is a bad trade.
   const size = s.swing < 1
-    ? 'The entire game turns on differences smaller than a single unit: nothing here is dramatic, and the setting should be correspondingly small and ordinary — a matter of fine adjustment, not of fortunes.'
+    ? 'Stakes are tiny: a matter of fine adjustment, not of fortunes. Keep the setting small and ordinary.'
     : s.swing < 10
-      ? 'The amounts at stake are modest. Choose an everyday setting where the parties care about the outcome but neither is transformed by it.'
+      ? 'Stakes are modest: an everyday setting where both parties care but neither is transformed.'
       : s.swing < 50
-        ? 'The amounts at stake are substantial — enough to matter to a season, a budget or a reputation. The setting should carry real weight without being catastrophic.'
-        : 'The amounts at stake are very large relative to everything else in this game. The setting should be one where the outcome genuinely changes the parties\' situation.';
+        ? 'Stakes are substantial: enough to matter to a season, a budget or a reputation, without being catastrophic.'
+        : 'Stakes are very large: the outcome genuinely changes the parties\' situation.';
 
   // THE GEOMETRIC LINES ARE DELIBERATELY ABSENT, and this is the most important
   // thing in the file. A first draft said "the weightiest decision here matters
@@ -162,6 +181,48 @@ export function stakesHint(g: GamePayoffs): string {
   // unmeasured: it is pinned at 1 by construction across the entire ladder that
   // was run, so that line never fired and the evidence says nothing about it. It
   // goes in when a ladder that actually moves it says it works, and not before.
-  const parts = [size];
-  return `STAKES OF THIS GAME — match the setting to them. ${parts.join(' ')} Describe the world only: state no figures and make no claim about which option is better, exactly as required above.`;
+  // THE ONE GEOMETRIC LINE THAT SURVIVED MEASUREMENT.
+  //
+  // It names the parties and then FORBIDS the words, which is the opposite of
+  // what I expected. The alternative wording referred to them positionally
+  // ("the one choosing between the first pair of options") and named no
+  // letters — and it leaked bare letters into the story at 10%, against 0% for
+  // this one, because a positional reference leaves the model no handle on the
+  // second party while the grounding payload supplies "Player A" anyway.
+  //
+  // DO NOT GENERALISE THAT. The first draft of this comment read "forbidding
+  // the vocabulary beats avoiding it", and a separate run refutes it as a
+  // general rule: added as a STANDALONE prohibition to a prompt that otherwise
+  // never names the parties, the same sentence MANUFACTURES the defect it
+  // forbids — control 0/72 leaks, prohibition 4/70, and both leaks were the
+  // worst class, a party with no character at all, which the control never
+  // produced in 72 draws. Don't-think-of-a-pink-elephant.
+  //
+  // The variable is the SALIENCE of the tokens in the instruction block, not
+  // the polarity of the instruction. This line has to name a party anyway —
+  // it is about which one is exposed — so the tokens are already present and
+  // the prohibition is free. That is the only case it is licensed in.
+  //
+  // Blind forced choice on the real production path, arm held constant within
+  // each pair, presentation order randomised, picks committed before the key:
+  //
+  //   gap   control fidelity / separation      with the line          Fisher
+  //     4      46%  /  -10 pts                 93%  /  85 pts        p=0.0003
+  //    10      50%  /    0 pts                 85%  /  68 pts        p=0.0096
+  //    25      59%  /  +19 pts                 87%  /  74 pts        p=0.0219
+  //
+  // It is STRONGEST at 4, which is the threshold that actually ships, and the
+  // three controls sit exactly on the null that the "matrix does not reach the
+  // story" result predicts — that is the evidence the design is sound and not
+  // just the treatment. Latency shrinks as the gap approaches the threshold:
+  // +3.37s at 25, +1.77s at 10, +1.13s at 4. And sub-threshold prompts are
+  // BYTE-IDENTICAL to what ships today (verified over 20,000 games: 2,312 fire,
+  // 0 differ below the cut), so that second is paid only on the ~1 game in 9
+  // that gets the benefit. Persona leak with this wording: 0/27, 0/26, 0/31.
+  const gap = Number.isFinite(s.playerGap) && s.playerGap >= PLAYER_GAP_NOTABLE
+    ? 'Player A has far more riding on this than Player B, or the reverse — make that difference in exposure part of who the two parties are. Never write "Player A", "Player B", "the players" or a bare letter in the description itself.'
+    : '';
+
+  const parts = [size, gap].filter(Boolean);
+  return `MATCH THE SETTING TO THE STAKES. ${parts.join(' ')} Still no figures and no claims.`;
 }

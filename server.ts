@@ -447,8 +447,34 @@ function pruneRateBuckets(now: number) {
   }
 }
 
-function rateLimit(label: string, max: number, windowMs: number): express.RequestHandler {
+/**
+ * Per-IP throttle for the hosted service.
+ *
+ * `hosted-only` marks a limit that exists ONLY to protect a SHARED server from
+ * one user. On the desktop there is no shared server: the model runs on the
+ * user's own machine, a report costs them nothing, and since this build binds
+ * 127.0.0.1 there is nobody else on the socket to throttle. Capping generation
+ * there is a pure downgrade — unlimited regeneration at no cost is one of the
+ * few things the local app has BY CONSTRUCTION that the hosted one cannot
+ * offer, and at ~0.75s per local report, 20/min is under half a minute of
+ * ordinary use.
+ *
+ * Limits that protect the USER rather than the server — sign-in attempts,
+ * verification and recovery codes, account deletion, admin endpoints — are
+ * deliberately NOT marked and stay in force everywhere. They guard the local
+ * database against whoever is at the keyboard, which is a real threat model on
+ * a desktop and not one on Cloud Run, so the desktop is the last place to
+ * relax them.
+ */
+function rateLimit(
+  label: string,
+  max: number,
+  windowMs: number,
+  scope: 'always' | 'hosted-only' = 'always',
+): express.RequestHandler {
+  const liftedForDesktop = scope === 'hosted-only' && process.env.IS_ELECTRON === 'true';
   return (req, res, next) => {
+    if (liftedForDesktop) return next();
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const key = `${label}:${ip}`;
     const now = Date.now();
@@ -854,7 +880,7 @@ async function startServer() {
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
   // The installed Electron app polls this to decide whether to prompt for an update.
-  app.get("/api/version", rateLimit("version", 60, 60_000), async (req, res) => {
+  app.get("/api/version", rateLimit("version", 60, 60_000, 'hosted-only'), async (req, res) => {
     try {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
@@ -878,7 +904,7 @@ async function startServer() {
   // prose only when validation passes; a refusal, truncation, or hallucination
   // degrades to the existing deterministic panel rather than showing something
   // wrong. That makes the fallback path exercised in normal operation.
-  app.post("/api/report", rateLimit("report", 20, 60_000), async (req, res) => {
+  app.post("/api/report", rateLimit("report", 20, 60_000, 'hosted-only'), async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
     const scenario = cleanScenario(req.body?.scenario);
     if (!payoffs) {
@@ -1063,10 +1089,27 @@ async function startServer() {
       const storyOk = (sc: NonNullable<typeof invented>) => validateScenario(sc, payoffs).ok
         && scenarioIsClaimFree(sc).ok
         && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0);
-      if (invented && process.env.NASH_SCENARIO_CHECKS !== '0' && !storyOk(invented)) {
+      // Two different ways to end up with nothing, and only one used to get a
+      // second chance.
+      //
+      // A draw that came back and FAILED the gate was retried. A draw that
+      // never came back at all — `max-tokens`, the model spending its whole
+      // budget reasoning — was not, because `invented` is null and the
+      // condition below started with `invented &&`. So the user clicked "New AI
+      // scenario" and got nothing, silently, with a second draw sitting right
+      // there. Measured at 7.5% of calls once the stakes hint lengthened the
+      // prompt (9 of 120 vs 0 of 120 without it, p=0.0033), and a pre-existing
+      // 1.1-1.7% before that. Roughly one click in thirteen.
+      //
+      // A reroll is the sanctioned instrument here — nothing is rewritten, a
+      // lost draw is simply drawn again — and it costs one extra call only on
+      // the calls that produced nothing.
+      const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
+      const lost = !invented;
+      if (lost || (gateOn && !storyOk(invented))) {
         const second = await invent();
-        invented = second.scenario && storyOk(second.scenario) ? second.scenario : null;
-        if (!invented) failure = "validation-failed" as typeof failure;
+        invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
+        if (!invented) failure = (lost && !second.scenario ? (second.failure ?? failure) : "validation-failed") as typeof failure;
       }
       return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
     }
@@ -1757,7 +1800,7 @@ async function startServer() {
   // ── Custom Saved Games API ─────────────────────────────────────────────────
 
   // Get User's Custom Games
-  app.get("/api/games", rateLimit("games-read", 60, 60_000), (req, res) => {
+  app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -1769,7 +1812,7 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", rateLimit("games-write", 20, 60_000), (req, res) => {
+  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
     const db = loadDB();
     const user = getAuthUser(req);
     if (!user) {
@@ -1815,7 +1858,7 @@ async function startServer() {
   // Payoffs are deliberately NOT updatable here: changing them would silently
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
-  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000), (req, res) => {
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -1857,7 +1900,7 @@ async function startServer() {
   });
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000), (req, res) => {
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
@@ -1926,8 +1969,25 @@ async function startServer() {
 
   // Dynamic port assignment with automatic fallback in case of port collisions
   const startListening = (port: number) => {
-    const serverInstance = app.listen(port, "0.0.0.0", () => {
-      console.log(`Express server running on http://0.0.0.0:${port}`);
+    // BIND HOST IS A DEFECT FIX, not a preference.
+    //
+    // On macOS, bind(0.0.0.0:P) SUCCEEDS while another process holds
+    // 127.0.0.1:P — no EADDRINUSE — and the more specific bind then wins every
+    // loopback connection. In the desktop app that had two consequences. The
+    // API was reachable from the LOCAL NETWORK: verified against a running
+    // installed copy, http://<lan-ip>:14321/ answered 200, and on a build with
+    // the offline model bundled a POST to /api/report from another machine
+    // returned a freshly invented scenario. CORS is irrelevant there; a direct
+    // request is not a browser. And the port-retry loop below could
+    // "successfully" bind a port another local server already owned, log
+    // nothing, and leave the window talking to that other server.
+    //
+    // Binding the loopback at the SAME specificity makes the kernel refuse the
+    // second bind, so the retry actually advances. Cloud Run must still bind
+    // 0.0.0.0 or the container is unreachable, hence the gate on IS_ELECTRON.
+    const host = process.env.IS_ELECTRON === 'true' ? '127.0.0.1' : '0.0.0.0';
+    const serverInstance = app.listen(port, host, () => {
+      console.log(`Express server running on http://${host}:${port}`);
       if (process.env.IS_ELECTRON === 'true') {
         (global as any).expressPort = port;
         if ((global as any).onExpressListening) {
