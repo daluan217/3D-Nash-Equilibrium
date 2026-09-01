@@ -61,18 +61,26 @@ const EXPOSURE_PHRASE = new RegExp([
   // greater BUDGET AND REPUTATION exposure" — any other noun between the
   // comparative and "exposure" broke the match. That was the single largest
   // recall gap in this list.
-  '(more|less|greater|little|much|greatest|larger|higher|lower|heavier|most|least)[^.]{0,30}?expos(ure|ed)',
+  // `broader|wider|deeper|fuller` were added after #2057 — "THE AUTHORITY
+  // CARRIES THE BROADER SCHEDULING EXPOSURE, while the contractor is managing a
+  // modest job" — escaped BOTH this list and the `carries the …` one below on
+  // the same word. The earlier widening opened the NOUN slot between the
+  // comparative and "exposure"; it did not touch the comparative itself.
+  '(more|less|greater|little|much|greatest|larger|higher|lower|heavier|most|least|broader|wider|deeper|fuller)[^.]{0,30}?expos(ure|ed)',
   'expos(ure|ed) [^.]{0,40} than',
   'heavily (exposed|tied|dependent|reliant)',
   'whose (exposure|stake|risk|position)',
   // "matters more to the grower than to the buyer", and the COPULAR form of the
   // same claim — "for which this contract is far more consequential" — which
   // the verb-anchored rule cannot reach (ORACLE, 2 unique texts in 12,518).
-  'matters? (far |much |a lot |significantly |a great deal )?(more|less)\\b',
+  // `matters?` matched "matter" and "matters" and NOT the participle. One
+  // inflection let #2424 through: "with the timing of the job MATTERING MORE to
+  // the owner than to the crew foreperson".
+  'matter(?:s|ed|ing)? (far |much |a lot |significantly |a great deal )?(more|less)\\b',
   '(far|much|considerably|significantly|rather) (more|less) (consequential|important|significant|costly|damaging|serious)',
   'weighs? (more|less|heavil)',
   '(more|less|little|much|a lot|a great deal) to (lose|gain)',
-  '(bears?|carries|carry|carrying) (the |a )?(greater|larger|bigger|brunt|heavier)',
+  '(bears?|carries|carry|carrying) (the |a )?(greater|larger|bigger|brunt|heavier|broader|wider|deeper|fuller)',
   '(more|less|greater|smaller|larger) (at stake|consequence)',
   // "a smaller commercial stake", "a smaller seasonal stake" — the same
   // comparative with a modifier wedged in.
@@ -89,8 +97,59 @@ const EXPOSURE_PHRASE = new RegExp([
   'only a (small|minor|modest|slight|brief|short)',
   '(smaller|larger|bigger|greater) (scheduling |financial |commercial |seasonal )?(stake|interest|exposure)',
   '\\b(much|most|the bulk) of its\\b',
+  // "with the success of the stop CARRYING MORE PERSONAL WEIGHT FOR the
+  // puppeteer THAN FOR the host" — a comparative with an open noun after it and
+  // no exposure word anywhere, reachable only by anchoring on the SECOND TERM of
+  // the comparison instead of on a noun.
+  //
+  // THE EXPLICIT `than for|than to` IS WHAT MAKES THE OPEN SLOT SAFE, and that
+  // was measured against the two negatives this rule family keeps as permanent
+  // fixtures (RED-BANK-2 hand-read them out of its own predicate's output):
+  //   "the supervisor is responsible for the patch, while the attendant handles
+  //    ONLY THE nearby check"
+  //   "the foreperson is responsible for the dredging schedule, while the
+  //    dispatcher coordinates ONLY ONE nearby ferry's timetable"
+  // Neither contains "than" at all, so neither can be reached. Those two divide
+  // LABOUR, not stake, and asserting a rule that catches them would be the same
+  // over-firing this file already prices at 20.5%.
+  '(more|less|greater|larger|smaller|heavier|lighter|higher|lower|bigger|broader|wider)[^.;]{0,60}?than (for|to) (the|its|their|a|an|one)\\b',
+  // "the caretaker, WHOSE PERSONAL SCHEDULE IS ONLY MILDLY AFFECTED" — the same
+  // claim as the accepted `only a (small|minor|…)` member with the noun replaced
+  // by a participle. `only` + an ADVERB + a past participle is a different
+  // construction from the negatives' `only` + a DETERMINER + an object noun, so
+  // it cannot reach them either.
+  'only (mildly|slightly|marginally|modestly|lightly|somewhat|minimally|barely) (affected|impacted|touched|exposed|involved|concerned|invested)\\b',
 ].join('|'), 'i');
 
 export function exposureAsymmetryClaim(s: SuggestedScenario): boolean {
   return EXPOSURE_PHRASE.test(s.description ?? '');
+}
+
+/**
+ * A DOUBLED TERMINAL STOP: `…and “Late trim.”.`
+ *
+ * The closing quotation already carries the period and another is appended. Not
+ * a falsehood, not a register problem, not a claim about the game — a typo, and
+ * the only mechanically decidable one left in the artifact. 4 rows of 2,505 in
+ * the shipped bank, 9 of 9,656 across every corpus held, every one hand-read,
+ * zero judgement calls and zero false positives.
+ *
+ * WHY THIS IS A BANK SCREEN AND NOT A PRODUCTION GATE, which is the only
+ * interesting decision here. On the cloud report path a rejection is not a retry
+ * — RED-PIPELINE measured one draw with no reroll, `invented` stays null and the
+ * response ships `suggestedScenario: undefined` — so gating this in production
+ * would DELETE A WHOLE STORY over a stray full stop. That trade is obviously
+ * wrong: the reader would rather have the story. In the bank the trade reverses,
+ * because a dropped row costs one of 2,505 and the picker simply hands over a
+ * different one. Falsehoods and register leaks are worth a missing story;
+ * punctuation is not.
+ *
+ * The adjacent softer defect is DELIBERATELY NOT TAKEN: 7 rows mix quote
+ * conventions inside one sentence (`"Rush firing,"` with the comma inside beside
+ * `"Late firing".` with the period outside). A reader notices a doubled stop and
+ * almost certainly does not notice that, and no instrument separates a
+ * convention choice from a mistake.
+ */
+export function doubledTerminalStop(s: SuggestedScenario): boolean {
+  return /[.!?][”’"'][.]\s*$/.test((s.description ?? '').trim());
 }
