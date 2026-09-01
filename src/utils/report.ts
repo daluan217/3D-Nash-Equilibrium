@@ -27,6 +27,7 @@ import type { GamePayoffs, LlmReport, SuggestedScenario } from '../types';
 import { computeAllNE, computeIndifference, fmtProb } from './gameEngine';
 import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
+import { stakesHint } from './scenarioStakes';
 
 /**
  * Chosen from eval data, not preference — see src/evals/ and the sweep of
@@ -358,7 +359,7 @@ export interface GenerateScenarioResult {
 /** The slim invention call behind "New AI scenario" — see SCENARIO_SCHEMA. */
 export async function generateScenario(
   g: GamePayoffs,
-  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string } = {},
+  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string; stakes?: boolean } = {},
 ): Promise<GenerateScenarioResult> {
   // `domain` steers WHICH setting the invention uses, and nothing else.
   //
@@ -371,9 +372,22 @@ export async function generateScenario(
   // by construction instead of a property of the model's priors.
   //
   // Deliberately additive and inert: no domain, no change to the prompt.
-  const systemPrompt = opts.domain
-    ? `${SCENARIO_SYSTEM_PROMPT}\n\nSET THIS SCENARIO IN THIS DOMAIN: ${opts.domain}. Use that domain and no other. Everything else above still applies.`
-    : SCENARIO_SYSTEM_PROMPT;
+  //
+  // `stakes` steers HOW MUCH IS AT RISK in that setting, and nothing else. The
+  // model is already handed every payoff, and measurably does not use them: an
+  // all-zero matrix produced stories indistinguishable from real ones. So this
+  // is not the numbers again — it is a computed reading of what they MEAN for
+  // the world the story is set in, which is the part the model was never asked
+  // for. Same additive-and-inert property as `domain`: no stakes line, no
+  // change to the prompt. See src/utils/scenarioStakes.ts.
+  const stakes = opts.stakes === false ? '' : stakesHint(g);
+  const systemPrompt = [
+    SCENARIO_SYSTEM_PROMPT,
+    opts.domain
+      ? `SET THIS SCENARIO IN THIS DOMAIN: ${opts.domain}. Use that domain and no other. Everything else above still applies.`
+      : '',
+    stakes,
+  ].filter(Boolean).join('\n\n');
   const res = await callProvider({
     model: opts.model || DEFAULT_MODEL,
     systemPrompt,
