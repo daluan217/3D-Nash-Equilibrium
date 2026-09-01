@@ -17,6 +17,7 @@
  */
 
 import { GamePayoffs } from './types';
+import { payoffTexRhs, fmtPayoffPair, indifferenceAt as indifferenceAtForDisplay } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
 import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
@@ -902,6 +903,7 @@ function runUnitTests() {
   testTwoChooserStructure();
   testRepeatedPlayRefused();
   testMetaVocabulary();
+  payoffDisplayTests();
   testModelDebris();
   console.log('All unit tests passed.');
 }
@@ -1778,6 +1780,76 @@ function testMetaVocabulary() {
     'META/FALSEHOOD SEPARATION: an attached payoff COMPARISON is still caught as a falsehood, not merely as register');
 
   console.log('✓ meta vocabulary: 5 sub-forms screened; both traps pinned — "the game-day menu" and the video-game studio pass, "Operator A chooses" passes at 20.0%-vs-1.2% cloud cost; "payoff" screened for REGISTER while the falsehood proposition about it still stands');
+}
+
+/* ---------------------------------------------------------------- 16. payoff
+ * DISPLAY PRECISION: the screen must not assert what it cannot show.
+ *
+ * Both defects here come from one root — `r3(v).toFixed(3)` discards precision
+ * that the surrounding claim depends on — and both were found by probing the
+ * shipped render path over random games rather than by reading it.
+ *
+ *   (a) A non-zero payoff printed as exactly "0.000". 8 of 40,000 random games
+ *       reach it at the equilibrium, and an exact zero becomes indistinguishable
+ *       from 0.0004.
+ *   (b) "0.030 > 0.030" — two DIFFERENT payoffs collapsed to one string with a
+ *       strict inequality still drawn between them: visibly self-contradictory
+ *       mathematics. Reachable where the gap exceeds the per-player
+ *       `indifferenceAt` tolerance (so a strict relation is shown) but falls
+ *       under 3dp. 28 of 640,000 relation renderings, 24 distinct games.
+ */
+function payoffDisplayTests() {
+  // (a) the relation moves into the OPERATOR, because prose cannot go in TeX.
+  assert(payoffTexRhs(0) === '= 0', 'an EXACT zero is stated as exactly zero');
+  assert(payoffTexRhs(0.0004) === '< 0.001', `sub-resolution positive: got ${payoffTexRhs(0.0004)}`);
+  assert(payoffTexRhs(-0.0004) === '> -0.001', `sub-resolution negative: got ${payoffTexRhs(-0.0004)}`);
+  assert(payoffTexRhs(2.3156) === '= 2.316', 'ordinary values keep 3dp');
+  assert(!/0\.000/.test(payoffTexRhs(1e-9)), 'a non-zero payoff is NEVER rendered as 0.000');
+  assert(!/=\s*0$/.test(payoffTexRhs(1e-9)), 'nor claimed equal to zero');
+
+  // (b) a strict relation must never be drawn between two identical strings.
+  const pairs: Array<[number, number]> = [
+    [0.0304366, 0.0300847], [-0.1974418, -0.1969141], [0.3124434, 0.3115643],
+    [1e-9, 2e-9], [5, 5.0000001], [-2.5, -2.5001],
+  ];
+  for (const [p, q] of pairs) {
+    const f = fmtPayoffPair(p, q);
+    assert(f.p !== f.q,
+      `SELF-CONTRADICTION: ${p} vs ${q} both render as "${f.p}", with a strict relation between them`);
+  }
+  // Equal values are the indifference case: they SHOULD render identically, and
+  // the caller draws an approx sign rather than a strict relation.
+  const eq = fmtPayoffPair(0.5, 0.5);
+  assert(eq.p === eq.q && eq.p === '0.500', `genuinely equal payoffs still render alike: ${eq.p}/${eq.q}`);
+  // 3dp stays the common case — this must not widen everything.
+  const ord = fmtPayoffPair(1.234, 5.678);
+  assert(ord.p === '1.234' && ord.q === '5.678', `ordinary pairs keep 3dp: ${ord.p}/${ord.q}`);
+
+  // And the end-to-end property, over the shipped condition rather than a
+  // stand-in for it: an earlier count using `p === q` in place of the real
+  // tolerance read 19,719 instead of 28 — 33x high.
+  let contradictions = 0, sampled = 0;
+  const rnd = (() => { let z = 4242; return () => ((z = (z * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff); })();
+  for (let i = 0; i < 1200; i++) {
+    const sc2 = [0.5, 2, 10, 50][i % 4];
+    const g: GamePayoffs = { a11: (rnd()*2-1)*sc2, a12: (rnd()*2-1)*sc2, a21: (rnd()*2-1)*sc2, a22: (rnd()*2-1)*sc2,
+                             b11: (rnd()*2-1)*sc2, b12: (rnd()*2-1)*sc2, b21: (rnd()*2-1)*sc2, b22: (rnd()*2-1)*sc2 };
+    for (let k = 0; k < 40; k++) {
+      const cx = rnd(), cy = rnd();
+      const ind = indifferenceAtForDisplay(g, cx, cy);
+      const r1 = cy*g.a11 + (1-cy)*g.a12, r2 = cy*g.a21 + (1-cy)*g.a22;
+      const c1 = cx*g.b11 + (1-cx)*g.b21, c2 = cx*g.b12 + (1-cx)*g.b22;
+      for (const [pp, qq, isInd] of [[r1, r2, ind.a], [c1, c2, ind.b]] as Array<[number, number, boolean]>) {
+        sampled++;
+        if (isInd) continue;
+        const f = fmtPayoffPair(pp, qq);
+        if (f.p === f.q) contradictions++;
+      }
+    }
+  }
+  assert(contradictions === 0,
+    `${contradictions} of ${sampled} relation renderings still print X > X`);
+  console.log(`✓ payoff display: sub-resolution payoffs state a relation instead of asserting 0.000, and ${sampled} sampled strict-relation renderings contain no "X > X"`);
 }
 
 try {
