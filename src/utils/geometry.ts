@@ -24,12 +24,6 @@
  */
 
 import type { GamePayoffs } from '../types';
-// `equilibriumSet` is the solver's own answer to "where are the equilibria".
-// The briefing used to answer that question from `hasInteriorFlatSpot` alone,
-// which is a statement about the two INDIFFERENCE ROOTS and not about the
-// equilibrium set — see the flat-spot line below. gameEngine imports nothing
-// from this file, so this direction of the dependency introduces no cycle.
-import { equilibriumSet } from './gameEngine';
 
 export interface Geometry {
   /** A's twist. Zero means A's surface is a flat plane: no strategic interaction. */
@@ -46,6 +40,23 @@ export interface Geometry {
   /** Is yStar an actual point on the board, rather than an extrapolation? */
   yStarInRange: boolean;
   xStarInRange: boolean;
+  /**
+   * Is A's surface level along A's OWN axis anywhere in the interior?
+   *
+   * NOT the same question as `yStarInRange`, and conflating the two rejected
+   * true model claims. dE_A/dx = y*(a11-a21) + (1-y)*(a12-a22) is linear in y
+   * with `twistA` as its slope, so a zero twist makes it the CONSTANT
+   * (a11 - a21): level EVERYWHERE if that is zero, level NOWHERE if it is not.
+   * `yStarInRange` collapses those two into "no shelf" because yStar is NaN in
+   * both. Measured against a sign-change scan of the real E_A — a magnitude
+   * grid cannot see a transversal crossing and disagrees with the truth 45% of
+   * the time — `yStarInRange`-as-shelf is wrong on 0.278% of int[-9,9] games
+   * and 2.022% of int[-3,3]; this predicate is wrong on 0 of 400,000, and is
+   * identical to `yStarInRange` wherever the twist is non-zero.
+   */
+  hasFlatShelfForA: boolean;
+  /** The same question for B, whose own axis is y and whose twist is twistB. */
+  hasFlatShelfForB: boolean;
   /** Both surfaces level simultaneously at an interior point. */
   hasInteriorFlatSpot: boolean;
   /** B's surface is the exact negative of A's. */
@@ -106,6 +117,14 @@ export function describeGeometry(g: GamePayoffs): Geometry {
     (g.b11 > g.b12 + EPS && g.b21 > g.b22 + EPS) ||
     (g.b12 > g.b11 + EPS && g.b22 > g.b21 + EPS);
 
+  // A's own-axis slope is CONSTANT when the twist vanishes (see hasFlatShelfForA):
+  // level everywhere iff a11 = a21, level nowhere otherwise. Same for B with
+  // b11 = b12. `yStarInRange` / `xStarInRange` are left exactly as they were —
+  // they answer "is the indifference ROOT an interior point", which is the right
+  // question for the coordinate sentences and for the strict boundary rule.
+  const hasFlatShelfForA = Math.abs(twistA) >= EPS ? inUnit(yStar) : Math.abs(g.a11 - g.a21) < EPS;
+  const hasFlatShelfForB = Math.abs(twistB) >= EPS ? inUnit(xStar) : Math.abs(g.b11 - g.b12) < EPS;
+
   return {
     twistA,
     twistB,
@@ -113,7 +132,9 @@ export function describeGeometry(g: GamePayoffs): Geometry {
     xStar,
     yStarInRange: inUnit(yStar),
     xStarInRange: inUnit(xStar),
-    hasInteriorFlatSpot: inUnit(xStar) && inUnit(yStar),
+    hasFlatShelfForA,
+    hasFlatShelfForB,
+    hasInteriorFlatSpot: hasFlatShelfForA && hasFlatShelfForB,
     zeroSum,
     constantSum,
     minimaxApplies: zeroSum || constantSum,
@@ -229,23 +250,35 @@ export function geometryBriefing(g: GamePayoffs): string {
 
   // THE FLAT-SPOT SENTENCE.
   //
-  // `hasInteriorFlatSpot` is a statement about the two INDIFFERENCE ROOTS, and
-  // the else-branch turned it into a statement about the EQUILIBRIUM SET —
-  // which does not follow. On a=[[-2,2],[4,-5]], b=[[3,3],[4,4]] B's twist is 0
-  // so there is no interior flat spot, yet the equilibrium set contains the
-  // whole segment [0,1] x {7/13}, whose points have BOTH coordinates strictly
-  // interior; (0.5, 7/13) has zero regret for both players. So ask the solver
-  // instead of inferring. Measured: 0% of "New random game" draws (a continuum
-  // needs a within-player tie, which that generator rejects), 0.25% of
-  // int[-9,9] matrices, 1.48% on [-3,3].
-  const interiorEquilibrium = geo.hasInteriorFlatSpot
-    ? false
-    : equilibriumSet(g).some((rct) => rct.x1 > 0 && rct.x0 < 1 && rct.y1 > 0 && rct.y0 < 1);
+  // This else-branch used to assert "The equilibrium sits on an edge or corner"
+  // on games whose equilibrium set contains strictly interior points — on
+  // a=[[-2,2],[4,-5]], b=[[3,3],[4,4]] the set contains the whole segment
+  // [0,1] x {7/13}, and (0.5, 7/13) has zero regret for both players. I first
+  // fixed that by asking `equilibriumSet` for an interior point and writing a
+  // third sentence for the case.
+  //
+  // THAT FIX IS GONE, because it was a symptom and the cause was one level down.
+  // An equilibrium with BOTH coordinates strictly interior means each player is
+  // mixing, which means each player is indifferent, which IS a joint flat spot.
+  // The case could only appear because `hasInteriorFlatSpot` was blind to the
+  // degenerate shelf (see `hasFlatShelfForA`). With the predicate corrected the
+  // shape is not rare — it is impossible: 0 of 400,000 games across four
+  // alphabets, and `testGeometryBriefingTruth` asserts the implication against
+  // the REGRET definition rather than against the solver that produces the
+  // sentence. A third branch here would now be a guard whose deletion changes
+  // no result, which is the class this codebase keeps finding.
+  // THE NaN MIRROR. `hasInteriorFlatSpot` is now true in the degenerate case
+  // where a player is level along their own axis at EVERY opponent mix — and in
+  // exactly that case their root is NaN, so the coordinate form of this sentence
+  // would print "x = undefined", the twin of the "y = undefined" defect fixed
+  // three sentences up. A player who is level everywhere has no single
+  // coordinate to name, so name the freedom instead.
+  const bothRootsNamed = geo.xStarInRange && geo.yStarInRange;
   lines.push(
-    geo.hasInteriorFlatSpot
+    geo.hasInteriorFlatSpot && bothRootsNamed
       ? `  Both surfaces are level at the same interior point (x = ${rw(geo.xStar)}, y = ${rw(geo.yStar)}) — the joint flat spot, which is the mixed equilibrium.`
-      : interiorEquilibrium
-        ? `  There is NO interior joint flat spot: the two surfaces are never level at the same interior point. The equilibria are NOT confined to the edges even so — a payoff tie makes a whole line or region of profiles equilibria, and some of those points are interior mixtures. Do not say the equilibrium must sit on an edge or corner.`
+      : geo.hasInteriorFlatSpot
+        ? `  Both surfaces are level at the same interior profiles — the joint flat spot, which is the mixed equilibrium. A's surface is level ${geo.yStarInRange ? `when B plays y = ${rw(geo.yStar)}` : `at EVERY y, because A is indifferent between the rows whatever B does`}, and B's surface is level ${geo.xStarInRange ? `when A plays x = ${rw(geo.xStar)}` : `at EVERY x, because B is indifferent between the columns whatever A does`}. There is a whole ${geo.xStarInRange || geo.yStarInRange ? 'line' : 'region'} of them, not one point, so do not name a single mixture as THE equilibrium.`
         : `  There is NO interior joint flat spot. The equilibrium sits on an edge or corner of the square, where a player is pinned to one action rather than balanced between two.`,
   );
 
@@ -300,7 +333,12 @@ export function geometryBriefing(g: GamePayoffs): string {
   // point that self-interest does not locate the equilibrium — and unlike that
   // slogan, it is checkable, which is why it belongs in the briefing rather than
   // in an instruction to write a certain way.
-  if (geo.hasInteriorFlatSpot) {
+  // Guarded on the ROOTS, not on the flat spot: the widened flat-spot predicate
+  // is true in the degenerate case where a root is NaN, and this block prints
+  // both coordinates. The claim it makes is still true there — a player's own
+  // payoffs never appear in their own mix — but there is no single mix to name,
+  // so it is dropped rather than rendered as "x = undefined".
+  if (geo.hasInteriorFlatSpot && bothRootsNamed) {
     lines.push(
       `  Note which numbers produce which coordinate: A's equilibrium mix x = ${rw(geo.xStar)} is computed`,
       `  entirely from B's payoffs, and B's mix y = ${rw(geo.yStar)} entirely from A's. Neither player's own`,

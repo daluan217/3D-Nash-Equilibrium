@@ -576,8 +576,12 @@ function testFmtPayoffProseExhaustive() {
  * draws / hand-typed int[-9,9] / int[-3,3]):
  *
  *   (a) "the level point would be at y = 0, outside [0,1]" — 0 is IN [0,1]; the
- *       root is on the EDGE of the board. Also printed "y = undefined" when
- *       there is no root at all.                        2.15% / 13.7% / 33.9%
+ *       root is on the EDGE of the board.               0.00% / 10.0% / 24.4%
+ *       and the same sentence with "y = undefined" when there is no root at
+ *       all, which asserts nothing false about a NUMBER (there is none) but
+ *       hands the model a hole.                          2.05% /  3.4% /  9.6%
+ *       Split after RED-MATH pointed out that pooling them overstated the
+ *       falsehood on the random button, where the boundary case is 0%.
  *   (b) "A's payoff does not depend on what B does" on twist = 0, where the
  *       dependence on B is a21 - a22 and the twist is only the INTERACTION.
  *       E_A = -1 - 4y is a function of B's mix alone.   2.00% /  3.3% /  7.5%
@@ -585,6 +589,11 @@ function testFmtPayoffProseExhaustive() {
  *       rows everywhere — the whole board is a shelf.      0% /  0.3% /  2.0%
  *   (d) "The equilibrium sits on an edge or corner" where the equilibrium set
  *       contains strictly interior points.                 0% /  0.2% /  1.5%
+ *       NOW IMPOSSIBLE rather than rare: an equilibrium with both coordinates
+ *       interior means both players are indifferent, which IS a joint flat
+ *       spot. It could only appear because `hasInteriorFlatSpot` was blind to
+ *       the degenerate shelf. Asserted below as an INVARIANT against the regret
+ *       definition, which is stronger than a sentence check.
  *   (e) "NEITHER player has a dominant strategy: ... which option is better
  *       depends on what the opponent does" where a player has a WEAKLY
  *       dominant option.                                   0% / 10.3% / 26.5%
@@ -606,9 +615,21 @@ function testGeometryBriefingTruth() {
   };
   const defB = (g: GamePayoffs) => Math.abs(twA(g)) < E && Math.abs(g.a21 - g.a22) >= E;
   const defC = (g: GamePayoffs) => Math.abs(twA(g)) < E && Math.abs(g.a12 - g.a22) < E;
-  const defD = (g: GamePayoffs) => {
-    if (describeGeometry(g).hasInteriorFlatSpot) return false;
-    return equilibriumSet(g).some((rc) => rc.x1 > 0 && rc.x0 < 1 && rc.y1 > 0 && rc.y0 < 1);
+  // (d) is no longer a sentence class but an INVARIANT: no game may have an
+  // equilibrium with both coordinates strictly interior while the flat-spot
+  // predicate says there is none. Returns the offending point so a failure
+  // names it.
+  const interiorNEWithoutFlatSpot = (g: GamePayoffs): [number, number] | null => {
+    if (describeGeometry(g).hasInteriorFlatSpot) return null;
+    for (const rc of equilibriumSet(g)) {
+      if (!(rc.x1 > 0 && rc.x0 < 1 && rc.y1 > 0 && rc.y0 < 1)) continue;
+      const x = Math.min(Math.max((Math.max(rc.x0, 0) + Math.min(rc.x1, 1)) / 2, 1e-6), 1 - 1e-6);
+      const y = Math.min(Math.max((Math.max(rc.y0, 0) + Math.min(rc.y1, 1)) / 2, 1e-6), 1 - 1e-6);
+      if (x < rc.x0 - 1e-12 || x > rc.x1 + 1e-12 || y < rc.y0 - 1e-12 || y > rc.y1 + 1e-12) continue;
+      // confirmed by the DEFINITION, not by the solver that produced the rect
+      if (Math.abs(regretA(x, y, g)) < 1e-9 && Math.abs(regretB(x, y, g)) < 1e-9) return [x, y];
+    }
+    return null;
   };
   const defE = (g: GamePayoffs) => {
     const geo = describeGeometry(g);
@@ -620,10 +641,9 @@ function testGeometryBriefingTruth() {
     a: 'outside [0,1]',
     b: "A's payoff does not depend on what B does",
     c: "A's surface always tilts one way",
-    d: 'The equilibrium sits on an edge or corner of the square',
     e: 'NEITHER player has a dominant strategy',
   };
-  const preds: Record<string, (g: GamePayoffs) => boolean> = { a: defA, b: defB, c: defC, d: defD, e: defE };
+  const preds: Record<string, (g: GamePayoffs) => boolean> = { a: defA, b: defB, c: defC, e: defE };
 
   // ---- KNOWN POSITIVES: the exact matrices, and the sentence each now gets --
   const FIX: [string, GamePayoffs, string[], string][] = [
@@ -635,8 +655,8 @@ function testGeometryBriefingTruth() {
       ['a', 'b', 'c', 'e'], "A's payoff does still move with B's choice (by -4 as B shifts from Col 2 to Col 1)"],
     ['(c) whole board is a shelf', { a11: 7, a12: -9, a21: 7, a22: -9, b11: 3, b12: 0, b21: 2, b22: -4 },
       ['a', 'b', 'c'], 'A is indifferent between the two rows EVERYWHERE on the board'],
-    ['(d) interior equilibrium, no flat spot', { a11: -2, a12: 2, a21: 4, a22: -5, b11: 3, b12: 3, b21: 4, b22: 4 },
-      ['d', 'e'], 'some of those points are interior mixtures'],
+    ['(d/f2) degenerate joint flat spot', { a11: -2, a12: 2, a21: 4, a22: -5, b11: 3, b12: 3, b21: 4, b22: 4 },
+      ['e'], "B's surface is level at EVERY x, because B is indifferent between the columns whatever A does"],
     ['(e) weakly dominant row', { a11: -7, a12: -5, a21: -7, a22: 7, b11: -3, b12: -1, b21: -6, b22: -8 },
       ['a', 'e'], "A's Row 2 is never worse than Row 1 and is strictly better against at least one column"],
   ];
@@ -649,11 +669,18 @@ function testGeometryBriefingTruth() {
     }
     assert(t.includes(want), `${name}: expected the briefing to say "${want}"\n${t}`);
   }
-  // (d)'s claim is checked against the DEFINITION of an equilibrium, not against
-  // the solver that produced the sentence: (0.5, 7/13) must have zero regret.
+  // The (d)/f2 fixture, checked against the DEFINITION rather than the solver:
+  // (0.5, 7/13) must be an equilibrium, and the widened predicate must now SEE
+  // the flat spot that the model was previously failed for naming.
   const dGame = FIX[4][1];
   assert(Math.abs(regretA(0.5, 7 / 13, dGame)) < 1e-9 && Math.abs(regretB(0.5, 7 / 13, dGame)) < 1e-9,
     '(d) fixture: (0.5, 7/13) must be an equilibrium by the regret definition, or the finding is not a finding');
+  assert(describeGeometry(dGame).hasInteriorFlatSpot,
+    '(f2) hasInteriorFlatSpot must be TRUE here — a validator comparing against it rejected a true model claim');
+  assert(describeGeometry(FIX[2][1]).hasFlatShelfForA,
+    '(f1) hasFlatShelfForA must be TRUE on a board that is level along A\'s axis everywhere');
+  assert(!describeGeometry(FIX[2][1]).yStarInRange,
+    'yStarInRange must stay STRICT — the new field is additional, not a redefinition');
 
   // ---- NEGATIVE FIXTURES: what must NOT change -----------------------------
   // The STRICT dominance predicates are the validator's contract and stay strict.
@@ -697,7 +724,25 @@ function testGeometryBriefingTruth() {
     ['int[-9,9]', () => { const c = () => ri(-9, 9); return { a11: c(), a12: c(), a21: c(), a22: c(), b11: c(), b12: c(), b21: c(), b22: c() }; }],
     ['random button', () => generateRandomGame(Math.random() < 0.5 ? 'pure' : 'mixed')],
   ];
-  const exercised: Record<string, number> = { a: 0, b: 0, c: 0, d: 0, e: 0 };
+  // GROUND TRUTH for "is this surface level along its own axis in the interior",
+  // read off the REAL E_A / E_B by SIGN CHANGE. Not by |slope| < eps on a grid:
+  // that instrument cannot see a transversal crossing between samples and
+  // disagrees with the truth on 37-45% of games, which would put a 40% headline
+  // on a 0.3% defect. (BLUE hit exactly that and said so; I reproduced it.)
+  const H = 1e-6;
+  const levelInterior = (f: (t: number) => number) => {
+    let prev = f(1 / 201);
+    if (Math.abs(prev) < 1e-7) return true;
+    for (let i = 2; i <= 200; i++) {
+      const v = f(i / 201);
+      if (Math.abs(v) < 1e-7) return true;
+      if ((prev < 0) !== (v < 0)) return true;
+      prev = v;
+    }
+    return false;
+  };
+  const exercised: Record<string, number> = { a: 0, b: 0, c: 0, e: 0 };
+  let degenerateShelves = 0;
   for (const [cname, gen] of corpora) {
     for (let i = 0; i < 4000; i++) {
       const g = gen();
@@ -708,14 +753,37 @@ function testGeometryBriefingTruth() {
         assert(!t.includes(FALSE_SENTENCE[k]),
           `${cname}: class (${k}) false sentence survives on ${JSON.stringify(g)}\n${t}`);
       }
+      // No sentence may hand the model a hole where a number belongs. This is
+      // how the "y = undefined" defect reached production, and widening the
+      // flat-spot predicate created a mirror of it at "x = undefined".
+      assert(!/undefined|NaN/.test(t), `${cname}: briefing contains a hole on ${JSON.stringify(g)}\n${t}`);
+      const geo = describeGeometry(g);
+      // The two new predicates, against the surfaces themselves.
+      const truthA = levelInterior((y) => (EA(0.5 + H, y, g) - EA(0.5 - H, y, g)) / (2 * H));
+      const truthB = levelInterior((x) => (EB(x, 0.5 + H, g) - EB(x, 0.5 - H, g)) / (2 * H));
+      assert(geo.hasFlatShelfForA === truthA,
+        `${cname}: hasFlatShelfForA=${geo.hasFlatShelfForA} but A's surface is ${truthA ? '' : 'NOT '}level somewhere interior — ${JSON.stringify(g)}`);
+      assert(geo.hasFlatShelfForB === truthB,
+        `${cname}: hasFlatShelfForB=${geo.hasFlatShelfForB} but B's surface is ${truthB ? '' : 'NOT '}level somewhere interior — ${JSON.stringify(g)}`);
+      if (geo.hasFlatShelfForA !== geo.yStarInRange || geo.hasFlatShelfForB !== geo.xStarInRange) degenerateShelves++;
+      // THE INVARIANT that replaced class (d): both coordinates interior means
+      // both players are mixing, which means both are indifferent, which IS a
+      // joint flat spot. Checked with the regret oracle, not the solver.
+      const pt = interiorNEWithoutFlatSpot(g);
+      assert(pt === null,
+        `${cname}: (${pt?.[0]}, ${pt?.[1]}) is an interior equilibrium by the regret definition, yet hasInteriorFlatSpot is false — ${JSON.stringify(g)}`);
     }
   }
+  // The degenerate case must actually OCCUR in the sweep, or the two new
+  // predicates are indistinguishable from the old ones and prove nothing.
+  assert(degenerateShelves >= 20,
+    `sweep met the degenerate shelf only ${degenerateShelves} times — the new predicates are untested against the old`);
   // NON-VACUITY: a sweep that never met the classes proves nothing. int[-1,1]
   // alone trips (a) in ~68% of games, so these floors sit far below the mean.
-  for (const [k, floor] of [['a', 200], ['b', 20], ['c', 20], ['d', 10], ['e', 200]] as [string, number][])
+  for (const [k, floor] of [['a', 200], ['b', 20], ['c', 20], ['e', 200]] as [string, number][])
     assert(exercised[k] >= floor, `sweep met class (${k}) only ${exercised[k]} times — too few to be a test`);
 
-  console.log(`✓ geometryBriefing: 5 false-sentence classes closed (sweep exercised a=${exercised.a} b=${exercised.b} c=${exercised.c} d=${exercised.d} e=${exercised.e}), presets byte-identical`);
+  console.log(`✓ geometryBriefing: 5 false-sentence classes closed (sweep exercised a=${exercised.a} b=${exercised.b} c=${exercised.c} e=${exercised.e}), flat-shelf predicates match a sign-change scan of the real surfaces, presets byte-identical`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

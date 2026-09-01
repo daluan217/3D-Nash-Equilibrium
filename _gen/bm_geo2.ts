@@ -59,7 +59,7 @@ const N = Number(process.env.BM_N || 100000);
 for (const [name, gen] of Object.entries(gens)) {
   const oldHit: Record<string, number> = { a: 0, b: 0, c: 0, d: 0, e: 0 };
   const newHit: Record<string, number> = { a: 0, b: 0, c: 0, d: 0, e: 0 };
-  let clean = 0, cleanChanged = 0, dirty = 0, dirtyUnchanged = 0;
+  let clean = 0, cleanChanged = 0, dirty = 0, dirtyUnchanged = 0, cleanChangedDegenerate = 0;
   for (let i = 0; i < N; i++) {
     const g = gen();
     const o = OLD(g), n = NEW(g);
@@ -70,12 +70,14 @@ for (const [name, gen] of Object.entries(gens)) {
       if (o.includes(S[k as keyof typeof S])) oldHit[k]++;
       if (n.includes(S[k as keyof typeof S])) newHit[k]++;
     }
+    const degenerate = Math.abs(g.a11 - g.a12 - g.a21 + g.a22) < 1e-9 || Math.abs(g.b11 - g.b12 - g.b21 + g.b22) < 1e-9;
     if (any) { dirty++; if (o === n) dirtyUnchanged++; }
-    else { clean++; if (o !== n) cleanChanged++; }
+    else { clean++; if (o !== n) { cleanChanged++; if (degenerate) cleanChangedDegenerate++; } }
   }
   console.log(`${name.padEnd(14)} n=${N}`);
   console.log(`   false sentences  BEFORE a=${oldHit.a} b=${oldHit.b} c=${oldHit.c} d=${oldHit.d} e=${oldHit.e}   AFTER a=${newHit.a} b=${newHit.b} c=${newHit.c} d=${newHit.d} e=${newHit.e}`);
   console.log(`   clean games ${clean} of which text CHANGED ${cleanChanged}${cleanChanged ? '   <-- NOT byte-identical' : ''};  defective games ${dirty} of which text UNCHANGED ${dirtyUnchanged}${dirtyUnchanged ? '   <-- NOT FIXED' : ''}`);
+  if (cleanChanged) console.log(`   of the ${cleanChanged} changed-but-clean games, ${cleanChangedDegenerate} are DEGENERATE (a twist below EPS) and ${cleanChanged - cleanChangedDegenerate} are not${cleanChanged - cleanChangedDegenerate ? '   <-- unexplained' : ''}`);
 }
 for (const [k, p] of Object.entries(PRESETS as Record<string, any>)) {
   if (!p || typeof p.a11 !== 'number') continue;

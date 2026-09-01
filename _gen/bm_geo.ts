@@ -15,8 +15,15 @@ import { buildGroundingPayload } from '../src/utils/report';
 import { equilibriumSet, regretA, regretB, generateRandomGame, PRESETS } from '../src/utils/gameEngine';
 import type { GamePayoffs } from '../src/types';
 
+// Class (a) SPLIT, after RED-MATH pointed out I was pooling two different
+// severities. (a1) is a FALSE STATEMENT about a real number — "y = 0 ... outside
+// [0,1]" when 0 is in [0,1]. (a2) is "y = undefined ... outside [0,1]", which
+// asserts nothing false about a number because there is no number; it is a
+// nonsense render, and the "no shelf" claim beside it is TRUE unless (c) fires.
 const S = {
   a: 'outside [0,1]',
+  a1: 'outside [0,1]',
+  a2: 'outside [0,1]',
   b: "A's payoff does not depend on what B does",
   c: "A's surface always tilts one way",
   d: 'The equilibrium sits on an edge or corner of the square',
@@ -85,12 +92,16 @@ const gens: Record<string, () => GamePayoffs> = {
 
 const N = Number(process.env.BM_N || 200000);
 for (const [name, gen] of Object.entries(gens)) {
-  const hit: Record<string, number> = { a: 0, b: 0, c: 0, d: 0, e: 0 };
-  const said: Record<string, number> = { a: 0, b: 0, c: 0, d: 0, e: 0 };
+  const hit: Record<string, number> = { a: 0, a1: 0, a2: 0, b: 0, c: 0, d: 0, e: 0 };
+  const said: Record<string, number> = { a: 0, a1: 0, a2: 0, b: 0, c: 0, d: 0, e: 0 };
   for (let i = 0; i < N; i++) {
     const g = gen();
     const t = geometryBriefing(g);
-    const flags: Record<string, boolean> = { a: defA(g), b: defB(g), c: defC(g), d: defD(g).hit, e: defE(g) };
+    const noRoot = Math.abs(g.a11 - g.a12 - g.a21 + g.a22) < E;
+    const flags: Record<string, boolean> = {
+      a: defA(g), a1: defA(g) && !noRoot, a2: noRoot,
+      b: defB(g), c: defC(g), d: defD(g).hit, e: defE(g),
+    };
     for (const k of Object.keys(flags)) {
       if (!flags[k]) continue;
       hit[k]++;
@@ -99,7 +110,7 @@ for (const [name, gen] of Object.entries(gens)) {
     }
   }
   console.log(`${name} (n=${N})`);
-  for (const k of ['a', 'b', 'c', 'd', 'e'] as const)
+  for (const k of ['a', 'a1', 'a2', 'b', 'c', 'd', 'e'] as const)
     console.log(`  (${k}) ${String(hit[k]).padStart(6)} games = ${(100 * hit[k] / N).toFixed(2)}%   sentence actually emitted in ${said[k]} of them${said[k] === hit[k] ? '' : '   <-- MISMATCH'}`);
 }
 
