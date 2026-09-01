@@ -135,9 +135,10 @@ check('exposure: the both-parties "at stake" shape is a KNOWN, ACCEPTED false po
 check('exposure: an option-label paraphrase is a KNOWN, ACCEPTED false positive',
   exposureAsymmetryClaim(sc('Cedar Grove Foragers and Valley Truffle Guild are seeking permits for the same seasonal truffle woodland. Each must choose between a Broad Permit covering more of the woodland and a Narrow Permit covering a smaller designated zone.')),
   'the accepted over-fire stopped firing — see _gen/bank_screens.ts before changing this');
-// RED-CLOUD's over-firing candidate, recorded as a NEGATIVE fixture rather than
-// as a finding: if anyone ever widens this screen toward margin vocabulary,
-// this real draw is what stops them.
+// ORACLE's over-firing candidate, recorded as a NEGATIVE fixture rather than as
+// a finding: if anyone ever widens this screen toward margin vocabulary, this
+// real draw is what stops them. (Attribution corrected — it was briefly credited
+// to RED-CLOUD, which asked for the correction rather than keep the credit.)
 quiet('exposure', exposureAsymmetryClaim,
   'The archive coordinator chooses between Wide Margins and Tight Margins for the scans, while the conservator chooses between Early Batch and Late Batch.');
 // New recall, from RED-CLOUD's 38-row gap analysis and ORACLE's copular form.

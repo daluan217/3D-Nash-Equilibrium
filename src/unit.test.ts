@@ -1846,6 +1846,34 @@ function testOracleGateHoles() {
   assert(gate('Two foundries are casting a bell. Foundry A schedules the Early Slot and Foundry B schedules the Late Slot, moving simultaneously.'),
     'BARE LETTER CONTROL: "Foundry A schedules"');
 
+  // ── THE BARE LETTER WITH ITS ROLE IN APPOSITION ─────────────────────────
+  // Verbatim gate-passing draws. Whatever verb list META_BARE_LETTER carries,
+  // the comma puts the verb where that rule does not look.
+  assert(!gate('A volunteer ecologist chooses whether to conduct the bat survey during an early or late evening window. B, the park coordinator, chooses whether to assign a quiet route or a busy route for that night\'s survey.'),
+    'APPOSITION (RED-CLOUD, cloud draw): "B, the park coordinator, chooses…"');
+  assert(!gate('A hospital charge nurse chooses between a Core Team and a Surge Team for the triage desk. B, the ambulance coordinator, chooses between Steady Arrivals and Surge Arrivals.'),
+    'APPOSITION: "B, the ambulance coordinator"');
+  assert(!gate('A satellite operator chooses between the Early Window and the Late Window for a downlink. B, a ground-network coordinator, chooses between a Priority Link and a Shared Link.'),
+    'APPOSITION: the indefinite article form, "B, a ground-network coordinator"');
+  // THE LOOKBEHIND, measured: it excludes exactly one row on the pooled corpora,
+  // and this is it — noun-preceded, so the letter only disambiguates.
+  assert(gate('Two oyster farmers with adjacent leased beds decide on harvesting. For Farmer A, the choices are Early Slot or Late Slot. For Farmer B, the choices are Shared Window or Separate Window.'),
+    'APPOSITION CONTROL: "For Farmer A, the choices…" is noun-preceded');
+  // The SYMMETRIC appositive, where both parties are charactered and the letter
+  // only disambiguates. ORACLE's negative fixture, re-checked here.
+  assert(gate('Operator A, the larger firm, chooses between an Early Slot and a Late Slot, while Operator B, the smaller, chooses between a Shared Window and a Separate Window.'),
+    'APPOSITION CONTROL: "Operator A, the larger firm" — both sides charactered');
+  // THE PAIR FORM IS DELIBERATELY NOT GATED — 82 draws on the same pool, both
+  // parties equally charactered. Asserted so a later widening has to face it.
+  // ISOLATED ON PURPOSE. The first draft of this control read "…Each company
+  // chooses between an Early Slot and a Late Slot" and failed — not on the pair
+  // form at all, but on `onlyPairHeldCollectively`, which correctly rejects one
+  // pair handed to a collective subject. A control carrying two signals cannot
+  // show what it claims to show; both choosers and both pairs are named here so
+  // only the pair form is under test.
+  assert(gate('Two local courier companies, A and B, are bidding for a delivery route. Courier A chooses between an Early Slot and a Late Slot, while Courier B chooses between a Shared Window and a Separate Window.'),
+    'APPOSITION CONTROL: the symmetric pair form stays legal');
+
   // ── THE SECOND PAIR HANDED BACK TO THE SAME NAMED ACTOR ─────────────────
   assert(!gate('A university library director chooses between Early Slot and Late Slot for a new book series. The same director chooses between Shared Window and Separate Window for evaluating the same publishing deal.'),
     'SAME ACTOR (gate-passing draw): the second pair handed back to "the same director"');
@@ -1881,5 +1909,5 @@ function testOracleGateHoles() {
   assert(!cited('The haulier earns 100% of the fee on an early window.'),
     'PAYOFF CITATION CONTROL: a percentage is not a payoff');
 
-  console.log('✓ oracle gate holes: the cast noun in 5 game-theoretic constructions (puppet-theatre collision spared), the bare letter under a widened verb list (designations spared), the second pair handed back to the same named actor (scene-noun "the same X" spared), and the sentence-final payoff citation the old lookahead could not see');
+  console.log('✓ oracle gate holes: the cast noun in 5 game-theoretic constructions (puppet-theatre collision spared), the bare letter under a widened verb list AND in apposition (designations and the symmetric pair form spared), the second pair handed back to the same named actor (scene-noun "the same X" spared), and the sentence-final payoff citation the old lookahead could not see');
 }

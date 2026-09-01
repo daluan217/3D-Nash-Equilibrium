@@ -606,6 +606,56 @@ const META_CAST_CONSTRUCTION =
  */
 const META_BARE_LETTER =
   /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have|books?|takes?|runs?|schedules?|sets?|opts?|holds?|weighs?|operates?|faces?|uses?|goes?|plans?|manages?|serves?|considers?)\b/u;
+/**
+ * THE BARE LETTER AS SUBJECT WITH ITS ROLE DEMOTED TO AN APPOSITIVE. Whatever
+ * verb list `META_BARE_LETTER` carries, this walks past it, because the letter
+ * is followed by a COMMA and the verb never sits where that rule looks:
+ *
+ *   "A volunteer ecologist chooses whether to conduct the bat survey during an
+ *    early or late evening window. B, THE PARK COORDINATOR, chooses whether to
+ *    assign a quiet route or a busy route for that night's survey."
+ *
+ * 21 of 8,194 unique gate-passing draws (0.256%), hand-read, 21/21 genuine,
+ * zero false positives. Found by RED-CLOUD; re-measured here rather than taken
+ * on report. The sources are cloud throughout, the production model included.
+ *
+ * WHY THIS IS THE BAD CLASS AND "Operator A chooses" IS NOT. In all 21 the
+ * asymmetry is total: the first party gets a real character ("A satellite
+ * operator", "A hospital charge nurse", "A local beekeeper") and the second IS
+ * the letter, with its role pushed into an aside. That is a party with no
+ * character at all, not the convention where a noun is primary and the letter
+ * only disambiguates. The lookbehind is what keeps the two apart, and it is
+ * measured: it excludes exactly ONE row on the same pool, "For Farmer A, the
+ * choices are to harvest now or wait another season", which is the good shape
+ * and is pinned as the control.
+ *
+ * TWO INDEPENDENT RE-MEASUREMENTS, and the broader form is the one shipped.
+ * ORACLE proposed a narrower shape that also requires the appositive to CLOSE
+ * with a comma and be followed by a verb, and measured it at 23/12,819. That
+ * form misses "B, a partner consortium sharing the telescope allocation, is
+ * choosing…", whose appositive runs past its 40-character window; the form here
+ * catches it, and all 21 of its matches were hand-read as genuine. Both teams
+ * observed the same regularity independently and it is the reason to believe
+ * the class: every single match is the letter B, never A. The first party is
+ * fully charactered and the second is demoted, which is precisely what the
+ * symmetric "Agency A / Operator B" convention cannot look like, since that
+ * convention necessarily uses both letters.
+ *
+ * HONEST NOTE ON THE LOOKBEHIND HERE. On ORACLE's pool the guard changes
+ * nothing at all — with and without it the rule returns the same rows — so
+ * unlike `META_BARE_LETTER`, where dropping it admits 740 good draws, here the
+ * guard is a SHAPE argument plus one real row on this pool, not a broadly
+ * measured one. It is kept on the D4 precedent this file already argues: a zero
+ * rate is not grounds for dropping a guard whose shape collides.
+ *
+ * DELIBERATELY NOT GATED: the PAIR form, "Two courier firms, A and B, are
+ * bidding…", 82 draws on the same pool. It is the same appositive naming
+ * introduced symmetrically, both parties equally charactered, and if "Firm A
+ * chooses X while Firm B chooses Y" is good output then so is this. RED-CLOUD
+ * declined to propose a rule for it and flagged its own uncertainty; the number
+ * is recorded so the refusal is on file with evidence rather than as an omission.
+ */
+const META_LETTER_IN_APPOSITION = /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB],\s+(?:the|a|an)\s+\w/u;
 const GAME_THEORY_VOCAB = /\b(?:payoffs?|equilibri\w+|strateg\w+|players?|matrix|matrices|dominant|zero[\s-]sum|simultaneous\w*|normal[\s-]form|best\s+response|moves?)\b/i;
 const GAME_PRODUCT_VOCAB = /\b(?:video\s?games?|game\s+studio|game\s+developer|gaming|console|arcade|board\s+games?|playtest\w*|publisher|storefront|featured\s+slot|download\w*|app\s+store|steam)\b/i;
 
@@ -1079,6 +1129,7 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
   const META: [RegExp | ((t: string) => boolean), string][] = [
     [META_PROMPT_CAST, "the prompt's own cast names (\"Player A\") in the story"],
     [META_BARE_LETTER, 'a bare letter standing in for a character'],
+    [META_LETTER_IN_APPOSITION, 'a bare letter as a character with its role demoted to an aside ("B, the park coordinator, chooses…")'],
     [META_GAME_CAST, 'the game\'s cast ("the two players") named in the story'],
     [META_CAST_CONSTRUCTION, 'the game\'s cast noun in a game-theoretic construction ("the row player", "the players are…")'],
     [namesTheGameItself, 'the game itself named as an object in the story'],

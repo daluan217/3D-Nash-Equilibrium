@@ -16,6 +16,14 @@ BARE LETTER (local draw): "A manages" — outside the shipped verb list
   exit=1
 Unit test suite failure:
 META TRAP B (rt3_flat_local#8): "Agency A chooses… while Operator B chooses" is ordinary English for two indistinguishable parties
+== M4b apposition: rule removed
+  exit=1
+Unit test suite failure:
+APPOSITION (RED-CLOUD, cloud draw): "B, the park coordinator, chooses…"
+== M4c apposition: LOOKBEHIND dropped
+  exit=1
+Unit test suite failure:
+APPOSITION CONTROL: "For Farmer A, the choices…" is noun-preceded
 == M5 same-actor: rule removed
   exit=1
 Unit test suite failure:

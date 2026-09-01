@@ -32,6 +32,12 @@ cp /tmp/nv.orig "$F"; mut "|books?|takes?|runs?|schedules?|sets?|opts?|holds?|we
 echo "== M4 bare letter: LOOKBEHIND dropped under the widened list"
 cp /tmp/nv.orig "$F"; mut "  /(?<![\\p{L}\\p{N}][ \\t]|[\\p{L}\\p{N}])\\b[AB]\\b\\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have|books?" "  /\\b[AB]\\b\\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have|books?"; run must-fail
 
+echo "== M4b apposition: rule removed"
+cp /tmp/nv.orig "$F"; mut '    [META_LETTER_IN_APPOSITION, ' '    [/(?!)/, '; run must-fail
+
+echo "== M4c apposition: LOOKBEHIND dropped"
+cp /tmp/nv.orig "$F"; mut 'const META_LETTER_IN_APPOSITION = /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB],' 'const META_LETTER_IN_APPOSITION = /\b[AB],'; run must-fail
+
 echo "== M5 same-actor: rule removed"
 cp /tmp/nv.orig "$F"; mut "    [theSameActorTakesTheSecondPair, \"a second set of options given back to the same named actor\"]," ""; run must-fail
 
