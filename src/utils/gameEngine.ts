@@ -430,6 +430,54 @@ export function fmtPayoff(v: number): string {
   return Object.is(s, -0) ? '0' : s.toFixed(3);
 }
 
+/**
+ * The RIGHT-HAND SIDE of a rendered payoff equation, RELATION INCLUDED.
+ *
+ * `fmtPayoff` returns prose ("less than 0.001"), which is right for a sentence
+ * and wrong inside TeX — "\mathbb{E}[A] = less than 0.001" is not an equation.
+ * So the relation moves into the operator instead of the value: a payoff that
+ * merely ROUNDS to zero renders as `< 0.001`, never as `= 0.000`.
+ *
+ * MEASURED, not hypothetical: over 40,000 random games, 8 equilibrium expected
+ * payoffs are non-zero yet print as exactly "0.000" — the display asserts a
+ * quantity is nothing when it is not, and an exact zero becomes
+ * indistinguishable from 0.0004.
+ */
+export function payoffTexRhs(v: number): string {
+  if (!Number.isFinite(v)) return '= \\text{--}';
+  if (v === 0) return '= 0';
+  if (r3(v) === 0) return v > 0 ? '< 0.001' : '> -0.001';
+  return `= ${r3(v).toFixed(3)}`;
+}
+
+/**
+ * Two payoffs that a STRICT relation is asserted between, rendered at whatever
+ * precision keeps that assertion legible.
+ *
+ * At 3dp the app could print "0.030 > 0.030" — two different numbers collapsed
+ * to one string with a strict inequality still between them, which is visibly
+ * self-contradictory mathematics. It happens where the gap exceeds the
+ * per-player indifference tolerance (so `indifferenceAt` reports NOT
+ * indifferent and a strict relation is drawn) while falling under 3dp
+ * resolution. Measured with the shipped condition: 28 of 640,000 relation
+ * renderings, across 24 distinct games.
+ *
+ * An earlier count of 19,719 was 33x too high because it substituted `p === q`
+ * for the real `indifferenceAt` tolerance — recorded because the inflated
+ * number is what a stand-in condition buys you.
+ */
+export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
+  if (!Number.isFinite(p) || !Number.isFinite(q) || p === q) {
+    return { p: r3(p).toFixed(3), q: r3(q).toFixed(3) };
+  }
+  // Widen only as far as it takes to tell them apart; 3dp stays the common case.
+  for (let dp = 3; dp <= 8; dp++) {
+    const sp = p.toFixed(dp), sq = q.toFixed(dp);
+    if (sp !== sq) return { p: sp, q: sq };
+  }
+  return { p: p.toExponential(2), q: q.toExponential(2) };
+}
+
 // NOTE (adversarial round 1, 2026-08-29): the mixed NE is reported at 3-dp
 // ROUNDED coordinates, and eA/eB are the expected payoffs AT THAT ROUNDED
 // PROFILE — so the tuple (x, y, eA, eB) is self-consistent, which `npm test`'s

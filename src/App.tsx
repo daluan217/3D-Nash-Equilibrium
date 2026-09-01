@@ -35,6 +35,8 @@ import {
   replayToStep,
   type ThinSnapshot,
   fmtPayoff,
+  payoffTexRhs,
+  fmtPayoffPair,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -3654,10 +3656,10 @@ export default function App() {
                   <MathTex tex={`y^* = ${texProb(resolved.y)}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[A] = ${r3(EA(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[A] ${payoffTexRhs(EA(resolved.x, resolved.y, payoffs))}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[B] = ${r3(EB(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[B] ${payoffTexRhs(EB(resolved.x, resolved.y, payoffs))}`} />
                 </span>
               </div>
 
@@ -3668,13 +3670,23 @@ export default function App() {
                       <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">
                         {indiff.a ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      <MathTex tex={`\\mathbb{E}[\\text{Row 1}] = ${r3(simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12).toFixed(3)} ${indiff.a ? '\\approx' : (simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12 > simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22 ? '>' : '<')} \\mathbb{E}[\\text{Row 2}] = ${r3(simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22).toFixed(3)}`} />
+                      {(() => {
+                        const p = simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12;
+                        const q = simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22;
+                        const f = fmtPayoffPair(p, q);
+                        return <MathTex tex={`\\mathbb{E}[\\text{Row 1}] = ${f.p} ${indiff.a ? '\\approx' : (p > q ? '>' : '<')} \\mathbb{E}[\\text{Row 2}] = ${f.q}`} />;
+                      })()}
                     </div>
                     <div>
                       <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">
                         {indiff.b ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      <MathTex tex={`\\mathbb{E}[\\text{Col 1}] = ${r3(simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21).toFixed(3)} ${indiff.b ? '\\approx' : (simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21 > simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22 ? '>' : '<')} \\mathbb{E}[\\text{Col 2}] = ${r3(simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22).toFixed(3)}`} />
+                      {(() => {
+                        const p = simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21;
+                        const q = simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22;
+                        const f = fmtPayoffPair(p, q);
+                        return <MathTex tex={`\\mathbb{E}[\\text{Col 1}] = ${f.p} ${indiff.b ? '\\approx' : (p > q ? '>' : '<')} \\mathbb{E}[\\text{Col 2}] = ${f.q}`} />;
+                      })()}
                     </div>
                     <div className="text-xs text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
