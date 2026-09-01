@@ -292,10 +292,22 @@ function checkGeometry(
       //   int[-3,3]  13.48% -> 15.03%,  1.557% moved
       //   int[-1,1]   4.87% -> 11.10%,  6.231% moved
       // and on `generateRandomGame`, the distribution the "New random game"
-      // button actually produces, it moved by 0.00 points across all four kinds
-      // over 160,000 draws — that sampler rejects within-player ties, so the
-      // degenerate class it turns on essentially never arises there. The change
-      // is real on hand-typed matrices and null on generated ones.
+      // button actually produces, it does not move AT ALL: 0.000% of rows change
+      // value on kind='pure' (level 14.74%), on kind='mixed' (level 100%), and
+      // on the 50/50 mix the button issues (level 56.75%), 40,000 draws each.
+      // That sampler rejects within-player ties, which is the same fact that
+      // makes the degenerate class unreachable there. The change is real on
+      // hand-typed matrices and NULL on generated ones.
+      //
+      // AN EARLIER VERSION OF THIS COMMENT SAID "0.00 points across all four
+      // kinds", WHICH WAS COVERAGE THIS MEASUREMENT DID NOT HAVE.
+      // `generateRandomGame` takes `'pure' | 'mixed'` and its body reads
+      // `kind === 'mixed' ? … : pureCount > 0`, so every other string lands in
+      // the 'pure' arm. I passed four invented names and measured ONE arm four
+      // times; the four matching 14.0% readings looked like agreement and were
+      // the same number. Re-run on the real arms, verified by passing a bogus
+      // kind and watching it reproduce the 'pure' level exactly. The 0.000%
+      // change survived; the word "four" did not.
       claimed: claims.equilibriumIsInteriorFlatSpot,
       actual: geo.hasInteriorFlatSpot,
       yes: 'the equilibrium is an interior joint flat spot',
