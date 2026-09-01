@@ -794,6 +794,7 @@ function runUnitTests() {
   testNegotiationForm();
   testInterestAlignment();
   testTwoChooserStructure();
+  testRepeatedPlayRefused();
   console.log('All unit tests passed.');
 }
 
@@ -1010,6 +1011,45 @@ function testOptionLabelChannel() {
     'CONTROL: "double" asserts no specific ratio and is ordinary English');
   assert(gate(sc({ description: 'A regional operator has run this route many times before, and a second operator is new to it.' })),
     'CONTROL: "many times" names no number — gating it would be the word list this screen avoids');
+
+  // ── L7 and L10: the two DECIDABLE label holes RED 1's newer oracle still
+  //    showed reaching the user. Both were verified reaching it through the
+  //    REAL gate before either was written (rule 4: never answer "is that
+  //    covered?" from an instrument).
+  assert(!gate(sc({ row1: 'Order-of-Magnitude Expansion', row2: 'Token Expansion', col1: 'Order-of-Magnitude Backing', col2: 'Token Backing' })),
+    'L10: "orders of magnitude" HYPHENATED must be caught — the rule already existed and was defeated by punctuation, exactly like U+2212');
+  assert(!gate(sc({ row1: 'Ten Thousand Crates', row2: 'One Crate', col1: 'Ten Thousand Slots', col2: 'One Slot' })),
+    'L7: a numeral written as a WORD in a label is the same claim as a digit');
+  assert(!gate(sc({ name: 'The Million-Unit Decision' })),
+    'L7: and in the NAME, the field no screen read at all before this campaign');
+  // The spaced spelling must STILL be caught, or the widening replaced the
+  // rule rather than extending it.
+  assert(!gate(sc({ description: 'The two yards differ by orders of magnitude in what this decision is worth.' })),
+    'L10 REGRESSION: the original spaced spelling must still be caught');
+
+  // ── COLLISION CONTROLS for L7. Every one of these is caught by the
+  //    predicate RED 1 scored (their D4) and must NOT be caught by this one.
+  //    None appears in the 3,296 draws on this box, so all three measure 0%
+  //    today — they are excluded on the SHAPE of the word, because the rate is
+  //    precisely what would have hidden them.
+  assert(gate(sc({ row1: 'Manifold Assembly', row2: 'Valve Assembly' })),
+    'L7 COLLISION: "Manifold" — red\'s D4 uses \\w+fold and would break this already-passing control');
+  assert(gate(sc({ description: 'A depot runs a twice-weekly delivery to the yard, and the yard schedules its own crew.' })),
+    'L7 COLLISION: "twice-weekly" is a SCHEDULE, not a magnitude');
+  // NB the first draft of this control read "…each morning before either
+  // operator decides", and the suite failed it — correctly. "before … decides"
+  // is the move-order claim, caught by a rule that has nothing to do with
+  // quantities. The fixture was wrong, not the gate; recorded because a
+  // control that fails for an unrelated reason is the easiest way to talk
+  // yourself into loosening the wrong rule.
+  assert(gate(sc({ description: 'Dozens of crates move through the depot each morning, and the two operators each pick a loading window.' })),
+    'L7 COLLISION: "dozens of crates" is ordinary scene-setting');
+  assert(gate(sc({ row1: 'Batch One', row2: 'Batch Two' })),
+    'L7 COLLISION (the one real FP in red\'s 527-row corpus): a spelled numeral used as an IDENTIFIER, not a magnitude');
+  // SCOPE: name+labels only. A description may set a scene at scale; a label
+  // asserting one is making a claim about a matrix it cannot see.
+  assert(gate(sc({ description: 'The depot handles thousands of crates a week, and the two operators each pick a window.' })),
+    'L7 SCOPE: a large quantity in the DESCRIPTION is scene-setting and stays legal — the description already carries the multiplier screen for the form that is a claim');
 
   // ── WHERE THE RULE LIVES. This is an architectural assertion, both ways. ──
   // The no-numbers rule is TRUE ONLY AT RUNG 3, because only there does the
@@ -1273,6 +1313,115 @@ function testTwoChooserStructure() {
     'W4 REGRESSION CONTROL: the actual rivalry CLAIM must still be caught on a common-interest matrix');
 
   console.log('✓ two-chooser structure: 5 real defects caught across 1,808 draws at 0 false positives; every control is a draw an earlier draft wrongly rejected');
+}
+
+/**
+ * REPEATED PLAY — PRICED AND REFUSED. This block ships NO new rule. It exists
+ * so the refusal is a standing, executable boundary rather than a note in a log
+ * that the next window has to rediscover.
+ *
+ * THE IDEA. The app models a ONE-SHOT simultaneous normal-form game. A scenario
+ * asserting the game is played over and over is therefore making a false claim
+ * about the object, and a serious one: under repetition the equilibrium set is
+ * a different thing entirely (folk theorem), so "each season they choose again,
+ * and a defector is punished next year" describes a game this app does not
+ * solve and whose surface does not match the plot on screen.
+ *
+ * WHY IT WAS REFUSED. Measured over 48 corpus files, 3,185 unique draws, 3,134
+ * of them gate-passing (_gen/blue_w5_repeatverdict.mjs), with the detector
+ * self-tested against hand-built positives before any zero was reported:
+ *
+ *   1. THE FALSE CLAIM IS ABSENT, NOT CONTAINED. The folk-theorem machinery was
+ *      counted TOKEN BY TOKEN so a zero could not hide inside an alternation:
+ *      retaliat* 0, punish* 0, forgiv* 0, tit-for-tat 0, "repeated game" 0,
+ *      iterat* 0, "future round/season/play" 0, "later rounds" 0, "over many X"
+ *      0, "again" 0, "season after season" 0, "in the long run" 0, "build a
+ *      reputation" 0, reputation-carried-across-plays 0. Zero on the 3,134
+ *      accepted draws AND zero on the 51 the gate rejects — so no existing
+ *      screen is quietly holding this back. The generator simply does not make
+ *      this claim. Building a gate for it would be pure containment for a
+ *      channel that, unlike the numeral channel, no one has shown is walkable.
+ *
+ *   2. THE ONLY CANDIDATE RULE WITH ANY REACH IS 100% FALSE POSITIVE. The
+ *      structural form — a recurrence quantifier attached to a CHOOSING verb,
+ *      which is the only form that is a claim about the GAME rather than about
+ *      the world — fires on exactly 1 of 3,134 draws, and that one is wrong.
+ *      It is the fourth instance of the scene-noun collision this campaign
+ *      keeps hitting, and the sharpest yet: see the control below.
+ *
+ *   3. EVERY LOOSER VARIANT IS THE 32.2% MISTAKE AGAIN. A gate on cycle nouns
+ *      (season/year/week/shift/day) would reject 943 of 3,134 draws = 30.09%.
+ *      The narrow-looking ones are no better once read: "round" (4 draws) is a
+ *      maintenance round, a purchasing round and a bird-ringing dawn round;
+ *      "long run" (2 draws) is a letterpress PRINT run and is literally an
+ *      OPTION LABEL ("Short Run / Long Run"); "reputation" (58 draws) is the
+ *      stakes-fidelity feature working as designed — a consequence of the ONE
+ *      decision, never a mechanism spanning plays.
+ *
+ * The controls below are all REAL, QUOTED, gate-passing draws. They pin the
+ * boundary so a later window that decides to revisit this cannot ship a
+ * cycle-noun word list without the suite going red.
+ */
+function testRepeatedPlayRefused() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const sc = (d: string, labels?: Partial<Record<'row1' | 'row2' | 'col1' | 'col2', string>>) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d, ...labels,
+  } as any);
+  const gate = (d: string, labels?: Partial<Record<'row1' | 'row2' | 'col1' | 'col2', string>>) =>
+    validateScenario(sc(d, labels), ANTI).ok
+    && scenarioIsClaimFree(sc(d, labels)).ok !== false
+    && validateProseDirections(d, sc(d, labels), ANTI).length === 0;
+
+  // ── THE FALSE POSITIVE THAT DECIDED IT (rt3_stakes_cloud#10, verbatim) ───
+  // "Each shift chooses" — "each" distributes over the two PLAYERS, and the
+  // players ARE the shifts. The cycle noun is the actor noun. The collision is
+  // doubled here, because "Shift" is also in both option labels. Any rule
+  // keyed on `(each|every) + <cycle noun>` rejects this correct draw.
+  assert(gate('Two textile dyeing shifts, A and B, are scheduling the timing of their routine dye-bath adjustments. Each shift chooses between Early Shift and Late Shift for its adjustment.',
+    { row1: 'Early Shift', row2: 'Late Shift', col1: 'Early Shift', col2: 'Late Shift' }),
+    'REPEATED PLAY (the measured false positive): "Each SHIFT chooses" distributes over the two PLAYERS — the cycle noun is the actor');
+
+  // ── THE SCENE NOUNS, every one a real draw the loose rules would have hit ─
+  const REAL: [string, string, Partial<Record<'row1' | 'row2' | 'col1' | 'col2', string>>?][] = [
+    ['rt3_flat_cloud2#51, "Long Run" is a PRINT run — and an option label',
+      'A small letterpress publisher is choosing between a Short Run and a Long Run for a new edition. Its paper supplier is choosing between Classic Type and Modern Type for the same edition.',
+      { row1: 'Short Run', row2: 'Long Run' }],
+    ['rt3_flat_cloud#39, "round" is a maintenance round',
+      'The clocktower caretaker chooses between Inspect Gears and Check Bell for the scheduled maintenance round. The restoration contractor chooses between Replace Ropes and Tune Chimes for the same round.'],
+    ['rt3_reroll_cloud#58, "Round" is a bird-ringing patrol — and an option label',
+      'A bird-ringing station manager chooses between a Dawn Round and an Extended Round for the station’s work. A visiting bird research team chooses whether to request the Early Slot or the Late Slot.',
+      { row1: 'Dawn Round', row2: 'Extended Round' }],
+    ['rt_label_corpus#48, "recurring" describes the CONTRACT, not the game',
+      'Two courier companies are competing for a recurring delivery contract. Each company chooses whether to submit a bid centered on the north route or the south route.'],
+    ['rt3_character_cloud#27, "daily sailings" is the business, one decision about it',
+      'Two ferry operators are assigning their daily sailings to timetable slots on the same route. Each operator chooses between the Early Slot and the Late Slot.'],
+    ['rt_label_corpus#31, "routine weekly prices" — recurrent context, single choice',
+      'Two neighboring dairy co-ops are setting routine weekly prices for comparable milk products. Each co-op chooses between Premium Price and Discount Price for the coming week.'],
+    ['rt2_gapladder_g25#12, "reputation" is a STAKE on this one decision',
+      'A large ski resort is setting its grooming plan for the season, with its reputation and operating budget heavily tied to reliable lift access. An independent grooming contractor, whose own business is less exposed, chooses between a Full Pass and a Selective Pass.'],
+    ['rt3_stakes_cloud#7, "next season’s catch limit" is the SUBJECT of one choice',
+      'Two fishing cooperatives are negotiating next season’s shared catch limit. Each cooperative chooses either Raise Quota or Hold Quota for its position at the bargaining table.'],
+  ];
+  for (const [tag, d, labels] of REAL) {
+    assert(gate(d, labels), `REPEATED PLAY CONTROL (${tag}): a cycle noun is scene-setting — gating it would reject 30.09% of real output`);
+  }
+
+  // ── AND THE CLAIM ITSELF, so the refusal is honest about what still ships ─
+  // These are NOT caught. They are recorded as reachable, exactly as the F1
+  // vocabulary gap was, so nobody reads this block as "repeated play is
+  // handled". If the retrained model starts producing them, this is the
+  // fixture that is already written.
+  const STILL_REACHES_THE_USER = [
+    'Each season the co-op chooses between an Early Harvest and a Late Harvest, and the mill chooses again the following season.',
+    'The two operators play this out over many rounds, and either can retaliate the next time the corridor is groomed.',
+    'A yard that undercuts today builds a reputation that costs it in future rounds.',
+  ];
+  for (const d of STILL_REACHES_THE_USER) {
+    assert(gate(d), `REPEATED PLAY, KNOWN OPEN: this genuinely false claim still reaches the user by design — 0 instances in 3,185 draws did not justify a rule whose only real-world hit was a false positive: ${d}`);
+  }
+
+  console.log('✓ repeated play: PRICED AND REFUSED — folk-theorem machinery 0/3,134 accepted and 0/51 rejected; candidate rule 1 hit, 1 false positive; 9 real draws pinned as controls; 3 true claims recorded as still reaching the user');
 }
 
 try {

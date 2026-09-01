@@ -421,10 +421,55 @@ const MULTIPLIER_CLAIM = new RegExp(
     String.raw`\p{N}\s?[×]`,
     // "a hundred thousand times more", "12 times larger", "ten times as costly"
     String.raw`\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|\p{N}+)\s+times\s+(?:more|less|larger|smaller|greater|bigger|higher|lower|worse|better|as\s+\w+)\b`,
-    String.raw`\borders?\s+of\s+magnitude\b`,
+    // `[-\s]+`, not `\s+`. RED 1's label oracle (hole L10) put the identical
+    // claim in a label as "Order-of-Magnitude Expansion" and it walked straight
+    // through this rule, because the rule was written for the spaced spelling
+    // only. Not a missing screen — an EXISTING screen defeated by punctuation,
+    // the same shape as the U+2212 minus this file normalizes, which has bitten
+    // this repo three times. Cost of the widening, measured over 3,245
+    // gate-passing draws across every corpus: zero.
+    String.raw`\borders?[-\s]+of[-\s]+magnitude\b`,
   ].join('|'),
   'iu',
 );
+
+/**
+ * A BARE LARGE QUANTITY IN A NAME OR AN OPTION LABEL.
+ *
+ * RED 1's label oracle, hole L7: rows "Ten Thousand Crates" / "One Crate" on a
+ * matrix whose every swing is one thousandth of a unit. There is no digit, so
+ * the `\p{N}` screen sees nothing; there is no "-fold", no "times more" and no
+ * "orders of magnitude", so no branch of MULTIPLIER_CLAIM sees it either. The
+ * label asserts a magnitude about a matrix it cannot see, and under rung 3 the
+ * rendered paragraph beside it states the real number.
+ *
+ * SCOPE IS NAME AND LABELS ONLY, DELIBERATELY. Both scopes measure 0 false
+ * positives today, but they are not the same bet on future output: a
+ * DESCRIPTION may legitimately set a scene at scale ("a depot handling
+ * thousands of crates"), whereas a large round number in a strategy NAME is an
+ * assertion about the payoff. The description already carries the multiplier
+ * screen for the form that is actually a claim ("a hundred thousand times
+ * more", RED 2's case L5). Keeping the description free is the minimum
+ * constraint that closes the hole.
+ *
+ * NARROWER THAN RED'S OWN D4 PREDICATE, and the differences are the point.
+ * Theirs is `hundreds?|thousands?|millions?|billions?|dozens?|twice|thrice|
+ * \w+fold`. Three of those are scene-noun collisions of exactly the kind this
+ * campaign has hit four times:
+ *   `\w+fold` matches "Manifold", which this suite already pins as a control
+ *             ("Manifold is not a multiple — the -fold rule requires a numeral
+ *             stem"); adopting D4 as written would have broken a passing test.
+ *   `twice`   matches "a twice-weekly delivery", a SCHEDULE, not a magnitude.
+ *   `dozens`  matches "dozens of crates", ordinary scene-setting.
+ * None of the three appears in the 3,296 draws on this box, so all of them
+ * measure 0% today. They are excluded on the shape of the word rather than on
+ * a rate, because the rate is what would have hidden them.
+ *
+ * Reach: 0 of 3,245 gate-passing draws across 49 corpora
+ * (_gen/blue_w5_spelledprice.mjs). CONTAINMENT, not detection — recorded that
+ * way for the same reason the numeral screen is.
+ */
+const BIG_SPELLED_QUANTITY = /\b(?:hundreds?|thousands?|millions?|billions?|trillions?)\b/i;
 
 /**
  * TWO DISTINCT CHOOSERS — the cast analysis behind three of the structural
@@ -619,6 +664,10 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     // which has bitten the repo three times.
     if (/\p{N}/u.test(raw)) return { ok: false, reason: `${where} cites a number` };
     if (MULTIPLIER_CLAIM.test(raw)) return { ok: false, reason: `${where} asserts a multiple` };
+    // The numeral written as a WORD. See BIG_SPELLED_QUANTITY above: name and
+    // labels only, and narrower than the predicate RED 1 scored, because three
+    // of theirs collide with ordinary scene vocabulary.
+    if (BIG_SPELLED_QUANTITY.test(raw)) return { ok: false, reason: `${where} cites a large quantity` };
   }
   const desc = normalizeProseMinus((sc.description ?? '').trim());
   if (!desc) return { ok: true };

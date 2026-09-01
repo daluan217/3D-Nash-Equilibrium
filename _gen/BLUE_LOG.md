@@ -23,6 +23,133 @@ slots, so `--parallel 4` on `-c 4096` gives 1024 tokens per slot.
 
 ---
 
+## 2026-08-31 — FIX WINDOW 5: repeated play PRICED AND REFUSED; two decidable label holes closed
+
+### e2e, run to completion first, as instructed
+
+**22/22 checks passed, exit 0**, at branch head `3732cb7`, load 16–19. Run
+again at the end of the window after the code changes: **22/22, exit 0**. The
+previous window killed a run at load 26.5 rather than report a meaningless
+number; this is the real one.
+
+### REPEATED PLAY — priced, refused, and the boundary pinned as controls
+
+The claim worth gating: this app models a ONE-SHOT simultaneous normal-form
+game, so a scenario asserting the game is played over and over describes an
+object the app does not solve (under repetition the equilibrium set is a
+different thing entirely). The worry was that "each season" is ordinary
+scene-setting and a gate on it would be the 32.2% mistake again.
+
+Measured over **48 corpus files, 3,185 unique draws, 3,134 gate-passing**
+(`_gen/blue_w5_repeatprice.mjs`, `_gen/blue_w5_repeatverdict.mjs`), detector
+self-tested against hand-built positives before any zero was reported:
+
+| | result |
+|---|---|
+| folk-theorem machinery, counted TOKEN BY TOKEN | **0** on accepted output, **0** on the 51 rejected |
+| candidate structural rule (recurrence quantifier + choosing verb) | **1 hit / 3,134 — and it is a FALSE POSITIVE** |
+| a gate on cycle nouns (season/year/week/shift/day) | would reject **943 / 3,134 = 30.09%** |
+
+`retaliat*` 0, `punish*` 0, `forgiv*` 0, tit-for-tat 0, "repeated game" 0,
+`iterat*` 0, "future round/season/play" 0, "later rounds" 0, "over many X" 0,
+"again" 0, "season after season" 0, "in the long run" 0, "build a reputation" 0,
+reputation-carried-across-plays 0. Counted per token so a zero could not hide
+inside an alternation. Zero on the REJECTED draws too, which is the load-bearing
+half: the class is **absent from the generator**, not contained by an existing
+screen.
+
+**REFUSED on three independent legs.** (1) The genuinely false claim does not
+occur. (2) The only candidate with any reach is 100% false positive, so it fails
+standing rule 2 outright. (3) Every looser variant is a scene-noun collision —
+the fourth, fifth and sixth instances this campaign has hit:
+
+- `each SHIFT chooses` — "each" distributes over the two PLAYERS, and the
+  players ARE the shifts. The cycle noun is the actor noun, and "Shift" is in
+  both option labels too.
+- `Long Run` (2 draws) is a letterpress PRINT run, and is literally an OPTION
+  LABEL ("Short Run / Long Run").
+- `round` (4 draws) is a maintenance round, a purchasing round, a bird-ringing
+  dawn round, a delivery route.
+- `reputation` (58 draws) is the stakes-fidelity feature working as designed — a
+  consequence of the ONE decision, never a mechanism spanning plays.
+
+Shipped as `testRepeatedPlayRefused()` in `src/unit.test.ts`: **no rule**, 9 real
+quoted draws pinned as controls, plus **3 true repeated-play claims asserted as
+STILL REACHING THE USER**. Those three are the honest half — if a later window
+ships this gate, those assertions go red and force a conscious decision instead
+of letting the refusal be quietly forgotten.
+
+### L7 and L10 — two DECIDABLE holes closed, in a channel this branch already owned
+
+RED 1's newer label oracle (`rt_label_gate_oracle.mjs`, 10 holes) showed 6
+reaching the user. Two were decidable and both sat in the numeral/multiple
+screen this branch already owns. Both were verified reaching the user **through
+the real gate** before either fix was written.
+
+- **L10 is not a missing rule — it is an existing rule defeated by punctuation.**
+  `MULTIPLIER_CLAIM` has contained `orders?\s+of\s+magnitude` all along; the
+  label was written `Order-of-Magnitude Expansion`, and `\s+` does not match a
+  hyphen. Same shape as the U+2212 minus that has bitten this repo three times.
+  Fixed to `[-\s]+`.
+- **L7** is a numeral written as a WORD in a label — "Ten Thousand Crates / One
+  Crate" on a matrix whose every swing is one thousandth of a unit. No digit, no
+  "-fold", no "times more", so nothing saw it. New `BIG_SPELLED_QUANTITY` screen
+  on **name and labels only**; the description keeps its multiplier screen and
+  stays free to set a scene at scale.
+
+**RED'S OWN PREDICATE COULD NOT BE ADOPTED AS WRITTEN, and the mutation test is
+the proof.** Their D4 scored 0/527 false positives, and it also measures 0% on
+all 3,296 draws here — but `\w+fold` matches **"Manifold"**, which this suite
+already pins as a passing control, and `twice`/`dozens` match "a twice-weekly
+delivery" and "dozens of crates". Mutation M3 widens the shipped rule to D4 as
+written and the suite goes red on the Manifold control. **A rate of 0% would
+have hidden all three; only the shape of the word catches them.** This is the
+seventh instance of the campaign's standing theme and the first where a
+zero-false-positive number measured on a real corpus was still the wrong basis
+for a decision.
+
+### Evidence
+
+| check | result |
+|---|---|
+| FP replay, PRE vs POST in one process, all corpora | **0 newly rejected, 0 newly accepted, 0 threw, over 3,317 draws** |
+| replay self-check | baseline lets both holes through, working tree closes both — modules provably distinguishable |
+| mutation M1 (hyphen fix reverted to `\s+`) | L10 fixture fails ✓ |
+| mutation M2 (big-quantity screen deleted) | L7 fixture fails ✓ |
+| mutation M3 (widened to red's D4 as written) | **Manifold control fails ✓** |
+| RED 1 label oracle | holes **6/10 → 4/10**, decidable **4/8 → 2/8**, controls wrongly blocked **0/15** |
+| RED 1 13-hole oracle | **3/13**, controls **0/8**, screens lost **0/2** — no regression |
+| lint · npm test · build · e2e | 0 · 0 (86,236 tie-prose renderings, 0 failures) · 0 · **22/22** |
+
+### Every shipped rule re-measured against corpora W4 never saw
+
+`_gen/blue_w5_fullgate.mjs`. W4's corpus list was HARDCODED, which is the same
+failure mode as measuring a rule only on the rows it was written against — a
+file red writes afterwards silently drops out of the denominator. This version
+**discovers** the corpora.
+
+    48 files · 3,254 unique draws · 2,060 from files W4 never measured
+    TOTAL rejected by blue's rules: 8 / 3,235 = 0.247%
+    of those, from files W4 never saw: 4
+
+All four unseen hits hand-read and confirmed TRUE POSITIVES: two are the
+offer/accept protocol (a bid submitted, then accepted or rejected) and two are
+one actor holding both option pairs behind the pronoun "It". **Zero false
+positives on 2,060 draws no rule here was written against** — the first time
+this campaign has confirmed reach on genuinely unseen data.
+
+### Still open, and NOT started
+
+The label oracle's remaining 4: **L3 and L6 are explicitly not decidable from
+the matrix** (consequence labels on a flat matrix — refused in W3 and still
+correctly refused). **L8 and L9 are decidable and open**: a cross-player stakes
+claim ("everything for one, a formality for the other") on a matrix where both
+players' swings are identical, in the description (L8) and moved into the labels
+(L9). That is a matrix-decided test, adjacent to the reserved structural work;
+flagged to the main session rather than started.
+
+---
+
 ## 2026-08-31 — INSTRUMENT DEFECT: three of the four deciding numbers were measuring the harness
 
 Filed by RED 2 (name-is-the-domain), audited and extended by blue. Metrics are
