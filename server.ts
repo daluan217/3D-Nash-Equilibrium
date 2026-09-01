@@ -337,6 +337,82 @@ function getAuthUser(req: express.Request): User | null {
   return user;
 }
 
+/**
+ * The desktop's local owner — the reason the offline app no longer asks you to
+ * invent a password to save a file to your own disk.
+ *
+ * On the hosted service an account is what separates one visitor's games from
+ * another's. On the desktop there is no other visitor: the database is
+ * `db.json` inside this OS user's own data directory, and the "tenant" is the
+ * person at the keyboard, who already owns the file. Requiring registration
+ * and e-mail verification there was a hosted constraint imposed where it means
+ * nothing — the same mistake as rate-limiting a user against a server they do
+ * not share.
+ *
+ * SCOPED TO THE GAME ROUTES ON PURPOSE. `getAuthUser` is also what guards
+ * account DELETION, and a fallback identity there would let anyone at the
+ * keyboard start a deletion flow against a real account. Those routes keep the
+ * strict check; only the routes that read and write this machine's own saved
+ * games use the owner below. That distinction is the whole safety argument, so
+ * it is asserted in the tests rather than left to the reader.
+ */
+const LOCAL_OWNER_ID = 'local-owner';
+
+function isDesktop(): boolean {
+  return process.env.IS_ELECTRON === 'true';
+}
+
+/** Provision the local owner on first use. Never on the hosted service. */
+function ensureLocalOwner(): User | null {
+  if (!isDesktop()) return null;
+  const db = loadDB();
+  const existing = db.users.find((u) => u.id === LOCAL_OWNER_ID);
+  if (existing) return existing;
+  const owner = {
+    id: LOCAL_OWNER_ID,
+    username: 'This device',
+    // A reserved, unroutable address: the local owner has no e-mail, and a
+    // blank one would collide with any other record missing the field.
+    email: 'local-owner@localhost.invalid',
+    passwordHash: '',
+    verified: true,
+    tokenVersion: 0,
+    createdAt: new Date().toISOString(),
+  } as unknown as User;
+  db.users.push(owner);
+  saveDB(db);
+  return owner;
+}
+
+/**
+ * Who owns the saved games for this request: the signed-in user if there is
+ * one, otherwise — on the desktop only — the local owner.
+ */
+function getGameOwner(req: express.Request): User | null {
+  return getAuthUser(req) ?? ensureLocalOwner();
+}
+
+/**
+ * Sign-in ADOPTS whatever was saved locally.
+ *
+ * Daniel's call: a local owner who later signs in takes their games with them,
+ * exactly as a signed-in user's games already follow them. Without this, using
+ * the app before making an account would silently strand that work behind an
+ * identity the user can no longer reach.
+ *
+ * Re-parenting rather than copying, so signing in twice cannot duplicate a
+ * library.
+ */
+function adoptLocalGames(userId: string): number {
+  if (!isDesktop() || userId === LOCAL_OWNER_ID) return 0;
+  const db = loadDB();
+  const mine = db.games.filter((g) => g.userId === LOCAL_OWNER_ID);
+  if (!mine.length) return 0;
+  for (const g of mine) g.userId = userId;
+  saveDB(db);
+  return mine.length;
+}
+
 function cleanText(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
@@ -1583,6 +1659,12 @@ async function startServer() {
       user.passwordHash = hashPassword(password);
       saveDB(db);
     }
+      // A local owner who signs in takes their games with them. Without this,
+      // anything saved before making an account would be stranded behind an
+      // identity the user can no longer reach.
+      const adopted = adoptLocalGames(user.id);
+      if (adopted) console.log(`[auth] adopted ${adopted} local game(s) into ${user.id}`);
+
 
     res.json({
       success: true,
@@ -1801,7 +1883,7 @@ async function startServer() {
 
   // Get User's Custom Games
   app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
-    const user = getAuthUser(req);
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -1814,7 +1896,7 @@ async function startServer() {
   // Create/Save a Custom Game
   app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
     const db = loadDB();
-    const user = getAuthUser(req);
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -1859,7 +1941,7 @@ async function startServer() {
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
   app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
-    const user = getAuthUser(req);
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -1901,7 +1983,7 @@ async function startServer() {
 
   // Delete a Custom Game
   app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), (req, res) => {
-    const user = getAuthUser(req);
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
     }

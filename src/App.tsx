@@ -2934,7 +2934,12 @@ export default function App() {
                 <Award className="w-4 h-4 text-accent-500" />
                 Custom Game Presets
               </div>
-              {user && (
+              {/* On the desktop the save control is available signed OUT too: the
+                  database is a file in this machine's own user-data directory,
+                  so there is no other tenant to separate the games from. A
+                  local owner is provisioned server-side on first write, and
+                  signing in later adopts whatever was saved. */}
+              {(user || isElectron) && (
                 <button
                   onClick={() => {
                     setSaveError('');
