@@ -12,6 +12,29 @@
  * finding is a fact and a fix is verifiable. Findings are reported per class
  * with the offending text, because a rate without an example is not actionable.
  *
+ * ── THIS FILE IS AN INSTRUMENT. IT GATES NOTHING. ──────────────────────────
+ *
+ * Exactly ONE class below reports product coverage: "SHIPPING GATE rejects",
+ * which calls validateScenario / scenarioIsClaimFree / validateProseDirections
+ * and reports what the REAL gate did. Every other class — article errors,
+ * doubled words, missing terminal punctuation, shared option names, ignored
+ * domain — is a MEASUREMENT of what the model produces. None of them rejects
+ * anything. A draw this file flags still ships unless the gate independently
+ * refused it.
+ *
+ * Spelled out because the confusion is live and cost real work this round. RED 2
+ * told blue that a defect class was "already caught" by a meta-reference screen;
+ * blue ran the five sentences through the real gate and all five reached the
+ * user. The screen was a detector in red's own scratch directory that had never
+ * rejected anything — a measurement instrument remembered, after a day of
+ * quoting its rate, as a thing that exists in the product. Same shape as the
+ * validator guard whose inputs the schema forbids, and the prompt clause that
+ * demands them: an instruction, or an observation, mistaken for a gate.
+ *
+ * The hazard is sharpest for whoever maintains BOTH the batteries and the
+ * gates, which is this branch's remit. RULE: never answer "is that covered?"
+ * from this file. Run the input through the gate — it is three lines.
+ *
  *   LOCAL_URL=http://localhost:8099/v1/chat/completions N=120 npx tsx _gen/redteam_local.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -45,6 +68,8 @@ for (let i = 0; i < N; i++) {
 }
 
 const VOWEL_START = /^(?:[aeiou]|hour|honest|honou?r)/i;
+/** Letters and digits only — "ski-lift grooming" vs "Skilift Grooming". */
+const squash = (s) => (s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 const findings = new Map();     // class -> [{tag, domain, text}]
 const add = (cls, tag, domain, text) => {
   if (!findings.has(cls)) findings.set(cls, []);
@@ -116,8 +141,27 @@ for (let i = 0; i < games.length; i++) {
   if (/[^\x00-\x7F‐-’…−]/.test(d + nm + labels.join(''))) add('non-ASCII/mojibake character', tag, domain, (d + nm).slice(0, 90));
   const sentences = d.split(/(?<=[.!?])\s+/).map((s) => s.trim().toLowerCase()).filter((s) => s.length > 15);
   if (new Set(sentences).size !== sentences.length) add('a repeated sentence', tag, domain, d.slice(0, 120));
+  // DOMAIN ADHERENCE, MEASURED WHERE THE HARNESS DID NOT PLANT THE ANSWER.
+  //
+  // This searched (name + description) and consequently never fired once. RED 2
+  // found why: the model's name is the injected domain, title-cased, verbatim
+  // 92.9% of the time, so the needle was always sitting in a field this harness
+  // effectively dictated. Re-measured over red's 84-draw corpus, the check goes
+  // from 0% to 10.3% once the name is excluded — and the misses are real, e.g.
+  // domain "ferry timetable slots" describing a ferry operator and then a
+  // station coordinator with a departing TRAIN.
+  //
+  // Labels are kept in the haystack: they are the model's own invention and
+  // carry the setting legitimately. Excluding the name is not a tightening that
+  // risks false positives — the cloud model scores 100% on this same corpus
+  // under the same rule, so a compliant writer always names its industry in the
+  // body. A check that only the weak model fails is discriminating, not noisy.
   const words = domain.split(/[\s-]+/).filter((w) => w.length > 3);
-  if (words.length && !words.some((w) => (nm + ' ' + d).toLowerCase().includes(w))) add('ignored the requested domain', tag, domain, `${nm}: ${d.slice(0, 80)}`);
+  const body = (d + ' ' + labels.filter(Boolean).join(' ')).toLowerCase();
+  if (words.length && !words.some((w) => body.includes(w))) add('ignored the requested domain (name excluded)', tag, domain, `${nm}: ${d.slice(0, 80)}`);
+  // Reported separately so the inflation stays visible rather than being
+  // silently swapped out from under the previous numbers.
+  if (words.length && squash(nm) === squash(domain)) add('scenario name is just the domain, title-cased', tag, domain, `${domain} -> ${nm}`);
 }
 
 lat.sort((a, b) => a - b);

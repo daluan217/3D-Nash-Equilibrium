@@ -32,6 +32,7 @@ import {
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { tieProse } from './utils/tieProse';
+import { validateScenario, scenarioIsClaimFree, validateProseDirections } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -814,6 +815,112 @@ function testFmtPayoffSubResolution() {
 
 // ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * MODEL-INTERNAL DEBRIS reaching the user.
+ *
+ * Five distinct real cloud draws, every one accepted by every shipped gate
+ * before this. Rare (5 of 4,088 draws that reach the user, 0.122%, across 67
+ * corpora plus the scenario bank) and every one user-facing.
+ *
+ * EACH RULE HAS A FIXTURE ONLY IT CAN CATCH. The two observed dirty rows carry
+ * more than one signal each — row 185 has Hebrew AND braces, row 805 has braces
+ * AND self-talk — so a suite built only from them cannot fail when a single rule
+ * is deleted. The isolating fixtures below exist for exactly that reason, and
+ * the mutation run (_gen/blue_w8_debris_mutation.py) confirms each rule is
+ * killed by its own.
+ */
+function testModelDebris() {
+  const G: GamePayoffs = { a11: 2, a12: -1, a21: 0, a22: 3, b11: 1, b12: 0, b21: -2, b22: 1 };
+  const sc = (o: Record<string, unknown>) => ({
+    name: 'Depot Window', row1: 'Early Slot', row2: 'Late Slot', col1: 'Full Crew', col2: 'Lean Crew',
+    storyClaims: null, description: 'A depot and a haulier each pick a loading window for the morning.', ...o,
+  } as any);
+  const debris = (o: Record<string, unknown>) =>
+    validateScenario(sc(o), G).issues.filter((i) => /outside the expected script|curly brace|talking to itself/.test(i));
+
+  // ── THE OBSERVED ROWS, quoted from the corpora they were found in ────────
+  assert(debris({ name: 'Regional Triage Staffing', col1: 'Surge Roster', col2: 'Core Roster',
+    description: 'Two hospitals share a regional triage plan. Hospital A chooses either "Expanded Roster" or "Lean Roster." לה}} 腾讯分分彩? 亚洲色}}' }).length > 0,
+    'DEBRIS: Hebrew and CJK spam appended to a real description must be rejected');
+  assert(debris({ row1: 'Thin coat', row2: '厚 coat' }).length > 0,
+    'DEBRIS: a CJK character inside an English option label must be rejected');
+  assert(debris({ row2: '深-cycle Service' }).length > 0,
+    'DEBRIS: the 深-cycle label that shipped in the wild must be rejected');
+  // The Arabic row existed ONLY in the bank, so no report corpus ever produced
+  // it. The script list already covered Arabic on principle; this is the draw
+  // that turned that from a boundary fixture into an observed positive.
+  assert(debris({ name: 'Herbarium Loan Request', row1: 'Approve Loan', row2: 'Defer Loan', col1: 'Rush Request', col2: 'Routine Request',
+    description: 'A university herbarium is coordinating a specimen-loan request with a botanical researcher. The herbarium chooses between "Approve Loan" and "Defer Loan," while the researcher chooses between "Rush Request" and "Routine Request." يُ}} GG. } siu' }).length > 0,
+    'DEBRIS: the Arabic + brace bank row must be rejected');
+  // The self-talk positive, first-hand from the bank rather than from a log
+  // excerpt: this is the row the rule was written against.
+  assert(debris({ name: 'Side-Table Touch-Up', row1: 'Trim Bid', row2: 'Full Bid', col1: 'Quick Approval', col2: 'Careful Review',
+    description: 'A neighborhood antique dealer and a restoration studio are discussing a bid. The dealer chooses between "Quick Approval" and "Careful Review." wait invalid. Need clean JSON.' })
+    .some((i) => /talking to itself/.test(i)),
+    'DEBRIS: the bank\'s Side-Table row is the first-hand self-talk positive');
+
+  // ── ONE FIXTURE PER RULE, each isolating a single signal ─────────────────
+  assert(debris({ row2: '厚 coat' }).some((i) => /outside the expected script/.test(i)),
+    'DEBRIS (script only): a non-Latin codepoint with no braces and no self-talk');
+  assert(debris({ description: 'A depot picks a lane while the board picks a window.}}' })
+    .some((i) => /curly brace/.test(i)),
+    'DEBRIS (brace only): JSON braces with no foreign script and no self-talk');
+  assert(debris({ description: 'The board picks a window. wait invalid. Need clean JSON. I accidentally weird.' })
+    .some((i) => /talking to itself/.test(i)),
+    'DEBRIS (self-talk only): the model narrating itself, with no braces and no foreign script');
+  // The curly apostrophe is not optional: the observed row writes "Let’s
+  // formulate" with U+2019, and an ASCII-only list missed it.
+  assert(debris({ description: 'The board picks a window. Let’s formulate.' })
+    .some((i) => /talking to itself/.test(i)),
+    'DEBRIS: the self-talk list must match the CURLY apostrophe, which is what the model actually emits');
+
+  // ── THE NEAR-MISSES. Every one would break a careless version. ───────────
+  const clean = (o: Record<string, unknown>, why: string) => assert(debris(o).length === 0, why);
+  clean({ description: 'The yard books a slot; the board notes a −100 swing for the season.' },
+    'DEBRIS CONTROL: U+2212 MINUS must pass — it has been mistaken for a defect in this repo three times');
+  clean({ name: 'Café Réservation', description: 'A Zürich café and a naïve façade restorer each pick a window.' },
+    'DEBRIS CONTROL: accented Latin is ordinary text');
+  clean({ description: 'The yard’s slot and the board’s “window” — an Early–Late choice…' },
+    'DEBRIS CONTROL: curly quotes, em and en dashes and the ellipsis must pass');
+  clean({ description: 'At 20°C the depot quotes £5, €5 or $5, a ± 3 swing, ≤ 4 crates.' },
+    'DEBRIS CONTROL: degree, currency and mathematical symbols are Symbol-class and must pass');
+  clean({ row1: 'Early Slot (peak)', description: 'The depot picks a lane [north or south] while the board picks a window.' },
+    'DEBRIS CONTROL: parentheses and square brackets are legitimate — only CURLY braces are JSON');
+  clean({ col1: 'Board Now', col2: 'Wait Briefly',
+    description: 'At a small cable ferry the ferryman picks a pull, while a passenger chooses Board Now or Wait Briefly.' },
+    'DEBRIS CONTROL: "Wait Briefly" is a real OPTION LABEL — a bare \\bwait\\b flags 13 of 7,684 held draws and a hand-read kills all 13');
+  clean({ description: 'Two kelp farms must each choose whether to harvest early or wait for the later harvest window.' },
+    'DEBRIS CONTROL: "wait for the later window" is ordinary English');
+  clean({}, 'DEBRIS CONTROL: an ordinary good draw must pass');
+
+  // ── THE PROPERTY THE SCRIPT RULE'S SAFETY RESTS ON ──────────────────────
+  // A non-Latin screen is only defensible because `validateScenario` never sees
+  // text a USER wrote. If the game-save endpoints ever started calling it, this
+  // rule would reject a user's own Chinese- or Hebrew-titled game — an
+  // internationalisation regression, not a defect fix. Asserted against the
+  // real server source rather than left as a comment, and asserted in BOTH
+  // directions so it cannot pass by the validators disappearing altogether.
+  {
+    const server = readFileForContract(new URL('../server.ts', import.meta.url), 'utf-8');
+    const firstGames = server.indexOf('"/api/games"');
+    const lastGames = server.lastIndexOf('/api/games/:id');
+    assert(firstGames > 0 && lastGames > firstGames,
+      'DEBRIS CONTRACT: could not locate the /api/games handlers in server.ts — this check must not silently pass');
+    const saveRegion = server.slice(firstGames, server.indexOf('\n  });', lastGames));
+    for (const fn of ['validateScenario', 'scenarioIsClaimFree']) {
+      assert(!saveRegion.includes(fn),
+        `DEBRIS CONTRACT: ${fn} must never run on the game-save path — it would screen USER-authored text, and the non-Latin rule would reject a user's own Chinese- or Hebrew-titled game`);
+    }
+    // The other direction: the report path must still gate, or the assertion
+    // above is satisfied by a server that validates nothing at all.
+    const reportRegion = server.slice(0, firstGames);
+    assert(reportRegion.includes('validateScenario(') && reportRegion.includes('scenarioIsClaimFree('),
+      'DEBRIS CONTRACT: the report path must still call both scenario gates — otherwise the save-path assertion above is vacuous');
+  }
+
+  console.log('✓ model-internal debris: 3 rules, 5 of 4,088 user-reaching draws newly rejected across 67 corpora + the shipping bank, 0 false positives; each rule isolated by its own fixture');
+}
+
 function runUnitTests() {
   testComputeMixedNEClosedForms();
   testComputeAllNEStructure();
@@ -835,7 +942,889 @@ function runUnitTests() {
   testCameraRelayoutPredicate();
   testScenarioDomains();
   testFmtPayoffSubResolution();
+  testGateFixesAugust31();
+  testOptionLabelChannel();
+  testNegotiationForm();
+  testInterestAlignment();
+  testTwoChooserStructure();
+  testRepeatedPlayRefused();
+  testMetaVocabulary();
+  testModelDebris();
   console.log('All unit tests passed.');
+}
+
+/**
+ * THE THREE GATE FIXES OF THE 2026-08-31 FIX WINDOW.
+ *
+ * Every check below ships with at least one KNOWN-POSITIVE draw it must flag,
+ * asserted in the same run as its negative control. That rule is not stylistic:
+ * four separate guards were found this round to be structurally unable to fire
+ * — one whose inputs the schema forbids, one formatter applied to an
+ * already-rounded value, one port assertion the kernel answers misleadingly, and
+ * one inside the red team's own instrument whose scan window had eaten the
+ * evidence and reported a clean zero. CLAUDE.md already records the same shape
+ * in `_gen/verify_geom.ts`. A green number from a check that cannot fire is
+ * worse than no check, so each fixture here is a draw observed in the wild.
+ */
+function testGateFixesAugust31() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const MATCH: GamePayoffs = { a11: 2, a12: 0, a21: 0, a22: 1, b11: 2, b12: 0, b21: 0, b22: 1 };
+  const PD_LOCAL: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+
+  // ── F11: an option with no name at all ────────────────────────────────────
+  // Verbatim draw: the model emitted col1 plus INVENTED keys day1/day2, so col2
+  // is ABSENT rather than empty. Every distinctness check short-circuits on a
+  // falsy label, so nothing examined it and the whole gate passed. Downstream it
+  // reached the user's SAVED description as "...and undefined".
+  const saffron: any = {
+    name: 'Saffron Harvest Labour', row1: 'Early Harvest', row2: 'Late Harvest',
+    col1: 'Night Work', day1: 'Morning Work', day2: 'Evening Work', storyClaims: null,
+    description: 'A farmer chooses between Early Harvest and Late Harvest for his saffron crop. A nearby worker chooses between Night Work and Day Work for the same harvest period.',
+  };
+  assert(!validateScenario(saffron, PD_LOCAL).ok,
+    'F11: a scenario whose col2 is ABSENT must be rejected — the observed draw invented day1/day2');
+  // The distinction that IS the defect: a check written against `=== ""` reports
+  // clean on the very draw it was written for.
+  assert(!validateScenario({ ...saffron, col2: '   ' }, PD_LOCAL).ok,
+    'F11: a whitespace-only label must be rejected too');
+  assert(validateScenario({ ...saffron, col2: 'Day Work' }, PD_LOCAL).ok,
+    'F11 CONTROL: with all four labels present the same scenario must pass');
+
+  // ── F1: matching language on a game whose every pure NE is a MISMATCH ─────
+  // The shape gate read `diag === pure.length || anti === pure.length`, which
+  // conflates "has a matching-or-mismatching structure" with "matching language
+  // is true here" — so the screen skipped exactly the games where it is false.
+  const coordSc = (d: string) => ({
+    name: 'X', row1: 'Morning Harvest', row2: 'Evening Harvest',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const MATCH_TALK = "Both cooperatives want to match the opponent's choice for the drying season.";
+  assert(!validateScenario(coordSc(MATCH_TALK), ANTI).ok,
+    'F1: matching language must be caught where every pure equilibrium is a MISMATCH');
+  // The pair that matters: same sentence, different matrix. Only the game differs.
+  assert(validateScenario(coordSc(MATCH_TALK), MATCH).ok,
+    'F1 CONTROL: the identical sentence on a genuine matching game must still pass');
+  assert(validateScenario(coordSc('A seaweed cooperative picks a drying slot while a neighbouring firm picks a window.'), ANTI).ok,
+    'F1 CONTROL: plain scene-setting on the mismatch game must still pass');
+
+  // ── F1-vocab: the ABSTRACT-PLAYER form, which is what the model actually ──
+  // writes. The predicate above was correct and matched ZERO of 341 real draws,
+  // because COORD_TALK's vocabulary ("incentive to match the opponent's
+  // choice") is not this model's. "The two players coordinate their choices" is,
+  // and it asserts the same thing. Reach on 875 stored draws: 14 (1.60%) local,
+  // 0 cloud — see `_gen/blue_w2_check.mjs`, which measures reach and fixtures in
+  // the same run.
+  //
+  // THE DISCRIMINATOR IS SUBJECT-HOOD, NOT THE WORD. Gating on "coordinate"
+  // itself has 11.9% precision and rejects 7.6% of local draws for the JOB TITLE
+  // "coordinator" alone. Each negative below is the specific shape a looser rule
+  // over-reaches into; C6 is a MEASURED false positive of the proximity draft
+  // this replaced, not a hypothetical.
+  const ONE_MATCH: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const NO_PURE: GamePayoffs = { a11: 2, a12: 0, a21: 0, a22: 1, b11: 0, b12: 1, b21: 2, b22: 0 };
+  const CLAIM = 'The two players coordinate their choices for the drying season.';
+  assert(!validateScenario(coordSc(CLAIM), ANTI).ok,
+    'F1-vocab: "the two players coordinate their choices" must be caught where no pure equilibrium matches');
+  assert(!validateScenario(coordSc(CLAIM), NO_PURE).ok,
+    'F1-vocab: and where the game has no pure equilibrium at all');
+  assert(!validateScenario(coordSc('The two players are planning a coordinated drying schedule for their racks.'), ANTI).ok,
+    'F1-vocab: the intention form with a participle object must be caught');
+  assert(!validateScenario(coordSc('Both parties are coordinating their harvest and procurement plans.'), ANTI).ok,
+    'F1-vocab: the "both" subject arm must be caught — untested vocabulary is unshipped vocabulary');
+  // Only the matrix may change the verdict.
+  assert(validateScenario(coordSc(CLAIM), MATCH).ok,
+    'F1-vocab CONTROL: the identical sentence where both pure equilibria MATCH must pass');
+  assert(validateScenario(coordSc(CLAIM), ONE_MATCH).ok,
+    'F1-vocab CONTROL: and where the single pure equilibrium IS a matching pair — the issue string would be false there');
+  // The job title, which is a scenario noun and never a claim.
+  assert(validateScenario(coordSc('A shipyards and a harbor coordinator are coordinating dredging operations for a shared canal.'), ANTI).ok,
+    'F1-vocab CONTROL (red 2, load-bearing): a job title AND a named-actor coordination verb in one sentence must pass');
+  assert(validateScenario(coordSc('The two players are the shipyard and the harbor coordinator for the canal.'), ANTI).ok,
+    'F1-vocab CONTROL: an abstract subject whose PREDICATE is the job title must pass');
+  assert(validateScenario(coordSc('The two players are coordinators at the same depot, and each picks a shift.'), ANTI).ok,
+    'F1-vocab CONTROL: "are coordinators" is a noun, not the players coordinating');
+  // The flat ACTIVITY tic: uniform across equilibrium shapes, so gating it would
+  // be the word list this screen exists to avoid.
+  assert(validateScenario(coordSc('A ferry operator and a dock warden are coordinating a joint experiment for the season.'), ANTI).ok,
+    'F1-vocab CONTROL: the flat ACTIVITY form with named actors must pass');
+  assert(validateScenario(coordSc('The two players are choosing how their shared grid will respond to a coordinated demand period.'), ANTI).ok,
+    'F1-vocab CONTROL (rt2#129, a MEASURED false positive of the proximity draft): the players\' verb is "are choosing"');
+  assert(validateScenario(coordSc('The two players are the coordinating body for the canal traffic.'), ANTI).ok,
+    'F1-vocab CONTROL: "the coordinating body" — a determiner with no verb of intention before it');
+  // Negation is excluded structurally: "never"/"do"/"cannot" are not in the
+  // closed bridge class, so the subject never reaches the verb.
+  for (const neg of ['The two players never coordinate their choices here.',
+    'The two players do not coordinate their choices.',
+    'The two players cannot coordinate their choices.']) {
+    assert(validateScenario(coordSc(neg), ANTI).ok, `F1-vocab CONTROL: a negated claim must pass — ${neg}`);
+  }
+
+  // ── F12: cross-attribution through the LETTER form ───────────────────────
+  // The role-noun misattribution check fires only on declared actor nouns and
+  // has never executed on a model-invented scenario, because the cloud schema
+  // forbids actorA/actorB. The letter form went unscreened because it was
+  // assumed unambiguous; this is the counterexample.
+  const orchard = {
+    name: 'Orchard Frost Watch', row1: 'Early Harvest', row2: 'Late Harvest',
+    col1: 'Release Water', col2: 'Hold Water', storyClaims: null,
+  };
+  const S12 = 'An orchard manager, Player A, chooses between Early Harvest and Late Harvest for the season. A regional water cooperative, Player B, chooses between Release Water and Hold Water for the same fields.';
+  assert(!validateScenario({ ...orchard, description: `${S12} Player A chooses when to release water, and Player B chooses how to manage it.` } as any, ANTI).ok,
+    'F12: "Player A chooses when to release water" must be caught — Release Water is B\'s option');
+  // The negative half matters as much: this is the CORRECT letter prose and it
+  // appears in most letter-using draws. A screen that flags it is unshippable.
+  assert(validateScenario({ ...orchard, description: S12 } as any, ANTI).ok,
+    'F12 CONTROL: correct letter prose naming each player\'s own options must pass');
+  assert(validateScenario({ ...orchard, description: `${S12} Player A chooses Early Harvest.` } as any, ANTI).ok,
+    'F12 CONTROL: a letter naming its OWN option must pass');
+
+  // ── F11, the save path (App.tsx useSuggestedScenario) ────────────────────
+  // Source-level, in the style of the other App.tsx invariants here: the
+  // fallback sentence must be built from the pairs that EXIST. Asserting on the
+  // source is the only way to guard a branch that lives inside a component.
+  const appSrc = readFileForContract('src/App.tsx', 'utf8');
+  assert(/const pair = \(who: string, a\?: string, b\?: string\) =>\s*\n?\s*a && b \?/.test(appSrc),
+    'F11 save path: the label sentence must be built per PAIR, so a partial draw keeps what it supplied');
+  assert(!/B chooses between \$\{sc\.col1\} and \$\{sc\.col2\}/.test(appSrc),
+    'F11 save path: the old template interpolated a missing label straight into the saved description');
+  assert(!/\[sc\.row1, sc\.row2, sc\.col1, sc\.col2\]\.some\(Boolean\) \? labelSentence/.test(appSrc),
+    'F11 save path: the some(Boolean) guard gated a sentence only built correctly when all four were present');
+
+  console.log('✓ gate fixes 2026-08-31: F11 missing label (gate + save path), F1 shape gate, F12 letter-form attribution');
+}
+
+/**
+ * THE OPTION-LABEL / NAME CHANNEL (RED 2, cases L1–L6).
+ *
+ * Rung 3's no-numbers rule governed `sc.description` and nothing else. The name
+ * field was screened by NOTHING, and a number in an option label was examined
+ * only when it sat INSIDE PARENTHESES. Six hand-built magnitude claims were
+ * pushed through the real shipping gate — validateScenario + scenarioIsClaimFree
+ * + validateProseDirections, as server.ts composes them — and all six reached
+ * the user. Four are closed here.
+ *
+ * TWO ARE DELIBERATELY LEFT OPEN, and that is the important part of this test.
+ * "Full Evacuation / No Evacuation" and "Full Shutdown / No Shutdown" are not
+ * decidable from anything the program holds: the same shape is real, good model
+ * output ("Full Monitoring / No Monitoring"), and a word list broad enough to
+ * catch them rejects 32.2% of gate-passing draws (282 of 875 measured;
+ * `_gen/blue_w3_mutation.mjs` prices that mutant against the corpus). The
+ * controls below are that boundary written down, so a later widening of this
+ * screen fails here instead of quietly costing a third of all output.
+ *
+ * Reach of everything added here: 0 of 890 stored real draws, cloud and local.
+ * This is CONTAINMENT, not detection.
+ */
+function testOptionLabelChannel() {
+  const TINY: GamePayoffs = { a11: 0.001, a12: 0, a21: 0, a22: 0.001, b11: 0, b12: 0.001, b21: 0.001, b22: 0 };
+  const sc = (o: Record<string, unknown>) => ({
+    name: 'Regional Allocation', row1: 'Alpha', row2: 'Beta', col1: 'Gamma', col2: 'Delta',
+    storyClaims: null, ...o,
+  } as any);
+  // The gate the SERVER runs, not a subset of it. Reproducing two thirds of a
+  // gate and calling the result a pass is the error this campaign keeps finding.
+  const gate = (s: any) => validateScenario(s, TINY).ok
+    && scenarioIsClaimFree(s).ok !== false
+    && validateProseDirections(s.description ?? '', s, TINY).length === 0;
+
+  // ── L1: a bare number in an option label ─────────────────────────────────
+  assert(!gate(sc({ row1: 'Commit 1000 Units', row2: 'Commit 1 Unit' })),
+    'L1: a bare number in an option label must be rejected — the digit screen read sc.description only');
+  // ── L2: an explicit multiple in an option label ──────────────────────────
+  assert(!gate(sc({ row1: 'Hundredfold Expansion', row2: 'No Change' })),
+    'L2: "Hundredfold" states a ratio on a game whose every swing is one thousandth of a unit');
+  // ── L4: magnitude in the NAME, a field no screen read ────────────────────
+  assert(!gate(sc({ name: 'The 100000x Decision' })),
+    'L4: the scenario name must be screened — it was read by nothing');
+  // ── L5: the same claim spelled out, so it carries no digit ───────────────
+  assert(!gate(sc({ description: 'A regional operator weighs a choice worth a hundred thousand times more than the other party\'s, in the same season.' })),
+    'L5: a spelled-out multiple carries the claim with no numeral for /\\d/ to find');
+
+  // The keystroke that blinds validateScenario's parenthetical rule. VERBATIM
+  // from the C11 draw that rule was written for, U+2212 and all — a paraphrased
+  // regression test once passed while the real defect shipped.
+  assert(!gate(sc({ row1: 'Signal −1/−1', row2: 'Signal +1/+1' })),
+    'C11 without brackets: the annotation rule only looks inside parentheses, so this walked through it');
+
+  // `\p{N}`, not `\d`. `\d` is ASCII-only in JavaScript; this repo has shipped
+  // that hole before and typography has bitten it three times.
+  assert(!gate(sc({ row1: 'Commit １０００ Units' })),
+    'a fullwidth numeral in a label must be rejected — /\\d/ misses it entirely');
+  assert(!gate(sc({ description: 'A regional operator commits ١٠٠ crates while a second operator commits its own.' })),
+    'an Arabic-Indic numeral in the description must be rejected');
+
+  // ── CONTROLS. Real, gate-passing draws. None may be newly rejected. ──────
+  assert(gate(sc({ name: 'Antique Restoration Bidding', row1: 'Full Repairs', row2: 'Minor Repairs', col1: 'Open Call', col2: 'Reserve' })),
+    'CONTROL (rt1#3): a magnitude-BEARING label pair is ordinary output and must pass');
+  assert(gate(sc({ name: 'Cheese Cave Ripening', row1: 'Early Ripening', row2: 'Late Ripening', col1: 'Full Monitoring', col2: 'No Monitoring' })),
+    'CONTROL (r2local#108): the ONLY total-vs-nothing pair in 883 real draws is good output — this is the boundary L3/L6 sit on');
+  assert(gate(sc({ name: 'Bakery Pricing', row1: 'Premium Price', row2: 'Discount Price', col1: 'Bulk Flour', col2: 'Specialty Flour' })),
+    'CONTROL: premium/discount label pairs are the single most common real shape');
+  assert(gate(sc({ row1: 'Manifold Assembly', row2: 'Valve Assembly' })),
+    'CONTROL: "Manifold" is not a multiple — the -fold rule requires a numeral stem');
+  assert(gate(sc({ row1: 'Double Shift', row2: 'Single Shift' })),
+    'CONTROL: "double" asserts no specific ratio and is ordinary English');
+  assert(gate(sc({ description: 'A regional operator has run this route many times before, and a second operator is new to it.' })),
+    'CONTROL: "many times" names no number — gating it would be the word list this screen avoids');
+
+  // ── L7 and L10: the two DECIDABLE label holes RED 1's newer oracle still
+  //    showed reaching the user. Both were verified reaching it through the
+  //    REAL gate before either was written (rule 4: never answer "is that
+  //    covered?" from an instrument).
+  assert(!gate(sc({ row1: 'Order-of-Magnitude Expansion', row2: 'Token Expansion', col1: 'Order-of-Magnitude Backing', col2: 'Token Backing' })),
+    'L10: "orders of magnitude" HYPHENATED must be caught — the rule already existed and was defeated by punctuation, exactly like U+2212');
+  assert(!gate(sc({ row1: 'Ten Thousand Crates', row2: 'One Crate', col1: 'Ten Thousand Slots', col2: 'One Slot' })),
+    'L7: a numeral written as a WORD in a label is the same claim as a digit');
+  assert(!gate(sc({ name: 'The Million-Unit Decision' })),
+    'L7: and in the NAME, the field no screen read at all before this campaign');
+  // The spaced spelling must STILL be caught, or the widening replaced the
+  // rule rather than extending it.
+  assert(!gate(sc({ description: 'The two yards differ by orders of magnitude in what this decision is worth.' })),
+    'L10 REGRESSION: the original spaced spelling must still be caught');
+
+  // ── COLLISION CONTROLS for L7. Every one of these is caught by the
+  //    predicate RED 1 scored (their D4) and must NOT be caught by this one.
+  //    None appears in the 3,296 draws on this box, so all three measure 0%
+  //    today — they are excluded on the SHAPE of the word, because the rate is
+  //    precisely what would have hidden them.
+  assert(gate(sc({ row1: 'Manifold Assembly', row2: 'Valve Assembly' })),
+    'L7 COLLISION: "Manifold" — red\'s D4 uses \\w+fold and would break this already-passing control');
+  // THESE TWO WERE SITED IN THE DESCRIPTION, WHERE THIS RULE NEVER RUNS.
+  // BIG_SPELLED_QUANTITY is scoped to the name and the option labels — see the
+  // block comment on it — so "twice-weekly" and "dozens of crates" in a
+  // DESCRIPTION passed no matter what the rule contained. Proved by the
+  // mutation these controls exist to catch: adopting red's D4 vocabulary
+  // (`dozens?|twice|thrice|\w+fold`) leaves both of them green, while the same
+  // words in a LABEL are rejected. A control that cannot fail for the reason it
+  // claims is the defect this suite keeps finding in other people's work, and
+  // here it was in mine. Relocated to labels, where the collision is real; the
+  // scope point they were doubling up on is asserted on its own below.
+  assert(gate(sc({ row1: 'Twice-Weekly Run', row2: 'Weekly Run' })),
+    'L7 COLLISION: "twice-weekly" is a SCHEDULE, not a magnitude — and red\'s D4 `twice` would reject this label');
+  // NB the first draft of this control read "…each morning before either
+  // operator decides", and the suite failed it — correctly. "before … decides"
+  // is the move-order claim, caught by a rule that has nothing to do with
+  // quantities. The fixture was wrong, not the gate; recorded because a
+  // control that fails for an unrelated reason is the easiest way to talk
+  // yourself into loosening the wrong rule.
+  assert(gate(sc({ row1: 'Dozen-Crate Lot', row2: 'Single-Crate Lot' })),
+    'L7 COLLISION: a dozen crates is ordinary scene-setting — and red\'s D4 `dozens?` would reject this label');
+  // The description forms of the same two words, kept as the SCOPE half: legal
+  // there today, and they must stay legal if the scope is ever widened by
+  // accident.
+  assert(gate(sc({ description: 'A depot runs a twice-weekly delivery to the yard, and the yard schedules its own crew.' })),
+    'L7 SCOPE: "twice-weekly" in a DESCRIPTION is out of this rule\'s scope and stays legal');
+  assert(gate(sc({ description: 'Dozens of crates move through the depot each morning, and the two operators each pick a loading window.' })),
+    'L7 SCOPE: "dozens of crates" in a DESCRIPTION is out of this rule\'s scope and stays legal');
+  assert(gate(sc({ row1: 'Batch One', row2: 'Batch Two' })),
+    'L7 COLLISION (the one real FP in red\'s 527-row corpus): a spelled numeral used as an IDENTIFIER, not a magnitude');
+  // SCOPE: name+labels only. A description may set a scene at scale; a label
+  // asserting one is making a claim about a matrix it cannot see.
+  assert(gate(sc({ description: 'The depot handles thousands of crates a week, and the two operators each pick a window.' })),
+    'L7 SCOPE: a large quantity in the DESCRIPTION is scene-setting and stays legal — the description already carries the multiplier screen for the form that is a claim');
+
+  // ── WHERE THE RULE LIVES. This is an architectural assertion, both ways. ──
+  // The no-numbers rule is TRUE ONLY AT RUNG 3, because only there does the
+  // solver state every number. validateScenario runs at every rung, and at rung
+  // 0 the model writes the numbers itself — "Gate 12 / Gate 7" is an ordinary
+  // pair of option names there. So the screen must sit on the rung-3-only
+  // function, and the all-rung one must stay silent about it.
+  const numbered = sc({ name: 'Airport Gate Assignment', row1: 'Gate 12', row2: 'Gate 7', col1: 'Stand A', col2: 'Stand B' });
+  assert(validateScenario(numbered, TINY).ok,
+    'PLACEMENT: validateScenario runs at EVERY rung and must not carry the rung-3 numeral rule — "Gate 12" is a fine rung-0 label');
+  assert(scenarioIsClaimFree(numbered).ok === false,
+    'PLACEMENT: the rung-3 screen must still reject it');
+  // And the matrix-checked annotation rule must NOT have migrated: it is
+  // decidable at any rung, so it belongs where it was.
+  assert(validateScenario(sc({ row1: 'Early Run (77, 88)', row2: 'Late Run' }), TINY).issues
+    ?.some((s) => /annotates a payoff pair/.test(s)),
+    'PLACEMENT: the matrix-checked parenthetical rule must remain in validateScenario');
+
+  console.log('✓ option-label channel: L1/L2/L4/L5 closed at 0 reach on 1,808 real draws (RED 1 independently: 0/274 fresh); L3/L6 left open as undecidable, boundary asserted');
+}
+
+/**
+ * THE NEGOTIATION FORM — RED 1's largest remaining oracle hole.
+ *
+ * "The two yards negotiate over the rack calendar. One side offers an Early
+ * Slot or a Late Slot and the other accepts a Shared Window or a Separate
+ * Window in exchange." False about EVERY game this app models, not merely this
+ * matrix: an offer answered by an acceptance places one move after the other
+ * and makes the second a response to the first, and a one-shot simultaneous
+ * game has no such order. It is the same defect the move-order and "responds
+ * to" rules exist for, in vocabulary neither of them shares.
+ *
+ * THE CONTROLS BELOW ARE REAL DRAWS, QUOTED. Every one is model output that
+ * passed the gate, and every one contains a word the naive fix would have
+ * banned. They are the evidence that the shipped rule is a conjunction rather
+ * than a word list: "negotiate" alone is 1.12% of real output, "offer" 1.12%,
+ * "contract/deal/terms" 6.18%, and all of it is good.
+ */
+function testNegotiationForm() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const sc = (d: string) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const gate = (d: string) => validateScenario(sc(d), ANTI).ok
+    && scenarioIsClaimFree(sc(d)).ok !== false
+    && validateProseDirections(d, sc(d), ANTI).length === 0;
+
+  // ── THE HOLE, verbatim from _gen/rt_gate_holes.mjs ───────────────────────
+  assert(!gate('The two yards negotiate over the rack calendar. One side offers an Early Slot or a Late Slot and the other accepts a Shared Window or a Separate Window in exchange.'),
+    'NEGOTIATION: the offer-and-accept protocol must be caught — it asserts sequence in a simultaneous game');
+  // Each arm alone, so a later edit that guts one is not hidden by the other.
+  assert(!gate('A shipyard offers an Early Slot or a Late Slot for the dredging window. A harbour board accepts one of two berth arrangements for the same window.'),
+    'NEGOTIATION arm A: offer plus accept, without the word "negotiate" anywhere');
+  assert(!gate('Two rack yards bargain until they reach an agreement on the season calendar.'),
+    'NEGOTIATION arm B: reaching an agreement asserts a cooperative solution concept');
+  assert(!gate('The two yards each pick a slot, and the result is a binding arrangement for the season.'),
+    'NEGOTIATION arm B: binding language must be caught');
+  assert(!gate('A yard takes an Early Slot and the neighbouring yard gives up its window in exchange.'),
+    'NEGOTIATION arm B: "in exchange" asserts a reciprocal trade the game cannot express');
+
+  // ── CONTROLS: REAL DRAWS that passed the gate. None may be newly rejected. ─
+  // Quoted from the stored corpora, not paraphrased — a paraphrased regression
+  // test has already passed here while the real defect shipped.
+  const REAL: [string, string][] = [
+    ['stcloud#7, "negotiating" as scene-setting',
+      'Two fishing cooperatives are negotiating how to manage a shared seasonal catch quota. The North Fleet chooses between Firm quota and Flexible quota, while the South Fleet independently chooses between Firm quota and Flexible quota.'],
+    ['rt2#20, negotiating a contract',
+      'A regional railroad and a neighboring railroad are negotiating a hedge-laying contract. The railroad chooses between Reserve Market and Hold Market, while the neighboring railroad chooses between Short Hedge and Long Hedge.'],
+    ['stcloud#24, negotiating plus two independent choices',
+      'An antique dealer and a restoration studio are negotiating a restoration contract. The dealer chooses between Firm Bid and Flexible Bid, while the studio chooses between Detailed Scope and Basic Scope.'],
+    ['stcloud#6, "offering" in the ordinary sense of providing',
+      'A bakery manager chooses between placing an Early Order or a Late Order for the next production cycle. A flour supplier chooses between offering Bulk Flour or Specialty Flour.'],
+    // WAS r2cloud#4, which contains "Player A"/"Player B" and is now rejected
+    // by the META screen. It was quoted here to prove the NEGOTIATION rule is a
+    // conjunction, and its meta vocabulary was incidental to that job — so the
+    // control is re-based on another REAL draw that exercises the same boundary
+    // (an offer with no acceptance, plus the word "contract") and carries no
+    // meta. The original is not discarded: it is asserted below, by REASON, so
+    // the fact it was quoted for is still tested.
+    ['rt3_character_cloud#4, a bottler offering a price for a harvest contract',
+      'An orchard cooperative is choosing whether to commit its fruit to an early harvest or a late harvest. A juice bottler is choosing between offering a premium price or buying at the spot price for that harvest contract.'],
+    ['r2local#4, "accept" as one player\'s own simultaneous choice',
+      'A fruit cooperative chooses whether to plant Early Harvest or Late Harvest. A retailer chooses whether to accept an Open Contract or a Fixed Contract.'],
+    ['rt1#180, "contract" as an ordinary scenario noun',
+      'An agricultural cooperative chooses between Early Planting and Late Planting for its wheat crop. A contract buyer chooses between Stable Contract and Flexible Contract for arranging the payment schedule.'],
+  ];
+  for (const [tag, d] of REAL) {
+    assert(gate(d), `NEGOTIATION CONTROL (${tag}): real gate-passing output must not be newly rejected — this is why the rule is a conjunction, not a word list`);
+  }
+  // The re-based control's original, kept and tested BY REASON. r2cloud#4 is
+  // now rejected — but for META vocabulary, not for negotiation. Asserting the
+  // reason rather than the verdict keeps the original claim ("the negotiation
+  // rule does not fire on an offer with no acceptance") under test, instead of
+  // letting a draw quietly change which rule it is evidence about.
+  const r2cloud4 = 'An orchard grower, Player A, chooses between an Early Harvest and a Late Harvest for the season. A fruit distributor, Player B, chooses between offering a Firm Contract and a Flexible Contract for purchasing the fruit.';
+  const r2cloud4Why = scenarioIsClaimFree(sc(r2cloud4)).reason ?? '';
+  assert(/cast names/.test(r2cloud4Why),
+    `NEGOTIATION/META: r2cloud#4 must be rejected for its META vocabulary, got: ${r2cloud4Why || '(accepted)'}`);
+  assert(!/offers and the other accepts|binding agreement/.test(r2cloud4Why),
+    'NEGOTIATION: the negotiation rule must STILL not fire on an offer with no acceptance answering it — that is what this draw was quoted to prove');
+  // THE MINIMAL PAIR. "Negotiating" is held constant across both, so the word
+  // is demonstrably not what decides the verdict — only the protocol is. Note
+  // the first draft of this pair was WRONG and the suite caught it: it swapped
+  // in "the other accepts" alone and expected a rejection, but an acceptance
+  // that answers nothing is one player's own simultaneous choice and is real,
+  // legal output (r2local#4 above). It takes BOTH roles to assert the protocol.
+  const scene = 'Two rack yards are negotiating the season calendar. One yard chooses an Early Slot or a Late Slot, while the other independently chooses a Shared Window or a Separate Window.';
+  assert(gate(scene),
+    'NEGOTIATION CONTROL: negotiating as a setting, with two independent choices, must pass');
+  assert(!gate(scene
+    .replace('One yard chooses', 'One yard offers')
+    .replace('while the other independently chooses', 'and the other accepts')),
+    'NEGOTIATION: the identical sentence becomes a claim once one side OFFERS and the other ACCEPTS');
+  // And the half-step in between stays legal, which is what keeps the rule a
+  // conjunction: an offer with no acceptance is just a supplier providing
+  // options, the single most common real use of the word.
+  assert(gate(scene.replace('One yard chooses', 'One yard offers')),
+    'NEGOTIATION CONTROL: an offer with no acceptance answering it must still pass');
+
+  console.log('✓ negotiation form: offer/accept protocol and binding-agreement claims caught; 7 real draws containing negotiate/offer/accept/contract still pass');
+}
+
+/**
+ * INTEREST ALIGNMENT — three more of RED 1's oracle holes, closed together
+ * because they share one property: THE MATRIX SIDE IS EXACT.
+ *
+ *   constant-sum    a+b identical in all four cells — one side's gain is
+ *                   precisely the other's loss, so a shared goal is impossible
+ *   common interest a == b in every cell — the two never disagree, so there is
+ *                   nothing to be rivals over
+ *   flat            a player's payoff does not move with the opponent's column,
+ *                   so that opponent cannot determine their outcome
+ *
+ * No tolerance, no equilibrium computation, nothing to tune. That is what makes
+ * these shippable where a vocabulary rule would not be: the screens CANNOT fire
+ * on an ordinary matrix however the sentence is worded, so the false-positive
+ * risk is bounded by the matrix instead of by the word list. Measured reach on
+ * 890 stored draws: 0 for all three (_gen/blue_w3_framing.mjs, which self-tests
+ * that its detector can fire before reporting that zero).
+ *
+ * THE FOURTH HOLE IN THIS FAMILY IS DELIBERATELY LEFT OPEN. RED 1's "zero-sum +
+ * cooperative framing" probe is "An antique store and a restoration company are
+ * COORDINATING a new display" on a +100/-100 matrix. 103 of 890 real draws pair
+ * some form of "coordinat*" with a constant-sum matrix (38 with the tight "are
+ * coordinating" form), and they read as good output — parties who cooperate on
+ * an activity while competing over its terms are ordinary, and nothing in the
+ * corpus separates them from the probe. Gating it costs 4-12% of real output to
+ * catch something undecidable. The controls below pin that boundary.
+ */
+function testInterestAlignment() {
+  const MP: GamePayoffs = { a11: 100, a12: -100, a21: -100, a22: 100, b11: -100, b12: 100, b21: 100, b22: -100 };
+  const COORD: GamePayoffs = { a11: 4, a12: 0, a21: 0, a22: 2, b11: 4, b12: 0, b21: 0, b22: 2 };
+  const AFLAT: GamePayoffs = { a11: 5, a12: 5, a21: 5, a22: 5, b11: 0, b12: 3, b21: -3, b22: 1 };
+  const PLAIN: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 1, b12: 4, b21: 2, b22: 6 };
+  const sc = (d: string) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const ok_ = (d: string, g: GamePayoffs) => validateScenario(sc(d), g).ok;
+
+  // ── HOLES, verbatim from the oracle ──────────────────────────────────────
+  assert(!ok_('A store and a restorer work together toward the same goal for the display. Each books its own slot for the season.', MP),
+    'ALIGNMENT: a shared goal on a constant-sum matrix — one player gains exactly what the other loses in every cell');
+  assert(!ok_('A textile company and a competing manufacturer fight for the same order. Each books its own dyeing slot for the run.', COORD),
+    'ALIGNMENT: rivalry where the two players\' payoffs are IDENTICAL in every cell');
+  assert(!ok_("A roastery picks its supplier for the season. The distribution partner's decision will determine the handling and pricing outcome for the roastery.", AFLAT),
+    "ALIGNMENT: \"B determines A's outcome\" where A earns the same in all four cells");
+
+  // ── THE MATRIX IS WHAT DECIDES. Same sentence, different matrix. ─────────
+  // This pair is the whole argument: if the screens were word lists these would
+  // both fail, and the second is ordinary good output.
+  assert(ok_('A store and a restorer work together toward the same goal for the display. Each books its own slot for the season.', COORD),
+    'ALIGNMENT CONTROL: the identical shared-goal sentence on a common-interest matrix is TRUE and must pass');
+  assert(ok_('A textile company and a competing manufacturer fight for the same order. Each books its own dyeing slot for the run.', MP),
+    'ALIGNMENT CONTROL: the identical rivalry sentence on a strictly opposed matrix is TRUE and must pass');
+  assert(ok_("A mill books a slot. A haulier books a window, and that partner's decision will determine the pricing outcome for the mill.", PLAIN),
+    "ALIGNMENT CONTROL: \"determines the outcome\" where the payoffs really do vary must pass");
+
+  // ── The oracle's own controls, which a careless widening would break. ────
+  // RE-EXPRESSED BY REASON. This control was written as "nothing rejects this",
+  // which is a stronger claim than the fact it was recruited to protect. The
+  // fact is that the sentence is not FALSE — "their choices determine the
+  // resulting payoffs" is true on any matrix whose payoffs vary — and that is
+  // asserted below, undiminished. It IS now rejected, by the META screen, for
+  // naming the mathematical object in user-facing fiction. True and out of
+  // register are independent, and a draw can be both.
+  const vacuous = 'A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.';
+  const vacuousWhy = scenarioIsClaimFree(sc(vacuous)).reason ?? '';
+  assert(!/share a goal|frames the two players as rivals|determines the outcome|comparative|attached to a comparison|conditional outcome|moves first/.test(vacuousWhy),
+    `ALIGNMENT CONTROL: no FALSEHOOD screen may fire on "their choices determine the payoffs" — it is the vacuous closer and it is true here. Got: ${vacuousWhy}`);
+  assert(validateScenario(sc(vacuous), PLAIN).ok,
+    'ALIGNMENT CONTROL: and the matrix-decided screens must still pass it');
+  assert(/mathematical object/.test(vacuousWhy),
+    `ALIGNMENT/META: it is rejected, but for REGISTER, not for falsehood. Got: ${vacuousWhy || '(accepted)'}`);
+  assert(ok_('Two hauliers share one loading dock. One books an Early Slot or a Late Slot; the other books a Shared Window or a Separate Window.', MP),
+    'ALIGNMENT CONTROL: sharing a RESOURCE is a scene fact, not a claim that interests are aligned');
+  // THE BOUNDARY, asserted so a later widening fails here rather than in
+  // production: "coordinating" on a constant-sum matrix stays legal, because
+  // 103 of 890 real draws have exactly that pairing and are good output.
+  assert(ok_('An antique store and a restoration company are coordinating a new display. The store books a slot while the restorer books a window.', MP),
+    'ALIGNMENT BOUNDARY: "coordinating" on a constant-sum matrix must stay legal — 103 of 890 real draws pair the two, and gating it costs 4-12% of output to catch something undecidable');
+
+  // Negation must not trip the rules, and the guard is WINDOWED — a negation
+  // elsewhere in the paragraph must not switch a rule off.
+  assert(ok_('The two firms do not work together toward the same goal; each books its own slot.', MP),
+    'ALIGNMENT: a negated shared-goal claim must pass');
+  assert(!ok_('The display is not yet booked. A store and a restorer work together toward the same goal for it.', MP),
+    'ALIGNMENT: a negation in an EARLIER clause must not suppress the rule — the guard is windowed, not a whole-description scan');
+
+  // ── THE FIRST-MATCH-ONLY UNDER-FIRE (CodeRabbit, verified by the coordinator)
+  // The guard read `re.exec(desc)` and judged the FIRST occurrence alone, so one
+  // negated early mention switched the whole rule off and a later genuine
+  // assertion walked through. All three rules share the helper, so all three had
+  // it — asserted here for each, because a fix verified on one arm is not
+  // verified. One unnegated occurrence is an assertion; the rest cannot retract it.
+  assert(!ok_('They do not work together on scheduling. Two hauliers pick a lane, and the firms work together toward the same goal.', MP),
+    'ALIGNMENT (shared goal): a NEGATED FIRST mention must not suppress a later real claim');
+  assert(!ok_('They do not compete for shelf space. Two firms pick a lane, and the yards compete for the same order.', COORD),
+    'ALIGNMENT (rivalry): a NEGATED FIRST mention must not suppress a later real claim');
+  assert(!ok_("A roastery picks a supplier. Weather does not determine the result. The partner's decision determines the outcome.", AFLAT),
+    'ALIGNMENT (determines): a NEGATED FIRST mention must not suppress a later real claim');
+  // And the other direction, or the fix has simply disabled the guard: a claim
+  // negated at EVERY occurrence must still pass.
+  assert(ok_('They do not work together toward the same goal. The two firms never work together toward the same goal either.', MP),
+    'ALIGNMENT: when every occurrence is negated the rule must still stay silent — scanning all matches must not become "ignore negation"');
+  assert(ok_('The firms do not compete for the same order. They never compete for shelf space.', COORD),
+    'ALIGNMENT (rivalry): every occurrence negated must still pass');
+
+  console.log('✓ interest alignment: shared-goal/rivalry/determines decided by the matrix, 0 reach on 1,808 draws AFTER the attributive-"rival" fix; the "coordinating on zero-sum" boundary pinned as legal');
+}
+
+/**
+ * TWO DISTINCT CHOOSERS (RED 1 holes: one player holding both option pairs, the
+ * second pair handed to a pronoun, both players making the same move).
+ *
+ * THIS IS THE FIRST BLOCK IN THIS FILE WITH REACH ON OBSERVED OUTPUT. Every
+ * other screen blue has added is containment — a real channel, demonstrably
+ * walkable, that the current models happen not to walk. These three catch what
+ * the models ACTUALLY DID: five defects across 1,808 gate-passing draws from
+ * every corpus this campaign holds, RED 1's newest 928 included, at zero false
+ * positives (_gen/blue_w4_fullgate.mjs, which self-tests that its detector can
+ * fire before reporting any zero).
+ *
+ * EVERY POSITIVE AND EVERY CONTROL BELOW IS A REAL DRAW, QUOTED. The controls
+ * matter more than the positives here, because each one is a sentence the FIRST
+ * DRAFT of these rules wrongly rejected. The word is never the discriminator —
+ * the description's own cast is.
+ */
+function testTwoChooserStructure() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const COMMON: GamePayoffs = { a11: 4, a12: 0, a21: 0, a22: 2, b11: 4, b12: 0, b21: 0, b22: 2 };
+  const sc = (d: string) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const gate = (d: string, g: GamePayoffs = ANTI) => validateScenario(sc(d), g).ok
+    && scenarioIsClaimFree(sc(d)).ok !== false
+    && validateProseDirections(d, sc(d), g).length === 0;
+
+  // ── ONE ACTOR TAKING A SECOND DECISION ───────────────────────────────────
+  assert(!gate("A regional airport is planning a survey of a mountain range's glaciers and will either use an Early Survey or a Late Survey for that data set. The airport will also choose between sharing a route with the same survey team or taking a separate route for that same data set."),
+    'W4 (rt1#71, in the wild): one actor holding BOTH option pairs — there is no second player');
+  assert(!gate('Two neighboring vineyard managers must each choose between Early Watering and Late Watering for their vines. Each manager also chooses between Deep Irrigation and Surface Irrigation for the shared vineyard water system.'),
+    'W4 (rt2 stakes pilot, in the wild): "each manager also chooses" gives one actor four options');
+  // THE CONTROL THAT DEFINES THE RULE. Same word, opposite meaning: here "also"
+  // is "likewise", and the subject is a NEWLY INTRODUCED second actor. The
+  // first draft captured the auxiliary "is" as the subject and rejected this.
+  assert(gate('A major film studio is choosing when to release its season-defining feature, with its budget and reputation tied to the campaign. A smaller independent distributor is also choosing between an open slot and a crowded slot for a film whose release matters less to its annual plans.'),
+    'W4 CONTROL (rt2 gap ladder, a MEASURED false positive of the first draft): "also" meaning "likewise", with a new actor, must pass');
+
+  // ── THE SECOND PAIR HANDED TO A PRONOUN ──────────────────────────────────
+  assert(!gate("A dairy co-op is deciding between Premium Pricing and Cost-Plus Pricing for its seasonal milk product. It chooses either Local Sales or Online Sales for distribution, with each choice shaping the co-op's overall pricing and distribution plan."),
+    'W4 (rt1#116, in the wild): "It chooses" hands the second pair back to the only player named');
+  assert(!gate('A dairy co-op is deciding whether to set its pricing at Premium Pricing or Cost-Plus Pricing. It must choose between Open Market and Stable Market for its main distribution channels.'),
+    'W4 (rt2 local#95, in the wild): the same shape with "It must choose"');
+  // The pronoun is fine when a second actor exists. The first draft counted only
+  // CHOOSING verbs, so an actor introduced with "is planning" was invisible.
+  assert(gate("A regional airline is planning a series of flights through a rapidly changing glacier route. It chooses between Early Survey and Late Survey for the flights, while the glacier manager chooses between Early Survey and Late Survey for the region's seasonal monitoring plan."),
+    'W4 CONTROL (rt3 slot control, a MEASURED false positive of the first draft): a pronoun for a properly introduced player, with a second actor present, must pass');
+  // A PLURAL pronoun refers to both players and is the correct way to say they
+  // move together — excluded structurally, not by a negation list.
+  assert(gate('A mill chooses an Early Slot or a Late Slot. A haulier chooses a Shared Window or a Separate Window. They choose simultaneously, without seeing each other.'),
+    'W4 CONTROL: "They choose simultaneously" is the correct statement and must pass');
+
+  // ── A CLAIM THAT THE TWO MOVES COINCIDE ──────────────────────────────────
+  assert(!gate('A farm cooperative and a harvest coordinator are coordinating a saffron harvest. The cooperative chooses Early Harvest or Late Harvest, while the coordinator chooses the same timing.'),
+    'W4 (rt1#117, in the wild): "chooses the same timing" asserts B\'s move IS A\'s move');
+  // Both controls are real draws the first draft rejected. The discriminator is
+  // whether the shared noun is already IN THE SCENE.
+  assert(gate('A textile mill and a nearby finishing mill each schedule its dyeing work for either an Early Shift or a Late Shift. The first mill chooses between Early Shift and Late Shift, while the second mill independently makes the same scheduling choice.'),
+    'W4 CONTROL (rt3 character cloud, a MEASURED false positive): "the same scheduling choice" is the same KIND of decision, not the same move');
+  assert(gate('A dairy co-op is deciding between Premium Pricing and Bulk Pricing for its seasonal product. The co-op chooses one, while the market buyer chooses the same product through the same season.'),
+    'W4 CONTROL (rt stakes leak local, a MEASURED false positive): "the same product" shares a thing already named in the scene, not a move');
+
+  // ── THE NEGOTIATION WIDENING (r2cloud#11), and its boundary ──────────────
+  assert(!gate('A courier company chooses whether to submit a Premium Route or a Budget Route bid for a delivery contract. A logistics platform chooses whether to Accept Bid or Reject Bid.'),
+    'W4 (rt2 cloud#11, in the wild): a bid submitted and then accepted or rejected is the offer/accept protocol in different words');
+  assert(gate('Two courier firms are competing for the same delivery contract. Each firm chooses between a Priority Bid, which offers a faster route, and an Economy Bid, which offers a lower-cost route.'),
+    'W4 CONTROL: bids and "offers" with NO acceptance answering them must pass — the rule stays a conjunction');
+
+  // ── REGRESSION: the rivals false positive RED 1's new corpus exposed ─────
+  // Shipped in W3 as a bare `rivals?`, which caught the word used ATTRIBUTIVELY
+  // to name an actor. Two real draws were being rejected.
+  // rt3_character_local#7 is now rejected by the META screen — it opens "A is a
+  // fisherman… B is a rival fisherman", the bare-letter form. Its meta
+  // vocabulary is incidental to what it was quoted to prove, so it is asserted
+  // BY REASON: the rivalry screen must still not fire on the attributive use.
+  // The verdict changed; the fact under test did not.
+  const rival7 = "A is a fisherman choosing between Open Fish and Keep Fish for the day's catch. B is a rival fisherman choosing between Open Fish and Keep Fish for the same catch.";
+  const rival7Why = scenarioIsClaimFree(sc(rival7)).reason ?? '';
+  assert(/bare letter/.test(rival7Why),
+    `W4/META: rt3 character local#7 must be rejected for the bare-letter form, got: ${rival7Why || '(accepted)'}`);
+  assert(!/frames the two players as rivals/.test(rival7Why),
+    'W4 REGRESSION (rt3 character local#7): "a RIVAL fisherman" names the actor — the rivalry screen must STILL not fire on it, even on a common-interest matrix');
+  assert(gate('A city marathon coordinator chooses whether to schedule the race with an Early Closure or a Late Closure. A rival event coordinator chooses whether to use a Peak Route or a Quiet Route.', COMMON),
+    'W4 REGRESSION (rt3 character local#29): the same attributive use must pass');
+  // And the claim itself must still be caught, or the fix removed the rule.
+  assert(!gate('A textile company and a competing manufacturer fight for the same order. Each books its own dyeing slot for the run.', COMMON),
+    'W4 REGRESSION CONTROL: the actual rivalry CLAIM must still be caught on a common-interest matrix');
+
+  // ── W7: THE SAME PAIR HELD BY BOTH PLAYERS, THE OTHER PAIR ABSENT ────────
+  // The retrained local model produces the pronoun rule's defect with a
+  // COLLECTIVE subject, which walked straight through it. Both positives are
+  // real gate-accepted v2 draws, quoted with the labels they actually shipped.
+  const lab = (o: Record<string, string>) => ({ name: 'Test', storyClaims: null, ...o } as any);
+  const claimFreeWhy = (o: Record<string, string>) => scenarioIsClaimFree(lab(o)).reason ?? '';
+  const HELD = /only option pair in the story is held by both players at once/;
+  assert(HELD.test(claimFreeWhy({ row1: 'Roof Shed', row2: 'Garden Shed', col1: 'Drainage Line', col2: 'Open Corridor',
+    description: 'Two neighboring beekeepers are choosing winter apiary sited near their homes. The beekeepers must choose either Roof Shed or Garden Shed for the apiary.' })),
+    'W7 (v2, in the wild): the collective plural holds the only pair named — the second player has no options in the story');
+  assert(HELD.test(claimFreeWhy({ row1: 'Limited Rotation', row2: 'Open Rotation', col1: 'Early Access', col2: 'Late Access',
+    description: 'Two neighboring salt-marsh graziers are arranging their seasonal grazing rights on adjacent shared grazing rights. Each chooses between Limited Rotation and Open Rotation for its holding schedule.' })),
+    'W7 (v2, in the wild): "Each chooses between…" with the other pair absent');
+  // THE CONTROL THAT DEFINES THE RULE. Identical phrasing, SYMMETRIC labels —
+  // the shape every real "each X chooses between Y and Z" draw in every corpus
+  // turns out to have. It must pass, or the rule has become a ban on symmetric
+  // games, which this repo deliberately allows.
+  assert(!HELD.test(claimFreeWhy({ row1: 'Raise Quota', row2: 'Hold Quota', col1: 'Raise Quota', col2: 'Hold Quota',
+    description: 'Two fishing cooperatives are negotiating next season\u2019s shared catch limit. Each cooperative chooses either Raise Quota or Hold Quota for its position at the bargaining table.' })),
+    'W7 CONTROL: a genuinely SYMMETRIC game described collectively is complete prose and must pass');
+  // The guard against the shape the first draft got wrong: one pair merely
+  // PARAPHRASED while a second, specific chooser is named.
+  assert(!HELD.test(claimFreeWhy({ row1: 'Early Slot', row2: 'Late Slot', col1: 'Open Window', col2: 'Hold Window',
+    description: 'Two yards each choose between Early Slot and Late Slot, while the board decides whether to open or hold the window for the season.' })),
+    'W7 CONTROL: a second SPECIFIC chooser means the story has two sides, however the second pair is worded');
+  // And with no chooser at all in the prose, the collective half is what keeps
+  // the rule off an ordinary description that just names one pair.
+  assert(!HELD.test(claimFreeWhy({ row1: 'Early Watch', row2: 'Late Watch', col1: 'Confirm Rows', col2: 'Confirm Covers',
+    description: 'The season\u2019s Early Watch and Late Watch are set by an orchard grower; a neighbouring cider cooperative handles cover placement for the same nights.' })),
+    'W7 CONTROL: naming one pair is not itself the defect — somebody has to be choosing collectively');
+
+  console.log('\u2713 two-chooser structure: 5 real defects caught across 1,808 draws at 0 false positives; every control is a draw an earlier draft wrongly rejected');
+  console.log('\u2713 W7 collective pair: 6 v2 defects caught across 3,297 user-reaching draws at 0 false positives; symmetric games pass');
+}
+
+/**
+ * REPEATED PLAY — PRICED AND REFUSED. This block ships NO new rule. It exists
+ * so the refusal is a standing, executable boundary rather than a note in a log
+ * that the next window has to rediscover.
+ *
+ * THE IDEA. The app models a ONE-SHOT simultaneous normal-form game. A scenario
+ * asserting the game is played over and over is therefore making a false claim
+ * about the object, and a serious one: under repetition the equilibrium set is
+ * a different thing entirely (folk theorem), so "each season they choose again,
+ * and a defector is punished next year" describes a game this app does not
+ * solve and whose surface does not match the plot on screen.
+ *
+ * WHY IT WAS REFUSED. Measured over 48 corpus files, 3,185 unique draws, 3,134
+ * of them gate-passing (_gen/blue_w5_repeatverdict.mjs), with the detector
+ * self-tested against hand-built positives before any zero was reported:
+ *
+ *   1. THE FALSE CLAIM IS ABSENT, NOT CONTAINED. The folk-theorem machinery was
+ *      counted TOKEN BY TOKEN so a zero could not hide inside an alternation:
+ *      retaliat* 0, punish* 0, forgiv* 0, tit-for-tat 0, "repeated game" 0,
+ *      iterat* 0, "future round/season/play" 0, "later rounds" 0, "over many X"
+ *      0, "again" 0, "season after season" 0, "in the long run" 0, "build a
+ *      reputation" 0, reputation-carried-across-plays 0. Zero on the 3,134
+ *      accepted draws AND zero on the 51 the gate rejects — so no existing
+ *      screen is quietly holding this back. The generator simply does not make
+ *      this claim. Building a gate for it would be pure containment for a
+ *      channel that, unlike the numeral channel, no one has shown is walkable.
+ *
+ *   2. THE ONLY CANDIDATE RULE WITH ANY REACH IS 100% FALSE POSITIVE. The
+ *      structural form — a recurrence quantifier attached to a CHOOSING verb,
+ *      which is the only form that is a claim about the GAME rather than about
+ *      the world — fires on exactly 1 of 3,134 draws, and that one is wrong.
+ *      It is the fourth instance of the scene-noun collision this campaign
+ *      keeps hitting, and the sharpest yet: see the control below.
+ *
+ *   3. EVERY LOOSER VARIANT IS THE 32.2% MISTAKE AGAIN. A gate on cycle nouns
+ *      (season/year/week/shift/day) would reject 943 of 3,134 draws = 30.09%.
+ *      The narrow-looking ones are no better once read: "round" (4 draws) is a
+ *      maintenance round, a purchasing round and a bird-ringing dawn round;
+ *      "long run" (2 draws) is a letterpress PRINT run and is literally an
+ *      OPTION LABEL ("Short Run / Long Run"); "reputation" (58 draws) is the
+ *      stakes-fidelity feature working as designed — a consequence of the ONE
+ *      decision, never a mechanism spanning plays.
+ *
+ * The controls below are all REAL, QUOTED, gate-passing draws. They pin the
+ * boundary so a later window that decides to revisit this cannot ship a
+ * cycle-noun word list without the suite going red.
+ */
+function testRepeatedPlayRefused() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const sc = (d: string, labels?: Partial<Record<'row1' | 'row2' | 'col1' | 'col2', string>>) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d, ...labels,
+  } as any);
+  const gate = (d: string, labels?: Partial<Record<'row1' | 'row2' | 'col1' | 'col2', string>>) =>
+    validateScenario(sc(d, labels), ANTI).ok
+    && scenarioIsClaimFree(sc(d, labels)).ok !== false
+    && validateProseDirections(d, sc(d, labels), ANTI).length === 0;
+
+  // ── THE FALSE POSITIVE THAT DECIDED IT (rt3_stakes_cloud#10, verbatim) ───
+  // "Each shift chooses" — "each" distributes over the two PLAYERS, and the
+  // players ARE the shifts. The cycle noun is the actor noun. The collision is
+  // doubled here, because "Shift" is also in both option labels. Any rule
+  // keyed on `(each|every) + <cycle noun>` rejects this correct draw.
+  assert(gate('Two textile dyeing shifts, A and B, are scheduling the timing of their routine dye-bath adjustments. Each shift chooses between Early Shift and Late Shift for its adjustment.',
+    { row1: 'Early Shift', row2: 'Late Shift', col1: 'Early Shift', col2: 'Late Shift' }),
+    'REPEATED PLAY (the measured false positive): "Each SHIFT chooses" distributes over the two PLAYERS — the cycle noun is the actor');
+
+  // EVERY "EACH X CHOOSES BETWEEN Y AND Z" DRAW IN THIS BLOCK IS A SYMMETRIC
+  // GAME, and four of them were being asserted against the wrong labels.
+  //
+  // The descriptions are quoted verbatim from real corpora, but the LABELS were
+  // this function's defaults (Early Slot / Late Slot / Shared Window / Separate
+  // Window), which none of these draws ever had. Looked up in the corpora they
+  // came from, all four carry the SAME pair on both sides — Early Slot / Late
+  // Slot, North Bid / South Bid, Premium Price / Discount Price, Raise Quota /
+  // Hold Quota — which is what makes "each cooperative chooses either Raise
+  // Quota or Hold Quota" complete prose rather than a story missing half its
+  // options. Glued onto unrelated column labels the same sentence describes a
+  // game whose second player has no options in the story at all, so the gate
+  // SHOULD reject it, and the control was asserting the opposite about a
+  // scenario that never existed. Real labels restored: the controls now pin
+  // what they were recruited to pin, and each can fail for the reason it claims.
+  // ── THE SCENE NOUNS, every one a real draw the loose rules would have hit ─
+  const REAL: [string, string, Partial<Record<'row1' | 'row2' | 'col1' | 'col2', string>>?][] = [
+    ['rt3_flat_cloud2#51, "Long Run" is a PRINT run — and an option label',
+      'A small letterpress publisher is choosing between a Short Run and a Long Run for a new edition. Its paper supplier is choosing between Classic Type and Modern Type for the same edition.',
+      { row1: 'Short Run', row2: 'Long Run' }],
+    ['rt3_flat_cloud#39, "round" is a maintenance round',
+      'The clocktower caretaker chooses between Inspect Gears and Check Bell for the scheduled maintenance round. The restoration contractor chooses between Replace Ropes and Tune Chimes for the same round.'],
+    ['rt3_reroll_cloud#58, "Round" is a bird-ringing patrol — and an option label',
+      'A bird-ringing station manager chooses between a Dawn Round and an Extended Round for the station’s work. A visiting bird research team chooses whether to request the Early Slot or the Late Slot.',
+      { row1: 'Dawn Round', row2: 'Extended Round' }],
+    ['rt_label_corpus#48, "recurring" describes the CONTRACT, not the game',
+      'Two courier companies are competing for a recurring delivery contract. Each company chooses whether to submit a bid centered on the north route or the south route.',
+      { row1: 'North Bid', row2: 'South Bid', col1: 'North Bid', col2: 'South Bid' }],
+    ['rt3_character_cloud#27, "daily sailings" is the business, one decision about it',
+      'Two ferry operators are assigning their daily sailings to timetable slots on the same route. Each operator chooses between the Early Slot and the Late Slot.',
+      { row1: 'Early Slot', row2: 'Late Slot', col1: 'Early Slot', col2: 'Late Slot' }],
+    ['rt_label_corpus#31, "routine weekly prices" — recurrent context, single choice',
+      'Two neighboring dairy co-ops are setting routine weekly prices for comparable milk products. Each co-op chooses between Premium Price and Discount Price for the coming week.',
+      { row1: 'Premium Price', row2: 'Discount Price', col1: 'Premium Price', col2: 'Discount Price' }],
+    ['rt2_gapladder_g25#12, "reputation" is a STAKE on this one decision',
+      'A large ski resort is setting its grooming plan for the season, with its reputation and operating budget heavily tied to reliable lift access. An independent grooming contractor, whose own business is less exposed, chooses between a Full Pass and a Selective Pass.'],
+    ['rt3_stakes_cloud#7, "next season’s catch limit" is the SUBJECT of one choice',
+      'Two fishing cooperatives are negotiating next season’s shared catch limit. Each cooperative chooses either Raise Quota or Hold Quota for its position at the bargaining table.',
+      { row1: 'Raise Quota', row2: 'Hold Quota', col1: 'Raise Quota', col2: 'Hold Quota' }],
+  ];
+  for (const [tag, d, labels] of REAL) {
+    assert(gate(d, labels), `REPEATED PLAY CONTROL (${tag}): a cycle noun is scene-setting — gating it would reject 30.09% of real output`);
+  }
+
+  // ── AND THE CLAIM ITSELF, so the refusal is honest about what still ships ─
+  // These are NOT caught. They are recorded as reachable, exactly as the F1
+  // vocabulary gap was, so nobody reads this block as "repeated play is
+  // handled". If the retrained model starts producing them, this is the
+  // fixture that is already written.
+  const STILL_REACHES_THE_USER = [
+    'Each season the co-op chooses between an Early Harvest and a Late Harvest, and the mill chooses again the following season.',
+    'The two operators play this out over many rounds, and either can retaliate the next time the corridor is groomed.',
+    'A yard that undercuts today builds a reputation that costs it in future rounds.',
+  ];
+  for (const d of STILL_REACHES_THE_USER) {
+    assert(gate(d), `REPEATED PLAY, KNOWN OPEN: this genuinely false claim still reaches the user by design — 0 instances in 3,185 draws did not justify a rule whose only real-world hit was a false positive: ${d}`);
+  }
+
+  console.log('✓ repeated play: PRICED AND REFUSED — folk-theorem machinery 0/3,134 accepted and 0/51 rejected; candidate rule 1 hit, 1 false positive; 9 real draws pinned as controls; 3 true claims recorded as still reaching the user');
+}
+
+/**
+ * META VOCABULARY — the prompt's own words and the mathematical object leaking
+ * into user-facing fiction. A REGISTER defect, not a falsehood: "Player A
+ * chooses between Early Harvest and Late Harvest" asserts nothing untrue, it
+ * simply is not a story.
+ *
+ * THE LARGEST REMAINING CLASS WITH REAL REACH. Measured per surface over 3,363
+ * gate-passing draws — and the two surfaces are NOT the same population, so the
+ * earlier "equal on both, therefore inherited from the teacher" reading does
+ * not hold once all sub-forms are counted:
+ *
+ *     union of the four shipped forms:  local 14.0%   cloud 7.0%
+ *     "Player A" alone:                 local  6.1%   cloud 6.2%   <- the one that IS equal
+ *     "the game" as an object:          local  0.6%   cloud 0.0%
+ *
+ * EVERY POSITIVE BELOW IS A REAL DRAW, QUOTED. Every control is either a
+ * measured false positive of an earlier draft or a shape whose collision is
+ * predicted by the domain rotation.
+ */
+function testMetaVocabulary() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const sc = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d, ...labels,
+  } as any);
+  const gate = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) =>
+    validateScenario(sc(d, labels), ANTI).ok
+    && scenarioIsClaimFree(sc(d, labels)).ok !== false
+    && validateProseDirections(d, sc(d, labels), ANTI).length === 0;
+  const why = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) =>
+    scenarioIsClaimFree(sc(d, labels)).reason ?? '';
+
+  // ── POSITIVES, all real draws ────────────────────────────────────────────
+  assert(!gate('A dairy co-op, Player A, is deciding between Premium Pricing and Cost-Plus Pricing for its seasonal produce. Player B, the distributor, is choosing between Premium Pricing and Cost-Plus Pricing for its delivery network.'),
+    'META (rt_label_corpus#16): "Player A"/"Player B" is the prompt\'s own cast, not a story');
+  assert(!gate('A is a mushroom grower choosing between Early Harvest and Late Harvest for its crops. B is a distributor choosing between Open Market and Stabilize Supply for the same products.'),
+    'META (rt_label_corpus#57): a bare letter standing in for a character');
+  assert(!gate('The two players are choosing their distribution timing for the same brew.'),
+    'META (rt_label_corpus#20): "the two players" names the game\'s cast, not the world\'s');
+  assert(!gate('A city planning department and a construction firm are coordinating the repair of a stone wall. The game is between these two players and represents the negotiation of their repair plan.'),
+    'META (rt2_local_prod200#73): the game named as an object');
+  // The NAME and the LABELS are user-facing too — the name is a field no screen
+  // read at all before this campaign.
+  assert(!gate('A mill and a haulier each pick a window.', { name: 'Player A Scheduling' }),
+    'META: the scenario NAME is screened too');
+  assert(!gate('A mill and a haulier each pick a window.', { row1: 'Player A Slot' }),
+    'META: option LABELS are screened too');
+
+  // ── TRAP A: "the game" is a PRODUCT in this corpus ───────────────────────
+  // Two guards, and the measurement shows each spares a case the other does
+  // not. Both are asserted, so a later edit cannot quietly drop either.
+  // NB the first draft of these two controls DID NOT TEST THEIR GUARDS. Both
+  // sentences lacked game-theory vocabulary, so the theory requirement spared
+  // them on its own and the mutation run passed with the hyphen boundary and
+  // the product guard both deleted. They are rewritten to carry theory
+  // vocabulary, so now only the guard under test can spare each one. A guard
+  // whose control cannot fail when the guard is removed is not a tested guard —
+  // this suite has caught that shape repeatedly, and here it caught mine.
+  assert(gate('A concession vendor chooses between Joint Promotion and Solo Sales for the game-day menu, and both operators move simultaneously.'),
+    'META TRAP A (from rt_label_corpus#9, a REAL cloud draw): "the GAME-DAY menu" — only the hyphen boundary spares this, because \\b sits happily before a hyphen');
+  assert(gate('A small game studio chooses whether to give the game a Featured Slot or a Standard Slot, while a rival studio moves simultaneously on its own title.'),
+    'META TRAP A: a video-game scenario — only the product-vocabulary test spares this one; the hyphen guard does not, because "the game" here is unhyphenated');
+  assert(!gate('A mill books a slot and a haulier books a window. The two decisions form the game\'s normal-form setup.'),
+    'META TRAP A: and the actual claim must still be caught — theory vocabulary, no product vocabulary');
+
+  // ── TRAP B: the bare-letter form needs the negative lookbehind ───────────
+  // This is CLOUD'S GOOD SHAPE. The naive predicate scores 20.0% on cloud
+  // against 1.2% with the lookbehind; 229 draws separate those numbers and
+  // every one inspected reads like these.
+  assert(gate('Agency A chooses Prime Slot or Off-Prime Slot, while Operator B chooses Full Pricing or Reduced Pricing.'),
+    'META TRAP B (rt3_flat_local#8): "Agency A chooses… while Operator B chooses" is ordinary English for two indistinguishable parties');
+  assert(gate('Operator A chooses Early Shift or Late Shift, while Operator B chooses Open Lighthouse or Hold Lighthouse.'),
+    'META TRAP B (rt3_flat_local2#111): a noun before the letter makes it a name, not a stand-in');
+  assert(gate('Bakery A and Bakery B are competing shops placing weekly flour orders with the same mill. Each bakery chooses whether to submit its order early or wait until later in the ordering window.'),
+    'META TRAP B (rt3_character_cloud#6): "Bakery A and Bakery B" must pass');
+  assert(gate('Two hospitals share one air-ambulance pad. Hospital A chooses between Surge Staffing and Core Staffing; Hospital B chooses between a Central Pool and Local Teams.'),
+    'META TRAP B: the same shape with a semicolon and two clauses');
+
+  // ── COLLISION CONTROLS: "player" is a scene noun in some domains ─────────
+  // The rotation contains "puppet theatre touring", where "the players" is the
+  // acting company. Bare "the players" is therefore EXCLUDED on shape — it
+  // measures 0.1% local / 0.0% cloud and the only draws it uniquely catches are
+  // caught by another form anyway. W5's D4 refusal is the precedent.
+  assert(gate('A touring puppet company chooses an Early Tour or a Late Tour, and the players rehearse whichever slot the hall offers.'),
+    'META COLLISION: "the players" is the acting company — excluded on SHAPE, because the rotation contains puppet theatre touring');
+  assert(gate('A glaciology team led by a senior surveyor chooses between Dawn Flight and Dusk Flight. A partner team chooses between a North Transect and a South Transect.'),
+    'META COLLISION: "team"/"led by" near no meta token must pass — the word "player" is what matters, not the sporting register');
+
+  // ── WHERE THE RULE LIVES, both ways. Same architectural test as the numeral
+  //    screen: META is a rung-3 defect, because only at rung 3 does the solver
+  //    state the mathematics and the description exist purely as a story.
+  const meta = sc('Player A chooses an Early Slot. Player B chooses a Shared Window.');
+  assert(validateScenario(meta, ANTI).ok,
+    'PLACEMENT: validateScenario runs at EVERY rung and must not carry the rung-3 META rule');
+  assert(scenarioIsClaimFree(meta).ok === false,
+    'PLACEMENT: the rung-3 screen must reject it');
+
+  // ── THE FIFTH SUB-FORM: "payoff", the mathematical object by name. ───────
+  // This looked like a conflict with a control RED 1'S OWN ORACLE scores and it
+  // is not one. THE TWO PROPOSITIONS ARE INDEPENDENT, and both are asserted
+  // here, which is the whole point:
+  //   the sentence is NOT FALSE      — true on any matrix whose payoffs vary
+  //   the sentence is NOT IN REGISTER — it names the mathematical object
+  // The control read as "nothing rejects this", which is stronger than the fact
+  // it was recruited to protect. Expressed by REASON, both facts survive.
+  const vacuousCloser = 'A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.';
+  const vacuousWhy2 = scenarioIsClaimFree(sc(vacuousCloser)).reason ?? '';
+  assert(/mathematical object/.test(vacuousWhy2),
+    `META: the bare noun "payoffs" is screened for REGISTER: ${vacuousWhy2 || '(accepted)'}`);
+  assert(!/comparative|attached to a comparison|conditional outcome|moves first|share a goal|rivals/.test(vacuousWhy2),
+    'META/FALSEHOOD SEPARATION: no falsehood screen may fire on the vacuous closer — that proposition is red 1\'s and it still stands');
+  assert(validateScenario(sc(vacuousCloser), ANTI).ok,
+    'META/FALSEHOOD SEPARATION: and the matrix-decided screens must still pass it');
+  // The falsehood rule for payoffs ATTACHED to a comparison must still fire on
+  // its own ground, or merging the two questions has quietly lost one.
+  assert(/attached to a comparison/.test(scenarioIsClaimFree(sc('A mill books a slot. The haulier\'s payoffs are higher than the mill\'s for every window.')).reason ?? ''),
+    'META/FALSEHOOD SEPARATION: an attached payoff COMPARISON is still caught as a falsehood, not merely as register');
+
+  console.log('✓ meta vocabulary: 5 sub-forms screened; both traps pinned — "the game-day menu" and the video-game studio pass, "Operator A chooses" passes at 20.0%-vs-1.2% cloud cost; "payoff" screened for REGISTER while the falsehood proposition about it still stands');
 }
 
 try {

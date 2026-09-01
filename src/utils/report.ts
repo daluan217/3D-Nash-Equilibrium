@@ -27,6 +27,7 @@ import type { GamePayoffs, LlmReport, SuggestedScenario } from '../types';
 import { computeAllNE, computeIndifference, fmtProb } from './gameEngine';
 import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
+import { stakesHint } from './scenarioStakes';
 
 /**
  * Chosen from eval data, not preference — see src/evals/ and the sweep of
@@ -358,7 +359,7 @@ export interface GenerateScenarioResult {
 /** The slim invention call behind "New AI scenario" — see SCENARIO_SCHEMA. */
 export async function generateScenario(
   g: GamePayoffs,
-  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string } = {},
+  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string; stakes?: boolean } = {},
 ): Promise<GenerateScenarioResult> {
   // `domain` steers WHICH setting the invention uses, and nothing else.
   //
@@ -371,9 +372,32 @@ export async function generateScenario(
   // by construction instead of a property of the model's priors.
   //
   // Deliberately additive and inert: no domain, no change to the prompt.
-  const systemPrompt = opts.domain
-    ? `${SCENARIO_SYSTEM_PROMPT}\n\nSET THIS SCENARIO IN THIS DOMAIN: ${opts.domain}. Use that domain and no other. Everything else above still applies.`
-    : SCENARIO_SYSTEM_PROMPT;
+  //
+  // `stakes` steers HOW MUCH IS AT RISK in that setting, and nothing else. The
+  // model is already handed every payoff, and measurably does not use them: an
+  // all-zero matrix produced stories indistinguishable from real ones. So this
+  // is not the numbers again — it is a computed reading of what they MEAN for
+  // the world the story is set in, which is the part the model was never asked
+  // for. Same additive-and-inert property as `domain`: no stakes line, no
+  // change to the prompt. See src/utils/scenarioStakes.ts.
+  // OPT-IN, not opt-out. This read as `=== false ? '' : hint` at first, which
+  // made the hint ON whenever the option was omitted — flatly contradicting
+  // the "additive and inert" property claimed two lines up, which `domain`
+  // genuinely has and this did not. Production was unaffected (all three call
+  // sites pass it explicitly), but ten `_gen` harnesses call generateScenario
+  // without it and were silently measuring the ON arm — including
+  // make_scenario_trainset.ts, the TEACHER-DATA GENERATOR for the local
+  // retrain. Since retraining is the only lever left on the local model, the
+  // next training set would have carried stakes-conditioned teacher prose by
+  // accident rather than by decision.
+  const stakes = opts.stakes === true ? stakesHint(g) : '';
+  const systemPrompt = [
+    SCENARIO_SYSTEM_PROMPT,
+    opts.domain
+      ? `SET THIS SCENARIO IN THIS DOMAIN: ${opts.domain}. Use that domain and no other. Everything else above still applies.`
+      : '',
+    stakes,
+  ].filter(Boolean).join('\n\n');
   const res = await callProvider({
     model: opts.model || DEFAULT_MODEL,
     systemPrompt,
@@ -388,8 +412,23 @@ export async function generateScenario(
     // warns about, one function up. Measured on the rung-3 yield runs: 1.1% of
     // luna@low calls and 1.7% of mini@low calls came back empty after ~11s (a
     // full budget generated), versus ~2.3s for a healthy call. Those are lost
-    // stories caused by our cap, not by the model. Matched to the report call.
-    maxOutputTokens: 8192,
+    // stories caused by our cap, not by the model.
+    //
+    // 8192 WAS STILL NOT ENOUGH, and the correction matters because the commit
+    // that shortened the stakes hint claimed to have fixed this. It did not.
+    // Re-measured at the reasoning level PRODUCTION actually runs — no
+    // REPORT_REASONING in the deploy manifest means the provider default, which
+    // is thinking-ON — the shortened 141-character hint still costs 4/107
+    // max-tokens against 0/110 without it. Shortening the prompt by 65% did not
+    // remove the pressure; it only removed it at `reasoning: 'low'`, which is
+    // the setting eleven local harnesses use and production does not.
+    //
+    // So raise the cap, which addresses the cause rather than the symptom. It
+    // costs NOTHING when unused — billing is on tokens produced, not on the
+    // ceiling — and the retry added alongside it stays as the belt: together
+    // they take the user-visible failure from ~3.7% to roughly 0.14%, since the
+    // draws measure as effectively independent.
+    maxOutputTokens: 16384,
   });
   if (res.failure || !res.text) return { scenario: null, failure: res.failure ?? 'unparseable', usage: res.usage ?? null };
   try {

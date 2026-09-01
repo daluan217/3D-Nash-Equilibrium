@@ -31,3 +31,9 @@ _gen/exemplars/*.json
 # Untracked from the tree on 2026-08-29; it remains in history at cfc7637 and
 # three later commits, which was accepted rather than rewriting public main.
 SOME_DESCRIPTION.md
+
+# Bundled local model + llama.cpp binaries: hundreds of MB, must never enter git.
+# A `git add -A` swept these in once and GitHub rejected the push at its 100MB
+# file limit, which is the only reason it was caught.
+local-model/
+*.gguf

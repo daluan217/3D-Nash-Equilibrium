@@ -385,6 +385,423 @@ function bestReplyIssues(
  * one retry backs up.
  */
 /**
+ * An explicit MULTIPLE, spelled out. The digit screens catch "100000x"; this
+ * catches the same claim written in words, which contains no digit at all —
+ * "a choice worth a hundred thousand times more than the other party's",
+ * "Hundredfold Expansion / No Change" as an option pair on a game whose every
+ * swing is a thousandth of a unit.
+ *
+ * Scoped to constructions that carry a NUMBER, because that is the half that is
+ * decidable. "twice", "double", "half" and "many times" are all left alone:
+ * they are ordinary English ("a double shift", "half day"), they assert no
+ * specific ratio, and a screen for them is the word list this file's other
+ * comments spend their length arguing against. "manifold" is unreachable by
+ * construction — the -fold alternation requires a numeral stem, so the engine
+ * part and the adjective both pass.
+ *
+ * WHICH BRANCH ACTUALLY EARNS ITS PLACE. The numeral-bearing alternatives
+ * ("10-fold", "10x", "12 times larger") are redundant against the caller as it
+ * stands: every site that consults this constant screens for a numeral FIRST
+ * and returns before reaching it. They are kept so the predicate is true to its
+ * own name when read or called on its own, and they are marked here rather than
+ * left to imply coverage they are not currently providing. The branch that
+ * closes a real hole is the SPELLED-OUT one — "hundredfold", "a hundred
+ * thousand times more", "orders of magnitude" — which contains no numeral and
+ * is therefore invisible to every screen that runs before it.
+ *
+ * Reach: 0 of 890 stored real draws, in every field.
+ */
+const MULTIPLIER_CLAIM = new RegExp(
+  [
+    // twofold … thousandfold, and 10-fold. A numeral stem is required.
+    String.raw`\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)[-\s]?fold\b`,
+    String.raw`\b\p{N}+[-\s]?fold\b`,
+    // 10x, 100 x. Not "3x3" — the trailing boundary fails against a digit.
+    String.raw`\b\p{N}+\s?x\b`,
+    String.raw`\p{N}\s?[×]`,
+    // "a hundred thousand times more", "12 times larger", "ten times as costly"
+    String.raw`\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|\p{N}+)\s+times\s+(?:more|less|larger|smaller|greater|bigger|higher|lower|worse|better|as\s+\w+)\b`,
+    // `[-\s]+`, not `\s+`. RED 1's label oracle (hole L10) put the identical
+    // claim in a label as "Order-of-Magnitude Expansion" and it walked straight
+    // through this rule, because the rule was written for the spaced spelling
+    // only. Not a missing screen — an EXISTING screen defeated by punctuation,
+    // the same shape as the U+2212 minus this file normalizes, which has bitten
+    // this repo three times. Cost of the widening, measured over 3,245
+    // gate-passing draws across every corpus: zero.
+    String.raw`\borders?[-\s]+of[-\s]+magnitude\b`,
+  ].join('|'),
+  'iu',
+);
+
+/**
+ * A BARE LARGE QUANTITY IN A NAME OR AN OPTION LABEL.
+ *
+ * RED 1's label oracle, hole L7: rows "Ten Thousand Crates" / "One Crate" on a
+ * matrix whose every swing is one thousandth of a unit. There is no digit, so
+ * the `\p{N}` screen sees nothing; there is no "-fold", no "times more" and no
+ * "orders of magnitude", so no branch of MULTIPLIER_CLAIM sees it either. The
+ * label asserts a magnitude about a matrix it cannot see, and under rung 3 the
+ * rendered paragraph beside it states the real number.
+ *
+ * SCOPE IS NAME AND LABELS ONLY, DELIBERATELY. Both scopes measure 0 false
+ * positives today, but they are not the same bet on future output: a
+ * DESCRIPTION may legitimately set a scene at scale ("a depot handling
+ * thousands of crates"), whereas a large round number in a strategy NAME is an
+ * assertion about the payoff. The description already carries the multiplier
+ * screen for the form that is actually a claim ("a hundred thousand times
+ * more", RED 2's case L5). Keeping the description free is the minimum
+ * constraint that closes the hole.
+ *
+ * NARROWER THAN RED'S OWN D4 PREDICATE, and the differences are the point.
+ * Theirs is `hundreds?|thousands?|millions?|billions?|dozens?|twice|thrice|
+ * \w+fold`. Three of those are scene-noun collisions of exactly the kind this
+ * campaign has hit four times:
+ *   `\w+fold` matches "Manifold", which this suite already pins as a control
+ *             ("Manifold is not a multiple — the -fold rule requires a numeral
+ *             stem"); adopting D4 as written would have broken a passing test.
+ *   `twice`   matches "a twice-weekly delivery", a SCHEDULE, not a magnitude.
+ *   `dozens`  matches "dozens of crates", ordinary scene-setting.
+ * None of the three appears in the 3,296 draws on this box, so all of them
+ * measure 0% today. They are excluded on the shape of the word rather than on
+ * a rate, because the rate is what would have hidden them.
+ *
+ * Reach: 0 of 3,245 gate-passing draws across 49 corpora
+ * (_gen/blue_w5_spelledprice.mjs). CONTAINMENT, not detection — recorded that
+ * way for the same reason the numeral screen is.
+ */
+const BIG_SPELLED_QUANTITY = /\b(?:hundreds?|thousands?|millions?|billions?|trillions?)\b/i;
+
+/**
+ * META VOCABULARY — the prompt's own words, and the mathematical object itself,
+ * appearing in user-facing fiction.
+ *
+ * This is a REGISTER defect, not a falsehood. "Player A chooses between Early
+ * Harvest and Late Harvest" asserts nothing false; it simply is not a story. It
+ * is the app's own scaffolding shown to a reader who was promised a scenario,
+ * and it is the largest remaining defect class with real reach on observed
+ * output — the truth classes are measured at or near zero.
+ *
+ * NOT INHERITED FROM THE TEACHER. Measured per surface over 3,363 gate-passing
+ * draws (_gen/blue_w6_metaprice.mjs, _gen/blue_w6_metadesign.mjs) — these are
+ * two different populations and pooling them hides the finding:
+ *
+ *   sub-form                              local     cloud
+ *   "Player A" / "Player B"                6.1%      6.2%    <- the one that IS equal
+ *   a BARE LETTER as a character           4.0%      1.2%
+ *   "the two players" / "each player"      3.0%      0.2%
+ *   "the game" as the object               0.6%      0.0%
+ *   ------------------------------------------------------
+ *   union of the four                     14.0%      7.0%
+ *
+ * TWO TRAPS, both handed over already measured, both built in from the first
+ * draft rather than discovered after shipping.
+ *
+ * TRAP A — "THE GAME" IS A PRODUCT IN THIS CORPUS. The domain rotation contains
+ * film, software and theatre settings, and of 31 META hits in an earlier
+ * training corpus TWELVE were video-game scenarios ("a game studio chooses…
+ * for distributing the game") — not one game-theoretic. A bare "the game" rule
+ * deletes a whole domain. TWO independent guards, and the measurement shows
+ * each one spares a case the other does not:
+ *   - the hyphen boundary `(?![-\w])` alone spares the real cloud draw
+ *     "…Solo Sales for the GAME-DAY menu", which a bare `\bthe game\b` matches
+ *     because `\b` sits happily before a hyphen. Same punctuation class as the
+ *     `orders?\s+of\s+magnitude` hole and the U+2212 minus.
+ *   - the product-vocabulary test alone spares "a small game studio chooses
+ *     whether to give the game a Featured Slot", which the hyphen guard does
+ *     NOT spare.
+ * So the rule fires only where a sentence names the game AND carries
+ * game-theory vocabulary AND carries no game-product vocabulary.
+ *
+ * TRAP B — THE BARE-LETTER FORM NEEDS A NEGATIVE LOOKBEHIND, and this is the
+ * single most expensive thing in this screen to get wrong. `\b[AB]\s+chooses`
+ * matches "Operator A chooses… while Operator B chooses…", which is ordinary
+ * English for two indistinguishable parties and is CLOUD'S GOOD SHAPE.
+ * Measured here, on this corpus:
+ *
+ *   naive, no lookbehind : local 4.8%   CLOUD 20.0%
+ *   with the lookbehind  : local 4.0%   cloud  1.2%
+ *
+ * 229 draws separate those two numbers and every one inspected is the good
+ * shape — "Agency A chooses Prime Slot or Off-Prime Slot, while Operator B
+ * chooses…". RED 1's first draft of this predicate reported 20.4% on cloud and
+ * 13 of 14 hand-checked matches were that shape. A rule that rejects a fifth of
+ * all cloud output would have looked like a huge win right up until someone
+ * read the rejections.
+ *
+ * THE FIFTH SUB-FORM, "payoff", AND WHY IT LOOKED LIKE A CONFLICT. Screening it
+ * appears to contradict a control RED 1'S OWN ORACLE scores: "their choices
+ * determine the resulting payoffs", asserted there as the vacuous closer the
+ * model writes constantly. It is not a contradiction. The oracle asserts the
+ * sentence is not FALSE — true on any matrix whose payoffs vary, and that
+ * assertion still stands, untouched. This screen asserts it is not IN REGISTER.
+ * Both are true and they are independent: a draw can be perfectly true and
+ * still be prose the product should not ship.
+ *
+ * The apparent conflict came from HOW the control was written — as "nothing
+ * rejects this", which is a stronger claim than the fact it was recruited to
+ * protect. The controls in the suite are therefore expressed by REJECTION
+ * REASON: the falsehood screens must not fire on that sentence, and the META
+ * screen may. Measured: "payoff" is the ONLY meta marker in 1.2% of local draws
+ * and 0.0% of cloud draws, so it adds a little to the union and nothing to
+ * cloud.
+ *
+ * `\p{N}` forms ("Player 1") are not listed because they are unreachable: the
+ * numeral screens above return first, in labels and in the description alike.
+ * Marked rather than left to imply coverage they do not provide.
+ */
+const META_PROMPT_CAST = /\bplayers?\s+(?:[AB]|one|two)\b/i;
+// The mathematical object by name. Screened for REGISTER, never for falsehood —
+// the falsehood rule above deliberately still does not fire on the bare noun.
+const META_PAYOFF = /\bpayoffs?\b/i;
+const META_GAME_CAST = /\b(?:the\s+two\s+players|both\s+players|each\s+player)\b/i;
+// "the players" BARE is excluded on SHAPE, not on rate. It is the one member
+// with an ordinary non-game meaning — "the players" is the acting company, and
+// the domain rotation contains "puppet theatre touring". It measures 0.1% local
+// and 0.0% cloud, and the only two draws it uniquely catches are already caught
+// by another form. W5's D4 refusal is the precedent: a zero rate is not grounds
+// for including a word whose shape collides.
+const META_BARE_LETTER =
+  /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have)\b/u;
+const GAME_THEORY_VOCAB = /\b(?:payoffs?|equilibri\w+|strateg\w+|players?|matrix|matrices|dominant|zero[\s-]sum|simultaneous\w*|normal[\s-]form|best\s+response|moves?)\b/i;
+const GAME_PRODUCT_VOCAB = /\b(?:video\s?games?|game\s+studio|game\s+developer|gaming|console|arcade|board\s+games?|playtest\w*|publisher|storefront|featured\s+slot|download\w*|app\s+store|steam)\b/i;
+
+/** TRAP A, per sentence: the game as the OBJECT, never the game as a product. */
+function namesTheGameItself(text: string): boolean {
+  for (const s of text.split(/(?<=[.;•])\s+/)) {
+    if (!/\bthe\s+game\b(?![-\w])/i.test(s)) continue;
+    if (GAME_PRODUCT_VOCAB.test(s)) continue;
+    if (GAME_THEORY_VOCAB.test(s)) return true;
+  }
+  return false;
+}
+
+/**
+ * TWO DISTINCT CHOOSERS — the cast analysis behind three of the structural
+ * rules in scenarioIsClaimFree.
+ *
+ * Every game this app models has exactly two players, each holding exactly one
+ * pair of options. A description that hands both pairs to one actor, or hands
+ * the second pair to nobody, shows the reader a game the product cannot model —
+ * and it is the most user-visible defect class left, because the whole subject
+ * of the app is two players choosing simultaneously.
+ *
+ * These are FUNCTIONS rather than entries in the CLAIMY regex table because
+ * every one of them is conditioned on the description's OWN CAST, not on a
+ * word. That distinction is the entire design: the first draft of each rule was
+ * a vocabulary match, and each produced a false positive on real output that
+ * only the cast could rule out.
+ */
+const CAST_AUX = /^(?:is|are|was|were|will|must|can|could|would|should|may|might|has|have|had|been|be|also|then)$/i;
+const CAST_STOP = new Set(['the', 'a', 'an', 'its', 'their', 'his', 'her', 'this', 'that', 'these', 'those',
+  'same', 'each', 'both', 'either', 'neither', 'must', 'will', 'also', 'then', 'and', 'or',
+  'independently', 'simultaneously']);
+// Clause boundaries: sentence ends, and the connectives that introduce a second
+// actor's clause. "X chooses A, WHILE Y chooses B" is two choosers in one
+// sentence, and a splitter that missed that would see one.
+const castClauses = (d: string) => d.split(/(?<=[.;!?])\s+|\s*,?\s+(?=while\b|whereas\b)/i).filter((c) => c.trim());
+// Actor-introducing verbs, deliberately broader than the choosing verbs. An
+// actor is often introduced with "is planning" or "operates" and only chooses
+// in a later clause; counting only choosing verbs made "A regional airline is
+// PLANNING a series of flights… It chooses… while the glacier manager
+// chooses…" look like a one-actor description. It has two.
+const CAST_VERB = String.raw`(?:chooses|choose|choosing|picks|pick|picking|decides|decide|deciding|selects|select|selecting|opts|opt|books|book|plans|plan|planning|operates|operate|operating|runs|run|running|schedules|schedule|scheduling|weighs|weigh|weighing|considers|consider|considering|manages|manage|managing|faces|face|facing|serves|serve|serving|sets|set|setting|holds|hold|holding|must|is|are)`;
+
+function describedCast(desc: string): { nouns: Set<string>; pronouns: string[] } {
+  const nouns = new Set<string>();
+  const pronouns: string[] = [];
+  for (const clause of castClauses(desc)) {
+    const m = new RegExp(String.raw`^(.*?)\b(?:will\s+|must\s+|then\s+|also\s+|independently\s+|simultaneously\s+)*${CAST_VERB}\b`, 'i').exec(clause);
+    if (!m) continue;
+    const subj = m[1].trim().replace(/\s+(?:will|must|also|then|independently|simultaneously)\s*$/i, '');
+    if (!subj) continue;
+    const words = subj.split(/\s+/).filter(Boolean);
+    const last = (words[words.length - 1] ?? '').replace(/[^A-Za-z'’-]/g, '');
+    if (/^(?:it|he|she|they)$/i.test(last) && words.length <= 2) { pronouns.push(last.toLowerCase()); continue; }
+    if (!last || CAST_AUX.test(last) || CAST_STOP.has(last.toLowerCase())) continue;
+    nouns.add(last.toLowerCase().replace(/s$/, ''));
+  }
+  return { nouns, pronouns };
+}
+
+/**
+ * One actor taking a SECOND decision: "The airport will ALSO choose between…"
+ * when the airport already chose. Found in the wild (rt1#71, and rt2 stakes
+ * pilot's "Each manager also chooses between Deep Irrigation and Surface
+ * Irrigation" — each manager holding both pairs).
+ *
+ * The subject test is the whole rule. "A smaller independent distributor is
+ * ALSO choosing between an open slot and a crowded slot" is CORRECT output:
+ * there "also" means "likewise", and the subject is the second actor, newly
+ * introduced. Same word, opposite meaning. The first draft captured the
+ * auxiliary "is" as the subject and flagged it.
+ */
+function oneActorTakesASecondDecision(desc: string): boolean {
+  const re = /\b([A-Za-z][\w'’-]*)\s+(?:is|are|will|must|can|would|should|may)?\s*also\s+(?:choose|chooses|choosing|decide|decides|deciding|pick|picks|picking|select|selects|selecting)\b/gi;
+  for (const m of desc.matchAll(re)) {
+    const w = m[1];
+    if (CAST_AUX.test(w) || CAST_STOP.has(w.toLowerCase())) continue;
+    const head = w.toLowerCase();
+    // Singular/plural tolerated ("managers" earlier, "manager also chooses"
+    // later). Only stemmed when the word is long enough that the trailing s is
+    // plausibly a plural — stripping it from "is" produced "i", which matched
+    // everything, and that was the first draft's false positive.
+    const sing = head.length > 3 ? head.replace(/s$/, '') : head;
+    if (new RegExp(String.raw`\b${sing}s?\b`, 'i').test(desc.slice(0, m.index))) return true;
+  }
+  return false;
+}
+
+/**
+ * The second option pair handed to a SINGULAR pronoun when no second player was
+ * ever named: "A dairy co-op is deciding between Premium Pricing and Cost-Plus
+ * Pricing… IT chooses either Local Sales or Online Sales." Two draws in the
+ * wild. "They" is excluded on purpose — a plural pronoun refers to both players
+ * and is the correct way to say they choose simultaneously.
+ */
+function secondPairHandedToAPronoun(desc: string): boolean {
+  const { nouns, pronouns } = describedCast(desc);
+  return pronouns.some((p) => /^(?:it|he|she)$/.test(p)) && nouns.size < 2;
+}
+
+/**
+ * THE SAME SINGLE PAIR HANDED TO BOTH PLAYERS COLLECTIVELY, with the other pair
+ * never appearing in the story at all.
+ *
+ *   "Two neighbouring beekeepers are choosing winter apiary sited near their
+ *    homes. THE BEEKEEPERS must choose either Roof Shed or Garden Shed."
+ *        labels: Roof Shed / Garden Shed / Drainage Line / Open Corridor
+ *
+ *   "Two neighbouring salt-marsh graziers are arranging their seasonal grazing
+ *    rights… EACH chooses between Limited Rotation and Open Rotation."
+ *        labels: Limited Rotation / Open Rotation / Early Access / Late Access
+ *
+ * Same family as `secondPairHandedToAPronoun` and found the same way: that rule
+ * catches the second pair going to a SINGULAR pronoun ("it chooses either…"),
+ * and the retrained local model produces the identical defect with a COLLECTIVE
+ * subject instead, which walked straight through it. The reader is shown a game
+ * with one player's options in it, and the app's whole subject is two players
+ * choosing at once.
+ *
+ * THREE CONDITIONS, AND EVERY ONE OF THEM IS LOAD-BEARING — measured, not
+ * assumed, over 3,208 draws that currently reach the user:
+ *
+ *  (a) ONE PAIR ONLY. Both of one player's labels appear in the description and
+ *      NEITHER of the other's does. Alone this fires on 160 draws, and a
+ *      hand-read says most are ordinary PARAPHRASE — "deciding whether to plant
+ *      cranberries early or late" for Early Planting / Late Planting is good
+ *      prose, not a defect. Never gate on this alone.
+ *  (b) A COLLECTIVE SUBJECT does the choosing. Alone this fires on 114 draws,
+ *      because "both choose at the same time" is the CORRECT way to say the
+ *      moves are simultaneous. `they` is included here where the pronoun rule
+ *      above deliberately excludes it, and (a) is what makes that safe.
+ *  (c) NO SECOND, SPECIFIC CHOOSER ANYWHERE IN THE DESCRIPTION. This is the
+ *      guard against the shape (a) and (b) cannot separate on their own: "Two
+ *      yards EACH choose between Early Slot and Late Slot, while THE BOARD
+ *      decides whether to open or hold the window" is correct output whose
+ *      second pair is merely paraphrased. No draw in any corpus has that shape
+ *      yet, so the guard is justified on SHAPE rather than on a rate — the D4
+ *      precedent, and the reason the campaign's over-firing predicates all
+ *      over-fired.
+ *
+ *      Its FIRST draft reused `describedCast` and counted named nouns, and the
+ *      negative fixture above caught it firing anyway: `describedCast` treats
+ *      "each" as a stop word, so "Two yards each choose…" contributed no noun
+ *      at all and the sentence with the second, perfectly specific chooser left
+ *      the count at one. The guard has to classify the SUBJECT OF EVERY
+ *      CHOOSING CLAUSE, not count nouns.
+ *
+ * WHAT THE RULE REALLY SEPARATES: A SYMMETRIC STORY FROM ASYMMETRIC LABELS.
+ * "Each cooperative chooses either Raise Quota or Hold Quota" is not a defect
+ * on its own — it is the model's normal, correct way to describe a SYMMETRIC
+ * game, and every draw of that shape in every corpus here (ferry timetable
+ * slots, courier bids, dairy prices, fishing quotas, textile dye shifts) turns
+ * out to carry the SAME pair on both sides. Condition (a) spares all of them
+ * for free, because a symmetric game's column labels do appear in the story.
+ * The rule fires only where the STORY is symmetric and the LABEL SLOTS are not,
+ * which is a disagreement inside one response and never a stylistic choice.
+ *
+ * This also settles a boundary the repo already decided: exact cross-player
+ * label collision is deliberately NOT gated in production, because symmetric
+ * games legitimately name both sides the same way. Nothing here changes that —
+ * a genuinely symmetric scenario passes.
+ *
+ * Reach: 6 of 3,297 draws that reach the user (0.18%), every one hand-read,
+ * every one a genuine defect, all six from the retrained local model. Zero on
+ * cloud, zero on the previous local model, so this is a NEW shape rather than a
+ * standing one — which is exactly why the acceptance sweep re-runs every rule
+ * against every model instead of trusting the corpus a rule was written on.
+ */
+const CHOOSE_VERB = String.raw`(?:choose|chooses|choosing|pick|picks|picking|decide|decides|deciding|select|selects|selecting|opt|opts|use|uses)`;
+/**
+ * The subject of every clause that does the choosing, split into the ones that
+ * speak for BOTH players at once and the ones that name a particular party.
+ * The rule fires only when there is at least one of the former and none of the
+ * latter — one specific chooser anywhere means the story does have two sides.
+ */
+function choosingSubjects(desc: string): { collective: number; specific: number } {
+  let collective = 0, specific = 0;
+  // A plural the description has already introduced as BOTH parties — "TWO
+  // NEIGHBOURING BEEKEEPERS are choosing… THE BEEKEEPERS must choose…".
+  const introduced = new Set<string>();
+  for (const m of desc.matchAll(/\b(?:two|both)\s+(?:\w+[\s-]+){0,3}?([a-z][\w'’-]{3,}s)\b/gi)) introduced.add(m[1].toLowerCase());
+  for (const clause of castClauses(desc)) {
+    const m = new RegExp(String.raw`^(.*?)\b(?:will\s+|must\s+|then\s+|also\s+|independently\s+|simultaneously\s+)*${CHOOSE_VERB}\b`, 'i').exec(clause);
+    if (!m) continue;
+    const subj = m[1].replace(/^\s*(?:and|but|while|whereas|with|so|then)\b/i, '').trim().toLowerCase();
+    if (!subj) continue;
+    const last = (subj.split(/\s+/).pop() ?? '').replace(/[^a-z'’-]/g, '');
+    const isCollective =
+      /^(?:each|both|they|either\s+party)\b/.test(subj)
+      || /\b(?:each|both)\b/.test(subj) && !/\bthe\s+(?:first|second|other)\b/.test(subj)
+      || /^(?:the\s+)?(?:two|both)\b/.test(subj)
+      || introduced.has(last);
+    if (isCollective) collective++; else specific++;
+  }
+  return { collective, specific };
+}
+function onlyPairHeldCollectively(sc: SuggestedScenario): boolean {
+  const raw = sc.description ?? '';
+  const desc = raw.toLowerCase();
+  if (!desc) return false;
+  const has = (l?: string) => !!l && desc.includes(l.trim().toLowerCase());
+  const rowPair = [sc.row1, sc.row2].filter((l): l is string => typeof l === 'string' && !!l.trim());
+  const colPair = [sc.col1, sc.col2].filter((l): l is string => typeof l === 'string' && !!l.trim());
+  if (rowPair.length < 2 || colPair.length < 2) return false;
+  const rowsIn = rowPair.filter(has).length, colsIn = colPair.filter(has).length;
+  if (!((rowsIn === 2 && colsIn === 0) || (colsIn === 2 && rowsIn === 0))) return false;
+  const { collective, specific } = choosingSubjects(raw);
+  return collective > 0 && specific === 0;
+}
+
+/**
+ * A claim that one player's move IS the other's: "…while the coordinator
+ * chooses THE SAME TIMING." The players move independently, so their moves
+ * cannot be asserted equal.
+ *
+ * The discriminator is that the shared noun is NOT already in the scene. "The
+ * co-op chooses one, while the market buyer chooses THE SAME PRODUCT" shares a
+ * thing that was named earlier — scene-setting, not a claim about the move.
+ * "The same timing" names nothing earlier, so "the same" can only be anaphoric
+ * to the other player's choice. Decision-nouns are excluded outright, because
+ * "makes the same scheduling CHOICE" is the ordinary "faces the same kind of
+ * decision" reading, and "makes" is excluded for the same reason.
+ */
+function assertsTheSameMove(desc: string): boolean {
+  const re = /\b(?:chooses?|choosing|picks?|picking|selects?|selecting)\s+(?:exactly\s+)?the\s+same\s+((?:[a-z'’-]+\s+){0,2}?)([a-z'’-]+)\b/gi;
+  for (const m of desc.matchAll(re)) {
+    const noun = m[2].toLowerCase();
+    if (/^(?:choices?|options?|decisions?|kinds?|types?|calls?|sorts?|ones?|way|ways)$/.test(noun)) continue;
+    const before = desc.slice(0, m.index);
+    const stem = noun.length > 4 ? noun.replace(/(?:ing|s)$/, '') : noun;
+    if (new RegExp(String.raw`\b${stem}`, 'i').test(before)) continue;
+    const mods = (m[1] || '').trim().split(/\s+/).filter(Boolean);
+    if (mods.some((w) => new RegExp(String.raw`\b${w.slice(0, Math.max(4, w.length - 3))}`, 'i').test(before))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * CLAIM-FREE screen for the rung-3 configuration.
  *
  * When the solver renders the mathematics, the model's only job is to invent a
@@ -399,18 +816,107 @@ function bestReplyIssues(
  * already produces naturally (storyClaims null on every story, zero story
  * defects across four rounds). So: a description may set a scene and name the
  * options, and may not assert anything decidable about the game.
+ *
+ * WHY THE NAME AND THE OPTION LABELS ARE SCREENED HERE AND NOT IN
+ * validateScenario. The no-numbers rule is a RUNG-3 rule: it is true only
+ * because the solver states every number, which is only so when the template
+ * renders the mathematics. validateScenario runs at every rung, and at rung 0
+ * the model writes the numbers itself — "Gate 12 / Gate 7" is an ordinary pair
+ * of option names there, and a numeral screen living in validateScenario would
+ * reject it. This function is called on the rung-3 paths and nowhere else, so
+ * it is the only place the justification actually holds. The matrix-checked
+ * parenthetical-annotation rule stays in validateScenario, where it belongs:
+ * that one is decidable at any rung because the matrix settles it.
  */
 export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reason?: string } {
+  // A NUMBER, OR AN EXPLICIT MULTIPLE, IN THE NAME OR AN OPTION LABEL.
+  //
+  // validateScenario treats a number in a label as a claim that has to match
+  // the matrix — but only INSIDE PARENTHESES. Drop the brackets and the
+  // identical assertion is examined by nothing. The C11 draw that rule cites as
+  // its motivation, rows "Signal (−1/−1)" / "Signal (+1/+1)", is one keystroke
+  // from being invisible to it: written "Signal −1/−1" / "Signal +1/+1" the two
+  // labels are distinct, no parenthetical exists, and the whole gate passes.
+  // RED 2 walked the same channel from the other end — "Commit 1000 Units /
+  // Commit 1 Unit" on a game whose every swing is one thousandth of a unit, and
+  // "The 100000x Decision" in the NAME, a field no screen read at all.
+  //
+  // NO EXEMPTION for a parenthetical the matrix verifies. One was written and
+  // then removed as dead code: across 890 stored draws, 4,450 authored fields,
+  // not one name or option label contains a numeral OR a parenthetical of any
+  // kind. Under rung 3 a correct payoff annotation in a label is redundant
+  // anyway, because the rendered paragraph beside it states the same number.
+  //
+  // WHAT IS DELIBERATELY NOT GATED, and why this is not a word list.
+  // Magnitude-BEARING label pairs — "Full Support / Lean Support", "Premium
+  // Price / Discount Price", "Reduce Catch / Maintain Catch" — occur in 32.16%
+  // of gate-passing real draws (284 of 883; _gen/blue_w3_reach.mjs), and the
+  // rate does not track the payoff spread. Gating "these labels sound dramatic"
+  // would reject a third of all good output to catch something no instrument
+  // can decide. Even the far narrower total-vs-nothing pair fires on real
+  // output ("Full Monitoring / No Monitoring", a perfectly good pair of
+  // options) and is excluded for that reason alone. Two of RED 2's six
+  // adversarial cases — "Full Evacuation / No Evacuation" and "Full Shutdown /
+  // No Shutdown" — are in that undecidable class and REMAIN OPEN on purpose.
+  //
+  // REACH, honestly stated: 0 of 890 stored draws, and 0 across RED 1's 30
+  // deliberately magnitude-provoking matrix families (±100, "huge stakes",
+  // "epsilon", "asym magnitude", "huge vs tiny mix"). So this is CONTAINMENT,
+  // not detection — it costs the current two models nothing and catches them
+  // nothing. It earns its place because the channel is demonstrably walkable
+  // (6 of 6 hand-built claims reached the user through the shipping gate) and
+  // the distribution is not fixed: the local model is being retrained, and
+  // REPORT_MODEL is an env var that has already changed under this product
+  // twice without anyone noticing.
+  for (const key of ['name', 'row1', 'row2', 'col1', 'col2'] as const) {
+    const raw = typeof sc[key] === 'string' ? (sc[key] as string).trim() : '';
+    if (!raw) continue;
+    const where = key === 'name' ? 'the scenario name' : `the option label "${raw}"`;
+    // `\p{N}` rather than `\d`: `\d` is ASCII-only in JavaScript, so a fullwidth
+    // or Arabic-Indic numeral walks straight through a rule that exists to stop
+    // numerals. Same class of hole as the U+2212 minus this file normalizes,
+    // which has bitten the repo three times.
+    if (/\p{N}/u.test(raw)) return { ok: false, reason: `${where} cites a number` };
+    if (MULTIPLIER_CLAIM.test(raw)) return { ok: false, reason: `${where} asserts a multiple` };
+    // The numeral written as a WORD. See BIG_SPELLED_QUANTITY above: name and
+    // labels only, and narrower than the predicate RED 1 scored, because three
+    // of theirs collide with ordinary scene vocabulary.
+    if (BIG_SPELLED_QUANTITY.test(raw)) return { ok: false, reason: `${where} cites a large quantity` };
+  }
   const desc = normalizeProseMinus((sc.description ?? '').trim());
   if (!desc) return { ok: true };
-  if (/\d/.test(desc)) return { ok: false, reason: 'the description cites a number' };
+  // `\p{N}`, for the reason given on the label screen above: `\d` is ASCII-only
+  // in JavaScript. This rule shipped as `/\d/` and a fullwidth numeral walked
+  // straight through the rule that exists to stop numerals.
+  if (/\p{N}/u.test(desc)) return { ok: false, reason: 'the description cites a number' };
+  // The spelled-out multiple contains no numeral, so the rule above cannot see
+  // it, and none of the comparative rules below reach it either: "worth a
+  // hundred thousand times more than the other party's" uses no payoff word and
+  // no comparative from their vocabulary. Measured reaching the user through
+  // the full shipping gate (RED 2, case L5).
+  if (MULTIPLIER_CLAIM.test(desc)) return { ok: false, reason: 'the description asserts a multiple' };
   const CLAIMY: [RegExp, string][] = [
-    // "payoffs" as a bare NOUN asserts nothing — "the matrix records their
-    // strategic payoffs", "their payoffs represent the resulting commercial
-    // success" — and dropping on the word alone cost 1,269 of 4,462 GOLD
-    // scenarios (28.4%), which is an off switch, not a filter. The same
-    // word-not-claim error as the joint-payoff check. So the bare noun is
-    // allowed and rule 1b below drops it once it is ATTACHED to a comparison.
+    // "payoffs" as a bare NOUN asserts nothing FALSE — "the matrix records
+    // their strategic payoffs" is true of any matrix — so this rule, which is a
+    // FALSEHOOD rule, deliberately does not fire on it. Rule 1b below drops it
+    // once it is ATTACHED to a comparison, which is where the assertion is.
+    //
+    // THE BARE NOUN IS NOW DROPPED ANYWAY, by the META screen further down, on
+    // a different ground: it is the mathematical object appearing in
+    // user-facing fiction. True and out of register are independent, and a draw
+    // can be both. Kept as two separate rules rather than merged, because the
+    // question each answers is worth being able to ask on its own.
+    //
+    // A SUPERSEDED NUMBER, RETIRED HERE. This comment used to justify allowing
+    // the bare noun with "dropping on the word alone cost 1,269 of 4,462 GOLD
+    // scenarios (28.4%)". That figure governed a DIFFERENT corpus — an earlier
+    // training set generated under a prompt that asked the model to describe
+    // payoffs — and it is not the cost on the surface this gate actually runs
+    // on. Measured on production output, 3,363 gate-passing draws: the word
+    // appears in 2.2% of local draws and 0.0% of cloud draws, and it is the
+    // ONLY meta marker in 1.2% of local draws. The old number is recorded as
+    // retired rather than deleted, because a stale figure left in a comment is
+    // how the next person inherits a decision without its evidence.
     // `equilibrium` stays claimy on sight: naming where the equilibrium is IS
     // an assertion, and a scenario has no business making it.
     [/\b(?:better|worse|best|worst|prefers?|favou?rs?|dominant|dominates?|optimal|advantage|equilibri(?:um|a)|indifferent|gains?\s+more|loses?\s+more)\b/i, 'a comparative or payoff word'],
@@ -430,13 +936,225 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     // choosing SECOND", which self-contradicts "independently choose" in the
     // same sentence. Ordinal, observation and follow phrasings are the same claim.
     [/\b(?:goes?|moves?|chooses?|choosing|picks?|acts?|plays?)\s+(?:first|second)\b|\b(?:first|second)\s+(?:mover|player\s+to\s+(?:move|choose|act))\b|\bobserv\w+\b[^.;]{0,40}?\b(?:then|before)\b|\b(?:then|and)\s+(?:B|A|the\s+\w+)\s+(?:follows?|responds?|replies|counters?)\b|\bcommits?\s+(?:first|initially)\b|\b(?:follows?|replies|responds?)\s+(?:to\s+)?the\s+(?:first|other)\b/i, 'a claim about who moves first'],
+
+    // NEGOTIATION — a PROTOCOL the game does not have. RED 1's largest oracle
+    // hole: "The two yards negotiate over the rack calendar. One side offers an
+    // Early Slot or a Late Slot and the other accepts a Shared Window or a
+    // Separate Window in exchange." An offer answered by an acceptance asserts
+    // a sequence and a reciprocal trade; a one-shot simultaneous normal-form
+    // game has neither. Same defect class as the two rules above, in vocabulary
+    // they do not share — which is why it walked through both.
+    //
+    // THE WORD "NEGOTIATE" IS NOT THE CLAIM, and that is the whole design here.
+    // It appears in 10 of 890 real draws (1.12%), always as scene-setting with
+    // a correct sentence after it — "Two fishing cooperatives are negotiating
+    // how to manage a shared seasonal catch quota. The North Fleet chooses
+    // between Firm quota and Flexible quota, while the South Fleet
+    // INDEPENDENTLY chooses…" Two parties in a negotiation who each pick a
+    // stance simultaneously is exactly what this app models. Gating the word
+    // would reject those ten, most of them from the cloud production path.
+    // The pieces are no better on their own: bare "offer" is 1.12% of real
+    // draws (a supplier "chooses between offering Bulk Flour or Specialty
+    // Flour"), bare "accept" 0.22% ("chooses whether to Accept Bid or Reject
+    // Bid"), and contract/deal/terms 6.18% — ordinary scenario nouns, all.
+    //
+    // So the rule is a CONJUNCTION, not a list: one side OFFERS *and* another
+    // ACCEPTS or REJECTS. Acceptance is acceptance OF the offer, so it places
+    // B's move after A's — the sequence claim, arrived at from the other side.
+    // Written with lookaheads to keep it in this table with every other claim
+    // rule instead of becoming a special case above the loop.
+    // Measured: 0 of 890 stored draws, cloud and local.
+    // The offer side covers SUBMITTING a bid and PROPOSING as well as offering,
+    // because those are the same speech act and the model uses them
+    // interchangeably. r2cloud#11 is the draw that forced it: "A courier company
+    // chooses whether to SUBMIT a Premium Route or a Budget Route BID for a
+    // delivery contract. A logistics platform chooses whether to ACCEPT BID or
+    // REJECT BID." B's options are answers to A's move, which is the sequence
+    // claim in the vocabulary the narrow rule did not cover. Cost of the
+    // widening, measured over 1,808 draws across every corpus: that one draw.
+    [/^(?=[\s\S]*\b(?:offer|propose|tender|submit)(?:s|ed|ing)?\b|[\s\S]*\bbids?\b)(?=[\s\S]*\b(?:accept|reject|decline|approve)(?:s|ed|ing)?\b)/i,
+      'a claim that one player offers and the other accepts'],
+
+    // The second half of the same claim: that this game ENDS IN AN AGREEMENT.
+    // Bargaining to a binding deal is a cooperative solution concept, and the
+    // app models a non-cooperative game — nothing here can bind anyone.
+    // Deliberately NOT the bare noun: "a licensing agreement", "a Premium
+    // Contract" name a thing in the world and are common, good output. Only
+    // REACHING one, or the reciprocity that implies one, is the assertion.
+    // Measured: 0 of 890. `agree on/to` and `in exchange|in return` are the
+    // least certain members — both are ordinary English that could in
+    // principle set a scene ("the two firms agreed on a shared calendar last
+    // year"), and 890 draws of two models on one prompt cannot rule that out.
+    // They are kept because a prior binding agreement between these two players
+    // is itself a claim about this game, and dropped at the first real draw
+    // either one costs.
+    [/\b(?:reach(?:es|ed)?|strikes?|struck|settles?\s+on|settled\s+on|comes?\s+to|came\s+to)\s+(?:an?\s+)?(?:agreement|deal|terms|accord)\b|\bcome\s+to\s+terms\b|\bagree(?:s|d)?\s+(?:on|to|upon)\b|\bbinding\b|\benforceabl\w*\b|\bin\s+(?:exchange|return)\b/i,
+      'a claim that the game ends in a binding agreement'],
   ];
   for (const [re, why] of CLAIMY) if (re.test(desc)) return { ok: false, reason: why };
+
+  // TWO DISTINCT CHOOSERS. Unlike everything else in this function, these three
+  // have REACH on observed output: 5 defects across 1,808 gate-passing draws
+  // from every corpus this campaign holds, RED 1's newest 928 included, with
+  // zero false positives (_gen/blue_w4_refine.mjs). They are the first checks
+  // here that catch what the models are actually doing rather than containing a
+  // channel nobody has walked.
+  // META VOCABULARY. Screened over EVERY authored field, not just the
+  // description: "Player A" is exactly as much a leak in the scenario name or
+  // an option label, and the name is a field no screen read at all before this
+  // campaign. See the block comment on META_PROMPT_CAST for the per-surface
+  // rates and for the two traps this predicate is shaped around.
+  const authored = ['name', 'row1', 'row2', 'col1', 'col2'] as const;
+  const metaText = normalizeProseMinus([...authored.map((k) => (typeof sc[k] === 'string' ? sc[k] as string : '')), desc].join(' • '));
+  const META: [RegExp | ((t: string) => boolean), string][] = [
+    [META_PROMPT_CAST, "the prompt's own cast names (\"Player A\") in the story"],
+    [META_BARE_LETTER, 'a bare letter standing in for a character'],
+    [META_GAME_CAST, 'the game\'s cast ("the two players") named in the story'],
+    [namesTheGameItself, 'the game itself named as an object in the story'],
+    [META_PAYOFF, 'the payoff, the mathematical object, named in the story'],
+  ];
+  for (const [test, why] of META) {
+    if (typeof test === 'function' ? test(metaText) : test.test(metaText)) return { ok: false, reason: why };
+  }
+
+  const STRUCTURAL: [(t: string) => boolean, string][] = [
+    [oneActorTakesASecondDecision, 'a second decision given to a player who already made one'],
+    [secondPairHandedToAPronoun, "a second set of options given to a pronoun when only one player is named"],
+    [assertsTheSameMove, "a claim that one player's move is the same as the other's"],
+  ];
+  for (const [fires, why] of STRUCTURAL) if (fires(desc)) return { ok: false, reason: why };
+  // Takes the whole scenario rather than the description alone: the defect is a
+  // disagreement between the story and the LABEL SLOTS, so it cannot be decided
+  // from the prose by itself.
+  if (onlyPairHeldCollectively(sc)) {
+    return { ok: false, reason: 'the only option pair in the story is held by both players at once' };
+  }
+
   return { ok: true };
 }
 
+/**
+ * MODEL-INTERNAL DEBRIS in user-facing text.
+ *
+ * Not a claim about the game and not a register problem — it is the generator's
+ * own machinery arriving in the story. FIVE distinct real instances, all CLOUD,
+ * all accepted by every shipped gate before this — four of them in the scenario
+ * BANK the desktop is about to ship, and one only in the report corpora:
+ *
+ *   name "Regional Triage Staffing", description ending
+ *     '...or "Core Roster." \u05DC\u05D4}} ...}}'          <- Hebrew + CJK SEO spam + JSON braces
+ *   labels "Thin coat" / "\u539A coat"                     <- CJK inside an English label
+ *   '..."Careful Review."<BOM-as-latin1>}} jing? wait invalid.
+ *    Need clean JSON. I accidentally weird. Must include
+ *    only object. Let’s formulate.'                     <- the model talking to itself
+ *
+ * WHY HERE AND NOT IN `scenarioIsClaimFree`. The claim-free screen is
+ * rung-3-only by deliberate placement: its no-numbers rule is true only because
+ * the solver states every number, and at rung 0 the model writes them itself,
+ * so "Gate 12 / Gate 7" is an ordinary label there. Debris has no such
+ * dependence — a CJK character inside an English label is wrong at every rung.
+ *
+ * AND THE PROPERTY THAT MAKES A SCRIPT RULE SAFE AT ALL: `validateScenario` is
+ * only ever applied to MODEL OUTPUT. Checked call site by call site — all four
+ * in server.ts run on an invented scenario, and the game-save endpoints
+ * (POST/PATCH /api/games) call neither this nor the claim-free screen. If it
+ * ever ran on user-supplied text, a non-Latin screen would reject a user's own
+ * Chinese- or Hebrew-titled game, which is an internationalisation regression
+ * rather than a defect fix. That property is load-bearing, so it is asserted by
+ * a test rather than left as a comment.
+ */
+const DEBRIS_FIELDS = ['name', 'row1', 'row2', 'col1', 'col2', 'description'] as const;
+/**
+ * A codepoint outside the expected set. EXACT — a codepoint is in the set or it
+ * is not — which is why this rule carries none of the collision risk that has
+ * broken eleven vocabulary predicates in this campaign.
+ *
+ * Latin, Number, Punctuation, White_Space, Symbol and Mark all pass, and the
+ * boundary was re-verified rather than inherited: U+2212 MINUS (which has bitten
+ * this repo three times), accented Latin ("Café Réservation", "Zürich"), curly
+ * quotes, en/em dashes, the ellipsis, degree and currency signs, combining
+ * marks, non-breaking spaces and emoji ALL PASS; Hebrew, CJK, Cyrillic, Greek,
+ * Arabic, Devanagari, Hiragana and Hangul are all flagged. 20 boundary cases,
+ * every one a fixture below.
+ */
+const FOREIGN_SCRIPT = /[^\p{Script=Latin}\p{Number}\p{Punctuation}\p{White_Space}\p{Symbol}\p{Mark}]/u;
+/**
+ * A curly brace anywhere in authored text. JSON syntax, never English.
+ *
+ *
+ * IT EARNS ITS PLACE ON ROBUSTNESS, NOT ON UNIQUE REACH, and the first version
+ * of this comment got that wrong. It claimed the brace rule was the only one
+ * that reaches the mis-decoded-BOM row, on the correct observation that
+ * `\u00EF\u00BB\u00BF` is entirely Latin (U+00EF Ll, U+00BB Pf, U+00BF Po) so
+ * the script rule cannot see it. The inference did not follow: that same row is
+ * ALSO the self-talk row, so the original two-rule brief already covered it.
+ * Measured per row over 4,088 draws that reach the user — 1,804 scannable bank
+ * rows plus 67 other corpora, deduplicated on CONTENT because three of the
+ * debris rows sit in more than one file and a source-keyed count reported eight
+ * where there are five. Foreign-only 4/5, brace-only 3/5, self-talk-only 1/5,
+ * foreign+self-talk 5/5, all three 5/5.
+ *
+ * The real argument is durability. SELF_TALK is a phrase ENUMERATION and is
+ * inherently evadable — the next model that narrates its difficulty will phrase
+ * it some way the list does not hold. This rule is STRUCTURAL: it catches JSON
+ * leakage by shape, independently of wording, at 3 of 4 observed rows and 0
+ * false positives across every corpus either team holds. So brace is the
+ * durable cover for the BOM row and self-talk is the fragile one, which is the
+ * reverse of what the first draft implied.
+ *
+ * Reach on its own: 3 of the 5 observed rows, 0 false positives across every
+ * corpus either team holds.
+ *
+ * Scoped to CURLY braces only — parentheses are legitimate (the
+ * label-annotation rule above expects them) and square brackets are ordinary
+ * punctuation. Justified on SHAPE as well as on the rate: there is no English
+ * use of `{}` in a scenario name, an option label or a sentence.
+ */
+const BRACE_DEBRIS = /[{}]/;
+/**
+ * The model narrating its own difficulty. DESCRIPTION ONLY, and multi-word
+ * phrases only.
+ *
+ * A single-word tell is guilty until measured here: a bare `\bwait\b` flags 13
+ * of 7,684 held draws and a hand-read kills all 13 — "Board Now" / "Wait
+ * Briefly", "Cross Now" / "Wait Ashore", "harvest early or wait for the later
+ * window". Every one is a legitimate option label or ordinary English.
+ *
+ * The curly apostrophe is not optional. The observed instance writes "Let’s
+ * formulate" with U+2019, and a list matching only the ASCII quote missed it —
+ * caught by testing the predicate against the captured text rather than against
+ * a paraphrase of it.
+ *
+ * TREAT THIS RULE AS THE FRAGILE ONE. It is an enumeration of phrases a model
+ * happened to emit, so it holds only until a model narrates itself differently.
+ * It is kept because it is the second signal on the BOM row and costs nothing
+ * (0 false positives across ~6,700 draws), not because it can be relied on to
+ * catch the next instance. The structural rules above are what carry this class.
+ *
+ * The positive is FIRST-HAND: bank row "Side-Table Touch-Up" carries "Need clean
+ * JSON" in its description. It was second-hand when the rule was written — the
+ * row existed only in a corpus this team could not read — and is recorded as
+ * confirmed rather than quietly upgraded.
+ */
+const SELF_TALK = /\bneed clean json\b|\bmust include only\b|\blet['\u2019]?s formulate\b|\bi accidentally\b|\bas an ai\b/i;
+
 export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): ScenarioValidation {
   const issues: string[] = [];
+
+  // MODEL-INTERNAL DEBRIS. First, because a description carrying a decoder's
+  // leftovers should be reported as that rather than as whatever downstream
+  // rule happens to trip on the wreckage.
+  {
+    const authored = DEBRIS_FIELDS.map((k) => (typeof sc[k] === 'string' ? (sc[k] as string) : '')).join(' \u2022 ');
+    const foreign = FOREIGN_SCRIPT.exec(authored);
+    if (foreign) {
+      const cp = foreign[0].codePointAt(0) ?? 0;
+      issues.push(`text contains a character outside the expected script: ${JSON.stringify(foreign[0])} (U+${cp.toString(16).toUpperCase().padStart(4, '0')})`);
+    }
+    if (BRACE_DEBRIS.test(authored)) issues.push('text contains a curly brace — JSON structure leaked into the story');
+    const talk = SELF_TALK.exec(sc.description ?? '');
+    if (talk) issues.push(`description contains the model talking to itself: ${JSON.stringify(talk[0])}`);
+  }
   // Same tolerance shape as checkProse: tight, the citation restates a matrix
   // number the model was handed verbatim.
   const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
@@ -449,6 +1167,29 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   // and are ignored.
   {
     const base = (l?: string) => (l ?? '').replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    // PRESENCE BEFORE DISTINCTNESS. Every check below asks whether two labels
+    // DIFFER, and each one short-circuits on a falsy label — so a player with an
+    // option that has no name at all was examined by nothing. Caught in the wild
+    // (RED 1 F11): the model emitted col1 plus invented keys day1/day2, leaving
+    // col2 ABSENT, and the whole gate passed it. The suggestion card then renders
+    // "B: Night Work / ", and useSuggestedScenario (App.tsx) interpolates the
+    // hole into what the user SAVES — "B chooses between Night Work and
+    // undefined."
+    //
+    // The test must be falsy, not `=== ''`: the observed defect had col2
+    // MISSING rather than empty, and a check written against the empty string
+    // would have reported clean on the exact draw it was written for.
+    //
+    // OFFLINE-ONLY in practice — the cloud path sends strict structured outputs
+    // with additionalProperties:false, which rejects both the missing key and
+    // the invented ones. The local llama-server honours no schema, so `required`
+    // is advisory there and this is the only thing standing in the way.
+    for (const key of ['row1', 'row2', 'col1', 'col2'] as const) {
+      const v = sc[key];
+      if (typeof v !== 'string' || !v.trim()) {
+        issues.push(`option label ${key} is missing — every option must be named`);
+      }
+    }
     if (base(sc.row1) && base(sc.row1) === base(sc.row2)) issues.push(`row labels are not distinct ("${sc.row1}" / "${sc.row2}")`);
     if (base(sc.col1) && base(sc.col1) === base(sc.col2)) issues.push(`column labels are not distinct ("${sc.col1}" / "${sc.col2}")`);
     const cells = [[g.a11, g.b11], [g.a12, g.b12], [g.a21, g.b21], [g.a22, g.b22]];
@@ -467,6 +1208,7 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
         issues.push(`label "${sc[key]}" annotates a payoff pair the matrix does not hold for that option`);
       }
     }
+
   }
 
   // A provider without strict structured outputs can hand actorA/actorB back as
@@ -542,6 +1284,51 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     }
   }
 
+
+  // THE LETTER FORM of the same misattribution (RED 1 F12).
+  //
+  // The check above only ever fires on ROLE NOUNS, by construction — it exists
+  // for descriptions that name the players as "the gatekeeper" INSTEAD of as A
+  // and B, and it is gated on actorA/actorB being declared. The letter form was
+  // left unscreened because it was assumed unambiguous, and that assumption was
+  // measured rather than argued ("when the model names the letters it gets the
+  // mapping right") until a counterexample turned up: "Player A chooses when to
+  // release water", where Release Water is B's column.
+  //
+  // Two reasons this is worth screening where the role-noun version struggles.
+  // "Player A" is an unambiguous token, so there is no actor mapping and no
+  // dependence on actorA/actorB — fields the cloud schema forbids, which is why
+  // the check above has never executed on a model-invented scenario. And the
+  // lookup is the same shape the file already trusts elsewhere: does the option
+  // named next belong to the other player?
+  //
+  // ANCHORING IS THE WHOLE DIFFICULTY. "An orchard manager, Player A, chooses
+  // between Early Harvest and Late Harvest" is CORRECT prose and appears in most
+  // letter-using draws, so the screen must key on a letter ADJACENT to a
+  // choosing verb and then on the option actually named — never on the letters
+  // appearing somewhere in the sentence. The enumerating form ("chooses between
+  // X and Y") is skipped outright: it names both of that player's own options
+  // and is the shape correct prose takes.
+  {
+    const LETTER_VERB = String.raw`(?:choos\w*|us\w*|play\w*|pick\w*|select\w*|takes?|opts?\s+for|goes?\s+(?:with|for))`;
+    const ownLabels = { A: [sc.row1, sc.row2], B: [sc.col1, sc.col2] } as const;
+    const re = new RegExp(
+      String.raw`\b(?:player\s+)?([AB])\b\s+${LETTER_VERB}\s+(?:when\s+to\s+|whether\s+to\s+|how\s+to\s+|to\s+)?(?:the\s+|an?\s+)?([\w' -]{2,40}?)\s*(?=[,.;]|\band\b|\bwhile\b|\bwith\b|$)`,
+      'g',
+    );
+    for (const m of desc.matchAll(re)) {
+      const who = m[1] as 'A' | 'B';
+      const named = m[2].trim();
+      // "between X and Y" enumerates that player's OWN pair — the correct form.
+      if (/^between\b/i.test(named)) continue;
+      const theirs = ownLabels[who === 'A' ? 'B' : 'A'];
+      const isTheirs = theirs.some((l) => l && new RegExp(`^(?:${labelPattern(l)})$`, 'i').test(named));
+      const isMine = ownLabels[who].some((l) => l && new RegExp(`^(?:${labelPattern(l)})$`, 'i').test(named));
+      if (isTheirs && !isMine) {
+        issues.push(`description has Player ${who} choosing "${named}", which is player ${who === 'A' ? 'B' : 'A'}'s option`);
+      }
+    }
+  }
 
   // Wordless outcome talk: a CONDITIONAL sentence attributing gain/loss to a
   // specific action combination, in a digit-free description with no declared
@@ -623,11 +1410,99 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     const pure = computeAllNE(g).filter((t) => t.type === 'pure');
     const diag = pure.filter((t) => (t.x === 1 && t.y === 1) || (t.x === 0 && t.y === 0)).length;
     const anti = pure.filter((t) => (t.x === 1 && t.y === 0) || (t.x === 0 && t.y === 1)).length;
-    const coordinationShape = pure.length >= 2 && (diag === pure.length || anti === pure.length);
+    // THE OR WAS THE HOLE (RED 1 F1). This read `diag === pure.length || anti
+    // === pure.length`, which conflates two different questions: "does this game
+    // have a matching-or-mismatching structure?" and "is MATCHING language true
+    // here?". On a game whose every pure equilibrium is a MISMATCH the first is
+    // yes and the second is no — and the `||` made the screen skip exactly those
+    // games. "Both cooperatives want to match the opponent's choice" passed the
+    // gate clean on A=[[0,3],[2,0]] B=[[0,2],[3,0]].
+    //
+    // Matching language is warranted only when the matching diagonal IS the
+    // whole pure equilibrium set, which is the precise mirror of the
+    // anti-coordination screen below — that one already fires only when
+    // `diag === pure.length`. Restoring the symmetry is the entire fix.
+    //
+    // This can only WIDEN the screen onto all-mismatch games, where matching
+    // language is false by construction, so it adds no false positive: every
+    // other game reaches the same verdict it did before.
+    const matchingShape = pure.length >= 2 && diag === pure.length;
     const COORD_TALK = /\b(?:(?:incentive|reason|want|wants|try|tries|aim|aims|prefer|prefers)\s+to\s+(?:match|coordinate|mirror|align\s+with|copy|imitate)|coordinat(?:e|ion)\s+(?:game|problem)|match(?:ing)?\s+(?:the\s+)?(?:opponent|other)['’]?s?\s+(?:likely\s+)?(?:choice|move|action|pick))\b/i;
     const NEGATED = /\b(?:no|not|never|little|without|rather\s+than)\s+(?:\w+\s+){0,2}(?:incentive|reason|want|need)/i;
-    if (!coordinationShape && COORD_TALK.test(desc) && !NEGATED.test(desc)) {
-      issues.push('description frames the game as coordination (matching the opponent), but its pure equilibria do not sit on matching or mismatching pairs');
+    // THE ABSTRACT-PLAYER FORM of the same false claim.
+    //
+    // COORD_TALK's vocabulary requires "want/incentive to coordinate",
+    // "coordination game/problem", or "matching the opponent's choice". The
+    // local model writes none of those — RED 1 measured COORD_TALK against 341
+    // real gate-passing draws and it matched ZERO. What the model actually
+    // writes is "the two players coordinate their choices", which asserts the
+    // same thing and was entirely unscreened.
+    //
+    // THE DISCRIMINATOR IS THE SUBJECT, NOT THE VERB, and that distinction is
+    // the whole reason this is shippable. Gating on "coordinate" itself has
+    // 11.9% precision — eight correct scenarios rejected per defect caught, and
+    // 7.6% of local draws rejected merely for containing the JOB TITLE
+    // "coordinator". Now that rewriting model output is closed and gates are the
+    // only instrument left, a blunt gate is the one way to make the product
+    // worse while trying to improve it.
+    //
+    // Measured on the corpus: every genuine claim carries an ABSTRACT-PLAYER
+    // subject ("the two players", "the two institutions"); not one of the 38
+    // vacuous uses does — those name real actors or use "coordinating" as a
+    // purpose adjunct. So the rule keys on a game-theoretic subject noun, never
+    // on a story noun: "cooperatives", "firms" and "operators" are deliberately
+    // NOT in the list, because those are what a scenario legitimately calls its
+    // characters.
+    //
+    // THE SUBJECT MUST GOVERN THE VERB, not merely precede it. A proximity
+    // window ("subject … within 80 characters … coordinat") reads the flat
+    // ACTIVITY form as a claim whenever an abstract subject happens to sit in
+    // front of it: measured false positive rt2#129, "The two players are
+    // choosing how their shared grid will respond to a COORDINATED demand
+    // period" — the players' verb there is "are choosing", and "coordinated"
+    // modifies a noun in the world. So the bridge between subject and verb is
+    // a CLOSED GRAMMATICAL CLASS (auxiliaries, modals, adverbs, and verbs of
+    // intention), never arbitrary text. Any bridge with its own clause breaks
+    // subject-hood and the screen stays silent.
+    //
+    // Three licensed forms, and nothing else:
+    //   1  the two players (aux)* coordinate | are coordinating
+    //   2  the two players (aux)* PLAN/AGREE/WANT (to|how|on)* coordinate
+    //   3  the two players (aux)* PLAN a|their COORDINATED <noun>
+    // Form 3 needs a verb of intention before the determiner precisely so that
+    // "the two players are THE COORDINATING body" cannot reach it.
+    //
+    // "coordinator"/"coordinators" is unreachable by construction: the verb
+    // alternation ends at (e|es|ing) and the participle at "coordinated", so
+    // the job title matches nothing. That is what keeps the 7.6% job-title
+    // rejection rate off this check.
+    const ABSTRACT_PLAYER = String.raw`(?:the\s+two|both)\s+(?:players?|parties|sides|institutions?|participants?|agents?|actors?)`;
+    const AUX = String.raw`(?:will|would|shall|should|must|can|could|may|might|are|is|were|was|also|then|now|still|already|simply|jointly|closely|each|both)`;
+    const INTENT = String.raw`(?:plans?|planning|try|tries|trying|aims?|aiming|seeks?|seeking|agrees?|agreeing|wants?|needs?|hopes?|hoping|intends?|attempts?|attempting|prepares?|preparing|arranges?|arranging|decides?|deciding|chooses?|choosing|works?|working)`;
+    const CO_VERB = String.raw`coordinat(?:e|es|ing)\b`;
+    const CO_PART = String.raw`coordinated\b`;
+    const ABSTRACT_COORD = new RegExp(
+      String.raw`\b${ABSTRACT_PLAYER}(?:\s+${AUX})*(?:\s+${CO_VERB}|(?:\s+${INTENT})(?:\s+(?:to|how|on|whether))*(?:\s+${CO_VERB}|\s+(?:a|an|the|their)\s+${CO_PART}))`, 'i');
+    // A WEAKER CLAIM FALSIFIED BY A WEAKER CONDITION. "Both want to coordinate"
+    // (COORD_TALK, below) asserts the game IS a coordination game, which needs
+    // two matching equilibria to be true. "The two players coordinate their
+    // choices" asserts only that agreeing is what equilibrium play produces —
+    // true as soon as ANY pure equilibrium sits on a matching pair. So this
+    // screen fires only when NONE does, which is strictly narrower than
+    // `!matchingShape` and keeps the issue string literally true of the game.
+    // Deliberately narrower: on the 635-draw corpus `!matchingShape` would also
+    // have rejected three scenarios whose single pure equilibrium IS a matching
+    // pair, under an issue string that was false about those games.
+    if (diag === 0 && ABSTRACT_COORD.test(desc) && !NEGATED.test(desc)) {
+      issues.push('description says the two players coordinate their choices, but no pure equilibrium of this game sits on a matching pair');
+    }
+    if (!matchingShape && COORD_TALK.test(desc) && !NEGATED.test(desc)) {
+      // The wording had to change with the predicate. It used to read "do not
+      // sit on matching OR MISMATCHING pairs", which was true of the old
+      // `||` condition and is now false of the commonest case this screen
+      // catches — an all-MISMATCH game, whose equilibria do sit on mismatching
+      // pairs. An issue string is a claim about the game like any other.
+      issues.push('description frames the game as coordination (matching the opponent), but its pure equilibria do not all sit on matching pairs');
     }
     // The mirror case (C13 draw 25): a pure COORDINATION game — every pure
     // equilibrium on the matching diagonal — described as one where you want
@@ -638,6 +1513,144 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     const ANTI_TALK = /\b(?:(?:incentive|reason|want|wants|need|needs|try|tries|prefer|prefers|better|best)\s+to\s+(?:counter|mismatch|differ|avoid\s+match\w*|do\s+the\s+opposite|choose\s+the\s+opposite|go\s+the\s+other\s+way|pick\s+differently)|anti[- ]coordination|(?:want|wants|prefer|prefers)\s+(?:to\s+)?(?:the\s+)?opposite\b|avoid\s+(?:matching|the\s+same)\b)/i;
     if (pure.length >= 2 && diag === pure.length && ANTI_TALK.test(desc) && !NEGATED.test(desc)) {
       issues.push('description frames the game as anti-coordination (countering the opponent), but every pure equilibrium sits on a matching pair');
+    }
+  }
+
+  // INTEREST ALIGNMENT, which is a different question from equilibrium shape.
+  // The rules above ask where the equilibria SIT; these ask whether the two
+  // players' interests are aligned or opposed, and the matrix answers that
+  // EXACTLY — no tolerance, no equilibrium computation, nothing to tune:
+  //
+  //   constant-sum   a+b is the same in all four cells: one side's gain is
+  //                  precisely the other's loss, in every outcome.
+  //   common interest a == b in every cell: the two never disagree about
+  //                  anything, so there is nothing to compete over.
+  //   flat           a player's payoff does not move with the opponent's
+  //                  column at all, so that opponent cannot affect it.
+  //
+  // That exactness is what makes these shippable: the screens CANNOT fire on an
+  // ordinary matrix however the sentence is worded, so the false-positive risk
+  // is bounded by the matrix rather than by the vocabulary. Measured reach on
+  // 890 stored draws: 0 for all three. (The corpus is if anything pessimistic —
+  // 382 of its 890 games are constant-sum, because the adversarial stakes
+  // corpora are matching-pennies-shaped. Real user matrices are far less often
+  // exactly constant-sum, so these fire even less in production.)
+  {
+    const near0 = (x: number, y: number) => Math.abs(x - y) < 1e-9;
+    // Negation guard. The NEGATED constant above is scoped to
+    // incentive/reason/want/need and does not reach this vocabulary, so these
+    // rules carry their own.
+    //
+    // Scoped to the phrase's OWN CLAUSE, not the paragraph and not a fixed
+    // character window. A blanket scan switches the rule off whenever any "not"
+    // appears anywhere; a fixed window reaches back across the full stop into
+    // the previous sentence, which is the same bug in miniature — the unit test
+    // caught exactly that, on "The display is not yet booked. A store and a
+    // restorer work together toward the same goal." Negation binds inside its
+    // clause, so the lookback stops at the last sentence or clause break.
+    //
+    // EVERY OCCURRENCE, NOT THE FIRST. This read `re.exec(desc)` and computed the
+    // lookback from match 1 alone, so ONE negated early mention switched the whole
+    // rule off and a later genuine assertion walked through. All three rules below
+    // share this helper, so the defect was never specific to the shared-goal arm:
+    //
+    //   "They do NOT work together on scheduling. Two hauliers pick a lane, and
+    //    the firms work together toward the same goal."     <- passed, constant-sum
+    //
+    // A rule that under-fires on a shape a model can produce is not a gate, so this
+    // is fixed rather than priced away.
+    //
+    // PRICED BEFORE IT WAS TAKEN, because the change can only ever fire MORE and
+    // every rule in this campaign that got more eager over-fired on ordinary
+    // English. Cost across every corpus held: 0 of 5,432 unique descriptions, each
+    // run through the REAL validateScenario against matrices satisfying each rule's
+    // precondition by construction (constant-sum, common-interest, flat) so the
+    // matrix gate could not mask the text. 41 of those descriptions fire under a
+    // forced matrix, and DELETING this guard outright moves none of them — which is
+    // the real finding: no description in any corpus contains a NEGATED occurrence
+    // of this vocabulary at all, so the first-match-only bug was pure latent
+    // under-fire and the guard has never been load-bearing on real output.
+    //
+    // Measuring on the corpora AS STORED would have proved nothing: no draw there
+    // pairs the vocabulary with a qualifying matrix, so an over-eager control also
+    // showed a zero delta. Forcing the matrix is what made the instrument able to
+    // move at all.
+    //
+    // TWO ADVERSARIAL SHAPES DO FLIP, and both are a PRE-EXISTING false positive
+    // losing an accidental shield rather than a new class: "The two firms do not
+    // work together toward the same goal; they work together only on the loading
+    // rota." That second mention is cooperation on an ACTIVITY, which the
+    // SHARED_GOAL comment below deliberately tolerates — and the shipped rule
+    // ALREADY fires on that sentence when no negation precedes it (verified both
+    // ways). The leading negation was never the reason it was safe.
+    const negatedBefore = (re: RegExp) => {
+      const all = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+      for (const m of desc.matchAll(all)) {
+        const before = desc.slice(0, m.index);
+        const cut = Math.max(before.lastIndexOf('.'), before.lastIndexOf(';'), before.lastIndexOf('!'), before.lastIndexOf('?'));
+        const clause = before.slice(cut + 1).slice(-60);
+        // One unnegated occurrence is an assertion; later negated ones cannot
+        // take it back. Callers guard with `RE.test(desc)`, so the no-match case
+        // never reaches here.
+        if (!/\b(?:no|not|never|neither|nor|without|rather\s+than|far\s+from|cannot)\b|n['\u2019]t\b/i.test(clause)) return false;
+      }
+      return true;
+    };
+    const k = g.a11 + g.b11;
+    const constantSum = near0(g.a12 + g.b12, k) && near0(g.a21 + g.b21, k) && near0(g.a22 + g.b22, k);
+    const commonInterest = near0(g.a11, g.b11) && near0(g.a12, g.b12)
+      && near0(g.a21, g.b21) && near0(g.a22, g.b22);
+    const aFlat = near0(g.a11, g.a12) && near0(g.a21, g.a22);
+    const bFlat = near0(g.b11, g.b21) && near0(g.b12, g.b22);
+
+    // A SHARED GOAL, asserted on a game where the payoffs are exactly opposed.
+    // Deliberately NOT the word "coordinating", which is the trap here: 103 of
+    // 890 real draws pair some form of "coordinat*" with a constant-sum matrix
+    // (38 with the tight "are coordinating" form), and they read as perfectly
+    // good output — "An antique store and a restoration company are
+    // coordinating a new display", then two independent choices. Parties who
+    // cooperate on an activity while competing over its terms are ordinary, and
+    // the corpus cannot separate them from RED 1's probe, which has the same
+    // shape. So that arm is LEFT OPEN, priced, rather than shipped at a 4-12%
+    // cost. What is gated is only the assertion of a shared PAYOFF interest,
+    // which constant-sum refutes outright.
+    const SHARED_GOAL = /\b(?:work(?:s|ing)?\s+together|the\s+same\s+goal|an?\s+shared\s+goal|common\s+goal|mutual\s+benefit|both\s+benefit|jointly\s+benefit|shared\s+interests?|same\s+interests?|for\s+their\s+mutual\b)/i;
+    if (constantSum && !commonInterest && SHARED_GOAL.test(desc) && !negatedBefore(SHARED_GOAL)) {
+      issues.push('description says the two players share a goal, but the matrix is constant-sum: one player gains exactly what the other loses in every outcome');
+    }
+
+    // The mirror: rivalry asserted where the two players' payoffs are IDENTICAL
+    // in every cell, so they never disagree about anything and there is nothing
+    // to win from each other. `competing/rival/contest` alone is 1.57% of real
+    // draws and legitimate almost everywhere — it is the common-interest matrix
+    // that makes it false, and that matrix holds in 76 of 890.
+    // `rivals` only as a PREDICATE NOUN ("the two are rivals"), never
+    // attributively. The first version had a bare `rivals?\b` and RED 1's newer
+    // corpus caught it rejecting two real draws — "B is a RIVAL fisherman
+    // choosing between Open Fish and Keep Fish" and "A RIVAL event
+    // coordinator…". There the word names WHO THE ACTOR IS, exactly the
+    // job-title-is-not-a-claim lesson the F1 screen above is built on, and
+    // which this file's own comment warned about two rules earlier. Two rival
+    // firms can face a decision where their interests happen to align
+    // perfectly; that is a coherent scene, not a false statement about the
+    // game. Every other member already requires a preposition or an object for
+    // the same reason ("competing FOR", "fight OVER"), so only this one leaked.
+    const RIVALRY = /\b(?:fight(?:s|ing)?\s+(?:for|over)|compet(?:e|es|ing)\s+(?:for|over|against)|are\s+rivals\b|\brivalry\b|battl(?:e|es|ing)\s+(?:for|over)|outbid|beat\s+the\s+other|at\s+odds\b|opposed\s+interests|conflicting\s+interests)/i;
+    if (commonInterest && RIVALRY.test(desc) && !negatedBefore(RIVALRY)) {
+      issues.push('description frames the two players as rivals, but their payoffs are identical in every cell: they never disagree about any outcome');
+    }
+
+    // "B's decision determines A's outcome" where A's payoff is the same in
+    // both of B's columns. The dominant-strategy rules above catch a related
+    // claim, but only when a player HAS a dominant strategy; a flat payoff row
+    // is a different and stronger fact. Kept narrow: it needs an outcome noun
+    // AND a determining verb, so the corpus's constant "their choices determine
+    // the payoffs" closer — true wherever both players' payoffs vary — is
+    // untouched, and is asserted as a control.
+    const DETERMINES = /\b(?:determines?|dictates?|drives?|controls?|sets?)\b[^.;]{0,40}?\b(?:outcome|payoff|return|result|position)\b|\b(?:outcome|payoff|return|result)\b[^.;]{0,30}?\b(?:is|are)\s+determined\s+by\b/i;
+    if ((aFlat || bFlat) && DETERMINES.test(desc) && !negatedBefore(DETERMINES)) {
+      const who = aFlat ? 'A' : 'B';
+      issues.push(`description says one player's choice determines the outcome, but ${who}'s payoff is the same whichever option the opponent takes`);
     }
   }
   for (const m of desc.matchAll(/(?:\bE\[[AB]\]|\b[AB])\s*[=≈≃~]\s*(-?\d+(?:\.\d+)?)/g)) {
