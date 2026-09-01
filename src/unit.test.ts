@@ -659,6 +659,16 @@ function testGeometryBriefingTruth() {
       ['e'], "B's surface is level at EVERY x, because B is indifferent between the columns whatever A does"],
     ['(e) weakly dominant row', { a11: -7, a12: -5, a21: -7, a22: 7, b11: -3, b12: -1, b21: -6, b22: -8 },
       ['a', 'e'], "A's Row 2 is never worse than Row 1 and is strictly better against at least one column"],
+    // THE OTHER DEGENERATE BRANCH — twistA = 0 with a CONSTANT non-zero own-axis
+    // slope, so A never goes level. Added on BLUE's evidence: with only the two
+    // positive shapes above, `hasFlatShelfForA` is TRUE on both, so hard-wiring
+    // it to `true` satisfied every fixture. It survived BLUE's fixture set for
+    // exactly that reason. (My sweep catches the hard-wire on its own — verified
+    // by mutation, all three hard-wires caught — but a fixture set that only
+    // ever asserts one polarity is a trap whether or not a sweep is standing
+    // behind it today.)
+    ['(b) A flat, level NOWHERE', { a11: 5, a12: 4, a21: 1, a22: 0, b11: 2, b12: -3, b21: -1, b22: 4 },
+      ['a', 'b'], 'A is always better off from Row 1, by 4, whatever B does'],
   ];
   for (const [name, g, classes, want] of FIX) {
     const t = geometryBriefing(g);
@@ -681,6 +691,14 @@ function testGeometryBriefingTruth() {
     '(f1) hasFlatShelfForA must be TRUE on a board that is level along A\'s axis everywhere');
   assert(!describeGeometry(FIX[2][1]).yStarInRange,
     'yStarInRange must stay STRICT — the new field is additional, not a redefinition');
+  // BOTH POLARITIES of the degenerate branch, so no constant can satisfy the set.
+  const nowhere = FIX[6][1];
+  assert(Math.abs(nowhere.a11 - nowhere.a12 - nowhere.a21 + nowhere.a22) < 1e-9,
+    'the level-nowhere fixture must actually have a vanishing twist');
+  assert(!describeGeometry(nowhere).hasFlatShelfForA,
+    'hasFlatShelfForA must be FALSE when the twist vanishes and the own-axis slope does not');
+  assert(!describeGeometry(nowhere).hasInteriorFlatSpot,
+    'a game where A never goes level cannot have a joint flat spot');
 
   // ---- NEGATIVE FIXTURES: what must NOT change -----------------------------
   // The STRICT dominance predicates are the validator's contract and stay strict.
