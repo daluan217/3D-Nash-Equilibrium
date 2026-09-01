@@ -1040,10 +1040,27 @@ async function startServer() {
       let { scenario: invented, failure } = await invent();
       const storyOk = (sc: NonNullable<typeof invented>) => validateScenario(sc, payoffs).ok
         && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0);
-      if (invented && process.env.NASH_SCENARIO_CHECKS !== '0' && !storyOk(invented)) {
+      // Two different ways to end up with nothing, and only one used to get a
+      // second chance.
+      //
+      // A draw that came back and FAILED the gate was retried. A draw that
+      // never came back at all — `max-tokens`, the model spending its whole
+      // budget reasoning — was not, because `invented` is null and the
+      // condition below started with `invented &&`. So the user clicked "New AI
+      // scenario" and got nothing, silently, with a second draw sitting right
+      // there. Measured at 7.5% of calls once the stakes hint lengthened the
+      // prompt (9 of 120 vs 0 of 120 without it, p=0.0033), and a pre-existing
+      // 1.1-1.7% before that. Roughly one click in thirteen.
+      //
+      // A reroll is the sanctioned instrument here — nothing is rewritten, a
+      // lost draw is simply drawn again — and it costs one extra call only on
+      // the calls that produced nothing.
+      const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
+      const lost = !invented;
+      if (lost || (gateOn && !storyOk(invented))) {
         const second = await invent();
-        invented = second.scenario && storyOk(second.scenario) ? second.scenario : null;
-        if (!invented) failure = "validation-failed" as typeof failure;
+        invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
+        if (!invented) failure = (lost && !second.scenario ? (second.failure ?? failure) : "validation-failed") as typeof failure;
       }
       return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
     }

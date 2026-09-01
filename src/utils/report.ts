@@ -380,7 +380,17 @@ export async function generateScenario(
   // the world the story is set in, which is the part the model was never asked
   // for. Same additive-and-inert property as `domain`: no stakes line, no
   // change to the prompt. See src/utils/scenarioStakes.ts.
-  const stakes = opts.stakes === false ? '' : stakesHint(g);
+  // OPT-IN, not opt-out. This read as `=== false ? '' : hint` at first, which
+  // made the hint ON whenever the option was omitted — flatly contradicting
+  // the "additive and inert" property claimed two lines up, which `domain`
+  // genuinely has and this did not. Production was unaffected (all three call
+  // sites pass it explicitly), but ten `_gen` harnesses call generateScenario
+  // without it and were silently measuring the ON arm — including
+  // make_scenario_trainset.ts, the TEACHER-DATA GENERATOR for the local
+  // retrain. Since retraining is the only lever left on the local model, the
+  // next training set would have carried stakes-conditioned teacher prose by
+  // accident rather than by decision.
+  const stakes = opts.stakes === true ? stakesHint(g) : '';
   const systemPrompt = [
     SCENARIO_SYSTEM_PROMPT,
     opts.domain
