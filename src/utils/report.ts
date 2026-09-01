@@ -359,7 +359,7 @@ export interface GenerateScenarioResult {
 /** The slim invention call behind "New AI scenario" — see SCENARIO_SCHEMA. */
 export async function generateScenario(
   g: GamePayoffs,
-  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string; stakes?: boolean } = {},
+  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string; stakes?: boolean; extraBody?: Record<string, unknown> } = {},
 ): Promise<GenerateScenarioResult> {
   // `domain` steers WHICH setting the invention uses, and nothing else.
   //
@@ -404,6 +404,7 @@ export async function generateScenario(
     // No scenario passed on purpose: the payload's invention block applies.
     userPrompt: buildGroundingPayload(g),
     reasoning: opts.reasoning,
+    extraBody: opts.extraBody,
     schema: SCENARIO_SCHEMA,
     // 2048 was sized for a NON-reasoning call: the scenario body is ~200 tokens,
     // so it looked generous. Reasoning tokens bill against this same budget, and
