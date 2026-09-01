@@ -248,7 +248,26 @@ function normalizeOpenAIUsage(u: OpenAI.CompletionUsage | undefined): Normalized
  */
 async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> {
   const { endpoint, apiKey } = foundryCreds(req.model);
-  const client = new OpenAI({ baseURL: endpoint, apiKey });
+  /**
+   * AgentRouter gates on the CLIENT, not just the key.
+   *
+   * It is a free relay aimed at Claude Code / Codex / Gemini CLI, and it
+   * rejects anything that does not look like one of them — with
+   * `401 {"message":"UNAUTHENTICATED", "error":"unauthorized client
+   * detected"}`, which is BYTE-IDENTICAL to what it returns for a request
+   * carrying no credential at all. That identity is what makes the failure so
+   * hard to read: the message tells you nothing about your key, and the
+   * obvious conclusion (bad token) is wrong. A valid, enabled, unlimited token
+   * fails exactly the same way until the User-Agent is right.
+   *
+   * Scoped to that host so nothing else sees a fabricated agent string.
+   */
+  const isAgentRouter = /(^|\/\/)([^/]*\.)?agentrouter\.org/i.test(endpoint ?? '');
+  const client = new OpenAI({
+    baseURL: endpoint,
+    apiKey,
+    ...(isAgentRouter ? { defaultHeaders: { 'user-agent': 'claude-cli/2.1.0 (external, cli)' } } : {}),
+  });
 
   const messages = [
     { role: 'system' as const, content: req.systemPrompt },
