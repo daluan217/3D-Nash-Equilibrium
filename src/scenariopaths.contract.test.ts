@@ -76,14 +76,82 @@ function isClaimFreeSurface(site: { full: string }): boolean {
   return /generateScenario\s*\(|inventScenario\s*\(/.test(site.full) || /claimFree/i.test(site.full);
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE CONTRACT IS NOW STRUCTURAL, AND STRONGER.
+ *
+ * This file used to check that three separate copies of the screen agreed. They
+ * drifted anyway — three times, in three different properties. Screening was
+ * unified in #56; the RETRY was not (the tie branch had none, so the SAME
+ * BUTTON returned no story on 1.30% of tie-game presses and 0.00% of non-tie,
+ * z=6.3 at n=3000 per cell); and the NASH_SCENARIO_CHECKS opt-out was read only
+ * on paths production does not serve, so it was inert exactly where it was
+ * meant to make the gate measurable.
+ *
+ * "Three copies that must agree" is the wrong contract, because it is satisfied
+ * by three copies that agree on the property being checked and differ on the
+ * next one. So there is now ONE screened, rerolled draw and every path goes
+ * through it, and this file checks that this stays true: the helper runs all
+ * three screens and lets each decide, and nothing reaches the raw draw around
+ * it. That cannot drift, because there is only one of it.
+ *
+ * The synthetic fixtures further down are unchanged and still guard the old
+ * shape — they are what would catch someone re-inlining a screen at a call site.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+// 1. The single screened draw exists; its body is what the rest of this checks.
+const helper = server.match(/async function inventScreenedScenario\([\s\S]*?\n}\n/);
+check('the one screened, rerolled draw exists', !!helper,
+  'inventScreenedScenario is the single place a scenario is drawn and screened');
+const helperBody = helper?.[0] ?? '';
+
+// 2. Nothing bypasses it. `inventScenario` is the RAW draw; only the helper's
+//    own deadline wrapper may call it. A new call site reaching past the helper
+//    is exactly how the retry drifted last time, and it is invisible to any
+//    test that only inspects responses.
+const rawCallLines = server.split('\n')
+  .map((line, n) => ({ line, n: n + 1 }))
+  .filter(({ line }) => /\binventScenario\s*\(/.test(line)
+    && !/function inventScenario/.test(line)
+    && !/^\s*(\*|\/\/)/.test(line));
+check('every scenario draw goes through the screened helper',
+  rawCallLines.length <= 1,
+  'raw inventScenario( calls outside the screened path: '
+  + rawCallLines.map(({ line, n }) => `${n}: ${line.trim().slice(0, 70)}`).join(' | '));
+
+// 3. All three screens run inside it, and each one gates the result.
+for (const [name, re] of [
+  ['the declarations gate', /validateScenario\s*\(/],
+  ['the claim-free screen', /scenarioIsClaimFree\s*\(/],
+  ['the direction checks', /validateProseDirections\s*\(/],
+] as const) {
+  check(`the screened draw runs ${name}`, re.test(helperBody), helperBody.slice(0, 160).replace(/\s+/g, ' '));
+}
+// PRESENCE IS NOT PARTICIPATION — the same distinction the per-site checks make.
+check('the screened draw returns false on a claim-free failure',
+  /claimFree\.ok[\s\S]{0,140}return false/.test(helperBody),
+  'the claim-free call is present but its result never reaches the returned boolean');
+// 4. The opt-out is honoured HERE, which is what makes it honoured everywhere.
+check('the screened draw honours NASH_SCENARIO_CHECKS',
+  /NASH_SCENARIO_CHECKS/.test(helperBody),
+  'the flag promises each gate is measurable in isolation; it must be read where the gate runs');
+// 5. And the reroll lives in it, so no branch can be the one without a second draw.
+check('the screened draw takes a second draw when the first is lost or rejected',
+  /const lost = !invented/.test(helperBody)
+  && (helperBody.match(/drawWithDeadline\s*\(/g) ?? []).length >= 2,
+  'a lost or gate-rejected draw must be drawn again — the only instrument permitted here');
+// 6. The draw is bounded. A provider that accepts and never answers held a real
+//    request open for 798 s with no timeout at any layer; the story is optional
+//    by construction, so it gets a deadline and the report goes out without it.
+check('the draw is bounded by a deadline', /function drawWithDeadline/.test(server)
+  && /Promise\.race/.test(server),
+  'an unanswered provider must not hold the user request open');
+
 const allSites = screeningSites(server);
-check('every invention site is found', allSites.length >= 4, `found ${allSites.length}`);
 const sites = allSites.filter(isClaimFreeSurface);
-check('the claim-free surfaces are identified', sites.length >= 3, `found ${sites.length} of ${allSites.length}`);
-// And the full-report path is correctly NOT treated as one, or this contract
-// would fail the rung-0/1/2 code it must leave alone.
+// The full-report path must still be OUT of scope, or this contract would fail
+// the rung-0/1/2 code it has to leave alone.
 check('the full-report path is out of scope',
-  allSites.some((s2) => /generateReport|suggestedScenario/.test(s2.full) && !isClaimFreeSurface(s2)));
+  allSites.every((s2) => !/generateReport/.test(s2.full) || !isClaimFreeSurface(s2)));
 
 for (const [i, site] of sites.entries()) {
   check(

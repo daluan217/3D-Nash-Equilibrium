@@ -143,6 +143,14 @@ jobs:
         env:
           DESKTOP_PERSIST_PORT: '3104'
 
+      # Every scenario-invention path draws, screens and REROLLS the same way.
+      # Counts PROVIDER CALLS against a mock, because a missing retry is
+      # invisible to any assertion on the response body.
+      - name: Boot the production server and run the scenario-parity suite
+        run: node src/integration/scenario-parity.test.mjs
+        env:
+          PARITY_PORT: '3106'
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 45
