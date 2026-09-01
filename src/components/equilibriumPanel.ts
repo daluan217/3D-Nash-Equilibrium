@@ -154,6 +154,28 @@ export function indifferenceLine(
   // the only remaining way `≈` can print two different numbers, and it is a real
   // statement about `neTolerancePlayer` (0.002 x spread), not about rounding —
   // hiding it would bury the question.
+  //
+  // HOW REACHABLE THAT IS, stated as the conditional it actually is. Through the
+  // converged run it is UNREACHED: 0 of 1,896 adversarial mixed panels, and 0
+  // across two further independent sweeps. The tempting next sentence — "and
+  // unreachable, because the run commits to a corner, so `resolveProfile`
+  // projects there and `profileConcept` returns 'pure'" — is a claim about the
+  // CALL PATH, and it stops being true the moment a second caller exists.
+  // Measured rather than argued (`_gen/blueapp_renderer_reach.ts`): hand this
+  // renderer ARBITRARY profiles instead of run output — 578,526 of them, over
+  // games with manufactured continua and near-degeneracy — and 716 of 217,652
+  // mixed-panel renderings, 0.33%, DO print `≈` between two different numbers.
+  // Every one sits at a resolved point with a coordinate at a vertex: a player
+  // holding a pure strategy inside an equilibrium region, non-indifferent by
+  // less than its own tolerance.
+  //
+  // So it is a property of THE ONE CALLER, not of this function. Today `App.tsx`
+  // is that caller and it passes `resolveProfile` of the converged run. A saved
+  // game, an NE-list click or a jumped-to equilibrium rendered here would expose
+  // the 0.33% at once — `computeAllNE` hands out exact interior coordinates
+  // through no projection at all. `src/equilibriumpanel.test.ts` §7 fails if a
+  // second production caller appears, so this is a checked condition rather than
+  // an assumption.
   const mid = (p + q) / 2;
   const f = indifferent
     ? (Math.abs(p - q) < 5e-4 ? { p: three(mid), q: three(mid) } : { p: three(p), q: three(q) })

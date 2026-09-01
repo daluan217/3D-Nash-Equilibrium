@@ -310,6 +310,46 @@ for (const SCALE of [10, 100]) {
   ok(Math.abs(neTolerancePlayer(g, 'A') - 4 * 5e-4 * 20) < 1e-12,
     'neTolerancePlayer must still be 0.002 x that player\'s own spread — the scaling question is a design decision, not a bug fix');
   ok(indifferenceAt(g, 1 / 11, 4 / 11).a || true, 'indifferenceAt is still the arbiter of the label');
+
+  // THE CONDITION THE "UNREACHED" CLAIM RESTS ON.
+  //
+  // Through the converged run, `≈` never sits between two different numbers.
+  // That is a fact about THE CALLER, not about the renderer: hand the renderer
+  // arbitrary profiles and 0.33% of mixed-panel renderings do print it (716 of
+  // 217,652 — `_gen/blueapp_renderer_reach.ts`), every one at a resolved point
+  // with a coordinate at a vertex, i.e. a player holding a pure strategy inside
+  // an equilibrium region. `computeAllNE` hands out exact interior coordinates
+  // through no projection at all, so an NE-list click, a saved game or a
+  // jumped-to equilibrium rendered through this panel would expose it at once.
+  //
+  // Rather than assume nobody adds that caller, fail when they do. This is the
+  // load-bearing check: if it ever fires, the tolerance question has become
+  // reachable and must be answered before the new caller ships.
+  const app = readFileSync(join(here, 'App.tsx'), 'utf8');
+  const callers = [...app.matchAll(/indifferenceLines\s*\(/g)].length;
+  ok(callers === 1,
+    `indifferenceLines must have exactly ONE production caller, found ${callers}. `
+    + 'A second caller that does not pass resolveProfile of the CONVERGED run makes the '
+    + 'neTolerancePlayer gap reachable (0.33% of arbitrary profiles print "≈" between two '
+    + 'different numbers). Answer the tolerance question before adding one.');
+  ok(/indifferenceLines\(payoffs, resolved\.x, resolved\.y\)/.test(app),
+    'and that one caller must still be the converged-run profile');
+
+  // The 0.33% is real, so prove the predicate above is guarding something
+  // rather than describing a hypothetical. This is the shape it takes.
+  const cont = { a11: -0.993, a12: -0.67, a21: 0.54, a22: -0.766,
+                 b11: 0.138, b12: 0.138, b21: -0.457, b22: -0.912 } as GamePayoffs;
+  const mn = computeMixedNE(cont);
+  ok(mn !== null, 'the reachable-shape fixture must have a mixed NE');
+  const off = resolveProfile(cont, { exactX: mn!.x + 4e-4, exactY: mn!.y - 4e-4 } as unknown as SimState);
+  ok(off.concept === 'mixed' && (off.x === 0 || off.x === 1),
+    `the fixture must resolve to a MIXED panel with a player at a vertex, got ${JSON.stringify(off)}`);
+  const bad = indifferenceLines(cont, off.x, off.y);
+  ok(bad.a.indifferent && bad.a.pStr !== bad.a.qStr,
+    `the fixture must actually print "≈" between two different numbers (${bad.a.pStr} / ${bad.a.qStr}) — `
+    + 'if it stops doing so, either the tolerance changed or this fixture has gone stale');
+  ok(Math.abs(bad.a.p - bad.a.q) < neTolerancePlayer(cont, 'A'),
+    'and it must be the TOLERANCE admitting it, not a rounding artefact');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
