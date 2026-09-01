@@ -19,7 +19,6 @@ import {
   equilibriumSet,
   kindOf,
   resolveProfile,
-  indifferenceAt,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
   // call parseFloat / parseInt / Number / valueAsNumber on user-supplied text:
@@ -34,8 +33,11 @@ import {
   precomputeThinHistory,
   replayToStep,
   type ThinSnapshot,
+  fmtPayoff,
+  payoffTexRhs,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
+import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -108,6 +110,75 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
  */
 // ColorCoded moved to its own component so the workspace-center library
 // (MenuDrawer) can color saved-game text with the exact same rules.
+
+/**
+ * Is this report envelope one we may show and prefill from?
+ *
+ * TWO call sites ask this and they had DRIFTED, which is the whole bug. The
+ * display path was taught about 'template' when the rung-3 flag shipped; the
+ * "generate a new game" dialog was not, and kept requiring source === 'llm'.
+ * Production runs rung 3, which NEVER emits 'llm' — so that dialog threw away
+ * a perfectly good scenario on every single generation and told the user "the
+ * AI scenario isn't available right now". Not intermittent: 100%, since the
+ * flag flip.
+ *
+ * 'template' envelopes carry NO validation object, and that is correct rather
+ * than missing: their sentences are rendered from the solver, so there are no
+ * model claims left to check, and the scenario they carry was already put
+ * through validateScenario + scenarioIsClaimFree + the direction checks
+ * SERVER-SIDE before being included. Requiring `validation.ok` of them asks for
+ * a receipt from a gate that had nothing to weigh.
+ *
+ * One predicate, so the next rung cannot desynchronise them again.
+ */
+export function envelopeIsTrustworthy(env: ReportEnvelope | null | undefined): boolean {
+  if (!env?.report) return false;
+  if (env.source === 'template') return true;
+  return env.source === 'llm' && env.validation?.ok === true;
+}
+
+/**
+ * A legend swatch drawn as a shape, not typed as an emoji.
+ *
+ * The legend used 🔴 🔵 🟣 for three of its entries. Emoji are rendered by the
+ * PLATFORM's font, so they carried a shading and outline nothing on the plot
+ * has, they changed appearance between macOS, Windows and Android, and none of
+ * them could take the app's own colours in dark mode. The purple one was also
+ * simply WRONG: a mixed equilibrium is drawn on the plot as a DIAMOND, exactly
+ * like a pure one, and only the colour distinguishes them — so the legend was
+ * teaching a reader to look for a circle that is not there.
+ *
+ * Every shape here mirrors what Plotly actually draws: a diamond for both
+ * equilibrium kinds, a dashed rectangle for the domain and corridor boxes, an
+ * open ring for the translucent ghost markers, a rule for the move paths, and
+ * a soft-cornered patch for a payoff SURFACE — a surface is a sheet, so a patch
+ * reads truer than a sphere ever did.
+ *
+ * Everything is stroked and filled with `currentColor`, so each entry inherits
+ * the colour token its own text already uses and both themes come out right
+ * without a second palette to keep in step.
+ */
+function LegendSwatch({ shape }: { shape: 'surface' | 'diamond' | 'ring' | 'dashed' | 'line' }) {
+  const common = { width: 11, height: 11, viewBox: '0 0 12 12', 'aria-hidden': true as const,
+    className: 'shrink-0 overflow-visible' };
+  switch (shape) {
+    case 'surface':
+      // A patch of sheet, lightly translucent like the plotted surfaces.
+      return <svg {...common}><rect x="0.5" y="1.5" width="11" height="9" rx="2" fill="currentColor" opacity="0.85" /></svg>;
+    case 'diamond':
+      // The plot draws BOTH equilibrium kinds as diamonds; colour is the only
+      // difference, which is why this shape is shared.
+      return <svg {...common}><path d="M6 0.5 11.5 6 6 11.5 0.5 6Z" fill="currentColor" /></svg>;
+    case 'ring':
+      // Ghost markers are translucent and hollow-reading on the plot.
+      return <svg {...common}><circle cx="6" cy="6" r="4.25" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>;
+    case 'dashed':
+      return <svg {...common}><rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" strokeDasharray="2.6 2" /></svg>;
+    case 'line':
+    default:
+      return <svg {...common}><line x1="0.5" y1="6" x2="11.5" y2="6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>;
+  }
+}
 
 export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
@@ -670,9 +741,7 @@ export default function App() {
   // validation object because there is nothing to validate: their sentences are
   // rendered from the solver, so they are grounded by construction rather than
   // by a gate. They display like a verified report.
-  const llmVerified =
-    (llmEnvelope?.source === 'llm' && llmEnvelope.validation?.ok === true && !!llmEnvelope.report)
-    || (llmEnvelope?.source === 'template' && !!llmEnvelope.report);
+  const llmVerified = envelopeIsTrustworthy(llmEnvelope);
 
   // Any edit to the game invalidates prose written about the previous one.
   useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
@@ -697,12 +766,26 @@ export default function App() {
     const hasAllLabels = [sc.row1, sc.row2, sc.col1, sc.col2].every(Boolean);
     // Only when the labels have no field of their own to live in. With all four
     // present they are saved structurally and the description stays prose.
-    const labelSentence = hasAllLabels
-      ? ''
-      : ` A chooses between ${sc.row1} and ${sc.row2}; B chooses between ${sc.col1} and ${sc.col2}.`;
-    const description = `${sc.description ?? ''}${
-      [sc.row1, sc.row2, sc.col1, sc.col2].some(Boolean) ? labelSentence : ''
-    }`.trim();
+    //
+    // THE FALLBACK USED TO INTERPOLATE THE HOLE IT EXISTS TO COVER (RED 1 F11).
+    // This branch runs precisely when a label is MISSING, and it then wrote
+    // `${sc.col2}` into the sentence regardless — so the draw that emitted col1
+    // plus invented keys day1/day2 saved the user the sentence "B chooses
+    // between Night Work and undefined." The branch written to handle the
+    // missing-label case was the one that printed it.
+    //
+    // Built per PAIR now, so a partial draw keeps whatever it actually supplied.
+    // Note what is deliberately NOT done: the guard below was
+    // `[row1,row2,col1,col2].some(Boolean)`, and tightening THAT to
+    // `hasAllLabels` would have silently dropped the labels a partial draw did
+    // provide — trading a visible "undefined" for invisible data loss, which is
+    // the worse of the two failures because nothing on screen reveals it.
+    const pair = (who: string, a?: string, b?: string) =>
+      a && b ? `${who} chooses between ${a} and ${b}` : '';
+    const parts = hasAllLabels
+      ? []
+      : [pair('A', sc.row1, sc.row2), pair('B', sc.col1, sc.col2)].filter(Boolean);
+    const description = `${sc.description ?? ''}${parts.length ? ` ${parts.join('; ')}.` : ''}`.trim();
     // Already a saved game of this user's: route the suggestion through the
     // EDIT dialog prefilled, exactly like the save-as-new path routes through
     // the save dialog — the user reviews and can rewrite any of it before it
@@ -918,12 +1001,23 @@ export default function App() {
     || runCtx.firstMover !== firstMover
     || (Object.keys(runCtx.payoffs) as (keyof GamePayoffs)[]).some((k) => runCtx.payoffs[k] !== payoffs[k]);
 
-  // Which players are ACTUALLY indifferent here. A continuum point is "mixed"
+  // The equilibrium panel's two indifference equations, and the labels above
+  // them ("A indifferent:" / "A strictly prefers:").
+  //
+  // Which players are ACTUALLY indifferent here: a continuum point is "mixed"
   // but only ONE player is indifferent on it; printing both indifference
   // equations asserted E[Row 1] = 3.783 ≈ E[Row 2] = -0.698.
-  const indiff = useMemo(
-    () => indifferenceAt(payoffs, simState.cx, simState.cy),
-    [payoffs, simState.cx, simState.cy]
+  //
+  // Evaluated at `resolved` — the SAME exact coordinates the x*/y*/E[A]/E[B]
+  // row above it uses. Reading `simState.cx`/`cy` here instead made the panel
+  // contradict itself within one box: those are r3-collapsed by `doStep`, so on
+  // the Search Game preset the headline said E[A] = 0.667 while the line under
+  // it asserted "A indifferent: E[Row 1] = 0.666 ≈ E[Row 2] = 0.667" — a
+  // difference that exists only because 1/3 was read as 0.333. At a mixed
+  // equilibrium E[A], E[Row 1] and E[Row 2] are the same number by definition.
+  const lines = useMemo(
+    () => indifferenceLines(payoffs, resolved.x, resolved.y),
+    [payoffs, resolved.x, resolved.y]
   );
 
 
@@ -1304,7 +1398,7 @@ export default function App() {
       const env = (await res.json()) as ReportEnvelope;
       // Prefill only from a validated invention — an unvalidated story could
       // contradict the very equilibria the user just asked for.
-      const sc = env.source === 'llm' && env.validation?.ok ? env.report?.suggestedScenario : null;
+      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;
       if (sc) {
         setSaveName((sc.name ?? '').slice(0, 40));
         setSaveDesc((sc.description ?? '').slice(0, 800));
@@ -3325,15 +3419,15 @@ export default function App() {
 
           {/* Plot Legend Info Line */}
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-xs text-slate-500 justify-center lg:justify-start">
-            <span className="flex items-center gap-1">🔴 E[A] Surface</span>
-            <span className="flex items-center gap-1">🔵 E[B] Surface</span>
-            <span className="flex items-center gap-1 text-player-a-500 font-medium">─ A Moves</span>
-            <span className="flex items-center gap-1 text-player-b-600 font-medium">─ B Moves</span>
-            <span className="flex items-center gap-1 font-semibold text-ne-pure">◆ Pure NE</span>
-            <span className="flex items-center gap-1 text-ne-mixed-600 font-bold">🟣 Mixed NE</span>
-            <span className="flex items-center gap-1 text-emerald-600">⬚ Domain</span>
-            <span className="flex items-center gap-1 text-orange-500">⬚ Search Corridor</span>
-            <span className="flex items-center gap-1 text-orange-500">○ Ghost positions</span>
+            <span className="flex items-center gap-1 text-player-a-600 dark:text-player-a-400"><LegendSwatch shape="surface" /> E[A] Surface</span>
+            <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400"><LegendSwatch shape="surface" /> E[B] Surface</span>
+            <span className="flex items-center gap-1 text-player-a-500 dark:text-player-a-400 font-medium"><LegendSwatch shape="line" /> A Moves</span>
+            <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400 font-medium"><LegendSwatch shape="line" /> B Moves</span>
+            <span className="flex items-center gap-1 font-semibold text-ne-pure dark:text-ne-pure"><LegendSwatch shape="diamond" /> Pure NE</span>
+            <span className="flex items-center gap-1 text-ne-mixed-600 dark:text-ne-mixed-400 font-bold"><LegendSwatch shape="diamond" /> Mixed NE</span>
+            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><LegendSwatch shape="dashed" /> Domain</span>
+            <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="dashed" /> Search Corridor</span>
+            <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="ring" /> Ghost positions</span>
           </div>
 
           {/* Plotly 3D visual component */}
@@ -3531,7 +3625,7 @@ export default function App() {
                   Expected Payoff E[A]
                 </span>
                 <span className="text-sm font-bold text-player-a-500 font-mono">
-                  {r3(EA(simState.cx, simState.cy, payoffs)).toFixed(3)}
+                  {fmtPayoff(EA(simState.cx, simState.cy, payoffs))}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -3539,7 +3633,7 @@ export default function App() {
                   Expected Payoff E[B]
                 </span>
                 <span className="text-sm font-bold text-player-b-600 dark:text-player-b-400 font-mono">
-                  {r3(EB(simState.cx, simState.cy, payoffs)).toFixed(3)}
+                  {fmtPayoff(EB(simState.cx, simState.cy, payoffs))}
                 </span>
               </div>
             </div>
@@ -3572,27 +3666,65 @@ export default function App() {
                   <MathTex tex={`y^* = ${texProb(resolved.y)}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[A] = ${r3(EA(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[A] ${payoffTexRhs(EA(resolved.x, resolved.y, payoffs))}`} />
                 </span>
                 <span className="text-slate-700 dark:text-slate-200">
-                  <MathTex tex={`\\mathbb{E}[B] = ${r3(EB(resolved.x, resolved.y, payoffs)).toFixed(3)}`} />
+                  <MathTex tex={`\\mathbb{E}[B] ${payoffTexRhs(EB(resolved.x, resolved.y, payoffs))}`} />
                 </span>
               </div>
+
+              {/* THE CONVENTION, stated rather than left to be discovered.
+                  Nothing above is false — every number is the correct value of
+                  the quantity it names, computed at the exact equilibrium and
+                  rounded once, at display time. What is NOT true is that the
+                  four PRINTED numbers form a self-consistent tuple: substitute
+                  the printed x* and y* into E[A] and you land somewhere else,
+                  for 50.5% of mixed equilibria on integer payoffs in [-9,9]
+                  (worst 0.008) and 90.0% at the +/-100 clamp (worst 0.093).
+                  Those two figures count E[A] ALONE; counting a mixed NE as
+                  affected when EITHER payoff moves gives 77.5% and 99.0%, which
+                  is the same phenomenon on a wider population, not a different
+                  measurement.
+                  A reader who checks the arithmetic by hand — which is exactly
+                  what this app invites, and what a referee will do — concludes
+                  the app is wrong.
+
+                  Printing more coordinate digits was the alternative and it
+                  does NOT close the gap: making the substitution reproduce BOTH
+                  printed payoffs needs 5 dp for 99.7% of mixed NEs at int[-9,9]
+                  and 6 dp for 98.7% at int[-100,100], and never reaches 100%.
+                  That buys "x* = 0.333333" on the Search Game preset in
+                  exchange for a guarantee it cannot deliver.
+
+                  And recomputing the payoffs AT the rounded profile is ruled
+                  out: it was the old convention, and it made the solver label
+                  and the templated prose print 2.315 and 2.316 for the same
+                  quantity. Today both say 2.316.
+
+                  Mixed only. At a pure equilibrium the coordinates are exactly
+                  0 or 1, the substitution reproduces the payoff exactly, and
+                  the caveat would be noise. Wording kept in step with the
+                  convention comment in gameEngine.ts. */}
+              {realisedConcept === 'mixed' && (
+                <p className="text-[11px] leading-snug text-slate-400 dark:text-slate-500 -mt-1 px-1">
+                  Computed at the exact equilibrium, then rounded to 3 dp for display — recomputing E[A] from the rounded x* and y* can differ in the last digits.
+                </p>
+              )}
 
               <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-300 space-y-1">
                 {realisedConcept === 'mixed' ? (
                   <>
                     <div>
                       <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">
-                        {indiff.a ? 'A indifferent:' : 'A strictly prefers:'}
+                        {lines.a.indifferent ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      <MathTex tex={`\\mathbb{E}[\\text{Row 1}] = ${r3(simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12).toFixed(3)} ${indiff.a ? '\\approx' : (simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12 > simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22 ? '>' : '<')} \\mathbb{E}[\\text{Row 2}] = ${r3(simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22).toFixed(3)}`} />
+                      <MathTex tex={lines.a.tex} />
                     </div>
                     <div>
                       <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">
-                        {indiff.b ? 'B indifferent:' : 'B strictly prefers:'}
+                        {lines.b.indifferent ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      <MathTex tex={`\\mathbb{E}[\\text{Col 1}] = ${r3(simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21).toFixed(3)} ${indiff.b ? '\\approx' : (simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21 > simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22 ? '>' : '<')} \\mathbb{E}[\\text{Col 2}] = ${r3(simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22).toFixed(3)}`} />
+                      <MathTex tex={lines.b.tex} />
                     </div>
                     <div className="text-xs text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
@@ -3613,7 +3745,12 @@ export default function App() {
                         NOUN still claimed "optimal pure NE payoff" on runs that
                         settled at a profile that is not a pure NE at all. Say
                         what actually happened. */}
-                    Mover priority settled. Player {(runCtx?.firstMover ?? firstMover) === 'A' ? 'A' : 'B'} moved first and realised {((runCtx?.firstMover ?? firstMover) === 'A' ? EA(resolved.x, resolved.y, payoffs) : EB(resolved.x, resolved.y, payoffs)).toFixed(3)}.
+                    {/* `toFixed(3)` here could print "-0.000" — a negative zero
+                        that both claims the payoff is nothing and reads as a
+                        typo. This is prose, not TeX, so it takes `fmtPayoff`
+                        (which says "less than 0.001" in words) rather than
+                        `payoffTexRhs`. */}
+                    Mover priority settled. Player {(runCtx?.firstMover ?? firstMover) === 'A' ? 'A' : 'B'} moved first and realised {fmtPayoff((runCtx?.firstMover ?? firstMover) === 'A' ? EA(resolved.x, resolved.y, payoffs) : EB(resolved.x, resolved.y, payoffs))}.
                   </div>
                 )}
               </div>
@@ -3639,7 +3776,10 @@ export default function App() {
                       <span className={`font-semibold ${ne.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400' : 'text-slate-800 dark:text-slate-100'}`}>
                         <ColorCoded text={ne.label} />
                       </span>{' '}
-                      with values <ColorCoded text={`E[A]=${ne.eA.toFixed(3)}, E[B]=${ne.eB.toFixed(3)}`} />
+                      {/* Recomputed via `neValues`, not read from ne.eA/eB: those are
+                          stored pre-rounded, and -0 === 0 in JavaScript, so a bare
+                          fmtPayoff swap would keep printing a false zero. */}
+                      with values <ColorCoded text={`E[A]=${neValues(ne, payoffs).a}, E[B]=${neValues(ne, payoffs).b}`} />
                     </li>
                   ))}
                   {continua.map((line, idx) => (
@@ -3698,7 +3838,7 @@ export default function App() {
                     {committedNE && (
                       <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
                         <ColorCoded
-                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${neValues(committedNE, payoffs).a}, B = ${neValues(committedNE, payoffs).b}).`}
                           aTerms={colorTerms.a}
                           bTerms={colorTerms.b}
                         />
@@ -3720,7 +3860,7 @@ export default function App() {
                     {committedNE && (
                       <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
                         <ColorCoded
-                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${neValues(committedNE, payoffs).a}, B = ${neValues(committedNE, payoffs).b}).`}
                           aTerms={colorTerms.a}
                           bTerms={colorTerms.b}
                         />

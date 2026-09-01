@@ -1,0 +1,4 @@
+
+> nash-equilibrium-simulator@0.0.97 lint
+> tsc --noEmit
+
