@@ -8,6 +8,7 @@ import { GamePayoffs, PresetGame } from '../types';
 import { PRESETS, computeAllNE } from '../utils/gameEngine';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
+import { savedGameColorTerms } from '../utils/colorTerms';
 import {
   X,
   HelpCircle,
@@ -103,10 +104,15 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       name: g.name,
       desc: g.description,
       payoffs: g.payoffs as GamePayoffs,
-      // Option labels feed ColorCoded so a saved game's own nouns get the
-      // same player coloring its description enjoys in the main panel.
-      aTerms: [g.row1Label, g.row2Label].filter(Boolean) as string[],
-      bTerms: [g.col1Label, g.col2Label].filter(Boolean) as string[],
+      // Derived, not assembled. This card renders the same sentence the main
+      // panel does, so it has to ask the same question of the same module —
+      // the comment that used to sit here claimed the card got "the same
+      // player coloring its description enjoys in the main panel" while the
+      // two lines under it built a narrower list by hand: no structural
+      // Row/Col terms, no `dropAmbiguous` (so a symmetric game's shared option
+      // name was painted as A's), and no `colorTermsA`/`colorTermsB`, which
+      // made every highlight the user placed by hand vanish on this surface.
+      terms: savedGameColorTerms(g),
     }));
   }, [userCustomGames]);
 
@@ -717,7 +723,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 </div>
                               </div>
                               <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed break-words">
-                                <ColorCoded text={game.desc} aTerms={game.aTerms} bTerms={game.bTerms} />
+                                <ColorCoded text={game.desc} aTerms={game.terms.a} bTerms={game.terms.b} />
                               </p>
 
                               {/* Plotted NE */}
