@@ -19,7 +19,6 @@ import {
   equilibriumSet,
   kindOf,
   resolveProfile,
-  indifferenceAt,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
   // call parseFloat / parseInt / Number / valueAsNumber on user-supplied text:
@@ -36,9 +35,9 @@ import {
   type ThinSnapshot,
   fmtPayoff,
   payoffTexRhs,
-  fmtPayoffPair,
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
+import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -1002,12 +1001,23 @@ export default function App() {
     || runCtx.firstMover !== firstMover
     || (Object.keys(runCtx.payoffs) as (keyof GamePayoffs)[]).some((k) => runCtx.payoffs[k] !== payoffs[k]);
 
-  // Which players are ACTUALLY indifferent here. A continuum point is "mixed"
+  // The equilibrium panel's two indifference equations, and the labels above
+  // them ("A indifferent:" / "A strictly prefers:").
+  //
+  // Which players are ACTUALLY indifferent here: a continuum point is "mixed"
   // but only ONE player is indifferent on it; printing both indifference
   // equations asserted E[Row 1] = 3.783 ≈ E[Row 2] = -0.698.
-  const indiff = useMemo(
-    () => indifferenceAt(payoffs, simState.cx, simState.cy),
-    [payoffs, simState.cx, simState.cy]
+  //
+  // Evaluated at `resolved` — the SAME exact coordinates the x*/y*/E[A]/E[B]
+  // row above it uses. Reading `simState.cx`/`cy` here instead made the panel
+  // contradict itself within one box: those are r3-collapsed by `doStep`, so on
+  // the Search Game preset the headline said E[A] = 0.667 while the line under
+  // it asserted "A indifferent: E[Row 1] = 0.666 ≈ E[Row 2] = 0.667" — a
+  // difference that exists only because 1/3 was read as 0.333. At a mixed
+  // equilibrium E[A], E[Row 1] and E[Row 2] are the same number by definition.
+  const lines = useMemo(
+    () => indifferenceLines(payoffs, resolved.x, resolved.y),
+    [payoffs, resolved.x, resolved.y]
   );
 
 
@@ -3668,25 +3678,15 @@ export default function App() {
                   <>
                     <div>
                       <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">
-                        {indiff.a ? 'A indifferent:' : 'A strictly prefers:'}
+                        {lines.a.indifferent ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      {(() => {
-                        const p = simState.cy * payoffs.a11 + (1 - simState.cy) * payoffs.a12;
-                        const q = simState.cy * payoffs.a21 + (1 - simState.cy) * payoffs.a22;
-                        const f = fmtPayoffPair(p, q);
-                        return <MathTex tex={`\\mathbb{E}[\\text{Row 1}] = ${f.p} ${indiff.a ? '\\approx' : (p > q ? '>' : '<')} \\mathbb{E}[\\text{Row 2}] = ${f.q}`} />;
-                      })()}
+                      <MathTex tex={lines.a.tex} />
                     </div>
                     <div>
                       <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">
-                        {indiff.b ? 'B indifferent:' : 'B strictly prefers:'}
+                        {lines.b.indifferent ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      {(() => {
-                        const p = simState.cx * payoffs.b11 + (1 - simState.cx) * payoffs.b21;
-                        const q = simState.cx * payoffs.b12 + (1 - simState.cx) * payoffs.b22;
-                        const f = fmtPayoffPair(p, q);
-                        return <MathTex tex={`\\mathbb{E}[\\text{Col 1}] = ${f.p} ${indiff.b ? '\\approx' : (p > q ? '>' : '<')} \\mathbb{E}[\\text{Col 2}] = ${f.q}`} />;
-                      })()}
+                      <MathTex tex={lines.b.tex} />
                     </div>
                     <div className="text-xs text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
@@ -3707,7 +3707,12 @@ export default function App() {
                         NOUN still claimed "optimal pure NE payoff" on runs that
                         settled at a profile that is not a pure NE at all. Say
                         what actually happened. */}
-                    Mover priority settled. Player {(runCtx?.firstMover ?? firstMover) === 'A' ? 'A' : 'B'} moved first and realised {((runCtx?.firstMover ?? firstMover) === 'A' ? EA(resolved.x, resolved.y, payoffs) : EB(resolved.x, resolved.y, payoffs)).toFixed(3)}.
+                    {/* `toFixed(3)` here could print "-0.000" — a negative zero
+                        that both claims the payoff is nothing and reads as a
+                        typo. This is prose, not TeX, so it takes `fmtPayoff`
+                        (which says "less than 0.001" in words) rather than
+                        `payoffTexRhs`. */}
+                    Mover priority settled. Player {(runCtx?.firstMover ?? firstMover) === 'A' ? 'A' : 'B'} moved first and realised {fmtPayoff((runCtx?.firstMover ?? firstMover) === 'A' ? EA(resolved.x, resolved.y, payoffs) : EB(resolved.x, resolved.y, payoffs))}.
                   </div>
                 )}
               </div>
@@ -3733,7 +3738,10 @@ export default function App() {
                       <span className={`font-semibold ${ne.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400' : 'text-slate-800 dark:text-slate-100'}`}>
                         <ColorCoded text={ne.label} />
                       </span>{' '}
-                      with values <ColorCoded text={`E[A]=${ne.eA.toFixed(3)}, E[B]=${ne.eB.toFixed(3)}`} />
+                      {/* Recomputed via `neValues`, not read from ne.eA/eB: those are
+                          stored pre-rounded, and -0 === 0 in JavaScript, so a bare
+                          fmtPayoff swap would keep printing a false zero. */}
+                      with values <ColorCoded text={`E[A]=${neValues(ne, payoffs).a}, E[B]=${neValues(ne, payoffs).b}`} />
                     </li>
                   ))}
                   {continua.map((line, idx) => (
@@ -3792,7 +3800,7 @@ export default function App() {
                     {committedNE && (
                       <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
                         <ColorCoded
-                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${neValues(committedNE, payoffs).a}, B = ${neValues(committedNE, payoffs).b}).`}
                           aTerms={colorTerms.a}
                           bTerms={colorTerms.b}
                         />
@@ -3814,7 +3822,7 @@ export default function App() {
                     {committedNE && (
                       <p className="font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-xl p-2.5 border border-emerald-100 dark:border-emerald-800">
                         <ColorCoded
-                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${committedNE.eA.toFixed(3)}, B = ${committedNE.eB.toFixed(3)}).`}
+                          text={`Player ${firstMover} initiates and commits to: ${committedNE.label} (payoff A = ${neValues(committedNE, payoffs).a}, B = ${neValues(committedNE, payoffs).b}).`}
                           aTerms={colorTerms.a}
                           bTerms={colorTerms.b}
                         />
