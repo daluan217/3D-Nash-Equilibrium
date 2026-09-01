@@ -249,41 +249,53 @@ function checkGeometry(
     },
     {
       kind: 'geometry-bad-shelf',
-      // KNOWN WRONG ON A DEGENERATE CLASS, FIX PENDING IN geometry.ts.
+      // THE FIELD THIS READS IS NOT `yStarInRange`, AND THAT IS THE FIX.
       //
       // The comment that stood here said `yStarInRange` "covers both ways a
       // shelf can fail to exist". There is a THIRD way, and in it the shelf does
       // not fail to exist — it is EVERYTHING. When twistA is 0 AND a11 === a21,
       // A's surface is level along A's own axis at every y, so the whole board
-      // is a shelf; yStar is NaN, `yStarInRange` is false, and this row REJECTS
-      // A TRUE CLAIM. Verified against the payoff definition rather than the
-      // predicate: a=[[-5,-1],[-5,-1]] gives dE_A/dx = 0 at every y.
+      // is a shelf; yStar is NaN, `yStarInRange` is false, and this row used to
+      // REJECT A TRUE CLAIM. Verified against the payoff definition rather than
+      // against the predicate: a=[[-5,-1],[-5,-1]] gives dE_A/dx = 0 at every y.
       //
-      // Measured against independent sign-change ground truth over 400,000
-      // random matrices: this predicate is wrong 0.273% of the time on
-      // int[-9,9] and 2.023% on int[-3,3]; the corrected form is wrong 0/400,000
-      // and is byte-identical wherever twistA is non-zero.
+      // Measured against sign-change ground truth read off E_A/E_B: the old
+      // predicate was wrong 0.273% of the time on int[-9,9] and 2.023% on
+      // int[-3,3]; `hasFlatShelfForA` is wrong 0 of 600,000 across three
+      // alphabets and identical wherever twistA is non-zero.
       //
-      // NOT FIXED HERE ON PURPOSE. The briefing in geometry.ts tells the model
-      // "There is NO flat shelf for A" from the SAME predicate, so correcting
-      // only this row would turn a false rejection into a false rejection in the
-      // other direction — the model would be told a falsehood and then failed
-      // for repeating it. The predicate has to move first (BLUE-MATH owns that
-      // file); this row then reads the corrected field.
+      // THE TWO HALVES HAD TO LAND TOGETHER. geometry.ts's briefing states the
+      // same fact from the same predicate, so correcting only this row would
+      // have turned a false rejection into a false rejection the other way — the
+      // model told there is no shelf, then failed for agreeing. The predicate
+      // moved first (BLUE-MATH), and this row follows it in the same branch.
       claimed: claims.hasFlatShelfForA,
-      actual: geo.yStarInRange,
+      actual: geo.hasFlatShelfForA,
       yes: 'A has a flat shelf on the board',
       no: 'A has no flat shelf on the board',
     },
     {
       kind: 'geometry-bad-flatspot',
-      // KNOWN WRONG ON THE SAME DEGENERATE CLASS, FIX PENDING IN geometry.ts.
-      // `hasInteriorFlatSpot` is `inUnit(xStar) && inUnit(yStar)`, so when
+      // NO EDIT NEEDED HERE, BECAUSE THE FIELD ITSELF WAS REDEFINED.
+      // `hasInteriorFlatSpot` was `inUnit(xStar) && inUnit(yStar)`, so when
       // twistB is 0 and B is level along its own axis EVERYWHERE, xStar is NaN
-      // and a real joint flat spot reads as none. a=[[-2,2],[4,-5]]
+      // and a real joint flat spot read as none. a=[[-2,2],[4,-5]]
       // b=[[3,3],[4,4]]: both surfaces are level at (any x, 7/13) and both
-      // regrets are zero there, and this row rejects the true claim. Wrong
-      // 0.241% / 1.552% on the two alphabets above; corrected form 0/400,000.
+      // regrets are zero there, and this row rejected the true claim. It is now
+      // `hasFlatShelfForA && hasFlatShelfForB`, wrong 0 of 600,000 against the
+      // same independent ground truth.
+      //
+      // HOW MUCH THE FIELD ACTUALLY MOVED, since a redefined field invalidates
+      // reach numbers measured against the old one. Before -> after, and the
+      // share of rows whose value CHANGED:
+      //   int[-9,9]  20.18% -> 20.43%,  0.247% moved
+      //   int[-3,3]  13.48% -> 15.03%,  1.557% moved
+      //   int[-1,1]   4.87% -> 11.10%,  6.231% moved
+      // and on `generateRandomGame`, the distribution the "New random game"
+      // button actually produces, it moved by 0.00 points across all four kinds
+      // over 160,000 draws — that sampler rejects within-player ties, so the
+      // degenerate class it turns on essentially never arises there. The change
+      // is real on hand-typed matrices and null on generated ones.
       claimed: claims.equilibriumIsInteriorFlatSpot,
       actual: geo.hasInteriorFlatSpot,
       yes: 'the equilibrium is an interior joint flat spot',

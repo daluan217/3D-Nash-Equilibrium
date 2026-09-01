@@ -28,11 +28,12 @@ import {
   computeMixedNE, computeAllNE, fmtProb, texProb,
   profileConcept, resolveProfile, indifferenceAt,
   equilibriumSet, kindOf, describeContinua,
-  computeIndifference, generateRandomGame, fmtPayoff,
+  computeIndifference, generateRandomGame, fmtPayoff, fmtPayoffProse,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
+import { describeGeometry, geometryBriefing } from './utils/geometry';
 import { tieProse } from './utils/tieProse';
-import { validateScenario, scenarioIsClaimFree, validateProseDirections } from './utils/nashValidator';
+import { validateScenario, scenarioIsClaimFree, validateProseDirections, validateReport } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -429,6 +430,360 @@ function testTieProseUnitTable() {
   const labeled = tieProse(FLAT_A, { row1: 'Attack', row2: 'Defend', col1: 'Left', col2: 'Right' });
   assert(/Attack|Defend/.test(labeled), 'tie prose uses the supplied row labels');
   assert(/Left|Right/.test(labeled), 'tie prose uses the supplied col labels');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// tieProse section 4 — the DERIVED payoff, which used to collapse onto zero
+// ════════════════════════════════════════════════════════════════════════════
+/**
+ * The expected-payoff sentence was rendered by a local `num` helper —
+ * `Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/\.?0+$/, '')` —
+ * rather than by `fmtPayoff`. On a matrix CELL that is harmless (every payoff
+ * reaching this module is r3-clamped by `cleanPayoffs`, so toFixed(3) is
+ * exact), but an expected payoff is a weighted AVERAGE of four cells and is
+ * neither clamped nor bounded away from zero. Two live classes, both measured
+ * against an exact BigInt oracle over 200,000 games per distribution:
+ *
+ *   "-0"        145 / 200,000 on int[-9,9] — `generateRandomGame`'s own
+ *               alphabet, so the random-game button hit it about 1 in 1,300.
+ *   FALSE "0"   up to 246 / 200,000 on 3-dp decimals: a genuinely nonzero
+ *               payoff asserted to be zero, in the paragraph that exists
+ *               because the model's arithmetic could not be trusted.
+ *
+ * Under `NASH_PAYOFF_TEMPLATE=1` this is the prose production returns for every
+ * game, not only ties.
+ */
+function testTieProseDerivedPayoff() {
+  // ---- KNOWN POSITIVES: the exact matrices that produced each defect --------
+  // NOTE the `$`: a lazy `(.+?)\.` stops at the DECIMAL POINT, so "-4.2" reads
+  // back as "-4" and "less than 0.001" as "less than 0". The first draft of this
+  // helper did exactly that and made the renderer look broken when it was not.
+  const sentence = (g: GamePayoffs) => {
+    const m = tieProse(g).match(/the expected payoffs are E\[A\] = (.+?) and E\[B\] = (.+?)\.\s*$/);
+    assert(!!m, `no expected-payoff sentence rendered for ${JSON.stringify(g)}`);
+    return { a: m![1], b: m![2] };
+  };
+  assert(sentence({ a11: 6, a12: -4, a21: -1, a22: 8, b11: -9, b12: 6, b21: -1, b22: -8 }).b === '-3.545',
+    'the extraction helper must return whole values, decimal point included');
+  // 1. NEGATIVE ZERO. True E[A] is exactly 0; the float is -5.55e-17.
+  const negZero: GamePayoffs = { a11: 0, a12: 0, a21: -2, a22: 5, b11: -9, b12: -6, b21: -1, b22: -3 };
+  assert(EA(...(() => { const r = equilibriumSet(negZero)[0]; return [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, negZero] as const; })()) !== 0,
+    'negative-zero fixture no longer carries float noise — it can no longer exercise the defect');
+  assert(sentence(negZero).a === 'greater than -0.001',
+    `negative-zero fixture: E[A] rendered "${sentence(negZero).a}"; the shipped defect printed "-0"`);
+  // second instance, a different matrix with the same shape
+  const negZero2: GamePayoffs = { a11: 0, a12: 0, a21: 2, a22: -1, b11: 3, b12: -9, b21: -8, b22: -2 };
+  assert(sentence(negZero2).a === 'greater than -0.001' && sentence(negZero2).b === '-4.333',
+    `negative-zero fixture 2: got E[A] = ${sentence(negZero2).a}, E[B] = ${sentence(negZero2).b}`);
+  // A SIGNED-ZERO TOKEN, anywhere in the paragraph. `\b` is the wrong boundary
+  // here — it fires INSIDE "-0.001", which is a legitimate rendering; the first
+  // draft of this predicate failed on its own fixture for exactly that reason,
+  // the same over-firing shape this campaign has hit five times.
+  const SIGNED_ZERO = /-0(?![\d.])/;
+  assert(SIGNED_ZERO.test('the expected payoffs are E[A] = -0 and E[B] = -4.2.'),
+    'SIGNED_ZERO must catch the defect sentence it exists for');
+  assert(!SIGNED_ZERO.test('E[A] = greater than -0.001'), 'SIGNED_ZERO must pass a legitimate -0.001');
+  assert(!SIGNED_ZERO.test('E[A] = -0.5'), 'SIGNED_ZERO must pass an ordinary negative');
+  for (const g of [negZero, negZero2])
+    assert(!SIGNED_ZERO.test(tieProse(g)), 'a negative-zero fixture still renders a signed zero somewhere');
+  // 2. FALSE ZERO. True E[B] is 529/2695000 = 0.000196…, printed as "0".
+  const falseZero: GamePayoffs = { a11: 0.617, a12: -6.983, a21: 0.47, a22: -3.506, b11: 3.089, b12: 5.776, b21: -3.107, b22: -5.81 };
+  assert(sentence(falseZero).b === 'less than 0.001',
+    `false-zero fixture: E[B] rendered "${sentence(falseZero).b}"; the shipped defect printed "0", which is false`);
+  // 3. FALSE ZERO, negative side. True E[B] is -2143/16001500 = -0.000133…
+  const falseZeroNeg: GamePayoffs = { a11: -6.78, a12: 6.376, a21: -5.298, a22: -4.974, b11: 8.224, b12: -7.807, b21: -8.194, b22: 7.778 };
+  assert(sentence(falseZeroNeg).b === 'greater than -0.001',
+    `negative false-zero fixture: E[B] rendered "${sentence(falseZeroNeg).b}"`);
+
+  // ---- NEGATIVE FIXTURES: the register must NOT change on ordinary games ----
+  // `fmtPayoff` alone would have turned "E[A] = 3" into "E[A] = 3.000" on
+  // 469,654 of 1,600,000 renderings. That is churn, not a fix, so the prose
+  // form trims — and these pin the wording that must survive.
+  for (const [name, g, wantA, wantB] of [
+    ['PD', PD, '1', '1'],
+    ['BoS', BOS, '1', '2'],
+    ['matching pennies', MATCHING_PENNIES, '0', '0'],   // an EXACT zero still prints plainly
+  ] as [string, GamePayoffs, string, string][]) {
+    const s = sentence(g);
+    assert(s.a === wantA && s.b === wantB,
+      `${name}: expected E[A] = ${wantA}, E[B] = ${wantB}; got E[A] = ${s.a}, E[B] = ${s.b}`);
+  }
+  // and a plain non-integer payoff still prints as digits, not as a phrase
+  assert(/^-?\d+(\.\d+)?$/.test(sentence({ a11: 6, a12: -4, a21: -1, a22: 8, b11: -9, b12: 6, b21: -1, b22: -8 }).a),
+    'an ordinary mixed-NE payoff must still render as a number');
+
+  console.log('✓ tieProse: the derived expected payoff never collapses onto zero');
+}
+
+/**
+ * The trim in `fmtPayoffProse` is cosmetic and must stay cosmetic.
+ *
+ * EXHAUSTIVE, not sampled: the matrix clamps every cell to ±100 at 3 dp and an
+ * expected payoff is a convex combination of four cells, so |E| ≤ 100 and the
+ * only values `fmtPayoff` can hand over as digits are the 200,001 multiples of
+ * 0.001 in [-100, 100]. Every one is checked to round-trip and to print "0"
+ * only when it IS zero.
+ */
+function testFmtPayoffProseExhaustive() {
+  let zeros = 0;
+  for (let k = -100000; k <= 100000; k++) {
+    const v = k / 1000;
+    const s = fmtPayoffProse(v);
+    if (/^-?0(\.0+)?$/.test(s)) {
+      zeros++;
+      assert(k === 0, `fmtPayoffProse(${v}) printed "${s}", claiming a payoff of ${v} is zero`);
+    }
+    assert(s !== '-0', `fmtPayoffProse(${v}) printed a negative zero`);
+    assert(Math.abs(Number(s) - v) < 5e-7, `fmtPayoffProse(${v}) = "${s}" does not round-trip`);
+  }
+  assert(zeros === 1, `exactly one of the 200,001 3-dp values may print as zero; ${zeros} did`);
+  // sub-resolution and noise values leave as PHRASES, with the right sign
+  const phrases: [number, string][] = [
+    [0, '0'],
+    [-0, '0'],
+    [5.551115123125783e-17, 'less than 0.001'],
+    [-5.551115123125783e-17, 'greater than -0.001'],
+    [0.000196289, 'less than 0.001'],
+    [-0.000133925, 'greater than -0.001'],
+    [0.0005, '0.001'],       // r3 rounds half up; still a number, not a phrase
+    [-0.0005, 'greater than -0.001'],
+  ];
+  for (const [v, want] of phrases)
+    assert(fmtPayoffProse(v) === want, `fmtPayoffProse(${v}): expected "${want}", got "${fmtPayoffProse(v)}"`);
+  // MUTATION CONTROL — the legacy renderer this replaced must FAIL the checks
+  // above, or they are decorative. (A guard whose deletion changes no result
+  // has turned up four times in this campaign.)
+  const legacy = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/\.?0+$/, ''));
+  assert(legacy(-5.551115123125783e-17) === '-0', 'the legacy renderer must reproduce the "-0" defect');
+  assert(legacy(0.000196289) === '0', 'the legacy renderer must reproduce the false-zero defect');
+  assert(fmtPayoffProse(-5.551115123125783e-17) !== legacy(-5.551115123125783e-17)
+    && fmtPayoffProse(0.000196289) !== legacy(0.000196289),
+    'the prose renderer must differ from the legacy one on exactly the defect inputs');
+  console.log('✓ fmtPayoffProse: 200,001 exhaustive values, "0" only for an exact zero');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// geometryBriefing — five sentences that were false about real games
+// ════════════════════════════════════════════════════════════════════════════
+/**
+ * The briefing is handed to the model labelled "computed, authoritative", and it
+ * sits inside `buildGroundingPayload`, which is the user prompt for BOTH
+ * `generateReport` and `generateScenario` — so it is what the cloud model reads
+ * every time it invents a scenario.
+ *
+ * Five classes, each measured over 100,000 games per corpus and each confirmed
+ * to be the sentence the renderer actually emits (rates: "New random game"
+ * draws / hand-typed int[-9,9] / int[-3,3]):
+ *
+ *   (a) "the level point would be at y = 0, outside [0,1]" — 0 is IN [0,1]; the
+ *       root is on the EDGE of the board.               0.00% / 10.0% / 24.4%
+ *       and the same sentence with "y = undefined" when there is no root at
+ *       all, which asserts nothing false about a NUMBER (there is none) but
+ *       hands the model a hole.                          2.05% /  3.4% /  9.6%
+ *       Split after RED-MATH pointed out that pooling them overstated the
+ *       falsehood on the random button, where the boundary case is 0%.
+ *   (b) "A's payoff does not depend on what B does" on twist = 0, where the
+ *       dependence on B is a21 - a22 and the twist is only the INTERACTION.
+ *       E_A = -1 - 4y is a function of B's mix alone.   2.00% /  3.3% /  7.5%
+ *   (c) "A's surface always tilts one way" where A is indifferent between the
+ *       rows everywhere — the whole board is a shelf.      0% /  0.3% /  2.0%
+ *   (d) "The equilibrium sits on an edge or corner" where the equilibrium set
+ *       contains strictly interior points.                 0% /  0.2% /  1.5%
+ *       NOW IMPOSSIBLE rather than rare: an equilibrium with both coordinates
+ *       interior means both players are indifferent, which IS a joint flat
+ *       spot. It could only appear because `hasInteriorFlatSpot` was blind to
+ *       the degenerate shelf. Asserted below as an INVARIANT against the regret
+ *       definition, which is stronger than a sentence check.
+ *   (e) "NEITHER player has a dominant strategy: ... which option is better
+ *       depends on what the opponent does" where a player has a WEAKLY
+ *       dominant option.                                   0% / 10.3% / 26.5%
+ *
+ * The three zeroes are structural, not luck: `generateRandomGame` rejects every
+ * within-player tie, and (c), (d) and (e) each require one.
+ */
+function testGeometryBriefingTruth() {
+  // The SAME threshold the renderer branches on. A `=== 0` predicate called
+  // three games clean whose float twist was 1.3e-15 and which took the
+  // twist-zero branch — measuring against a different threshold than the code
+  // uses is measuring a different program.
+  const E = 1e-9;
+  const twA = (g: GamePayoffs) => g.a11 - g.a12 - g.a21 + g.a22;
+  const defA = (g: GamePayoffs) => {
+    if (Math.abs(twA(g)) < E) return true;
+    const y = (g.a22 - g.a12) / twA(g);
+    return Math.abs(y) <= E || Math.abs(y - 1) <= E;
+  };
+  const defB = (g: GamePayoffs) => Math.abs(twA(g)) < E && Math.abs(g.a21 - g.a22) >= E;
+  const defC = (g: GamePayoffs) => Math.abs(twA(g)) < E && Math.abs(g.a12 - g.a22) < E;
+  // (d) is no longer a sentence class but an INVARIANT: no game may have an
+  // equilibrium with both coordinates strictly interior while the flat-spot
+  // predicate says there is none. Returns the offending point so a failure
+  // names it.
+  const interiorNEWithoutFlatSpot = (g: GamePayoffs): [number, number] | null => {
+    if (describeGeometry(g).hasInteriorFlatSpot) return null;
+    for (const rc of equilibriumSet(g)) {
+      if (!(rc.x1 > 0 && rc.x0 < 1 && rc.y1 > 0 && rc.y0 < 1)) continue;
+      const x = Math.min(Math.max((Math.max(rc.x0, 0) + Math.min(rc.x1, 1)) / 2, 1e-6), 1 - 1e-6);
+      const y = Math.min(Math.max((Math.max(rc.y0, 0) + Math.min(rc.y1, 1)) / 2, 1e-6), 1 - 1e-6);
+      if (x < rc.x0 - 1e-12 || x > rc.x1 + 1e-12 || y < rc.y0 - 1e-12 || y > rc.y1 + 1e-12) continue;
+      // confirmed by the DEFINITION, not by the solver that produced the rect
+      if (Math.abs(regretA(x, y, g)) < 1e-9 && Math.abs(regretB(x, y, g)) < 1e-9) return [x, y];
+    }
+    return null;
+  };
+  const defE = (g: GamePayoffs) => {
+    const geo = describeGeometry(g);
+    if (geo.dominantRowA || geo.dominantColB) return false;
+    return ((g.a11 >= g.a21 && g.a12 >= g.a22) || (g.a21 >= g.a11 && g.a22 >= g.a12))
+      || ((g.b11 >= g.b12 && g.b21 >= g.b22) || (g.b12 >= g.b11 && g.b22 >= g.b21));
+  };
+  const FALSE_SENTENCE: Record<string, string> = {
+    a: 'outside [0,1]',
+    b: "A's payoff does not depend on what B does",
+    c: "A's surface always tilts one way",
+    e: 'NEITHER player has a dominant strategy',
+  };
+  const preds: Record<string, (g: GamePayoffs) => boolean> = { a: defA, b: defB, c: defC, e: defE };
+
+  // ---- KNOWN POSITIVES: the exact matrices, and the sentence each now gets --
+  const FIX: [string, GamePayoffs, string[], string][] = [
+    ['(a) root at y = 0', { a11: 3, a12: -6, a21: -9, a22: -6, b11: 8, b12: 9, b21: 0, b22: 3 },
+      ['a'], 'goes level only at y = 0, which is the edge of the square (B playing Col 2 outright)'],
+    ['(a) root at y = 1', { a11: 1, a12: 8, a21: 1, a22: 5, b11: 7, b12: -2, b21: -1, b22: -9 },
+      ['a'], 'goes level only at y = 1, which is the edge of the square (B playing Col 1 outright)'],
+    ['(b)+(c) A flat, payoff still moves with B', { a11: -5, a12: -1, a21: -5, a22: -1, b11: -6, b12: -6, b21: 0, b22: 6 },
+      ['a', 'b', 'c', 'e'], "A's payoff does still move with B's choice (by -4 as B shifts from Col 2 to Col 1)"],
+    ['(c) whole board is a shelf', { a11: 7, a12: -9, a21: 7, a22: -9, b11: 3, b12: 0, b21: 2, b22: -4 },
+      ['a', 'b', 'c'], 'A is indifferent between the two rows EVERYWHERE on the board'],
+    ['(d/f2) degenerate joint flat spot', { a11: -2, a12: 2, a21: 4, a22: -5, b11: 3, b12: 3, b21: 4, b22: 4 },
+      ['e'], "B's surface is level at EVERY x, because B is indifferent between the columns whatever A does"],
+    ['(e) weakly dominant row', { a11: -7, a12: -5, a21: -7, a22: 7, b11: -3, b12: -1, b21: -6, b22: -8 },
+      ['a', 'e'], "A's Row 2 is never worse than Row 1 and is strictly better against at least one column"],
+  ];
+  for (const [name, g, classes, want] of FIX) {
+    const t = geometryBriefing(g);
+    for (const k of classes) {
+      // the fixture must actually EXERCISE the class it is filed under
+      assert(preds[k](g), `${name}: fixture no longer triggers class (${k}) — it cannot guard it`);
+      assert(!t.includes(FALSE_SENTENCE[k]), `${name}: briefing still contains the class-(${k}) false sentence "${FALSE_SENTENCE[k]}"`);
+    }
+    assert(t.includes(want), `${name}: expected the briefing to say "${want}"\n${t}`);
+  }
+  // The (d)/f2 fixture, checked against the DEFINITION rather than the solver:
+  // (0.5, 7/13) must be an equilibrium, and the widened predicate must now SEE
+  // the flat spot that the model was previously failed for naming.
+  const dGame = FIX[4][1];
+  assert(Math.abs(regretA(0.5, 7 / 13, dGame)) < 1e-9 && Math.abs(regretB(0.5, 7 / 13, dGame)) < 1e-9,
+    '(d) fixture: (0.5, 7/13) must be an equilibrium by the regret definition, or the finding is not a finding');
+  assert(describeGeometry(dGame).hasInteriorFlatSpot,
+    '(f2) hasInteriorFlatSpot must be TRUE here — a validator comparing against it rejected a true model claim');
+  assert(describeGeometry(FIX[2][1]).hasFlatShelfForA,
+    '(f1) hasFlatShelfForA must be TRUE on a board that is level along A\'s axis everywhere');
+  assert(!describeGeometry(FIX[2][1]).yStarInRange,
+    'yStarInRange must stay STRICT — the new field is additional, not a redefinition');
+
+  // ---- NEGATIVE FIXTURES: what must NOT change -----------------------------
+  // The STRICT dominance predicates are the validator's contract and stay strict.
+  assert(!describeGeometry(FIX[5][1]).dominantRowA,
+    'dominantRowA must stay STRICT — a weakly dominant row must not start counting');
+  assert(describeGeometry(PD).dominantRowA && describeGeometry(PD).dominantColB,
+    'PD must still report strict dominance for both players');
+  // The untouched branches must render verbatim: this fix is a repair of five
+  // sentences, not a rewrite of the prompt. Measured against origin/main's own
+  // renderer, the briefing is byte-identical on every game where none of the
+  // five predicates fires (0 of 355,491 clean games across five corpora) and on
+  // all six shipped presets.
+  const PRESET_LINES: [string, GamePayoffs, string][] = [
+    ['PD', PD, '  Dominant strategy present for A and B — one option beats the other whatever the opponent does.'],
+    // PD, not BoS: BoS HAS an interior flat spot (x* = 2/3, y* = 1/3) and takes
+    // the other branch. PD's roots are both at -1, so it is the preset that
+    // exercises the sentence class (d) had to leave alone.
+    ['PD', PD, '  There is NO interior joint flat spot. The equilibrium sits on an edge or corner of the square, where a player is pinned to one action rather than balanced between two.'],
+    ['BoS', BOS, "  Both surfaces are level at the same interior point (x = 0.6667 (two-thirds), y = 0.3333 (a third)) — the joint flat spot, which is the mixed equilibrium."],
+    ['matching pennies', MATCHING_PENNIES, "  A's surface goes LEVEL along A's axis when B plays y = 0.5 (a half) — that flat shelf is A's indifference."],
+  ];
+  for (const [name, g, line] of PRESET_LINES)
+    assert(geometryBriefing(g).split('\n').includes(line), `${name}: the untouched branch must render verbatim — missing\n  ${line}`);
+
+  // ---- REACHABILITY, asserted rather than assumed --------------------------
+  // `generateScenario` passes `buildGroundingPayload(g)` as its USER PROMPT
+  // (report.ts), and that payload embeds this briefing verbatim. So the briefing
+  // is what the cloud model reads on every scenario invention — including under
+  // NASH_PAYOFF_TEMPLATE=1, where the report prose is templated but the STORY is
+  // still invented. Anyone re-classifying these five as unreachable has to
+  // delete this assertion first.
+  assert(buildGroundingPayload(FIX[0][1]).includes(geometryBriefing(FIX[0][1])),
+    'the geometry briefing must still be inside the grounding payload the model is sent');
+
+  // ---- SWEEP: no class may survive on any corpus ---------------------------
+  const ri = (lo: number, hi: number) => lo + Math.floor(Math.random() * (hi - lo + 1));
+  const corpora: [string, () => GamePayoffs][] = [
+    // int[-1,1] is where these classes are DENSEST (80% of games trip at least
+    // one), so a small sample there is a real test rather than a formality.
+    ['int[-1,1]', () => { const c = () => ri(-1, 1); return { a11: c(), a12: c(), a21: c(), a22: c(), b11: c(), b12: c(), b21: c(), b22: c() }; }],
+    ['int[-9,9]', () => { const c = () => ri(-9, 9); return { a11: c(), a12: c(), a21: c(), a22: c(), b11: c(), b12: c(), b21: c(), b22: c() }; }],
+    ['random button', () => generateRandomGame(Math.random() < 0.5 ? 'pure' : 'mixed')],
+  ];
+  // GROUND TRUTH for "is this surface level along its own axis in the interior",
+  // read off the REAL E_A / E_B by SIGN CHANGE. Not by |slope| < eps on a grid:
+  // that instrument cannot see a transversal crossing between samples and
+  // disagrees with the truth on 37-45% of games, which would put a 40% headline
+  // on a 0.3% defect. (BLUE hit exactly that and said so; I reproduced it.)
+  const H = 1e-6;
+  const levelInterior = (f: (t: number) => number) => {
+    let prev = f(1 / 201);
+    if (Math.abs(prev) < 1e-7) return true;
+    for (let i = 2; i <= 200; i++) {
+      const v = f(i / 201);
+      if (Math.abs(v) < 1e-7) return true;
+      if ((prev < 0) !== (v < 0)) return true;
+      prev = v;
+    }
+    return false;
+  };
+  const exercised: Record<string, number> = { a: 0, b: 0, c: 0, e: 0 };
+  let degenerateShelves = 0;
+  for (const [cname, gen] of corpora) {
+    for (let i = 0; i < 4000; i++) {
+      const g = gen();
+      const t = geometryBriefing(g);
+      for (const k of Object.keys(preds)) {
+        if (!preds[k](g)) continue;
+        exercised[k]++;
+        assert(!t.includes(FALSE_SENTENCE[k]),
+          `${cname}: class (${k}) false sentence survives on ${JSON.stringify(g)}\n${t}`);
+      }
+      // No sentence may hand the model a hole where a number belongs. This is
+      // how the "y = undefined" defect reached production, and widening the
+      // flat-spot predicate created a mirror of it at "x = undefined".
+      assert(!/undefined|NaN/.test(t), `${cname}: briefing contains a hole on ${JSON.stringify(g)}\n${t}`);
+      const geo = describeGeometry(g);
+      // The two new predicates, against the surfaces themselves.
+      const truthA = levelInterior((y) => (EA(0.5 + H, y, g) - EA(0.5 - H, y, g)) / (2 * H));
+      const truthB = levelInterior((x) => (EB(x, 0.5 + H, g) - EB(x, 0.5 - H, g)) / (2 * H));
+      assert(geo.hasFlatShelfForA === truthA,
+        `${cname}: hasFlatShelfForA=${geo.hasFlatShelfForA} but A's surface is ${truthA ? '' : 'NOT '}level somewhere interior — ${JSON.stringify(g)}`);
+      assert(geo.hasFlatShelfForB === truthB,
+        `${cname}: hasFlatShelfForB=${geo.hasFlatShelfForB} but B's surface is ${truthB ? '' : 'NOT '}level somewhere interior — ${JSON.stringify(g)}`);
+      if (geo.hasFlatShelfForA !== geo.yStarInRange || geo.hasFlatShelfForB !== geo.xStarInRange) degenerateShelves++;
+      // THE INVARIANT that replaced class (d): both coordinates interior means
+      // both players are mixing, which means both are indifferent, which IS a
+      // joint flat spot. Checked with the regret oracle, not the solver.
+      const pt = interiorNEWithoutFlatSpot(g);
+      assert(pt === null,
+        `${cname}: (${pt?.[0]}, ${pt?.[1]}) is an interior equilibrium by the regret definition, yet hasInteriorFlatSpot is false — ${JSON.stringify(g)}`);
+    }
+  }
+  // The degenerate case must actually OCCUR in the sweep, or the two new
+  // predicates are indistinguishable from the old ones and prove nothing.
+  assert(degenerateShelves >= 20,
+    `sweep met the degenerate shelf only ${degenerateShelves} times — the new predicates are untested against the old`);
+  // NON-VACUITY: a sweep that never met the classes proves nothing. int[-1,1]
+  // alone trips (a) in ~68% of games, so these floors sit far below the mean.
+  for (const [k, floor] of [['a', 200], ['b', 20], ['c', 20], ['e', 200]] as [string, number][])
+    assert(exercised[k] >= floor, `sweep met class (${k}) only ${exercised[k]} times — too few to be a test`);
+
+  console.log(`✓ geometryBriefing: 5 false-sentence classes closed (sweep exercised a=${exercised.a} b=${exercised.b} c=${exercised.c} e=${exercised.e}), flat-shelf predicates match a sign-change scan of the real surfaces, presets byte-identical`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -895,6 +1250,9 @@ function runUnitTests() {
   testCameraRelayoutPredicate();
   testScenarioDomains();
   testFmtPayoffSubResolution();
+  testFmtPayoffProseExhaustive();
+  testTieProseDerivedPayoff();
+  testGeometryBriefingTruth();
   testGateFixesAugust31();
   testOptionLabelChannel();
   testNegotiationForm();
@@ -904,6 +1262,7 @@ function runUnitTests() {
   testMetaVocabulary();
   testModelDebris();
   testOracleGateHoles();
+  testGeometryDegenerateShelf();
   console.log('All unit tests passed.');
 }
 
@@ -1910,4 +2269,101 @@ function testOracleGateHoles() {
     'PAYOFF CITATION CONTROL: a percentage is not a payoff');
 
   console.log('✓ oracle gate holes: the cast noun in 5 game-theoretic constructions (puppet-theatre collision spared), the bare letter under a widened verb list AND in apposition (designations and the symmetric pair form spared), the second pair handed back to the same named actor (scene-noun "the same X" spared), and the sentence-final payoff citation the old lookahead could not see');
+}
+
+/**
+ * THE VALIDATOR SIDE OF THE DEGENERATE FLAT SHELF.
+ *
+ * `checkGeometry` compared the model's `hasFlatShelfForA` against
+ * `yStarInRange`, which is false when twistA is 0 because yStar is NaN. There
+ * are three ways a shelf can relate to the board, not two: the level point is
+ * inside [0,1], it is outside, or twistA vanishes — and in that last case the
+ * shelf either does not exist at all (A's own-axis slope is a non-zero
+ * constant) or is EVERYTHING (the slope is zero). The old predicate called the
+ * third case "no shelf", so the validator DEMOTED A REPORT FOR STATING A TRUTH.
+ *
+ * Both matrices below are BLUE-MATH's, re-verified here against the payoff
+ * definition rather than against the predicate: on the first, dE_A/dx = 0 at
+ * y = 0, .25, .5, .75 and 1; on the second, dE_B/dy = 0 at every x while A goes
+ * level at y = 7/13, so both surfaces are level along a whole interior line.
+ *
+ * Asserted in BOTH directions. A one-way fixture would pass against a predicate
+ * hard-wired to true, which is exactly the failure this suite keeps finding.
+ */
+function testGeometryDegenerateShelf() {
+  const G = (a: number[][], b: number[][]): GamePayoffs =>
+    ({ a11: a[0][0], a12: a[0][1], a21: a[1][0], a22: a[1][1], b11: b[0][0], b12: b[0][1], b21: b[1][0], b22: b[1][1] });
+  // ENTIRELY a shelf: a11 === a21 and a12 === a22, so A's own-axis slope is 0.
+  const WHOLE_SHELF = G([[-5, -1], [-5, -1]], [[-6, -6], [0, 6]]);
+  // B level along B's axis at EVERY x, A level at y = 7/13 -> a joint flat spot.
+  const FLAT_LINE = G([[-2, 2], [4, -5]], [[3, 3], [4, 4]]);
+
+  // Ground truth from the surfaces, so the fixture does not assume the predicate.
+  const EA = (g: GamePayoffs, x: number, y: number) => x * y * g.a11 + x * (1 - y) * g.a12 + (1 - x) * y * g.a21 + (1 - x) * (1 - y) * g.a22;
+  const EB = (g: GamePayoffs, x: number, y: number) => x * y * g.b11 + x * (1 - y) * g.b12 + (1 - x) * y * g.b21 + (1 - x) * (1 - y) * g.b22;
+  for (const y of [0, 0.25, 0.5, 0.75, 1]) {
+    assert(Math.abs(EA(WHOLE_SHELF, 1, y) - EA(WHOLE_SHELF, 0, y)) < 1e-12,
+      `WHOLE_SHELF: A must be level along its own axis at y=${y} — the fixture's premise, checked from E_A and not from describeGeometry`);
+  }
+  for (const x of [0, 0.25, 0.5, 0.75, 1]) {
+    assert(Math.abs(EB(FLAT_LINE, x, 1) - EB(FLAT_LINE, x, 0)) < 1e-12,
+      `FLAT_LINE: B must be level along its own axis at x=${x}`);
+  }
+  assert(Math.abs(EA(FLAT_LINE, 1, 7 / 13) - EA(FLAT_LINE, 0, 7 / 13)) < 1e-12,
+    'FLAT_LINE: A must be level at y = 7/13, so the flat spot is a genuine interior line');
+
+  assert(describeGeometry(WHOLE_SHELF).hasFlatShelfForA,
+    'a board that is ENTIRELY a shelf must report one — the old predicate said no shelf because yStar is NaN');
+  assert(describeGeometry(FLAT_LINE).hasInteriorFlatSpot,
+    'both surfaces level along an interior line IS an interior joint flat spot — the old predicate said edge-or-corner because xStar is NaN');
+  // The predicate must still say NO where there genuinely is none: twistA is 0
+  // but A's own-axis slope is a non-zero constant, so A never goes level.
+  assert(!describeGeometry(G([[3, 1], [1, -1]], [[0, 0], [0, 0]])).hasFlatShelfForA,
+    'twist 0 with a NON-zero constant slope is the OTHER degenerate case and has no shelf at all');
+
+  // …and through the real validator, in both directions.
+  const claims = (g: GamePayoffs, over: Partial<Record<string, boolean>> = {}) => {
+    const geo = describeGeometry(g);
+    return {
+      surfacesInteract: Math.abs(geo.twistA) >= 1e-9,
+      opponentSurfaceIsMirror: geo.zeroSum || geo.constantSum,
+      hasFlatShelfForA: geo.hasFlatShelfForA,
+      equilibriumIsInteriorFlatSpot: geo.hasInteriorFlatSpot,
+      minimaxApplies: geo.minimaxApplies,
+      hasDominantStrategy: geo.dominantRowA || geo.dominantColB,
+      ...over,
+    } as never;
+  };
+  const geoKinds = (g: GamePayoffs, c: unknown) =>
+    validateReport({ prose: 'A short description.', claimedEquilibria: [], geometryClaims: c } as never, g)
+      .mismatches.map((m) => m.kind).filter((k) => k.startsWith('geometry-'));
+
+  // THE SHAPE GUARD ATE MY FIRST VERSION OF THIS CHECK. Passing `equilibria: []`
+  // instead of `claimedEquilibria: []` makes validateReport return early on
+  // malformed shape, so BOTH the truthful and the negated claims came back with
+  // no geometry mismatch and the harness looked like a clean pass. The negation
+  // assertions below are the only reason that was caught.
+  // THE THIRD GAME EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Hard-wiring the
+  // shelf row's `actual` to `true` passed the whole suite on the two games
+  // above, because `hasFlatShelfForA` is true on BOTH of them — so every
+  // assertion still held and the fixture proved nothing about the field being
+  // read. This is the OTHER degenerate branch: twistA is 0 and A's own-axis
+  // slope is the non-zero constant 4, so A never goes level and a claimed shelf
+  // must be caught. Same trap the comment above warns about, found by running
+  // the mutation rather than by reasoning about it.
+  const NO_SHELF = G([[5, 4], [1, 0]], [[2, -1], [0, 3]]);
+  assert(Math.abs(EA(NO_SHELF, 1, 0.5) - EA(NO_SHELF, 0, 0.5)) > 1e-9,
+    'NO_SHELF: A must NOT be level at mid-board — the fixture premise, from E_A');
+  assert(!describeGeometry(NO_SHELF).hasFlatShelfForA, 'NO_SHELF has no shelf for A');
+
+  for (const [name, g] of [['WHOLE_SHELF', WHOLE_SHELF], ['FLAT_LINE', FLAT_LINE], ['NO_SHELF', NO_SHELF]] as Array<[string, GamePayoffs]>) {
+    assert(geoKinds(g, claims(g)).length === 0,
+      `${name}: a report stating the geometry TRUTHFULLY must not be demoted (was: ${geoKinds(g, claims(g)).join(', ')})`);
+    assert(geoKinds(g, claims(g, { hasFlatShelfForA: !describeGeometry(g).hasFlatShelfForA })).includes('geometry-bad-shelf'),
+      `${name}: negating the shelf claim MUST still be caught`);
+    assert(geoKinds(g, claims(g, { equilibriumIsInteriorFlatSpot: !describeGeometry(g).hasInteriorFlatSpot })).includes('geometry-bad-flatspot'),
+      `${name}: negating the flat-spot claim MUST still be caught`);
+  }
+
+  console.log('✓ geometry degenerate shelf: a board that is entirely a shelf, and an interior flat LINE, are both stated truthfully without being demoted — and negating either claim is still caught');
 }
