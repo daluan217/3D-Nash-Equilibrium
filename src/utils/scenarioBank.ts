@@ -60,9 +60,39 @@ export function stakesBand(g: GamePayoffs): number {
  * so this is a naming problem rather than a content one — but a reader meeting
  * "Harbour Inspection" three times will not care about the distinction.
  *
- * `seen` is the caller's session memory. Unseen entries are preferred, then
- * unseen NAMES, and only when a cell is exhausted does it fall back — at which
- * point repeating is the honest outcome rather than a bug.
+ * WHY "WITHOUT REPLACEMENT" DID NOT HOLD IN PRACTICE, and the fix. The tiers
+ * below only ever looked INSIDE one pool, and the pool was the exact
+ * (domain, band) cell whenever that cell was non-empty. 34 of 320 cells in the
+ * shipped artifact hold exactly ONE distinct name — "lighthouse relief shifts"
+ * band 2 is eight rows all titled "Lighthouse Relief Shifts" — so the moment
+ * that title was shown, every remaining row in the cell fell to the last tier
+ * and the title came back. Measured on the shipped bank with the domain held
+ * fixed, which is the condition that isolates the defect: repeated-title rate
+ * 29.5% at 5 presses, 60.7% at 10, 80.3% at 20, 90.2% at 40.
+ *
+ * So a cell that cannot offer an unseen NAME now WIDENS rather than repeating.
+ *
+ * THE WIDENING LADDER, and why it is ordered this way. The two things a widened
+ * pick can lose are the stakes register and the setting:
+ *
+ *   1. the exact cell — (domain, band)
+ *   2. THE SAME BAND, any domain
+ *   3. the same domain, any band
+ *   4. anything at all
+ *
+ * Band before domain, because the band is derived from the USER'S OWN MATRIX
+ * while the domain is a rotation choice the user never made and cannot see the
+ * absence of. A story from the wrong band contradicts the numbers printed
+ * beside it — "a modest patch of coppice" against a swing of 120 — which is a
+ * mismatch a reader can detect; a story from a different setting is simply a
+ * different setting. (This also fixes the reverse defect: an EMPTY exact cell
+ * used to widen by DOMAIN first, so a band-3 game in a domain whose band-3 cell
+ * was empty was served that domain's band-0 story.)
+ *
+ * `seen` is the caller's session memory. Note that an unseen NAME implies an
+ * unseen ENTRY — `seenNames` is derived from `seen` — so the old middle tier
+ * ("unseen name, seen entry") was unreachable and is gone rather than left
+ * standing as a check that cannot fire.
  */
 export function pickFromBank(
   bank: BankEntry[],
@@ -72,26 +102,28 @@ export function pickFromBank(
   pick: () => number = Math.random,
 ): SuggestedScenario | null {
   const band = stakesBand(g);
-  const exact = bank.filter((e) => e.d === domain && e.b === band);
-  // A cell can be thin or empty. Widen by band first (the domain is what the
-  // reader actually sees), then by domain, rather than returning nothing.
-  const pool = exact.length ? exact
-    : bank.filter((e) => e.d === domain).length ? bank.filter((e) => e.d === domain)
-      : bank.filter((e) => e.b === band);
-  if (!pool.length) return null;
-
+  const ladder: BankEntry[][] = [
+    bank.filter((e) => e.d === domain && e.b === band),
+    bank.filter((e) => e.b === band),
+    bank.filter((e) => e.d === domain),
+    bank,
+  ];
   const seenNames = new Set([...seen].map((k) => k.split('|')[1]));
-  const unseen = pool.filter((e) => !seen.has(bankKey(e)));
-  const unseenName = pool.filter((e) => !seenNames.has(e.s.name ?? ''));
-  // ORDER MATTERS, and getting it wrong reintroduces the defect this exists to
-  // prevent. Preferring "an entry I have not shown" over "a name I have not
-  // shown" still returns a repeated TITLE whenever a cell holds two stories
-  // under one name — which 214 of 314 real cells do. The first tier therefore
-  // requires BOTH; only then does it relax, and it relaxes on the name last,
-  // because the title is what a reader recognises.
-  const both = unseen.filter((e) => !seenNames.has(e.s.name ?? ''));
-  const from = both.length ? both : unseenName.length ? unseenName : unseen.length ? unseen : pool;
-  return from[Math.min(Math.floor(pick() * from.length), from.length - 1)].s;
+  const take = (pool: BankEntry[]) => pool[Math.min(Math.floor(pick() * pool.length), pool.length - 1)].s;
+
+  // A name the reader has not met, as close to the exact cell as one exists.
+  for (const pool of ladder) {
+    const fresh = pool.filter((e) => !seenNames.has(e.s.name ?? ''));
+    if (fresh.length) return take(fresh);
+  }
+  // Every name in the bank has been shown. Repeating a title is now the honest
+  // outcome; at least give the reader prose they have not read.
+  for (const pool of ladder) {
+    const unseen = pool.filter((e) => !seen.has(bankKey(e)));
+    if (unseen.length) return take(unseen);
+  }
+  for (const pool of ladder) if (pool.length) return take(pool);
+  return null;
 }
 
 /** The session key for an entry the caller has shown. */

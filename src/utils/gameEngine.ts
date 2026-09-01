@@ -426,8 +426,15 @@ export function fmtPayoff(v: number): string {
   if (v === 0) return '0';
   const s = r3(v);
   if (s === 0) return v > 0 ? 'less than 0.001' : 'greater than -0.001';
-  // Object.is catches the -0 that r3 can produce from a tiny negative.
-  return Object.is(s, -0) ? '0' : s.toFixed(3);
+  // NOTE: this used to end `Object.is(s, -0) ? '0' : s.toFixed(3)`, "to catch
+  // the -0 that r3 can produce from a tiny negative". That branch could never
+  // run: `-0 === 0` in JavaScript, so the line above already returns for every
+  // -0 — a guard whose deletion changes no test result, which is the class this
+  // codebase keeps finding. The guarantee it claimed still holds, and holds
+  // EARLIER: a value that merely rounds to zero leaves as a phrase, never as a
+  // signed zero. Below this point r3(v) is nonzero, so toFixed(3) has a nonzero
+  // significant digit and cannot print "0" or "-0" either.
+  return s.toFixed(3);
 }
 
 /**
@@ -491,6 +498,57 @@ export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
 // equilibria survive the strict 0<x<1 gate (see evals/golden.ts). Both numbers
 // are defensible and internally consistent; this is a display difference, not
 // a false statement.
+
+/**
+The same payoff, in PROSE register: trailing zeros trimmed.
+ *
+ * `fmtPayoff` pads to three decimals because it feeds a fixed-width readout
+ * where the columns should line up. A sentence does not want "E[A] = 3.000".
+ * The trim is cosmetic and cannot weaken the contract: `fmtPayoff` returns "0"
+ * only for an exact zero, and every other numeric return has a nonzero
+ * significant digit, so removing trailing zeros can never produce "0" or "-0".
+ * `testFmtPayoffProseExhaustive` checks that over every value the matrix admits
+ * rather than arguing it.
+ */
+export function fmtPayoffProse(v: number): string {
+  const s = fmtPayoff(v);
+  return /^-?\d+\.\d+$/.test(s) ? s.replace(/\.?0+$/, '') : s;
+}
+
+// THE CONVENTION, and the trap in it (rewritten 2026-09-01 — the note that
+// stood here described the OPPOSITE convention and had already misled a reader).
+//
+// EVERYTHING IS COMPUTED AT THE EXACT EQUILIBRIUM. `computeMixedNE` returns the
+// unrounded root (see its own comment for why rounding there deleted genuine
+// equilibria), and `eA`/`eB` below are `r3(EA(mn.x, mn.y, g))` — the payoff at
+// that exact point, with r3 applied only to the number that will be shown.
+// `unit.test.ts`'s soundness sweep asserts `ne.eA ≈ EA(ne.x, ne.y, g)` with
+// `ne.x` EXACT, so what the test enforces is exact-point consistency.
+//
+// THE CONSEQUENCE A FUTURE EDITOR MUST KNOW: the DISPLAYED numbers are not a
+// self-consistent tuple. `eA` is not `EA(displayed x, displayed y)` — the
+// coordinates are rounded to 3 dp for the screen and the payoff is not
+// recomputed at the rounded point. Measured over 200,000 games per row:
+//   int[-9,9]     39,985 mixed NEs — 77.5% differ in the third decimal
+//   int[-100,100] 49,344 mixed NEs — 99.0% differ, worst gap 0.092
+// Nothing printed is false; each number is the correct value of the quantity it
+// names. But a reader who recomputes E[A] from the x* and y* on screen will
+// usually get a different last digit, and at ±100 payoffs will get a visibly
+// different number. That non-identity is the thing to warn about, and the old
+// note denied it. (How it is explained on screen is BLUE-APP's call; this
+// comment and that wording must agree.)
+//
+// HISTORY, so the rejected alternative is not re-tried, and the accepted one is
+// not re-reverted: computing eA/eB at the exact point while DISPLAYING rounded
+// coordinates was tried, reverted once as "inconsistent" (it failed 99 test
+// groups), and then deliberately RE-ADOPTED, because the alternative was worse.
+// Rounding the coordinates before evaluating made the solver label and the
+// template prose print different values for the same quantity — on
+// {a:[[6,-4],[-1,8]], b:[[-9,6],[-1,-8]]} the label said E[A] = 2.315 while the
+// prose said 2.316 (44/19). Today both say 2.316, because both evaluate at the
+// exact root and round once, at the end. One source of truth, rounded last.
+// Do not "fix" the tuple by evaluating at the rounded profile; that reopens the
+// disagreement between two surfaces the user sees side by side.
 
 export function computeAllNE(g: GamePayoffs): NashEquilibrium[] {
   const nes: NashEquilibrium[] = [];

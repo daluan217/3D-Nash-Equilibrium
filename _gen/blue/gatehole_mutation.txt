@@ -1,0 +1,44 @@
+== M0 baseline (must pass)
+  exit=0
+== M1 cast noun: rule removed
+  exit=1
+Unit test suite failure:
+CAST (scenario_raw_v2): "The players are X"
+== M2 cast noun: WIDENED to the bare noun (the refused collision)
+  exit=1
+Unit test suite failure:
+META COLLISION: "the players" is the acting company — excluded on SHAPE, because the rotation contains puppet theatre touring
+== M3 bare letter: verb list reverted to the shipped one
+  exit=1
+Unit test suite failure:
+BARE LETTER (local draw): "A manages" — outside the shipped verb list
+== M4 bare letter: LOOKBEHIND dropped under the widened list
+  exit=1
+Unit test suite failure:
+META TRAP B (rt3_flat_local#8): "Agency A chooses… while Operator B chooses" is ordinary English for two indistinguishable parties
+== M4b apposition: rule removed
+  exit=1
+Unit test suite failure:
+APPOSITION (RED-CLOUD, cloud draw): "B, the park coordinator, chooses…"
+== M4c apposition: LOOKBEHIND dropped
+  exit=1
+Unit test suite failure:
+APPOSITION CONTROL: "For Farmer A, the choices…" is noun-preceded
+== M5 same-actor: rule removed
+  exit=1
+Unit test suite failure:
+SAME ACTOR (gate-passing draw): the second pair handed back to "the same director"
+== M6 same-actor: CLAUSE ANCHOR dropped
+  exit=1
+Unit test suite failure:
+SAME ACTOR CONTROL: "the same habitat" is a scene noun and the subject is a second party
+== M7 payoff citation: the old lookahead restored
+  exit=1
+Unit test suite failure:
+PAYOFF CITATION: a payoff number at the END OF A SENTENCE was invisible — the old lookahead excluded the full stop
+== M8 payoff citation: lookahead removed ENTIRELY (decimals must break)
+  exit=1
+Unit test suite failure:
+PAYOFF CITATION CONTROL: a decimal and a dimension are not citations
+== restored
+  exit=0

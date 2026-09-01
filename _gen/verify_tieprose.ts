@@ -75,6 +75,43 @@ const payB = (g: GamePayoffs, r: 1 | 2, c: 1 | 2) => (r === 1 ? (c === 1 ? g.b11
 
 const NUM = String.raw`-?\d+(?:\.\d+)?`;
 
+/**
+ * A DERIVED payoff may also be rendered as a THRESHOLD PHRASE.
+ *
+ * The expected payoff at an equilibrium is a weighted average of four cells, so
+ * it can be smaller than the 3-dp display resolution or be pure floating-point
+ * noise around an exact zero. It is now rendered through `fmtPayoffProse`, which
+ * says so in words rather than printing a number it does not have.
+ */
+const PAY = String.raw`${NUM}|less than 0\.001|greater than -0\.001`;
+
+/**
+ * The assertion the old parser could not make.
+ *
+ * `Number("-0")` is `-0` and `-0 === 0` numerically, so a "-0" in the prose
+ * passed the old `near()` check silently — and the shipped renderer emitted one
+ * on 145 of 200,000 int[-9,9] games. Likewise a genuinely nonzero payoff printed
+ * as "0" was accepted, because it is within the 3-dp tolerance. Both are claims
+ * that the payoff is NOTHING, so both are checked as claims rather than as
+ * numbers:
+ *   - "-0" is never a legitimate rendering of anything;
+ *   - a bare "0" asserts an EXACT zero, so the value must be exactly 0;
+ *   - a threshold phrase asserts a sign and a magnitude, so both must hold.
+ */
+function checkPayoff(label: string, str: string, v: number): void {
+  if (/^-0(?:\.0+)?$/.test(str)) bad(`${label} rendered as "${str}" — a negative zero is not a value`);
+  if (str === 'less than 0.001') {
+    if (!(v > 0 && v < 5e-4)) bad(`${label} says "less than 0.001" but the value is ${v}`);
+    return;
+  }
+  if (str === 'greater than -0.001') {
+    if (!(v < 0 && v > -5e-4)) bad(`${label} says "greater than -0.001" but the value is ${v}`);
+    return;
+  }
+  if (str === '0' && v !== 0) bad(`${label} rendered as "0", claiming an exact zero, but the value is ${v}`);
+  if (!near(Number(str), v)) bad(`${label} ${str} != ${v}`);
+}
+
 function verifyOne(ctx: Ctx, resolve: (name: string, side: 'row' | 'col') => 1 | 2): void {
   const { g } = ctx;
   let s = ctx.text;
@@ -261,8 +298,14 @@ function verifyOne(ctx: Ctx, resolve: (name: string, side: 'row' | 'col') => 1 |
     // A threshold band ("less than 0.001") is a CONTAINMENT claim, so compare by
     // whether each solver rect is covered by some rendered rect rather than by
     // exact 3-dp key equality — which cannot represent a sub-resolution value.
+    // The slack is `TOL + 1e-9` for the same reason `near` uses it: without the
+    // half-ulp the comparison fails on its own boundary. A root exactly on a
+    // .0005 display tie (x* = 0.6625 -> "0.663") made this report a round-trip
+    // MISMATCH on a paragraph that was entirely correct — 1 in 282,235
+    // renderings, invisible to `npm test`'s V_N=4000, and present on main
+    // before any of today's changes.
     const covers = (r: Rect, t: Rect) =>
-      t.x0 >= r.x0 - 5e-4 && t.x1 <= r.x1 + 5e-4 && t.y0 >= r.y0 - 5e-4 && t.y1 <= r.y1 + 5e-4;
+      t.x0 >= r.x0 - 5e-4 - 1e-9 && t.x1 <= r.x1 + 5e-4 + 1e-9 && t.y0 >= r.y0 - 5e-4 - 1e-9 && t.y1 <= r.y1 + 5e-4 + 1e-9;
     if (parsed.length !== set.length) bad(`component COUNT mismatch: solver ${set.length}, rendered ${parsed.length}`);
     for (const t of set) {
       if (!parsed.some((r) => covers(r, t)))
@@ -280,13 +323,13 @@ function verifyOne(ctx: Ctx, resolve: (name: string, side: 'row' | 'col') => 1 |
   // ---- 4. expected payoffs --------------------------------------------------
   if (s.length) {
     if (s.startsWith(' ')) s = s.slice(1);
-    const m4 = eat(new RegExp(String.raw`(At the first of these|At that equilibrium|At a representative point of the first component|At a representative point of it) the expected payoffs are E\[A\] = (${NUM}) and E\[B\] = (${NUM})\.`));
+    const m4 = eat(new RegExp(String.raw`(At the first of these|At that equilibrium|At a representative point of the first component|At a representative point of it) the expected payoffs are E\[A\] = (${PAY}) and E\[B\] = (${PAY})\.`));
     if (!m4) bad(`unparsed tail: ${JSON.stringify(s.slice(0, 140))}`);
     const rep = set[0];
     if (!rep) bad('expected-payoff sentence with no equilibrium');
     const x = (rep.x0 + rep.x1) / 2, y = (rep.y0 + rep.y1) / 2;
-    if (!near(Number(m4![2]), EA(x, y, g))) bad(`E[A] ${m4![2]} != ${EA(x, y, g)}`);
-    if (!near(Number(m4![3]), EB(x, y, g))) bad(`E[B] ${m4![3]} != ${EB(x, y, g)}`);
+    checkPayoff('E[A]', m4![2], EA(x, y, g));
+    checkPayoff('E[B]', m4![3], EB(x, y, g));
     const isPoint = kindOf(rep) === 'point', many = set.length > 1;
     const want = isPoint ? (many ? 'At the first of these' : 'At that equilibrium')
       : (many ? 'At a representative point of the first component' : 'At a representative point of it');
