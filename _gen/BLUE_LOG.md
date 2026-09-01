@@ -1,0 +1,1548 @@
+# BLUE LOG — local model & offline desktop app
+
+Running record of the batteries so regressions are visible over time. Newest
+first. Every row records the SURFACE it was measured against, because this
+session has already proved that the serving configuration can dominate the
+numbers entirely.
+
+## Measurement surface (read this before comparing any two rows)
+
+The shared llama-server on **:8099** is not a fixed target — it has been
+restarted with different flags mid-session. Blue measures against **:8123**,
+its own instance started with the DESKTOP APP'S EXACT SPAWN FLAGS:
+
+```
+llama-server -m ~/nash-finetune-models/nash-scenario-domain-0.6b-Q4_K_M.gguf \
+  --host 127.0.0.1 --port 8123 -c 4096 -ngl 99 --no-warmup
+```
+
+Those are the flags in `electron-llama.cjs` (`dmg-bundled-model`), so a number
+measured here is a number the shipped offline app can actually produce. In
+particular there is **no `--parallel`**: llama.cpp DIVIDES the context across
+slots, so `--parallel 4` on `-c 4096` gives 1024 tokens per slot.
+
+---
+
+
+## 2026-09-01 — WINDOW 7b: the four PR review findings, each verified before acting
+
+The coordinator verified one and handed over three with the standing framing:
+suggestions to VERIFY, never a to-do list. All four turned out real, but ONE OF
+THEM POINTED AT THE WRONG LINE, and taking it on trust would have produced a
+no-op edit against already-correct code.
+
+### 1. `negatedBefore` judged only the FIRST match — REAL, and broader than reported
+
+`re.exec(desc)` returns match 1 and the lookback was computed from its index, so
+one negated early mention switched the whole rule off. Reproduced through the
+real `validateScenario`. **It is not the shared-goal arm only: all three
+alignment rules share the helper and all three had it** — rivalry and determines
+reproduce identically, which the report did not say and which matters, because a
+fix verified on one arm is not verified.
+
+**PRICED BEFORE TAKEN, and the first measurement was BLIND.** The obvious fix can
+only fire more, so the cost had to be measured. Diffing the shipped gate against
+the candidate over every corpus gave "0 newly rejected" — and the control run
+that has to accompany any zero, an over-eager variant with the guard DELETED,
+also gave 0. A diff that cannot move is not evidence. The reason: no draw in any
+corpus pairs this vocabulary with a QUALIFYING matrix, so the alignment rules are
+inert there whatever the guard does.
+
+Re-measured with the matrix FORCED: every one of 5,432 unique descriptions run
+through the real `validateScenario` three times, against matrices satisfying each
+rule's precondition by construction. 41 descriptions fire; the candidate moves
+**0 of 5,432**; deleting the guard outright also moves none. **The real finding is
+that no held description contains a negated occurrence of this vocabulary at all**
+— the guard has never been load-bearing on real output, and the bug was pure
+latent under-fire.
+
+Two adversarial shapes do flip ("...do not work together toward the same goal;
+they work together only on the loading rota"), and both are a PRE-EXISTING false
+positive losing an accidental shield, not a new class: the shipped rule already
+fires on that sentence with the leading negation removed. Verified both ways.
+**Taken.** Regression tests pin it from both sides — reverting to first-match-only
+fails the new under-fire assertions, and disabling negation entirely fails the
+old "a negated claim must pass" ones.
+
+### 2. Two L7 collision controls sat where the rule never runs — REAL
+
+`BIG_SPELLED_QUANTITY` is scoped to the name and option labels, and the
+"twice-weekly" and "dozens of crates" controls put their words in the
+DESCRIPTION. Proved rather than argued: adopting red's D4 vocabulary — the exact
+mutation those controls exist to catch — leaves both of them GREEN while the same
+words in a label are rejected. A control that cannot fail for the reason it
+claims, which is the defect this suite keeps finding in other people's work.
+Relocated to labels ("Twice-Weekly Run", "Dozen-Crate Lot"); each now dies under
+its own word, mutation-tested separately. The description forms are kept as
+explicit SCOPE assertions, which is the only thing they were ever proving.
+
+Gotcha, and it nearly wasted the result: the first mutation script built the
+widened regex with an f-string and double-escaped `\\b`, so it wrote a pattern
+matching a literal backslash. That mutation made the rule WEAKER, a `!gate`
+assertion failed, and it read exactly like the control working. Same family as
+W6's mutation-that-never-applied: always confirm a mutation is the change it
+claims to be before believing what it kills.
+
+### 3. `App.tsx:3616` — the LINE is stale, the FINDING is real (reported, not edited)
+
+3616/3624 already use `fmtPayoff`. The identical defect is live one block down at
+**3657/3660** (the equilibrium summary, `MathTex` on `r3(...).toFixed(3)`) and at
+**3698**. Reproduced: on a matrix scaled to ±0.003 at (0.6, 0.4), E[A] is
++3.2e-4 and E[B] is −3.2e-4, and both render as **"0.000"** — the exact
+sub-resolution lie `fmtPayoff` exists to prevent, asserting a payoff is nothing
+when it is not.
+
+**The fix is NOT a straight substitution.** `fmtPayoff` returns prose ("less than
+0.001"), and 3657/3660 interpolate into `\mathbb{E}[A] = ...`, so wrapping it
+yields "E[A] = less than 0.001". Those two sites need the relation in the
+operator (`\mathbb{E}[A] < 0.001` / `> -0.001`); 3698 is plain prose and takes
+`fmtPayoff` directly. App.tsx is outside blue's scope — handed over with the
+reproduction rather than edited.
+
+### 4. `package.json` vs `package-lock.json` — REAL drift, masking nothing
+
+Manifest 0.0.104, lock 0.0.90: fourteen releases behind. Checked for what the
+coordinator actually asked about — all 33 declared dependencies still resolve
+inside their ranges and the lock's root dependency blocks are byte-identical to
+the manifest's, so **no dependency drift was hidden**. Root cause found rather
+than the symptom patched: `scripts/bump-version.cjs` writes `package.json` only
+and `.githooks/pre-commit` stages only that file, so every release since 0.0.90
+moved one and not the other. Both fixed — the bump now rewrites the lock's two
+VERSION fields (never the dependency tree, which is what `npm version` does and
+keeps the hook incapable of re-resolving a dependency mid-commit) and the hook
+stages it. Verified by forcing a real bump: manifest and lock move together, and
+the lock diff stays 2 lines rather than reformatting 20,000.
+
+---
+
+## 2026-09-01 — WINDOW 7: THE ACCEPTANCE SWEEP AGAINST THE RETRAINED MODEL (v2)
+
+**Carry this first: a clean lexical sweep demonstrates the absence of the defect
+classes we can DECIDE, and says nothing about whether the story makes sense.**
+Every number below is a decidable class. A separate blind coherence read covers
+the rest and nothing here substitutes for it.
+
+Surface: v2 = `nash-scenario-v2-0.6b-Q4_K_M.gguf` on :8120 (`-c 4096
+--parallel 1`, the desktop spawn flags); v1 = `nash-scenario-domain-0.6b-Q4_K_M`
+on :8110 (`-c 16384 --parallel 4`). 400 + 400 PAIRED draws on identical (game,
+domain) cells, fresh seed 777001 so no rule in this repo was tuned on them,
+collected through `generateScenario({ model: 'localqwen', domain, stakes: true })`
+and nothing else. Measurement started at `28bfc23`.
+
+### 1. FALSE POSITIVES ON v2: ZERO — and one guard is now doing 19x more work
+
+12 v2 rejections across 480 draws (400 fresh + 80 banked). ALL TWELVE HAND-READ,
+all twelve true positives: 6 the new W7 rule below, 5 duplicate label slots
+(every one with the model's own sentence naming two DISTINCT options — a
+serialisation failure, not an invention failure), 1 the W4 pronoun rule.
+
+The sharper test is not counting rejections but removing each guard and asking
+what the rule would then reject on v2. v2's register changed, so each guard is
+worth a different amount now:
+
+| guard | spares on v1 | spares on v2 |
+|---|---|---|
+| META bare letter: the negative lookbehind | 3 (0.8%) | **60 (15.0%)** |
+| negotiation: offer/accept CONJUNCTION not the word | 7 (1.8%) | 11 (2.8%) |
+| move order: a CHOOSING VERB after before/after | 0 (0.0%) | 5 (1.3%) |
+| META "the game": hyphen boundary | 0 | 0 — **GUARD NOT TESTED** here |
+| BIG_SPELLED_QUANTITY: the 3 words D4 had | 0 | 0 — **GUARD NOT TESTED** here |
+| META cast: excluding bare "the players" | 0 | 0 — **GUARD NOT TESTED** here |
+
+**v2 adopted "Designation + Letter" as its house style** — Grower A / Grower B,
+Shift A / Shift B, Farmer A / Farmer B, Operator A / Operator B, Herder A /
+Herder B. That is cloud's good shape, and it is the exact string the naive
+bare-letter predicate matches. Without the W6 lookbehind the META screen would
+now reject **one v2 draw in seven**, every one of them good prose. The guard was
+built for cloud's benefit at a measured 0.5% cost on v1; on v2 it is the single
+most load-bearing thing in the gate. Three guards are reported as UNTESTED
+rather than as passes — no draw in either arm separates them.
+
+### 2. LOST REACH: the entire META family is now containment on local
+
+| rule | v1 | v2 |
+|---|---|---|
+| META prompt cast ("Player A") | 4.25% | **0.00%** |
+| META bare letter | 4.00% | **0.00%** |
+| META game cast ("the two players") | 1.75% | **0.00%** |
+| META the game itself | 0.25% | **0.00%** |
+| META payoff named | 0.50% | **0.00%** |
+| W4 second decision / same move | 0.25% each | 0.00% |
+| every W3 falsehood + alignment rule | 0.00% | 0.00% |
+
+The largest local-vs-cloud gap this campaign measured (meta vocabulary, local
+17.1% vs cloud 6.2%, p=3.7e-10) is **gone on the retrained model**: 0 of 480 v2
+draws hit any of the five sub-forms, against 40 of 480 on v1. Recorded as
+CONTAINMENT, not as coverage — the rules keep their place because the guards
+above prove the channel is live, not because they catch anything now.
+
+Also improved, on gate-ACCEPTED output: label collision 9.12% -> 0.76%,
+a/an disagreement 3.13% -> 0.51%, persona leak 8.3% -> 0.0%, meta leak
+3.0% -> 0.0%, whole-gate rejection 12.3% -> 1.0%, distinct scenario names
+101/400 -> 168/400, "name is just the domain title-cased" 85.3% -> 51.8%.
+
+### 3. NEW ON v2, and the one that was worth a rule
+
+**SHIPPED — the collective subject holds the only pair.** W4 catches the second
+pair going to a singular pronoun ("A dairy co-op is deciding between X and Y…
+IT chooses either P or Q"). v2 produces the identical defect with a COLLECTIVE
+subject and walked straight through:
+
+    "Two neighboring beekeepers are choosing winter apiary sited near their
+     homes. THE BEEKEEPERS must choose either Roof Shed or Garden Shed."
+         labels: Roof Shed / Garden Shed / Drainage Line / Open Corridor
+
+    "…EACH chooses between Limited Rotation and Open Rotation for its holding
+     schedule."   labels: Limited Rotation / Open Rotation / Early Access / Late Access
+
+**What it really separates is a SYMMETRIC STORY FROM ASYMMETRIC LABELS.** "Each
+cooperative chooses either Raise Quota or Hold Quota" is the model's normal,
+correct way to describe a symmetric game, and every draw of that shape in every
+corpus here — ferry slots, courier bids, dairy prices, fishing quotas, textile
+dye shifts — carries the SAME pair on both sides, which the rule spares for
+free. It fires only where the story says symmetric and the label slots say
+otherwise: a disagreement inside one response, never a style choice.
+
+Reach 6 of 3,297 user-reaching draws (0.18%), every hit hand-read, every one a
+genuine defect, **all six from v2** — zero on cloud, zero on v1, zero on any
+legacy corpus. Four conditions, each mutation-killed SEPARATELY by a distinct
+fixture (`_gen/blue_w7_mutation.py`); the harness voids a mutation that fails to
+apply instead of reporting a pass.
+
+**AND IT BROKE ONE OF MY OWN SHIPPED CONTROLS, which turned out to be wrong.**
+`testRepeatedPlayRefused` asserts the whole gate accepts nine real draws. Four
+of them quote real prose but were glued to the test's DEFAULT labels — labels
+none of those draws ever had. Looked up in their source corpora all four are
+SYMMETRIC (Early Slot / Late Slot on both sides, North Bid / South Bid, Premium
+Price / Discount Price, Raise Quota / Hold Quota). Under unrelated column labels
+the same sentence describes a game whose second player has no options at all, so
+the gate SHOULD reject it and the control was asserting the opposite about a
+scenario that never existed. Real labels restored: the controls now pin what
+they were recruited to pin, the repeated-play refusal is untouched, and each can
+fail for the reason it claims. `npm test` and `npm run lint` green.
+
+**MEASURED AND NOT SHIPPED — every one refused with its reason.**
+
+| new shape | v1 | v2 | verdict |
+|---|---|---|---|
+| stakes band said out loud ("high-stakes edition", "a modest project") | 3.3% | **26.5%** | NOT A DEFECT — 0 contradict the matrix |
+| the stakes prompt's own wording in the story | 0.0% | 1.5% | REFUSED, see below |
+| domain phrase given agency ("Two avalanche patrol ROSTERS are deciding") | 0.0% | 1.0% | not gateable here — the gate has no domain |
+| near-colliding label pairs (Early Rotas/Late Rotas vs Early Rota/Late Rota) | 0.0% | 0.3% | REFUSED — see below |
+| chatbot-register label ("Ask me next") | 0.0% | 0.3% | n=1, recorded |
+| "chooses between" twice | 61.8% | **77.8%** | register narrowing, no defect |
+| both players' pairs share modifiers | 13.3% | 3.8% | v2 BETTER |
+
+*The stakes band said out loud is the stakes feature working, not a leak.* The
+adjectives track the band computed from the matrix, and the contradiction rate
+is 0/400 on both arms. That number was 2 on v2 and 1 on v1 in the first draft,
+and a hand-read killed all three: every one was an option LABEL quoted in the
+description ("chooses Small Order or Large Order" on a band-1 game). Blanking
+the labels first — which `validateScenario`'s own outcome rule already does — is
+what makes it zero. Tenth over-firing first draft this campaign.
+
+*The stakes prompt's own wording is REFUSED on a hand-read.* Narrowed to the two
+phrases distinctive to `stakesHint`, it is 4 of 3,511 user-reaching draws, all
+v2. Reading them: ONE is out of register ("with the amounts at stake being a
+large portion of the schedule"); the other THREE are "making a fine adjustment
+to a shared irrigation plan", which is ordinary English that happens to appear
+in the band-1 hint. Gating it would be 3 false positives out of 4 hits. What is
+left is n=1, which cannot support a precision claim. Recorded as an OPEN,
+UNGATED observation, not as coverage.
+
+*Near-collision is REFUSED on consistency, not on rate.* Exact cross-player
+label collision is DELIBERATELY not gated in production, because symmetric games
+legitimately name both sides the same way. Rejecting "Early Rotas / Late Rotas"
+against "Early Rota / Late Rota" while accepting "Early Harvest / Late Harvest"
+against "Early Harvest / Late Harvest" would be incoherent. The channel is
+recorded, the rule is not written.
+
+### 4. RESIDUAL HOLES, stated so nobody reads this as clean
+
+- **Three-party cast with one pair absent.** "A wind-farm operator chooses
+  between a Routine Overhaul and a Deep Overhaul… while the farm's UTILITY AND
+  GRID OPERATORS are choosing how to coordinate the work." Three parties, B's
+  pair never named, no collective chooser — the new rule does not reach it.
+- **Domain-phrase agency** (1.0% on v2): needs the domain at validation time,
+  which `scenarioIsClaimFree` does not have.
+- **Coined non-words on the REAL path.** v1 shipped `Openvertise` / `Holdvertise`
+  as option labels and `Reindee Herding Routes` as a name, gate-accepted, through
+  `generateScenario` with the schema. The earlier attribution of coined non-words
+  to a missing-schema artefact is at best incomplete. v2 has ~2 (`haulline`,
+  a "thanning contractor" for thatching) against v1's ~9 — better, not zero.
+
+### 5. TWO INSTRUMENT BUGS IN MY OWN HARNESS, both found before they were quoted
+
+- **The sweep ate its own output.** Run 1 wrote its accepted-draw dump to
+  `/tmp/blue_w7_v2_accepted.jsonl` — a directory the discovery walks. Run 2 read
+  it back as a separate corpus; it sorts ahead of `eval_v2.jsonl`, and the global
+  dedup silently reassigned **77 of the 80 banked v2 draws out of the v2 arm**.
+  The arm counts read `v2-banked 3` and every v2 rate was computed on three rows.
+  Fixed by writing to `/tmp/blue_w7_out/` (not descended into) plus a name guard,
+  and by keying the dedup PER ARM so filename order can never move a draw between
+  populations.
+- **The W6 registry was already stale.** Its rule list was hardcoded and did not
+  contain `cites a large quantity` (W5) or `the payoff, the mathematical object`
+  (W6) — both shipped, both invisible to it. The W7 sweep reports any rejection
+  reason no tag claims and exits non-zero; that flushed out four more rules
+  nobody had listed, three of which fire on real corpus rows. It also carries a
+  COUNTING-PATH self-test (planted defects must be attributed to the right rule
+  in the right arm) and an under-load assertion, because "all zeros on v2" is
+  what both bugs above looked like.
+
+### Files
+
+`_gen/blue_w7_collect.mjs` (paired collector, real path) ·
+`_gen/blue_w7_acceptance.mjs` (35-rule registry, discovery, self-tests) ·
+`_gen/blue_w7_guardvalue.mjs` (what each guard is worth on v2) ·
+`_gen/blue_w7_newshapes.mjs` + `_gen/blue_w7_newclasses.mjs` (paired feature diff) ·
+`_gen/blue_w7_collective.mjs` + `_gen/blue_w7_price.mjs` (pricing) ·
+`_gen/blue_w7_mutation.py` (per-condition mutation, voids non-applying mutations).
+Corpora: `/tmp/blue_w7_v1.jsonl`, `/tmp/blue_w7_v2.jsonl`; dumps in `/tmp/blue_w7_out/`.
+
+---
+
+## 2026-09-01 — FIX WINDOW 6: META VOCABULARY — four sub-forms shipped, the fifth escalated
+
+The largest remaining defect class with real reach, and the first this campaign
+has shipped that is a REGISTER defect rather than a falsehood. "Player A chooses
+between Early Harvest and Late Harvest" asserts nothing untrue; it is simply not
+a story. The truth classes are all measured at or near zero, so this is where
+the remaining user-visible damage is.
+
+### NOT inherited from the teacher — the surfaces are different populations
+
+Measured per surface over 3,363 gate-passing draws. The earlier "6.6% local /
+5.7% cloud, so it is in the teacher too" reading came from a narrow predicate
+that caught only the first sub-form:
+
+| sub-form | local | cloud |
+|---|---|---|
+| "Player A" / "Player B" | 6.1% | **6.2%** — the one that IS equal |
+| a BARE LETTER as a character | 4.0% | 1.2% |
+| "the two players" / "each player" | 3.0% | 0.2% |
+| "the game" as an object | 0.6% | **0.0%** |
+| **union of the four shipped** | **14.0%** | **7.0%** |
+
+Only the "Player A" form is shared. Everything else is local-heavy, and two
+sub-forms are at zero on cloud. Pooling them would have hidden that.
+
+### Both traps held, and both are now mutation-pinned
+
+**TRAP B — the bare-letter lookbehind is the single most expensive thing here to
+get wrong.** `\b[AB]\s+chooses` matches "Operator A chooses… while Operator B
+chooses", which is ordinary English for two indistinguishable parties and is
+CLOUD'S GOOD SHAPE:
+
+    naive, no lookbehind : local 4.8%   CLOUD 20.0%
+    with the lookbehind  : local 4.0%   cloud  1.2%
+
+229 draws separate those numbers and every one inspected is the good shape. This
+reproduces RED 1's independently measured 20.4%. A rule rejecting a fifth of all
+cloud output would have looked like a huge win until someone read the rejections.
+
+**TRAP A — "the game" is a PRODUCT in this corpus**, and it needs TWO guards
+because each spares a case the other does not:
+- the **hyphen boundary** `(?![-\w])` alone spares the real cloud draw "…Solo
+  Sales for the GAME-DAY menu" — `\b` sits happily before a hyphen. Third
+  instance this campaign of a rule defeated by punctuation, after
+  `orders?\s+of\s+magnitude` and U+2212.
+- the **product-vocabulary test** alone spares "a small game studio chooses
+  whether to give the game a Featured Slot", which the hyphen guard does not.
+
+### MY OWN TRAP CONTROLS DID NOT TEST THEIR GUARDS — the mutation run caught it
+
+The first draft of both TRAP A controls passed with the hyphen boundary AND the
+product guard deleted. Neither sentence carried game-theory vocabulary, so the
+theory requirement spared them on its own and the guards were doing nothing in
+those tests. Rewritten to carry theory vocabulary, so now only the guard under
+test can spare each. **A guard whose control cannot fail when the guard is
+removed is not a tested guard** — this suite has caught that shape repeatedly in
+other people's work, and here it caught mine. Mutations now:
+
+| mutation | result |
+|---|---|
+| N1 drop the negative lookbehind | TRAP B control fails ✓ |
+| N2 drop the hyphen boundary | game-day control fails ✓ (passed before the fixture fix) |
+| N3 drop the product-vocabulary guard | video-game control fails ✓ (passed before the fixture fix) |
+| N4 add bare "the players" back | puppet-theatre control fails ✓ |
+
+### ADDENDUM — the fifth sub-form SHIPPED after arbitration, and the oracle now reads 1/8
+
+The coordinator ruled, and the ruling dissolved the conflict rather than picking
+a side: **both propositions are true and independent.** RED 1's control asserts
+the sentence is not FALSE (true on any matrix whose payoffs vary); the META
+screen asserts it is not IN REGISTER. A draw can be perfectly true and still be
+prose the product should not ship. The apparent contradiction came from the
+control being written as "nothing rejects this", which is a stronger claim than
+the fact it was recruited to protect — so the fix was the one already used three
+times this window: **assert it by its rejection REASON.**
+
+`payoff` therefore ships. The suite now asserts BOTH halves on the same
+sentence: no falsehood screen may fire on it, the matrix-decided screens must
+still pass it, and the META screen must reject it. A fourth assertion keeps the
+falsehood rule honest on its own ground — a payoff comparison ("the haulier's
+payoffs are higher than the mill's") must still be caught AS A FALSEHOOD, not
+merely as register, or merging the two questions has quietly lost one.
+
+**RED 1'S ORACLE NOW REPORTS `controls wrongly blocked 1/8`, and that is
+expected, not a regression to fix.** It names exactly the authorised control:
+
+    REGRESSION  "their choices determine the payoffs" on an ORDINARY matrix
+                wrongly blocked by: the payoff, the mathematical object, named in the story
+
+Blue did not edit that file. Editing another team's acceptance test so your own
+change reads clean is the anti-pattern this campaign exists to catch. RED 1
+should re-express that control the same way — the proposition it protects is
+untouched and still asserted here — and until they do, the scoreboard reads 1/8.
+Holes are unchanged at 3/13, screens lost 0/2, and the label oracle is unchanged
+at 4/10 with 0/15 controls.
+
+Updated audit, baselined against the pre-META commit: **411 newly rejected
+(local 222, cloud 76, unattributed 113), 0 newly accepted, 0 unexplained**, and
+the population is now NINE distinct matched substrings — the eight below plus
+44x «payoffs». All nine unambiguously meta.
+
+### A SUPERSEDED NUMBER RETIRED FROM THE VALIDATOR
+
+The comment allowing bare "payoffs" justified itself with "dropping on the word
+alone cost 1,269 of 4,462 GOLD scenarios (28.4%)". That figure governed a
+DIFFERENT corpus, generated under a prompt that asked the model to describe
+payoffs. Production rate on the surface this gate actually runs on: **2.2% local,
+0.0% cloud**, and it is the only meta marker in 1.2% of local draws. The old
+number is recorded as retired rather than deleted — a stale figure left in a
+comment is how the next person inherits a decision without its evidence.
+
+### AND THE MUTATION HARNESS ITSELF HAD THE DEFECT IT HUNTS — third instance this window
+
+N5 ("delete the payoff form") reported **All unit tests passed**. The guard had
+not survived: the mutation never applied. The shell harness passed each
+mutation as a single-quoted argument containing a `|||` separator, and N5's
+replacement text contains single quotes, so the separator did not survive the
+shell. Python raised, the helper printed the traceback — **and then ran the
+suite anyway, on the unmutated file.** A mutation that never applied read
+exactly like a guard that survived deletion.
+
+Rewritten as `_gen/blue_w6_mutation.py`: the mutation data never touches a
+shell, a mutation that fails to apply VOIDS its own result instead of reporting
+a pass, and a surviving guard is reported as `GUARD NOT TESTED` with a non-zero
+exit. All five guards then proved necessary, N5 included (killed by the
+register/falsehood separation assertion).
+
+That is three times in one window that a test could not fail for the reason it
+claimed: the two TRAP A controls, and now the detector itself. The formulation
+stands as the window's main result — **a guard whose control cannot fail when
+the guard is removed is not a tested guard** — and it applies to detectors as
+readily as to product code.
+
+### The fifth sub-form as originally filed (superseded by the addendum above)
+
+The word **"payoff"** is the fourth sub-form named in the scope, and gating it
+contradicts a control **RED 1'S OWN ORACLE SCORES**: "their choices determine
+the resulting payoffs" is asserted there as the vacuous closer the model writes
+constantly, true on any matrix whose payoffs vary. Both readings are defensible
+and neither instrument is broken — the oracle asks whether the sentence is FALSE
+(it is not); the META screen asks whether it is IN REGISTER (it is not).
+Changing a control the exit criterion is scored against, to make my own change
+look clean, is not a validator decision. **Escalated, not decided.** Cost of
+leaving it out, measured: "payoff" is the ONLY meta marker in **1.2% of local
+draws and 0.0% of cloud draws**; the other four carry 14.0% / 7.0% without it.
+
+### "the players" excluded on SHAPE, not on rate
+
+The one member with an ordinary non-game meaning — "the players" is the acting
+company, and the rotation contains **"puppet theatre touring"**. It measures
+0.1% local / 0.0% cloud, and the only two draws it uniquely catches are already
+caught by another form. W5's D4 refusal is the precedent: a zero rate is not
+grounds for including a word whose shape collides. A dedicated collision hunt
+found 484 sentences using "player(s)" and 16 co-occurring with a
+sport/music/theatre word — **every one of the 16 is meta usage beside a scene
+word, not player-as-athlete.**
+
+### False-positive audit — a different question from W5's
+
+W5 required "0 newly rejected". That question is wrong here: META is MEANT to
+reject ~14% of local output, and 387 draws is too many to read without the
+reading becoming a rubber stamp. So the audit tabulates the DISTINCT MATCHED
+SUBSTRING behind every new rejection:
+
+    3,481 draws · newly REJECTED 387 (local 203, cloud 76, unattributed 108)
+                · newly ACCEPTED 0 · rejections unexplained by the four forms: 0
+
+    prompt cast : 190x «player a»   1x «player b»
+    bare letter : 123x «a is»   8x «a chooses»   3x «b is»
+    game cast   :  65x «the two players»   7x «each player»
+    the game    :  13x «the game»
+
+**Eight distinct shapes, all eight unambiguously meta.** That is stronger
+evidence than sampling 387 draws, and it is checkable by anyone in one read.
+
+### Three existing fixtures had to change, all handled BY REASON
+
+Three quoted real draws in the suite contain meta vocabulary incidental to what
+they were quoted to prove. None was deleted and none was paraphrased. Each is
+now asserted by its REJECTION REASON, so the original fact stays under test:
+
+| fixture | now asserted as |
+|---|---|
+| negotiation control r2cloud#4 | rejected for META, and the NEGOTIATION rule must still not fire |
+| W4 rivalry regression rt3_character_local#7 | rejected for the bare letter, and the RIVALRY screen must still not fire |
+| `src/test.ts` port-inspector gold | dropped for META, and NO claim rule may fire on it |
+
+The negotiation control was additionally re-based on another REAL corpus draw
+carrying offer+contract without meta, so the list still holds seven quoted draws.
+
+### Evidence
+
+| check | result |
+|---|---|
+| FP audit | 387 newly rejected, **0 newly accepted, 0 unexplained**, 8 distinct match shapes |
+| mutations N1–N4 | each fails its own control ✓ |
+| RED 1 13-hole oracle | **3/13**, controls **0/8**, screens lost **0/2** — unchanged |
+| RED 1 label oracle | **4/10**, controls wrongly blocked **0/15** — unchanged |
+| lint · npm test · build · e2e | 0 · 0 (86,236 tie-prose renderings) · 0 · **22/22** |
+| reach over every corpus | 250/3,481 = 7.18% rejected by blue's rules, **145 from files W4 never saw** |
+
+### Limitation carried forward
+
+RED 2 read ten local stories that pass all six of its lexical screens and found
+four or five carrying semantic incoherence no lexical screen can see — a rice
+farmer with a saffron crop, a coffee roastery that harvests. These gates are
+necessary and not sufficient, and no regex closes that gap.
+
+---
+
+## 2026-08-31 — FIX WINDOW 5: repeated play PRICED AND REFUSED; two decidable label holes closed
+
+### e2e, run to completion first, as instructed
+
+**22/22 checks passed, exit 0**, at branch head `3732cb7`, load 16–19. Run
+again at the end of the window after the code changes: **22/22, exit 0**. The
+previous window killed a run at load 26.5 rather than report a meaningless
+number; this is the real one.
+
+### REPEATED PLAY — priced, refused, and the boundary pinned as controls
+
+The claim worth gating: this app models a ONE-SHOT simultaneous normal-form
+game, so a scenario asserting the game is played over and over describes an
+object the app does not solve (under repetition the equilibrium set is a
+different thing entirely). The worry was that "each season" is ordinary
+scene-setting and a gate on it would be the 32.2% mistake again.
+
+Measured over **48 corpus files, 3,185 unique draws, 3,134 gate-passing**
+(`_gen/blue_w5_repeatprice.mjs`, `_gen/blue_w5_repeatverdict.mjs`), detector
+self-tested against hand-built positives before any zero was reported:
+
+| | result |
+|---|---|
+| folk-theorem machinery, counted TOKEN BY TOKEN | **0** on accepted output, **0** on the 51 rejected |
+| candidate structural rule (recurrence quantifier + choosing verb) | **1 hit / 3,134 — and it is a FALSE POSITIVE** |
+| a gate on cycle nouns (season/year/week/shift/day) | would reject **943 / 3,134 = 30.09%** |
+
+`retaliat*` 0, `punish*` 0, `forgiv*` 0, tit-for-tat 0, "repeated game" 0,
+`iterat*` 0, "future round/season/play" 0, "later rounds" 0, "over many X" 0,
+"again" 0, "season after season" 0, "in the long run" 0, "build a reputation" 0,
+reputation-carried-across-plays 0. Counted per token so a zero could not hide
+inside an alternation. Zero on the REJECTED draws too, which is the load-bearing
+half: the class is **absent from the generator**, not contained by an existing
+screen.
+
+**REFUSED on three independent legs.** (1) The genuinely false claim does not
+occur. (2) The only candidate with any reach is 100% false positive, so it fails
+standing rule 2 outright. (3) Every looser variant is a scene-noun collision —
+the fourth, fifth and sixth instances this campaign has hit:
+
+- `each SHIFT chooses` — "each" distributes over the two PLAYERS, and the
+  players ARE the shifts. The cycle noun is the actor noun, and "Shift" is in
+  both option labels too.
+- `Long Run` (2 draws) is a letterpress PRINT run, and is literally an OPTION
+  LABEL ("Short Run / Long Run").
+- `round` (4 draws) is a maintenance round, a purchasing round, a bird-ringing
+  dawn round, a delivery route.
+- `reputation` (58 draws) is the stakes-fidelity feature working as designed — a
+  consequence of the ONE decision, never a mechanism spanning plays.
+
+Shipped as `testRepeatedPlayRefused()` in `src/unit.test.ts`: **no rule**, 9 real
+quoted draws pinned as controls, plus **3 true repeated-play claims asserted as
+STILL REACHING THE USER**. Those three are the honest half — if a later window
+ships this gate, those assertions go red and force a conscious decision instead
+of letting the refusal be quietly forgotten.
+
+### L7 and L10 — two DECIDABLE holes closed, in a channel this branch already owned
+
+RED 1's newer label oracle (`rt_label_gate_oracle.mjs`, 10 holes) showed 6
+reaching the user. Two were decidable and both sat in the numeral/multiple
+screen this branch already owns. Both were verified reaching the user **through
+the real gate** before either fix was written.
+
+- **L10 is not a missing rule — it is an existing rule defeated by punctuation.**
+  `MULTIPLIER_CLAIM` has contained `orders?\s+of\s+magnitude` all along; the
+  label was written `Order-of-Magnitude Expansion`, and `\s+` does not match a
+  hyphen. Same shape as the U+2212 minus that has bitten this repo three times.
+  Fixed to `[-\s]+`.
+- **L7** is a numeral written as a WORD in a label — "Ten Thousand Crates / One
+  Crate" on a matrix whose every swing is one thousandth of a unit. No digit, no
+  "-fold", no "times more", so nothing saw it. New `BIG_SPELLED_QUANTITY` screen
+  on **name and labels only**; the description keeps its multiplier screen and
+  stays free to set a scene at scale.
+
+**RED'S OWN PREDICATE COULD NOT BE ADOPTED AS WRITTEN, and the mutation test is
+the proof.** Their D4 scored 0/527 false positives, and it also measures 0% on
+all 3,296 draws here — but `\w+fold` matches **"Manifold"**, which this suite
+already pins as a passing control, and `twice`/`dozens` match "a twice-weekly
+delivery" and "dozens of crates". Mutation M3 widens the shipped rule to D4 as
+written and the suite goes red on the Manifold control. **A rate of 0% would
+have hidden all three; only the shape of the word catches them.** This is the
+seventh instance of the campaign's standing theme and the first where a
+zero-false-positive number measured on a real corpus was still the wrong basis
+for a decision.
+
+### Evidence
+
+| check | result |
+|---|---|
+| FP replay, PRE vs POST in one process, all corpora | **0 newly rejected, 0 newly accepted, 0 threw, over 3,317 draws** |
+| replay self-check | baseline lets both holes through, working tree closes both — modules provably distinguishable |
+| mutation M1 (hyphen fix reverted to `\s+`) | L10 fixture fails ✓ |
+| mutation M2 (big-quantity screen deleted) | L7 fixture fails ✓ |
+| mutation M3 (widened to red's D4 as written) | **Manifold control fails ✓** |
+| RED 1 label oracle | holes **6/10 → 4/10**, decidable **4/8 → 2/8**, controls wrongly blocked **0/15** |
+| RED 1 13-hole oracle | **3/13**, controls **0/8**, screens lost **0/2** — no regression |
+| lint · npm test · build · e2e | 0 · 0 (86,236 tie-prose renderings, 0 failures) · 0 · **22/22** |
+
+### Every shipped rule re-measured against corpora W4 never saw
+
+`_gen/blue_w5_fullgate.mjs`. W4's corpus list was HARDCODED, which is the same
+failure mode as measuring a rule only on the rows it was written against — a
+file red writes afterwards silently drops out of the denominator. This version
+**discovers** the corpora.
+
+    48 files · 3,254 unique draws · 2,060 from files W4 never measured
+    TOTAL rejected by blue's rules: 8 / 3,235 = 0.247%
+    of those, from files W4 never saw: 4
+
+All four unseen hits hand-read and confirmed TRUE POSITIVES: two are the
+offer/accept protocol (a bid submitted, then accepted or rejected) and two are
+one actor holding both option pairs behind the pronoun "It". **Zero false
+positives on 2,060 draws no rule here was written against** — the first time
+this campaign has confirmed reach on genuinely unseen data.
+
+### Still open, and NOT started
+
+The label oracle's remaining 4: **L3 and L6 are explicitly not decidable from
+the matrix** (consequence labels on a flat matrix — refused in W3 and still
+correctly refused). **L8 and L9 are decidable and open**: a cross-player stakes
+claim ("everything for one, a formality for the other") on a matrix where both
+players' swings are identical, in the description (L8) and moved into the labels
+(L9). That is a matrix-decided test, adjacent to the reserved structural work;
+flagged to the main session rather than started.
+
+---
+
+## 2026-08-31 — INSTRUMENT DEFECT: three of the four deciding numbers were measuring the harness
+
+Filed by RED 2 (name-is-the-domain), audited and extended by blue. Metrics are
+blue's lane, so this was corrected rather than handed back as a lead.
+
+RED 2's claim: the model's scenario NAME is the injected domain, title-cased,
+verbatim. Audited against red's own corpus (`_gen/blue_metric_audit.mjs`):
+
+| | LOCAL (n=84) | CLOUD (n=80) |
+|---|---|---|
+| name IS the domain, title-cased | **92.9%** | 66.3% |
+| distinct names *(as reported)* | 95.2% | 100.0% |
+| TOP name share *(as reported)* | 2.4% | 1.3% |
+| distinct DOMAINS drawn | 80/84 | 80/80 |
+| domain adherence *(as reported)* | **100.0%** | 100.0% |
+| domain adherence *(name excluded)* | **84.5%** | 100.0% |
+
+Red named one compromised metric. There are three:
+
+1. **`domain adherence`** searched `name + description`. The name IS the domain,
+   so the needle sat in a field the harness supplied. 100.0% reported vs 84.5%
+   honest — 15.5 points of pure inflation, and the true failure (a description
+   about a different industry than the domain) was structurally invisible.
+2. **`distinct names`** and 3. **`TOP share`** are bounded by the ROTATION, not
+   by the model. 80 distinct domains were drawn over 84 rows, so title-casing
+   the domain and doing nothing else scores 95.2% distinct and 2.4% top-share
+   automatically. Neither number can detect a diversity regression.
+
+That third point reaches further than the arithmetic. "Diversity was fixed by
+rotating the domain" was concluded from these numbers. Rotating the domain
+demonstrably rotated the NAME; whether it changed the STORY is a question these
+metrics could not ask. RED 2's independent reading says it did not — 69.0% of
+local row-label pairs are Early/Late.
+
+### Mutation test (`_gen/blue_metric_mutation.mjs`)
+
+| check | LOCAL n=92 | CLOUD n=80 |
+|---|---|---|
+| OLD `ignored the requested domain` (name+desc) | **0 = 0.0%** | 0 = 0.0% |
+| NEW same check (desc+labels) | **13 = 14.1%** | **0 = 0.0%** |
+| NEW `name is just the domain` | 86 = 93.5% | 53 = 66.3% |
+
+The old check fired **zero times out of 92** — structurally dead, exactly the
+"a test that cannot fail on the defect it names" failure applied to a metric.
+The corrected check fires 14.1% locally on real misses ("ferry timetable slots"
+described as a ferry operator and then a station coordinator with a departing
+TRAIN) and **0% on cloud**, which is the false-positive control: a compliant
+writer always names its industry in the body, so the check discriminates rather
+than adding noise.
+
+Changed (instruments only, no product code):
+- `_gen/domain_model_eval.mjs` — reports HONEST adherence (description+labels)
+  and an option-axis TOP-modifier share; keeps the name-based numbers under a
+  `harness-bounded, do not read as model quality` heading so the inflation stays
+  visible instead of being silently swapped out.
+- `_gen/redteam_local.mjs` — domain check excludes the name; new finding class
+  for `name is just the domain, title-cased`.
+
+---
+
+## 2026-08-31 — baseline runs
+
+### run 1 — :8099, INVALID (recorded so the hole in the series is explained)
+
+```
+redteam_local  N=120 : parsed 0/120, gate pass 0.0%, latency p50 0.02s
+domain_eval    N=60  : yield 0/60, unparseable 60
+```
+
+Not a model result. `:8099` was running `-c 4096 --parallel 4` = **1024 tokens
+per slot** against a **1360-token** production prompt, so every request returned
+HTTP 400 instantly:
+
+```
+{"code":400,"message":"request (1360 tokens) exceeds the available context size
+ (1024 tokens)","n_prompt_tokens":1360,"n_ctx":1024}
+```
+
+The 0.02s p50 is the tell — impossible for a 700-token generation. Any local
+number measured against :8099 between ~18:30 and the coordinator's fix is void.
+The shipped desktop app is NOT exposed: it spawns `-c 4096` with no `--parallel`.
+
+### run 2 — :8123 (desktop flags) — FIRST VALID BASELINE
+
+Machine under load from four concurrent agents plus three llama-servers, so the
+latency figures are an upper bound, not a quiet-machine baseline.
+
+```
+redteam_local N=120 : parsed 120/120 · shipping-gate pass 116/120 = 96.7%
+                      latency p50 4.52s  p90 7.52s
+  10x  BOTH PLAYERS share an option name          8.3%   row+col both "Early Dye"/"Late Dye"
+   4x  SHIPPING GATE rejects                      3.3%   coordination framing; dup column labels
+   3x  description never mentions any option label 2.5%
+   1x  degenerate repetition in a label/name      0.8%   "Reserved Reserve"
+
+domain_model_eval N=60 :
+  yield through the real gates    59/60 = 98.3%   (unparseable 0)
+  latency                         p50 6.79s  p90 8.68s
+  domain adherence (HONEST)       53/60 = 88.3%   <- description+labels, name excluded
+  option-axis TOP modifier        "early" x45 = 37.5% of row labels   (target <= 5%)
+  -- harness-bounded --
+  name IS the domain title-cased  53/60 = 88.3%
+  distinct names                  60/60   (ceiling: 60 distinct domains drawn)
+  TOP name share                  1.7%
+  domain adherence (as before)    60/60 = 100.0%   <- inflated by 11.7 pts
+```
+
+**The option-axis number is the first honest diversity figure this harness has
+produced, and it fails the standing <=5% target by 7.5x.** "early" alone is the
+leading word of 37.5% of row labels. It corroborates RED 2's independently
+measured 69.0% Early/Late row-PAIR rate from a different corpus and a different
+detector, so two instruments now agree that the rotation did not diversify the
+stories. `distinct names 60/60 against a ceiling of 60 distinct domains drawn`
+is the tautology printing itself.
+
+Note the two adherence numbers disagree by 11.7 points on the same 60 draws.
+Both are computed in the same run; the gap IS the defect.
+
+Baseline gate on this branch: `npm run lint` exit 0, `npm test` passes
+(solver 20k=76ms, precompute=33ms, 200-game battery=30ms, 566 tie games clean).
+
+---
+
+## 2026-08-31 — blue's first root cause was WRONG; red refuted it with data
+
+Recorded because a retracted hypothesis is worth as much as a confirmed one,
+and because the refutation changed what a fix should aim at.
+
+Blue proposed, from the shared-label examples ("Early Dye"/"Late Dye" as BOTH
+players' options), that the model has a single contrast axis and applies it to
+both players at once. RED 2 measured it: row and column share an axis in only
+**7.6%** of local draws. 92% already give the two players different axes, so a
+fix aimed at blue's version would chase 8% and leave the 69% untouched.
+
+The real shape is per-ROW-SLOT and corpus-level: **player A is handed a TIMING
+decision in 83% of local draws, against 64% on cloud.** The shared-label cases
+are a special case of that, not its cause — when the model does reuse an axis,
+it reuses the timing one it was going to give A anyway.
+
+### Calibrating blue's classifier against red's hand labels
+
+`_gen/blue_axis_check.mjs`, run over red's corpus:
+
+| | blue (5 coarse families) | red (hand-labelled) |
+|---|---|---|
+| ROW axis TIME/SPEED, local | 80.7% | 83% |
+| ROW axis TIME/SPEED, cloud | 53.8% | 64% |
+| row/col share an axis, local | **23.6%** | **7.6%** |
+
+The TIME/SPEED share tracks — within ~2 points locally, right direction and a
+wider gap on cloud — so it goes into the series. The same-axis number does NOT:
+five coarse buckets put genuinely different decisions in one family and it
+over-reads by 3x. It is reported as an explicit UPPER BOUND labelled "trust
+red's", never under red's name. Reporting 23.6% beside red's label would be the
+same category of error this log exists to correct.
+
+---
+
+## 2026-08-31 — FIX WINDOW 1: three gate fixes
+
+Daniel's ruling arrived during this window and defines the instrument set:
+
+> "I do not want the model to be rewritten deterministically before display.
+> Rung 3 is the lowest rung I would go. All remaining inaccuracies need to be
+> fixed without jeopardizing any more prose."
+
+So post-hoc rewriting of model output is CLOSED — not a flag, not a follow-up.
+The permitted instruments are gates that REJECT a bad draw, prompt/schema
+changes that prevent it, and retraining. That makes the validator the primary
+path for every truthfulness defect, and makes its false-positive rate the number
+that matters most.
+
+### What landed
+
+| | defect | fix |
+|---|---|---|
+| **F11** | an option label MISSING passes every gate, and the save path writes literal "undefined" into the user's description | presence check in `validateScenario` (falsy test, not `=== ''`) + `useSuggestedScenario` builds the sentence per PAIR |
+| **F1** | matching language on a game whose every pure NE is a MISMATCH | `diag === pure.length \|\| anti === pure.length` → `diag === pure.length` |
+| **F12** | cross-attribution through the LETTER form ("Player A chooses when to release water", where Release Water is B's) | new screen beside the role-noun one, inside `validateScenario` |
+
+All three landed INSIDE `validateScenario`, deliberately: RED 1's oracle calls
+only `validateScenario` / `scenarioIsClaimFree` / `validateProseDirections`, so a
+new exported function would have left the oracle reporting a red acceptance test
+for a working fix — the fourth-instance shape landing in the acceptance test.
+
+### RED 1's oracle (their file, unmodified, run against my tree)
+
+    BEFORE  holes 13/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+    AFTER   holes 11/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+
+### Mutation evidence — each fix proven necessary by its own fixture
+
+| mutation | result |
+|---|---|
+| F1: revert to the `\|\|` form | F1 positive PASSES → 1 failure |
+| F11: rewrite the presence test as `v === ''` | BOTH F11 positives PASS → 2 failures |
+| F12: disable the `isTheirs` test | F12 positive PASSES → 1 failure |
+| all restored | all 9 fixtures behave as specified |
+
+The F11 mutation is the one worth keeping: `=== ''` is the spelling a careless
+fix would use, and it reports CLEAN on the exact draw it was written for,
+because the observed defect had col2 ABSENT rather than empty.
+
+### False positives — 0, and what that does not prove
+
+Replayed all 291 stored scenarios in both red corpora through the pre-fix and
+post-fix validators side by side: **0 newly rejected, 0 newly accepted**, local
+and cloud alike.
+
+Stated honestly: those corpora contain none of the three positives, so the zero
+means "adds no false positive", NOT "the checks work". The known-positive
+fixtures carry that half. RED 1's 341-draw corpus contains the real F11 and F12
+draws and is the acceptance test I cannot run on myself — they are replaying it.
+
+### One hole deliberately left open
+
+RED 1's hole #1 ("ANTI-COORD + coordinate their choices") still reaches the user,
+and it is NOT the shape defect. Its wording matches no branch of `COORD_TALK` —
+that vocabulary needs "want/incentive to coordinate", "coordination
+game/problem", or "matching the opponent's choice". Bare "coordinate their
+choices" is outside it, so no shape fix can ever close it.
+
+Widening the vocabulary was declined in this window for two reasons: bare
+"coordinate" is near-vacuous and is one of the model's stock closers, so it is
+exactly the word-list move that risks false positives against correct input; and
+changing vocabulary and shape predicate together would confound them, leaving
+any new false positive unattributable. Refiled to RED 1 as its own finding
+needing its own controls.
+
+### Gate — FULL, all green
+
+lint 0 · `npm test` exit 0 (incl. the new section) · 86,236 tie-prose renderings,
+0 failures · **e2e smoke 22/22 checks passed**.
+
+### Acceptance test — RED 1's replay, the one blue could not run on itself
+
+`_gen/rt_replay_prepost.mjs` loads red's PRE-fix validator and blue's POST-fix
+validator in one process over all 344 stored scenarios.
+
+    SELF-CHECK   replayed PRE verdict vs the verdict frozen at collection time
+                 344/344 agree — the baseline reproduces exactly
+    DELTA        newly REJECTED : 2      newly ACCEPTED : 0      threw : 0
+
+The two, and only the two:
+
+    rt2#113 "Orchard Frost Watch"   -> Player A choosing "release water" (B's option)
+    rt2#117 "Saffron Harvest Labour" -> option label col2 is missing
+
+Exactly the F12 and F11 draws. **Zero false positives across the 341 other
+gate-passing scenarios, spanning 32 matrix shapes.** Red ran the self-check
+first and reported it first: a replay that cannot reproduce its own baseline has
+no standing to judge the change.
+
+### F1 IS *NOT* CLOSED — predicate corrected, zero coverage on observed output
+
+RED 1 measured the reach of the gate's REAL trigger vocabulary, lifted verbatim
+from `nashValidator.ts` rather than paraphrased:
+
+    gate-passing draws                            : 341
+    draws matching the real COORD_TALK vocabulary :   0
+    draws matching the real ANTI_TALK vocabulary  :   0
+
+The shape fix is correct — the predicate genuinely was wrong and the
+hand-written probe proves it fires — but **its trigger vocabulary matches
+nothing this model produces**. On the observed distribution the corrected gate
+is unreachable. Logged as "predicate corrected; zero coverage on observed local
+output", never as "closed": 9.1% of anti-coordination cases keep shipping.
+
+**This is a FIFTH instance of the round's theme, and a different flavour.** The
+other four are checks that cannot fire because of a defect — inputs the schema
+forbids, a formatter fed an already-rounded value, a kernel answering a
+reasonable question misleadingly, a scan window that ate its evidence. This one
+is CORRECT and simply never meets its trigger. The defence differs too: the
+first four are caught by a known-positive fixture, which this fix has and passes.
+Only measuring the gate's REACH against real model output catches this one.
+
+### HAZARD: an instrument mistaken for a gate (sixth instance of the theme)
+
+RED 2 advised blue to stand down on the F1-vocab defect — those five claim
+sentences were "already caught" by an existing meta-reference screen. Blue ran
+all five through the real gate on an all-mismatch matrix: **five for five REACH
+THE USER**, and no such screen exists in `nashValidator.ts`, `report.ts` or
+`server.ts`.
+
+Red then diagnosed it themselves, and the diagnosis is the valuable part: the
+"meta-reference, 11.9% local / 6.3% cloud" screen is a detector in
+`_gen/rt2_analyze.mjs` — their own probe. After a day of quoting its rate they
+had come to think of it as something that exists in the product.
+
+Sixth instance of this round's theme, and the sharpest, because the other five
+at least pointed at real code. This pointed at a scratch file and carried a
+recommendation to stop work. Had blue taken it, five claim-bearing scenarios
+would have stayed uncovered under a log note saying they were handled.
+
+**The hazard is sharpest for THIS branch**, which owns both the batteries and
+the gates. `_gen/redteam_local.mjs` reports nine finding classes and exactly ONE
+of them — "SHIPPING GATE rejects" — is product coverage; the other eight are
+measurements that reject nothing. That distinction is now written into the file's
+header rather than left implicit in a class name.
+
+RULE ADOPTED: never answer "is that covered?" from an instrument. Run the input
+through the gate. It is three lines, and nobody wrote them.
+
+### F1-vocab, filed for a later window (red's boundary, with data)
+
+Splitting "coordinate" by WHAT is coordinated, against equilibrium shape:
+
+| shape | n | "coordinate their MOVES" | "coordinating an ACTIVITY" |
+|---|---|---|---|
+| all-MISMATCH | 44 | **9.1%** | 15.9% |
+| all-MATCH | 75 | 1.3% | 12.0% |
+| other | 222 | 2.7% | 13.5% |
+
+The ACTIVITY form is FLAT across shapes (15.9 / 12.0 / 13.5) — a verbal tic, and
+gating it would be precisely the word list that risks rejecting correct output.
+The MOVES form is 9.1% where matching is false against 1.3% where it is true, a
+7x skew concentrated where it misleads. That is the defensible boundary: the
+thing coordinated is the players' own MOVES, not a noun in the world.
+
+Controls the screen must satisfy, if a later window takes it — the third is
+RED 2's, and is the specific false positive their own data predicts:
+  1. "are coordinating a joint experiment" PASSES on any matrix (the flat ACTIVITY form)
+  2. "the two players coordinate their choices" CAUGHT on all-mismatch, PASSES on all-match
+  3. "A shipyards and a harbor coordinator are coordinating dredging operations for a
+     shared canal" PASSES on every matrix — a job title AND a named-actor coordination
+     verb in one sentence, the shape a subject-based regex over-reaches into if the
+     subject pattern is loosened to allow a preceding noun phrase
+
+Not implemented this window — changing vocabulary and shape predicate together
+would leave any new false positive unattributable.
+
+**TAKEN IN FIX WINDOW 2 (below).** Control 3 held. Control 2 had to be SPLIT:
+"PASSES on all-match" was not strong enough, because the sentence must also pass
+where the single pure equilibrium is a matching pair. And a fourth control the
+filing did not anticipate turned out to be a MEASURED false positive of the
+shape proposed here — see rt2#129.
+
+---
+
+## 2026-08-31 — RED 3 RETRACTED F1 AND F2: no desktop stop-ship
+
+Material to this branch's remit, so recorded here rather than left in messages.
+Six launches of the REAL packaged app, fresh user-data-dir each, scored against
+the shipped 60s budget, per-trial load recorded:
+
+    trial 1 (load 4.62) HEALTHY 15s (cold) · trials 2-6 (load 3.2-4.0) HEALTHY 1s
+    RESULT: 6 healthy / 0 failed
+
+F1 (quarantine SIGKILL) is retracted too: on a quiet box the quarantined binary
+behaves exactly like the de-quarantined one, and the real app started 3 of 3
+with quarantine re-applied to all 37 files and verified still present. The
+quarantine PROPAGATION fact stands — a real install does mark all 37 files — but
+it has no demonstrable consequence.
+
+Both original failures were measured at load 40-60. The earlier "load does not
+select the regime" conclusion came from comparing cold rounds against
+back-to-back warm rounds; like-for-like it is monotonic (load 60 → ~78s, load
+20 → 54s, load 6 → 15.7s). **Blue's original objection — that latency measured
+at load average 55 was void — was correct**, and this log's "latency in this
+window is VOID" entry stands as written. Nothing in this log ever recorded a
+mechanism for the bimodality, so nothing needed striking.
+
+What survives from RED 3: F3 (orphaned llama-server survives kill -9 at PPID 1,
+holding 889 MB and the port), F6 (dual-bind port hijack), F4 CORS, F8 CI gaps
+and the unpinned GGUF, F5 narrowed to one self-healing error page.
+
+---
+
+## 2026-08-31 — triage results: what blue reproduced independently
+
+A red-team finding is a claim until someone else runs it. Each of these was
+re-coded from the filed description rather than run through red's harness.
+
+| finding | filed | blue's independent reproduction |
+|---|---|---|
+| RED 1 F1 — anti-coordination games get no coordination screen | claim | **CONFIRMED.** On `A=[[0,3],[2,0]] B=[[0,2],[3,0]]` both pure NE are mismatches, so `anti === pure.length` makes `coordinationShape` TRUE and the screen is skipped. "Both cooperatives want to match the opponent's choice" passes clean. |
+| RED 1 F10 — actorA/actorB never declared | claim | **CONFIRMED AND WIDER.** 0 of 140 local AND 0 of 80 cloud. Then verified red's upgrade by reading the schema: `SCENARIO_SCHEMA` references `REPORT_SCHEMA.properties.suggestedScenario`, which has no actorA/actorB at any nesting; `providers.ts` grafts `additionalProperties:false` onto every object node and sends `strict:true`. So the fields are FORBIDDEN on the cloud path — while `report.ts:423` tells the model "you MUST list those nouns in actorA and actorB". The prompt demands data the schema rejects, and `nashValidator.ts:526` gates the whole misattribution check on it. Dead code on every path. |
+| RED 2 — specialised domains drive off-domain stories | claim | **CONFIRMED to the decimal.** Independently coded, including my own Fisher exact rather than quoting red's. |
+| blue's own "single contrast axis for both players" | blue's hypothesis | **REFUTED by red.** See above. |
+| blue's own "still gains 0.000 by switching" self-contradiction | blue's hypothesis | **NOT REPRODUCED** in 2,944 converged runs. |
+
+### RED 2's specialised-domain finding, reproduced
+
+| | blue | red |
+|---|---|---|
+| SPECIALISED domains off-domain (local) | 14/59 = **23.7%** | 23.7% |
+| EVERYDAY domains off-domain (local) | 6/110 = 5.5% | 4.7% |
+| Fisher two-sided p | **8.35e-4** | 4e-4 |
+| row pair EXACTLY "Early Harvest"/"Late Harvest" | 16.0% | 16.4% |
+| description says cooperative/co-op | 27.8% | 28.5% |
+| CLOUD, both buckets | **0.0%** | 0.0% |
+
+(The p-values differ by ~2x — a tie-inclusion convention — and both are
+decisively below 0.001. Blue's is computed in `_gen/blue_triage_specialised.mjs`.)
+
+**Blue's addition, which changes the recommendation:** pruning the specialised
+domains would NOT fix the monoculture. Row-axis TIME/SPEED by bucket:
+
+    SPECIALISED  54/59  = 91.5%
+    EVERYDAY     86/112 = 76.8%
+
+Everyday domains still hand player A a timing decision more than three times in
+four. So off-domain and the monoculture are **two defects needing two fixes**;
+pruning the list addresses the first and leaves the second almost untouched.
+
+### RED 1 F11 — a missing option label reaches the user's saved data
+
+**CONFIRMED**, `_gen/blue_triage_f11.mjs`. The real draw (local model, Prisoner's
+Dilemma, domain "saffron harvest labour") emitted `col1` plus hallucinated keys
+`day1`/`day2`, leaving **`col2` undefined**:
+
+    validateScenario.ok     = true   (issues: [])
+    scenarioIsClaimFree.ok  = true
+    validateProseDirections = []
+    => SHIPPING GATE PASSES = true
+
+There is no presence check for the four option labels anywhere in the gate. The
+label-hygiene block tests DISTINCTNESS and short-circuits on a falsy first
+label, so a missing label is never examined at all.
+
+The save path then interpolates it verbatim:
+
+> "…for the same harvest period. A chooses between Early Harvest and Late
+> Harvest; B chooses between Night Work and **undefined**."
+
+The irony is worth recording because it is where a fix must look: `hasAllLabels`
+is false EXACTLY when a label is missing, and the fallback sentence is emitted
+EXACTLY in that case. The branch that exists to handle the missing-label case is
+the one that prints "undefined". Fixing the template alone still leaves the
+blank on the suggestion card; fixing the gate alone leaves the template one bad
+draw from doing it again.
+
+**Offline-only.** The cloud path sends `strict: true` with
+`additionalProperties: false`, which rejects both the missing `col2` and the
+invented `day1`/`day2`. The local llama-server is not a strict structured-outputs
+provider, so the schema's `required` is advisory there. Rate 1 in **341**
+gate-passing local draws (0.3%) — RED 1's corpus-1 job finished after they filed,
+so their first denominator (318) was a partial file; corrected here at source.
+One occurrence, so an order of magnitude and not a number — but the mechanism is
+not rate-dependent, since any misspelled JSON key lands in the same place.
+
+### RED 2's "Skilift" determinism — REFUTED, then jointly resolved
+
+Filed as "3 of 3, deterministic". Blue ran 5 draws on a FIXED game (so only the
+sampler varied) and got four different manglings, never the reported string.
+Red then ran 20 draws on that one domain:
+
+    9x  "Skilift Grooming"          2x  "Skis-Lift Grooming"
+    2x  "Skim-Lift Grooming"        2x  "Ski-Lift Grooming"  (correct)
+    1x each: " Ski-Lift Grooming", "Skyscraper Grooming", "Skier Grooming",
+             "Skylift Grooming", "Skier Lift Grooming"
+    mangled 17/20 = 85%   —   NINE distinct spellings in twenty draws
+
+Both halves were wrong about something and the joint result is better than
+either. Determinism is refuted (nine spellings). But "Skilift Grooming" is not a
+fluke either — it is the MODE at 45%, which is exactly why three consecutive
+corpus draws hit it and why a strong mode was mistaken for determinism.
+
+Blue's 4/5 and red's 17/20 = 85% agree closely across two different servers and
+two different context sizes (`-c 4096` vs `-c 16384`), which also rules out
+context size as a factor in token-level spelling.
+
+The fix consequence stands: a different mangle each draw cannot be patched with
+a substitution table. "Skyscraper Grooming" is the one to show a mathematician.
+
+**The leading space REPRODUCED** — once in red's twenty, against 0 untrimmed
+fields in 289 corpus draws (names, all four labels, descriptions; also 0
+double-spaces). Two sightings, both on this domain, none elsewhere. No longer
+obviously chance; possibly whatever makes this token hard also perturbs the
+whitespace. Still not filed as its own defect — but it is now an observation
+with a denominator rather than an anecdote.
+
+### Copy-edit rate — which number to quote, and why
+
+Red hand-scored "would an editor mark this up", criteria and denominator fixed
+before scoring, domain drift excluded so it does not double-count off-domain.
+
+    unblinded   LOCAL 33.3%  CLOUD 13.3%   p = 0.011      <- QUOTE THIS ONE
+    blinded     LOCAL 53.3%  CLOUD  8.3%   p = 4.9e-08
+
+The blind pass shuffled 120 draws with a fixed seed, stripped model labels, and
+unblinded only afterwards. The gap did not narrow — it went from 20 points to
+45 — and the disagreements are lopsided in the *anti*-confirmatory direction:
+14 local and 2 cloud flagged only when blind, against 5 cloud and 2 local
+flagged only when unblinded. Knowing the condition made the scorer GENTLER on
+local, the opposite of the expected bias.
+
+**Blue's call: quote the unblinded 33.3% / 13.3% as the headline.** Red flagged,
+unprompted, that the two passes differ in TWO ways — blinding, and a more
+literal application of the written criteria (every lower-case paraphrase flagged
+consistently; mismatched-axis pairs like "Early Harvest / Full Harvest" no longer
+flagged). Those cannot be cleanly separated, and the criteria change plausibly
+correlates with condition — if local produces more lower-case paraphrases, a
+stricter rule hits local harder for reasons that have nothing to do with
+blinding. The two passes are also not independent: same scorer, second look at
+items already read, so 80.8% agreement is an upper bound on reproducibility and
+the blind CIs do not carry scorer variance.
+
+So the blinded pass is CORROBORATION that the gap is not an artifact of knowing
+the condition. It is not the number to defend in an argument. The floor is
+33.3% / 13.3% at p = 0.011, and that already answers the question a person
+actually asks.
+
+### F12 — reviving the dead guard would NOT catch it
+
+RED 1 filed the first cross-attribution instance ("Player A chooses when to
+release water", where Release Water is B's pair) as "exactly what the dead
+actorA/actorB guard was written to catch". Tested, not reasoned about:
+
+    PASSES  as the model emitted it (no actors)
+    PASSES  WITH actorA/actorB declared
+    CAUGHT  the same sentence using the ROLE NOUN instead of the letter
+
+The guard only ever fires on the role-noun form — by construction, since it
+exists for descriptions that use role nouns INSTEAD of letters. F12 attacks
+through the letter form, which nobody screens because it was assumed
+unambiguous. **Consequence: "add actorA/actorB to the schema so the guard runs"
+cannot be justified by F12** — the one real instance would still pass. The
+letter form is separately decidable and *easier* to check (no actor mapping).
+
+### RED 3 F6 — Express and llama-server both bind :14322; the window loads llama.cpp
+
+Kept here because the guard spec is the interesting part and it generalises.
+
+`server.ts startListening()` retries `port+1` on EADDRINUSE when `IS_ELECTRON`,
+starting at 14321 — and the first fallback step is 14322, which is
+`LLAMA_PORT`. The two do NOT conflict, because the addresses differ: llama binds
+`127.0.0.1:14322`, Node binds `0.0.0.0:14322` with SO_REUSEADDR, and `lsof`
+shows both LISTENing at once. BSD prefers the specific bind on loopback, and
+`createWindow` does `loadURL('http://127.0.0.1:' + finalPort)` — so the window's
+request is answered by **llama.cpp's static web UI**. Electron logs no error
+because the load succeeds.
+
+**Why the obvious assertion would not catch it, and this is the point:** the OS
+reports no conflict — both binds SUCCEED. So "Express is not on the llama port",
+"the port is listening", or any connect-only probe all PASS while the defect is
+present. The only assertion that catches it is on the RESPONSE: after startup, a
+request to the port the window will actually load must be answered by *the app*
+(`/api/health` returning the app's shape), not merely connect.
+
+That is the third member of this round's recurring theme — a guard that looks
+present and is not — alongside the dead actorA/actorB check and the `fmtPayoff`
+no-op. All three would be reported green by a plausible test.
+
+Trigger for a regression test needs BOTH ports occupied simultaneously (two
+macOS accounts in the real world; `--user-data-dir` reproduces it).
+
+### Measurement hygiene: latency in this window is VOID
+
+Load average **55** with four llama-servers and four agents running scans
+concurrently. Defect RATES are unaffected (they do not depend on machine load),
+but every latency figure measured in this window — mine and everyone's — is a
+statement about contention, not about the model. Do not compare run 2/3 p50 or
+p90 against any quiet-machine baseline.
+
+---
+
+## 2026-08-31 — FIX WINDOW 2: F1-vocab, the abstract-player coordination claim
+
+The screen F1 corrected in window 1 was right and unreachable: RED 1 measured
+its vocabulary against 341 real gate-passing draws and got ZERO. This window
+gives the same shape predicate the vocabulary the model actually uses.
+
+### What the discriminator is, and what it deliberately is not
+
+Not a word list. A bare "coordinate" screen has **11.9% precision** on local
+output — eight correct scenarios rejected per defect caught — and 7.6% of local
+draws contain the JOB TITLE "coordinator" and nothing else. With post-hoc
+rewriting closed by Daniel's ruling, a blunt gate is the one remaining way to
+make the product worse while trying to improve it.
+
+The discriminator is the SUBJECT, and specifically **subject-hood**, not
+proximity:
+
+    the two players | both parties …   (aux)*   coordinate / are coordinating
+                                       (aux)*  PLAN|AGREE|WANT (to|how|on)* coordinate
+                                       (aux)*  PLAN a|their COORDINATED <noun>
+
+The bridge between subject and verb is a CLOSED GRAMMATICAL CLASS — auxiliaries,
+modals, adverbs, verbs of intention. Any bridge carrying its own clause breaks
+subject-hood and the screen stays silent. "coordinator"/"coordinators" is
+unreachable by construction: the alternation ends at `(e|es|ing)` and
+`coordinated`, so the job title matches nothing at all.
+
+### The proximity draft was wrong, and the corpus said so
+
+The shape filed for this window — subject, then `[^.]{0,80}`, then `coordinat` —
+was implemented first and **produced a false positive on real output**:
+
+    rt2#129  "The two players are choosing how their shared grid will respond
+              to a COORDINATED demand period."
+
+The players' verb there is "are choosing"; "coordinated" modifies a noun in the
+world. That is the flat ACTIVITY tic — the very form the filing said must never
+be gated — reached anyway because an abstract subject happened to sit in front
+of it. Mutation-tested: the proximity draft wrongly flags **5 of 8** controls,
+including every negated claim. Fixed by the closed bridge class.
+
+### The shape predicate is NARROWER than the screen beside it, on purpose
+
+`!matchingShape` (pure >= 2 and all diagonal) is right for COORD_TALK, whose
+vocabulary asserts the game IS a coordination game. It is too strong here.
+"The two players coordinate their choices" asserts only that agreeing is what
+equilibrium play produces — **true as soon as ANY pure equilibrium sits on a
+matching pair**. So this screen fires only when `diag === 0`.
+
+That is not a technicality. Under `!matchingShape` the corpus produced three
+rejections — rt1#186, rt2#122, rt2#134 — of games whose single pure equilibrium
+IS a matching pair, under an issue string ("its pure equilibria do not all sit on
+matching pairs") that was **false about those games**. An issue string is a claim
+about the game like any other. Weaker claim, weaker falsification condition.
+
+### Evidence — fixture, reach, and false positives in ONE run
+
+`_gen/blue_w2_check.mjs`. Both required clauses, same run, because my own F1
+predicate had a green fixture and a green oracle and 0/341 reach.
+
+    KNOWN POSITIVES  9/9   the five real claim sentences + no-pure + one-mismatch
+                           + the "both" arm + the progressive form
+    CONTROLS        15/15  incl. red 2's load-bearing job-title sentence, the
+                           measured rt2#129 false positive, "are coordinators",
+                           "the coordinating body", and three negations
+    REACH            14 of 875 stored draws (1.60%)
+    newly rejected   13    (rt2#113 was already rejected by F12)
+    newly ACCEPTED    0
+    self-check        0 disagreements outside this screen
+
+All 14 hand-classified as true positives: every one says "the two players
+coordinate their <choices|actions|decisions|plans>" on a game where **no pure
+equilibrium is a matching pair**. By corpus: local 5/211, rt1 3/200, rt2 3/144,
+stakes-local 3/100, **cloud 0/220**. The local/cloud split is the same shape as
+every other defect in this round.
+
+The stakes corpora nearly went unmeasured: they store `spread`, not the matrix.
+It is fully recoverable (`_gen/rt2_stakes_scale.mjs` builds `game(k)` from it)
+and every one of those 240 matrices is matching-pennies, i.e. `diag === 0` —
+so they are the corpus MOST able to produce a false positive here. Skipping
+them for a missing key would have thrown away the strongest negative evidence
+available. Worth generalising: a corpus with no `game` field is not a corpus
+without a game.
+
+Note stakes#9 in the real hits — "A regional grid coordinator, Player B, …
+The two players coordinate their maintenance and dispatch decisions." A job
+title and a genuine claim in the SAME description, and the screen fired only on
+the claim. That is red 2's control, occurring in the wild rather than as a
+fixture.
+
+### Mutation evidence (`_gen/blue_w2_mutation.mjs`)
+
+    MUTANT A  the committed gate      -> all 5 positives slip through   (screen is what catches them)
+    MUTANT B  the proximity draft     -> wrongly flags 5 of 8 controls  (tightening was necessary)
+    MUTANT C  the bare word list      -> wrongly flags 8 of 8 controls  (red's 11.9% precision, reproduced)
+    DIRECTION same sentence, matrix alone flips the verdict, both ways
+
+Both mutants are materialised from git at run time rather than kept as a copy.
+A checked-in "before" snapshot goes stale silently, and the whole job of that
+mutant is to genuinely be the previous behaviour.
+
+### Independent check — RED 1's oracle, their file unmodified
+
+    BEFORE  holes 11/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+    AFTER   holes 10/13 · controls wrongly blocked 0/8 · existing screens lost 0/2
+
+The hole that closed is exactly the one they named: *ANTI-COORD + "coordinate
+their choices" (the model's own wording)*.
+
+### Gate
+
+lint 0 · `npm test` exit 0 (86,236 tie-prose renderings, 0 failures) · build 0 ·
+e2e 22/22 · acceptance 0 · mutation 0. Fixtures for both sides live in
+`src/unit.test.ts`, so they run in the shipping gate rather than only in a
+scratch file — the distinction this round has now been bitten by six times.
+
+### What is still open
+
+F1 is now reachable AND corrected, but "closed" would again be the wrong word.
+The screen covers the abstract-player form; the ACTIVITY form stays deliberately
+unscreened (flat across equilibrium shapes at 15.9 / 12.0 / 13.5 — a tic, not a
+claim), and RED 1's oracle still shows 10 holes reaching the user, including the
+NEGOTIATION form. Reach is 1.60% of draws; nothing here says the remaining
+9.1% of anti-coordination cases are handled.
+
+---
+
+# WINDOW 3 — the option-label channel, the negotiation form, and interest alignment
+
+Three commits: `476a8c9`, `6a8f614`, `b467269`. Gate on each: lint 0, `npm test`
+0, build 0, e2e 22/22. RED 1's oracle went **10/13 holes -> 6/13**, with
+**controls wrongly blocked 0/8 and existing screens lost 0/2 at every step**.
+Combined reach of everything added: **0 of 890 stored draws**, cloud and local.
+
+## The finding that is not a gate: server.ts screens three paths differently
+
+Reported to the main session; NO server.ts edit made, because that file is
+shared and PR #55 is in flight on it. Measured by transcribing each server line
+into a predicate and calling the SHIPPING functions (`_gen/blue_w3_paths.mjs`).
+
+| | P1 rung-3 report (:899) | P2 tie path (:963) | P3 scenarioOnly (:1025) |
+|---|---|---|---|
+| validateScenario | yes | yes | yes |
+| scenarioIsClaimFree | **yes** | **yes** | **NO** |
+| validateProseDirections | yes | yes | yes |
+| retry | no | no | **one** |
+| NASH_SCENARIO_CHECKS=0 kill switch | no | no | **yes** |
+
+Two things fall out. **The weakest gate is the one with the retry** — P3 drops
+the entire claim-free screen and then gets a second draw through what is left.
+And **the split is on the MATRIX, not the button**: "New AI scenario" on a TIE
+game is served by the tie block and DOES get claim-free; on a non-tie game it
+falls to :1025 and does not. Ties are 12.7% of a random sample, so ~87% of
+clicks on that button take the weaker path. 4 of 4 known positives that P1
+rejects — including the real `stakes-local #13` "Col1 or Col2" draw rejected in
+the wild — pass P3. Cost of alignment: 2 of 890 draws, 0.23% of what the button
+ships today.
+
+This matters more than it first looked, because of where the label screen had
+to live (below): the label fix reaches P1 and P2 today but does NOT reach the
+"New AI scenario" button until P3 calls claim-free. One fix, two files.
+
+## The option-label channel (RED 2, L1-L6)
+
+Closed L1 (number in a label), L2 ("Hundredfold"), L4 (number in the NAME, a
+field no screen read), L5 (spelled-out multiple in the description). Also closed
+a shape RED 2 did not build: **the C11 draw without its brackets**. `Signal
+(-1/-1)` is caught by the annotation rule; `Signal -1/-1` was caught by nothing —
+one keystroke from invisible. And `/\d/` -> `/\p{N}/u`, because the description
+screen was ASCII-only and a fullwidth numeral walked through the rule whose only
+job is to stop numerals.
+
+**The placement was the real decision.** The first draft put the numeral screen
+in `validateScenario`. That runs at EVERY rung, and at rung 0 the model writes
+the numbers itself, so `Gate 12 / Gate 7` is an ordinary option pair there — a
+false positive aimed straight at the rung-2/1/0 exploration Daniel has queued.
+The rule is true only because the solver states every number, which is only so
+at rung 3, so it lives on `scenarioIsClaimFree`. The matrix-checked parenthetical
+rule stays in `validateScenario`, where the matrix settles it at any rung. Both
+directions asserted (MUTANT D).
+
+**L3 and L6 are left open on purpose.** "Full Evacuation / No Evacuation" and
+"Full Shutdown / No Shutdown" are not decidable from anything the program holds;
+the identical shape is real, good output (`Full Monitoring / No Monitoring`,
+r2local#108). The word list that catches them rejects **282 of 875 = 32.2%** of
+gate-passing draws. Priced as MUTANT C rather than argued about.
+
+## The negotiation form (RED 1's largest hole)
+
+The rule is a **conjunction**, and the corpus is why. "Negotiat*" is in 10 of 890
+real draws and ALL TEN ARE GOOD — "Two fishing cooperatives are negotiating how
+to manage a shared seasonal catch quota. The North Fleet chooses between Firm
+quota and Flexible quota, while the South Fleet INDEPENDENTLY chooses..." Two
+parties in a negotiation who each pick a stance simultaneously is exactly what
+this app models, and most of those ten are from the cloud production path. Bare
+"offer" is 1.12%, bare "accept" 0.22%, contract/deal/terms 6.29%. So: one side
+OFFERS **and** another ACCEPTS/REJECTS, plus a second arm for the game ENDING in
+a binding agreement. Both 0 of 890.
+
+The unit test's minimal pair holds "negotiating" constant on both sides, so the
+word is demonstrably not what decides the verdict. **Its first draft was wrong
+and the suite caught it**: it swapped in "the other accepts" alone, but an
+acceptance answering nothing is one player's own simultaneous choice and is real
+legal output (r2local#4). It takes both roles to assert the protocol.
+
+## Interest alignment (three more holes, one mechanism)
+
+constant-sum / common-interest / flat are **exact** matrix predicates — no
+tolerance, no equilibrium computation. That is what makes them shippable where a
+vocabulary rule would not be: they cannot fire on an ordinary matrix however the
+sentence is worded. Stated in the test as three minimal pairs — the same sentence
+on a matrix where it is TRUE must pass — which is the property a word list could
+not have.
+
+The negation guard was first a fixed 45-character lookback and **the unit test
+caught it reaching back across a full stop** into the previous sentence, so a
+"not" that negated something else switched the rule off. It is now scoped to the
+phrase's own clause. A whole-description scan is the same bug at full size.
+
+## What is still open, honestly
+
+- **6 of 13 oracle holes remain**: one player holding both option pairs, the
+  pronoun-subject second decision, an option pair with no chooser, both players
+  making the same move, repeated play, and zero-sum + "coordinating".
+- **The last of those is priced and refused**, not merely unfinished: 103 of 890
+  real draws pair "coordinat*" with a constant-sum matrix (38 on the tight form),
+  and they are good output.
+- **Everything shipped this window has 0 reach on observed output.** It is
+  CONTAINMENT, not detection — worth its place because the channels are
+  demonstrably walkable and the distribution is not fixed, but nothing here says
+  the current two models were producing these defects.
+- **`r2cloud#11` is a same-class negotiation instance the narrow rule does not
+  catch**: "chooses whether to submit a Premium Route or a Budget Route bid... A
+  logistics platform chooses whether to Accept Bid or Reject Bid." Widening the
+  offer side to bid/submit/propose catches it at a cost of 1 of 890. Handed to
+  the main session rather than decided unilaterally.
+
+---
+
+# WINDOW 4 — two distinct choosers, and the first checks with REAL REACH
+
+RED 1's oracle **6/13 holes -> 3/13**, controls wrongly blocked **0/8**, existing
+screens lost **0/2**. Gate: lint 0, `npm test` 0, build 0, e2e 22/22.
+
+## The headline, and it is not a count
+
+Everything blue shipped in window 3 is CONTAINMENT: real channels, demonstrably
+walkable, zero observed traffic. **These three rules are the first that catch
+what the models are actually doing.** Five defects, in the reds' own stored
+output, across 1,808 gate-passing draws from every corpus this campaign holds:
+
+| | draws | all genuine? |
+|---|---|---|
+| one actor taking a SECOND decision | 2 | yes |
+| second option pair handed to a PRONOUN | 2 | yes |
+| a claim that the two MOVES COINCIDE | 1 | yes |
+
+`rt1#71` is RED 1's one-player probe in the wild: *"A regional airport … will
+either use an Early Survey or a Late Survey for that data set. The airport will
+ALSO choose between sharing a route … or taking a separate route."* There is no
+second player. The user is shown a single decision maker with four options, in a
+product whose entire subject is two players choosing simultaneously.
+
+Total rejected by every blue rule over 1,808 draws: **6, or 0.332%** — the five
+above plus the approved negotiation widening. Zero false positives.
+
+## I shipped a false positive in window 3, and RED 1's new corpus found it
+
+W3's rivalry arm was a bare `rivals?`. It caught the word used ATTRIBUTIVELY, to
+name an actor: *"B is a RIVAL fisherman choosing between Open Fish and Keep
+Fish"* and *"A RIVAL event coordinator chooses…"* — two real draws, wrongly
+rejected on common-interest matrices. Two rival firms can face a decision where
+their interests happen to align perfectly; that is a coherent scene, not a false
+statement about the game.
+
+It is the job-title-is-not-a-claim lesson the F1 screen is built on, and **this
+file's own W3 comment warned about it two rules earlier** ("competing/rival/
+contest alone is 1.57% of real draws and legitimate almost everywhere"). Every
+other member of that regex requires a preposition or an object; only `rivals?`
+leaked. Fixed to `are rivals` / `rivalry`, with the claim itself still caught,
+asserted both ways.
+
+**The lesson is about measurement, not about the word.** W3's "0 reach on 890
+draws" was true and still concealed this, because 890 rows were the rows the
+rule was written against. RED 1 re-ran the label predicates on 274 fresh accepted
+draws and got 0.00%; doing the same for every blue rule over 928 NEW draws is
+what surfaced the rivalry bug. A rule measured only on its own corpus looks free
+whether or not it is.
+
+## Three more false positives, all mine, all caught before shipping
+
+Each first draft was a vocabulary match, and each was wrong on real output in a
+way only the description's own CAST could settle. All three are now controls.
+
+- **"also"** — `The airport will ALSO choose` is one actor taking a second
+  decision; `A smaller independent distributor is ALSO choosing` is "likewise",
+  a second actor, and correct. Same word, opposite meaning. My draft captured the
+  auxiliary `is` as the subject and then stripped its trailing s, comparing the
+  string `i` against the text — which matches everything.
+- **pronoun** — counting only CHOOSING verbs made *"A regional airline is
+  PLANNING a series of flights… It chooses… while the glacier manager
+  chooses…"* look like a one-actor description. It has two. The cast count now
+  includes actor-introducing verbs.
+- **"the same"** — fired on *"chooses the same PRODUCT through the same
+  season"*, where the thing shared is the object of the game, not the move. The
+  discriminator is whether the shared noun is ALREADY IN THE SCENE: "product"
+  was named earlier, "timing" appears nowhere else, so only the latter can be
+  anaphoric to the other player's choice.
+
+## Also this window
+
+The negotiation offer side was widened to submitting a bid (coordinator
+approved), catching `rt2_cloud#11`: *"chooses whether to SUBMIT a Premium Route
+or a Budget Route BID … chooses whether to ACCEPT BID or REJECT BID."* Cost over
+1,808 draws: that one draw. `blue_w3_mutation.mjs` had asserted the negotiation
+rule rejects NOTHING; that assertion correctly failed and is now pinned to
+exactly one known draw rather than relaxed to an inequality, so a second hit
+fails until somebody reads it.
+
+## What is left, honestly
+
+Three holes, and they are not equivalent:
+
+- **ZERO-SUM + "coordinating"** — REFUSED and priced, not unfinished. 103 of 890
+  real draws pair `coordinat*` with a constant-sum matrix.
+- **AN OPTION PAIR WITH NO CHOOSER** — deferred by agreement. The vocabulary
+  form runs at 25% precision ("The options represent which stage takes the
+  earlier shift" is explanatory prose in draws that name both choosers). It
+  needs a structural test: is the second option pair ever the object of a
+  choosing verb with its own subject.
+- **REPEATED PLAY** — not yet measured. "Each season" is likely everywhere in
+  this corpus, so it must be priced before anything is designed.
+
+---
+
+## Open leads handed to red (evidence in blue's hands, investigation in theirs)
+
+- **RED 1 — `fmtPayoff` applied at 2 of 10 payoff-printing sites.** The
+  2026-08-31 fix routed the two live-coordinate readouts through `fmtPayoff`
+  and left the RESOLVED/headline payoffs on a bare `toFixed(3)`:
+  `src/App.tsx` 3576, 3579, 3590, 3596 (MathTex), 3617 (prose "realised X"),
+  3643, 3702, 3724 (ColorCoded text); `src/utils/gameEngine.ts` 1492, 1493,
+  1520, 1521 (simulation log). Confirmed reachable: on
+  `A=[[-0.003,0],[0.002,-0.001]] B=[[-0.003,-0.002],[-0.002,-0.003]]` the mixed
+  NE has a true `E[A] = -0.0005` and `ne.eA.toFixed(3)` prints `"0.000"` while
+  `fmtPayoff` says `"greater than -0.001"`.
+  **NOT reproduced:** blue's own hypothesis that the "Settled … a player still
+  gains 0.000 by switching" line self-contradicts did NOT occur in 2,944
+  converged runs over small-scale matrices. Stated as a negative so nobody
+  fixes a phantom.

@@ -1,0 +1,83 @@
+
+> nash-equilibrium-simulator@0.0.97 test
+> tsx src/unit.test.ts && tsx src/test.ts && tsx src/fuzz.test.ts && tsx src/cors.contract.test.ts && tsx src/cloudbuild.contract.test.ts && V_N=4000 tsx _gen/verify_tieprose.ts
+
+✓ color-coding term parity: card and saved description derive identical terms
+✓ user colour terms: cleaning rules hold and never cross into model prose
+✓ camera relayout predicate: granular scene.camera.* keys count as camera changes
+✓ scenario domains: 80 distinct settings, top share 1.75% over 4000 picks (target < 5%)
+✓ fmtPayoff: sub-resolution payoffs never render as zero
+✓ gate fixes 2026-08-31: F11 missing label (gate + save path), F1 shape gate, F12 letter-form attribution
+All unit tests passed.
+  ✓ prose direction check: catches the cloud PD inversion, tie-as-strict, over-generalised indifference and the row-15 inversion; passes 8 correct specimens
+✓ equilibriumSet: 507,000 membership checks, 2,115 tie-free games identical to computeAllNE, 680 tie games where the corner list is incomplete
+✓ claim-free screen: bare "payoffs" allowed, every attached claim still refused
+✓ equilibriumActions: continuum interiors accepted, unplayed options still caught
+✓ template declarations: bestPays/altPays populated and true, output passes its own gate
+✓ red-team findings: sub-resolution probability, dropped equilibrium, prose/solver agreement, Unicode duplicates
+✓ sub-resolution wording: handover and both modes’ discovery logs say "less than 0.001", never "0"
+✓ red-team #3: continuum formatter, continuum-aware narrative gate, ordinal move-order phrasings
+✓ red-team #4: regret-checked convergence, confusable-label folding
+✓ red-team #5: NE tolerance scaled to r3 quantisation, presets recognised, real non-equilibria still caught
+✓ red-team #6: NE tolerance is scale-invariant (no floor), solution concept read from the realised profile
+✓ red-team #7: concept decided on exact coordinates, indifference asserted only where it holds
+✓ red-team #8: box resolves to exact coordinates through the real sim path, tolerance is per-player
+✓ red-team #9: exact coordinates carried on the state; 3598 converged runs, every reported equilibrium is in the equilibrium set
+✓ red-team #10: box coordinates, concept and payoffs all read the rendered game; 800 cross-game renders checked
+✓ red-team #11/#12: committedNE and the full replay argument set are part of the run context
+✓ red-team #13: run parameters frozen for the forward path too; unicode minus reaches the solver
+✓ red-team #14: one parser per typed field; a pasted minus survives blur and a zero is a value
+✓ red-team break 1: the stale-replay fixture is false three ways, and the predicate is pinned
+✓ red-team break 2: mover change makes a finished run false, so it must reset
+✓ class guard: no ad-hoc numeric parsers in App.tsx
+✓ class guard: firstMover has exactly one writer
+✓ class guard: every setPayoffs writer resets or cannot change a value
+✓ validators: a false claim flags in every spelling of its minus sign
+✓ two negatives in one sentence: every occurrence normalises, in every spelling
+✓ red-team 15 break A: 1504 steps converge; per-step cost flat (late/early 0.97x)
+✓ phase-2 entry: corridor inherited (no [0,1] snapback), one-sided extension when the root is outside
+✓ step cap: truncation path exercised with an injected cap; the real cap clears the worst known run
+✓ class guard: no per-step deep copying of the trajectory
+✓ red-team 15 break B: x0/y0 canonicalise on blur, like every other numeric field
+✓ run-context invariant: runStale cannot be true while a run still exists
+✓ class guard: stepMode has exactly one writer, and it ends the run it would otherwise silently ignore
+✓ red-team 16: a deferred tour stage builds its run from current parameters, not a stale closure
+✓ latent-hazard guard: the tour never stages a mover change, so changeFirstMover cannot reset mid-act
+✓ joint-payoff claim: 4 true positives still fire, 4 false-positive shapes closed (21 golds + L15 + 2 nano rows)
+✓ tie prose: 566 tie games rendered, every sentence passed the prose gate
+✓ performance budgets: solver 20k=10ms, precompute=4ms, 200-game battery=4ms (1662 steps total)
+All game-engine regression tests passed.
+
+=== PRESETS (search, bos, pd, cnr, spy) ===
+games audited: 5  (degenerate: 0)
+✓ no issues
+
+=== RANDOM smallInt (300 games) ===
+games audited: 300  (degenerate: 126)
+✓ no issues
+
+=== RANDOM tie (200 games) ===
+games audited: 200  (degenerate: 177)
+✓ no issues
+
+=== RANDOM bigFrac (200 games) ===
+games audited: 200  (degenerate: 0)
+✓ no issues
+
+=== RANDOM wide (150 games) ===
+games audited: 150  (degenerate: 2)
+✓ no issues
+
+=== GENERATE RANDOM GAME (200 rolls per kind) ===
+✓ no issues
+
+==================================================
+✓✓ ALL CHECKS PASSED — solver, both sim modes, and visuals are correct across all sampled inputs.
+✓ cors contract: client verbs [DELETE, HEAD, PATCH, POST] all covered (non-safelisted checked against: GET, POST, PUT, PATCH, DELETE, OPTIONS)
+✓ cloudbuild contract: 16 env names match deploy/cloudrun-env-manifest.txt; rung-3 flags literal, REPORT_MODEL non-empty, substitutions declared, images: tags built, no secret-shaped defaults, image is NODE_ENV=production by construction
+near-boundary: 432 renderings with equilibrium probabilities in and around the 0.0005 display threshold
+exhaustive: 6,817 matrices x 12 label sets = 82,236 verified, 1,164 full-space
+
+verified 86,236 renderings (82,236 exhaustive + 4,000 of 4,000 random)
+  ties 67,624 · continua 55,206 · full-space 1,165 · multi-component 31,534
+  FAILURES: 0 (0 distinct classes)
