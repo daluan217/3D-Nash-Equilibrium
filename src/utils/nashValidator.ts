@@ -664,6 +664,116 @@ function secondPairHandedToAPronoun(desc: string): boolean {
 }
 
 /**
+ * THE SAME SINGLE PAIR HANDED TO BOTH PLAYERS COLLECTIVELY, with the other pair
+ * never appearing in the story at all.
+ *
+ *   "Two neighbouring beekeepers are choosing winter apiary sited near their
+ *    homes. THE BEEKEEPERS must choose either Roof Shed or Garden Shed."
+ *        labels: Roof Shed / Garden Shed / Drainage Line / Open Corridor
+ *
+ *   "Two neighbouring salt-marsh graziers are arranging their seasonal grazing
+ *    rights… EACH chooses between Limited Rotation and Open Rotation."
+ *        labels: Limited Rotation / Open Rotation / Early Access / Late Access
+ *
+ * Same family as `secondPairHandedToAPronoun` and found the same way: that rule
+ * catches the second pair going to a SINGULAR pronoun ("it chooses either…"),
+ * and the retrained local model produces the identical defect with a COLLECTIVE
+ * subject instead, which walked straight through it. The reader is shown a game
+ * with one player's options in it, and the app's whole subject is two players
+ * choosing at once.
+ *
+ * THREE CONDITIONS, AND EVERY ONE OF THEM IS LOAD-BEARING — measured, not
+ * assumed, over 3,208 draws that currently reach the user:
+ *
+ *  (a) ONE PAIR ONLY. Both of one player's labels appear in the description and
+ *      NEITHER of the other's does. Alone this fires on 160 draws, and a
+ *      hand-read says most are ordinary PARAPHRASE — "deciding whether to plant
+ *      cranberries early or late" for Early Planting / Late Planting is good
+ *      prose, not a defect. Never gate on this alone.
+ *  (b) A COLLECTIVE SUBJECT does the choosing. Alone this fires on 114 draws,
+ *      because "both choose at the same time" is the CORRECT way to say the
+ *      moves are simultaneous. `they` is included here where the pronoun rule
+ *      above deliberately excludes it, and (a) is what makes that safe.
+ *  (c) NO SECOND, SPECIFIC CHOOSER ANYWHERE IN THE DESCRIPTION. This is the
+ *      guard against the shape (a) and (b) cannot separate on their own: "Two
+ *      yards EACH choose between Early Slot and Late Slot, while THE BOARD
+ *      decides whether to open or hold the window" is correct output whose
+ *      second pair is merely paraphrased. No draw in any corpus has that shape
+ *      yet, so the guard is justified on SHAPE rather than on a rate — the D4
+ *      precedent, and the reason the campaign's over-firing predicates all
+ *      over-fired.
+ *
+ *      Its FIRST draft reused `describedCast` and counted named nouns, and the
+ *      negative fixture above caught it firing anyway: `describedCast` treats
+ *      "each" as a stop word, so "Two yards each choose…" contributed no noun
+ *      at all and the sentence with the second, perfectly specific chooser left
+ *      the count at one. The guard has to classify the SUBJECT OF EVERY
+ *      CHOOSING CLAUSE, not count nouns.
+ *
+ * WHAT THE RULE REALLY SEPARATES: A SYMMETRIC STORY FROM ASYMMETRIC LABELS.
+ * "Each cooperative chooses either Raise Quota or Hold Quota" is not a defect
+ * on its own — it is the model's normal, correct way to describe a SYMMETRIC
+ * game, and every draw of that shape in every corpus here (ferry timetable
+ * slots, courier bids, dairy prices, fishing quotas, textile dye shifts) turns
+ * out to carry the SAME pair on both sides. Condition (a) spares all of them
+ * for free, because a symmetric game's column labels do appear in the story.
+ * The rule fires only where the STORY is symmetric and the LABEL SLOTS are not,
+ * which is a disagreement inside one response and never a stylistic choice.
+ *
+ * This also settles a boundary the repo already decided: exact cross-player
+ * label collision is deliberately NOT gated in production, because symmetric
+ * games legitimately name both sides the same way. Nothing here changes that —
+ * a genuinely symmetric scenario passes.
+ *
+ * Reach: 6 of 3,297 draws that reach the user (0.18%), every one hand-read,
+ * every one a genuine defect, all six from the retrained local model. Zero on
+ * cloud, zero on the previous local model, so this is a NEW shape rather than a
+ * standing one — which is exactly why the acceptance sweep re-runs every rule
+ * against every model instead of trusting the corpus a rule was written on.
+ */
+const CHOOSE_VERB = String.raw`(?:choose|chooses|choosing|pick|picks|picking|decide|decides|deciding|select|selects|selecting|opt|opts|use|uses)`;
+/**
+ * The subject of every clause that does the choosing, split into the ones that
+ * speak for BOTH players at once and the ones that name a particular party.
+ * The rule fires only when there is at least one of the former and none of the
+ * latter — one specific chooser anywhere means the story does have two sides.
+ */
+function choosingSubjects(desc: string): { collective: number; specific: number } {
+  let collective = 0, specific = 0;
+  // A plural the description has already introduced as BOTH parties — "TWO
+  // NEIGHBOURING BEEKEEPERS are choosing… THE BEEKEEPERS must choose…".
+  const introduced = new Set<string>();
+  for (const m of desc.matchAll(/\b(?:two|both)\s+(?:\w+[\s-]+){0,3}?([a-z][\w'’-]{3,}s)\b/gi)) introduced.add(m[1].toLowerCase());
+  for (const clause of castClauses(desc)) {
+    const m = new RegExp(String.raw`^(.*?)\b(?:will\s+|must\s+|then\s+|also\s+|independently\s+|simultaneously\s+)*${CHOOSE_VERB}\b`, 'i').exec(clause);
+    if (!m) continue;
+    const subj = m[1].replace(/^\s*(?:and|but|while|whereas|with|so|then)\b/i, '').trim().toLowerCase();
+    if (!subj) continue;
+    const last = (subj.split(/\s+/).pop() ?? '').replace(/[^a-z'’-]/g, '');
+    const isCollective =
+      /^(?:each|both|they|either\s+party)\b/.test(subj)
+      || /\b(?:each|both)\b/.test(subj) && !/\bthe\s+(?:first|second|other)\b/.test(subj)
+      || /^(?:the\s+)?(?:two|both)\b/.test(subj)
+      || introduced.has(last);
+    if (isCollective) collective++; else specific++;
+  }
+  return { collective, specific };
+}
+function onlyPairHeldCollectively(sc: SuggestedScenario): boolean {
+  const raw = sc.description ?? '';
+  const desc = raw.toLowerCase();
+  if (!desc) return false;
+  const has = (l?: string) => !!l && desc.includes(l.trim().toLowerCase());
+  const rowPair = [sc.row1, sc.row2].filter((l): l is string => typeof l === 'string' && !!l.trim());
+  const colPair = [sc.col1, sc.col2].filter((l): l is string => typeof l === 'string' && !!l.trim());
+  if (rowPair.length < 2 || colPair.length < 2) return false;
+  const rowsIn = rowPair.filter(has).length, colsIn = colPair.filter(has).length;
+  if (!((rowsIn === 2 && colsIn === 0) || (colsIn === 2 && rowsIn === 0))) return false;
+  const { collective, specific } = choosingSubjects(raw);
+  return collective > 0 && specific === 0;
+}
+
+/**
  * A claim that one player's move IS the other's: "…while the coordinator
  * chooses THE SAME TIMING." The players move independently, so their moves
  * cannot be asserted equal.
@@ -913,6 +1023,12 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     [assertsTheSameMove, "a claim that one player's move is the same as the other's"],
   ];
   for (const [fires, why] of STRUCTURAL) if (fires(desc)) return { ok: false, reason: why };
+  // Takes the whole scenario rather than the description alone: the defect is a
+  // disagreement between the story and the LABEL SLOTS, so it cannot be decided
+  // from the prose by itself.
+  if (onlyPairHeldCollectively(sc)) {
+    return { ok: false, reason: 'the only option pair in the story is held by both players at once' };
+  }
 
   return { ok: true };
 }

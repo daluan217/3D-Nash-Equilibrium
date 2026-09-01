@@ -1353,7 +1353,39 @@ function testTwoChooserStructure() {
   assert(!gate('A textile company and a competing manufacturer fight for the same order. Each books its own dyeing slot for the run.', COMMON),
     'W4 REGRESSION CONTROL: the actual rivalry CLAIM must still be caught on a common-interest matrix');
 
-  console.log('✓ two-chooser structure: 5 real defects caught across 1,808 draws at 0 false positives; every control is a draw an earlier draft wrongly rejected');
+  // ── W7: THE SAME PAIR HELD BY BOTH PLAYERS, THE OTHER PAIR ABSENT ────────
+  // The retrained local model produces the pronoun rule's defect with a
+  // COLLECTIVE subject, which walked straight through it. Both positives are
+  // real gate-accepted v2 draws, quoted with the labels they actually shipped.
+  const lab = (o: Record<string, string>) => ({ name: 'Test', storyClaims: null, ...o } as any);
+  const claimFreeWhy = (o: Record<string, string>) => scenarioIsClaimFree(lab(o)).reason ?? '';
+  const HELD = /only option pair in the story is held by both players at once/;
+  assert(HELD.test(claimFreeWhy({ row1: 'Roof Shed', row2: 'Garden Shed', col1: 'Drainage Line', col2: 'Open Corridor',
+    description: 'Two neighboring beekeepers are choosing winter apiary sited near their homes. The beekeepers must choose either Roof Shed or Garden Shed for the apiary.' })),
+    'W7 (v2, in the wild): the collective plural holds the only pair named — the second player has no options in the story');
+  assert(HELD.test(claimFreeWhy({ row1: 'Limited Rotation', row2: 'Open Rotation', col1: 'Early Access', col2: 'Late Access',
+    description: 'Two neighboring salt-marsh graziers are arranging their seasonal grazing rights on adjacent shared grazing rights. Each chooses between Limited Rotation and Open Rotation for its holding schedule.' })),
+    'W7 (v2, in the wild): "Each chooses between…" with the other pair absent');
+  // THE CONTROL THAT DEFINES THE RULE. Identical phrasing, SYMMETRIC labels —
+  // the shape every real "each X chooses between Y and Z" draw in every corpus
+  // turns out to have. It must pass, or the rule has become a ban on symmetric
+  // games, which this repo deliberately allows.
+  assert(!HELD.test(claimFreeWhy({ row1: 'Raise Quota', row2: 'Hold Quota', col1: 'Raise Quota', col2: 'Hold Quota',
+    description: 'Two fishing cooperatives are negotiating next season\u2019s shared catch limit. Each cooperative chooses either Raise Quota or Hold Quota for its position at the bargaining table.' })),
+    'W7 CONTROL: a genuinely SYMMETRIC game described collectively is complete prose and must pass');
+  // The guard against the shape the first draft got wrong: one pair merely
+  // PARAPHRASED while a second, specific chooser is named.
+  assert(!HELD.test(claimFreeWhy({ row1: 'Early Slot', row2: 'Late Slot', col1: 'Open Window', col2: 'Hold Window',
+    description: 'Two yards each choose between Early Slot and Late Slot, while the board decides whether to open or hold the window for the season.' })),
+    'W7 CONTROL: a second SPECIFIC chooser means the story has two sides, however the second pair is worded');
+  // And with no chooser at all in the prose, the collective half is what keeps
+  // the rule off an ordinary description that just names one pair.
+  assert(!HELD.test(claimFreeWhy({ row1: 'Early Watch', row2: 'Late Watch', col1: 'Confirm Rows', col2: 'Confirm Covers',
+    description: 'The season\u2019s Early Watch and Late Watch are set by an orchard grower; a neighbouring cider cooperative handles cover placement for the same nights.' })),
+    'W7 CONTROL: naming one pair is not itself the defect — somebody has to be choosing collectively');
+
+  console.log('\u2713 two-chooser structure: 5 real defects caught across 1,808 draws at 0 false positives; every control is a draw an earlier draft wrongly rejected');
+  console.log('\u2713 W7 collective pair: 6 v2 defects caught across 3,297 user-reaching draws at 0 false positives; symmetric games pass');
 }
 
 /**
@@ -1423,6 +1455,21 @@ function testRepeatedPlayRefused() {
     { row1: 'Early Shift', row2: 'Late Shift', col1: 'Early Shift', col2: 'Late Shift' }),
     'REPEATED PLAY (the measured false positive): "Each SHIFT chooses" distributes over the two PLAYERS — the cycle noun is the actor');
 
+  // EVERY "EACH X CHOOSES BETWEEN Y AND Z" DRAW IN THIS BLOCK IS A SYMMETRIC
+  // GAME, and four of them were being asserted against the wrong labels.
+  //
+  // The descriptions are quoted verbatim from real corpora, but the LABELS were
+  // this function's defaults (Early Slot / Late Slot / Shared Window / Separate
+  // Window), which none of these draws ever had. Looked up in the corpora they
+  // came from, all four carry the SAME pair on both sides — Early Slot / Late
+  // Slot, North Bid / South Bid, Premium Price / Discount Price, Raise Quota /
+  // Hold Quota — which is what makes "each cooperative chooses either Raise
+  // Quota or Hold Quota" complete prose rather than a story missing half its
+  // options. Glued onto unrelated column labels the same sentence describes a
+  // game whose second player has no options in the story at all, so the gate
+  // SHOULD reject it, and the control was asserting the opposite about a
+  // scenario that never existed. Real labels restored: the controls now pin
+  // what they were recruited to pin, and each can fail for the reason it claims.
   // ── THE SCENE NOUNS, every one a real draw the loose rules would have hit ─
   const REAL: [string, string, Partial<Record<'row1' | 'row2' | 'col1' | 'col2', string>>?][] = [
     ['rt3_flat_cloud2#51, "Long Run" is a PRINT run — and an option label',
@@ -1434,15 +1481,19 @@ function testRepeatedPlayRefused() {
       'A bird-ringing station manager chooses between a Dawn Round and an Extended Round for the station’s work. A visiting bird research team chooses whether to request the Early Slot or the Late Slot.',
       { row1: 'Dawn Round', row2: 'Extended Round' }],
     ['rt_label_corpus#48, "recurring" describes the CONTRACT, not the game',
-      'Two courier companies are competing for a recurring delivery contract. Each company chooses whether to submit a bid centered on the north route or the south route.'],
+      'Two courier companies are competing for a recurring delivery contract. Each company chooses whether to submit a bid centered on the north route or the south route.',
+      { row1: 'North Bid', row2: 'South Bid', col1: 'North Bid', col2: 'South Bid' }],
     ['rt3_character_cloud#27, "daily sailings" is the business, one decision about it',
-      'Two ferry operators are assigning their daily sailings to timetable slots on the same route. Each operator chooses between the Early Slot and the Late Slot.'],
+      'Two ferry operators are assigning their daily sailings to timetable slots on the same route. Each operator chooses between the Early Slot and the Late Slot.',
+      { row1: 'Early Slot', row2: 'Late Slot', col1: 'Early Slot', col2: 'Late Slot' }],
     ['rt_label_corpus#31, "routine weekly prices" — recurrent context, single choice',
-      'Two neighboring dairy co-ops are setting routine weekly prices for comparable milk products. Each co-op chooses between Premium Price and Discount Price for the coming week.'],
+      'Two neighboring dairy co-ops are setting routine weekly prices for comparable milk products. Each co-op chooses between Premium Price and Discount Price for the coming week.',
+      { row1: 'Premium Price', row2: 'Discount Price', col1: 'Premium Price', col2: 'Discount Price' }],
     ['rt2_gapladder_g25#12, "reputation" is a STAKE on this one decision',
       'A large ski resort is setting its grooming plan for the season, with its reputation and operating budget heavily tied to reliable lift access. An independent grooming contractor, whose own business is less exposed, chooses between a Full Pass and a Selective Pass.'],
     ['rt3_stakes_cloud#7, "next season’s catch limit" is the SUBJECT of one choice',
-      'Two fishing cooperatives are negotiating next season’s shared catch limit. Each cooperative chooses either Raise Quota or Hold Quota for its position at the bargaining table.'],
+      'Two fishing cooperatives are negotiating next season’s shared catch limit. Each cooperative chooses either Raise Quota or Hold Quota for its position at the bargaining table.',
+      { row1: 'Raise Quota', row2: 'Hold Quota', col1: 'Raise Quota', col2: 'Hold Quota' }],
   ];
   for (const [tag, d, labels] of REAL) {
     assert(gate(d, labels), `REPEATED PLAY CONTROL (${tag}): a cycle noun is scene-setting — gating it would reject 30.09% of real output`);

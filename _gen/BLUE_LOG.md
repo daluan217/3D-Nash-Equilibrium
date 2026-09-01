@@ -23,6 +23,194 @@ slots, so `--parallel 4` on `-c 4096` gives 1024 tokens per slot.
 
 ---
 
+
+## 2026-09-01 — WINDOW 7: THE ACCEPTANCE SWEEP AGAINST THE RETRAINED MODEL (v2)
+
+**Carry this first: a clean lexical sweep demonstrates the absence of the defect
+classes we can DECIDE, and says nothing about whether the story makes sense.**
+Every number below is a decidable class. A separate blind coherence read covers
+the rest and nothing here substitutes for it.
+
+Surface: v2 = `nash-scenario-v2-0.6b-Q4_K_M.gguf` on :8120 (`-c 4096
+--parallel 1`, the desktop spawn flags); v1 = `nash-scenario-domain-0.6b-Q4_K_M`
+on :8110 (`-c 16384 --parallel 4`). 400 + 400 PAIRED draws on identical (game,
+domain) cells, fresh seed 777001 so no rule in this repo was tuned on them,
+collected through `generateScenario({ model: 'localqwen', domain, stakes: true })`
+and nothing else. Measurement started at `28bfc23`.
+
+### 1. FALSE POSITIVES ON v2: ZERO — and one guard is now doing 19x more work
+
+12 v2 rejections across 480 draws (400 fresh + 80 banked). ALL TWELVE HAND-READ,
+all twelve true positives: 6 the new W7 rule below, 5 duplicate label slots
+(every one with the model's own sentence naming two DISTINCT options — a
+serialisation failure, not an invention failure), 1 the W4 pronoun rule.
+
+The sharper test is not counting rejections but removing each guard and asking
+what the rule would then reject on v2. v2's register changed, so each guard is
+worth a different amount now:
+
+| guard | spares on v1 | spares on v2 |
+|---|---|---|
+| META bare letter: the negative lookbehind | 3 (0.8%) | **60 (15.0%)** |
+| negotiation: offer/accept CONJUNCTION not the word | 7 (1.8%) | 11 (2.8%) |
+| move order: a CHOOSING VERB after before/after | 0 (0.0%) | 5 (1.3%) |
+| META "the game": hyphen boundary | 0 | 0 — **GUARD NOT TESTED** here |
+| BIG_SPELLED_QUANTITY: the 3 words D4 had | 0 | 0 — **GUARD NOT TESTED** here |
+| META cast: excluding bare "the players" | 0 | 0 — **GUARD NOT TESTED** here |
+
+**v2 adopted "Designation + Letter" as its house style** — Grower A / Grower B,
+Shift A / Shift B, Farmer A / Farmer B, Operator A / Operator B, Herder A /
+Herder B. That is cloud's good shape, and it is the exact string the naive
+bare-letter predicate matches. Without the W6 lookbehind the META screen would
+now reject **one v2 draw in seven**, every one of them good prose. The guard was
+built for cloud's benefit at a measured 0.5% cost on v1; on v2 it is the single
+most load-bearing thing in the gate. Three guards are reported as UNTESTED
+rather than as passes — no draw in either arm separates them.
+
+### 2. LOST REACH: the entire META family is now containment on local
+
+| rule | v1 | v2 |
+|---|---|---|
+| META prompt cast ("Player A") | 4.25% | **0.00%** |
+| META bare letter | 4.00% | **0.00%** |
+| META game cast ("the two players") | 1.75% | **0.00%** |
+| META the game itself | 0.25% | **0.00%** |
+| META payoff named | 0.50% | **0.00%** |
+| W4 second decision / same move | 0.25% each | 0.00% |
+| every W3 falsehood + alignment rule | 0.00% | 0.00% |
+
+The largest local-vs-cloud gap this campaign measured (meta vocabulary, local
+17.1% vs cloud 6.2%, p=3.7e-10) is **gone on the retrained model**: 0 of 480 v2
+draws hit any of the five sub-forms, against 40 of 480 on v1. Recorded as
+CONTAINMENT, not as coverage — the rules keep their place because the guards
+above prove the channel is live, not because they catch anything now.
+
+Also improved, on gate-ACCEPTED output: label collision 9.12% -> 0.76%,
+a/an disagreement 3.13% -> 0.51%, persona leak 8.3% -> 0.0%, meta leak
+3.0% -> 0.0%, whole-gate rejection 12.3% -> 1.0%, distinct scenario names
+101/400 -> 168/400, "name is just the domain title-cased" 85.3% -> 51.8%.
+
+### 3. NEW ON v2, and the one that was worth a rule
+
+**SHIPPED — the collective subject holds the only pair.** W4 catches the second
+pair going to a singular pronoun ("A dairy co-op is deciding between X and Y…
+IT chooses either P or Q"). v2 produces the identical defect with a COLLECTIVE
+subject and walked straight through:
+
+    "Two neighboring beekeepers are choosing winter apiary sited near their
+     homes. THE BEEKEEPERS must choose either Roof Shed or Garden Shed."
+         labels: Roof Shed / Garden Shed / Drainage Line / Open Corridor
+
+    "…EACH chooses between Limited Rotation and Open Rotation for its holding
+     schedule."   labels: Limited Rotation / Open Rotation / Early Access / Late Access
+
+**What it really separates is a SYMMETRIC STORY FROM ASYMMETRIC LABELS.** "Each
+cooperative chooses either Raise Quota or Hold Quota" is the model's normal,
+correct way to describe a symmetric game, and every draw of that shape in every
+corpus here — ferry slots, courier bids, dairy prices, fishing quotas, textile
+dye shifts — carries the SAME pair on both sides, which the rule spares for
+free. It fires only where the story says symmetric and the label slots say
+otherwise: a disagreement inside one response, never a style choice.
+
+Reach 6 of 3,297 user-reaching draws (0.18%), every hit hand-read, every one a
+genuine defect, **all six from v2** — zero on cloud, zero on v1, zero on any
+legacy corpus. Four conditions, each mutation-killed SEPARATELY by a distinct
+fixture (`_gen/blue_w7_mutation.py`); the harness voids a mutation that fails to
+apply instead of reporting a pass.
+
+**AND IT BROKE ONE OF MY OWN SHIPPED CONTROLS, which turned out to be wrong.**
+`testRepeatedPlayRefused` asserts the whole gate accepts nine real draws. Four
+of them quote real prose but were glued to the test's DEFAULT labels — labels
+none of those draws ever had. Looked up in their source corpora all four are
+SYMMETRIC (Early Slot / Late Slot on both sides, North Bid / South Bid, Premium
+Price / Discount Price, Raise Quota / Hold Quota). Under unrelated column labels
+the same sentence describes a game whose second player has no options at all, so
+the gate SHOULD reject it and the control was asserting the opposite about a
+scenario that never existed. Real labels restored: the controls now pin what
+they were recruited to pin, the repeated-play refusal is untouched, and each can
+fail for the reason it claims. `npm test` and `npm run lint` green.
+
+**MEASURED AND NOT SHIPPED — every one refused with its reason.**
+
+| new shape | v1 | v2 | verdict |
+|---|---|---|---|
+| stakes band said out loud ("high-stakes edition", "a modest project") | 3.3% | **26.5%** | NOT A DEFECT — 0 contradict the matrix |
+| the stakes prompt's own wording in the story | 0.0% | 1.5% | REFUSED, see below |
+| domain phrase given agency ("Two avalanche patrol ROSTERS are deciding") | 0.0% | 1.0% | not gateable here — the gate has no domain |
+| near-colliding label pairs (Early Rotas/Late Rotas vs Early Rota/Late Rota) | 0.0% | 0.3% | REFUSED — see below |
+| chatbot-register label ("Ask me next") | 0.0% | 0.3% | n=1, recorded |
+| "chooses between" twice | 61.8% | **77.8%** | register narrowing, no defect |
+| both players' pairs share modifiers | 13.3% | 3.8% | v2 BETTER |
+
+*The stakes band said out loud is the stakes feature working, not a leak.* The
+adjectives track the band computed from the matrix, and the contradiction rate
+is 0/400 on both arms. That number was 2 on v2 and 1 on v1 in the first draft,
+and a hand-read killed all three: every one was an option LABEL quoted in the
+description ("chooses Small Order or Large Order" on a band-1 game). Blanking
+the labels first — which `validateScenario`'s own outcome rule already does — is
+what makes it zero. Tenth over-firing first draft this campaign.
+
+*The stakes prompt's own wording is REFUSED on a hand-read.* Narrowed to the two
+phrases distinctive to `stakesHint`, it is 4 of 3,511 user-reaching draws, all
+v2. Reading them: ONE is out of register ("with the amounts at stake being a
+large portion of the schedule"); the other THREE are "making a fine adjustment
+to a shared irrigation plan", which is ordinary English that happens to appear
+in the band-1 hint. Gating it would be 3 false positives out of 4 hits. What is
+left is n=1, which cannot support a precision claim. Recorded as an OPEN,
+UNGATED observation, not as coverage.
+
+*Near-collision is REFUSED on consistency, not on rate.* Exact cross-player
+label collision is DELIBERATELY not gated in production, because symmetric games
+legitimately name both sides the same way. Rejecting "Early Rotas / Late Rotas"
+against "Early Rota / Late Rota" while accepting "Early Harvest / Late Harvest"
+against "Early Harvest / Late Harvest" would be incoherent. The channel is
+recorded, the rule is not written.
+
+### 4. RESIDUAL HOLES, stated so nobody reads this as clean
+
+- **Three-party cast with one pair absent.** "A wind-farm operator chooses
+  between a Routine Overhaul and a Deep Overhaul… while the farm's UTILITY AND
+  GRID OPERATORS are choosing how to coordinate the work." Three parties, B's
+  pair never named, no collective chooser — the new rule does not reach it.
+- **Domain-phrase agency** (1.0% on v2): needs the domain at validation time,
+  which `scenarioIsClaimFree` does not have.
+- **Coined non-words on the REAL path.** v1 shipped `Openvertise` / `Holdvertise`
+  as option labels and `Reindee Herding Routes` as a name, gate-accepted, through
+  `generateScenario` with the schema. The earlier attribution of coined non-words
+  to a missing-schema artefact is at best incomplete. v2 has ~2 (`haulline`,
+  a "thanning contractor" for thatching) against v1's ~9 — better, not zero.
+
+### 5. TWO INSTRUMENT BUGS IN MY OWN HARNESS, both found before they were quoted
+
+- **The sweep ate its own output.** Run 1 wrote its accepted-draw dump to
+  `/tmp/blue_w7_v2_accepted.jsonl` — a directory the discovery walks. Run 2 read
+  it back as a separate corpus; it sorts ahead of `eval_v2.jsonl`, and the global
+  dedup silently reassigned **77 of the 80 banked v2 draws out of the v2 arm**.
+  The arm counts read `v2-banked 3` and every v2 rate was computed on three rows.
+  Fixed by writing to `/tmp/blue_w7_out/` (not descended into) plus a name guard,
+  and by keying the dedup PER ARM so filename order can never move a draw between
+  populations.
+- **The W6 registry was already stale.** Its rule list was hardcoded and did not
+  contain `cites a large quantity` (W5) or `the payoff, the mathematical object`
+  (W6) — both shipped, both invisible to it. The W7 sweep reports any rejection
+  reason no tag claims and exits non-zero; that flushed out four more rules
+  nobody had listed, three of which fire on real corpus rows. It also carries a
+  COUNTING-PATH self-test (planted defects must be attributed to the right rule
+  in the right arm) and an under-load assertion, because "all zeros on v2" is
+  what both bugs above looked like.
+
+### Files
+
+`_gen/blue_w7_collect.mjs` (paired collector, real path) ·
+`_gen/blue_w7_acceptance.mjs` (35-rule registry, discovery, self-tests) ·
+`_gen/blue_w7_guardvalue.mjs` (what each guard is worth on v2) ·
+`_gen/blue_w7_newshapes.mjs` + `_gen/blue_w7_newclasses.mjs` (paired feature diff) ·
+`_gen/blue_w7_collective.mjs` + `_gen/blue_w7_price.mjs` (pricing) ·
+`_gen/blue_w7_mutation.py` (per-condition mutation, voids non-applying mutations).
+Corpora: `/tmp/blue_w7_v1.jsonl`, `/tmp/blue_w7_v2.jsonl`; dumps in `/tmp/blue_w7_out/`.
+
+---
+
 ## 2026-09-01 — FIX WINDOW 6: META VOCABULARY — four sub-forms shipped, the fifth escalated
 
 The largest remaining defect class with real reach, and the first this campaign
