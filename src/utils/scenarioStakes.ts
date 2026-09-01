@@ -219,8 +219,31 @@ export function stakesHint(g: GamePayoffs): string {
   // BYTE-IDENTICAL to what ships today (verified over 20,000 games: 2,312 fire,
   // 0 differ below the cut), so that second is paid only on the ~1 game in 9
   // that gets the benefit. Persona leak with this wording: 0/27, 0/26, 0/31.
+  // DIRECTION IS STATED, NOT LEFT TO THE MODEL.
+  //
+  // This line used to read "Player A has far more riding on this than Player B,
+  // OR THE REVERSE". That phrasing announces that an asymmetry exists while
+  // withholding which way it runs — and it had to, because `playerGap` is
+  // `max(swingA, swingB) / min(...)`, a magnitude RATIO that discards direction
+  // by construction. So the model guessed, and a red team measured the guess on
+  // the story's OWN game: it agreed with the swing reading 38% of the time and
+  // with the range reading 53%, and 44% of the stories were wrong under BOTH.
+  // Worse, every confirmed instance named the ROW party as the exposed one —
+  // the "or the reverse" half was never taken.
+  //
+  // The forced-choice evidence above is not contradicted by that, because it
+  // never tested this: it was a RANKING task (which of two stories carries the
+  // bigger gap), so a story could rank correctly while pointing at the wrong
+  // party. A comparative claim about which side has more at stake is decidable
+  // from the matrix printed beside it, which makes a wrong one exactly the
+  // falsehood rung 3 exists to prevent.
+  //
+  // `swingA`/`swingB` carry the direction the ratio threw away, so the line now
+  // names the exposed party. Everything else is byte-identical, including the
+  // persona prohibition measured at 0/27, 0/26, 0/31.
+  const exposedFirst = s.swingA >= s.swingB;
   const gap = Number.isFinite(s.playerGap) && s.playerGap >= PLAYER_GAP_NOTABLE
-    ? 'Player A has far more riding on this than Player B, or the reverse — make that difference in exposure part of who the two parties are. Never write "Player A", "Player B", "the players" or a bare letter in the description itself.'
+    ? `${exposedFirst ? 'Player A has far more riding on this than Player B' : 'Player B has far more riding on this than Player A'} — make that difference in exposure part of who the two parties are. Never write "Player A", "Player B", "the players" or a bare letter in the description itself.`
     : '';
 
   const parts = [size, gap].filter(Boolean);
