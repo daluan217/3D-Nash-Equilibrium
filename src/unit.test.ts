@@ -792,6 +792,7 @@ function runUnitTests() {
   testGateFixesAugust31();
   testOptionLabelChannel();
   testNegotiationForm();
+  testInterestAlignment();
   console.log('All unit tests passed.');
 }
 
@@ -1111,6 +1112,83 @@ function testNegotiationForm() {
     'NEGOTIATION CONTROL: an offer with no acceptance answering it must still pass');
 
   console.log('✓ negotiation form: offer/accept protocol and binding-agreement claims caught; 7 real draws containing negotiate/offer/accept/contract still pass');
+}
+
+/**
+ * INTEREST ALIGNMENT — three more of RED 1's oracle holes, closed together
+ * because they share one property: THE MATRIX SIDE IS EXACT.
+ *
+ *   constant-sum    a+b identical in all four cells — one side's gain is
+ *                   precisely the other's loss, so a shared goal is impossible
+ *   common interest a == b in every cell — the two never disagree, so there is
+ *                   nothing to be rivals over
+ *   flat            a player's payoff does not move with the opponent's column,
+ *                   so that opponent cannot determine their outcome
+ *
+ * No tolerance, no equilibrium computation, nothing to tune. That is what makes
+ * these shippable where a vocabulary rule would not be: the screens CANNOT fire
+ * on an ordinary matrix however the sentence is worded, so the false-positive
+ * risk is bounded by the matrix instead of by the word list. Measured reach on
+ * 890 stored draws: 0 for all three (_gen/blue_w3_framing.mjs, which self-tests
+ * that its detector can fire before reporting that zero).
+ *
+ * THE FOURTH HOLE IN THIS FAMILY IS DELIBERATELY LEFT OPEN. RED 1's "zero-sum +
+ * cooperative framing" probe is "An antique store and a restoration company are
+ * COORDINATING a new display" on a +100/-100 matrix. 103 of 890 real draws pair
+ * some form of "coordinat*" with a constant-sum matrix (38 with the tight "are
+ * coordinating" form), and they read as good output — parties who cooperate on
+ * an activity while competing over its terms are ordinary, and nothing in the
+ * corpus separates them from the probe. Gating it costs 4-12% of real output to
+ * catch something undecidable. The controls below pin that boundary.
+ */
+function testInterestAlignment() {
+  const MP: GamePayoffs = { a11: 100, a12: -100, a21: -100, a22: 100, b11: -100, b12: 100, b21: 100, b22: -100 };
+  const COORD: GamePayoffs = { a11: 4, a12: 0, a21: 0, a22: 2, b11: 4, b12: 0, b21: 0, b22: 2 };
+  const AFLAT: GamePayoffs = { a11: 5, a12: 5, a21: 5, a22: 5, b11: 0, b12: 3, b21: -3, b22: 1 };
+  const PLAIN: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 1, b12: 4, b21: 2, b22: 6 };
+  const sc = (d: string) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const ok_ = (d: string, g: GamePayoffs) => validateScenario(sc(d), g).ok;
+
+  // ── HOLES, verbatim from the oracle ──────────────────────────────────────
+  assert(!ok_('A store and a restorer work together toward the same goal for the display. Each books its own slot for the season.', MP),
+    'ALIGNMENT: a shared goal on a constant-sum matrix — one player gains exactly what the other loses in every cell');
+  assert(!ok_('A textile company and a competing manufacturer fight for the same order. Each books its own dyeing slot for the run.', COORD),
+    'ALIGNMENT: rivalry where the two players\' payoffs are IDENTICAL in every cell');
+  assert(!ok_("A roastery picks its supplier for the season. The distribution partner's decision will determine the handling and pricing outcome for the roastery.", AFLAT),
+    "ALIGNMENT: \"B determines A's outcome\" where A earns the same in all four cells");
+
+  // ── THE MATRIX IS WHAT DECIDES. Same sentence, different matrix. ─────────
+  // This pair is the whole argument: if the screens were word lists these would
+  // both fail, and the second is ordinary good output.
+  assert(ok_('A store and a restorer work together toward the same goal for the display. Each books its own slot for the season.', COORD),
+    'ALIGNMENT CONTROL: the identical shared-goal sentence on a common-interest matrix is TRUE and must pass');
+  assert(ok_('A textile company and a competing manufacturer fight for the same order. Each books its own dyeing slot for the run.', MP),
+    'ALIGNMENT CONTROL: the identical rivalry sentence on a strictly opposed matrix is TRUE and must pass');
+  assert(ok_("A mill books a slot. A haulier books a window, and that partner's decision will determine the pricing outcome for the mill.", PLAIN),
+    "ALIGNMENT CONTROL: \"determines the outcome\" where the payoffs really do vary must pass");
+
+  // ── The oracle's own controls, which a careless widening would break. ────
+  assert(ok_('A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.', PLAIN),
+    'ALIGNMENT CONTROL: "their choices determine the payoffs" is the vacuous closer the model writes constantly and is true here');
+  assert(ok_('Two hauliers share one loading dock. One books an Early Slot or a Late Slot; the other books a Shared Window or a Separate Window.', MP),
+    'ALIGNMENT CONTROL: sharing a RESOURCE is a scene fact, not a claim that interests are aligned');
+  // THE BOUNDARY, asserted so a later widening fails here rather than in
+  // production: "coordinating" on a constant-sum matrix stays legal, because
+  // 103 of 890 real draws have exactly that pairing and are good output.
+  assert(ok_('An antique store and a restoration company are coordinating a new display. The store books a slot while the restorer books a window.', MP),
+    'ALIGNMENT BOUNDARY: "coordinating" on a constant-sum matrix must stay legal — 103 of 890 real draws pair the two, and gating it costs 4-12% of output to catch something undecidable');
+
+  // Negation must not trip the rules, and the guard is WINDOWED — a negation
+  // elsewhere in the paragraph must not switch a rule off.
+  assert(ok_('The two firms do not work together toward the same goal; each books its own slot.', MP),
+    'ALIGNMENT: a negated shared-goal claim must pass');
+  assert(!ok_('The display is not yet booked. A store and a restorer work together toward the same goal for it.', MP),
+    'ALIGNMENT: a negation in an EARLIER clause must not suppress the rule — the guard is windowed, not a whole-description scan');
+
+  console.log('✓ interest alignment: shared-goal/rivalry/determines rules decided by the matrix, 0 reach on 890 draws; the "coordinating on zero-sum" boundary pinned as legal');
 }
 
 try {

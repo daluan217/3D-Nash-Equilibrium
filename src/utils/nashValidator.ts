@@ -955,6 +955,93 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
       issues.push('description frames the game as anti-coordination (countering the opponent), but every pure equilibrium sits on a matching pair');
     }
   }
+
+  // INTEREST ALIGNMENT, which is a different question from equilibrium shape.
+  // The rules above ask where the equilibria SIT; these ask whether the two
+  // players' interests are aligned or opposed, and the matrix answers that
+  // EXACTLY — no tolerance, no equilibrium computation, nothing to tune:
+  //
+  //   constant-sum   a+b is the same in all four cells: one side's gain is
+  //                  precisely the other's loss, in every outcome.
+  //   common interest a == b in every cell: the two never disagree about
+  //                  anything, so there is nothing to compete over.
+  //   flat           a player's payoff does not move with the opponent's
+  //                  column at all, so that opponent cannot affect it.
+  //
+  // That exactness is what makes these shippable: the screens CANNOT fire on an
+  // ordinary matrix however the sentence is worded, so the false-positive risk
+  // is bounded by the matrix rather than by the vocabulary. Measured reach on
+  // 890 stored draws: 0 for all three. (The corpus is if anything pessimistic —
+  // 382 of its 890 games are constant-sum, because the adversarial stakes
+  // corpora are matching-pennies-shaped. Real user matrices are far less often
+  // exactly constant-sum, so these fire even less in production.)
+  {
+    const near0 = (x: number, y: number) => Math.abs(x - y) < 1e-9;
+    // Negation guard. The NEGATED constant above is scoped to
+    // incentive/reason/want/need and does not reach this vocabulary, so these
+    // rules carry their own.
+    //
+    // Scoped to the phrase's OWN CLAUSE, not the paragraph and not a fixed
+    // character window. A blanket scan switches the rule off whenever any "not"
+    // appears anywhere; a fixed window reaches back across the full stop into
+    // the previous sentence, which is the same bug in miniature \u2014 the unit test
+    // caught exactly that, on "The display is not yet booked. A store and a
+    // restorer work together toward the same goal." Negation binds inside its
+    // clause, so the lookback stops at the last sentence or clause break.
+    const negatedBefore = (re: RegExp) => {
+      const m = re.exec(desc);
+      if (!m) return false;
+      const before = desc.slice(0, m.index);
+      const cut = Math.max(before.lastIndexOf('.'), before.lastIndexOf(';'), before.lastIndexOf('!'), before.lastIndexOf('?'));
+      const clause = before.slice(cut + 1).slice(-60);
+      return /\b(?:no|not|never|neither|nor|without|rather\s+than|far\s+from|cannot)\b|n['\u2019]t\b/i.test(clause);
+    };
+    const k = g.a11 + g.b11;
+    const constantSum = near0(g.a12 + g.b12, k) && near0(g.a21 + g.b21, k) && near0(g.a22 + g.b22, k);
+    const commonInterest = near0(g.a11, g.b11) && near0(g.a12, g.b12)
+      && near0(g.a21, g.b21) && near0(g.a22, g.b22);
+    const aFlat = near0(g.a11, g.a12) && near0(g.a21, g.a22);
+    const bFlat = near0(g.b11, g.b21) && near0(g.b12, g.b22);
+
+    // A SHARED GOAL, asserted on a game where the payoffs are exactly opposed.
+    // Deliberately NOT the word "coordinating", which is the trap here: 103 of
+    // 890 real draws pair some form of "coordinat*" with a constant-sum matrix
+    // (38 with the tight "are coordinating" form), and they read as perfectly
+    // good output — "An antique store and a restoration company are
+    // coordinating a new display", then two independent choices. Parties who
+    // cooperate on an activity while competing over its terms are ordinary, and
+    // the corpus cannot separate them from RED 1's probe, which has the same
+    // shape. So that arm is LEFT OPEN, priced, rather than shipped at a 4-12%
+    // cost. What is gated is only the assertion of a shared PAYOFF interest,
+    // which constant-sum refutes outright.
+    const SHARED_GOAL = /\b(?:work(?:s|ing)?\s+together|the\s+same\s+goal|an?\s+shared\s+goal|common\s+goal|mutual\s+benefit|both\s+benefit|jointly\s+benefit|shared\s+interests?|same\s+interests?|for\s+their\s+mutual\b)/i;
+    if (constantSum && !commonInterest && SHARED_GOAL.test(desc) && !negatedBefore(SHARED_GOAL)) {
+      issues.push('description says the two players share a goal, but the matrix is constant-sum: one player gains exactly what the other loses in every outcome');
+    }
+
+    // The mirror: rivalry asserted where the two players' payoffs are IDENTICAL
+    // in every cell, so they never disagree about anything and there is nothing
+    // to win from each other. `competing/rival/contest` alone is 1.57% of real
+    // draws and legitimate almost everywhere — it is the common-interest matrix
+    // that makes it false, and that matrix holds in 76 of 890.
+    const RIVALRY = /\b(?:fight(?:s|ing)?\s+(?:for|over)|compet(?:e|es|ing)\s+(?:for|over|against)|rivals?\b|battl(?:e|es|ing)\s+(?:for|over)|outbid|beat\s+the\s+other|at\s+odds\b|opposed\s+interests|conflicting\s+interests)/i;
+    if (commonInterest && RIVALRY.test(desc) && !negatedBefore(RIVALRY)) {
+      issues.push('description frames the two players as rivals, but their payoffs are identical in every cell: they never disagree about any outcome');
+    }
+
+    // "B's decision determines A's outcome" where A's payoff is the same in
+    // both of B's columns. The dominant-strategy rules above catch a related
+    // claim, but only when a player HAS a dominant strategy; a flat payoff row
+    // is a different and stronger fact. Kept narrow: it needs an outcome noun
+    // AND a determining verb, so the corpus's constant "their choices determine
+    // the payoffs" closer — true wherever both players' payoffs vary — is
+    // untouched, and is asserted as a control.
+    const DETERMINES = /\b(?:determines?|dictates?|drives?|controls?|sets?)\b[^.;]{0,40}?\b(?:outcome|payoff|return|result|position)\b|\b(?:outcome|payoff|return|result)\b[^.;]{0,30}?\b(?:is|are)\s+determined\s+by\b/i;
+    if ((aFlat || bFlat) && DETERMINES.test(desc) && !negatedBefore(DETERMINES)) {
+      const who = aFlat ? 'A' : 'B';
+      issues.push(`description says one player's choice determines the outcome, but ${who}'s payoff is the same whichever option the opponent takes`);
+    }
+  }
   for (const m of desc.matchAll(/(?:\bE\[[AB]\]|\b[AB])\s*[=≈≃~]\s*(-?\d+(?:\.\d+)?)/g)) {
     const v = Number(m[1]);
     if (!Number.isFinite(v)) continue;
