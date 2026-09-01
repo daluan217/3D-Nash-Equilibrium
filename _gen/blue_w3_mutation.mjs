@@ -212,7 +212,14 @@ console.log('\n── NEGOTIATION mutants, priced against the real corpus ──
   ok(mOff > 0, 'MUTANT "offer" must be shown to cost real output');
   ok(mDis > mNeg, 'MUTANT disjunction must be shown to be worse than the conjunction');
   ok(mNoun > 0, 'MUTANT bare contract/deal noun must be shown to cost real output');
-  ok(mine === 0, 'the SHIPPED negotiation rule must reject none of the real corpus');
+  // Was `mine === 0`. The offer side was WIDENED in window 4 (coordinator
+  // approved) to cover submitting a bid, which catches exactly one real draw:
+  // rt2_cloud#11, "chooses whether to SUBMIT a Premium Route or a Budget Route
+  // BID… chooses whether to ACCEPT BID or REJECT BID". That is a true positive
+  // of the same class, not a regression, so the expectation is pinned to that
+  // one draw rather than relaxed to an inequality — a second hit here is a new
+  // fact and should fail until someone has read it.
+  ok(mine === 1, `the SHIPPED negotiation rule must reject exactly the one known draw, got ${mine}`);
 }
 
 console.log(`\n${fail ? `MUTATION FAILURES: ${fail}` : 'ALL MUTATION CHECKS PASSED'}`);

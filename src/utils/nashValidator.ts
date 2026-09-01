@@ -427,6 +427,122 @@ const MULTIPLIER_CLAIM = new RegExp(
 );
 
 /**
+ * TWO DISTINCT CHOOSERS — the cast analysis behind three of the structural
+ * rules in scenarioIsClaimFree.
+ *
+ * Every game this app models has exactly two players, each holding exactly one
+ * pair of options. A description that hands both pairs to one actor, or hands
+ * the second pair to nobody, shows the reader a game the product cannot model —
+ * and it is the most user-visible defect class left, because the whole subject
+ * of the app is two players choosing simultaneously.
+ *
+ * These are FUNCTIONS rather than entries in the CLAIMY regex table because
+ * every one of them is conditioned on the description's OWN CAST, not on a
+ * word. That distinction is the entire design: the first draft of each rule was
+ * a vocabulary match, and each produced a false positive on real output that
+ * only the cast could rule out.
+ */
+const CAST_AUX = /^(?:is|are|was|were|will|must|can|could|would|should|may|might|has|have|had|been|be|also|then)$/i;
+const CAST_STOP = new Set(['the', 'a', 'an', 'its', 'their', 'his', 'her', 'this', 'that', 'these', 'those',
+  'same', 'each', 'both', 'either', 'neither', 'must', 'will', 'also', 'then', 'and', 'or',
+  'independently', 'simultaneously']);
+// Clause boundaries: sentence ends, and the connectives that introduce a second
+// actor's clause. "X chooses A, WHILE Y chooses B" is two choosers in one
+// sentence, and a splitter that missed that would see one.
+const castClauses = (d: string) => d.split(/(?<=[.;!?])\s+|\s*,?\s+(?=while\b|whereas\b)/i).filter((c) => c.trim());
+// Actor-introducing verbs, deliberately broader than the choosing verbs. An
+// actor is often introduced with "is planning" or "operates" and only chooses
+// in a later clause; counting only choosing verbs made "A regional airline is
+// PLANNING a series of flights… It chooses… while the glacier manager
+// chooses…" look like a one-actor description. It has two.
+const CAST_VERB = String.raw`(?:chooses|choose|choosing|picks|pick|picking|decides|decide|deciding|selects|select|selecting|opts|opt|books|book|plans|plan|planning|operates|operate|operating|runs|run|running|schedules|schedule|scheduling|weighs|weigh|weighing|considers|consider|considering|manages|manage|managing|faces|face|facing|serves|serve|serving|sets|set|setting|holds|hold|holding|must|is|are)`;
+
+function describedCast(desc: string): { nouns: Set<string>; pronouns: string[] } {
+  const nouns = new Set<string>();
+  const pronouns: string[] = [];
+  for (const clause of castClauses(desc)) {
+    const m = new RegExp(String.raw`^(.*?)\b(?:will\s+|must\s+|then\s+|also\s+|independently\s+|simultaneously\s+)*${CAST_VERB}\b`, 'i').exec(clause);
+    if (!m) continue;
+    const subj = m[1].trim().replace(/\s+(?:will|must|also|then|independently|simultaneously)\s*$/i, '');
+    if (!subj) continue;
+    const words = subj.split(/\s+/).filter(Boolean);
+    const last = (words[words.length - 1] ?? '').replace(/[^A-Za-z'’-]/g, '');
+    if (/^(?:it|he|she|they)$/i.test(last) && words.length <= 2) { pronouns.push(last.toLowerCase()); continue; }
+    if (!last || CAST_AUX.test(last) || CAST_STOP.has(last.toLowerCase())) continue;
+    nouns.add(last.toLowerCase().replace(/s$/, ''));
+  }
+  return { nouns, pronouns };
+}
+
+/**
+ * One actor taking a SECOND decision: "The airport will ALSO choose between…"
+ * when the airport already chose. Found in the wild (rt1#71, and rt2 stakes
+ * pilot's "Each manager also chooses between Deep Irrigation and Surface
+ * Irrigation" — each manager holding both pairs).
+ *
+ * The subject test is the whole rule. "A smaller independent distributor is
+ * ALSO choosing between an open slot and a crowded slot" is CORRECT output:
+ * there "also" means "likewise", and the subject is the second actor, newly
+ * introduced. Same word, opposite meaning. The first draft captured the
+ * auxiliary "is" as the subject and flagged it.
+ */
+function oneActorTakesASecondDecision(desc: string): boolean {
+  const re = /\b([A-Za-z][\w'’-]*)\s+(?:is|are|will|must|can|would|should|may)?\s*also\s+(?:choose|chooses|choosing|decide|decides|deciding|pick|picks|picking|select|selects|selecting)\b/gi;
+  for (const m of desc.matchAll(re)) {
+    const w = m[1];
+    if (CAST_AUX.test(w) || CAST_STOP.has(w.toLowerCase())) continue;
+    const head = w.toLowerCase();
+    // Singular/plural tolerated ("managers" earlier, "manager also chooses"
+    // later). Only stemmed when the word is long enough that the trailing s is
+    // plausibly a plural — stripping it from "is" produced "i", which matched
+    // everything, and that was the first draft's false positive.
+    const sing = head.length > 3 ? head.replace(/s$/, '') : head;
+    if (new RegExp(String.raw`\b${sing}s?\b`, 'i').test(desc.slice(0, m.index))) return true;
+  }
+  return false;
+}
+
+/**
+ * The second option pair handed to a SINGULAR pronoun when no second player was
+ * ever named: "A dairy co-op is deciding between Premium Pricing and Cost-Plus
+ * Pricing… IT chooses either Local Sales or Online Sales." Two draws in the
+ * wild. "They" is excluded on purpose — a plural pronoun refers to both players
+ * and is the correct way to say they choose simultaneously.
+ */
+function secondPairHandedToAPronoun(desc: string): boolean {
+  const { nouns, pronouns } = describedCast(desc);
+  return pronouns.some((p) => /^(?:it|he|she)$/.test(p)) && nouns.size < 2;
+}
+
+/**
+ * A claim that one player's move IS the other's: "…while the coordinator
+ * chooses THE SAME TIMING." The players move independently, so their moves
+ * cannot be asserted equal.
+ *
+ * The discriminator is that the shared noun is NOT already in the scene. "The
+ * co-op chooses one, while the market buyer chooses THE SAME PRODUCT" shares a
+ * thing that was named earlier — scene-setting, not a claim about the move.
+ * "The same timing" names nothing earlier, so "the same" can only be anaphoric
+ * to the other player's choice. Decision-nouns are excluded outright, because
+ * "makes the same scheduling CHOICE" is the ordinary "faces the same kind of
+ * decision" reading, and "makes" is excluded for the same reason.
+ */
+function assertsTheSameMove(desc: string): boolean {
+  const re = /\b(?:chooses?|choosing|picks?|picking|selects?|selecting)\s+(?:exactly\s+)?the\s+same\s+((?:[a-z'’-]+\s+){0,2}?)([a-z'’-]+)\b/gi;
+  for (const m of desc.matchAll(re)) {
+    const noun = m[2].toLowerCase();
+    if (/^(?:choices?|options?|decisions?|kinds?|types?|calls?|sorts?|ones?|way|ways)$/.test(noun)) continue;
+    const before = desc.slice(0, m.index);
+    const stem = noun.length > 4 ? noun.replace(/(?:ing|s)$/, '') : noun;
+    if (new RegExp(String.raw`\b${stem}`, 'i').test(before)) continue;
+    const mods = (m[1] || '').trim().split(/\s+/).filter(Boolean);
+    if (mods.some((w) => new RegExp(String.raw`\b${w.slice(0, Math.max(4, w.length - 3))}`, 'i').test(before))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * CLAIM-FREE screen for the rung-3 configuration.
  *
  * When the solver renders the mathematics, the model's only job is to invent a
@@ -570,7 +686,15 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     // Written with lookaheads to keep it in this table with every other claim
     // rule instead of becoming a special case above the loop.
     // Measured: 0 of 890 stored draws, cloud and local.
-    [/^(?=[\s\S]*\boffer(?:s|ed|ing)?\b)(?=[\s\S]*\b(?:accept|reject|decline|approve)(?:s|ed|ing)?\b)/i,
+    // The offer side covers SUBMITTING a bid and PROPOSING as well as offering,
+    // because those are the same speech act and the model uses them
+    // interchangeably. r2cloud#11 is the draw that forced it: "A courier company
+    // chooses whether to SUBMIT a Premium Route or a Budget Route BID for a
+    // delivery contract. A logistics platform chooses whether to ACCEPT BID or
+    // REJECT BID." B's options are answers to A's move, which is the sequence
+    // claim in the vocabulary the narrow rule did not cover. Cost of the
+    // widening, measured over 1,808 draws across every corpus: that one draw.
+    [/^(?=[\s\S]*\b(?:offer|propose|tender|submit)(?:s|ed|ing)?\b|[\s\S]*\bbids?\b)(?=[\s\S]*\b(?:accept|reject|decline|approve)(?:s|ed|ing)?\b)/i,
       'a claim that one player offers and the other accepts'],
 
     // The second half of the same claim: that this game ENDS IN AN AGREEMENT.
@@ -590,6 +714,20 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
       'a claim that the game ends in a binding agreement'],
   ];
   for (const [re, why] of CLAIMY) if (re.test(desc)) return { ok: false, reason: why };
+
+  // TWO DISTINCT CHOOSERS. Unlike everything else in this function, these three
+  // have REACH on observed output: 5 defects across 1,808 gate-passing draws
+  // from every corpus this campaign holds, RED 1's newest 928 included, with
+  // zero false positives (_gen/blue_w4_refine.mjs). They are the first checks
+  // here that catch what the models are actually doing rather than containing a
+  // channel nobody has walked.
+  const STRUCTURAL: [(t: string) => boolean, string][] = [
+    [oneActorTakesASecondDecision, 'a second decision given to a player who already made one'],
+    [secondPairHandedToAPronoun, "a second set of options given to a pronoun when only one player is named"],
+    [assertsTheSameMove, "a claim that one player's move is the same as the other's"],
+  ];
+  for (const [fires, why] of STRUCTURAL) if (fires(desc)) return { ok: false, reason: why };
+
   return { ok: true };
 }
 
@@ -1024,7 +1162,18 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     // to win from each other. `competing/rival/contest` alone is 1.57% of real
     // draws and legitimate almost everywhere — it is the common-interest matrix
     // that makes it false, and that matrix holds in 76 of 890.
-    const RIVALRY = /\b(?:fight(?:s|ing)?\s+(?:for|over)|compet(?:e|es|ing)\s+(?:for|over|against)|rivals?\b|battl(?:e|es|ing)\s+(?:for|over)|outbid|beat\s+the\s+other|at\s+odds\b|opposed\s+interests|conflicting\s+interests)/i;
+    // `rivals` only as a PREDICATE NOUN ("the two are rivals"), never
+    // attributively. The first version had a bare `rivals?\b` and RED 1's newer
+    // corpus caught it rejecting two real draws — "B is a RIVAL fisherman
+    // choosing between Open Fish and Keep Fish" and "A RIVAL event
+    // coordinator…". There the word names WHO THE ACTOR IS, exactly the
+    // job-title-is-not-a-claim lesson the F1 screen above is built on, and
+    // which this file's own comment warned about two rules earlier. Two rival
+    // firms can face a decision where their interests happen to align
+    // perfectly; that is a coherent scene, not a false statement about the
+    // game. Every other member already requires a preposition or an object for
+    // the same reason ("competing FOR", "fight OVER"), so only this one leaked.
+    const RIVALRY = /\b(?:fight(?:s|ing)?\s+(?:for|over)|compet(?:e|es|ing)\s+(?:for|over|against)|are\s+rivals\b|\brivalry\b|battl(?:e|es|ing)\s+(?:for|over)|outbid|beat\s+the\s+other|at\s+odds\b|opposed\s+interests|conflicting\s+interests)/i;
     if (commonInterest && RIVALRY.test(desc) && !negatedBefore(RIVALRY)) {
       issues.push('description frames the two players as rivals, but their payoffs are identical in every cell: they never disagree about any outcome');
     }

@@ -819,6 +819,102 @@ phrase's own clause. A whole-description scan is the same bug at full size.
 
 ---
 
+# WINDOW 4 — two distinct choosers, and the first checks with REAL REACH
+
+RED 1's oracle **6/13 holes -> 3/13**, controls wrongly blocked **0/8**, existing
+screens lost **0/2**. Gate: lint 0, `npm test` 0, build 0, e2e 22/22.
+
+## The headline, and it is not a count
+
+Everything blue shipped in window 3 is CONTAINMENT: real channels, demonstrably
+walkable, zero observed traffic. **These three rules are the first that catch
+what the models are actually doing.** Five defects, in the reds' own stored
+output, across 1,808 gate-passing draws from every corpus this campaign holds:
+
+| | draws | all genuine? |
+|---|---|---|
+| one actor taking a SECOND decision | 2 | yes |
+| second option pair handed to a PRONOUN | 2 | yes |
+| a claim that the two MOVES COINCIDE | 1 | yes |
+
+`rt1#71` is RED 1's one-player probe in the wild: *"A regional airport … will
+either use an Early Survey or a Late Survey for that data set. The airport will
+ALSO choose between sharing a route … or taking a separate route."* There is no
+second player. The user is shown a single decision maker with four options, in a
+product whose entire subject is two players choosing simultaneously.
+
+Total rejected by every blue rule over 1,808 draws: **6, or 0.332%** — the five
+above plus the approved negotiation widening. Zero false positives.
+
+## I shipped a false positive in window 3, and RED 1's new corpus found it
+
+W3's rivalry arm was a bare `rivals?`. It caught the word used ATTRIBUTIVELY, to
+name an actor: *"B is a RIVAL fisherman choosing between Open Fish and Keep
+Fish"* and *"A RIVAL event coordinator chooses…"* — two real draws, wrongly
+rejected on common-interest matrices. Two rival firms can face a decision where
+their interests happen to align perfectly; that is a coherent scene, not a false
+statement about the game.
+
+It is the job-title-is-not-a-claim lesson the F1 screen is built on, and **this
+file's own W3 comment warned about it two rules earlier** ("competing/rival/
+contest alone is 1.57% of real draws and legitimate almost everywhere"). Every
+other member of that regex requires a preposition or an object; only `rivals?`
+leaked. Fixed to `are rivals` / `rivalry`, with the claim itself still caught,
+asserted both ways.
+
+**The lesson is about measurement, not about the word.** W3's "0 reach on 890
+draws" was true and still concealed this, because 890 rows were the rows the
+rule was written against. RED 1 re-ran the label predicates on 274 fresh accepted
+draws and got 0.00%; doing the same for every blue rule over 928 NEW draws is
+what surfaced the rivalry bug. A rule measured only on its own corpus looks free
+whether or not it is.
+
+## Three more false positives, all mine, all caught before shipping
+
+Each first draft was a vocabulary match, and each was wrong on real output in a
+way only the description's own CAST could settle. All three are now controls.
+
+- **"also"** — `The airport will ALSO choose` is one actor taking a second
+  decision; `A smaller independent distributor is ALSO choosing` is "likewise",
+  a second actor, and correct. Same word, opposite meaning. My draft captured the
+  auxiliary `is` as the subject and then stripped its trailing s, comparing the
+  string `i` against the text — which matches everything.
+- **pronoun** — counting only CHOOSING verbs made *"A regional airline is
+  PLANNING a series of flights… It chooses… while the glacier manager
+  chooses…"* look like a one-actor description. It has two. The cast count now
+  includes actor-introducing verbs.
+- **"the same"** — fired on *"chooses the same PRODUCT through the same
+  season"*, where the thing shared is the object of the game, not the move. The
+  discriminator is whether the shared noun is ALREADY IN THE SCENE: "product"
+  was named earlier, "timing" appears nowhere else, so only the latter can be
+  anaphoric to the other player's choice.
+
+## Also this window
+
+The negotiation offer side was widened to submitting a bid (coordinator
+approved), catching `rt2_cloud#11`: *"chooses whether to SUBMIT a Premium Route
+or a Budget Route BID … chooses whether to ACCEPT BID or REJECT BID."* Cost over
+1,808 draws: that one draw. `blue_w3_mutation.mjs` had asserted the negotiation
+rule rejects NOTHING; that assertion correctly failed and is now pinned to
+exactly one known draw rather than relaxed to an inequality, so a second hit
+fails until somebody reads it.
+
+## What is left, honestly
+
+Three holes, and they are not equivalent:
+
+- **ZERO-SUM + "coordinating"** — REFUSED and priced, not unfinished. 103 of 890
+  real draws pair `coordinat*` with a constant-sum matrix.
+- **AN OPTION PAIR WITH NO CHOOSER** — deferred by agreement. The vocabulary
+  form runs at 25% precision ("The options represent which stage takes the
+  earlier shift" is explanatory prose in draws that name both choosers). It
+  needs a structural test: is the second option pair ever the object of a
+  choosing verb with its own subject.
+- **REPEATED PLAY** — not yet measured. "Each season" is likely everywhere in
+  this corpus, so it must be priced before anything is designed.
+
+---
+
 ## Open leads handed to red (evidence in blue's hands, investigation in theirs)
 
 - **RED 1 — `fmtPayoff` applied at 2 of 10 payoff-printing sites.** The

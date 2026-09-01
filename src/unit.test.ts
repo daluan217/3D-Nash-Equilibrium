@@ -793,6 +793,7 @@ function runUnitTests() {
   testOptionLabelChannel();
   testNegotiationForm();
   testInterestAlignment();
+  testTwoChooserStructure();
   console.log('All unit tests passed.');
 }
 
@@ -1027,7 +1028,7 @@ function testOptionLabelChannel() {
     ?.some((s) => /annotates a payoff pair/.test(s)),
     'PLACEMENT: the matrix-checked parenthetical rule must remain in validateScenario');
 
-  console.log('✓ option-label channel: L1/L2/L4/L5 closed at 0 reach on 890 real draws; L3/L6 left open as undecidable, boundary asserted');
+  console.log('✓ option-label channel: L1/L2/L4/L5 closed at 0 reach on 1,808 real draws (RED 1 independently: 0/274 fresh); L3/L6 left open as undecidable, boundary asserted');
 }
 
 /**
@@ -1188,7 +1189,90 @@ function testInterestAlignment() {
   assert(!ok_('The display is not yet booked. A store and a restorer work together toward the same goal for it.', MP),
     'ALIGNMENT: a negation in an EARLIER clause must not suppress the rule — the guard is windowed, not a whole-description scan');
 
-  console.log('✓ interest alignment: shared-goal/rivalry/determines rules decided by the matrix, 0 reach on 890 draws; the "coordinating on zero-sum" boundary pinned as legal');
+  console.log('✓ interest alignment: shared-goal/rivalry/determines decided by the matrix, 0 reach on 1,808 draws AFTER the attributive-"rival" fix; the "coordinating on zero-sum" boundary pinned as legal');
+}
+
+/**
+ * TWO DISTINCT CHOOSERS (RED 1 holes: one player holding both option pairs, the
+ * second pair handed to a pronoun, both players making the same move).
+ *
+ * THIS IS THE FIRST BLOCK IN THIS FILE WITH REACH ON OBSERVED OUTPUT. Every
+ * other screen blue has added is containment — a real channel, demonstrably
+ * walkable, that the current models happen not to walk. These three catch what
+ * the models ACTUALLY DID: five defects across 1,808 gate-passing draws from
+ * every corpus this campaign holds, RED 1's newest 928 included, at zero false
+ * positives (_gen/blue_w4_fullgate.mjs, which self-tests that its detector can
+ * fire before reporting any zero).
+ *
+ * EVERY POSITIVE AND EVERY CONTROL BELOW IS A REAL DRAW, QUOTED. The controls
+ * matter more than the positives here, because each one is a sentence the FIRST
+ * DRAFT of these rules wrongly rejected. The word is never the discriminator —
+ * the description's own cast is.
+ */
+function testTwoChooserStructure() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const COMMON: GamePayoffs = { a11: 4, a12: 0, a21: 0, a22: 2, b11: 4, b12: 0, b21: 0, b22: 2 };
+  const sc = (d: string) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const gate = (d: string, g: GamePayoffs = ANTI) => validateScenario(sc(d), g).ok
+    && scenarioIsClaimFree(sc(d)).ok !== false
+    && validateProseDirections(d, sc(d), g).length === 0;
+
+  // ── ONE ACTOR TAKING A SECOND DECISION ───────────────────────────────────
+  assert(!gate("A regional airport is planning a survey of a mountain range's glaciers and will either use an Early Survey or a Late Survey for that data set. The airport will also choose between sharing a route with the same survey team or taking a separate route for that same data set."),
+    'W4 (rt1#71, in the wild): one actor holding BOTH option pairs — there is no second player');
+  assert(!gate('Two neighboring vineyard managers must each choose between Early Watering and Late Watering for their vines. Each manager also chooses between Deep Irrigation and Surface Irrigation for the shared vineyard water system.'),
+    'W4 (rt2 stakes pilot, in the wild): "each manager also chooses" gives one actor four options');
+  // THE CONTROL THAT DEFINES THE RULE. Same word, opposite meaning: here "also"
+  // is "likewise", and the subject is a NEWLY INTRODUCED second actor. The
+  // first draft captured the auxiliary "is" as the subject and rejected this.
+  assert(gate('A major film studio is choosing when to release its season-defining feature, with its budget and reputation tied to the campaign. A smaller independent distributor is also choosing between an open slot and a crowded slot for a film whose release matters less to its annual plans.'),
+    'W4 CONTROL (rt2 gap ladder, a MEASURED false positive of the first draft): "also" meaning "likewise", with a new actor, must pass');
+
+  // ── THE SECOND PAIR HANDED TO A PRONOUN ──────────────────────────────────
+  assert(!gate("A dairy co-op is deciding between Premium Pricing and Cost-Plus Pricing for its seasonal milk product. It chooses either Local Sales or Online Sales for distribution, with each choice shaping the co-op's overall pricing and distribution plan."),
+    'W4 (rt1#116, in the wild): "It chooses" hands the second pair back to the only player named');
+  assert(!gate('A dairy co-op is deciding whether to set its pricing at Premium Pricing or Cost-Plus Pricing. It must choose between Open Market and Stable Market for its main distribution channels.'),
+    'W4 (rt2 local#95, in the wild): the same shape with "It must choose"');
+  // The pronoun is fine when a second actor exists. The first draft counted only
+  // CHOOSING verbs, so an actor introduced with "is planning" was invisible.
+  assert(gate("A regional airline is planning a series of flights through a rapidly changing glacier route. It chooses between Early Survey and Late Survey for the flights, while the glacier manager chooses between Early Survey and Late Survey for the region's seasonal monitoring plan."),
+    'W4 CONTROL (rt3 slot control, a MEASURED false positive of the first draft): a pronoun for a properly introduced player, with a second actor present, must pass');
+  // A PLURAL pronoun refers to both players and is the correct way to say they
+  // move together — excluded structurally, not by a negation list.
+  assert(gate('A mill chooses an Early Slot or a Late Slot. A haulier chooses a Shared Window or a Separate Window. They choose simultaneously, without seeing each other.'),
+    'W4 CONTROL: "They choose simultaneously" is the correct statement and must pass');
+
+  // ── A CLAIM THAT THE TWO MOVES COINCIDE ──────────────────────────────────
+  assert(!gate('A farm cooperative and a harvest coordinator are coordinating a saffron harvest. The cooperative chooses Early Harvest or Late Harvest, while the coordinator chooses the same timing.'),
+    'W4 (rt1#117, in the wild): "chooses the same timing" asserts B\'s move IS A\'s move');
+  // Both controls are real draws the first draft rejected. The discriminator is
+  // whether the shared noun is already IN THE SCENE.
+  assert(gate('A textile mill and a nearby finishing mill each schedule its dyeing work for either an Early Shift or a Late Shift. The first mill chooses between Early Shift and Late Shift, while the second mill independently makes the same scheduling choice.'),
+    'W4 CONTROL (rt3 character cloud, a MEASURED false positive): "the same scheduling choice" is the same KIND of decision, not the same move');
+  assert(gate('A dairy co-op is deciding between Premium Pricing and Bulk Pricing for its seasonal product. The co-op chooses one, while the market buyer chooses the same product through the same season.'),
+    'W4 CONTROL (rt stakes leak local, a MEASURED false positive): "the same product" shares a thing already named in the scene, not a move');
+
+  // ── THE NEGOTIATION WIDENING (r2cloud#11), and its boundary ──────────────
+  assert(!gate('A courier company chooses whether to submit a Premium Route or a Budget Route bid for a delivery contract. A logistics platform chooses whether to Accept Bid or Reject Bid.'),
+    'W4 (rt2 cloud#11, in the wild): a bid submitted and then accepted or rejected is the offer/accept protocol in different words');
+  assert(gate('Two courier firms are competing for the same delivery contract. Each firm chooses between a Priority Bid, which offers a faster route, and an Economy Bid, which offers a lower-cost route.'),
+    'W4 CONTROL: bids and "offers" with NO acceptance answering them must pass — the rule stays a conjunction');
+
+  // ── REGRESSION: the rivals false positive RED 1's new corpus exposed ─────
+  // Shipped in W3 as a bare `rivals?`, which caught the word used ATTRIBUTIVELY
+  // to name an actor. Two real draws were being rejected.
+  assert(gate("A is a fisherman choosing between Open Fish and Keep Fish for the day's catch. B is a rival fisherman choosing between Open Fish and Keep Fish for the same catch.", COMMON),
+    'W4 REGRESSION (rt3 character local#7): "a RIVAL fisherman" names the actor — a job title is not a claim, even on a common-interest matrix');
+  assert(gate('A city marathon coordinator chooses whether to schedule the race with an Early Closure or a Late Closure. A rival event coordinator chooses whether to use a Peak Route or a Quiet Route.', COMMON),
+    'W4 REGRESSION (rt3 character local#29): the same attributive use must pass');
+  // And the claim itself must still be caught, or the fix removed the rule.
+  assert(!gate('A textile company and a competing manufacturer fight for the same order. Each books its own dyeing slot for the run.', COMMON),
+    'W4 REGRESSION CONTROL: the actual rivalry CLAIM must still be caught on a common-interest matrix');
+
+  console.log('✓ two-chooser structure: 5 real defects caught across 1,808 draws at 0 false positives; every control is a draw an earlier draft wrongly rejected');
 }
 
 try {
