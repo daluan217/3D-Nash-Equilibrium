@@ -9,3 +9,6 @@
 
 node "$(git rev-parse --show-toplevel)/scripts/bump-version.cjs" || exit 1
 git add "$(git rev-parse --show-toplevel)/package.json"
+# The bump now rewrites the lockfile's two version fields as well, so it has
+# to be staged with the manifest or they drift apart again on the next commit.
+git add "$(git rev-parse --show-toplevel)/package-lock.json"
