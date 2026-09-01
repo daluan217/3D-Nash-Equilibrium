@@ -318,9 +318,24 @@ for (const SCALE of [10, 100]) {
   // arbitrary profiles and 0.33% of mixed-panel renderings do print it (716 of
   // 217,652 — `_gen/blueapp_renderer_reach.ts`), every one at a resolved point
   // with a coordinate at a vertex, i.e. a player holding a pure strategy inside
-  // an equilibrium region. `computeAllNE` hands out exact interior coordinates
-  // through no projection at all, so an NE-list click, a saved game or a
-  // jumped-to equilibrium rendered through this panel would expose it at once.
+  // an equilibrium region.
+  //
+  // WHICH SECOND CALLER, precisely — because the obvious guess is wrong and a
+  // guard that names the wrong hazard misdirects whoever reads it
+  // (`_gen/blueapp_vertex_class.ts`, 120,000 games per alphabet):
+  //   * An NE-LIST CLICK IS SAFE on this axis. `computeAllNE` gates the mixed
+  //     root at 0 < x < 1 and returns pure NEs at corners, so it never yields a
+  //     MIXED-concept point with a coordinate at a vertex. Feeding its own
+  //     coordinates produces 0 / 16 / 0 vertex-class lines and 0 misprints.
+  //   * The hazard is a caller passing an ARBITRARY, non-equilibrium profile
+  //     and letting `resolveProfile` project it onto the EDGE of a continuum —
+  //     a restored saved game, a jumped-to step. There the vertex class is
+  //     38.6% / 0.5% / 4.9% of mixed-panel lines, ~31% of it renders "strictly
+  //     prefers" under a heading that says MIXED (correct output, surprising
+  //     screen), and 0.04-0.09% of it is the misprint.
+  // So the misprint stays rare even for the hazardous caller; what a second
+  // caller really buys is the "strictly prefers" class, and that is a display
+  // decision to take deliberately rather than discover.
   //
   // Rather than assume nobody adds that caller, fail when they do. This is the
   // load-bearing check: if it ever fires, the tolerance question has become
@@ -329,9 +344,12 @@ for (const SCALE of [10, 100]) {
   const callers = [...app.matchAll(/indifferenceLines\s*\(/g)].length;
   ok(callers === 1,
     `indifferenceLines must have exactly ONE production caller, found ${callers}. `
-    + 'A second caller that does not pass resolveProfile of the CONVERGED run makes the '
-    + 'neTolerancePlayer gap reachable (0.33% of arbitrary profiles print "≈" between two '
-    + 'different numbers). Answer the tolerance question before adding one.');
+    + 'A caller that passes an ARBITRARY profile (a restored saved game, a jumped-to step) '
+    + 'lets resolveProfile land on a continuum EDGE, where up to 38.6% of mixed-panel lines '
+    + 'sit at a vertex: ~31% of those render "A strictly prefers" under a MIXED heading, and '
+    + '0.04-0.09% print "≈" between two different numbers. Feeding computeAllNE coordinates '
+    + '(an NE-list click) is SAFE — it never yields a mixed-concept vertex point. Decide the '
+    + 'display question before adding a caller of the first kind.');
   ok(/indifferenceLines\(payoffs, resolved\.x, resolved\.y\)/.test(app),
     'and that one caller must still be the converged-run profile');
 

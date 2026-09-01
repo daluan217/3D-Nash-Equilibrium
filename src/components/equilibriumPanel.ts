@@ -170,12 +170,17 @@ export function indifferenceLine(
   // less than its own tolerance.
   //
   // So it is a property of THE ONE CALLER, not of this function. Today `App.tsx`
-  // is that caller and it passes `resolveProfile` of the converged run. A saved
-  // game, an NE-list click or a jumped-to equilibrium rendered here would expose
-  // the 0.33% at once — `computeAllNE` hands out exact interior coordinates
-  // through no projection at all. `src/equilibriumpanel.test.ts` §7 fails if a
-  // second production caller appears, so this is a checked condition rather than
-  // an assumption.
+  // is that caller and it passes `resolveProfile` of the converged run.
+  //
+  // WHICH other caller would matter is itself measured, because the obvious
+  // guess is wrong. An NE-LIST CLICK IS SAFE: `computeAllNE` gates the mixed
+  // root at 0 < x < 1 and returns pure NEs at corners, so it never yields a
+  // mixed-concept point with a coordinate at a vertex — 0 of 120,000 games per
+  // alphabet. The hazard is a caller handing over an ARBITRARY, non-equilibrium
+  // profile (a restored saved game, a jumped-to step) for `resolveProfile` to
+  // project onto a continuum EDGE. `src/equilibriumpanel.test.ts` §7 fails if
+  // any second production caller appears and carries both numbers, so this is a
+  // checked condition rather than an assumption.
   const mid = (p + q) / 2;
   const f = indifferent
     ? (Math.abs(p - q) < 5e-4 ? { p: three(mid), q: three(mid) } : { p: three(p), q: three(q) })
