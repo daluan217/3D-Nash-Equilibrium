@@ -359,7 +359,25 @@ export interface GenerateScenarioResult {
 /** The slim invention call behind "New AI scenario" — see SCENARIO_SCHEMA. */
 export async function generateScenario(
   g: GamePayoffs,
-  opts: { model?: string; reasoning?: ReasoningEffort; domain?: string; stakes?: boolean; extraBody?: Record<string, unknown> } = {},
+  opts: {
+    model?: string; reasoning?: ReasoningEffort; domain?: string; stakes?: boolean;
+    extraBody?: Record<string, unknown>;
+    /**
+     * An extra rule appended to the system prompt, for A/B-ing a candidate rule
+     * on the REAL path before shipping it. Nothing in production sets it.
+     *
+     * It exists because the prompt is not model-neutral and pretending otherwise
+     * produced a misleading comparison. Its rules are the residue of rounds of
+     * iteration against ONE family of models' mistakes — "never characterize
+     * what happens when specific options meet in words alone ('pays off', 'is
+     * punished', 'works well')" is there because a model wrote those exact
+     * phrases and was caught. So a fresh model measured against it is being
+     * scored on a rubric written for someone else, and a gate-rate gap cannot
+     * be attributed to the model until it has had one round of the same
+     * treatment.
+     */
+    extraRules?: string;
+  } = {},
 ): Promise<GenerateScenarioResult> {
   // `domain` steers WHICH setting the invention uses, and nothing else.
   //
@@ -397,6 +415,7 @@ export async function generateScenario(
       ? `SET THIS SCENARIO IN THIS DOMAIN: ${opts.domain}. Use that domain and no other. Everything else above still applies.`
       : '',
     stakes,
+    opts.extraRules ?? '',
   ].filter(Boolean).join('\n\n');
   const res = await callProvider({
     model: opts.model || DEFAULT_MODEL,
