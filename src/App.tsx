@@ -3394,13 +3394,13 @@ export default function App() {
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-xs text-slate-500 justify-center lg:justify-start">
             <span className="flex items-center gap-1 text-player-a-600 dark:text-player-a-400"><LegendSwatch shape="surface" /> E[A] Surface</span>
             <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400"><LegendSwatch shape="surface" /> E[B] Surface</span>
-            <span className="flex items-center gap-1 text-player-a-500 font-medium"><LegendSwatch shape="line" /> A Moves</span>
-            <span className="flex items-center gap-1 text-player-b-600 font-medium"><LegendSwatch shape="line" /> B Moves</span>
-            <span className="flex items-center gap-1 font-semibold text-ne-pure"><LegendSwatch shape="diamond" /> Pure NE</span>
+            <span className="flex items-center gap-1 text-player-a-500 dark:text-player-a-400 font-medium"><LegendSwatch shape="line" /> A Moves</span>
+            <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400 font-medium"><LegendSwatch shape="line" /> B Moves</span>
+            <span className="flex items-center gap-1 font-semibold text-ne-pure dark:text-ne-pure"><LegendSwatch shape="diamond" /> Pure NE</span>
             <span className="flex items-center gap-1 text-ne-mixed-600 dark:text-ne-mixed-400 font-bold"><LegendSwatch shape="diamond" /> Mixed NE</span>
-            <span className="flex items-center gap-1 text-emerald-600"><LegendSwatch shape="dashed" /> Domain</span>
-            <span className="flex items-center gap-1 text-orange-500"><LegendSwatch shape="dashed" /> Search Corridor</span>
-            <span className="flex items-center gap-1 text-orange-500"><LegendSwatch shape="ring" /> Ghost positions</span>
+            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><LegendSwatch shape="dashed" /> Domain</span>
+            <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="dashed" /> Search Corridor</span>
+            <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="ring" /> Ghost positions</span>
           </div>
 
           {/* Plotly 3D visual component */}
