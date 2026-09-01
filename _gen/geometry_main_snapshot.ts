@@ -1,4 +1,17 @@
 /**
+ * FROZEN COPY of `src/utils/geometry.ts` as it stood on origin/main BEFORE the
+ * 2026-09-01 truth fix. DO NOT EDIT AND DO NOT IMPORT FROM APPLICATION CODE.
+ *
+ * It exists only as the BEFORE arm of `_gen/bm_geo2.ts`, which proves two
+ * things about the fix that no test on the new file alone can: that the five
+ * false sentences are gone, and that the briefing is byte-identical to this one
+ * on every game where none of the five predicates fires.
+ *
+ * Regenerate with:
+ *   git show <commit-before-the-fix>:src/utils/geometry.ts \
+ *     | sed "s|from '../types'|from '../src/types'|" > _gen/geometry_main_snapshot.ts
+ */
+/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -23,13 +36,7 @@
  * CONVENTION: x is A's probability on Row 1, y is B's probability on Col 1.
  */
 
-import type { GamePayoffs } from '../types';
-// `equilibriumSet` is the solver's own answer to "where are the equilibria".
-// The briefing used to answer that question from `hasInteriorFlatSpot` alone,
-// which is a statement about the two INDIFFERENCE ROOTS and not about the
-// equilibrium set — see the flat-spot line below. gameEngine imports nothing
-// from this file, so this direction of the dependency introduces no cycle.
-import { equilibriumSet } from './gameEngine';
+import type { GamePayoffs } from '../src/types';
 
 export interface Geometry {
   /** A's twist. Zero means A's surface is a flat plane: no strategic interaction. */
@@ -155,36 +162,10 @@ export function geometryBriefing(g: GamePayoffs): string {
   };
   const lines: string[] = ['Geometry of the two expected-payoff surfaces (computed, authoritative):'];
 
-  /**
-   * A's surface, written out, because four of the sentences below are about its
-   * coefficients and three of them used to read the wrong one:
-   *
-   *   E_A(x, y) = a22 + x*(a12 - a22) + y*(a21 - a22) + x*y*twistA
-   *
-   * so `aOwnTilt` is how A's payoff moves with A's OWN mix (at y = 0),
-   * `aOppTilt` is how it moves with B's mix (at x = 0), and `twistA` is only
-   * the INTERACTION between them. A zero twist says the two tilts do not
-   * modulate each other; it says nothing about either tilt being zero.
-   */
-  const aOwnTilt = g.a12 - g.a22;
-  const aOppTilt = g.a21 - g.a22;
-  const flatPlaneA = Math.abs(geo.twistA) < EPS;
-  /** A is indifferent between the rows at EVERY y — the whole board is a shelf. */
-  const aIndifferentEverywhere = flatPlaneA && Math.abs(aOwnTilt) < EPS;
-
   lines.push(
-    !flatPlaneA
-      ? `  A's surface is WARPED (twist = ${geo.twistA}): the players' choices genuinely interact.`
-      // TWIST ZERO IS NOT INDEPENDENCE. This branch said "A's payoff does not
-      // depend on what B does", which is false whenever a21 != a22: on
-      // a=[[-5,-1],[-5,-1]], b=[[-6,-6],[0,6]] the payoff is E_A = -1 - 4y, a
-      // function of B's mix ALONE. Measured on 100,000 games per corpus: 1.87%
-      // of "New random game" draws, 3.27% of hand-typed int[-9,9] matrices,
-      // 7.59% on a [-3,3] alphabet. The true reading of twist = 0 is that the
-      // two tilts are independent of each other, not that one of them is zero.
-      : Math.abs(aOppTilt) < EPS
-        ? `  A's surface is a FLAT PLANE (twist = 0): A's payoff does not depend on what B does, so there is no strategic interaction to describe.`
-        : `  A's surface is a FLAT PLANE (twist = 0): there is no strategic INTERACTION to describe — how much A's own choice is worth is the same whatever B does. A's payoff does still move with B's choice (by ${r(aOppTilt)} as B shifts from Col 2 to Col 1), by the same amount whichever row A picks.`,
+    Math.abs(geo.twistA) < EPS
+      ? `  A's surface is a FLAT PLANE (twist = 0): A's payoff does not depend on what B does, so there is no strategic interaction to describe.`
+      : `  A's surface is WARPED (twist = ${geo.twistA}): the players' choices genuinely interact.`,
   );
 
   lines.push(
@@ -195,58 +176,16 @@ export function geometryBriefing(g: GamePayoffs): string {
         : `  The game is NOT zero-sum: B's surface is its own shape, NOT a mirror of A's. Do not describe it as one.`,
   );
 
-  // THE SHELF SENTENCE, in four cases rather than two.
-  //
-  // The old else-branch was one string covering three different situations and
-  // was false in two of them. "The level point would be at y = 0, outside
-  // [0,1]" is a self-contradiction — 0 is IN [0,1]; the root is on the edge of
-  // the board, not off it. And when twistA is 0 there is no level point to
-  // report at all, so the sentence printed "y = undefined, outside [0,1]" and
-  // then asserted "A's surface always tilts one way" on boards where A is
-  // indifferent between the rows everywhere, i.e. where the whole surface is a
-  // shelf. Measured on 100,000 games per corpus: the boundary-or-undefined case
-  // is 2.03% of "New random game" draws, 13.51% of hand-typed int[-9,9]
-  // matrices and 34.20% on a [-3,3] alphabet; the indifferent-everywhere case
-  // cannot arise from the random button at all (`generateRandomGame` rejects
-  // within-player ties) but is 2.00% of [-3,3] matrices.
-  //
-  // The PREDICATE is unchanged and stays strict: a root on the boundary is not
-  // an interior shelf, which is what `yStarInRange` is for and what
-  // `nashValidator` checks against. Only the sentence changes.
-  const onBoundary = Number.isFinite(geo.yStar)
-    && ((Math.abs(geo.yStar) <= EPS) || (Math.abs(geo.yStar - 1) <= EPS));
   lines.push(
     geo.yStarInRange
       ? `  A's surface goes LEVEL along A's axis when B plays y = ${rw(geo.yStar)} — that flat shelf is A's indifference.`
-      : aIndifferentEverywhere
-        ? `  A is indifferent between the two rows EVERYWHERE on the board: A's surface is level along A's own axis at every y, so the whole surface is a shelf rather than one line. A's payoff is decided entirely by B. Do not describe A as preferring a row.`
-        : flatPlaneA
-          ? `  There is NO flat shelf for A: A's surface tilts the same way at every y — A is always better off from ${aOwnTilt > 0 ? 'Row 1' : 'Row 2'}, by ${r(Math.abs(aOwnTilt))}, whatever B does. Do not describe a shelf.`
-          : onBoundary
-            ? `  There is NO flat shelf INSIDE the board: A's surface goes level only at y = ${r(geo.yStar)}, which is the edge of the square (B playing ${geo.yStar > 0.5 ? 'Col 1' : 'Col 2'} outright), not a mix. At every genuine mixture A's surface tilts one way. Do not describe an interior shelf.`
-            : `  There is NO flat shelf for A on the board: the level point would be at y = ${r(geo.yStar)}, outside [0,1]. A's surface always tilts one way. Do not describe a shelf.`,
+      : `  There is NO flat shelf for A on the board: the level point would be at y = ${r(geo.yStar)}, outside [0,1]. A's surface always tilts one way. Do not describe a shelf.`,
   );
 
-  // THE FLAT-SPOT SENTENCE.
-  //
-  // `hasInteriorFlatSpot` is a statement about the two INDIFFERENCE ROOTS, and
-  // the else-branch turned it into a statement about the EQUILIBRIUM SET —
-  // which does not follow. On a=[[-2,2],[4,-5]], b=[[3,3],[4,4]] B's twist is 0
-  // so there is no interior flat spot, yet the equilibrium set contains the
-  // whole segment [0,1] x {7/13}, whose points have BOTH coordinates strictly
-  // interior; (0.5, 7/13) has zero regret for both players. So ask the solver
-  // instead of inferring. Measured: 0% of "New random game" draws (a continuum
-  // needs a within-player tie, which that generator rejects), 0.25% of
-  // int[-9,9] matrices, 1.48% on [-3,3].
-  const interiorEquilibrium = geo.hasInteriorFlatSpot
-    ? false
-    : equilibriumSet(g).some((rct) => rct.x1 > 0 && rct.x0 < 1 && rct.y1 > 0 && rct.y0 < 1);
   lines.push(
     geo.hasInteriorFlatSpot
       ? `  Both surfaces are level at the same interior point (x = ${rw(geo.xStar)}, y = ${rw(geo.yStar)}) — the joint flat spot, which is the mixed equilibrium.`
-      : interiorEquilibrium
-        ? `  There is NO interior joint flat spot: the two surfaces are never level at the same interior point. The equilibria are NOT confined to the edges even so — a payoff tie makes a whole line or region of profiles equilibria, and some of those points are interior mixtures. Do not say the equilibrium must sit on an edge or corner.`
-        : `  There is NO interior joint flat spot. The equilibrium sits on an edge or corner of the square, where a player is pinned to one action rather than balanced between two.`,
+      : `  There is NO interior joint flat spot. The equilibrium sits on an edge or corner of the square, where a player is pinned to one action rather than balanced between two.`,
   );
 
   // MINIMAX AND DOMINANCE. Stated here rather than left to the model's judgement
@@ -261,37 +200,11 @@ export function geometryBriefing(g: GamePayoffs): string {
       : `  This game is NOT zero-sum or constant-sum, so there is NO single "value of the game" and the minimax framing does NOT apply. Do not call the equilibrium a minimax value.`,
   );
 
-  // WEAK DOMINANCE. `dominantRowA` / `dominantColB` are deliberately STRICT and
-  // stay that way — the validator checks a claim of dominance against them, and
-  // loosening them would let "Row 1 dominates" pass on a game where the rows
-  // merely tie. The defect was in the NEGATIVE sentence, which read the absence
-  // of STRICT dominance as "which option is better depends on what the opponent
-  // does". On a=[[-7,-5],[-7,7]], b=[[-3,-1],[-6,-8]] Row 2 is never worse than
-  // Row 1 and is strictly better against Col 2, so nothing about A's choice
-  // depends on B. Measured: 0% of "New random game" draws (that generator
-  // rejects the within-player ties weak dominance requires), 10.33% of
-  // hand-typed int[-9,9] matrices, 26.66% on a [-3,3] alphabet.
-  const weakRow = (g.a11 >= g.a21 && g.a12 >= g.a22) ? 1 : (g.a21 >= g.a11 && g.a22 >= g.a12) ? 2 : 0;
-  const weakCol = (g.b11 >= g.b12 && g.b21 >= g.b22) ? 1 : (g.b12 >= g.b11 && g.b22 >= g.b21) ? 2 : 0;
-  const bIndifferentEverywhere = g.b11 === g.b12 && g.b21 === g.b22;
-  const weakNotes: string[] = [];
-  if (!geo.dominantRowA && weakRow) {
-    weakNotes.push(aIndifferentEverywhere
-      ? `A is indifferent between the rows against every column, so neither of A's options is ever the better one`
-      : `A's Row ${weakRow} is never worse than Row ${3 - weakRow} and is strictly better against at least one column — it WEAKLY dominates`);
-  }
-  if (!geo.dominantColB && weakCol) {
-    weakNotes.push(bIndifferentEverywhere
-      ? `B is indifferent between the columns against every row, so neither of B's options is ever the better one`
-      : `B's Col ${weakCol} is never worse than Col ${3 - weakCol} and is strictly better against at least one row — it WEAKLY dominates`);
-  }
   const dom = [geo.dominantRowA ? 'A' : null, geo.dominantColB ? 'B' : null].filter(Boolean);
   lines.push(
     dom.length
       ? `  Dominant strategy present for ${dom.join(' and ')} — one option beats the other whatever the opponent does.`
-      : weakNotes.length
-        ? `  Neither player has a STRICTLY dominant strategy, but ${weakNotes.join('; and ')}. Do not call any option strictly dominant, and do not say that for every player the better option depends on the opponent.`
-        : `  NEITHER player has a dominant strategy: for each player, which option is better depends on what the opponent does. Do not claim one dominates.`,
+      : `  NEITHER player has a dominant strategy: for each player, which option is better depends on what the opponent does. Do not claim one dominates.`,
   );
 
   // WHO AUTHORS WHOSE INDIFFERENCE. This is a fact, not a flourish: x* is
