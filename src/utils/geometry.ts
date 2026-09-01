@@ -64,11 +64,47 @@ export interface Geometry {
   /** a+b is the same constant in every cell — a mirror up to a vertical offset. */
   constantSum: boolean;
   /**
+   * B's payoffs are a DECREASING affine function of A's: b = k*a + c with k < 0,
+   * exactly, in all four cells. Constant-sum is the special case k = -1.
+   *
+   * This is the cardinal condition for "strictly competitive", and it is what
+   * makes the minimax framing right on games that are not constant-sum as
+   * written. See `minimaxApplies`.
+   */
+  strictlyCompetitive: boolean;
+  /**
    * Is the minimax / "value of the game" framing available at all?
    *
    * Zero-sum is the textbook precondition; constant-sum qualifies because it is
    * zero-sum after an affine shift, which moves the value without changing the
-   * strategies. Anything else has no single value to be the minimax OF.
+   * strategies.
+   *
+   * SO DOES ANY b = k*a + c WITH k < 0, and leaving those out made the briefing
+   * assert a falsehood under the header "computed, authoritative". von
+   * Neumann-Morgenstern utilities are defined only up to a POSITIVE affine
+   * transformation, so rescaling B's utility by alpha = -1/k — positive, because
+   * k is negative — turns the game into a genuinely constant-sum one without
+   * changing a single preference. It therefore HAS a value, every equilibrium
+   * pays A that value, and minimax is exactly the right framing, while
+   * `zeroSum || constantSum` told the model the opposite.
+   *
+   * Worked case: A = [[-3,-9],[-6,6]], B = [[-3,-1],[-2,-6]] is b = -a/3 - 4.
+   * Cell sums are -6, -10, -8, 0, so it is not constant-sum; its unique
+   * equilibrium pays A exactly -4.0000, and A's maximin is -4.000005.
+   *
+   * THE ORACLE TO AVOID WHEN RE-DERIVING THIS. The obvious test — "the unique
+   * equilibrium pays A their maximin" — is NECESSARY BUT NOT SUFFICIENT: it
+   * holds whenever both players have a dominant strategy, so it fires on
+   * PRISONER'S DILEMMA, which is not competitive in any sense. It was this
+   * change's first candidate predicate and only a negative control caught it.
+   * Battle of the Sexes is the control that must keep taking the false branch:
+   * its equilibria pay A 1, 2 and 0.667, so there is genuinely no single value.
+   *
+   * REACH, corpora named (_gen/blue_in2_sweep.mjs): the newly-true class is
+   * 0/20,000 generateRandomGame('mixed'), 0/20,000 'pure', 0/50,000 uniform
+   * int[-9,9], 67/50,000 (0.134%) uniform int[-3,3], and 0 of the 7 presets — so
+   * no preset user has ever seen the false sentence, and the briefing is
+   * byte-identical on every game outside that class.
    */
   minimaxApplies: boolean;
   /** A has a row that beats their other row against every column B can play. */
@@ -78,6 +114,33 @@ export interface Geometry {
 }
 
 const EPS = 1e-9;
+
+/**
+ * Fit b = k*a + c across the four cells and accept only k < 0. See
+ * `Geometry.minimaxApplies` for why a negative slope is the whole point.
+ *
+ * EXACT, not least-squares: an approximate fit is not a strategic equivalence,
+ * and a game that is nearly competitive is not competitive. The near-miss
+ * fixture (one cell off by 0.01) is in the unit tests for that reason.
+ *
+ * A game where all four of A's payoffs are equal is excluded rather than
+ * accepted: k is undefined there — every k fits some c — and A is indifferent
+ * between every profile, which is not a thing to call strictly competitive.
+ * Left unguarded, `(b[i]-b[0])/(a[i]-a[0])` divides by zero and the whole
+ * indifferent-A family would report as competitive.
+ */
+function isStrictlyCompetitive(g: GamePayoffs): boolean {
+  const a = [g.a11, g.a12, g.a21, g.a22];
+  const b = [g.b11, g.b12, g.b21, g.b22];
+  const j = a.findIndex((v) => Math.abs(v - a[0]) > EPS);
+  if (j < 0) return false;
+  const k = (b[j] - b[0]) / (a[j] - a[0]);
+  if (!(k < -EPS)) return false;
+  const c = b[0] - k * a[0];
+  // Relative tolerance: an absolute one would reject a legitimate fit on
+  // payoffs near the ±100 clamp purely from floating-point residue.
+  return a.every((ai, i) => Math.abs(b[i] - (k * ai + c)) <= 1e-9 * (1 + Math.abs(b[i])));
+}
 
 /**
  * xStar MUST be computed from B's payoffs, not A's.
@@ -103,6 +166,7 @@ export function describeGeometry(g: GamePayoffs): Geometry {
   const sums = [g.a11 + g.b11, g.a12 + g.b12, g.a21 + g.b21, g.a22 + g.b22];
   const zeroSum = sums.every((s) => Math.abs(s) < EPS);
   const constantSum = sums.every((s) => Math.abs(s - sums[0]) < EPS);
+  const strictlyCompetitive = isStrictlyCompetitive(g);
 
   // STRICT dominance only. With weak dominance a tie in one column would count,
   // and "Row 1 is always at least as good" is a materially weaker statement than
@@ -137,7 +201,8 @@ export function describeGeometry(g: GamePayoffs): Geometry {
     hasInteriorFlatSpot: hasFlatShelfForA && hasFlatShelfForB,
     zeroSum,
     constantSum,
-    minimaxApplies: zeroSum || constantSum,
+    strictlyCompetitive,
+    minimaxApplies: zeroSum || constantSum || strictlyCompetitive,
     dominantRowA,
     dominantColB,
   };
@@ -288,10 +353,22 @@ export function geometryBriefing(g: GamePayoffs): string {
   // one handed a framing under instruction asserted von Neumann's minimax about a
   // game that was not zero-sum. Both facts are one comparison away from the
   // matrix, so both are supplied and both are checked.
+  // THREE BRANCHES, NOT TWO. The middle one is new, and it exists because the
+  // old FALSE branch asserted a falsehood on games where B's payoffs are a
+  // decreasing affine function of A's: those are zero-sum games in different
+  // utility units, so they DO have a value. See `Geometry.minimaxApplies`.
+  //
+  // The new branch is gated on `!constantSum` so the two OLD branches keep
+  // firing on exactly the games they fired on before, with byte-identical text.
+  // That is what lets every existing yield and defect number stand: measured
+  // over 90,000 games and all 7 presets, this string moves on 67 games — all of
+  // them in the 0.134% int[-3,3] class where the old sentence was false.
   lines.push(
-    geo.minimaxApplies
-      ? `  This game is ${geo.zeroSum ? 'zero-sum' : 'constant-sum'}, so it HAS a value in von Neumann's sense and the minimax framing applies.`
-      : `  This game is NOT zero-sum or constant-sum, so there is NO single "value of the game" and the minimax framing does NOT apply. Do not call the equilibrium a minimax value.`,
+    geo.minimaxApplies && !geo.zeroSum && !geo.constantSum
+      ? `  This game is not constant-sum as written, but B's payoffs are a decreasing straight-line function of A's, so it is the same game as a zero-sum one in different units: it HAS a value in von Neumann's sense and the minimax framing applies.`
+      : geo.minimaxApplies
+        ? `  This game is ${geo.zeroSum ? 'zero-sum' : 'constant-sum'}, so it HAS a value in von Neumann's sense and the minimax framing applies.`
+        : `  This game is NOT zero-sum or constant-sum, so there is NO single "value of the game" and the minimax framing does NOT apply. Do not call the equilibrium a minimax value.`,
   );
 
   // WEAK DOMINANCE. `dominantRowA` / `dominantColB` are deliberately STRICT and
