@@ -1,0 +1,79 @@
+/**
+ * The desktop's scenario SOURCE: a pre-verified bank instead of a bundled model.
+ *
+ * WHY A BANK AND NOT THE 0.6B. The retrained local model's remaining defects are
+ * coherence, not lexicon, and they are GENERATED rather than inherited — the
+ * teacher corpus is cloud output and cloud measures 0% coherence-defective, so a
+ * v3 trained on cleaner data cannot fix what the small model itself produces.
+ * The bank sidesteps the generator entirely: every row was screened by the real
+ * production gates before it shipped, so what the desktop shows has already
+ * passed what the cloud path enforces at request time.
+ *
+ * WHAT THIS MODULE DELIBERATELY DOES NOT DO: skip the gates. A bank row is
+ * re-screened by the caller exactly like model output, because the bank is an
+ * artifact frozen at build time while the gates keep moving. If a gate tightens
+ * after the artifact is built, a bank row that no longer passes MUST be caught,
+ * and it can only be caught by running the live gate. Treating "already
+ * verified" as "need not be checked" is how a stale artifact silently outvotes
+ * a fix — so the bank changes only WHERE a scenario comes from, never whether
+ * it is screened.
+ */
+import { pickFromBank, bankKey, type BankEntry } from './scenarioBank';
+import type { GamePayoffs, SuggestedScenario } from '../types';
+
+/**
+ * STATIC IMPORT, DELIBERATELY.
+ *
+ * The first version used `require()` so the artifact would not be inlined into
+ * builds that never read it. It returned `false` from `bankAvailable()` in every
+ * context that matters — tsx, ESM, tests — because `require` is not defined
+ * there, and the failure was SILENT: the catch below degraded to the model path
+ * exactly as designed, so nothing threw, nothing logged, and the desktop would
+ * have shipped consulting a bank that never loaded. Caught by probing the
+ * function rather than by reading it.
+ *
+ * A static import is resolved by tsx, Vite and esbuild alike, and costs ~745 KB
+ * inlined into the server bundle — against the ~378 MB model this replaces, that
+ * is not a tradeoff worth a runtime loader for.
+ */
+import rows from '../data/scenarioBank.json';
+
+const bank: BankEntry[] = (rows as unknown as BankEntry[]) ?? [];
+
+/**
+ * Rows already shown this run. In memory only and deliberately so: a desktop
+ * launch is the natural scope for "don't repeat yourself", and persisting it
+ * would mean a long-lived install eventually exhausting the bank and falling
+ * back to repeats anyway — with a file to corrupt in the meantime.
+ */
+const seen = new Set<string>();
+
+/** True when the bank can serve this process at all — used to pick the path. */
+export function bankAvailable(): boolean {
+  return bank.length > 0;
+}
+
+/**
+ * A scenario for this game, or null to fall through to the model path.
+ * `domain` comes from the same rotation the cloud path uses, so setting variety
+ * is driven identically on both surfaces.
+ */
+export function bankScenario(g: GamePayoffs, domain: string): SuggestedScenario | null {
+  if (!bank.length) return null;
+  const sc = pickFromBank(bank, g, domain, seen);
+  if (!sc) return null;
+  // Record BEFORE returning: the caller may reject this row at the gate, and a
+  // rejected row should not come back on the retry.
+  const hit = bank.find((e) => e.s === sc);
+  if (hit) seen.add(bankKey(hit));
+  return sc;
+}
+
+/** The shipped rows, so a test can re-screen the artifact against today's gates. */
+export function allBankRows(): readonly BankEntry[] { return bank; }
+
+/** Row count, so a test can assert the artifact actually arrived. */
+export function bankSize(): number { return bank.length; }
+
+/** Test seam — the seen set is process-global, which a test must be able to reset. */
+export function __resetBankSeen(): void { seen.clear(); }
