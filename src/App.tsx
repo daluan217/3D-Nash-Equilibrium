@@ -109,6 +109,32 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
 // ColorCoded moved to its own component so the workspace-center library
 // (MenuDrawer) can color saved-game text with the exact same rules.
 
+/**
+ * Is this report envelope one we may show and prefill from?
+ *
+ * TWO call sites ask this and they had DRIFTED, which is the whole bug. The
+ * display path was taught about 'template' when the rung-3 flag shipped; the
+ * "generate a new game" dialog was not, and kept requiring source === 'llm'.
+ * Production runs rung 3, which NEVER emits 'llm' — so that dialog threw away
+ * a perfectly good scenario on every single generation and told the user "the
+ * AI scenario isn't available right now". Not intermittent: 100%, since the
+ * flag flip.
+ *
+ * 'template' envelopes carry NO validation object, and that is correct rather
+ * than missing: their sentences are rendered from the solver, so there are no
+ * model claims left to check, and the scenario they carry was already put
+ * through validateScenario + scenarioIsClaimFree + the direction checks
+ * SERVER-SIDE before being included. Requiring `validation.ok` of them asks for
+ * a receipt from a gate that had nothing to weigh.
+ *
+ * One predicate, so the next rung cannot desynchronise them again.
+ */
+export function envelopeIsTrustworthy(env: ReportEnvelope | null | undefined): boolean {
+  if (!env?.report) return false;
+  if (env.source === 'template') return true;
+  return env.source === 'llm' && env.validation?.ok === true;
+}
+
 export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
   const isElectronMac = isElectron && window.navigator?.userAgent?.toLowerCase().includes('mac');
@@ -670,9 +696,7 @@ export default function App() {
   // validation object because there is nothing to validate: their sentences are
   // rendered from the solver, so they are grounded by construction rather than
   // by a gate. They display like a verified report.
-  const llmVerified =
-    (llmEnvelope?.source === 'llm' && llmEnvelope.validation?.ok === true && !!llmEnvelope.report)
-    || (llmEnvelope?.source === 'template' && !!llmEnvelope.report);
+  const llmVerified = envelopeIsTrustworthy(llmEnvelope);
 
   // Any edit to the game invalidates prose written about the previous one.
   useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
@@ -1304,7 +1328,7 @@ export default function App() {
       const env = (await res.json()) as ReportEnvelope;
       // Prefill only from a validated invention — an unvalidated story could
       // contradict the very equilibria the user just asked for.
-      const sc = env.source === 'llm' && env.validation?.ok ? env.report?.suggestedScenario : null;
+      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;
       if (sc) {
         setSaveName((sc.name ?? '').slice(0, 40));
         setSaveDesc((sc.description ?? '').slice(0, 800));
