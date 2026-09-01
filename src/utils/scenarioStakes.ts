@@ -131,13 +131,22 @@ export function stakesHint(g: GamePayoffs): string {
   // inventing some would be a claim. Say nothing; the domain line still applies.
   if (s.swing === 0) return '';
 
+  // SHORT ON PURPOSE. The first draft ran three to four times this length and
+  // cost 7.5% of cloud invention yield: 9 of 120 calls came back `max-tokens`
+  // against 0 of 120 without it (Fisher p=0.0033). Mean output on the draws
+  // that succeeded barely moved (243 -> 262 tokens), so it was a TAIL — a
+  // subset of calls spending the whole 8192 budget reasoning about a long
+  // instruction, which is the exact failure this function's caller documents
+  // and that the 2048 -> 8192 raise was meant to end. A user cannot see prose
+  // that was never returned, so a longer hint that buys better stories for
+  // twelve users and nothing at all for the thirteenth is a bad trade.
   const size = s.swing < 1
-    ? 'The entire game turns on differences smaller than a single unit: nothing here is dramatic, and the setting should be correspondingly small and ordinary — a matter of fine adjustment, not of fortunes.'
+    ? 'Stakes are tiny: a matter of fine adjustment, not of fortunes. Keep the setting small and ordinary.'
     : s.swing < 10
-      ? 'The amounts at stake are modest. Choose an everyday setting where the parties care about the outcome but neither is transformed by it.'
+      ? 'Stakes are modest: an everyday setting where both parties care but neither is transformed.'
       : s.swing < 50
-        ? 'The amounts at stake are substantial — enough to matter to a season, a budget or a reputation. The setting should carry real weight without being catastrophic.'
-        : 'The amounts at stake are very large relative to everything else in this game. The setting should be one where the outcome genuinely changes the parties\' situation.';
+        ? 'Stakes are substantial: enough to matter to a season, a budget or a reputation, without being catastrophic.'
+        : 'Stakes are very large: the outcome genuinely changes the parties\' situation.';
 
   // THE GEOMETRIC LINES ARE DELIBERATELY ABSENT, and this is the most important
   // thing in the file. A first draft said "the weightiest decision here matters
@@ -163,5 +172,5 @@ export function stakesHint(g: GamePayoffs): string {
   // was run, so that line never fired and the evidence says nothing about it. It
   // goes in when a ladder that actually moves it says it works, and not before.
   const parts = [size];
-  return `STAKES OF THIS GAME — match the setting to them. ${parts.join(' ')} Describe the world only: state no figures and make no claim about which option is better, exactly as required above.`;
+  return `MATCH THE SETTING TO THE STAKES. ${parts.join(' ')} Still no figures and no claims.`;
 }

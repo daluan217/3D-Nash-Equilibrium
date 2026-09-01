@@ -63,10 +63,10 @@ const G = (a11: number, a12: number, a21: number, a22: number,
 /* --------------------------------------- known positives: every band fires */
 type Band = 'sub-unit' | 'modest' | 'substantial' | 'very large';
 const sizeBand = (h: string): Band | null =>
-  /smaller than a single unit/.test(h) ? 'sub-unit'
-  : /amounts at stake are modest/.test(h) ? 'modest'
-  : /amounts at stake are substantial/.test(h) ? 'substantial'
-  : /amounts at stake are very large/.test(h) ? 'very large' : null;
+  /Stakes are tiny/.test(h) ? 'sub-unit'
+  : /Stakes are modest/.test(h) ? 'modest'
+  : /Stakes are substantial/.test(h) ? 'substantial'
+  : /Stakes are very large/.test(h) ? 'very large' : null;
 const SIZE_FIXTURES: Array<[Band, GamePayoffs]> = [
   ['sub-unit', G(0.4, 0, 0, 0.2, 0.3, 0, 0, 0.1)],
   ['modest', G(6, 0, 0, 3, 5, 0, 0, 2)],
@@ -139,6 +139,25 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
   }
   const pct = (k: string) => `${k} ${(100 * (seen[k] ?? 0) / N).toFixed(1)}%`;
   console.log('  reach: ' + ['sub-unit', 'modest', 'substantial', 'very large'].map(pct).join(', '));
+}
+
+/* ------------------------------------------------------ length is a defect */
+// The first draft of this hint cost 7.5% of cloud invention yield — 9 of 120
+// calls returned `max-tokens` against 0 of 120 without it (p=0.0033) — because
+// a subset of calls spent the whole 8192 budget reasoning about a long
+// instruction. Output the user never receives is worse than output that could
+// have been better, so the length is now a guarded property and not a matter
+// of taste.
+{
+  let seed = 3;
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  let longest = 0;
+  for (let i = 0; i < 5000; i++) {
+    const mag = [0.5, 5, 30, 100][i % 4];
+    const p = () => Math.round((rand() * 2 - 1) * mag * 1000) / 1000;
+    longest = Math.max(longest, stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p())).length);
+  }
+  check('the hint stays short enough not to cost yield', longest <= 220, `longest ${longest} chars`);
 }
 
 if (failures > 0) { console.error(`✗ scenario stakes: ${failures} failed`); process.exit(1); }
