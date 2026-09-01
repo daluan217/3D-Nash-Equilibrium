@@ -2938,8 +2938,14 @@ export default function App() {
                   database is a file in this machine's own user-data directory,
                   so there is no other tenant to separate the games from. A
                   local owner is provisioned server-side on first write, and
-                  signing in later adopts whatever was saved. */}
-              {(user || isElectron) && (
+                  signing in later adopts whatever was saved.
+
+                  Gated on dbMode === 'local', not on isElectron alone: the
+                  desktop can also run in CLOUD mode, against the hosted API
+                  and a separate token key, where there is no local owner and
+                  an account is genuinely required. Showing the control there
+                  would offer a save that cannot work. */}
+              {(user || (isElectron && dbMode === 'local')) && (
                 <button
                   onClick={() => {
                     setSaveError('');

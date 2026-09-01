@@ -35,7 +35,20 @@ function resolverByRoute(src: string): Array<{ route: string; resolver: string }
 }
 
 const sites = resolverByRoute(server);
-check('every resolver call is located', sites.length >= 7, `${sites.length}`);
+// A count is not coverage. `sites.length >= 7` passes if a route VANISHES and
+// another gains a call — the shape of a check that cannot fail for the reason
+// it claims, which is this campaign's most repeated defect. Assert each route
+// by NAME, exactly once.
+const EXPECTED_ONCE = ['/api/auth/me', '/api/auth/delete-request', '/api/auth/delete-confirm'];
+const EXPECTED_TWICE = ['/api/games', '/api/games/:id'];
+for (const r of EXPECTED_ONCE) {
+  check(`${r} is present exactly once`, sites.filter((s2) => s2.route === r).length === 1,
+    `${sites.filter((s2) => s2.route === r).length}`);
+}
+for (const r of EXPECTED_TWICE) {
+  check(`${r} is present twice (read + write)`, sites.filter((s2) => s2.route === r).length === 2,
+    `${sites.filter((s2) => s2.route === r).length}`);
+}
 
 // Routes that decide who owns SAVED GAMES may fall back to the local owner.
 const GAME_ROUTES = ['/api/games', '/api/games/:id'];

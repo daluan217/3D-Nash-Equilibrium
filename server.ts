@@ -368,17 +368,23 @@ function ensureLocalOwner(): User | null {
   const db = loadDB();
   const existing = db.users.find((u) => u.id === LOCAL_OWNER_ID);
   if (existing) return existing;
-  const owner = {
+  // Built to the real User shape, with NO cast. The first version set
+  // `verified: true` — a field this interface does not have — so the owner
+  // read as UNVERIFIED everywhere `isVerified` is checked, and the
+  // `as unknown as User` cast is precisely what hid the mismatch. A cast is
+  // how a schema drift ships looking correct.
+  const owner: User = {
     id: LOCAL_OWNER_ID,
     username: 'This device',
     // A reserved, unroutable address: the local owner has no e-mail, and a
     // blank one would collide with any other record missing the field.
     email: 'local-owner@localhost.invalid',
     passwordHash: '',
-    verified: true,
+    isVerified: true,
+    verificationCode: '',
+    verificationCodeExpires: 0,
     tokenVersion: 0,
-    createdAt: new Date().toISOString(),
-  } as unknown as User;
+  };
   db.users.push(owner);
   saveDB(db);
   return owner;
