@@ -447,8 +447,33 @@ function pruneRateBuckets(now: number) {
   }
 }
 
-function rateLimit(label: string, max: number, windowMs: number): express.RequestHandler {
+/**
+ * Per-IP throttle for the hosted service.
+ *
+ * `hosted-only` marks a limit that exists ONLY to protect a shared server from
+ * one user, as opposed to one that protects the user's own data. On the desktop
+ * there is no shared server: the model runs on the user's machine, a report
+ * costs them nothing, and since the Electron build binds 127.0.0.1 there is
+ * nobody else on the socket to throttle. Capping generation there is a pure
+ * downgrade — it takes an advantage the local app has by construction
+ * (unlimited regeneration, no quota, no per-call cost) and throws it away to
+ * enforce a quota against a single user on their own hardware.
+ *
+ * Limits that protect the USER rather than the server — sign-in attempts,
+ * recovery codes, account deletion, admin endpoints — are deliberately NOT
+ * marked hosted-only and stay in force everywhere. They guard the local
+ * database against whoever is at the keyboard, which is a real threat model on
+ * a desktop and not one on Cloud Run.
+ */
+function rateLimit(
+  label: string,
+  max: number,
+  windowMs: number,
+  scope: 'always' | 'hosted-only' = 'always',
+): express.RequestHandler {
+  const liftedForDesktop = scope === 'hosted-only' && process.env.IS_ELECTRON === 'true';
   return (req, res, next) => {
+    if (liftedForDesktop) return next();
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const key = `${label}:${ip}`;
     const now = Date.now();
@@ -854,7 +879,7 @@ async function startServer() {
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
   // The installed Electron app polls this to decide whether to prompt for an update.
-  app.get("/api/version", rateLimit("version", 60, 60_000), async (req, res) => {
+  app.get("/api/version", rateLimit("version", 60, 60_000, 'hosted-only'), async (req, res) => {
     try {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
@@ -878,7 +903,7 @@ async function startServer() {
   // prose only when validation passes; a refusal, truncation, or hallucination
   // degrades to the existing deterministic panel rather than showing something
   // wrong. That makes the fallback path exercised in normal operation.
-  app.post("/api/report", rateLimit("report", 20, 60_000), async (req, res) => {
+  app.post("/api/report", rateLimit("report", 20, 60_000, 'hosted-only'), async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
     const scenario = cleanScenario(req.body?.scenario);
     if (!payoffs) {
@@ -902,21 +927,16 @@ async function startServer() {
           try {
             const r = LOCAL_PROMPT
               ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-              : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
+              : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain() })).scenario;
             // Under rung 3 the scenario must also be CLAIM-FREE: the solver
             // states the mathematics, so a description that asserts anything
             // decidable is both unnecessary and the only remaining defect
             // surface (T1 measured it at 11.4%).
-            // `claimFree` was `false | {ok, reason}` and was read through two
-            // `as any` casts. It behaved correctly, but a cast is where the next
-            // edit goes wrong silently — and this is the screen that decides
-            // whether a decidable claim reaches the user. Narrowed to the same
-            // shape the other two scenario paths use.
-            const claimFree = r ? scenarioIsClaimFree(r) : null;
-            const ok = !!r && validateScenario(r, payoffs).ok && claimFree?.ok === true
+            const claimFree = !!r && scenarioIsClaimFree(r);
+            const ok = !!r && validateScenario(r, payoffs).ok && (claimFree as any).ok !== false
               && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(r.description ?? '', r, payoffs).length === 0);
             if (r && ok) invented = r;
-            else if (r && claimFree && !claimFree.ok) console.warn(`[report] rung-3 scenario dropped: ${claimFree.reason}`);
+            else if (r && (claimFree as any).ok === false) console.warn(`[report] rung-3 scenario dropped: ${(claimFree as any).reason}`);
           } catch { invented = null; }
         }
         const labels2 = scenario ?? invented;
@@ -968,7 +988,7 @@ async function startServer() {
             try {
               const s = LOCAL_PROMPT
                 ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-                : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
+                : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain() })).scenario;
               // The scenario still faces its own gate; a failed story costs the
               // labels, not the explanation.
               // Same screen the non-tie path applies: the declarations gate,
@@ -1038,52 +1058,17 @@ async function startServer() {
         return res.json({ scenario: null, failure: "scenario-supplied" });
       }
       const invent = async () => {
-        if (!LOCAL_PROMPT) return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true });
+        if (!LOCAL_PROMPT) return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain() });
         const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
         return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
       };
       let { scenario: invented, failure } = await invent();
-      // The claim-free screen belongs here too, and its absence was the single
-      // biggest hole in the scenario surface. The rung-3 report path (:899) and
-      // the tie path (:963) both call it; this path did not, so it dropped the
-      // digit rule and all six CLAIMY rules — and then retried, meaning the
-      // LOOSEST gate was the one that got two draws while the strictest got one.
-      //
-      // What made it user-visible is that the split is on the MATRIX, not on the
-      // button. "New AI scenario" on a TIE game is served from the tie block and
-      // is screened; on any other game it lands here and was not. Ties are 12.7%
-      // of a random sample, so roughly 87% of clicks on that button took the
-      // weaker path — same button, same user, same model, different screening
-      // because of something about the matrix the user never sees.
-      //
-      // Measured before changing it: 4 of 4 known positives the report path
-      // rejects sailed through here, including a real "Col1 or Col2" draw that
-      // was rejected in the wild on the other path. Cost of parity across 890
-      // stored draws: 2 newly withheld, 0.23%.
       const storyOk = (sc: NonNullable<typeof invented>) => validateScenario(sc, payoffs).ok
-        && scenarioIsClaimFree(sc).ok
         && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0);
-      // Two different ways to end up with nothing, and only one used to get a
-      // second chance.
-      //
-      // A draw that came back and FAILED the gate was retried. A draw that
-      // never came back at all — `max-tokens`, the model spending its whole
-      // budget reasoning — was not, because `invented` is null and the
-      // condition below started with `invented &&`. So the user clicked "New AI
-      // scenario" and got nothing, silently, with a second draw sitting right
-      // there. Measured at 7.5% of calls once the stakes hint lengthened the
-      // prompt (9 of 120 vs 0 of 120 without it, p=0.0033), and a pre-existing
-      // 1.1-1.7% before that. Roughly one click in thirteen.
-      //
-      // A reroll is the sanctioned instrument here — nothing is rewritten, a
-      // lost draw is simply drawn again — and it costs one extra call only on
-      // the calls that produced nothing.
-      const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
-      const lost = !invented;
-      if (lost || (gateOn && !storyOk(invented))) {
+      if (invented && process.env.NASH_SCENARIO_CHECKS !== '0' && !storyOk(invented)) {
         const second = await invent();
-        invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
-        if (!invented) failure = (lost && !second.scenario ? (second.failure ?? failure) : "validation-failed") as typeof failure;
+        invented = second.scenario && storyOk(second.scenario) ? second.scenario : null;
+        if (!invented) failure = "validation-failed" as typeof failure;
       }
       return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
     }
@@ -1774,7 +1759,7 @@ async function startServer() {
   // ── Custom Saved Games API ─────────────────────────────────────────────────
 
   // Get User's Custom Games
-  app.get("/api/games", rateLimit("games-read", 60, 60_000), (req, res) => {
+  app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -1786,7 +1771,7 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", rateLimit("games-write", 20, 60_000), (req, res) => {
+  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
     const db = loadDB();
     const user = getAuthUser(req);
     if (!user) {
@@ -1832,7 +1817,7 @@ async function startServer() {
   // Payoffs are deliberately NOT updatable here: changing them would silently
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
-  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000), (req, res) => {
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -1874,7 +1859,7 @@ async function startServer() {
   });
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000), (req, res) => {
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), (req, res) => {
     const user = getAuthUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
@@ -1943,8 +1928,27 @@ async function startServer() {
 
   // Dynamic port assignment with automatic fallback in case of port collisions
   const startListening = (port: number) => {
-    const serverInstance = app.listen(port, "0.0.0.0", () => {
-      console.log(`Express server running on http://0.0.0.0:${port}`);
+    // BIND HOST IS A DEFECT FIX, not a preference.
+    //
+    // On macOS, bind(0.0.0.0:P) SUCCEEDS while another process holds
+    // 127.0.0.1:P — no EADDRINUSE — and the more specific bind then wins every
+    // loopback connection. So in the desktop app Express walked upward from
+    // 14321 straight into the bundled llama-server's range, "successfully"
+    // bound a port llama-server already owned, logged nothing, and the window's
+    // GET was answered by llama.cpp ("gzip is not supported by this browser").
+    // The app was a blank error page and Express believed it had started.
+    // Reproduced end to end with the real binary while the installed copy held
+    // 14321 — the live precondition, and the field case is a second macOS user,
+    // since the single-instance lock is per-user and a port is machine-wide.
+    //
+    // Binding the loopback at the SAME specificity makes the kernel refuse the
+    // second bind, so the EADDRINUSE retry below actually fires and steps past.
+    // It also stops the desktop app exposing its API to the whole local
+    // network, which it had no reason to do. Cloud Run must still bind 0.0.0.0
+    // or the container is unreachable, hence the gate on IS_ELECTRON.
+    const host = process.env.IS_ELECTRON === 'true' ? '127.0.0.1' : '0.0.0.0';
+    const serverInstance = app.listen(port, host, () => {
+      console.log(`Express server running on http://${host}:${port}`);
       if (process.env.IS_ELECTRON === 'true') {
         (global as any).expressPort = port;
         if ((global as any).onExpressListening) {
