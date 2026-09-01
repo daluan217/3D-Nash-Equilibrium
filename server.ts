@@ -907,11 +907,16 @@ async function startServer() {
             // states the mathematics, so a description that asserts anything
             // decidable is both unnecessary and the only remaining defect
             // surface (T1 measured it at 11.4%).
-            const claimFree = !!r && scenarioIsClaimFree(r);
-            const ok = !!r && validateScenario(r, payoffs).ok && (claimFree as any).ok !== false
+            // `claimFree` was `false | {ok, reason}` and was read through two
+            // `as any` casts. It behaved correctly, but a cast is where the next
+            // edit goes wrong silently — and this is the screen that decides
+            // whether a decidable claim reaches the user. Narrowed to the same
+            // shape the other two scenario paths use.
+            const claimFree = r ? scenarioIsClaimFree(r) : null;
+            const ok = !!r && validateScenario(r, payoffs).ok && claimFree?.ok === true
               && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(r.description ?? '', r, payoffs).length === 0);
             if (r && ok) invented = r;
-            else if (r && (claimFree as any).ok === false) console.warn(`[report] rung-3 scenario dropped: ${(claimFree as any).reason}`);
+            else if (r && claimFree && !claimFree.ok) console.warn(`[report] rung-3 scenario dropped: ${claimFree.reason}`);
           } catch { invented = null; }
         }
         const labels2 = scenario ?? invented;
@@ -1038,7 +1043,25 @@ async function startServer() {
         return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
       };
       let { scenario: invented, failure } = await invent();
+      // The claim-free screen belongs here too, and its absence was the single
+      // biggest hole in the scenario surface. The rung-3 report path (:899) and
+      // the tie path (:963) both call it; this path did not, so it dropped the
+      // digit rule and all six CLAIMY rules — and then retried, meaning the
+      // LOOSEST gate was the one that got two draws while the strictest got one.
+      //
+      // What made it user-visible is that the split is on the MATRIX, not on the
+      // button. "New AI scenario" on a TIE game is served from the tie block and
+      // is screened; on any other game it lands here and was not. Ties are 12.7%
+      // of a random sample, so roughly 87% of clicks on that button took the
+      // weaker path — same button, same user, same model, different screening
+      // because of something about the matrix the user never sees.
+      //
+      // Measured before changing it: 4 of 4 known positives the report path
+      // rejects sailed through here, including a real "Col1 or Col2" draw that
+      // was rejected in the wild on the other path. Cost of parity across 890
+      // stored draws: 2 newly withheld, 0.23%.
       const storyOk = (sc: NonNullable<typeof invented>) => validateScenario(sc, payoffs).ok
+        && scenarioIsClaimFree(sc).ok
         && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0);
       if (invented && process.env.NASH_SCENARIO_CHECKS !== '0' && !storyOk(invented)) {
         const second = await invent();
