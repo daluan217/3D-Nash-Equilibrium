@@ -707,6 +707,118 @@ NEGOTIATION form. Reach is 1.60% of draws; nothing here says the remaining
 
 ---
 
+# WINDOW 3 — the option-label channel, the negotiation form, and interest alignment
+
+Three commits: `476a8c9`, `6a8f614`, `b467269`. Gate on each: lint 0, `npm test`
+0, build 0, e2e 22/22. RED 1's oracle went **10/13 holes -> 6/13**, with
+**controls wrongly blocked 0/8 and existing screens lost 0/2 at every step**.
+Combined reach of everything added: **0 of 890 stored draws**, cloud and local.
+
+## The finding that is not a gate: server.ts screens three paths differently
+
+Reported to the main session; NO server.ts edit made, because that file is
+shared and PR #55 is in flight on it. Measured by transcribing each server line
+into a predicate and calling the SHIPPING functions (`_gen/blue_w3_paths.mjs`).
+
+| | P1 rung-3 report (:899) | P2 tie path (:963) | P3 scenarioOnly (:1025) |
+|---|---|---|---|
+| validateScenario | yes | yes | yes |
+| scenarioIsClaimFree | **yes** | **yes** | **NO** |
+| validateProseDirections | yes | yes | yes |
+| retry | no | no | **one** |
+| NASH_SCENARIO_CHECKS=0 kill switch | no | no | **yes** |
+
+Two things fall out. **The weakest gate is the one with the retry** — P3 drops
+the entire claim-free screen and then gets a second draw through what is left.
+And **the split is on the MATRIX, not the button**: "New AI scenario" on a TIE
+game is served by the tie block and DOES get claim-free; on a non-tie game it
+falls to :1025 and does not. Ties are 12.7% of a random sample, so ~87% of
+clicks on that button take the weaker path. 4 of 4 known positives that P1
+rejects — including the real `stakes-local #13` "Col1 or Col2" draw rejected in
+the wild — pass P3. Cost of alignment: 2 of 890 draws, 0.23% of what the button
+ships today.
+
+This matters more than it first looked, because of where the label screen had
+to live (below): the label fix reaches P1 and P2 today but does NOT reach the
+"New AI scenario" button until P3 calls claim-free. One fix, two files.
+
+## The option-label channel (RED 2, L1-L6)
+
+Closed L1 (number in a label), L2 ("Hundredfold"), L4 (number in the NAME, a
+field no screen read), L5 (spelled-out multiple in the description). Also closed
+a shape RED 2 did not build: **the C11 draw without its brackets**. `Signal
+(-1/-1)` is caught by the annotation rule; `Signal -1/-1` was caught by nothing —
+one keystroke from invisible. And `/\d/` -> `/\p{N}/u`, because the description
+screen was ASCII-only and a fullwidth numeral walked through the rule whose only
+job is to stop numerals.
+
+**The placement was the real decision.** The first draft put the numeral screen
+in `validateScenario`. That runs at EVERY rung, and at rung 0 the model writes
+the numbers itself, so `Gate 12 / Gate 7` is an ordinary option pair there — a
+false positive aimed straight at the rung-2/1/0 exploration Daniel has queued.
+The rule is true only because the solver states every number, which is only so
+at rung 3, so it lives on `scenarioIsClaimFree`. The matrix-checked parenthetical
+rule stays in `validateScenario`, where the matrix settles it at any rung. Both
+directions asserted (MUTANT D).
+
+**L3 and L6 are left open on purpose.** "Full Evacuation / No Evacuation" and
+"Full Shutdown / No Shutdown" are not decidable from anything the program holds;
+the identical shape is real, good output (`Full Monitoring / No Monitoring`,
+r2local#108). The word list that catches them rejects **282 of 875 = 32.2%** of
+gate-passing draws. Priced as MUTANT C rather than argued about.
+
+## The negotiation form (RED 1's largest hole)
+
+The rule is a **conjunction**, and the corpus is why. "Negotiat*" is in 10 of 890
+real draws and ALL TEN ARE GOOD — "Two fishing cooperatives are negotiating how
+to manage a shared seasonal catch quota. The North Fleet chooses between Firm
+quota and Flexible quota, while the South Fleet INDEPENDENTLY chooses..." Two
+parties in a negotiation who each pick a stance simultaneously is exactly what
+this app models, and most of those ten are from the cloud production path. Bare
+"offer" is 1.12%, bare "accept" 0.22%, contract/deal/terms 6.29%. So: one side
+OFFERS **and** another ACCEPTS/REJECTS, plus a second arm for the game ENDING in
+a binding agreement. Both 0 of 890.
+
+The unit test's minimal pair holds "negotiating" constant on both sides, so the
+word is demonstrably not what decides the verdict. **Its first draft was wrong
+and the suite caught it**: it swapped in "the other accepts" alone, but an
+acceptance answering nothing is one player's own simultaneous choice and is real
+legal output (r2local#4). It takes both roles to assert the protocol.
+
+## Interest alignment (three more holes, one mechanism)
+
+constant-sum / common-interest / flat are **exact** matrix predicates — no
+tolerance, no equilibrium computation. That is what makes them shippable where a
+vocabulary rule would not be: they cannot fire on an ordinary matrix however the
+sentence is worded. Stated in the test as three minimal pairs — the same sentence
+on a matrix where it is TRUE must pass — which is the property a word list could
+not have.
+
+The negation guard was first a fixed 45-character lookback and **the unit test
+caught it reaching back across a full stop** into the previous sentence, so a
+"not" that negated something else switched the rule off. It is now scoped to the
+phrase's own clause. A whole-description scan is the same bug at full size.
+
+## What is still open, honestly
+
+- **6 of 13 oracle holes remain**: one player holding both option pairs, the
+  pronoun-subject second decision, an option pair with no chooser, both players
+  making the same move, repeated play, and zero-sum + "coordinating".
+- **The last of those is priced and refused**, not merely unfinished: 103 of 890
+  real draws pair "coordinat*" with a constant-sum matrix (38 on the tight form),
+  and they are good output.
+- **Everything shipped this window has 0 reach on observed output.** It is
+  CONTAINMENT, not detection — worth its place because the channels are
+  demonstrably walkable and the distribution is not fixed, but nothing here says
+  the current two models were producing these defects.
+- **`r2cloud#11` is a same-class negotiation instance the narrow rule does not
+  catch**: "chooses whether to submit a Premium Route or a Budget Route bid... A
+  logistics platform chooses whether to Accept Bid or Reject Bid." Widening the
+  offer side to bid/submit/propose catches it at a cost of 1 of 890. Handed to
+  the main session rather than decided unilaterally.
+
+---
+
 ## Open leads handed to red (evidence in blue's hands, investigation in theirs)
 
 - **RED 1 — `fmtPayoff` applied at 2 of 10 payoff-printing sites.** The
