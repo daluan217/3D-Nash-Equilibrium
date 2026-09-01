@@ -187,9 +187,21 @@ export function stakesHint(g: GamePayoffs): string {
   // what I expected. The alternative wording referred to them positionally
   // ("the one choosing between the first pair of options") and named no
   // letters — and it leaked bare letters into the story at 10%, against 0% for
-  // this one, because the grounding payload supplies "Player A" either way and
-  // a positional reference leaves the model no handle on the second party.
-  // Forbidding the vocabulary beats avoiding it.
+  // this one, because a positional reference leaves the model no handle on the
+  // second party while the grounding payload supplies "Player A" anyway.
+  //
+  // DO NOT GENERALISE THAT. The first draft of this comment read "forbidding
+  // the vocabulary beats avoiding it", and a separate run refutes it as a
+  // general rule: added as a STANDALONE prohibition to a prompt that otherwise
+  // never names the parties, the same sentence MANUFACTURES the defect it
+  // forbids — control 0/72 leaks, prohibition 4/70, and both leaks were the
+  // worst class, a party with no character at all, which the control never
+  // produced in 72 draws. Don't-think-of-a-pink-elephant.
+  //
+  // The variable is the SALIENCE of the tokens in the instruction block, not
+  // the polarity of the instruction. This line has to name a party anyway —
+  // it is about which one is exposed — so the tokens are already present and
+  // the prohibition is free. That is the only case it is licensed in.
   //
   // Blind forced choice on the real production path, arm held constant within
   // each pair, presentation order randomised, picks committed before the key:
