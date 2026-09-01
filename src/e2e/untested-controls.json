@@ -18,8 +18,6 @@
   "Refresh": "Re-fetches the saved-game list; the list endpoint itself is covered by the integration suite.",
   "Open workspace menu": "Reveals the saved-game library. UNTESTED AND WORTH TESTING \u2014 this is the surface that renders user-saved descriptions, which is exactly where a colour-coding or escaping defect would show.",
   "Get the desktop app": "Starts a DMG download from GCS. Not clicked in CI because the download itself is the thing it does; the release pipeline covers producing and uploading that artifact.",
-  "Go": "Submits the api-base override in the developer panel. Changes which server the app talks to, so exercising it in a suite would point the suite at something other than the server under test.",
   "Sign In / Sign Up": "Opens the auth panel. The auth LIFECYCLE \u2014 register, verify, login, tampered tokens, rate limits \u2014 is covered by src/integration/api.test.mjs against the real server.",
-  "Sign out": "See 'Log out'.",
-  "Toggle dark mode": "UNTESTED AND WORTH TESTING. Theme round-trip IS asserted by src/e2e/smoke.mjs, but through localStorage rather than this control, so the button that sets it is not itself pressed."
+  "Sign out": "See 'Log out'."
 }

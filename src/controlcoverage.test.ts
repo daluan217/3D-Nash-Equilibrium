@@ -87,6 +87,13 @@ function e2eVocabulary(): string {
   if (wordSoup.length !== 0) fail('fixture: prose in a test file was read as a selector');
   const realSel = e2eSelectorNames("page.getByRole('button', { name: /^Run$/ })");
   if (!realSel.length) fail('fixture: a real role selector was not read');
+  // The role is not the name.
+  const named = e2eSelectorNames("page.getByRole('button', { name: 'Run' })");
+  if (!named.includes('Run')) fail(`fixture: a STRING role name was not read — got ${JSON.stringify(named)}`);
+  if (named.includes('button')) fail('fixture: the ROLE was recorded as if it were a control name');
+  // The raw-attribute form the smoke suite actually uses.
+  const attr = e2eSelectorNames('page.locator(\'[aria-label="Toggle dark mode"]\').first().click()');
+  if (!attr.includes('Toggle dark mode')) fail(`fixture: an attribute selector was not read — got ${JSON.stringify(attr)}`);
 }
 
 /* ------------------------------------------------------------- the audit */
@@ -140,8 +147,18 @@ const vocab = e2eVocabulary();
  */
 function e2eSelectorNames(src: string): Array<string | RegExp> {
   const out: Array<string | RegExp> = [];
-  // getByRole('button', { name: 'X' | /X/i }), getByText/Label/Placeholder/Title
-  for (const m of src.matchAll(/get(?:By|AllBy)(?:Role|Text|Label|Placeholder|Title)\([^)]*?['"`]([^'"`]{2,60})['"`]/g)) out.push(m[1]);
+  // getByRole('button', { name: 'X' }) — take the NAME, not the role. The first
+  // draft grabbed the first quoted string, which is the ROLE ("button"), so
+  // every role query recorded a useless token and the controls it selects read
+  // as untested. Under-crediting is the mirror of the word-soup bug this file
+  // was written to fix, and just as wrong.
+  for (const m of src.matchAll(/get(?:By|AllBy)Role\(\s*['"`][^'"`]+['"`]\s*,\s*\{[^}]*?name:\s*['"`]([^'"`]{2,60})['"`]/g)) out.push(m[1]);
+  // The other queries take the name as their first argument.
+  for (const m of src.matchAll(/get(?:By|AllBy)(?:Text|Label|Placeholder|Title)\(\s*['"`]([^'"`]{2,60})['"`]/g)) out.push(m[1]);
+  // The suites also select by raw attribute — smoke.mjs presses the theme
+  // toggle as page.locator('[aria-label="Toggle dark mode"]'). A parser that
+  // does not read the form the tests actually use is not measuring coverage.
+  for (const m of src.matchAll(/locator\(\s*['"`]\[(?:aria-label|title)="([^"]{2,60})"\]/g)) out.push(m[1]);
   for (const m of src.matchAll(/get(?:By|AllBy)(?:Role|Text|Label|Placeholder|Title)\([^)]*?\/((?:[^/\\]|\\.){2,80})\/([gimsuy]*)/g)) {
     try { out.push(new RegExp(m[1], m[2].replace(/[gy]/g, ''))); } catch { /* unparseable selector */ }
   }
@@ -165,6 +182,13 @@ if (unlisted.length) {
 // protects nothing — the same drift that caused the bug this file exists for.
 if (staleEntries.length) {
   fail(`${staleEntries.length} allowlist entr(ies) name a control that no longer exists: ${staleEntries.join(', ')}`);
+}
+// An entry for a control that IS exercised is dead weight in the other
+// direction: its reason says nobody presses it, and somebody does. Left alone
+// the list slowly becomes fiction, which is exactly what it exists to prevent.
+const nowCovered = Object.keys(ALLOWLIST).filter((l) => labels.has(l) && covered(l));
+if (nowCovered.length) {
+  fail(`${nowCovered.length} allowlist entr(ies) name a control an e2e suite now DOES press — delete them: ${nowCovered.join(', ')}`);
 }
 
 console.log(`  controls found ${labels.size} · exercised by e2e ${labels.size - untested.length} · knowingly untested ${untested.length}`);
