@@ -1277,15 +1277,39 @@ function testClaimFreeScreen() {
     'A traveler chooses whether to Show Pass or Skip Check before approaching the entrance.',
   ]) assert(!drop(d), `an EVENT reference must not be read as move order: ${d.slice(0, 80)}`);
 
-  // MUST PASS — verbatim gold descriptions; "payoffs" names the concept only.
+  // MUST PASS — verbatim gold descriptions with no claim and no meta.
+  for (const d of [
+    'Two subcontractors, Arin and Bela, separately choose how to structure competing proposals for a shared project.',
+    'Two drivers approach a narrow one-lane bridge from opposite ends. Each driver chooses whether to Hold Course or Yield before they proceed.',
+  ]) assert(!drop(d), `claim-free screen must ALLOW a claim-free story: ${d.slice(0, 80)}`);
+  // ── The "payoffs" golds, asserted BY REASON. ────────────────────────────
+  // These name the concept only and assert nothing false — the proposition this
+  // block was written to protect, and it still holds. They ARE now dropped, by
+  // the META screen, for naming the mathematical object in user-facing fiction.
+  // True and out of register are independent questions; both are asked here.
   for (const d of [
     'A and B are rival campaign managers deciding where to send a field team. Each independently chooses North or South, and the matrix records their strategic payoffs.',
     'Firms A and B simultaneously choose whether to build around a shared industry standard or their own proprietary platform. Their payoffs represent the resulting commercial success for each firm.',
-    'Two subcontractors, Arin and Bela, separately choose how to structure competing proposals for a shared project.',
-    'A is a port inspector choosing between Light inspection and Thorough inspection. B is a cargo operator choosing between Cooperate and Evade during the inspection.',
-    'Two drivers approach a narrow one-lane bridge from opposite ends. Each driver chooses whether to Hold Course or Yield before they proceed.',
-  ]) assert(!drop(d), `claim-free screen must ALLOW a claim-free story: ${d.slice(0, 80)}`);
-  console.log('\u2713 claim-free screen: bare "payoffs" allowed, every attached claim still refused');
+  ]) {
+    const w = scenarioIsClaimFree({ description: d } as never).reason ?? '';
+    assert(/mathematical object/.test(w),
+      `the "payoffs" golds are dropped for REGISTER: ${d.slice(0, 60)} -> ${w || '(allowed)'}`);
+    assert(!/comparative|attached to a comparison|conditional outcome|moves first|offers and the other accepts/.test(w),
+      `no FALSEHOOD screen may fire on a bare "payoffs" gold — that is what this block protects: ${d.slice(0, 60)} -> ${w}`);
+  }
+  // The port-inspector gold, moved out of the list above and asserted BY REASON.
+  // It is now dropped \u2014 but for its META vocabulary ("A is a port inspector"
+  // uses the bare letter as the character's name), not by any CLAIM rule, and
+  // this block exists to test the claim rules. Asserting the reason keeps the
+  // original fact under test instead of letting a gold draw quietly change
+  // which screen it is evidence about.
+  const inspector = 'A is a port inspector choosing between Light inspection and Thorough inspection. B is a cargo operator choosing between Cooperate and Evade during the inspection.';
+  const inspectorWhy = scenarioIsClaimFree({ description: inspector } as never).reason ?? '';
+  assert(/bare letter/.test(inspectorWhy),
+    `the port-inspector gold must be dropped for META, not for a claim: ${inspectorWhy || '(allowed)'}`);
+  assert(!/comparative|payoff word|claim|equilibri/i.test(inspectorWhy),
+    'claim-free screen must still find NO CLAIM in the port-inspector gold \u2014 that is what it was quoted to prove');
+  console.log('\u2713 claim-free screen: every attached claim refused; the bare-"payoffs" golds carry no claim and are dropped for REGISTER by META instead');
 }
 
 function testEquilibriumActionsContinuum() {

@@ -54,7 +54,37 @@ export function colorTermsFor(
     a.push(...actorA);
     b.push(...actorB);
   }
-  return { a, b };
+  return dropAmbiguous(a, b);
+}
+
+/**
+ * A phrase both players can play belongs to NEITHER colour.
+ *
+ * Symmetric games share option names on purpose — the Prisoner's Dilemma is
+ * "Cooperate" for Row 1 AND Col 1, and Battle of the Sexes is Opera/Football
+ * for both — so this is correct input, not a defect to reject. But ColorCoded
+ * builds its entry list as every A term followed by every B term and takes the
+ * first match, so a shared phrase was always painted as A's: right half the
+ * time by construction, and misleading precisely where the reader most needs
+ * to know whose move is being described.
+ *
+ * Leaving it uncoloured says the true thing. The reader still gets the
+ * structural cues (Row 1, Col 2, x*, E[A]) which are unambiguous, and no
+ * sentence claims an option belongs to a player who does not own it.
+ *
+ * Found by a red-team pass over the local model, where 8.3% of scenarios gave
+ * both players the same option names — but the built-in Prisoner's Dilemma
+ * preset had the same defect long before any model did.
+ */
+function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
+  const norm = (t: string) => t.trim().toLowerCase();
+  const inB = new Set(b.map(norm));
+  const shared = new Set(a.map(norm).filter((t) => inB.has(t)));
+  if (shared.size === 0) return { a, b };
+  return {
+    a: a.filter((t) => !shared.has(norm(t))),
+    b: b.filter((t) => !shared.has(norm(t))),
+  };
 }
 
 // ── user-chosen colour terms ────────────────────────────────────────────────

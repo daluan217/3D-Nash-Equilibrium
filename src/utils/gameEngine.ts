@@ -406,6 +406,30 @@ export function fmtProb(v: number): string {
   return String(s);
 }
 
+/**
+ * A PAYOFF for display, never claiming a value it does not have.
+ *
+ * fmtProb has protected probabilities from the sub-resolution lie since round
+ * 14; payoffs were left on a bare toFixed(3) and have the same exposure. The
+ * matrix accepts values down to 0.001 (commitPayoffInput rounds to 3dp and
+ * clamps to ±100), and an expected payoff is a weighted average of four of
+ * them, so it can be smaller than the display resolution: on a game scaled to
+ * ±0.003 the true E[A] is -3.333e-4 and toFixed(3) prints "-0.000" — a
+ * NEGATIVE ZERO, which both claims the payoff is nothing and reads as a
+ * typographical error.
+ *
+ * Same contract as fmtProb: an exact zero prints as "0", and anything that
+ * merely ROUNDS to zero says so in words rather than asserting it.
+ */
+export function fmtPayoff(v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  if (v === 0) return '0';
+  const s = r3(v);
+  if (s === 0) return v > 0 ? 'less than 0.001' : 'greater than -0.001';
+  // Object.is catches the -0 that r3 can produce from a tiny negative.
+  return Object.is(s, -0) ? '0' : s.toFixed(3);
+}
+
 // NOTE (adversarial round 1, 2026-08-29): the mixed NE is reported at 3-dp
 // ROUNDED coordinates, and eA/eB are the expected payoffs AT THAT ROUNDED
 // PROFILE — so the tuple (x, y, eA, eB) is self-consistent, which `npm test`'s

@@ -1,0 +1,32 @@
+
+> nash-equilibrium-simulator@0.0.100 test:e2e
+> node src/e2e/smoke.mjs
+
+[server] AUTH_SECRET/SESSION_SECRET is not configured; auth sessions will be invalidated on server restart.
+[server] (node:3846) ExperimentalWarning: CommonJS module /private/tmp/claude-501/-Users-danielluan-Desktop-3D-Nash-Equilibrium/5d5d682e-2a27-4687-ac2f-801e07672846/scratchpad/blue/dist/server.cjs is loading ES Module /Users/danielluan/Desktop/3D-Nash-Equilibrium/node_modules/vite/dist/node/index.js using require().
+Support for loading ES Module in require() is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS page loads with the app title — Nash Equilibrium Simulator
+PASS report API falls back to deterministic ground truth without a key — status=200 source=deterministic NEs=1
+PASS U+2212 pasted into A(1,1) commits to -4 — got "-4"
+PASS x0=0 + Step opens the log "Start (0.000, …)" — Start (0.000, 0.217) — Player A moves first
+PASS tab-wedge fixture: Step responds instantly — 1772ms
+PASS tab-wedge fixture: progress reads 1 / 1504 — ["1 / 1504"]
+PASS Spy vs. Analyst converges in Domain Shrink mode
+PASS regret mode says "regret contraction cycles"
+PASS clicking Player B clears the Converged pill and the log — 1 log lines
+PASS report renders the computed Pure NE (Row2, Col2) for the fixture
+PASS no-key path shows the deterministic report as authoritative
+PASS matrix edit after Go-to-step-0 clears the run — 1 log lines, Converged pill=0
+PASS BoS converges with the pure-settlement wording
+PASS theme toggle flips the dark class and persists it — {"dark":true,"stored":"dark"}
+PASS Reset clears the log and the Converged pill — 1 log lines, Converged pill=0
+PASS the 3D scene is live before the camera checks (precondition)
+PASS the 3D plot can be rotated by dragging — {"x":-2.193762318602279,"y":0.5544428640362574,"z":1.1} -> {"x":-0.6000504375838028,"y":1.7397933874039935,"z":1.7155344477744519}
+PASS the 3D plot can be zoomed by wheel — {"x":-0.6000504375838028,"y":1.7397933874039935,"z":1.7155344477744519} -> {"x":-0.2546178297811016,"y":0.7382419690452261,"z":0.7279482367614262}
+PASS resuming a paused run keeps the adjusted camera (no pre-zoom flash) — 13 react calls, worst deviation=0.0000
+PASS the run was going before the zoom (precondition)
+PASS zooming the scene pauses a running simulation
+PASS no console/page errors across the whole suite
+
+══════ E2E SMOKE: 22/22 checks passed ══════
