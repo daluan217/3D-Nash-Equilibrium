@@ -43,6 +43,50 @@ const REPORT_REASONING: ReasoningEffort | undefined =
 // an invention-mode report instead of the separate scenario prompt.
 const LOCAL_PROMPT = process.env.REPORT_LOCAL_PROMPT === '1' ? LOCAL_SYSTEM_PROMPT : undefined;
 
+/**
+ * WHERE AN INVENTED SCENARIO COMES FROM — one function, three callers.
+ *
+ * This was three copies of the same ternary. The copies are what
+ * `scenariopaths.contract.test.ts` exists to police, because they had already
+ * drifted once: a branch took `server.ts` wholesale from a pre-fix tree and
+ * silently reverted the claim-free screen on one path only. A single source
+ * makes that particular drift unrepresentable rather than merely detectable.
+ *
+ * ORDER IS DELIBERATE. The bank is consulted first and ONLY on the desktop,
+ * because it exists to replace a bundled model, not to override the cloud. A
+ * miss falls through to the model path instead of failing: a thin (domain,
+ * band) cell should cost variety, never a report.
+ *
+ * WHAT THIS DOES NOT DO is decide whether the scenario may be SHOWN. Every
+ * caller screens the result — bank rows included — through the same live gates
+ * it applies to model output. The bank is frozen at build time while the gates
+ * keep moving, so "already verified" must never read as "need not be checked".
+ */
+/**
+ * Can this process produce a scenario at all?
+ *
+ * A key is no longer the only way. The desktop ships a bank precisely so the
+ * offline app has a story WITHOUT credentials, so gating invention on
+ * `hasCredentials` alone would have made the bank unreachable in the exact
+ * situation it was built for — present, loaded, correct, and never consulted.
+ */
+function canInvent(): boolean {
+  return hasCredentials(DEFAULT_MODEL) || (process.env.IS_ELECTRON === 'true' && bankAvailable());
+}
+
+async function inventScenario(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+  const domain = pickScenarioDomain();
+  if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
+    const sc = bankScenario(payoffs, domain);
+    if (sc) return { scenario: sc };
+  }
+  if (!LOCAL_PROMPT) {
+    return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true });
+  }
+  const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
+  return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
+}
+
 // Validated-report cache. The same eight numbers always have the same
 // equilibria, and only envelopes that passed EVERY gate are stored — so a
 // hit serves certified content instantly and for free. The six standard
@@ -60,6 +104,7 @@ const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number;
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair } from "./src/utils/colorTerms";
 import { pickScenarioDomain } from "./src/utils/scenarioDomains";
+import { bankAvailable, bankScenario } from "./src/utils/bankSource";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -924,11 +969,9 @@ async function startServer() {
       const isTie = p2.a11 === p2.a21 || p2.a12 === p2.a22 || p2.b11 === p2.b12 || p2.b21 === p2.b22;
       if (!isTie && req.body?.scenarioOnly !== true) {
         let invented: SuggestedScenario | null = null;
-        if (!scenario && hasCredentials(DEFAULT_MODEL)) {
+        if (!scenario && canInvent()) {
           try {
-            const r = LOCAL_PROMPT
-              ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-              : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
+            const r = (await inventScenario(payoffs)).scenario;
             // Under rung 3 the scenario must also be CLAIM-FREE: the solver
             // states the mathematics, so a description that asserts anything
             // decidable is both unnecessary and the only remaining defect
@@ -990,11 +1033,9 @@ async function startServer() {
           // supplied "Night Shift / Day Shift" was shown a mathematically
           // perfect paragraph about options that were not in their game.)
           let invented: SuggestedScenario | null = null;
-          if (!scenario && hasCredentials(DEFAULT_MODEL)) {
+          if (!scenario && canInvent()) {
             try {
-              const s = LOCAL_PROMPT
-                ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-                : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
+              const s = (await inventScenario(payoffs)).scenario;
               // The scenario still faces its own gate; a failed story costs the
               // labels, not the explanation.
               // Same screen the non-tie path applies: the declarations gate,
@@ -1054,7 +1095,7 @@ async function startServer() {
     // retry. Same story-claims gate, one retry, suggestion withheld on a
     // double failure. Never cached: freshness is the request.
     if (req.body?.scenarioOnly === true) {
-      if (!hasCredentials(DEFAULT_MODEL)) {
+      if (!canInvent()) {
         return res.json({ scenario: null, failure: "no-key" });
       }
       // The tie path already refuses to replace a scenario the user supplied;
@@ -1063,11 +1104,7 @@ async function startServer() {
       if (scenarioIsUsable(scenario)) {
         return res.json({ scenario: null, failure: "scenario-supplied" });
       }
-      const invent = async () => {
-        if (!LOCAL_PROMPT) return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true });
-        const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
-        return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
-      };
+      const invent = () => inventScenario(payoffs);
       let { scenario: invented, failure } = await invent();
       // The claim-free screen belongs here too, and its absence was the single
       // biggest hole in the scenario surface. The rung-3 report path (:899) and
