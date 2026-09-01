@@ -902,7 +902,7 @@ async function startServer() {
           try {
             const r = LOCAL_PROMPT
               ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-              : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain() })).scenario;
+              : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
             // Under rung 3 the scenario must also be CLAIM-FREE: the solver
             // states the mathematics, so a description that asserts anything
             // decidable is both unnecessary and the only remaining defect
@@ -963,7 +963,7 @@ async function startServer() {
             try {
               const s = LOCAL_PROMPT
                 ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-                : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain() })).scenario;
+                : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
               // The scenario still faces its own gate; a failed story costs the
               // labels, not the explanation.
               // Same screen the non-tie path applies: the declarations gate,
@@ -1033,7 +1033,7 @@ async function startServer() {
         return res.json({ scenario: null, failure: "scenario-supplied" });
       }
       const invent = async () => {
-        if (!LOCAL_PROMPT) return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain() });
+        if (!LOCAL_PROMPT) return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true });
         const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
         return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
       };
