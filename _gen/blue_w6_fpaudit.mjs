@@ -74,6 +74,7 @@ const FORMS = [
   ['bare letter', /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have)\b/u],
   ['game cast', /\b(?:the\s+two\s+players|both\s+players|each\s+player)\b/i],
   ['the game', /\bthe\s+game\b(?![-\w])/i],
+  ['payoff', /\bpayoffs?\b/i],
 ];
 let newlyRejected = 0, newlyAccepted = 0, other = 0;
 const byForm = new Map(FORMS.map(([t]) => [t, new Map()]));

@@ -528,22 +528,31 @@ const BIG_SPELLED_QUANTITY = /\b(?:hundreds?|thousands?|millions?|billions?|tril
  * all cloud output would have looked like a huge win right up until someone
  * read the rejections.
  *
- * WHAT IS DELIBERATELY NOT HERE. The word "payoff" is the fifth sub-form of
- * this class and it is NOT screened, because doing so contradicts a control
- * that RED 1'S OWN ORACLE scores: "their choices determine the resulting
- * payoffs" is asserted there as the vacuous closer the model writes constantly,
- * true on any matrix whose payoffs vary. Both readings are defensible and
- * neither instrument is broken — the oracle asks whether the sentence is FALSE
- * (it is not) and this screen asks whether it is IN REGISTER (it is not). That
- * is a scoreboard question, not a validator question, so it is escalated rather
- * than decided here. Cost of leaving it out, measured: the word "payoff" is the
- * ONLY meta marker in 1.2% of local draws and 0.0% of cloud draws.
+ * THE FIFTH SUB-FORM, "payoff", AND WHY IT LOOKED LIKE A CONFLICT. Screening it
+ * appears to contradict a control RED 1'S OWN ORACLE scores: "their choices
+ * determine the resulting payoffs", asserted there as the vacuous closer the
+ * model writes constantly. It is not a contradiction. The oracle asserts the
+ * sentence is not FALSE — true on any matrix whose payoffs vary, and that
+ * assertion still stands, untouched. This screen asserts it is not IN REGISTER.
+ * Both are true and they are independent: a draw can be perfectly true and
+ * still be prose the product should not ship.
+ *
+ * The apparent conflict came from HOW the control was written — as "nothing
+ * rejects this", which is a stronger claim than the fact it was recruited to
+ * protect. The controls in the suite are therefore expressed by REJECTION
+ * REASON: the falsehood screens must not fire on that sentence, and the META
+ * screen may. Measured: "payoff" is the ONLY meta marker in 1.2% of local draws
+ * and 0.0% of cloud draws, so it adds a little to the union and nothing to
+ * cloud.
  *
  * `\p{N}` forms ("Player 1") are not listed because they are unreachable: the
  * numeral screens above return first, in labels and in the description alike.
  * Marked rather than left to imply coverage they do not provide.
  */
 const META_PROMPT_CAST = /\bplayers?\s+(?:[AB]|one|two)\b/i;
+// The mathematical object by name. Screened for REGISTER, never for falsehood —
+// the falsehood rule above deliberately still does not fire on the bare noun.
+const META_PAYOFF = /\bpayoffs?\b/i;
 const META_GAME_CAST = /\b(?:the\s+two\s+players|both\s+players|each\s+player)\b/i;
 // "the players" BARE is excluded on SHAPE, not on rate. It is the one member
 // with an ordinary non-game meaning — "the players" is the acting company, and
@@ -777,12 +786,27 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
   // the full shipping gate (RED 2, case L5).
   if (MULTIPLIER_CLAIM.test(desc)) return { ok: false, reason: 'the description asserts a multiple' };
   const CLAIMY: [RegExp, string][] = [
-    // "payoffs" as a bare NOUN asserts nothing — "the matrix records their
-    // strategic payoffs", "their payoffs represent the resulting commercial
-    // success" — and dropping on the word alone cost 1,269 of 4,462 GOLD
-    // scenarios (28.4%), which is an off switch, not a filter. The same
-    // word-not-claim error as the joint-payoff check. So the bare noun is
-    // allowed and rule 1b below drops it once it is ATTACHED to a comparison.
+    // "payoffs" as a bare NOUN asserts nothing FALSE — "the matrix records
+    // their strategic payoffs" is true of any matrix — so this rule, which is a
+    // FALSEHOOD rule, deliberately does not fire on it. Rule 1b below drops it
+    // once it is ATTACHED to a comparison, which is where the assertion is.
+    //
+    // THE BARE NOUN IS NOW DROPPED ANYWAY, by the META screen further down, on
+    // a different ground: it is the mathematical object appearing in
+    // user-facing fiction. True and out of register are independent, and a draw
+    // can be both. Kept as two separate rules rather than merged, because the
+    // question each answers is worth being able to ask on its own.
+    //
+    // A SUPERSEDED NUMBER, RETIRED HERE. This comment used to justify allowing
+    // the bare noun with "dropping on the word alone cost 1,269 of 4,462 GOLD
+    // scenarios (28.4%)". That figure governed a DIFFERENT corpus — an earlier
+    // training set generated under a prompt that asked the model to describe
+    // payoffs — and it is not the cost on the surface this gate actually runs
+    // on. Measured on production output, 3,363 gate-passing draws: the word
+    // appears in 2.2% of local draws and 0.0% of cloud draws, and it is the
+    // ONLY meta marker in 1.2% of local draws. The old number is recorded as
+    // retired rather than deleted, because a stale figure left in a comment is
+    // how the next person inherits a decision without its evidence.
     // `equilibrium` stays claimy on sight: naming where the equilibrium is IS
     // an assertion, and a scenario has no business making it.
     [/\b(?:better|worse|best|worst|prefers?|favou?rs?|dominant|dominates?|optimal|advantage|equilibri(?:um|a)|indifferent|gains?\s+more|loses?\s+more)\b/i, 'a comparative or payoff word'],
@@ -877,6 +901,7 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     [META_BARE_LETTER, 'a bare letter standing in for a character'],
     [META_GAME_CAST, 'the game\'s cast ("the two players") named in the story'],
     [namesTheGameItself, 'the game itself named as an object in the story'],
+    [META_PAYOFF, 'the payoff, the mathematical object, named in the story'],
   ];
   for (const [test, why] of META) {
     if (typeof test === 'function' ? test(metaText) : test.test(metaText)) return { ok: false, reason: why };

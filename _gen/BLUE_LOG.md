@@ -88,7 +88,75 @@ other people's work, and here it caught mine. Mutations now:
 | N3 drop the product-vocabulary guard | video-game control fails ✓ (passed before the fixture fix) |
 | N4 add bare "the players" back | puppet-theatre control fails ✓ |
 
-### The fifth sub-form is NOT shipped, and this is a scoreboard question
+### ADDENDUM — the fifth sub-form SHIPPED after arbitration, and the oracle now reads 1/8
+
+The coordinator ruled, and the ruling dissolved the conflict rather than picking
+a side: **both propositions are true and independent.** RED 1's control asserts
+the sentence is not FALSE (true on any matrix whose payoffs vary); the META
+screen asserts it is not IN REGISTER. A draw can be perfectly true and still be
+prose the product should not ship. The apparent contradiction came from the
+control being written as "nothing rejects this", which is a stronger claim than
+the fact it was recruited to protect — so the fix was the one already used three
+times this window: **assert it by its rejection REASON.**
+
+`payoff` therefore ships. The suite now asserts BOTH halves on the same
+sentence: no falsehood screen may fire on it, the matrix-decided screens must
+still pass it, and the META screen must reject it. A fourth assertion keeps the
+falsehood rule honest on its own ground — a payoff comparison ("the haulier's
+payoffs are higher than the mill's") must still be caught AS A FALSEHOOD, not
+merely as register, or merging the two questions has quietly lost one.
+
+**RED 1'S ORACLE NOW REPORTS `controls wrongly blocked 1/8`, and that is
+expected, not a regression to fix.** It names exactly the authorised control:
+
+    REGRESSION  "their choices determine the payoffs" on an ORDINARY matrix
+                wrongly blocked by: the payoff, the mathematical object, named in the story
+
+Blue did not edit that file. Editing another team's acceptance test so your own
+change reads clean is the anti-pattern this campaign exists to catch. RED 1
+should re-express that control the same way — the proposition it protects is
+untouched and still asserted here — and until they do, the scoreboard reads 1/8.
+Holes are unchanged at 3/13, screens lost 0/2, and the label oracle is unchanged
+at 4/10 with 0/15 controls.
+
+Updated audit, baselined against the pre-META commit: **411 newly rejected
+(local 222, cloud 76, unattributed 113), 0 newly accepted, 0 unexplained**, and
+the population is now NINE distinct matched substrings — the eight below plus
+44x «payoffs». All nine unambiguously meta.
+
+### A SUPERSEDED NUMBER RETIRED FROM THE VALIDATOR
+
+The comment allowing bare "payoffs" justified itself with "dropping on the word
+alone cost 1,269 of 4,462 GOLD scenarios (28.4%)". That figure governed a
+DIFFERENT corpus, generated under a prompt that asked the model to describe
+payoffs. Production rate on the surface this gate actually runs on: **2.2% local,
+0.0% cloud**, and it is the only meta marker in 1.2% of local draws. The old
+number is recorded as retired rather than deleted — a stale figure left in a
+comment is how the next person inherits a decision without its evidence.
+
+### AND THE MUTATION HARNESS ITSELF HAD THE DEFECT IT HUNTS — third instance this window
+
+N5 ("delete the payoff form") reported **All unit tests passed**. The guard had
+not survived: the mutation never applied. The shell harness passed each
+mutation as a single-quoted argument containing a `|||` separator, and N5's
+replacement text contains single quotes, so the separator did not survive the
+shell. Python raised, the helper printed the traceback — **and then ran the
+suite anyway, on the unmutated file.** A mutation that never applied read
+exactly like a guard that survived deletion.
+
+Rewritten as `_gen/blue_w6_mutation.py`: the mutation data never touches a
+shell, a mutation that fails to apply VOIDS its own result instead of reporting
+a pass, and a surviving guard is reported as `GUARD NOT TESTED` with a non-zero
+exit. All five guards then proved necessary, N5 included (killed by the
+register/falsehood separation assertion).
+
+That is three times in one window that a test could not fail for the reason it
+claimed: the two TRAP A controls, and now the detector itself. The formulation
+stands as the window's main result — **a guard whose control cannot fail when
+the guard is removed is not a tested guard** — and it applies to detectors as
+readily as to product code.
+
+### The fifth sub-form as originally filed (superseded by the addendum above)
 
 The word **"payoff"** is the fourth sub-form named in the scope, and gating it
 contradicts a control **RED 1'S OWN ORACLE SCORES**: "their choices determine

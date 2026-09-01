@@ -1231,8 +1231,21 @@ function testInterestAlignment() {
     "ALIGNMENT CONTROL: \"determines the outcome\" where the payoffs really do vary must pass");
 
   // ── The oracle's own controls, which a careless widening would break. ────
-  assert(ok_('A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.', PLAIN),
-    'ALIGNMENT CONTROL: "their choices determine the payoffs" is the vacuous closer the model writes constantly and is true here');
+  // RE-EXPRESSED BY REASON. This control was written as "nothing rejects this",
+  // which is a stronger claim than the fact it was recruited to protect. The
+  // fact is that the sentence is not FALSE — "their choices determine the
+  // resulting payoffs" is true on any matrix whose payoffs vary — and that is
+  // asserted below, undiminished. It IS now rejected, by the META screen, for
+  // naming the mathematical object in user-facing fiction. True and out of
+  // register are independent, and a draw can be both.
+  const vacuous = 'A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.';
+  const vacuousWhy = scenarioIsClaimFree(sc(vacuous)).reason ?? '';
+  assert(!/share a goal|frames the two players as rivals|determines the outcome|comparative|attached to a comparison|conditional outcome|moves first/.test(vacuousWhy),
+    `ALIGNMENT CONTROL: no FALSEHOOD screen may fire on "their choices determine the payoffs" — it is the vacuous closer and it is true here. Got: ${vacuousWhy}`);
+  assert(validateScenario(sc(vacuous), PLAIN).ok,
+    'ALIGNMENT CONTROL: and the matrix-decided screens must still pass it');
+  assert(/mathematical object/.test(vacuousWhy),
+    `ALIGNMENT/META: it is rejected, but for REGISTER, not for falsehood. Got: ${vacuousWhy || '(accepted)'}`);
   assert(ok_('Two hauliers share one loading dock. One books an Early Slot or a Late Slot; the other books a Shared Window or a Separate Window.', MP),
     'ALIGNMENT CONTROL: sharing a RESOURCE is a scene fact, not a claim that interests are aligned');
   // THE BOUNDARY, asserted so a later widening fails here rather than in
@@ -1549,16 +1562,28 @@ function testMetaVocabulary() {
   assert(scenarioIsClaimFree(meta).ok === false,
     'PLACEMENT: the rung-3 screen must reject it');
 
-  // ── KNOWN OPEN, recorded so nobody reads this block as "META is handled".
-  // The word "payoff" is the fifth sub-form and is NOT screened, because doing
-  // so contradicts a control RED 1'S OWN ORACLE scores ("their choices
-  // determine the resulting payoffs" — the vacuous closer, true on any matrix
-  // whose payoffs vary). Escalated rather than decided here. Cost of leaving it
-  // out: "payoff" is the ONLY meta marker in 1.2% of local draws, 0.0% cloud.
-  assert(gate('A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.'),
-    'META, KNOWN OPEN: bare "payoffs" still reaches the user by design — gating it would break a RED 1 oracle control, which is a scoreboard question, not a validator question');
+  // ── THE FIFTH SUB-FORM: "payoff", the mathematical object by name. ───────
+  // This looked like a conflict with a control RED 1'S OWN ORACLE scores and it
+  // is not one. THE TWO PROPOSITIONS ARE INDEPENDENT, and both are asserted
+  // here, which is the whole point:
+  //   the sentence is NOT FALSE      — true on any matrix whose payoffs vary
+  //   the sentence is NOT IN REGISTER — it names the mathematical object
+  // The control read as "nothing rejects this", which is stronger than the fact
+  // it was recruited to protect. Expressed by REASON, both facts survive.
+  const vacuousCloser = 'A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.';
+  const vacuousWhy2 = scenarioIsClaimFree(sc(vacuousCloser)).reason ?? '';
+  assert(/mathematical object/.test(vacuousWhy2),
+    `META: the bare noun "payoffs" is screened for REGISTER: ${vacuousWhy2 || '(accepted)'}`);
+  assert(!/comparative|attached to a comparison|conditional outcome|moves first|share a goal|rivals/.test(vacuousWhy2),
+    'META/FALSEHOOD SEPARATION: no falsehood screen may fire on the vacuous closer — that proposition is red 1\'s and it still stands');
+  assert(validateScenario(sc(vacuousCloser), ANTI).ok,
+    'META/FALSEHOOD SEPARATION: and the matrix-decided screens must still pass it');
+  // The falsehood rule for payoffs ATTACHED to a comparison must still fire on
+  // its own ground, or merging the two questions has quietly lost one.
+  assert(/attached to a comparison/.test(scenarioIsClaimFree(sc('A mill books a slot. The haulier\'s payoffs are higher than the mill\'s for every window.')).reason ?? ''),
+    'META/FALSEHOOD SEPARATION: an attached payoff COMPARISON is still caught as a falsehood, not merely as register');
 
-  console.log('✓ meta vocabulary: 4 sub-forms screened (union local 14.0% / cloud 7.0%); both traps pinned — "the game-day menu" and the video-game studio pass, "Operator A chooses" passes at 20.0%-vs-1.2% cloud cost; "payoff" left open and escalated');
+  console.log('✓ meta vocabulary: 5 sub-forms screened; both traps pinned — "the game-day menu" and the video-game studio pass, "Operator A chooses" passes at 20.0%-vs-1.2% cloud cost; "payoff" screened for REGISTER while the falsehood proposition about it still stands');
 }
 
 try {
