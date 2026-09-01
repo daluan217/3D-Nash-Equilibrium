@@ -175,12 +175,69 @@ interface DB {
 
 const PASSWORD_ITERATIONS = 210_000;
 const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * THE DESKTOP'S SESSION SECRET, persisted beside its database.
+ *
+ * WHY. Every auth token is an HMAC under `AUTH_SECRET`. A packaged app ships no
+ * `.env` — correctly, since a distributed binary must not carry credentials —
+ * and `electron-main.cjs` sets NODE_ENV/PORT/IS_ELECTRON/ELECTRON_USER_DATA_PATH
+ * plus the rung-3 trio, but no secret. So the fallback below minted a NEW random
+ * secret on every launch and every token ever issued stopped verifying.
+ *
+ * MEASURED against the real packaged .app (`electron-builder --dir`, launched
+ * with cwd=/ so dotenv loads nothing): register, sign in, save a game, quit,
+ * relaunch against the SAME user-data directory —
+ *   before: GET /api/auth/me -> 401 "Invalid session."
+ *           GET /api/games   -> 401 "Invalid or expired session."
+ * The rows are still in `db.json`; the token in localStorage is simply dead. On
+ * a local-first desktop app that reads as "my saved games are gone", and it
+ * happened on every launch.
+ *
+ * SCOPE, deliberately narrow. This persists ONLY under
+ * `ELECTRON_USER_DATA_PATH` — the desktop, where the user's own machine is the
+ * trust boundary and the key sits in the same directory as the database it
+ * protects. The hosted path keeps its per-process random fallback on purpose:
+ * writing a secret to a Cloud Run container's ephemeral disk would make an
+ * unkeyed deploy LOOK fixed while still dropping every session on scale-out or
+ * a revision roll, which is worse than the loud warning below. An explicitly
+ * configured secret still wins over both, so the deployed service is untouched.
+ *
+ * Degrades rather than throws: if the file cannot be read or written (read-only
+ * home, permissions) this returns null and the caller falls back to exactly
+ * today's behaviour — a random per-process secret — rather than failing to boot.
+ */
+function desktopAuthSecret(): string | null {
+  const dir = process.env.ELECTRON_USER_DATA_PATH;
+  if (!dir) return null;
+  const file = path.join(dir, "auth-secret");
+  try {
+    if (fs.existsSync(file)) {
+      const existing = fs.readFileSync(file, "utf-8").trim();
+      // Only accept something that is actually a key. A truncated or empty file
+      // must not silently become a one-character HMAC secret that still "works".
+      if (/^[0-9a-f]{64}$/.test(existing)) return existing;
+    }
+    const fresh = crypto.randomBytes(32).toString("hex");
+    fs.mkdirSync(dir, { recursive: true });
+    // 0600: the database beside it is only as private as the user's home
+    // directory, but a session key should not be world-readable.
+    fs.writeFileSync(file, fresh, { encoding: "utf-8", mode: 0o600 });
+    return fresh;
+  } catch (err) {
+    console.error("Could not persist the desktop session secret; sessions will not survive a restart:", err);
+    return null;
+  }
+}
+
 const AUTH_SECRET = process.env.AUTH_SECRET
   || process.env.SESSION_SECRET
   || process.env.ADMIN_SECRET
+  || desktopAuthSecret()
   || crypto.randomBytes(32).toString("hex");
 
-if (process.env.NODE_ENV === "production" && !process.env.AUTH_SECRET && !process.env.SESSION_SECRET && !process.env.ADMIN_SECRET) {
+if (process.env.NODE_ENV === "production" && !process.env.AUTH_SECRET && !process.env.SESSION_SECRET && !process.env.ADMIN_SECRET
+    && !process.env.ELECTRON_USER_DATA_PATH) {
   console.warn("AUTH_SECRET/SESSION_SECRET is not configured; auth sessions will be invalidated on server restart.");
 }
 
@@ -188,6 +245,41 @@ const GCS_BUCKET = process.env.GCS_BUCKET_NAME;
 const DB_FILE = process.env.ELECTRON_USER_DATA_PATH
   ? path.join(process.env.ELECTRON_USER_DATA_PATH, "db.json")
   : path.join(process.cwd(), "db.json");
+
+/**
+ * Replace a file's contents in one indivisible step.
+ *
+ * `fs.writeFileSync` truncates the target and then writes into it, so between
+ * those two operations the file on disk is short. On the desktop `db.json` is
+ * the ONLY copy of the user's account and saved games — the GCS branch is
+ * skipped whenever ELECTRON_USER_DATA_PATH is set — and a crash, force-quit or
+ * power loss in that window leaves a truncated file. `loadDBFromFile` then
+ * catches the parse error and returns an empty database, so the app opens
+ * looking exactly like a fresh install, and the next save writes that empty
+ * database over whatever was left.
+ *
+ * Write to a sibling temp file, flush it to the platter, then `rename` over the
+ * target. POSIX rename within a directory is atomic: a reader sees either the
+ * whole old file or the whole new one, never a partial. The fsync is what makes
+ * that hold after a power loss rather than only after a process crash.
+ */
+function writeFileAtomicSync(file: string, data: string): void {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(tmp, "w", 0o600);
+    fs.writeFileSync(fd, data, "utf-8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    // Never leave the scratch file behind to be mistaken for data.
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best effort */ }
+    throw err;
+  }
+}
 
 let inMemoryDb: DB | null = null;
 
@@ -203,7 +295,7 @@ function loadDBFromFile(): DB {
   if (!fs.existsSync(DB_FILE)) {
     const fresh: DB = { users: [], games: [] };
     try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(fresh, null, 2), "utf-8");
+      writeFileAtomicSync(DB_FILE, JSON.stringify(fresh, null, 2));
     } catch (err) {
       console.error("Error creating fresh db.json:", err);
     }
@@ -213,7 +305,19 @@ function loadDBFromFile(): DB {
     const data = fs.readFileSync(DB_FILE, "utf-8");
     return JSON.parse(data);
   } catch (err) {
-    console.error("Error reading db.json, resetting database:", err);
+    // A database we cannot parse is not a database we may DELETE. Returning the
+    // empty DB here is survivable on its own; what made it destructive is what
+    // happens next — the first `saveDB` writes that empty object straight over
+    // the file, so the unreadable-but-present rows become genuinely gone. Move
+    // the bad file aside first, so the bytes still exist to be recovered from
+    // and the next save lands on a clean path.
+    const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    try {
+      fs.renameSync(DB_FILE, aside);
+      console.error(`Error reading db.json, resetting database. The unreadable file has been kept at ${aside}:`, err);
+    } catch (renameErr) {
+      console.error("Error reading db.json, resetting database (and the unreadable file could NOT be preserved):", err, renameErr);
+    }
     return { users: [], games: [] };
   }
 }
@@ -554,7 +658,7 @@ function saveDB(db: DB) {
       if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
       }
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+      writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
     } catch (err) {
       console.error("Error writing db.json:", err);
     }

@@ -133,6 +133,16 @@ jobs:
           INTEGRATION_PORT: '3098'
           INTEGRATION_BASE: http://localhost:3098
 
+      # The desktop's persistence guarantees, booted from a temp cwd so dotenv
+      # loads nothing — the packaged condition. Guards two defects RED-DESKTOP
+      # found in the real .app: a per-launch session secret that signed the user
+      # out on every restart, and a truncating db.json write that turned an
+      # unreadable database into a deleted one.
+      - name: Boot the production server and run the desktop persistence suite
+        run: node src/integration/desktop-persistence.test.mjs
+        env:
+          DESKTOP_PERSIST_PORT: '3104'
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 45
