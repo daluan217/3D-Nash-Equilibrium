@@ -77,22 +77,37 @@ for (const [want, g] of SIZE_FIXTURES) {
   const got = sizeBand(stakesHint(g));
   check(`size band "${want}" fires`, got === want, `got "${got}"`);
 }
-// The geometric clauses were REMOVED after blind rating found no effect
-// (p=0.37 against p=0.0006 for the arithmetic ones). Assert their absence, so
-// re-adding one without re-measuring fails here rather than shipping quietly.
+// The CONTINGENT geometric clauses stay out. Blind rating found no effect for
+// the lopsidedness line (p=0.37 against p=0.0006 for the arithmetic ones), and
+// the reason is structural: that ratio compares A's swing against B's column 1
+// with A's swing against column 2, so the fact is conditional — exactly the
+// shape `scenarioIsClaimFree` rejects. `playerGap` is different and IS in: it
+// describes who the parties are rather than claiming anything about a cell, and
+// it measured 93% vs 46% at the shipping threshold (p=0.0003). This asserts the
+// unmeasured ones stay out, so re-adding one without measuring it fails here.
 for (const [why, g] of [
   ['extreme lopsidedness', G(100, 0, 0, 0.001, 0, 100, 0.001, 0)],
   ['a moot choice', G(5, 9, 5, 1, 2, 8, 3, 0)],
-  ['a one-sided exposure', G(50, 0, 0, 50, 1, 0, 0, 1)],
 ] as Array<[string, GamePayoffs]>) {
   const h = stakesHint(g);
   check(`no unmeasured geometric clause for ${why}`,
-    !/times more|comparable weight|no difference whatsoever|riding on this/.test(h), h.slice(0, 160));
+    !/times more|comparable weight|no difference whatsoever/.test(h), h.slice(0, 160));
   check(`${why} still gets its arithmetic line`, sizeBand(h) !== null, h.slice(0, 80));
 }
 // describeStakes still computes the full profile — the hint just does not use
 // the geometric half yet. Keep it correct so re-adding it is a prompt change.
 check('playerGap still computed', describeStakes(G(50, 0, 0, 50, 1, 0, 0, 1)).playerGap === 50);
+// The measured geometric line: fires above the cut, silent below it, and never
+// without its prohibition — the prohibition is the half that holds the persona
+// leak at 0/27, 0/26, 0/31. Naming the parties and forbidding the words beat
+// referring to them positionally, which leaked bare letters at 10%.
+{
+  const above = stakesHint(G(50, 0, 0, 50, 1, 0, 0, 1));   // playerGap 50
+  const below = stakesHint(G(50, 0, 0, 50, 30, 0, 0, 30)); // playerGap 1.67, the median
+  check('playerGap line fires above the cut', /far more riding on this/.test(above), above.slice(0, 120));
+  check('and carries its prohibition', /Never write "Player A"/.test(above));
+  check('playerGap line is silent below the cut', !/far more riding/.test(below), below.slice(0, 120));
+}
 check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3, 0)).hasIrrelevantChoice);
 
 /* -------------------------------------------------------- no claims, ever */
@@ -151,13 +166,21 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
 {
   let seed = 3;
   const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-  let longest = 0;
+  let longest = 0, longestNoGap = 0;
   for (let i = 0; i < 5000; i++) {
     const mag = [0.5, 5, 30, 100][i % 4];
     const p = () => Math.round((rand() * 2 - 1) * mag * 1000) / 1000;
-    longest = Math.max(longest, stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p())).length);
+    const h = stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p()));
+    longest = Math.max(longest, h.length);
+    if (!/far more riding/.test(h)) longestNoGap = Math.max(longestNoGap, h.length);
   }
-  check('the hint stays short enough not to cost yield', longest <= 220, `longest ${longest} chars`);
+  // Two budgets, because the two lines have different measured costs. The SIZE
+  // line is on every call, so it stays tight. The playerGap line fires on 11.6%
+  // of games and its yield cost was measured directly across three thresholds
+  // (1, 2 and 1 lost draws, all max-tokens, with the CONTROL losing 2 at gap=4
+  // — so the loss is not clean-attributable to it), which buys it more room.
+  check('the always-on size line stays short', longestNoGap <= 220, `longest ${longestNoGap} chars`);
+  check('the full hint stays bounded', longest <= 440, `longest ${longest} chars`);
 }
 
 if (failures > 0) { console.error(`✗ scenario stakes: ${failures} failed`); process.exit(1); }

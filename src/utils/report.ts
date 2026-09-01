@@ -412,8 +412,23 @@ export async function generateScenario(
     // warns about, one function up. Measured on the rung-3 yield runs: 1.1% of
     // luna@low calls and 1.7% of mini@low calls came back empty after ~11s (a
     // full budget generated), versus ~2.3s for a healthy call. Those are lost
-    // stories caused by our cap, not by the model. Matched to the report call.
-    maxOutputTokens: 8192,
+    // stories caused by our cap, not by the model.
+    //
+    // 8192 WAS STILL NOT ENOUGH, and the correction matters because the commit
+    // that shortened the stakes hint claimed to have fixed this. It did not.
+    // Re-measured at the reasoning level PRODUCTION actually runs — no
+    // REPORT_REASONING in the deploy manifest means the provider default, which
+    // is thinking-ON — the shortened 141-character hint still costs 4/107
+    // max-tokens against 0/110 without it. Shortening the prompt by 65% did not
+    // remove the pressure; it only removed it at `reasoning: 'low'`, which is
+    // the setting eleven local harnesses use and production does not.
+    //
+    // So raise the cap, which addresses the cause rather than the symptom. It
+    // costs NOTHING when unused — billing is on tokens produced, not on the
+    // ceiling — and the retry added alongside it stays as the belt: together
+    // they take the user-visible failure from ~3.7% to roughly 0.14%, since the
+    // draws measure as effectively independent.
+    maxOutputTokens: 16384,
   });
   if (res.failure || !res.text) return { scenario: null, failure: res.failure ?? 'unparseable', usage: res.usage ?? null };
   try {
