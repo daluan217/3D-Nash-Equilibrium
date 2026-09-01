@@ -3673,6 +3673,44 @@ export default function App() {
                 </span>
               </div>
 
+              {/* THE CONVENTION, stated rather than left to be discovered.
+                  Nothing above is false — every number is the correct value of
+                  the quantity it names, computed at the exact equilibrium and
+                  rounded once, at display time. What is NOT true is that the
+                  four PRINTED numbers form a self-consistent tuple: substitute
+                  the printed x* and y* into E[A] and you land somewhere else,
+                  for 50.5% of mixed equilibria on integer payoffs in [-9,9]
+                  (worst 0.008) and 90.0% at the +/-100 clamp (worst 0.093).
+                  Those two figures count E[A] ALONE; counting a mixed NE as
+                  affected when EITHER payoff moves gives 77.5% and 99.0%, which
+                  is the same phenomenon on a wider population, not a different
+                  measurement.
+                  A reader who checks the arithmetic by hand — which is exactly
+                  what this app invites, and what a referee will do — concludes
+                  the app is wrong.
+
+                  Printing more coordinate digits was the alternative and it
+                  does NOT close the gap: making the substitution reproduce BOTH
+                  printed payoffs needs 5 dp for 99.7% of mixed NEs at int[-9,9]
+                  and 6 dp for 98.7% at int[-100,100], and never reaches 100%.
+                  That buys "x* = 0.333333" on the Search Game preset in
+                  exchange for a guarantee it cannot deliver.
+
+                  And recomputing the payoffs AT the rounded profile is ruled
+                  out: it was the old convention, and it made the solver label
+                  and the templated prose print 2.315 and 2.316 for the same
+                  quantity. Today both say 2.316.
+
+                  Mixed only. At a pure equilibrium the coordinates are exactly
+                  0 or 1, the substitution reproduces the payoff exactly, and
+                  the caveat would be noise. Wording kept in step with the
+                  convention comment in gameEngine.ts. */}
+              {realisedConcept === 'mixed' && (
+                <p className="text-[11px] leading-snug text-slate-400 dark:text-slate-500 -mt-1 px-1">
+                  Computed at the exact equilibrium, then rounded to 3 dp for display — recomputing E[A] from the rounded x* and y* can differ in the last digits.
+                </p>
+              )}
+
               <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-300 space-y-1">
                 {realisedConcept === 'mixed' ? (
                   <>

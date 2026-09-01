@@ -465,6 +465,18 @@ export function payoffTexRhs(v: number): string {
  * An earlier count of 19,719 was 33x too high because it substituted `p === q`
  * for the real `indifferenceAt` tolerance — recorded because the inflated
  * number is what a stand-in condition buys you.
+ *
+ * ONLY EVER CALL THIS UNDER A STRICT RELATION. The loop terminates on
+ * `p !== q`, which makes "tell them apart" the goal — right when the panel is
+ * asserting `>` or `<`, and wrong when it is asserting `≈`, because under `≈`
+ * the two values may be mathematically EQUAL and differ only by float dust. The
+ * flagship preset is the counter-example: at Search Game's equilibrium
+ * `2*(1/3)` is 0.6666666666666666 and `1-(1/3)` is 0.6666666666666667, so this
+ * function chases one ulp all the way to its exponential fallback and the panel
+ * reads `6.67e-1 ≈ 6.67e-1`. Verified by mutation, not reasoned about.
+ * `src/components/equilibriumPanel.ts` is the one caller, and under `≈` it
+ * renders from the midpoint instead whenever the gap is below display
+ * resolution.
  */
 export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
   if (!Number.isFinite(p) || !Number.isFinite(q) || p === q) {

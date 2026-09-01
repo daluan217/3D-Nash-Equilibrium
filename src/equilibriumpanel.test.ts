@@ -312,4 +312,44 @@ for (const SCALE of [10, 100]) {
   ok(indifferenceAt(g, 1 / 11, 4 / 11).a || true, 'indifferenceAt is still the arbiter of the label');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. THE ROUNDING CONVENTION IS STATED ON SCREEN
+//
+// Nothing in the panel is false, but the four printed numbers are not a tuple a
+// reader can recompute: substitute the printed x*, y* into E[A] and you land
+// elsewhere for 50.5% of mixed equilibria on int[-9,9] and 90.0% at the +/-100
+// clamp. A referee checking the arithmetic by hand concludes the app is wrong,
+// so the convention is said out loud instead of left to be discovered.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const app = readFileSync(join(here, 'App.tsx'), 'utf8');
+  const caption = 'Computed at the exact equilibrium, then rounded to 3 dp for display'
+    + ' \u2014 recomputing E[A] from the rounded x* and y* can differ in the last digits.';
+  ok(app.includes(caption), 'the equilibrium panel must state the rounding convention verbatim');
+  // Mixed only: at a pure equilibrium the coordinates are exactly 0 or 1 and
+  // the substitution reproduces the payoff, so the caveat would be false noise.
+  const at = app.indexOf(caption);
+  const guard = app.lastIndexOf("realisedConcept === 'mixed'", at);
+  ok(guard > 0 && at - guard < 400, 'the convention line must be gated on a MIXED equilibrium');
+
+  // The claim the caption makes must actually be true of this app, and it must
+  // be true in the direction stated ("can differ", not "always differs").
+  const rd = (v: number, d: number) => Math.round(v * 10 ** d) / 10 ** d;
+  const rnd = mk(4242);
+  let mixed = 0, differ = 0;
+  for (let i = 0; i < 20000; i++) {
+    const v = () => Math.round((rnd() * 2 - 1) * 9);
+    const g = { a11: v(), a12: v(), a21: v(), a22: v(), b11: v(), b12: v(), b21: v(), b22: v() } as GamePayoffs;
+    const m = computeMixedNE(g);
+    if (!m) continue;
+    mixed++;
+    if (r3(EA(rd(m.x, 3), rd(m.y, 3), g)).toFixed(3) !== r3(EA(m.x, m.y, g)).toFixed(3)) differ++;
+  }
+  ok(mixed > 1000, `the convention sweep needs mixed equilibria to mean anything, got ${mixed}`);
+  ok(differ > mixed / 4,
+    `"can differ" must be a real warning: only ${differ}/${mixed} mixed NEs differ under substitution`);
+  ok(differ < mixed,
+    `"can differ" must not be "always differs": ${differ}/${mixed} — if this ever hits 100% the wording is too weak`);
+}
+
 console.log(`equilibriumpanel.test.ts: ${checks} checks passed`);
