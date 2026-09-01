@@ -159,5 +159,61 @@ console.log('\n── MUTANT D: rung-3 rule placed in the all-rung validator ─
     'the matrix-checked annotation rule must remain in validateScenario');
 }
 
+// ══ NEGOTIATION FORM ═══════════════════════════════════════════════════════
+// The rule is a CONJUNCTION (offer AND accept), and the whole argument for
+// that shape is that each part alone is common, good output. So each part is
+// materialised as a mutant and PRICED against the corpus, rather than argued.
+console.log('\n── NEGOTIATION: positives caught, baseline misses them ──');
+{
+  const NEG_POS = [
+    ["RED 1's hole, verbatim", 'The two yards negotiate over the rack calendar. One side offers an Early Slot or a Late Slot and the other accepts a Shared Window or a Separate Window in exchange.'],
+    ['arm A without the word "negotiate"', 'A shipyard offers an Early Slot or a Late Slot for the dredging window. A harbour board accepts one of two berth arrangements for the same window.'],
+    ['arm B, reaching an agreement', 'Two rack yards bargain until they reach an agreement on the season calendar.'],
+    ['arm B, binding', 'The two yards each pick a slot, and the result is a binding arrangement for the season.'],
+    ['arm B, reciprocity', 'A yard takes an Early Slot and the neighbouring yard gives up its window in exchange.'],
+  ];
+  for (const [tag, d] of NEG_POS) {
+    const n = NEW.scenarioIsClaimFree(L({ description: d }));
+    const o = OLD.scenarioIsClaimFree(L({ description: d }));
+    console.log(`  new=${n.ok === false ? 'block' : 'PASS '}  baseline=${o.ok === false ? 'block' : 'PASS '}   ${tag}`);
+    if (n.ok === false) console.log(`        -> ${n.reason}`);
+    ok(n.ok === false, `NEGOTIATION ${tag}: the new gate must reject it`);
+    ok(o.ok !== false, `NEGOTIATION ${tag}: the baseline must miss it, or this is not a new positive`);
+  }
+}
+
+console.log('\n── NEGOTIATION mutants, priced against the real corpus ──');
+{
+  const S2 = '/private/tmp/claude-501/-Users-danielluan-Desktop-3D-Nash-Equilibrium/5d5d682e-2a27-4687-ac2f-801e07672846/scratchpad';
+  const descs = [];
+  for (const f of [`${S2}/rt1.jsonl`, `${S2}/rt2.jsonl`, `${S2}/pilot.jsonl`, '/tmp/rt2_local.jsonl', '/tmp/rt2_cloud.jsonl',
+    '/tmp/rt2_pilot.jsonl', '/tmp/rt2_cloudpilot.jsonl', '/tmp/rt2_stakes_local.jsonl', '/tmp/rt2_stakes_cloud.jsonl',
+    '/tmp/rt2_stakes_cloud_hint.jsonl', '/tmp/rt2_stakes_pilot.jsonl']) {
+    if (!existsSync(f)) continue;
+    for (const l of readFileSync(f, 'utf8').split('\n')) {
+      if (!l.trim()) continue;
+      try { const r = JSON.parse(l); if (r.sc) descs.push({ sc: r.sc, d: String(r.sc.description ?? '') }); } catch { /* skip */ }
+    }
+  }
+  const price = (label, pred) => {
+    const n = descs.filter((r) => pred(r.d)).length;
+    console.log(`  ${label.padEnd(46)} ${String(n).padStart(3)}/${descs.length} = ${(100 * n / descs.length).toFixed(2)}%`);
+    return n;
+  };
+  const mNeg = price('MUTANT: bare "negotiat*"', (d) => /\bnegotiat/i.test(d));
+  const mOff = price('MUTANT: bare "offer*"', (d) => /\boffer(?:s|ed|ing)?\b/i.test(d));
+  const mDis = price('MUTANT: offer OR accept (disjunction)', (d) => /\boffer(?:s|ed|ing)?\b/i.test(d) || /\baccept(?:s|ed|ing)?\b/i.test(d));
+  const mNoun = price('MUTANT: bare agreement/contract/deal/terms', (d) => /\bagreements?\b|\bcontracts?\b|\bdeals?\b|\bterms\b/i.test(d));
+  const mine = price('SHIPPED rule (conjunction + binding)', (d) => {
+    const r = NEW.scenarioIsClaimFree(L({ description: d }));
+    return r.ok === false && /offers and the other accepts|binding agreement/.test(r.reason ?? '');
+  });
+  ok(mNeg > 0, 'MUTANT "negotiate" must be shown to cost real output, or the conjunction is unmotivated');
+  ok(mOff > 0, 'MUTANT "offer" must be shown to cost real output');
+  ok(mDis > mNeg, 'MUTANT disjunction must be shown to be worse than the conjunction');
+  ok(mNoun > 0, 'MUTANT bare contract/deal noun must be shown to cost real output');
+  ok(mine === 0, 'the SHIPPED negotiation rule must reject none of the real corpus');
+}
+
 console.log(`\n${fail ? `MUTATION FAILURES: ${fail}` : 'ALL MUTATION CHECKS PASSED'}`);
 process.exit(fail ? 1 : 0);

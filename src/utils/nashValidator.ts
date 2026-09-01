@@ -542,6 +542,52 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     // choosing SECOND", which self-contradicts "independently choose" in the
     // same sentence. Ordinal, observation and follow phrasings are the same claim.
     [/\b(?:goes?|moves?|chooses?|choosing|picks?|acts?|plays?)\s+(?:first|second)\b|\b(?:first|second)\s+(?:mover|player\s+to\s+(?:move|choose|act))\b|\bobserv\w+\b[^.;]{0,40}?\b(?:then|before)\b|\b(?:then|and)\s+(?:B|A|the\s+\w+)\s+(?:follows?|responds?|replies|counters?)\b|\bcommits?\s+(?:first|initially)\b|\b(?:follows?|replies|responds?)\s+(?:to\s+)?the\s+(?:first|other)\b/i, 'a claim about who moves first'],
+
+    // NEGOTIATION — a PROTOCOL the game does not have. RED 1's largest oracle
+    // hole: "The two yards negotiate over the rack calendar. One side offers an
+    // Early Slot or a Late Slot and the other accepts a Shared Window or a
+    // Separate Window in exchange." An offer answered by an acceptance asserts
+    // a sequence and a reciprocal trade; a one-shot simultaneous normal-form
+    // game has neither. Same defect class as the two rules above, in vocabulary
+    // they do not share — which is why it walked through both.
+    //
+    // THE WORD "NEGOTIATE" IS NOT THE CLAIM, and that is the whole design here.
+    // It appears in 10 of 890 real draws (1.12%), always as scene-setting with
+    // a correct sentence after it — "Two fishing cooperatives are negotiating
+    // how to manage a shared seasonal catch quota. The North Fleet chooses
+    // between Firm quota and Flexible quota, while the South Fleet
+    // INDEPENDENTLY chooses…" Two parties in a negotiation who each pick a
+    // stance simultaneously is exactly what this app models. Gating the word
+    // would reject those ten, most of them from the cloud production path.
+    // The pieces are no better on their own: bare "offer" is 1.12% of real
+    // draws (a supplier "chooses between offering Bulk Flour or Specialty
+    // Flour"), bare "accept" 0.22% ("chooses whether to Accept Bid or Reject
+    // Bid"), and contract/deal/terms 6.18% — ordinary scenario nouns, all.
+    //
+    // So the rule is a CONJUNCTION, not a list: one side OFFERS *and* another
+    // ACCEPTS or REJECTS. Acceptance is acceptance OF the offer, so it places
+    // B's move after A's — the sequence claim, arrived at from the other side.
+    // Written with lookaheads to keep it in this table with every other claim
+    // rule instead of becoming a special case above the loop.
+    // Measured: 0 of 890 stored draws, cloud and local.
+    [/^(?=[\s\S]*\boffer(?:s|ed|ing)?\b)(?=[\s\S]*\b(?:accept|reject|decline|approve)(?:s|ed|ing)?\b)/i,
+      'a claim that one player offers and the other accepts'],
+
+    // The second half of the same claim: that this game ENDS IN AN AGREEMENT.
+    // Bargaining to a binding deal is a cooperative solution concept, and the
+    // app models a non-cooperative game — nothing here can bind anyone.
+    // Deliberately NOT the bare noun: "a licensing agreement", "a Premium
+    // Contract" name a thing in the world and are common, good output. Only
+    // REACHING one, or the reciprocity that implies one, is the assertion.
+    // Measured: 0 of 890. `agree on/to` and `in exchange|in return` are the
+    // least certain members — both are ordinary English that could in
+    // principle set a scene ("the two firms agreed on a shared calendar last
+    // year"), and 890 draws of two models on one prompt cannot rule that out.
+    // They are kept because a prior binding agreement between these two players
+    // is itself a claim about this game, and dropped at the first real draw
+    // either one costs.
+    [/\b(?:reach(?:es|ed)?|strikes?|struck|settles?\s+on|settled\s+on|comes?\s+to|came\s+to)\s+(?:an?\s+)?(?:agreement|deal|terms|accord)\b|\bcome\s+to\s+terms\b|\bagree(?:s|d)?\s+(?:on|to|upon)\b|\bbinding\b|\benforceabl\w*\b|\bin\s+(?:exchange|return)\b/i,
+      'a claim that the game ends in a binding agreement'],
   ];
   for (const [re, why] of CLAIMY) if (re.test(desc)) return { ok: false, reason: why };
   return { ok: true };

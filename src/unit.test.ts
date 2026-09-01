@@ -791,6 +791,7 @@ function runUnitTests() {
   testFmtPayoffSubResolution();
   testGateFixesAugust31();
   testOptionLabelChannel();
+  testNegotiationForm();
   console.log('All unit tests passed.');
 }
 
@@ -1026,6 +1027,90 @@ function testOptionLabelChannel() {
     'PLACEMENT: the matrix-checked parenthetical rule must remain in validateScenario');
 
   console.log('✓ option-label channel: L1/L2/L4/L5 closed at 0 reach on 890 real draws; L3/L6 left open as undecidable, boundary asserted');
+}
+
+/**
+ * THE NEGOTIATION FORM — RED 1's largest remaining oracle hole.
+ *
+ * "The two yards negotiate over the rack calendar. One side offers an Early
+ * Slot or a Late Slot and the other accepts a Shared Window or a Separate
+ * Window in exchange." False about EVERY game this app models, not merely this
+ * matrix: an offer answered by an acceptance places one move after the other
+ * and makes the second a response to the first, and a one-shot simultaneous
+ * game has no such order. It is the same defect the move-order and "responds
+ * to" rules exist for, in vocabulary neither of them shares.
+ *
+ * THE CONTROLS BELOW ARE REAL DRAWS, QUOTED. Every one is model output that
+ * passed the gate, and every one contains a word the naive fix would have
+ * banned. They are the evidence that the shipped rule is a conjunction rather
+ * than a word list: "negotiate" alone is 1.12% of real output, "offer" 1.12%,
+ * "contract/deal/terms" 6.18%, and all of it is good.
+ */
+function testNegotiationForm() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const sc = (d: string) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d,
+  } as any);
+  const gate = (d: string) => validateScenario(sc(d), ANTI).ok
+    && scenarioIsClaimFree(sc(d)).ok !== false
+    && validateProseDirections(d, sc(d), ANTI).length === 0;
+
+  // ── THE HOLE, verbatim from _gen/rt_gate_holes.mjs ───────────────────────
+  assert(!gate('The two yards negotiate over the rack calendar. One side offers an Early Slot or a Late Slot and the other accepts a Shared Window or a Separate Window in exchange.'),
+    'NEGOTIATION: the offer-and-accept protocol must be caught — it asserts sequence in a simultaneous game');
+  // Each arm alone, so a later edit that guts one is not hidden by the other.
+  assert(!gate('A shipyard offers an Early Slot or a Late Slot for the dredging window. A harbour board accepts one of two berth arrangements for the same window.'),
+    'NEGOTIATION arm A: offer plus accept, without the word "negotiate" anywhere');
+  assert(!gate('Two rack yards bargain until they reach an agreement on the season calendar.'),
+    'NEGOTIATION arm B: reaching an agreement asserts a cooperative solution concept');
+  assert(!gate('The two yards each pick a slot, and the result is a binding arrangement for the season.'),
+    'NEGOTIATION arm B: binding language must be caught');
+  assert(!gate('A yard takes an Early Slot and the neighbouring yard gives up its window in exchange.'),
+    'NEGOTIATION arm B: "in exchange" asserts a reciprocal trade the game cannot express');
+
+  // ── CONTROLS: REAL DRAWS that passed the gate. None may be newly rejected. ─
+  // Quoted from the stored corpora, not paraphrased — a paraphrased regression
+  // test has already passed here while the real defect shipped.
+  const REAL: [string, string][] = [
+    ['stcloud#7, "negotiating" as scene-setting',
+      'Two fishing cooperatives are negotiating how to manage a shared seasonal catch quota. The North Fleet chooses between Firm quota and Flexible quota, while the South Fleet independently chooses between Firm quota and Flexible quota.'],
+    ['rt2#20, negotiating a contract',
+      'A regional railroad and a neighboring railroad are negotiating a hedge-laying contract. The railroad chooses between Reserve Market and Hold Market, while the neighboring railroad chooses between Short Hedge and Long Hedge.'],
+    ['stcloud#24, negotiating plus two independent choices',
+      'An antique dealer and a restoration studio are negotiating a restoration contract. The dealer chooses between Firm Bid and Flexible Bid, while the studio chooses between Detailed Scope and Basic Scope.'],
+    ['stcloud#6, "offering" in the ordinary sense of providing',
+      'A bakery manager chooses between placing an Early Order or a Late Order for the next production cycle. A flour supplier chooses between offering Bulk Flour or Specialty Flour.'],
+    ['r2cloud#4, a distributor offering contract types',
+      'An orchard grower, Player A, chooses between an Early Harvest and a Late Harvest for the season. A fruit distributor, Player B, chooses between offering a Firm Contract and a Flexible Contract for purchasing the fruit.'],
+    ['r2local#4, "accept" as one player\'s own simultaneous choice',
+      'A fruit cooperative chooses whether to plant Early Harvest or Late Harvest. A retailer chooses whether to accept an Open Contract or a Fixed Contract.'],
+    ['rt1#180, "contract" as an ordinary scenario noun',
+      'An agricultural cooperative chooses between Early Planting and Late Planting for its wheat crop. A contract buyer chooses between Stable Contract and Flexible Contract for arranging the payment schedule.'],
+  ];
+  for (const [tag, d] of REAL) {
+    assert(gate(d), `NEGOTIATION CONTROL (${tag}): real gate-passing output must not be newly rejected — this is why the rule is a conjunction, not a word list`);
+  }
+  // THE MINIMAL PAIR. "Negotiating" is held constant across both, so the word
+  // is demonstrably not what decides the verdict — only the protocol is. Note
+  // the first draft of this pair was WRONG and the suite caught it: it swapped
+  // in "the other accepts" alone and expected a rejection, but an acceptance
+  // that answers nothing is one player's own simultaneous choice and is real,
+  // legal output (r2local#4 above). It takes BOTH roles to assert the protocol.
+  const scene = 'Two rack yards are negotiating the season calendar. One yard chooses an Early Slot or a Late Slot, while the other independently chooses a Shared Window or a Separate Window.';
+  assert(gate(scene),
+    'NEGOTIATION CONTROL: negotiating as a setting, with two independent choices, must pass');
+  assert(!gate(scene
+    .replace('One yard chooses', 'One yard offers')
+    .replace('while the other independently chooses', 'and the other accepts')),
+    'NEGOTIATION: the identical sentence becomes a claim once one side OFFERS and the other ACCEPTS');
+  // And the half-step in between stays legal, which is what keeps the rule a
+  // conjunction: an offer with no acceptance is just a supplier providing
+  // options, the single most common real use of the word.
+  assert(gate(scene.replace('One yard chooses', 'One yard offers')),
+    'NEGOTIATION CONTROL: an offer with no acceptance answering it must still pass');
+
+  console.log('✓ negotiation form: offer/accept protocol and binding-agreement claims caught; 7 real draws containing negotiate/offer/accept/contract still pass');
 }
 
 try {
