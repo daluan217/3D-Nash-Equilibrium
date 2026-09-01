@@ -249,8 +249,27 @@ function checkGeometry(
     },
     {
       kind: 'geometry-bad-shelf',
-      // yStarInRange is false when twistA is 0 (yStar is NaN), so this single
-      // predicate covers both ways a shelf can fail to exist.
+      // KNOWN WRONG ON A DEGENERATE CLASS, FIX PENDING IN geometry.ts.
+      //
+      // The comment that stood here said `yStarInRange` "covers both ways a
+      // shelf can fail to exist". There is a THIRD way, and in it the shelf does
+      // not fail to exist — it is EVERYTHING. When twistA is 0 AND a11 === a21,
+      // A's surface is level along A's own axis at every y, so the whole board
+      // is a shelf; yStar is NaN, `yStarInRange` is false, and this row REJECTS
+      // A TRUE CLAIM. Verified against the payoff definition rather than the
+      // predicate: a=[[-5,-1],[-5,-1]] gives dE_A/dx = 0 at every y.
+      //
+      // Measured against independent sign-change ground truth over 400,000
+      // random matrices: this predicate is wrong 0.273% of the time on
+      // int[-9,9] and 2.023% on int[-3,3]; the corrected form is wrong 0/400,000
+      // and is byte-identical wherever twistA is non-zero.
+      //
+      // NOT FIXED HERE ON PURPOSE. The briefing in geometry.ts tells the model
+      // "There is NO flat shelf for A" from the SAME predicate, so correcting
+      // only this row would turn a false rejection into a false rejection in the
+      // other direction — the model would be told a falsehood and then failed
+      // for repeating it. The predicate has to move first (BLUE-MATH owns that
+      // file); this row then reads the corrected field.
       claimed: claims.hasFlatShelfForA,
       actual: geo.yStarInRange,
       yes: 'A has a flat shelf on the board',
@@ -258,6 +277,13 @@ function checkGeometry(
     },
     {
       kind: 'geometry-bad-flatspot',
+      // KNOWN WRONG ON THE SAME DEGENERATE CLASS, FIX PENDING IN geometry.ts.
+      // `hasInteriorFlatSpot` is `inUnit(xStar) && inUnit(yStar)`, so when
+      // twistB is 0 and B is level along its own axis EVERYWHERE, xStar is NaN
+      // and a real joint flat spot reads as none. a=[[-2,2],[4,-5]]
+      // b=[[3,3],[4,4]]: both surfaces are level at (any x, 7/13) and both
+      // regrets are zero there, and this row rejects the true claim. Wrong
+      // 0.241% / 1.552% on the two alphabets above; corrected form 0/400,000.
       claimed: claims.equilibriumIsInteriorFlatSpot,
       actual: geo.hasInteriorFlatSpot,
       yes: 'the equilibrium is an interior joint flat spot',
