@@ -42,8 +42,18 @@ export function extractControlLabels(src: string): string[] {
     const t = m[1].replace(/\s+/g, ' ').trim();
     if (t && /[A-Za-z]/.test(t)) out.add(t);
   }
-  // Controls named only for assistive tech still ship to users.
-  for (const m of src.matchAll(/aria-label="([^"{}]{2,60})"/g)) out.add(m[1].trim());
+  // A control named only for assistive tech, or only by a tooltip, still ships
+  // to users. Both are read — but ONLY from tags that a user can actually
+  // operate. Reading `aria-label` from every element pulled in region labels
+  // like "Simulation log", which is a landmark, not a control, and padded the
+  // allowlist with entries that could never be "pressed" by anything.
+  const INTERACTIVE = /<(?:button|a|input|select|textarea|summary)\b[^>]*>|<[a-zA-Z][^>]*\brole="(?:button|link|switch|tab|menuitem|checkbox|radio)"[^>]*>/g;
+  for (const tag of src.match(INTERACTIVE) ?? []) {
+    for (const attr of ['aria-label', 'title']) {
+      const m = tag.match(new RegExp(`${attr}="([^"{}]{2,60})"`));
+      if (m) out.add(m[1].trim());
+    }
+  }
   return [...out];
 }
 
@@ -66,6 +76,17 @@ function e2eVocabulary(): string {
   if (dyn.length !== 0) fail(`fixture: a computed label was guessed at — ${JSON.stringify(dyn)}`);
   const nonBtn = extractControlLabels('<div>Standard Scenarios</div>');
   if (nonBtn.length !== 0) fail(`fixture: a non-control was extracted — ${JSON.stringify(nonBtn)}`);
+  const titled = extractControlLabels('<button title="Reset the view" />');
+  if (!titled.includes('Reset the view')) fail('fixture: a title-only control is not extracted');
+  // A landmark is not a control; reading aria-label off any element padded the
+  // allowlist with things nothing could ever press.
+  const region = extractControlLabels('<section aria-label="Simulation log"><p>x</p></section>');
+  if (region.length !== 0) fail(`fixture: a non-interactive aria-label was extracted — ${JSON.stringify(region)}`);
+  // Coverage must require a SELECTOR, not loose words.
+  const wordSoup = e2eSelectorNames('// deletes a saved game in another suite\nawait page.click();');
+  if (wordSoup.length !== 0) fail('fixture: prose in a test file was read as a selector');
+  const realSel = e2eSelectorNames("page.getByRole('button', { name: /^Run$/ })");
+  if (!realSel.length) fail('fixture: a real role selector was not read');
 }
 
 /* ------------------------------------------------------------- the audit */
@@ -81,7 +102,13 @@ delete ALLOWLIST._README;
 // when it points at an entry that exists and carries a real reason of its own,
 // so "See X" can never become a chain that terminates in nothing.
 const REAL_REASON_WORDS = 5;
-const xref = (v: string) => v.match(/^\s*(?:See|As above)\b[^'"\u2018\u2019]*['\u2018"]([^'\u2019"]+)['\u2019"]/i)?.[1];
+// A reference may sit ANYWHERE in the reason, not only at the start. The
+// first draft anchored to ^See, so this file's own entry — "Duplicate
+// spelling; see 'Close Dialog'." — was never recognised AS a reference, and
+// therefore was never checked to resolve. It passed on word count alone, and
+// deleting its target would have left a dangling pointer that nothing failed
+// on. That is the exact drift this list exists to prevent, in the list itself.
+const xref = (v: string) => v.match(/\b(?:see|as above)\b[^'"\u2018\u2019]{0,20}['\u2018"]([^'\u2019"]+)['\u2019"]/i)?.[1];
 for (const [k, v] of Object.entries(ALLOWLIST)) {
   if (typeof v !== 'string') { fail(`allowlist entry "${k}" has no reason`); continue; }
   const target = xref(v);
@@ -99,12 +126,31 @@ const labels = new Set<string>();
 for (const f of sources) for (const l of extractControlLabels(readFileSync(f, 'utf8'))) labels.add(l);
 
 const vocab = e2eVocabulary();
-const covered = (label: string): boolean => {
-  if (vocab.includes(label)) return true;
-  // A suite may match a control by a distinctive fragment or a regex.
-  const words = label.split(/\s+/).filter((w) => w.length > 3);
-  return words.length > 0 && words.every((w) => vocab.includes(w));
-};
+
+/**
+ * The names an e2e suite actually SELECTS BY — not every word that happens to
+ * appear in the file.
+ *
+ * The first draft asked whether each of a label's words occurred anywhere in
+ * the raw `.mjs` text. That counts comments, unrelated assertions and other
+ * selectors, so a new "Delete saved game" control would have read as covered
+ * because "Delete", "saved" and "game" each appear somewhere for other reasons.
+ * A predicate that says "covered" when nothing presses the control is worse
+ * than no audit, because it reports a clean number.
+ */
+function e2eSelectorNames(src: string): Array<string | RegExp> {
+  const out: Array<string | RegExp> = [];
+  // getByRole('button', { name: 'X' | /X/i }), getByText/Label/Placeholder/Title
+  for (const m of src.matchAll(/get(?:By|AllBy)(?:Role|Text|Label|Placeholder|Title)\([^)]*?['"`]([^'"`]{2,60})['"`]/g)) out.push(m[1]);
+  for (const m of src.matchAll(/get(?:By|AllBy)(?:Role|Text|Label|Placeholder|Title)\([^)]*?\/((?:[^/\\]|\\.){2,80})\/([gimsuy]*)/g)) {
+    try { out.push(new RegExp(m[1], m[2].replace(/[gy]/g, ''))); } catch { /* unparseable selector */ }
+  }
+  return out;
+}
+const selectors = e2eSelectorNames(vocab);
+const covered = (label: string): boolean => selectors.some(
+  (sel) => (typeof sel === 'string' ? sel === label || sel.includes(label) || label.includes(sel) : sel.test(label)),
+);
 
 const untested = [...labels].filter((l) => !covered(l)).sort();
 const unlisted = untested.filter((l) => !(l in ALLOWLIST));
