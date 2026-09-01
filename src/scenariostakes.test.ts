@@ -246,6 +246,31 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
   }
   check('direction tracks the swings across a sweep', wrong === 0,
     `${wrong} hints named the party the matrix contradicts`);
+
+  // INFINITE ASYMMETRY — the strongest case, and it used to be the only one
+  // excluded. `playerGap` is Infinity when the smaller swing is exactly 0, and
+  // the old `Number.isFinite` guard dropped exactly those games (0.55% of random
+  // games over a 200,000-game sweep) while a 4x gap still got the line.
+  const onlyASwings: GamePayoffs = { a11: 5, a12: -5, a21: -3, a22: 4, b11: 2, b12: 2, b21: 2, b22: 2 };
+  const onlyBSwings: GamePayoffs = { a11: 2, a12: 2, a21: 2, a22: 2, b11: 5, b12: -5, b21: -3, b22: 4 };
+  const neitherSwings: GamePayoffs = { a11: 1, a12: 1, a21: 1, a22: 1, b11: 3, b12: 3, b21: 3, b22: 3 };
+  check('a party whose choice does NOTHING is the maximal asymmetry, and fires',
+    /Player A has far more riding on this than Player B/.test(stakesHint(onlyASwings)),
+    stakesHint(onlyASwings).slice(0, 180));
+  check('and it fires in the other direction too',
+    /Player B has far more riding on this than Player A/.test(stakesHint(onlyBSwings)),
+    stakesHint(onlyBSwings).slice(0, 180));
+  // A game where NEITHER choice matters must claim no asymmetry. NOTE WHAT THIS
+  // DOES AND DOES NOT TEST: it passes because `stakesHint` returns an empty
+  // string for a game with no stakes at all, NOT because of anything in the gap
+  // logic. I originally guarded the gap branch against this case and asserted
+  // the guard here; mutation testing showed deleting the guard changed nothing,
+  // because an all-flat game never reaches that branch. The guard was removed as
+  // dead code and this check is kept for what it actually covers — the early
+  // return — with the distinction written down so nobody reads it as gap coverage.
+  check('a game where NEITHER choice matters claims no asymmetry (via the empty hint)',
+    stakesHint(neitherSwings) === '',
+    JSON.stringify(stakesHint(neitherSwings)));
 }
 
 // The exit check stays LAST in the file.

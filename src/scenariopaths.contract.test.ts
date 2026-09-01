@@ -38,17 +38,20 @@ const server = readFileSync('server.ts', 'utf8');
  * the guard rather than by a hardcoded line number, so moving code cannot
  * silently drop a site out of the contract.
  */
-function screeningSites(src: string): string[] {
+function screeningSites(src: string): Array<{ full: string; decision: string }> {
   // The decision that gates ONE invented scenario, taken as a window running
   // backwards from the `validateScenario` call as well as forwards: two of the
   // three sites hoist the claim-free result into a local first
   // (`claimFreeOk`, `claimFree?.ok`), so a forward-only window reads as if the
   // screen were absent. That exact shape made the first draft of this file
   // report three false positives against correct code.
-  const out: string[] = [];
+  const out: Array<{ full: string; decision: string }> = [];
   for (const m of src.matchAll(/validateScenario\([^)]*\)\.ok[\s\S]{0,600}?;/g)) {
     const back = src.slice(Math.max(0, m.index! - 400), m.index!);
-    out.push(back + m[0]);
+    // `decision` is the boolean expression that actually gates the scenario;
+    // `full` adds the preceding lines so a hoisted local is visible. The split
+    // is load-bearing — see the dead-call check below.
+    out.push({ full: back + m[0], decision: m[0] });
   }
   return out;
 }
@@ -69,8 +72,8 @@ function screeningSites(src: string): string[] {
  * queued — the no-numbers rule is true ONLY because the solver states every
  * number, i.e. only at rung 3.
  */
-function isClaimFreeSurface(site: string): boolean {
-  return /generateScenario\s*\(/.test(site) || /claimFree/i.test(site);
+function isClaimFreeSurface(site: { full: string }): boolean {
+  return /generateScenario\s*\(|inventScenario\s*\(/.test(site.full) || /claimFree/i.test(site.full);
 }
 
 const allSites = screeningSites(server);
@@ -80,20 +83,35 @@ check('the claim-free surfaces are identified', sites.length >= 3, `found ${site
 // And the full-report path is correctly NOT treated as one, or this contract
 // would fail the rung-0/1/2 code it must leave alone.
 check('the full-report path is out of scope',
-  allSites.some((s2) => /generateReport|suggestedScenario/.test(s2) && !isClaimFreeSurface(s2)));
+  allSites.some((s2) => /generateReport|suggestedScenario/.test(s2.full) && !isClaimFreeSurface(s2)));
 
 for (const [i, site] of sites.entries()) {
   check(
     `claim-free site ${i + 1} runs the claim-free screen`,
-    /scenarioIsClaimFree\s*\(/.test(site),
+    /scenarioIsClaimFree\s*\(/.test(site.full),
     'a scenario path that validates but does not screen for claims: the digit rule and '
     + 'every CLAIMY rule are skipped, so a description asserting something decidable reaches '
-    + 'the user on that path only.\n' + site.slice(0, 220).replace(/\s+/g, ' '),
+    + 'the user on that path only.\n' + site.full.slice(0, 220).replace(/\s+/g, ' '),
   );
   check(
     `claim-free site ${i + 1} honours NASH_DIRECTION_CHECKS`,
-    /validateProseDirections\s*\(/.test(site),
-    site.slice(-200).replace(/\s+/g, ' '),
+    /validateProseDirections\s*\(/.test(site.full),
+    site.full.slice(-200).replace(/\s+/g, ' '),
+  );
+  // PRESENCE IS NOT PARTICIPATION. The two checks above find the CALL; this one
+  // requires its RESULT to gate the decision. Without it the screen can be
+  // unwired from the boolean while the call stays behind as dead code, and the
+  // guard reports green — verified, not theorised: deleting `&& claimFree?.ok`
+  // from a real site left every other assertion here passing, on this branch
+  // AND on main. That is the same "a check that cannot fail for the reason it
+  // claims" shape this file was written to prevent, living inside the file
+  // itself.
+  check(
+    `claim-free site ${i + 1} lets the screen decide`,
+    /claimFree|scenarioIsClaimFree/i.test(site.decision),
+    'the claim-free call is present but its result never reaches the boolean that '
+    + 'gates the scenario, so the screen runs and is discarded.\n'
+    + site.decision.slice(0, 220).replace(/\s+/g, ' '),
   );
 }
 
@@ -113,13 +131,20 @@ const MUST_FLAG: Array<[string, string]> = [
    'const r = await generateScenario(p, {}); const ok = validateScenario(sc, p).ok && other(sc);'],
   ['a claim-free site with no direction check',
    'const r = await generateScenario(p, {}); const ok = validateScenario(sc, p).ok && scenarioIsClaimFree(sc).ok;'],
+  // The mutation that survived every other assertion in this file: the screen is
+  // CALLED, its result is hoisted into a local, and the local never reaches the
+  // boolean. Present, running, and screening nothing.
+  ['a claim-free site whose screen result is discarded',
+   'const r = await generateScenario(p, {}); const claimFree = scenarioIsClaimFree(sc);'
+   + ' const ok = validateScenario(sc, p).ok && validateProseDirections(d, sc, p).length === 0;'],
 ];
 for (const [name, src] of MUST_FLAG) {
   const found = screeningSites(src).filter(isClaimFreeSurface);
   check(`fixture "${name}" is located at all`, found.length === 1, `${found.length} sites`);
-  const missingClaim = found.length === 1 && !/scenarioIsClaimFree\s*\(/.test(found[0]);
-  const missingDir = found.length === 1 && !/validateProseDirections\s*\(/.test(found[0]);
-  check(`fixture "${name}" is flagged`, missingClaim || missingDir);
+  const missingClaim = found.length === 1 && !/scenarioIsClaimFree\s*\(/.test(found[0].full);
+  const missingDir = found.length === 1 && !/validateProseDirections\s*\(/.test(found[0].full);
+  const deadCall = found.length === 1 && !/claimFree|scenarioIsClaimFree/i.test(found[0].decision);
+  check(`fixture "${name}" is flagged`, missingClaim || missingDir || deadCall);
 }
 // The rung-0/1/2 report path must NOT be flagged: it is allowed to make claims.
 check('the full-report shape is out of scope, not a failure',
@@ -131,7 +156,8 @@ check('the full-report shape is out of scope, not a failure',
     + " && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(d, sc, p).length === 0);";
   const f = screeningSites(good).filter(isClaimFreeSurface);
   check('the correct shape is not flagged',
-    f.length === 1 && /scenarioIsClaimFree/.test(f[0]) && /validateProseDirections/.test(f[0]));
+    f.length === 1 && /scenarioIsClaimFree/.test(f[0].full) && /validateProseDirections/.test(f[0].full)
+    && /claimFree|scenarioIsClaimFree/i.test(f[0].decision));
 }
 
 if (failures > 0) { console.error(`✗ scenario paths: ${failures} failed`); process.exit(1); }

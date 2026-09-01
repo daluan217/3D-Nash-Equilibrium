@@ -241,8 +241,22 @@ export function stakesHint(g: GamePayoffs): string {
   // `swingA`/`swingB` carry the direction the ratio threw away, so the line now
   // names the exposed party. Everything else is byte-identical, including the
   // persona prohibition measured at 0/27, 0/26, 0/31.
+  // INFINITE ASYMMETRY IS THE STRONGEST CASE, AND IT USED TO BE THE ONLY ONE
+  // EXCLUDED. `playerGap` is Infinity when the smaller swing is exactly 0, so
+  // the guard `Number.isFinite(playerGap)` silently dropped the games where one
+  // party's choice provably does nothing at all — 0.55% of random games over a
+  // 200,000-game sweep — while a mere 4x gap got the line. That is the opposite
+  // of the intended behaviour.
+  //
+  // The both-swings-zero game is also an infinite ratio, and there the parties
+  // are equally unexposed rather than maximally unequal — but it never reaches
+  // this line: all four decision swings are 0, so `swing` is 0 and the function
+  // has already returned an empty hint above. I first guarded it here with
+  // `swingA !== swingB` and wrote a test for it; mutation testing showed the
+  // test could not fail, because the case never arrives. The guard was dead code
+  // and the comment justifying it was false, so both are gone.
   const exposedFirst = s.swingA >= s.swingB;
-  const gap = Number.isFinite(s.playerGap) && s.playerGap >= PLAYER_GAP_NOTABLE
+  const gap = s.playerGap >= PLAYER_GAP_NOTABLE
     ? `${exposedFirst ? 'Player A has far more riding on this than Player B' : 'Player B has far more riding on this than Player A'} — make that difference in exposure part of who the two parties are. Never write "Player A", "Player B", "the players" or a bare letter in the description itself.`
     : '';
 
