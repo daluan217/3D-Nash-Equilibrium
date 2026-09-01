@@ -24,6 +24,124 @@ slots, so `--parallel 4` on `-c 4096` gives 1024 tokens per slot.
 ---
 
 
+## 2026-09-01 — WINDOW 8: MODEL-INTERNAL DEBRIS, a class no shipped screen touched
+
+The first defect class this campaign has gated that is neither a falsehood nor a
+register problem: the generator's own machinery arriving in user-facing text.
+"The falsehood surface is exhausted" said nothing about debris, and every one of
+these passed `validateScenario`, `scenarioIsClaimFree` and
+`validateProseDirections` alike.
+
+**FIVE distinct rows, all CLOUD, zero from the retrained local model.** Four are
+in the scenario BANK the desktop is about to ship; the fifth is in the report
+corpora only. 5 of 4,088 draws that reach the user = 0.122%.
+
+| row | foreign | brace | self-talk | where |
+|---|---|---|---|---|
+| Regional Triage Staffing (Hebrew + CJK SEO spam) | X | X | | bank + rt2d_fixpool |
+| Mirror Recoating ("厚 coat") | X | | | bank + rt2d_fixpool |
+| Side-Table Touch-Up (BOM-as-latin1 + self-narration) | | X | X | bank only |
+| Herbarium Loan Request (Arabic ي + braces) | X | X | | bank only |
+| Wind-Farm Maintenance ("深-cycle Service") | X | | | **NOT in the bank** |
+
+### Three rules, in `validateScenario` — and the placement argument is not the obvious one
+
+"Debris is wrong at every rung" correctly rules OUT `scenarioIsClaimFree`, which
+is rung-3-only by the placement argument that kept the numeral rule out of
+`validateScenario`. But what makes a NON-LATIN rule safe is narrower and was not
+in the brief: **`validateScenario` only ever runs on MODEL output.** Checked call
+site by call site — all four in `server.ts` take an invented scenario, and
+`POST`/`PATCH /api/games` call neither gate. If it ever ran on user-authored
+text this rule would reject a user's own Chinese- or Hebrew-titled saved game:
+an internationalisation regression, not a defect fix. That property is now a
+contract test against the real server source, asserted BOTH ways so it cannot
+pass by the gates disappearing, and mutation-verified by planting a
+`validateScenario` reference on the save path.
+
+### I WAS WRONG ABOUT WHY THE BRACE RULE EARNS ITS PLACE, and I had the data
+
+Handing the rules over I claimed brace was the only rule reaching the
+mis-decoded-BOM row, because `ï»¿` is entirely Latin (U+00EF Ll, U+00BB Pf,
+U+00BF Po) so the script rule cannot see it. The premise is right and the
+conclusion does not follow: that same row is ALSO the self-talk row, so the
+original two-rule brief already covered it. Verified independently against the
+bank through the real gate: foreign-only 4/5, brace-only 3/5, self-talk-only
+1/5, **foreign+self-talk 5/5**.
+
+Worse than not knowing: an earlier probe in this same window printed
+`self-talk fires: true, brace fires: true` on that exact row. I ran the check,
+had the output, and then wrote a coverage claim contradicting it. The lesson is
+not "measure more" — it is that a coverage claim needs the SUBSET table run, not
+an inference from one rule read in isolation.
+
+**The rule stays, on the argument I failed to make.** `SELF_TALK` is a phrase
+ENUMERATION and is inherently evadable — the next model that narrates its
+difficulty will phrase it a way the list does not hold. `BRACE_DEBRIS` is
+STRUCTURAL: it catches JSON leakage by shape, independent of wording, at 3 of 5
+rows and 0 false positives everywhere. Brace is the DURABLE cover for the BOM
+row and self-talk is the fragile one — the reverse of what my comment implied.
+Both comments now say so, because a rule justified by a property it does not
+have is the load-bearing-comment-that-isn't this campaign keeps being bitten by.
+
+### The exact rule is the point
+
+`FOREIGN_SCRIPT` is a codepoint test, so it carries none of the collision risk
+that has broken eleven vocabulary predicates here. Boundary RE-VERIFIED rather
+than inherited, 20 cases, all fixtures: flags Hebrew, CJK, Cyrillic, Greek,
+Arabic, Devanagari, Hiragana, Hangul; passes U+2212 MINUS (mistaken for a defect
+in this repo three times), accented Latin, curly quotes, en/em dashes, ellipsis,
+degree/currency/maths symbols, combining marks, non-breaking spaces and emoji.
+Emoji passing is a DELIBERATE boundary, left alone because there is no measured
+instance in ~6,700 draws and an unmeasured predicate is the spiral.
+
+`SELF_TALK` is description-only and multi-word only. A bare `\bwait\b` flags 13
+of 7,684 held draws and a hand-read kills all 13 — "Board Now"/"Wait Briefly",
+"Cross Now"/"Wait Ashore", "harvest early or wait for the later window". The
+curly apostrophe is load-bearing: the observed row writes "Let’s formulate" with
+U+2019 and an ASCII-only list missed it, caught by testing against the captured
+text rather than a paraphrase.
+
+### Every rule has a fixture ONLY IT can catch
+
+Both of the originally-known dirty rows carry two signals each, so a suite built
+from them alone cannot fail when a single rule is deleted — the
+control-that-cannot-fail shape. Isolating fixtures added for each rule; five
+mutations, each killed by its own. Two of my first-draft mutation anchors never
+matched the file and the harness reported them VOID rather than as passes, which
+is the W6 lesson working.
+
+### THREE INSTRUMENT DEFECTS, two of them mine
+
+- **My census double-counted.** Keyed on (source, content), a row present in two
+  files counted twice: the first run reported 8 rejections where there are 5
+  distinct draws. Now keyed on content.
+- **My generation-failure counter read 0 against a hand count of 131.**
+  `r.scenario ?? r.sc` collapses a NULL scenario to `undefined`, so `sc === null`
+  never matched. The bank carries 131 of 1,935 rows with `scenario: null` —
+  generation failures, not defects, but whoever builds the shipping bank must
+  drop them explicitly rather than assume every row has a scenario.
+- **The bank scan handed to me reported `unterminated 1521/1521 (100.00%)`**, and
+  60/60 on its own control arm. A defect class at 100% on both arms is measuring
+  the harness. Flagged and confirmed dead; it informed nothing.
+
+### Refused, and still reachable
+
+`glued period` — "…for the pre-show cue.chemical." is live in rt2d_decoy and in
+the bank. Both drafts collided with a domain name (`example.com`, mid-sentence
+then sentence-final). Domains measure 0 in 5,089 descriptions so the collision is
+theoretical, but the fix is a TLD list, which is the twelfth over-fire waiting to
+happen. Recorded as REACHABLE AND UNGATED rather than shipped on a third draft.
+
+### Files
+
+`_gen/blue_w8_debris_reach.mjs` (census over 67 corpora + the live bank, with the
+per-rule firing table and subset coverage) · `_gen/blue_w8_debris_mutation.py`
+(five mutations, non-applying ones voided). The bank is LIVE — `bank_fill`
+appends — so it is re-read every run and any quoted row count is the count at
+that moment.
+
+---
+
 ## 2026-09-01 — WINDOW 7b: the four PR review findings, each verified before acting
 
 The coordinator verified one and handed over three with the standing framing:
