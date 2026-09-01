@@ -23,6 +23,148 @@ slots, so `--parallel 4` on `-c 4096` gives 1024 tokens per slot.
 
 ---
 
+## 2026-09-01 — FIX WINDOW 6: META VOCABULARY — four sub-forms shipped, the fifth escalated
+
+The largest remaining defect class with real reach, and the first this campaign
+has shipped that is a REGISTER defect rather than a falsehood. "Player A chooses
+between Early Harvest and Late Harvest" asserts nothing untrue; it is simply not
+a story. The truth classes are all measured at or near zero, so this is where
+the remaining user-visible damage is.
+
+### NOT inherited from the teacher — the surfaces are different populations
+
+Measured per surface over 3,363 gate-passing draws. The earlier "6.6% local /
+5.7% cloud, so it is in the teacher too" reading came from a narrow predicate
+that caught only the first sub-form:
+
+| sub-form | local | cloud |
+|---|---|---|
+| "Player A" / "Player B" | 6.1% | **6.2%** — the one that IS equal |
+| a BARE LETTER as a character | 4.0% | 1.2% |
+| "the two players" / "each player" | 3.0% | 0.2% |
+| "the game" as an object | 0.6% | **0.0%** |
+| **union of the four shipped** | **14.0%** | **7.0%** |
+
+Only the "Player A" form is shared. Everything else is local-heavy, and two
+sub-forms are at zero on cloud. Pooling them would have hidden that.
+
+### Both traps held, and both are now mutation-pinned
+
+**TRAP B — the bare-letter lookbehind is the single most expensive thing here to
+get wrong.** `\b[AB]\s+chooses` matches "Operator A chooses… while Operator B
+chooses", which is ordinary English for two indistinguishable parties and is
+CLOUD'S GOOD SHAPE:
+
+    naive, no lookbehind : local 4.8%   CLOUD 20.0%
+    with the lookbehind  : local 4.0%   cloud  1.2%
+
+229 draws separate those numbers and every one inspected is the good shape. This
+reproduces RED 1's independently measured 20.4%. A rule rejecting a fifth of all
+cloud output would have looked like a huge win until someone read the rejections.
+
+**TRAP A — "the game" is a PRODUCT in this corpus**, and it needs TWO guards
+because each spares a case the other does not:
+- the **hyphen boundary** `(?![-\w])` alone spares the real cloud draw "…Solo
+  Sales for the GAME-DAY menu" — `\b` sits happily before a hyphen. Third
+  instance this campaign of a rule defeated by punctuation, after
+  `orders?\s+of\s+magnitude` and U+2212.
+- the **product-vocabulary test** alone spares "a small game studio chooses
+  whether to give the game a Featured Slot", which the hyphen guard does not.
+
+### MY OWN TRAP CONTROLS DID NOT TEST THEIR GUARDS — the mutation run caught it
+
+The first draft of both TRAP A controls passed with the hyphen boundary AND the
+product guard deleted. Neither sentence carried game-theory vocabulary, so the
+theory requirement spared them on its own and the guards were doing nothing in
+those tests. Rewritten to carry theory vocabulary, so now only the guard under
+test can spare each. **A guard whose control cannot fail when the guard is
+removed is not a tested guard** — this suite has caught that shape repeatedly in
+other people's work, and here it caught mine. Mutations now:
+
+| mutation | result |
+|---|---|
+| N1 drop the negative lookbehind | TRAP B control fails ✓ |
+| N2 drop the hyphen boundary | game-day control fails ✓ (passed before the fixture fix) |
+| N3 drop the product-vocabulary guard | video-game control fails ✓ (passed before the fixture fix) |
+| N4 add bare "the players" back | puppet-theatre control fails ✓ |
+
+### The fifth sub-form is NOT shipped, and this is a scoreboard question
+
+The word **"payoff"** is the fourth sub-form named in the scope, and gating it
+contradicts a control **RED 1'S OWN ORACLE SCORES**: "their choices determine
+the resulting payoffs" is asserted there as the vacuous closer the model writes
+constantly, true on any matrix whose payoffs vary. Both readings are defensible
+and neither instrument is broken — the oracle asks whether the sentence is FALSE
+(it is not); the META screen asks whether it is IN REGISTER (it is not).
+Changing a control the exit criterion is scored against, to make my own change
+look clean, is not a validator decision. **Escalated, not decided.** Cost of
+leaving it out, measured: "payoff" is the ONLY meta marker in **1.2% of local
+draws and 0.0% of cloud draws**; the other four carry 14.0% / 7.0% without it.
+
+### "the players" excluded on SHAPE, not on rate
+
+The one member with an ordinary non-game meaning — "the players" is the acting
+company, and the rotation contains **"puppet theatre touring"**. It measures
+0.1% local / 0.0% cloud, and the only two draws it uniquely catches are already
+caught by another form. W5's D4 refusal is the precedent: a zero rate is not
+grounds for including a word whose shape collides. A dedicated collision hunt
+found 484 sentences using "player(s)" and 16 co-occurring with a
+sport/music/theatre word — **every one of the 16 is meta usage beside a scene
+word, not player-as-athlete.**
+
+### False-positive audit — a different question from W5's
+
+W5 required "0 newly rejected". That question is wrong here: META is MEANT to
+reject ~14% of local output, and 387 draws is too many to read without the
+reading becoming a rubber stamp. So the audit tabulates the DISTINCT MATCHED
+SUBSTRING behind every new rejection:
+
+    3,481 draws · newly REJECTED 387 (local 203, cloud 76, unattributed 108)
+                · newly ACCEPTED 0 · rejections unexplained by the four forms: 0
+
+    prompt cast : 190x «player a»   1x «player b»
+    bare letter : 123x «a is»   8x «a chooses»   3x «b is»
+    game cast   :  65x «the two players»   7x «each player»
+    the game    :  13x «the game»
+
+**Eight distinct shapes, all eight unambiguously meta.** That is stronger
+evidence than sampling 387 draws, and it is checkable by anyone in one read.
+
+### Three existing fixtures had to change, all handled BY REASON
+
+Three quoted real draws in the suite contain meta vocabulary incidental to what
+they were quoted to prove. None was deleted and none was paraphrased. Each is
+now asserted by its REJECTION REASON, so the original fact stays under test:
+
+| fixture | now asserted as |
+|---|---|
+| negotiation control r2cloud#4 | rejected for META, and the NEGOTIATION rule must still not fire |
+| W4 rivalry regression rt3_character_local#7 | rejected for the bare letter, and the RIVALRY screen must still not fire |
+| `src/test.ts` port-inspector gold | dropped for META, and NO claim rule may fire on it |
+
+The negotiation control was additionally re-based on another REAL corpus draw
+carrying offer+contract without meta, so the list still holds seven quoted draws.
+
+### Evidence
+
+| check | result |
+|---|---|
+| FP audit | 387 newly rejected, **0 newly accepted, 0 unexplained**, 8 distinct match shapes |
+| mutations N1–N4 | each fails its own control ✓ |
+| RED 1 13-hole oracle | **3/13**, controls **0/8**, screens lost **0/2** — unchanged |
+| RED 1 label oracle | **4/10**, controls wrongly blocked **0/15** — unchanged |
+| lint · npm test · build · e2e | 0 · 0 (86,236 tie-prose renderings) · 0 · **22/22** |
+| reach over every corpus | 250/3,481 = 7.18% rejected by blue's rules, **145 from files W4 never saw** |
+
+### Limitation carried forward
+
+RED 2 read ten local stories that pass all six of its lexical screens and found
+four or five carrying semantic incoherence no lexical screen can see — a rice
+farmer with a saffron crop, a coffee roastery that harvests. These gates are
+necessary and not sufficient, and no regex closes that gap.
+
+---
+
 ## 2026-08-31 — FIX WINDOW 5: repeated play PRICED AND REFUSED; two decidable label holes closed
 
 ### e2e, run to completion first, as instructed

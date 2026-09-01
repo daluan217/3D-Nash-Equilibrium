@@ -472,6 +472,101 @@ const MULTIPLIER_CLAIM = new RegExp(
 const BIG_SPELLED_QUANTITY = /\b(?:hundreds?|thousands?|millions?|billions?|trillions?)\b/i;
 
 /**
+ * META VOCABULARY — the prompt's own words, and the mathematical object itself,
+ * appearing in user-facing fiction.
+ *
+ * This is a REGISTER defect, not a falsehood. "Player A chooses between Early
+ * Harvest and Late Harvest" asserts nothing false; it simply is not a story. It
+ * is the app's own scaffolding shown to a reader who was promised a scenario,
+ * and it is the largest remaining defect class with real reach on observed
+ * output — the truth classes are measured at or near zero.
+ *
+ * NOT INHERITED FROM THE TEACHER. Measured per surface over 3,363 gate-passing
+ * draws (_gen/blue_w6_metaprice.mjs, _gen/blue_w6_metadesign.mjs) — these are
+ * two different populations and pooling them hides the finding:
+ *
+ *   sub-form                              local     cloud
+ *   "Player A" / "Player B"                6.1%      6.2%    <- the one that IS equal
+ *   a BARE LETTER as a character           4.0%      1.2%
+ *   "the two players" / "each player"      3.0%      0.2%
+ *   "the game" as the object               0.6%      0.0%
+ *   ------------------------------------------------------
+ *   union of the four                     14.0%      7.0%
+ *
+ * TWO TRAPS, both handed over already measured, both built in from the first
+ * draft rather than discovered after shipping.
+ *
+ * TRAP A — "THE GAME" IS A PRODUCT IN THIS CORPUS. The domain rotation contains
+ * film, software and theatre settings, and of 31 META hits in an earlier
+ * training corpus TWELVE were video-game scenarios ("a game studio chooses…
+ * for distributing the game") — not one game-theoretic. A bare "the game" rule
+ * deletes a whole domain. TWO independent guards, and the measurement shows
+ * each one spares a case the other does not:
+ *   - the hyphen boundary `(?![-\w])` alone spares the real cloud draw
+ *     "…Solo Sales for the GAME-DAY menu", which a bare `\bthe game\b` matches
+ *     because `\b` sits happily before a hyphen. Same punctuation class as the
+ *     `orders?\s+of\s+magnitude` hole and the U+2212 minus.
+ *   - the product-vocabulary test alone spares "a small game studio chooses
+ *     whether to give the game a Featured Slot", which the hyphen guard does
+ *     NOT spare.
+ * So the rule fires only where a sentence names the game AND carries
+ * game-theory vocabulary AND carries no game-product vocabulary.
+ *
+ * TRAP B — THE BARE-LETTER FORM NEEDS A NEGATIVE LOOKBEHIND, and this is the
+ * single most expensive thing in this screen to get wrong. `\b[AB]\s+chooses`
+ * matches "Operator A chooses… while Operator B chooses…", which is ordinary
+ * English for two indistinguishable parties and is CLOUD'S GOOD SHAPE.
+ * Measured here, on this corpus:
+ *
+ *   naive, no lookbehind : local 4.8%   CLOUD 20.0%
+ *   with the lookbehind  : local 4.0%   cloud  1.2%
+ *
+ * 229 draws separate those two numbers and every one inspected is the good
+ * shape — "Agency A chooses Prime Slot or Off-Prime Slot, while Operator B
+ * chooses…". RED 1's first draft of this predicate reported 20.4% on cloud and
+ * 13 of 14 hand-checked matches were that shape. A rule that rejects a fifth of
+ * all cloud output would have looked like a huge win right up until someone
+ * read the rejections.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. The word "payoff" is the fifth sub-form of
+ * this class and it is NOT screened, because doing so contradicts a control
+ * that RED 1'S OWN ORACLE scores: "their choices determine the resulting
+ * payoffs" is asserted there as the vacuous closer the model writes constantly,
+ * true on any matrix whose payoffs vary. Both readings are defensible and
+ * neither instrument is broken — the oracle asks whether the sentence is FALSE
+ * (it is not) and this screen asks whether it is IN REGISTER (it is not). That
+ * is a scoreboard question, not a validator question, so it is escalated rather
+ * than decided here. Cost of leaving it out, measured: the word "payoff" is the
+ * ONLY meta marker in 1.2% of local draws and 0.0% of cloud draws.
+ *
+ * `\p{N}` forms ("Player 1") are not listed because they are unreachable: the
+ * numeral screens above return first, in labels and in the description alike.
+ * Marked rather than left to imply coverage they do not provide.
+ */
+const META_PROMPT_CAST = /\bplayers?\s+(?:[AB]|one|two)\b/i;
+const META_GAME_CAST = /\b(?:the\s+two\s+players|both\s+players|each\s+player)\b/i;
+// "the players" BARE is excluded on SHAPE, not on rate. It is the one member
+// with an ordinary non-game meaning — "the players" is the acting company, and
+// the domain rotation contains "puppet theatre touring". It measures 0.1% local
+// and 0.0% cloud, and the only two draws it uniquely catches are already caught
+// by another form. W5's D4 refusal is the precedent: a zero rate is not grounds
+// for including a word whose shape collides.
+const META_BARE_LETTER =
+  /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have)\b/u;
+const GAME_THEORY_VOCAB = /\b(?:payoffs?|equilibri\w+|strateg\w+|players?|matrix|matrices|dominant|zero[\s-]sum|simultaneous\w*|normal[\s-]form|best\s+response|moves?)\b/i;
+const GAME_PRODUCT_VOCAB = /\b(?:video\s?games?|game\s+studio|game\s+developer|gaming|console|arcade|board\s+games?|playtest\w*|publisher|storefront|featured\s+slot|download\w*|app\s+store|steam)\b/i;
+
+/** TRAP A, per sentence: the game as the OBJECT, never the game as a product. */
+function namesTheGameItself(text: string): boolean {
+  for (const s of text.split(/(?<=[.;•])\s+/)) {
+    if (!/\bthe\s+game\b(?![-\w])/i.test(s)) continue;
+    if (GAME_PRODUCT_VOCAB.test(s)) continue;
+    if (GAME_THEORY_VOCAB.test(s)) return true;
+  }
+  return false;
+}
+
+/**
  * TWO DISTINCT CHOOSERS — the cast analysis behind three of the structural
  * rules in scenarioIsClaimFree.
  *
@@ -770,6 +865,23 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
   // zero false positives (_gen/blue_w4_refine.mjs). They are the first checks
   // here that catch what the models are actually doing rather than containing a
   // channel nobody has walked.
+  // META VOCABULARY. Screened over EVERY authored field, not just the
+  // description: "Player A" is exactly as much a leak in the scenario name or
+  // an option label, and the name is a field no screen read at all before this
+  // campaign. See the block comment on META_PROMPT_CAST for the per-surface
+  // rates and for the two traps this predicate is shaped around.
+  const authored = ['name', 'row1', 'row2', 'col1', 'col2'] as const;
+  const metaText = normalizeProseMinus([...authored.map((k) => (typeof sc[k] === 'string' ? sc[k] as string : '')), desc].join(' • '));
+  const META: [RegExp | ((t: string) => boolean), string][] = [
+    [META_PROMPT_CAST, "the prompt's own cast names (\"Player A\") in the story"],
+    [META_BARE_LETTER, 'a bare letter standing in for a character'],
+    [META_GAME_CAST, 'the game\'s cast ("the two players") named in the story'],
+    [namesTheGameItself, 'the game itself named as an object in the story'],
+  ];
+  for (const [test, why] of META) {
+    if (typeof test === 'function' ? test(metaText) : test.test(metaText)) return { ok: false, reason: why };
+  }
+
   const STRUCTURAL: [(t: string) => boolean, string][] = [
     [oneActorTakesASecondDecision, 'a second decision given to a player who already made one'],
     [secondPairHandedToAPronoun, "a second set of options given to a pronoun when only one player is named"],

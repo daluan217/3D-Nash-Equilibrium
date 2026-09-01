@@ -795,6 +795,7 @@ function runUnitTests() {
   testInterestAlignment();
   testTwoChooserStructure();
   testRepeatedPlayRefused();
+  testMetaVocabulary();
   console.log('All unit tests passed.');
 }
 
@@ -1123,8 +1124,15 @@ function testNegotiationForm() {
       'An antique dealer and a restoration studio are negotiating a restoration contract. The dealer chooses between Firm Bid and Flexible Bid, while the studio chooses between Detailed Scope and Basic Scope.'],
     ['stcloud#6, "offering" in the ordinary sense of providing',
       'A bakery manager chooses between placing an Early Order or a Late Order for the next production cycle. A flour supplier chooses between offering Bulk Flour or Specialty Flour.'],
-    ['r2cloud#4, a distributor offering contract types',
-      'An orchard grower, Player A, chooses between an Early Harvest and a Late Harvest for the season. A fruit distributor, Player B, chooses between offering a Firm Contract and a Flexible Contract for purchasing the fruit.'],
+    // WAS r2cloud#4, which contains "Player A"/"Player B" and is now rejected
+    // by the META screen. It was quoted here to prove the NEGOTIATION rule is a
+    // conjunction, and its meta vocabulary was incidental to that job — so the
+    // control is re-based on another REAL draw that exercises the same boundary
+    // (an offer with no acceptance, plus the word "contract") and carries no
+    // meta. The original is not discarded: it is asserted below, by REASON, so
+    // the fact it was quoted for is still tested.
+    ['rt3_character_cloud#4, a bottler offering a price for a harvest contract',
+      'An orchard cooperative is choosing whether to commit its fruit to an early harvest or a late harvest. A juice bottler is choosing between offering a premium price or buying at the spot price for that harvest contract.'],
     ['r2local#4, "accept" as one player\'s own simultaneous choice',
       'A fruit cooperative chooses whether to plant Early Harvest or Late Harvest. A retailer chooses whether to accept an Open Contract or a Fixed Contract.'],
     ['rt1#180, "contract" as an ordinary scenario noun',
@@ -1133,6 +1141,17 @@ function testNegotiationForm() {
   for (const [tag, d] of REAL) {
     assert(gate(d), `NEGOTIATION CONTROL (${tag}): real gate-passing output must not be newly rejected — this is why the rule is a conjunction, not a word list`);
   }
+  // The re-based control's original, kept and tested BY REASON. r2cloud#4 is
+  // now rejected — but for META vocabulary, not for negotiation. Asserting the
+  // reason rather than the verdict keeps the original claim ("the negotiation
+  // rule does not fire on an offer with no acceptance") under test, instead of
+  // letting a draw quietly change which rule it is evidence about.
+  const r2cloud4 = 'An orchard grower, Player A, chooses between an Early Harvest and a Late Harvest for the season. A fruit distributor, Player B, chooses between offering a Firm Contract and a Flexible Contract for purchasing the fruit.';
+  const r2cloud4Why = scenarioIsClaimFree(sc(r2cloud4)).reason ?? '';
+  assert(/cast names/.test(r2cloud4Why),
+    `NEGOTIATION/META: r2cloud#4 must be rejected for its META vocabulary, got: ${r2cloud4Why || '(accepted)'}`);
+  assert(!/offers and the other accepts|binding agreement/.test(r2cloud4Why),
+    'NEGOTIATION: the negotiation rule must STILL not fire on an offer with no acceptance answering it — that is what this draw was quoted to prove');
   // THE MINIMAL PAIR. "Negotiating" is held constant across both, so the word
   // is demonstrably not what decides the verdict — only the protocol is. Note
   // the first draft of this pair was WRONG and the suite caught it: it swapped
@@ -1304,8 +1323,17 @@ function testTwoChooserStructure() {
   // ── REGRESSION: the rivals false positive RED 1's new corpus exposed ─────
   // Shipped in W3 as a bare `rivals?`, which caught the word used ATTRIBUTIVELY
   // to name an actor. Two real draws were being rejected.
-  assert(gate("A is a fisherman choosing between Open Fish and Keep Fish for the day's catch. B is a rival fisherman choosing between Open Fish and Keep Fish for the same catch.", COMMON),
-    'W4 REGRESSION (rt3 character local#7): "a RIVAL fisherman" names the actor — a job title is not a claim, even on a common-interest matrix');
+  // rt3_character_local#7 is now rejected by the META screen — it opens "A is a
+  // fisherman… B is a rival fisherman", the bare-letter form. Its meta
+  // vocabulary is incidental to what it was quoted to prove, so it is asserted
+  // BY REASON: the rivalry screen must still not fire on the attributive use.
+  // The verdict changed; the fact under test did not.
+  const rival7 = "A is a fisherman choosing between Open Fish and Keep Fish for the day's catch. B is a rival fisherman choosing between Open Fish and Keep Fish for the same catch.";
+  const rival7Why = scenarioIsClaimFree(sc(rival7)).reason ?? '';
+  assert(/bare letter/.test(rival7Why),
+    `W4/META: rt3 character local#7 must be rejected for the bare-letter form, got: ${rival7Why || '(accepted)'}`);
+  assert(!/frames the two players as rivals/.test(rival7Why),
+    'W4 REGRESSION (rt3 character local#7): "a RIVAL fisherman" names the actor — the rivalry screen must STILL not fire on it, even on a common-interest matrix');
   assert(gate('A city marathon coordinator chooses whether to schedule the race with an Early Closure or a Late Closure. A rival event coordinator chooses whether to use a Peak Route or a Quiet Route.', COMMON),
     'W4 REGRESSION (rt3 character local#29): the same attributive use must pass');
   // And the claim itself must still be caught, or the fix removed the rule.
@@ -1422,6 +1450,115 @@ function testRepeatedPlayRefused() {
   }
 
   console.log('✓ repeated play: PRICED AND REFUSED — folk-theorem machinery 0/3,134 accepted and 0/51 rejected; candidate rule 1 hit, 1 false positive; 9 real draws pinned as controls; 3 true claims recorded as still reaching the user');
+}
+
+/**
+ * META VOCABULARY — the prompt's own words and the mathematical object leaking
+ * into user-facing fiction. A REGISTER defect, not a falsehood: "Player A
+ * chooses between Early Harvest and Late Harvest" asserts nothing untrue, it
+ * simply is not a story.
+ *
+ * THE LARGEST REMAINING CLASS WITH REAL REACH. Measured per surface over 3,363
+ * gate-passing draws — and the two surfaces are NOT the same population, so the
+ * earlier "equal on both, therefore inherited from the teacher" reading does
+ * not hold once all sub-forms are counted:
+ *
+ *     union of the four shipped forms:  local 14.0%   cloud 7.0%
+ *     "Player A" alone:                 local  6.1%   cloud 6.2%   <- the one that IS equal
+ *     "the game" as an object:          local  0.6%   cloud 0.0%
+ *
+ * EVERY POSITIVE BELOW IS A REAL DRAW, QUOTED. Every control is either a
+ * measured false positive of an earlier draft or a shape whose collision is
+ * predicted by the domain rotation.
+ */
+function testMetaVocabulary() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const sc = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d, ...labels,
+  } as any);
+  const gate = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) =>
+    validateScenario(sc(d, labels), ANTI).ok
+    && scenarioIsClaimFree(sc(d, labels)).ok !== false
+    && validateProseDirections(d, sc(d, labels), ANTI).length === 0;
+  const why = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) =>
+    scenarioIsClaimFree(sc(d, labels)).reason ?? '';
+
+  // ── POSITIVES, all real draws ────────────────────────────────────────────
+  assert(!gate('A dairy co-op, Player A, is deciding between Premium Pricing and Cost-Plus Pricing for its seasonal produce. Player B, the distributor, is choosing between Premium Pricing and Cost-Plus Pricing for its delivery network.'),
+    'META (rt_label_corpus#16): "Player A"/"Player B" is the prompt\'s own cast, not a story');
+  assert(!gate('A is a mushroom grower choosing between Early Harvest and Late Harvest for its crops. B is a distributor choosing between Open Market and Stabilize Supply for the same products.'),
+    'META (rt_label_corpus#57): a bare letter standing in for a character');
+  assert(!gate('The two players are choosing their distribution timing for the same brew.'),
+    'META (rt_label_corpus#20): "the two players" names the game\'s cast, not the world\'s');
+  assert(!gate('A city planning department and a construction firm are coordinating the repair of a stone wall. The game is between these two players and represents the negotiation of their repair plan.'),
+    'META (rt2_local_prod200#73): the game named as an object');
+  // The NAME and the LABELS are user-facing too — the name is a field no screen
+  // read at all before this campaign.
+  assert(!gate('A mill and a haulier each pick a window.', { name: 'Player A Scheduling' }),
+    'META: the scenario NAME is screened too');
+  assert(!gate('A mill and a haulier each pick a window.', { row1: 'Player A Slot' }),
+    'META: option LABELS are screened too');
+
+  // ── TRAP A: "the game" is a PRODUCT in this corpus ───────────────────────
+  // Two guards, and the measurement shows each spares a case the other does
+  // not. Both are asserted, so a later edit cannot quietly drop either.
+  // NB the first draft of these two controls DID NOT TEST THEIR GUARDS. Both
+  // sentences lacked game-theory vocabulary, so the theory requirement spared
+  // them on its own and the mutation run passed with the hyphen boundary and
+  // the product guard both deleted. They are rewritten to carry theory
+  // vocabulary, so now only the guard under test can spare each one. A guard
+  // whose control cannot fail when the guard is removed is not a tested guard —
+  // this suite has caught that shape repeatedly, and here it caught mine.
+  assert(gate('A concession vendor chooses between Joint Promotion and Solo Sales for the game-day menu, and both operators move simultaneously.'),
+    'META TRAP A (from rt_label_corpus#9, a REAL cloud draw): "the GAME-DAY menu" — only the hyphen boundary spares this, because \\b sits happily before a hyphen');
+  assert(gate('A small game studio chooses whether to give the game a Featured Slot or a Standard Slot, while a rival studio moves simultaneously on its own title.'),
+    'META TRAP A: a video-game scenario — only the product-vocabulary test spares this one; the hyphen guard does not, because "the game" here is unhyphenated');
+  assert(!gate('A mill books a slot and a haulier books a window. The two decisions form the game\'s normal-form setup.'),
+    'META TRAP A: and the actual claim must still be caught — theory vocabulary, no product vocabulary');
+
+  // ── TRAP B: the bare-letter form needs the negative lookbehind ───────────
+  // This is CLOUD'S GOOD SHAPE. The naive predicate scores 20.0% on cloud
+  // against 1.2% with the lookbehind; 229 draws separate those numbers and
+  // every one inspected reads like these.
+  assert(gate('Agency A chooses Prime Slot or Off-Prime Slot, while Operator B chooses Full Pricing or Reduced Pricing.'),
+    'META TRAP B (rt3_flat_local#8): "Agency A chooses… while Operator B chooses" is ordinary English for two indistinguishable parties');
+  assert(gate('Operator A chooses Early Shift or Late Shift, while Operator B chooses Open Lighthouse or Hold Lighthouse.'),
+    'META TRAP B (rt3_flat_local2#111): a noun before the letter makes it a name, not a stand-in');
+  assert(gate('Bakery A and Bakery B are competing shops placing weekly flour orders with the same mill. Each bakery chooses whether to submit its order early or wait until later in the ordering window.'),
+    'META TRAP B (rt3_character_cloud#6): "Bakery A and Bakery B" must pass');
+  assert(gate('Two hospitals share one air-ambulance pad. Hospital A chooses between Surge Staffing and Core Staffing; Hospital B chooses between a Central Pool and Local Teams.'),
+    'META TRAP B: the same shape with a semicolon and two clauses');
+
+  // ── COLLISION CONTROLS: "player" is a scene noun in some domains ─────────
+  // The rotation contains "puppet theatre touring", where "the players" is the
+  // acting company. Bare "the players" is therefore EXCLUDED on shape — it
+  // measures 0.1% local / 0.0% cloud and the only draws it uniquely catches are
+  // caught by another form anyway. W5's D4 refusal is the precedent.
+  assert(gate('A touring puppet company chooses an Early Tour or a Late Tour, and the players rehearse whichever slot the hall offers.'),
+    'META COLLISION: "the players" is the acting company — excluded on SHAPE, because the rotation contains puppet theatre touring');
+  assert(gate('A glaciology team led by a senior surveyor chooses between Dawn Flight and Dusk Flight. A partner team chooses between a North Transect and a South Transect.'),
+    'META COLLISION: "team"/"led by" near no meta token must pass — the word "player" is what matters, not the sporting register');
+
+  // ── WHERE THE RULE LIVES, both ways. Same architectural test as the numeral
+  //    screen: META is a rung-3 defect, because only at rung 3 does the solver
+  //    state the mathematics and the description exist purely as a story.
+  const meta = sc('Player A chooses an Early Slot. Player B chooses a Shared Window.');
+  assert(validateScenario(meta, ANTI).ok,
+    'PLACEMENT: validateScenario runs at EVERY rung and must not carry the rung-3 META rule');
+  assert(scenarioIsClaimFree(meta).ok === false,
+    'PLACEMENT: the rung-3 screen must reject it');
+
+  // ── KNOWN OPEN, recorded so nobody reads this block as "META is handled".
+  // The word "payoff" is the fifth sub-form and is NOT screened, because doing
+  // so contradicts a control RED 1'S OWN ORACLE scores ("their choices
+  // determine the resulting payoffs" — the vacuous closer, true on any matrix
+  // whose payoffs vary). Escalated rather than decided here. Cost of leaving it
+  // out: "payoff" is the ONLY meta marker in 1.2% of local draws, 0.0% cloud.
+  assert(gate('A mill books an Early Slot or a Late Slot for the run. A haulier books a Shared Window or a Separate Window. Their choices determine the resulting payoffs.'),
+    'META, KNOWN OPEN: bare "payoffs" still reaches the user by design — gating it would break a RED 1 oracle control, which is a scoreboard question, not a validator question');
+
+  console.log('✓ meta vocabulary: 4 sub-forms screened (union local 14.0% / cloud 7.0%); both traps pinned — "the game-day menu" and the video-game studio pass, "Operator A chooses" passes at 20.0%-vs-1.2% cloud cost; "payoff" left open and escalated');
 }
 
 try {
