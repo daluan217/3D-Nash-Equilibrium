@@ -32,7 +32,7 @@ import {
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { tieProse } from './utils/tieProse';
-import { validateScenario } from './utils/nashValidator';
+import { validateScenario, scenarioIsClaimFree, validateProseDirections } from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -790,6 +790,7 @@ function runUnitTests() {
   testScenarioDomains();
   testFmtPayoffSubResolution();
   testGateFixesAugust31();
+  testOptionLabelChannel();
   console.log('All unit tests passed.');
 }
 
@@ -931,6 +932,100 @@ function testGateFixesAugust31() {
     'F11 save path: the some(Boolean) guard gated a sentence only built correctly when all four were present');
 
   console.log('✓ gate fixes 2026-08-31: F11 missing label (gate + save path), F1 shape gate, F12 letter-form attribution');
+}
+
+/**
+ * THE OPTION-LABEL / NAME CHANNEL (RED 2, cases L1–L6).
+ *
+ * Rung 3's no-numbers rule governed `sc.description` and nothing else. The name
+ * field was screened by NOTHING, and a number in an option label was examined
+ * only when it sat INSIDE PARENTHESES. Six hand-built magnitude claims were
+ * pushed through the real shipping gate — validateScenario + scenarioIsClaimFree
+ * + validateProseDirections, as server.ts composes them — and all six reached
+ * the user. Four are closed here.
+ *
+ * TWO ARE DELIBERATELY LEFT OPEN, and that is the important part of this test.
+ * "Full Evacuation / No Evacuation" and "Full Shutdown / No Shutdown" are not
+ * decidable from anything the program holds: the same shape is real, good model
+ * output ("Full Monitoring / No Monitoring"), and a word list broad enough to
+ * catch them rejects 32.2% of gate-passing draws (282 of 875 measured;
+ * `_gen/blue_w3_mutation.mjs` prices that mutant against the corpus). The
+ * controls below are that boundary written down, so a later widening of this
+ * screen fails here instead of quietly costing a third of all output.
+ *
+ * Reach of everything added here: 0 of 890 stored real draws, cloud and local.
+ * This is CONTAINMENT, not detection.
+ */
+function testOptionLabelChannel() {
+  const TINY: GamePayoffs = { a11: 0.001, a12: 0, a21: 0, a22: 0.001, b11: 0, b12: 0.001, b21: 0.001, b22: 0 };
+  const sc = (o: Record<string, unknown>) => ({
+    name: 'Regional Allocation', row1: 'Alpha', row2: 'Beta', col1: 'Gamma', col2: 'Delta',
+    storyClaims: null, ...o,
+  } as any);
+  // The gate the SERVER runs, not a subset of it. Reproducing two thirds of a
+  // gate and calling the result a pass is the error this campaign keeps finding.
+  const gate = (s: any) => validateScenario(s, TINY).ok
+    && scenarioIsClaimFree(s).ok !== false
+    && validateProseDirections(s.description ?? '', s, TINY).length === 0;
+
+  // ── L1: a bare number in an option label ─────────────────────────────────
+  assert(!gate(sc({ row1: 'Commit 1000 Units', row2: 'Commit 1 Unit' })),
+    'L1: a bare number in an option label must be rejected — the digit screen read sc.description only');
+  // ── L2: an explicit multiple in an option label ──────────────────────────
+  assert(!gate(sc({ row1: 'Hundredfold Expansion', row2: 'No Change' })),
+    'L2: "Hundredfold" states a ratio on a game whose every swing is one thousandth of a unit');
+  // ── L4: magnitude in the NAME, a field no screen read ────────────────────
+  assert(!gate(sc({ name: 'The 100000x Decision' })),
+    'L4: the scenario name must be screened — it was read by nothing');
+  // ── L5: the same claim spelled out, so it carries no digit ───────────────
+  assert(!gate(sc({ description: 'A regional operator weighs a choice worth a hundred thousand times more than the other party\'s, in the same season.' })),
+    'L5: a spelled-out multiple carries the claim with no numeral for /\\d/ to find');
+
+  // The keystroke that blinds validateScenario's parenthetical rule. VERBATIM
+  // from the C11 draw that rule was written for, U+2212 and all — a paraphrased
+  // regression test once passed while the real defect shipped.
+  assert(!gate(sc({ row1: 'Signal −1/−1', row2: 'Signal +1/+1' })),
+    'C11 without brackets: the annotation rule only looks inside parentheses, so this walked through it');
+
+  // `\p{N}`, not `\d`. `\d` is ASCII-only in JavaScript; this repo has shipped
+  // that hole before and typography has bitten it three times.
+  assert(!gate(sc({ row1: 'Commit １０００ Units' })),
+    'a fullwidth numeral in a label must be rejected — /\\d/ misses it entirely');
+  assert(!gate(sc({ description: 'A regional operator commits ١٠٠ crates while a second operator commits its own.' })),
+    'an Arabic-Indic numeral in the description must be rejected');
+
+  // ── CONTROLS. Real, gate-passing draws. None may be newly rejected. ──────
+  assert(gate(sc({ name: 'Antique Restoration Bidding', row1: 'Full Repairs', row2: 'Minor Repairs', col1: 'Open Call', col2: 'Reserve' })),
+    'CONTROL (rt1#3): a magnitude-BEARING label pair is ordinary output and must pass');
+  assert(gate(sc({ name: 'Cheese Cave Ripening', row1: 'Early Ripening', row2: 'Late Ripening', col1: 'Full Monitoring', col2: 'No Monitoring' })),
+    'CONTROL (r2local#108): the ONLY total-vs-nothing pair in 883 real draws is good output — this is the boundary L3/L6 sit on');
+  assert(gate(sc({ name: 'Bakery Pricing', row1: 'Premium Price', row2: 'Discount Price', col1: 'Bulk Flour', col2: 'Specialty Flour' })),
+    'CONTROL: premium/discount label pairs are the single most common real shape');
+  assert(gate(sc({ row1: 'Manifold Assembly', row2: 'Valve Assembly' })),
+    'CONTROL: "Manifold" is not a multiple — the -fold rule requires a numeral stem');
+  assert(gate(sc({ row1: 'Double Shift', row2: 'Single Shift' })),
+    'CONTROL: "double" asserts no specific ratio and is ordinary English');
+  assert(gate(sc({ description: 'A regional operator has run this route many times before, and a second operator is new to it.' })),
+    'CONTROL: "many times" names no number — gating it would be the word list this screen avoids');
+
+  // ── WHERE THE RULE LIVES. This is an architectural assertion, both ways. ──
+  // The no-numbers rule is TRUE ONLY AT RUNG 3, because only there does the
+  // solver state every number. validateScenario runs at every rung, and at rung
+  // 0 the model writes the numbers itself — "Gate 12 / Gate 7" is an ordinary
+  // pair of option names there. So the screen must sit on the rung-3-only
+  // function, and the all-rung one must stay silent about it.
+  const numbered = sc({ name: 'Airport Gate Assignment', row1: 'Gate 12', row2: 'Gate 7', col1: 'Stand A', col2: 'Stand B' });
+  assert(validateScenario(numbered, TINY).ok,
+    'PLACEMENT: validateScenario runs at EVERY rung and must not carry the rung-3 numeral rule — "Gate 12" is a fine rung-0 label');
+  assert(scenarioIsClaimFree(numbered).ok === false,
+    'PLACEMENT: the rung-3 screen must still reject it');
+  // And the matrix-checked annotation rule must NOT have migrated: it is
+  // decidable at any rung, so it belongs where it was.
+  assert(validateScenario(sc({ row1: 'Early Run (77, 88)', row2: 'Late Run' }), TINY).issues
+    ?.some((s) => /annotates a payoff pair/.test(s)),
+    'PLACEMENT: the matrix-checked parenthetical rule must remain in validateScenario');
+
+  console.log('✓ option-label channel: L1/L2/L4/L5 closed at 0 reach on 890 real draws; L3/L6 left open as undecidable, boundary asserted');
 }
 
 try {

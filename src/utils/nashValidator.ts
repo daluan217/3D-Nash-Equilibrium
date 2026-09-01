@@ -385,6 +385,48 @@ function bestReplyIssues(
  * one retry backs up.
  */
 /**
+ * An explicit MULTIPLE, spelled out. The digit screens catch "100000x"; this
+ * catches the same claim written in words, which contains no digit at all —
+ * "a choice worth a hundred thousand times more than the other party's",
+ * "Hundredfold Expansion / No Change" as an option pair on a game whose every
+ * swing is a thousandth of a unit.
+ *
+ * Scoped to constructions that carry a NUMBER, because that is the half that is
+ * decidable. "twice", "double", "half" and "many times" are all left alone:
+ * they are ordinary English ("a double shift", "half day"), they assert no
+ * specific ratio, and a screen for them is the word list this file's other
+ * comments spend their length arguing against. "manifold" is unreachable by
+ * construction — the -fold alternation requires a numeral stem, so the engine
+ * part and the adjective both pass.
+ *
+ * WHICH BRANCH ACTUALLY EARNS ITS PLACE. The numeral-bearing alternatives
+ * ("10-fold", "10x", "12 times larger") are redundant against the caller as it
+ * stands: every site that consults this constant screens for a numeral FIRST
+ * and returns before reaching it. They are kept so the predicate is true to its
+ * own name when read or called on its own, and they are marked here rather than
+ * left to imply coverage they are not currently providing. The branch that
+ * closes a real hole is the SPELLED-OUT one — "hundredfold", "a hundred
+ * thousand times more", "orders of magnitude" — which contains no numeral and
+ * is therefore invisible to every screen that runs before it.
+ *
+ * Reach: 0 of 890 stored real draws, in every field.
+ */
+const MULTIPLIER_CLAIM = new RegExp(
+  [
+    // twofold … thousandfold, and 10-fold. A numeral stem is required.
+    String.raw`\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)[-\s]?fold\b`,
+    String.raw`\b\p{N}+[-\s]?fold\b`,
+    // 10x, 100 x. Not "3x3" — the trailing boundary fails against a digit.
+    String.raw`\b\p{N}+\s?x\b`,
+    String.raw`\p{N}\s?[×]`,
+    // "a hundred thousand times more", "12 times larger", "ten times as costly"
+    String.raw`\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|\p{N}+)\s+times\s+(?:more|less|larger|smaller|greater|bigger|higher|lower|worse|better|as\s+\w+)\b`,
+    String.raw`\borders?\s+of\s+magnitude\b`,
+  ].join('|'),
+  'iu',
+);
+
+/**
  * CLAIM-FREE screen for the rung-3 configuration.
  *
  * When the solver renders the mathematics, the model's only job is to invent a
@@ -399,11 +441,81 @@ function bestReplyIssues(
  * already produces naturally (storyClaims null on every story, zero story
  * defects across four rounds). So: a description may set a scene and name the
  * options, and may not assert anything decidable about the game.
+ *
+ * WHY THE NAME AND THE OPTION LABELS ARE SCREENED HERE AND NOT IN
+ * validateScenario. The no-numbers rule is a RUNG-3 rule: it is true only
+ * because the solver states every number, which is only so when the template
+ * renders the mathematics. validateScenario runs at every rung, and at rung 0
+ * the model writes the numbers itself — "Gate 12 / Gate 7" is an ordinary pair
+ * of option names there, and a numeral screen living in validateScenario would
+ * reject it. This function is called on the rung-3 paths and nowhere else, so
+ * it is the only place the justification actually holds. The matrix-checked
+ * parenthetical-annotation rule stays in validateScenario, where it belongs:
+ * that one is decidable at any rung because the matrix settles it.
  */
 export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reason?: string } {
+  // A NUMBER, OR AN EXPLICIT MULTIPLE, IN THE NAME OR AN OPTION LABEL.
+  //
+  // validateScenario treats a number in a label as a claim that has to match
+  // the matrix — but only INSIDE PARENTHESES. Drop the brackets and the
+  // identical assertion is examined by nothing. The C11 draw that rule cites as
+  // its motivation, rows "Signal (−1/−1)" / "Signal (+1/+1)", is one keystroke
+  // from being invisible to it: written "Signal −1/−1" / "Signal +1/+1" the two
+  // labels are distinct, no parenthetical exists, and the whole gate passes.
+  // RED 2 walked the same channel from the other end — "Commit 1000 Units /
+  // Commit 1 Unit" on a game whose every swing is one thousandth of a unit, and
+  // "The 100000x Decision" in the NAME, a field no screen read at all.
+  //
+  // NO EXEMPTION for a parenthetical the matrix verifies. One was written and
+  // then removed as dead code: across 890 stored draws, 4,450 authored fields,
+  // not one name or option label contains a numeral OR a parenthetical of any
+  // kind. Under rung 3 a correct payoff annotation in a label is redundant
+  // anyway, because the rendered paragraph beside it states the same number.
+  //
+  // WHAT IS DELIBERATELY NOT GATED, and why this is not a word list.
+  // Magnitude-BEARING label pairs — "Full Support / Lean Support", "Premium
+  // Price / Discount Price", "Reduce Catch / Maintain Catch" — occur in 32.16%
+  // of gate-passing real draws (284 of 883; _gen/blue_w3_reach.mjs), and the
+  // rate does not track the payoff spread. Gating "these labels sound dramatic"
+  // would reject a third of all good output to catch something no instrument
+  // can decide. Even the far narrower total-vs-nothing pair fires on real
+  // output ("Full Monitoring / No Monitoring", a perfectly good pair of
+  // options) and is excluded for that reason alone. Two of RED 2's six
+  // adversarial cases — "Full Evacuation / No Evacuation" and "Full Shutdown /
+  // No Shutdown" — are in that undecidable class and REMAIN OPEN on purpose.
+  //
+  // REACH, honestly stated: 0 of 890 stored draws, and 0 across RED 1's 30
+  // deliberately magnitude-provoking matrix families (±100, "huge stakes",
+  // "epsilon", "asym magnitude", "huge vs tiny mix"). So this is CONTAINMENT,
+  // not detection — it costs the current two models nothing and catches them
+  // nothing. It earns its place because the channel is demonstrably walkable
+  // (6 of 6 hand-built claims reached the user through the shipping gate) and
+  // the distribution is not fixed: the local model is being retrained, and
+  // REPORT_MODEL is an env var that has already changed under this product
+  // twice without anyone noticing.
+  for (const key of ['name', 'row1', 'row2', 'col1', 'col2'] as const) {
+    const raw = typeof sc[key] === 'string' ? (sc[key] as string).trim() : '';
+    if (!raw) continue;
+    const where = key === 'name' ? 'the scenario name' : `the option label "${raw}"`;
+    // `\p{N}` rather than `\d`: `\d` is ASCII-only in JavaScript, so a fullwidth
+    // or Arabic-Indic numeral walks straight through a rule that exists to stop
+    // numerals. Same class of hole as the U+2212 minus this file normalizes,
+    // which has bitten the repo three times.
+    if (/\p{N}/u.test(raw)) return { ok: false, reason: `${where} cites a number` };
+    if (MULTIPLIER_CLAIM.test(raw)) return { ok: false, reason: `${where} asserts a multiple` };
+  }
   const desc = normalizeProseMinus((sc.description ?? '').trim());
   if (!desc) return { ok: true };
-  if (/\d/.test(desc)) return { ok: false, reason: 'the description cites a number' };
+  // `\p{N}`, for the reason given on the label screen above: `\d` is ASCII-only
+  // in JavaScript. This rule shipped as `/\d/` and a fullwidth numeral walked
+  // straight through the rule that exists to stop numerals.
+  if (/\p{N}/u.test(desc)) return { ok: false, reason: 'the description cites a number' };
+  // The spelled-out multiple contains no numeral, so the rule above cannot see
+  // it, and none of the comparative rules below reach it either: "worth a
+  // hundred thousand times more than the other party's" uses no payoff word and
+  // no comparative from their vocabulary. Measured reaching the user through
+  // the full shipping gate (RED 2, case L5).
+  if (MULTIPLIER_CLAIM.test(desc)) return { ok: false, reason: 'the description asserts a multiple' };
   const CLAIMY: [RegExp, string][] = [
     // "payoffs" as a bare NOUN asserts nothing — "the matrix records their
     // strategic payoffs", "their payoffs represent the resulting commercial
@@ -490,6 +602,7 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
         issues.push(`label "${sc[key]}" annotates a payoff pair the matrix does not hold for that option`);
       }
     }
+
   }
 
   // A provider without strict structured outputs can hand actorA/actorB back as
