@@ -1035,16 +1035,33 @@ function testOptionLabelChannel() {
   //    precisely what would have hidden them.
   assert(gate(sc({ row1: 'Manifold Assembly', row2: 'Valve Assembly' })),
     'L7 COLLISION: "Manifold" — red\'s D4 uses \\w+fold and would break this already-passing control');
-  assert(gate(sc({ description: 'A depot runs a twice-weekly delivery to the yard, and the yard schedules its own crew.' })),
-    'L7 COLLISION: "twice-weekly" is a SCHEDULE, not a magnitude');
+  // THESE TWO WERE SITED IN THE DESCRIPTION, WHERE THIS RULE NEVER RUNS.
+  // BIG_SPELLED_QUANTITY is scoped to the name and the option labels — see the
+  // block comment on it — so "twice-weekly" and "dozens of crates" in a
+  // DESCRIPTION passed no matter what the rule contained. Proved by the
+  // mutation these controls exist to catch: adopting red's D4 vocabulary
+  // (`dozens?|twice|thrice|\w+fold`) leaves both of them green, while the same
+  // words in a LABEL are rejected. A control that cannot fail for the reason it
+  // claims is the defect this suite keeps finding in other people's work, and
+  // here it was in mine. Relocated to labels, where the collision is real; the
+  // scope point they were doubling up on is asserted on its own below.
+  assert(gate(sc({ row1: 'Twice-Weekly Run', row2: 'Weekly Run' })),
+    'L7 COLLISION: "twice-weekly" is a SCHEDULE, not a magnitude — and red\'s D4 `twice` would reject this label');
   // NB the first draft of this control read "…each morning before either
   // operator decides", and the suite failed it — correctly. "before … decides"
   // is the move-order claim, caught by a rule that has nothing to do with
   // quantities. The fixture was wrong, not the gate; recorded because a
   // control that fails for an unrelated reason is the easiest way to talk
   // yourself into loosening the wrong rule.
+  assert(gate(sc({ row1: 'Dozen-Crate Lot', row2: 'Single-Crate Lot' })),
+    'L7 COLLISION: a dozen crates is ordinary scene-setting — and red\'s D4 `dozens?` would reject this label');
+  // The description forms of the same two words, kept as the SCOPE half: legal
+  // there today, and they must stay legal if the scope is ever widened by
+  // accident.
+  assert(gate(sc({ description: 'A depot runs a twice-weekly delivery to the yard, and the yard schedules its own crew.' })),
+    'L7 SCOPE: "twice-weekly" in a DESCRIPTION is out of this rule\'s scope and stays legal');
   assert(gate(sc({ description: 'Dozens of crates move through the depot each morning, and the two operators each pick a loading window.' })),
-    'L7 COLLISION: "dozens of crates" is ordinary scene-setting');
+    'L7 SCOPE: "dozens of crates" in a DESCRIPTION is out of this rule\'s scope and stays legal');
   assert(gate(sc({ row1: 'Batch One', row2: 'Batch Two' })),
     'L7 COLLISION (the one real FP in red\'s 527-row corpus): a spelled numeral used as an IDENTIFIER, not a magnitude');
   // SCOPE: name+labels only. A description may set a scene at scale; a label
@@ -1260,6 +1277,25 @@ function testInterestAlignment() {
     'ALIGNMENT: a negated shared-goal claim must pass');
   assert(!ok_('The display is not yet booked. A store and a restorer work together toward the same goal for it.', MP),
     'ALIGNMENT: a negation in an EARLIER clause must not suppress the rule — the guard is windowed, not a whole-description scan');
+
+  // ── THE FIRST-MATCH-ONLY UNDER-FIRE (CodeRabbit, verified by the coordinator)
+  // The guard read `re.exec(desc)` and judged the FIRST occurrence alone, so one
+  // negated early mention switched the whole rule off and a later genuine
+  // assertion walked through. All three rules share the helper, so all three had
+  // it — asserted here for each, because a fix verified on one arm is not
+  // verified. One unnegated occurrence is an assertion; the rest cannot retract it.
+  assert(!ok_('They do not work together on scheduling. Two hauliers pick a lane, and the firms work together toward the same goal.', MP),
+    'ALIGNMENT (shared goal): a NEGATED FIRST mention must not suppress a later real claim');
+  assert(!ok_('They do not compete for shelf space. Two firms pick a lane, and the yards compete for the same order.', COORD),
+    'ALIGNMENT (rivalry): a NEGATED FIRST mention must not suppress a later real claim');
+  assert(!ok_("A roastery picks a supplier. Weather does not determine the result. The partner's decision determines the outcome.", AFLAT),
+    'ALIGNMENT (determines): a NEGATED FIRST mention must not suppress a later real claim');
+  // And the other direction, or the fix has simply disabled the guard: a claim
+  // negated at EVERY occurrence must still pass.
+  assert(ok_('They do not work together toward the same goal. The two firms never work together toward the same goal either.', MP),
+    'ALIGNMENT: when every occurrence is negated the rule must still stay silent — scanning all matches must not become "ignore negation"');
+  assert(ok_('The firms do not compete for the same order. They never compete for shelf space.', COORD),
+    'ALIGNMENT (rivalry): every occurrence negated must still pass');
 
   console.log('✓ interest alignment: shared-goal/rivalry/determines decided by the matrix, 0 reach on 1,808 draws AFTER the attributive-"rival" fix; the "coordinating on zero-sum" boundary pinned as legal');
 }

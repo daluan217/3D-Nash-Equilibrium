@@ -1424,17 +1424,57 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     // Scoped to the phrase's OWN CLAUSE, not the paragraph and not a fixed
     // character window. A blanket scan switches the rule off whenever any "not"
     // appears anywhere; a fixed window reaches back across the full stop into
-    // the previous sentence, which is the same bug in miniature \u2014 the unit test
+    // the previous sentence, which is the same bug in miniature — the unit test
     // caught exactly that, on "The display is not yet booked. A store and a
     // restorer work together toward the same goal." Negation binds inside its
     // clause, so the lookback stops at the last sentence or clause break.
+    //
+    // EVERY OCCURRENCE, NOT THE FIRST. This read `re.exec(desc)` and computed the
+    // lookback from match 1 alone, so ONE negated early mention switched the whole
+    // rule off and a later genuine assertion walked through. All three rules below
+    // share this helper, so the defect was never specific to the shared-goal arm:
+    //
+    //   "They do NOT work together on scheduling. Two hauliers pick a lane, and
+    //    the firms work together toward the same goal."     <- passed, constant-sum
+    //
+    // A rule that under-fires on a shape a model can produce is not a gate, so this
+    // is fixed rather than priced away.
+    //
+    // PRICED BEFORE IT WAS TAKEN, because the change can only ever fire MORE and
+    // every rule in this campaign that got more eager over-fired on ordinary
+    // English. Cost across every corpus held: 0 of 5,432 unique descriptions, each
+    // run through the REAL validateScenario against matrices satisfying each rule's
+    // precondition by construction (constant-sum, common-interest, flat) so the
+    // matrix gate could not mask the text. 41 of those descriptions fire under a
+    // forced matrix, and DELETING this guard outright moves none of them — which is
+    // the real finding: no description in any corpus contains a NEGATED occurrence
+    // of this vocabulary at all, so the first-match-only bug was pure latent
+    // under-fire and the guard has never been load-bearing on real output.
+    //
+    // Measuring on the corpora AS STORED would have proved nothing: no draw there
+    // pairs the vocabulary with a qualifying matrix, so an over-eager control also
+    // showed a zero delta. Forcing the matrix is what made the instrument able to
+    // move at all.
+    //
+    // TWO ADVERSARIAL SHAPES DO FLIP, and both are a PRE-EXISTING false positive
+    // losing an accidental shield rather than a new class: "The two firms do not
+    // work together toward the same goal; they work together only on the loading
+    // rota." That second mention is cooperation on an ACTIVITY, which the
+    // SHARED_GOAL comment below deliberately tolerates — and the shipped rule
+    // ALREADY fires on that sentence when no negation precedes it (verified both
+    // ways). The leading negation was never the reason it was safe.
     const negatedBefore = (re: RegExp) => {
-      const m = re.exec(desc);
-      if (!m) return false;
-      const before = desc.slice(0, m.index);
-      const cut = Math.max(before.lastIndexOf('.'), before.lastIndexOf(';'), before.lastIndexOf('!'), before.lastIndexOf('?'));
-      const clause = before.slice(cut + 1).slice(-60);
-      return /\b(?:no|not|never|neither|nor|without|rather\s+than|far\s+from|cannot)\b|n['\u2019]t\b/i.test(clause);
+      const all = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+      for (const m of desc.matchAll(all)) {
+        const before = desc.slice(0, m.index);
+        const cut = Math.max(before.lastIndexOf('.'), before.lastIndexOf(';'), before.lastIndexOf('!'), before.lastIndexOf('?'));
+        const clause = before.slice(cut + 1).slice(-60);
+        // One unnegated occurrence is an assertion; later negated ones cannot
+        // take it back. Callers guard with `RE.test(desc)`, so the no-match case
+        // never reaches here.
+        if (!/\b(?:no|not|never|neither|nor|without|rather\s+than|far\s+from|cannot)\b|n['\u2019]t\b/i.test(clause)) return false;
+      }
+      return true;
     };
     const k = g.a11 + g.b11;
     const constantSum = near0(g.a12 + g.b12, k) && near0(g.a21 + g.b21, k) && near0(g.a22 + g.b22, k);

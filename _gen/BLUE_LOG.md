@@ -24,6 +24,97 @@ slots, so `--parallel 4` on `-c 4096` gives 1024 tokens per slot.
 ---
 
 
+## 2026-09-01 — WINDOW 7b: the four PR review findings, each verified before acting
+
+The coordinator verified one and handed over three with the standing framing:
+suggestions to VERIFY, never a to-do list. All four turned out real, but ONE OF
+THEM POINTED AT THE WRONG LINE, and taking it on trust would have produced a
+no-op edit against already-correct code.
+
+### 1. `negatedBefore` judged only the FIRST match — REAL, and broader than reported
+
+`re.exec(desc)` returns match 1 and the lookback was computed from its index, so
+one negated early mention switched the whole rule off. Reproduced through the
+real `validateScenario`. **It is not the shared-goal arm only: all three
+alignment rules share the helper and all three had it** — rivalry and determines
+reproduce identically, which the report did not say and which matters, because a
+fix verified on one arm is not verified.
+
+**PRICED BEFORE TAKEN, and the first measurement was BLIND.** The obvious fix can
+only fire more, so the cost had to be measured. Diffing the shipped gate against
+the candidate over every corpus gave "0 newly rejected" — and the control run
+that has to accompany any zero, an over-eager variant with the guard DELETED,
+also gave 0. A diff that cannot move is not evidence. The reason: no draw in any
+corpus pairs this vocabulary with a QUALIFYING matrix, so the alignment rules are
+inert there whatever the guard does.
+
+Re-measured with the matrix FORCED: every one of 5,432 unique descriptions run
+through the real `validateScenario` three times, against matrices satisfying each
+rule's precondition by construction. 41 descriptions fire; the candidate moves
+**0 of 5,432**; deleting the guard outright also moves none. **The real finding is
+that no held description contains a negated occurrence of this vocabulary at all**
+— the guard has never been load-bearing on real output, and the bug was pure
+latent under-fire.
+
+Two adversarial shapes do flip ("...do not work together toward the same goal;
+they work together only on the loading rota"), and both are a PRE-EXISTING false
+positive losing an accidental shield, not a new class: the shipped rule already
+fires on that sentence with the leading negation removed. Verified both ways.
+**Taken.** Regression tests pin it from both sides — reverting to first-match-only
+fails the new under-fire assertions, and disabling negation entirely fails the
+old "a negated claim must pass" ones.
+
+### 2. Two L7 collision controls sat where the rule never runs — REAL
+
+`BIG_SPELLED_QUANTITY` is scoped to the name and option labels, and the
+"twice-weekly" and "dozens of crates" controls put their words in the
+DESCRIPTION. Proved rather than argued: adopting red's D4 vocabulary — the exact
+mutation those controls exist to catch — leaves both of them GREEN while the same
+words in a label are rejected. A control that cannot fail for the reason it
+claims, which is the defect this suite keeps finding in other people's work.
+Relocated to labels ("Twice-Weekly Run", "Dozen-Crate Lot"); each now dies under
+its own word, mutation-tested separately. The description forms are kept as
+explicit SCOPE assertions, which is the only thing they were ever proving.
+
+Gotcha, and it nearly wasted the result: the first mutation script built the
+widened regex with an f-string and double-escaped `\\b`, so it wrote a pattern
+matching a literal backslash. That mutation made the rule WEAKER, a `!gate`
+assertion failed, and it read exactly like the control working. Same family as
+W6's mutation-that-never-applied: always confirm a mutation is the change it
+claims to be before believing what it kills.
+
+### 3. `App.tsx:3616` — the LINE is stale, the FINDING is real (reported, not edited)
+
+3616/3624 already use `fmtPayoff`. The identical defect is live one block down at
+**3657/3660** (the equilibrium summary, `MathTex` on `r3(...).toFixed(3)`) and at
+**3698**. Reproduced: on a matrix scaled to ±0.003 at (0.6, 0.4), E[A] is
++3.2e-4 and E[B] is −3.2e-4, and both render as **"0.000"** — the exact
+sub-resolution lie `fmtPayoff` exists to prevent, asserting a payoff is nothing
+when it is not.
+
+**The fix is NOT a straight substitution.** `fmtPayoff` returns prose ("less than
+0.001"), and 3657/3660 interpolate into `\mathbb{E}[A] = ...`, so wrapping it
+yields "E[A] = less than 0.001". Those two sites need the relation in the
+operator (`\mathbb{E}[A] < 0.001` / `> -0.001`); 3698 is plain prose and takes
+`fmtPayoff` directly. App.tsx is outside blue's scope — handed over with the
+reproduction rather than edited.
+
+### 4. `package.json` vs `package-lock.json` — REAL drift, masking nothing
+
+Manifest 0.0.104, lock 0.0.90: fourteen releases behind. Checked for what the
+coordinator actually asked about — all 33 declared dependencies still resolve
+inside their ranges and the lock's root dependency blocks are byte-identical to
+the manifest's, so **no dependency drift was hidden**. Root cause found rather
+than the symptom patched: `scripts/bump-version.cjs` writes `package.json` only
+and `.githooks/pre-commit` stages only that file, so every release since 0.0.90
+moved one and not the other. Both fixed — the bump now rewrites the lock's two
+VERSION fields (never the dependency tree, which is what `npm version` does and
+keeps the hook incapable of re-resolving a dependency mid-commit) and the hook
+stages it. Verified by forcing a real bump: manifest and lock move together, and
+the lock diff stays 2 lines rather than reformatting 20,000.
+
+---
+
 ## 2026-09-01 — WINDOW 7: THE ACCEPTANCE SWEEP AGAINST THE RETRAINED MODEL (v2)
 
 **Carry this first: a clean lexical sweep demonstrates the absence of the defect
