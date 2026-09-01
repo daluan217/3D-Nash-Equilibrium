@@ -13,11 +13,64 @@
  * validated scenario; otherwise the generic Row/Col names are used.
  */
 import type { GamePayoffs, ProseActionClaims, ScenarioBestReply } from '../types';
-import { equilibriumSet, kindOf, EA, EB, fmtProb, type Rect } from './gameEngine';
+import { equilibriumSet, kindOf, EA, EB, fmtProb, fmtPayoffProse, type Rect } from './gameEngine';
 
 export interface TieLabels { row1?: string; row2?: string; col1?: string; col2?: string }
 
+/**
+ * A MATRIX CELL, printed. Safe here and ONLY here.
+ *
+ * Every payoff that reaches this module is a 3-dp multiple: `cleanPayoffs` in
+ * server.ts applies `Math.round(n * 1000) / 1000` to every /api/report and
+ * /api/games body, and the UI's `commitPayoffInput` applies the identical r3 +
+ * clamp before a value can be stored. `toFixed(3)` round-trips such a value
+ * exactly, so the integer branch and the trailing-zero strip are cosmetic only.
+ *
+ * It is NOT safe on a DERIVED quantity — see `payoff` below.
+ */
 const num = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/\.?0+$/, ''));
+
+/**
+ * A DERIVED payoff — the expected value at an equilibrium — printed.
+ *
+ * `num` was used here too, and it lies twice. An expected payoff is a weighted
+ * average of four cells, so unlike a cell it can land below the display
+ * resolution or on floating-point noise:
+ *
+ *   NEGATIVE ZERO. On a=[[0,0],[-2,5]], b=[[-9,-6],[-1,-3]] the true E[A] is
+ *   exactly 0, the float is -5.55e-17, and `num` printed "-0" — which reads as
+ *   a typographical error and is not a number anyone means. Measured 145 in
+ *   200,000 games on int[-9,9], which is `generateRandomGame`'s own alphabet.
+ *
+ *   FALSE ZERO. On a=[[0.617,-6.983],[0.47,-3.506]], b=[[3.089,5.776],
+ *   [-3.107,-5.81]] the true E[B] is 529/2695000 = 0.000196…, and `num` printed
+ *   "0" — a false mathematical statement, in the one paragraph of the report
+ *   that exists BECAUSE the model's own arithmetic could not be trusted. All
+ *   3-dp values, so reachable through the matrix editor. Measured up to 0.123%.
+ *
+ * `fmtPayoff` is the contract that already refuses both (its docstring names the
+ * negative-zero case), and it is what App.tsx's own E[A]/E[B] readout uses, so
+ * routing through it also removes a latent disagreement between the prose and
+ * the box beside it: `num` rounds an exact .0005 tie half-away-from-zero (V8's
+ * toFixed) while `r3` rounds it half-up, and the two printed different last
+ * digits for the same quantity.
+ *
+ * The trailing-zero strip is kept so the register does not change: `fmtPayoff`
+ * alone would turn "E[A] = 3" into "E[A] = 3.000" on 469,654 of 1,600,000
+ * renderings, which is churn, not a fix. It cannot reintroduce either defect:
+ * `fmtPayoff` returns "0" only for an exact zero, and otherwise a string whose
+ * significant digit is nonzero, so stripping trailing zeros can never produce
+ * "0" or "-0". `testFmtPayoffProseExhaustive` proves that over every 3-dp
+ * multiple the matrix admits rather than arguing it.
+ *
+ * COST, stated because it is real: where the true expected payoff is exactly 0
+ * but the float carries noise, this now says "less than 0.001" / "greater than
+ * -0.001" rather than "0". True, but vaguer — 160 of 1,600,000 renderings. No
+ * threshold can separate that case from a genuine sub-resolution payoff: with
+ * 3-dp payoffs a true nonzero |E| can be ~6e-15, inside the noise band, so the
+ * only alternative to vagueness is exact rational arithmetic in the renderer.
+ */
+const payoff = fmtPayoffProse;
 
 /**
  * Probabilities, which must NEVER collapse onto a pure strategy.
@@ -221,7 +274,7 @@ export function tieProseFull(g: GamePayoffs, labelsIn?: TieLabels | null): { pro
     const where = kindOf(rep) === 'point'
       ? (many ? 'At the first of these' : 'At that equilibrium')
       : (many ? 'At a representative point of the first component' : 'At a representative point of it');
-    sentences.push(`${where} the expected payoffs are E[A] = ${num(EA(x, y, g))} and E[B] = ${num(EB(x, y, g))}.`);
+    sentences.push(`${where} the expected payoffs are E[A] = ${payoff(EA(x, y, g))} and E[B] = ${payoff(EB(x, y, g))}.`);
   }
   return { prose: sentences.join(' '), claims: { equilibriumActions, bestReplies } };
 }

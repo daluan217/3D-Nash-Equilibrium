@@ -1,0 +1,18 @@
+### redteam_local N=120  2026-08-31T22:34:09Z
+
+══════ RED TEAM — local scenario writer ══════
+games 120 (held-out + 6 adversarial shapes) · parsed 0 · shipping-gate pass 0/120 = 0.0%
+latency p50 0.02s  p90 0.04s
+
+ 120x  unparseable output   (100.0% of draws)
+        [held-out] 
+        [held-out] 
+        [held-out] 
+
+### domain_model_eval N=60  2026-08-31T22:34:16Z
+MODEL nash-scenario-domain-0.6b-Q4_K_M
+  yield through the real gates : 0/60 = 0.0%   (unparseable 60)
+  distinct names               : 0/0
+  TOP share                    : "undefined" xundefined = 0%   (target <= 5%)
+  domain adherence             : 0/0 = 0.0%
+  latency                      : p50 0.02s  p90 0.04s

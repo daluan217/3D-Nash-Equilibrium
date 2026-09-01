@@ -61,6 +61,41 @@ if (!gotTheLock) {
   process.env.IS_ELECTRON = 'true';
   process.env.ELECTRON_USER_DATA_PATH = app.getPath('userData');
 
+  // RUNG 3 ON THE DESKTOP.
+  //
+  // These three are set for the web backend in `cloudbuild.yaml` and were set
+  // NOWHERE for the desktop, so the packaged app quietly ran a different code
+  // path from the site. `package.json`'s `build.files` ships no `.env` either,
+  // which is correct — a packaged app must not carry credentials — but it left
+  // the desktop with no way to reach the flags at all.
+  //
+  // MEASURED under packaged conditions (the built `dist/` copied to an empty
+  // directory with no `.env`, launched with exactly the four variables above,
+  // which is what makes the measurement meaningful: run the same bundle from
+  // the repo instead and dotenv silently loads the repo's own `.env`, the app
+  // finds credentials it could never have when packaged, and the answer
+  // changes to `source: 'llm'`):
+  //
+  //   without these flags   source: 'deterministic', report: null — the desktop
+  //                         app produced NO explanation and NO scenario at all
+  //   with these flags      source: 'template', solver-rendered prose, and a
+  //                         scenario from the bundled bank: 20 requests on one
+  //                         game returned 20 DISTINCT names, no network, no key
+  //
+  // The bank is consulted inside `inventScenario`, which the main report path
+  // only reaches through `NASH_PAYOFF_TEMPLATE === '1'`. So the offline story
+  // bank shipped for exactly this app was unreachable from its report panel
+  // until these lines existed. (It was already reachable from the "New AI
+  // scenario" button, which takes the separate `scenarioOnly` path — that one
+  // returned bank scenarios without any flag.)
+  //
+  // At rung 3 the solver renders every mathematical sentence and the bank
+  // supplies the story, so the desktop needs neither a model nor a network.
+  // `src/electronenv.contract.test.ts` fails if any of the three is dropped.
+  process.env.NASH_PAYOFF_TEMPLATE = '1';
+  process.env.NASH_LLM_TIES = 'template';
+  process.env.NASH_DIRECTION_CHECKS = '1';
+
   let serverStarted = false;
   let expressPort = 14321;
   let mainWindow = null;

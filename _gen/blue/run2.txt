@@ -1,0 +1,32 @@
+### redteam_local N=120 @8123 (-c 4096, no --parallel = desktop flags)  2026-08-31T22:37:55Z
+
+══════ RED TEAM — local scenario writer ══════
+games 120 (held-out + 6 adversarial shapes) · parsed 120 · shipping-gate pass 116/120 = 96.7%
+latency p50 4.52s  p90 7.52s
+
+  10x  BOTH PLAYERS share an option name (reader cannot tell whose move it is)   (8.3% of draws)
+        [held-out] row:"Early Dye"/"Late Dye"  col:"Early Dye"/"Late Dye"
+        [held-out] row:"Early Dye"/"Late Dye"  col:"Early Dye"/"Late Dye"
+        [held-out] row:"Early Booking"/"Late Booking"  col:"Early Booking"/"Late Booking"
+   4x  SHIPPING GATE rejects (no scenario shown to the user)   (3.3% of draws)
+        [held-out] description frames the game as coordination (matching the opponent), but its pure equilibria do not sit on matching or mismatching pairs
+        [held-out] column labels are not distinct ("Shared Window" / "Shared Window")
+        [held-out] column labels are not distinct ("Shared Window" / "Shared Window")
+   3x  description never mentions any option label   (2.5% of draws)
+        [held-out] A bell foundry chooses whether to cast its bell in the morning or the evening. A distributor chooses whether t
+        [held-out] A farmer is deciding whether to plant early or late in the cranberry bog. The nearby water manager is choosing
+        [held-out] A regional poultry cooperative chooses whether to Release its new flocks early or late in the season. A neighb
+   1x  degenerate repetition in a label/name   (0.8% of draws)
+        [held-out] Reserved Reserve
+
+### domain_model_eval N=60 @8123  2026-08-31T22:47:55Z
+MODEL nash-scenario-domain-0.6b-Q4_K_M
+  yield through the real gates : 59/60 = 98.3%   (unparseable 0)
+  latency                      : p50 6.79s  p90 8.68s
+  domain adherence (HONEST)    : 53/60 = 88.3%   <- description+labels, name excluded
+  option-axis TOP modifier     : "early" x45 = 37.5% of row labels   (target <= 5%)
+  --- harness-bounded, do not read as model quality ---
+  name IS the domain title-cased: 53/60 = 88.3%   <- why the three below are inflated
+  distinct names               : 60/60   (ceiling: 60 distinct domains drawn)
+  TOP name share               : "Vineyard Irrigation" x1 = 1.7%
+  domain adherence (as reported before): 60/60 = 100.0%   <- inflated by 11.7 pts
