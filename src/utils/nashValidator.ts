@@ -1037,8 +1037,9 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
  * MODEL-INTERNAL DEBRIS in user-facing text.
  *
  * Not a claim about the game and not a register problem — it is the generator's
- * own machinery arriving in the story. Three real instances, all CLOUD, all
- * accepted by every shipped gate before this:
+ * own machinery arriving in the story. FIVE distinct real instances, all CLOUD,
+ * all accepted by every shipped gate before this — four of them in the scenario
+ * BANK the desktop is about to ship, and one only in the report corpora:
  *
  *   name "Regional Triage Staffing", description ending
  *     '...or "Core Roster." \u05DC\u05D4}} ...}}'          <- Hebrew + CJK SEO spam + JSON braces
@@ -1078,9 +1079,33 @@ const DEBRIS_FIELDS = ['name', 'row1', 'row2', 'col1', 'col2', 'description'] as
  */
 const FOREIGN_SCRIPT = /[^\p{Script=Latin}\p{Number}\p{Punctuation}\p{White_Space}\p{Symbol}\p{Mark}]/u;
 /**
- * A curly brace anywhere in authored text. JSON syntax, never English: measured
- * 1 of 4,386 draws that reach the user today, and that one is the Hebrew/CJK
- * row above. Scoped to CURLY braces only — parentheses are legitimate (the
+ * A curly brace anywhere in authored text. JSON syntax, never English.
+ *
+ *
+ * IT EARNS ITS PLACE ON ROBUSTNESS, NOT ON UNIQUE REACH, and the first version
+ * of this comment got that wrong. It claimed the brace rule was the only one
+ * that reaches the mis-decoded-BOM row, on the correct observation that
+ * `\u00EF\u00BB\u00BF` is entirely Latin (U+00EF Ll, U+00BB Pf, U+00BF Po) so
+ * the script rule cannot see it. The inference did not follow: that same row is
+ * ALSO the self-talk row, so the original two-rule brief already covered it.
+ * Measured per row over 4,088 draws that reach the user — 1,804 scannable bank
+ * rows plus 67 other corpora, deduplicated on CONTENT because three of the
+ * debris rows sit in more than one file and a source-keyed count reported eight
+ * where there are five. Foreign-only 4/5, brace-only 3/5, self-talk-only 1/5,
+ * foreign+self-talk 5/5, all three 5/5.
+ *
+ * The real argument is durability. SELF_TALK is a phrase ENUMERATION and is
+ * inherently evadable — the next model that narrates its difficulty will phrase
+ * it some way the list does not hold. This rule is STRUCTURAL: it catches JSON
+ * leakage by shape, independently of wording, at 3 of 4 observed rows and 0
+ * false positives across every corpus either team holds. So brace is the
+ * durable cover for the BOM row and self-talk is the fragile one, which is the
+ * reverse of what the first draft implied.
+ *
+ * Reach on its own: 3 of the 5 observed rows, 0 false positives across every
+ * corpus either team holds.
+ *
+ * Scoped to CURLY braces only — parentheses are legitimate (the
  * label-annotation rule above expects them) and square brackets are ordinary
  * punctuation. Justified on SHAPE as well as on the rate: there is no English
  * use of `{}` in a scenario name, an option label or a sentence.
@@ -1095,10 +1120,21 @@ const BRACE_DEBRIS = /[{}]/;
  * Briefly", "Cross Now" / "Wait Ashore", "harvest early or wait for the later
  * window". Every one is a legitimate option label or ordinary English.
  *
- * The curly apostrophe is not optional. The one observed instance writes
- * "Let’s formulate" with U+2019, and a list matching only the ASCII quote
- * missed it — caught by testing the predicate against the captured text rather
- * than against a paraphrase of it.
+ * The curly apostrophe is not optional. The observed instance writes "Let’s
+ * formulate" with U+2019, and a list matching only the ASCII quote missed it —
+ * caught by testing the predicate against the captured text rather than against
+ * a paraphrase of it.
+ *
+ * TREAT THIS RULE AS THE FRAGILE ONE. It is an enumeration of phrases a model
+ * happened to emit, so it holds only until a model narrates itself differently.
+ * It is kept because it is the second signal on the BOM row and costs nothing
+ * (0 false positives across ~6,700 draws), not because it can be relied on to
+ * catch the next instance. The structural rules above are what carry this class.
+ *
+ * The positive is FIRST-HAND: bank row "Side-Table Touch-Up" carries "Need clean
+ * JSON" in its description. It was second-hand when the rule was written — the
+ * row existed only in a corpus this team could not read — and is recorded as
+ * confirmed rather than quietly upgraded.
  */
 const SELF_TALK = /\bneed clean json\b|\bmust include only\b|\blet['\u2019]?s formulate\b|\bi accidentally\b|\bas an ai\b/i;
 
