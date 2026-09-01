@@ -435,8 +435,92 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
   return { ok: true };
 }
 
+/**
+ * MODEL-INTERNAL DEBRIS in user-facing text.
+ *
+ * Not a claim about the game and not a register problem — it is the generator's
+ * own machinery arriving in the story. Three real instances, all CLOUD, all
+ * accepted by every shipped gate before this:
+ *
+ *   name "Regional Triage Staffing", description ending
+ *     '...or "Core Roster." \u05DC\u05D4}} ...}}'          <- Hebrew + CJK SEO spam + JSON braces
+ *   labels "Thin coat" / "\u539A coat"                     <- CJK inside an English label
+ *   '..."Careful Review."<BOM-as-latin1>}} jing? wait invalid.
+ *    Need clean JSON. I accidentally weird. Must include
+ *    only object. Let’s formulate.'                     <- the model talking to itself
+ *
+ * WHY HERE AND NOT IN `scenarioIsClaimFree`. The claim-free screen is
+ * rung-3-only by deliberate placement: its no-numbers rule is true only because
+ * the solver states every number, and at rung 0 the model writes them itself,
+ * so "Gate 12 / Gate 7" is an ordinary label there. Debris has no such
+ * dependence — a CJK character inside an English label is wrong at every rung.
+ *
+ * AND THE PROPERTY THAT MAKES A SCRIPT RULE SAFE AT ALL: `validateScenario` is
+ * only ever applied to MODEL OUTPUT. Checked call site by call site — all four
+ * in server.ts run on an invented scenario, and the game-save endpoints
+ * (POST/PATCH /api/games) call neither this nor the claim-free screen. If it
+ * ever ran on user-supplied text, a non-Latin screen would reject a user's own
+ * Chinese- or Hebrew-titled game, which is an internationalisation regression
+ * rather than a defect fix. That property is load-bearing, so it is asserted by
+ * a test rather than left as a comment.
+ */
+const DEBRIS_FIELDS = ['name', 'row1', 'row2', 'col1', 'col2', 'description'] as const;
+/**
+ * A codepoint outside the expected set. EXACT — a codepoint is in the set or it
+ * is not — which is why this rule carries none of the collision risk that has
+ * broken eleven vocabulary predicates in this campaign.
+ *
+ * Latin, Number, Punctuation, White_Space, Symbol and Mark all pass, and the
+ * boundary was re-verified rather than inherited: U+2212 MINUS (which has bitten
+ * this repo three times), accented Latin ("Café Réservation", "Zürich"), curly
+ * quotes, en/em dashes, the ellipsis, degree and currency signs, combining
+ * marks, non-breaking spaces and emoji ALL PASS; Hebrew, CJK, Cyrillic, Greek,
+ * Arabic, Devanagari, Hiragana and Hangul are all flagged. 20 boundary cases,
+ * every one a fixture below.
+ */
+const FOREIGN_SCRIPT = /[^\p{Script=Latin}\p{Number}\p{Punctuation}\p{White_Space}\p{Symbol}\p{Mark}]/u;
+/**
+ * A curly brace anywhere in authored text. JSON syntax, never English: measured
+ * 1 of 4,386 draws that reach the user today, and that one is the Hebrew/CJK
+ * row above. Scoped to CURLY braces only — parentheses are legitimate (the
+ * label-annotation rule above expects them) and square brackets are ordinary
+ * punctuation. Justified on SHAPE as well as on the rate: there is no English
+ * use of `{}` in a scenario name, an option label or a sentence.
+ */
+const BRACE_DEBRIS = /[{}]/;
+/**
+ * The model narrating its own difficulty. DESCRIPTION ONLY, and multi-word
+ * phrases only.
+ *
+ * A single-word tell is guilty until measured here: a bare `\bwait\b` flags 13
+ * of 7,684 held draws and a hand-read kills all 13 — "Board Now" / "Wait
+ * Briefly", "Cross Now" / "Wait Ashore", "harvest early or wait for the later
+ * window". Every one is a legitimate option label or ordinary English.
+ *
+ * The curly apostrophe is not optional. The one observed instance writes
+ * "Let’s formulate" with U+2019, and a list matching only the ASCII quote
+ * missed it — caught by testing the predicate against the captured text rather
+ * than against a paraphrase of it.
+ */
+const SELF_TALK = /\bneed clean json\b|\bmust include only\b|\blet['\u2019]?s formulate\b|\bi accidentally\b|\bas an ai\b/i;
+
 export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): ScenarioValidation {
   const issues: string[] = [];
+
+  // MODEL-INTERNAL DEBRIS. First, because a description carrying a decoder's
+  // leftovers should be reported as that rather than as whatever downstream
+  // rule happens to trip on the wreckage.
+  {
+    const authored = DEBRIS_FIELDS.map((k) => (typeof sc[k] === 'string' ? (sc[k] as string) : '')).join(' \u2022 ');
+    const foreign = FOREIGN_SCRIPT.exec(authored);
+    if (foreign) {
+      const cp = foreign[0].codePointAt(0) ?? 0;
+      issues.push(`text contains a character outside the expected script: ${JSON.stringify(foreign[0])} (U+${cp.toString(16).toUpperCase().padStart(4, '0')})`);
+    }
+    if (BRACE_DEBRIS.test(authored)) issues.push('text contains a curly brace — JSON structure leaked into the story');
+    const talk = SELF_TALK.exec(sc.description ?? '');
+    if (talk) issues.push(`description contains the model talking to itself: ${JSON.stringify(talk[0])}`);
+  }
   // Same tolerance shape as checkProse: tight, the citation restates a matrix
   // number the model was handed verbatim.
   const near = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);

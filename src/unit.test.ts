@@ -31,6 +31,7 @@ import {
   computeIndifference, generateRandomGame,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
+import { validateScenario } from './utils/nashValidator';
 import { tieProse } from './utils/tieProse';
 
 const TOL = 0.002;
@@ -710,6 +711,100 @@ function testScenarioDomains() {
 
 // ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * MODEL-INTERNAL DEBRIS reaching the user.
+ *
+ * Three real cloud draws, every one accepted by every shipped gate before this.
+ * Rare (4 of 4,995 draws that reach the user, 0.080%, across 67 corpora) and
+ * every one user-facing.
+ *
+ * EACH RULE HAS A FIXTURE ONLY IT CAN CATCH. The two observed dirty rows carry
+ * more than one signal each — row 185 has Hebrew AND braces, row 805 has braces
+ * AND self-talk — so a suite built only from them cannot fail when a single rule
+ * is deleted. The isolating fixtures below exist for exactly that reason, and
+ * the mutation run (_gen/blue_w8_debris_mutation.py) confirms each rule is
+ * killed by its own.
+ */
+function testModelDebris() {
+  const G: GamePayoffs = { a11: 2, a12: -1, a21: 0, a22: 3, b11: 1, b12: 0, b21: -2, b22: 1 };
+  const sc = (o: Record<string, unknown>) => ({
+    name: 'Depot Window', row1: 'Early Slot', row2: 'Late Slot', col1: 'Full Crew', col2: 'Lean Crew',
+    storyClaims: null, description: 'A depot and a haulier each pick a loading window for the morning.', ...o,
+  } as any);
+  const debris = (o: Record<string, unknown>) =>
+    validateScenario(sc(o), G).issues.filter((i) => /outside the expected script|curly brace|talking to itself/.test(i));
+
+  // ── THE OBSERVED ROWS, quoted from the corpora they were found in ────────
+  assert(debris({ name: 'Regional Triage Staffing', col1: 'Surge Roster', col2: 'Core Roster',
+    description: 'Two hospitals share a regional triage plan. Hospital A chooses either "Expanded Roster" or "Lean Roster." לה}} 腾讯分分彩? 亚洲色}}' }).length > 0,
+    'DEBRIS: Hebrew and CJK spam appended to a real description must be rejected');
+  assert(debris({ row1: 'Thin coat', row2: '厚 coat' }).length > 0,
+    'DEBRIS: a CJK character inside an English option label must be rejected');
+  assert(debris({ row2: '深-cycle Service' }).length > 0,
+    'DEBRIS: the 深-cycle label that shipped in the wild must be rejected');
+
+  // ── ONE FIXTURE PER RULE, each isolating a single signal ─────────────────
+  assert(debris({ row2: '厚 coat' }).some((i) => /outside the expected script/.test(i)),
+    'DEBRIS (script only): a non-Latin codepoint with no braces and no self-talk');
+  assert(debris({ description: 'A depot picks a lane while the board picks a window.}}' })
+    .some((i) => /curly brace/.test(i)),
+    'DEBRIS (brace only): JSON braces with no foreign script and no self-talk');
+  assert(debris({ description: 'The board picks a window. wait invalid. Need clean JSON. I accidentally weird.' })
+    .some((i) => /talking to itself/.test(i)),
+    'DEBRIS (self-talk only): the model narrating itself, with no braces and no foreign script');
+  // The curly apostrophe is not optional: the observed row writes "Let’s
+  // formulate" with U+2019, and an ASCII-only list missed it.
+  assert(debris({ description: 'The board picks a window. Let’s formulate.' })
+    .some((i) => /talking to itself/.test(i)),
+    'DEBRIS: the self-talk list must match the CURLY apostrophe, which is what the model actually emits');
+
+  // ── THE NEAR-MISSES. Every one would break a careless version. ───────────
+  const clean = (o: Record<string, unknown>, why: string) => assert(debris(o).length === 0, why);
+  clean({ description: 'The yard books a slot; the board notes a −100 swing for the season.' },
+    'DEBRIS CONTROL: U+2212 MINUS must pass — it has been mistaken for a defect in this repo three times');
+  clean({ name: 'Café Réservation', description: 'A Zürich café and a naïve façade restorer each pick a window.' },
+    'DEBRIS CONTROL: accented Latin is ordinary text');
+  clean({ description: 'The yard’s slot and the board’s “window” — an Early–Late choice…' },
+    'DEBRIS CONTROL: curly quotes, em and en dashes and the ellipsis must pass');
+  clean({ description: 'At 20°C the depot quotes £5, €5 or $5, a ± 3 swing, ≤ 4 crates.' },
+    'DEBRIS CONTROL: degree, currency and mathematical symbols are Symbol-class and must pass');
+  clean({ row1: 'Early Slot (peak)', description: 'The depot picks a lane [north or south] while the board picks a window.' },
+    'DEBRIS CONTROL: parentheses and square brackets are legitimate — only CURLY braces are JSON');
+  clean({ col1: 'Board Now', col2: 'Wait Briefly',
+    description: 'At a small cable ferry the ferryman picks a pull, while a passenger chooses Board Now or Wait Briefly.' },
+    'DEBRIS CONTROL: "Wait Briefly" is a real OPTION LABEL — a bare \\bwait\\b flags 13 of 7,684 held draws and a hand-read kills all 13');
+  clean({ description: 'Two kelp farms must each choose whether to harvest early or wait for the later harvest window.' },
+    'DEBRIS CONTROL: "wait for the later window" is ordinary English');
+  clean({}, 'DEBRIS CONTROL: an ordinary good draw must pass');
+
+  // ── THE PROPERTY THE SCRIPT RULE'S SAFETY RESTS ON ──────────────────────
+  // A non-Latin screen is only defensible because `validateScenario` never sees
+  // text a USER wrote. If the game-save endpoints ever started calling it, this
+  // rule would reject a user's own Chinese- or Hebrew-titled game — an
+  // internationalisation regression, not a defect fix. Asserted against the
+  // real server source rather than left as a comment, and asserted in BOTH
+  // directions so it cannot pass by the validators disappearing altogether.
+  {
+    const server = readFileForContract(new URL('../server.ts', import.meta.url), 'utf-8');
+    const firstGames = server.indexOf('"/api/games"');
+    const lastGames = server.lastIndexOf('/api/games/:id');
+    assert(firstGames > 0 && lastGames > firstGames,
+      'DEBRIS CONTRACT: could not locate the /api/games handlers in server.ts — this check must not silently pass');
+    const saveRegion = server.slice(firstGames, server.indexOf('\n  });', lastGames));
+    for (const fn of ['validateScenario', 'scenarioIsClaimFree']) {
+      assert(!saveRegion.includes(fn),
+        `DEBRIS CONTRACT: ${fn} must never run on the game-save path — it would screen USER-authored text, and the non-Latin rule would reject a user's own Chinese- or Hebrew-titled game`);
+    }
+    // The other direction: the report path must still gate, or the assertion
+    // above is satisfied by a server that validates nothing at all.
+    const reportRegion = server.slice(0, firstGames);
+    assert(reportRegion.includes('validateScenario(') && reportRegion.includes('scenarioIsClaimFree('),
+      'DEBRIS CONTRACT: the report path must still call both scenario gates — otherwise the save-path assertion above is vacuous');
+  }
+
+  console.log('✓ model-internal debris: 3 rules, 4 of 4,995 user-reaching draws newly rejected across 67 corpora, 0 false positives; each rule isolated by its own fixture');
+}
+
 function runUnitTests() {
   testComputeMixedNEClosedForms();
   testComputeAllNEStructure();
@@ -730,6 +825,7 @@ function runUnitTests() {
   testUserColorTerms();
   testCameraRelayoutPredicate();
   testScenarioDomains();
+  testModelDebris();
   console.log('All unit tests passed.');
 }
 
