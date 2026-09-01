@@ -560,8 +560,52 @@ const META_GAME_CAST = /\b(?:the\s+two\s+players|both\s+players|each\s+player)\b
 // and 0.0% cloud, and the only two draws it uniquely catches are already caught
 // by another form. W5's D4 refusal is the precedent: a zero rate is not grounds
 // for including a word whose shape collides.
+/**
+ * THE CAST NOUN IN A GAME-THEORETIC CONSTRUCTION — the exclusion above, kept,
+ * with the leak it was letting through now closed.
+ *
+ * The comment above is still right that the bare noun collides, and this rule
+ * does not reopen it. What it adds is the five constructions in which "player"
+ * cannot mean a performer: "the row player", "the first player", "X are the
+ * players", "the players' decisions", "either player". All are user-visible and
+ * gate-clean today:
+ *
+ *   "The players are two rival truffle cooperatives sharing access to a
+ *    high-value forest…"
+ *   "Two textile firms booking capacity at the same dyehouse are the players."
+ *   "Farmer A (the row player) chooses whether to plant Wheat or Barley."
+ *
+ * THE ARGUMENT FOR THE NARROW FORM RATHER THAN THE BARE NOUN IS A MEASUREMENT,
+ * not a preference. Over 7,989 unique draws that pass all three shipping gates,
+ * pooled from every corpus either team holds, the narrow form finds 19 and the
+ * bare noun finds the SAME 19 — hand-read, all 19 genuine register leaks, zero
+ * false positives either way. So refusing the collision costs nothing HERE.
+ *
+ * It is not free everywhere, and the two surfaces are priced differently on
+ * purpose. Over the wider pool that includes gate-FAILING output the bare noun
+ * finds 14 more ("Each player's choice concerns…", "the game's two-player,
+ * normal-form setup"), all real; `_gen/trainset_screens.ts` therefore uses the
+ * BARE noun, because a build-time screen that over-fires costs one row out of
+ * ~2,300 while this gate over-firing costs a user their generation.
+ */
+const META_CAST_CONSTRUCTION =
+  /\b(?:(?:row|column|col)\s+player|(?:first|second)\s+player|the\s+players\s+are|are\s+the\s+players|players['’]\s+(?:decisions?|choices?|moves?|actions?)|either\s+player|any\s+player|each\s+of\s+the\s+players)\b/i;
+/**
+ * The verb list is WIDER than it was, and the lookbehind is what makes that
+ * safe. Over the same 7,989 gate-passing draws the shipped list finds 0 and the
+ * widened one finds 3, all hand-read, all genuine, all local-model: "A manages
+ * a protected site and chooses between Patrol and Stay back", "A manages a gate
+ * and chooses whether to Open Gate or Close Gate", "A manages North Ridge
+ * Vineyard, while B manages South Ridge Vineyard".
+ *
+ * THE LOOKBEHIND IS LOAD-BEARING UNDER THE WIDENING, measured rather than
+ * assumed: dropping it takes those 3 to 743, and the 740 extra are the shape
+ * this file has always deliberately allowed — "Grower A chooses Early heat",
+ * "Foundry A chooses between Rush Casting", "Team A chooses between an Early
+ * Sweep". A capitalised noun in front of the letter makes it a designation.
+ */
 const META_BARE_LETTER =
-  /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have)\b/u;
+  /(?<![\p{L}\p{N}][ \t]|[\p{L}\p{N}])\b[AB]\b\s+(?:chooses?|choosing|picks?|decides?|selects?|plays?|prefers?|is|are|will|must|can|has|have|books?|takes?|runs?|schedules?|sets?|opts?|holds?|weighs?|operates?|faces?|uses?|goes?|plans?|manages?|serves?|considers?)\b/u;
 const GAME_THEORY_VOCAB = /\b(?:payoffs?|equilibri\w+|strateg\w+|players?|matrix|matrices|dominant|zero[\s-]sum|simultaneous\w*|normal[\s-]form|best\s+response|moves?)\b/i;
 const GAME_PRODUCT_VOCAB = /\b(?:video\s?games?|game\s+studio|game\s+developer|gaming|console|arcade|board\s+games?|playtest\w*|publisher|storefront|featured\s+slot|download\w*|app\s+store|steam)\b/i;
 
@@ -661,6 +705,32 @@ function oneActorTakesASecondDecision(desc: string): boolean {
 function secondPairHandedToAPronoun(desc: string): boolean {
   const { nouns, pronouns } = describedCast(desc);
   return pronouns.some((p) => /^(?:it|he|she)$/.test(p)) && nouns.size < 2;
+}
+
+/**
+ * The second option pair handed back to the ONE NAMED ACTOR by repeating its
+ * noun. Same defect as `secondPairHandedToAPronoun`, and it walks straight
+ * through that rule because "the same director" is a noun, not a pronoun:
+ *
+ *   "A university library director chooses between Full Expansion and Steady
+ *    Release for a new book series. THE SAME DIRECTOR chooses between Open
+ *    Review and Group Review for evaluating the same publishing deal."
+ *
+ * 3 gate-passing draws in the pooled corpora, hand-read, all defects; the other
+ * two are "The same grocer chooses…" and "The same operator chooses…".
+ *
+ * THE CLAUSE ANCHOR IS LOAD-BEARING, measured both ways. Without the
+ * `(?:^|[.;!?]\s+)` prefix the rule finds 5, and the 2 extra are the shape where
+ * "the same" modifies a SCENE noun and the subject is a genuine second party:
+ * "A second team surveying THE SAME HABITAT chooses between Early Survey and
+ * Late Survey", "A coffee importer arranging THE SAME SUPPLY chooses between
+ * Reserve Contract and Spot Contract". Both are correct output and both are
+ * pinned as negative fixtures.
+ */
+const SAME_ACTOR_SECOND_PAIR =
+  /(?:^|[.;!?]\s+)the\s+same\s+[a-z][\w'’-]{2,}\s+(?:chooses|picks|decides|selects|takes|books|opts)\b/i;
+function theSameActorTakesTheSecondPair(desc: string): boolean {
+  return SAME_ACTOR_SECOND_PAIR.test(desc);
 }
 
 /**
@@ -1010,6 +1080,7 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     [META_PROMPT_CAST, "the prompt's own cast names (\"Player A\") in the story"],
     [META_BARE_LETTER, 'a bare letter standing in for a character'],
     [META_GAME_CAST, 'the game\'s cast ("the two players") named in the story'],
+    [META_CAST_CONSTRUCTION, 'the game\'s cast noun in a game-theoretic construction ("the row player", "the players are…")'],
     [namesTheGameItself, 'the game itself named as an object in the story'],
     [META_PAYOFF, 'the payoff, the mathematical object, named in the story'],
   ];
@@ -1020,6 +1091,7 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
   const STRUCTURAL: [(t: string) => boolean, string][] = [
     [oneActorTakesASecondDecision, 'a second decision given to a player who already made one'],
     [secondPairHandedToAPronoun, "a second set of options given to a pronoun when only one player is named"],
+    [theSameActorTakesTheSecondPair, "a second set of options given back to the same named actor"],
     [assertsTheSameMove, "a claim that one player's move is the same as the other's"],
   ];
   for (const [fires, why] of STRUCTURAL) if (fires(desc)) return { ok: false, reason: why };
@@ -1672,7 +1744,28 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   // 7", "earns -3") are citations too — C2 draw 18 said "B gets … only 2 when
   // Inspect meets Publicize" (cell pays 0) with storyClaims null. Probabilities
   // and dimensions ("2x2", "0.5") are not payoffs and are skipped.
-  for (const m of desc.matchAll(/\b(?:gets?|receives?|earns?|pays?|scores?|collects?|nets?|loses?)\b[^.;\d−–-]{0,25}?([-−–]?\d+)(?![.\d×x%])/gi)) {
+  //
+  // THE LOOKAHEAD USED TO EXCLUDE A FULL STOP, which made a payoff number at the
+  // END OF A SENTENCE invisible to the rule that exists to catch payoff numbers.
+  // Measured through this function on an ANTI matrix with storyClaims null:
+  //   "…and earns 9."                -> NOT SEEN
+  //   "…and earns 9 for the season." -> caught
+  //   "…and earns 9, then leaves."   -> caught
+  //   "…and earns 9"                 -> caught
+  // One keystroke, and it is the keystroke a model puts at the end of every
+  // sentence. What the exclusion was actually protecting is decimals and
+  // dimensions, so it now says exactly that: not a longer number, not a decimal
+  // or thousands separator, not a dimension or a percentage. "earns 2.5 per run"
+  // and "earns 100%" stay skipped; "earns 9." and "earns 12 tokens" are caught.
+  //
+  // LATENT AT RUNG 3, NOT DEAD. `scenarioIsClaimFree` rejects any description
+  // containing a numeral before this rule can be the reason a draw is blocked,
+  // so today the numeral screen carries it. The bug is reachable at rungs 0/1/2,
+  // where the model writes the numbers itself — which is where the rung-3 exit
+  // criterion points — and on that day nothing would have reported it, because a
+  // rule that cannot see the defect simply returns clean. Found by ORACLE while
+  // proving this rule unreachable at rung 3, not by looking for it.
+  for (const m of desc.matchAll(/\b(?:gets?|receives?|earns?|pays?|scores?|collects?|nets?|loses?)\b[^.;\d−–-]{0,25}?([-−–]?\d+)(?!\d)(?![.,]\d)(?![×x%])/gi)) {
     const v = Number(m[1]);   // already normalised at the entry point
     if (!Number.isFinite(v)) continue;
     const allCells = [g.a11, g.a12, g.a21, g.a22, g.b11, g.b12, g.b21, g.b22];

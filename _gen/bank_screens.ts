@@ -53,20 +53,37 @@ const EXPOSURE_PHRASE = new RegExp([
   'at risk',
   'on the line',
   'stands? to (lose|gain|win)',
-  // "far more exposure in the project than", "more exposed to a mismatch"
-  '(more|less|greater|little|much|greatest|larger|higher|lower|heavier|most|least) (financial |commercial |seasonal )?expos(ure|ed)',
+  // "far more exposure in the project than", "more exposed to a mismatch".
+  //
+  // THE ADJECTIVE SLOT IS OPEN, NOT A THREE-WORD LIST. It was
+  // `(financial |commercial |seasonal )?`, and RED-CLOUD's complementary run
+  // over 6,788 gate-passing descriptions found 12 misses of the form "much
+  // greater BUDGET AND REPUTATION exposure" — any other noun between the
+  // comparative and "exposure" broke the match. That was the single largest
+  // recall gap in this list.
+  '(more|less|greater|little|much|greatest|larger|higher|lower|heavier|most|least)[^.]{0,30}?expos(ure|ed)',
   'expos(ure|ed) [^.]{0,40} than',
   'heavily (exposed|tied|dependent|reliant)',
-  // "matters more to the grower than to the buyer"
+  'whose (exposure|stake|risk|position)',
+  // "matters more to the grower than to the buyer", and the COPULAR form of the
+  // same claim — "for which this contract is far more consequential" — which
+  // the verb-anchored rule cannot reach (ORACLE, 2 unique texts in 12,518).
   'matters? (far |much |a lot |significantly |a great deal )?(more|less)\\b',
+  '(far|much|considerably|significantly|rather) (more|less) (consequential|important|significant|costly|damaging|serious)',
   'weighs? (more|less|heavil)',
   '(more|less|little|much|a lot|a great deal) to (lose|gain)',
-  '(bears?|carries|carry) (the |a )?(greater|larger|bigger|brunt|heavier)',
+  '(bears?|carries|carry|carrying) (the |a )?(greater|larger|bigger|brunt|heavier)',
   '(more|less|greater|smaller|larger) (at stake|consequence)',
+  // "a smaller commercial stake", "a smaller seasonal stake" — the same
+  // comparative with a modifier wedged in.
+  '(smaller|larger|bigger|greater|lesser) \\w+ stake',
+  // "with more of the season's budget and reputation" — the comparative with no
+  // exposure noun adjacent at all, 13 of RED-CLOUD's 38 misses.
+  '(more|less) of (the|its|their) \\w+',
   // "whose seasonal schedule depends heavily on this harbour" against a
   // "smaller" counterparty — the same claim without the word "stake".
-  'depends? heavily',
-  'depend heavily',
+  '(depends?|depend|relies?|rely) heavily',
+  'tied (closely|heavily)',
   'hinges? (heavily )?on',
   'for whom (this|that|the|it)',
   'only a (small|minor|modest|slight|brief|short)',

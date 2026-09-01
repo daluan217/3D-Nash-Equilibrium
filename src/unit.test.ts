@@ -903,6 +903,7 @@ function runUnitTests() {
   testRepeatedPlayRefused();
   testMetaVocabulary();
   testModelDebris();
+  testOracleGateHoles();
   console.log('All unit tests passed.');
 }
 
@@ -1786,4 +1787,99 @@ try {
   console.error('Unit test suite failure:');
   console.error(err?.message || err);
   process.exit(1);
+}
+
+/**
+ * THE HOLES ORACLE FOUND, AND THE ONE BUG THAT FALLS OUT OF PROVING A RULE
+ * UNREACHABLE.
+ *
+ * Every rule below is measured over 7,989 unique draws that pass all three
+ * shipping gates today, pooled from every corpus either team holds, with every
+ * match hand-read. Each ships with the defect it must catch AND the ordinary
+ * output the guard spares, because a guard whose control cannot fail when the
+ * guard is deleted is not a tested guard.
+ */
+function testOracleGateHoles() {
+  const ANTI: GamePayoffs = { a11: 0, a12: 3, a21: 2, a22: 0, b11: 0, b12: 2, b21: 3, b22: 0 };
+  const sc = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) => ({
+    name: 'Test', row1: 'Early Slot', row2: 'Late Slot',
+    col1: 'Shared Window', col2: 'Separate Window', storyClaims: null, description: d, ...labels,
+  } as any);
+  const gate = (d: string, labels?: Partial<Record<'name' | 'row1' | 'row2' | 'col1' | 'col2', string>>) =>
+    scenarioIsClaimFree(sc(d, labels)).ok;
+
+  // ── THE CAST NOUN IN A GAME-THEORETIC CONSTRUCTION ──────────────────────
+  // Verbatim production-model output, all gate-clean before this rule.
+  assert(!gate('The players are two rival truffle cooperatives sharing access to a high-value forest whose annual permit plan can be opened or tightened.'),
+    'CAST (scenario_raw_v2): "The players are X"');
+  assert(!gate('Two textile firms booking capacity at the same dyehouse are the players. Firm A chooses Early Shift or Late Shift.'),
+    'CAST (scenario_raw_v2): "X are the players"');
+  assert(!gate('Farmer A (the row player) chooses whether to plant Wheat or Barley. Farmer B (the column player) decides whether to sell early or late.'),
+    'CAST (fair_round): "the row player"');
+  assert(!gate('The first player is the triage chief at Hospital A, choosing between Core Staffing and Surge Staffing.'),
+    'CAST (rt3_reroll_cloud): "the first player"');
+  assert(!gate('Both sides commit simultaneously, with no other factor influencing either player\'s decision.'),
+    'CAST (rt3_slot_control): "either player"');
+  // THE COLLISION THE BARE NOUN WAS REFUSED FOR, and the reason the narrow form
+  // exists. "puppet theatre touring" is a live domain in the rotation; these
+  // must keep passing, and they are what a widening to `\bplayers?\b` would
+  // break. Measured: over the same 7,989 gate-passing draws the narrow form and
+  // the bare noun find the SAME 19 rows, so the collision safety is free HERE —
+  // the build-time screen in _gen/trainset_screens.ts takes the bare noun
+  // instead, where over-firing costs one row of ~2,300 rather than a user's
+  // generation.
+  assert(gate('A touring puppet theatre company books an Early Slot while a rival books a Late Slot; the players rehearse in the afternoon.'),
+    'CAST CONTROL: "the players" is the acting company in a puppet-theatre setting');
+  assert(gate('A brass band books an Early Slot while the hall books a Shared Window, and its players tune beforehand.'),
+    'CAST CONTROL: "its players" are musicians');
+
+  // ── BARE LETTER, WIDENED VERB LIST ──────────────────────────────────────
+  assert(!gate('A manages a protected site and chooses between Patrol and Stay back. B operates nearby and chooses between Harvest and Abandon site.'),
+    'BARE LETTER (local draw): "A manages" — outside the shipped verb list');
+  assert(!gate('A books an Early Slot or a Late Slot. B books a Shared Window or a Separate Window.'),
+    'BARE LETTER: "A books"');
+  // THE LOOKBEHIND, which is what makes the widening safe. Dropping it takes the
+  // widened rule from 3 hits to 743 on the same pool, and the 740 extra are all
+  // this shape.
+  assert(gate('Two neighbouring growers share a greenhouse. Grower A takes the Early Slot while Grower B takes the Late Slot, and both commit at once.'),
+    'BARE LETTER CONTROL: "Grower A takes" is a designation, not the prompt\'s variable');
+  assert(gate('Two foundries are casting a bell. Foundry A schedules the Early Slot and Foundry B schedules the Late Slot, moving simultaneously.'),
+    'BARE LETTER CONTROL: "Foundry A schedules"');
+
+  // ── THE SECOND PAIR HANDED BACK TO THE SAME NAMED ACTOR ─────────────────
+  assert(!gate('A university library director chooses between Early Slot and Late Slot for a new book series. The same director chooses between Shared Window and Separate Window for evaluating the same publishing deal.'),
+    'SAME ACTOR (gate-passing draw): the second pair handed back to "the same director"');
+  assert(!gate('A small grocer chooses between Early Slot and Late Slot for the season. The same grocer chooses between Shared Window and Separate Window for the same bed.'),
+    'SAME ACTOR: "The same grocer chooses"');
+  // THE CLAUSE ANCHOR. Without it the rule finds 5 rather than 3 on the pooled
+  // corpora, and these two are the extra pair — "the same" modifying a SCENE
+  // noun, with a real second party as the subject.
+  assert(gate('A survey team chooses between Early Slot and Late Slot for a bat survey night. A second team surveying the same habitat chooses between Shared Window and Separate Window.'),
+    'SAME ACTOR CONTROL: "the same habitat" is a scene noun and the subject is a second party');
+  assert(gate('A roastery chooses between Early Slot and Late Slot for its sourcing plan. A coffee importer arranging the same supply chooses between Shared Window and Separate Window.'),
+    'SAME ACTOR CONTROL: "the same supply"');
+
+  // ── THE SENTENCE-FINAL PAYOFF CITATION ──────────────────────────────────
+  // Latent at rung 3 (the numeral screens reject the field first) and live the
+  // moment the rung steps down. The typography is verbatim on purpose: this
+  // repo's own record says punctuation has bitten it three times.
+  const cited = (d: string) => validateScenario({
+    name: 'Haulage Window', row1: 'Early Window', row2: 'Late Window',
+    col1: 'Open Dock', col2: 'Hold Dock', description: d, storyClaims: null,
+  } as any, { a11: 3, a12: -2, a21: -4, a22: 5, b11: -3, b12: 2, b21: 4, b22: -5 })
+    .issues.some((i) => /cellCitation/.test(i));
+  assert(cited('A haulier books a window and earns 9.'),
+    'PAYOFF CITATION: a payoff number at the END OF A SENTENCE was invisible — the old lookahead excluded the full stop');
+  assert(cited('A haulier books a window and earns 9 for the season.'),
+    'PAYOFF CITATION: mid-sentence, which always worked');
+  assert(cited('A haulier books a window and earns 12 tokens.'),
+    'PAYOFF CITATION: a multi-digit number followed by a word');
+  // WHAT THE EXCLUSION WAS ACTUALLY PROTECTING. Decimals and dimensions are not
+  // payoff citations and must stay skipped, or the rule fires on every "2x2".
+  assert(!cited('The dock runs a 2x2 trial and the haulier earns 2.5 per run.'),
+    'PAYOFF CITATION CONTROL: a decimal and a dimension are not citations');
+  assert(!cited('The haulier earns 100% of the fee on an early window.'),
+    'PAYOFF CITATION CONTROL: a percentage is not a payoff');
+
+  console.log('✓ oracle gate holes: the cast noun in 5 game-theoretic constructions (puppet-theatre collision spared), the bare letter under a widened verb list (designations spared), the second pair handed back to the same named actor (scene-noun "the same X" spared), and the sentence-final payoff citation the old lookahead could not see');
 }

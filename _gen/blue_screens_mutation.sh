@@ -33,13 +33,13 @@ echo "== M2 truncated: the NAIVE widening — curly quotes added to the class"
 restore; mut "$TS" "!/[.!?][\")'\\]”’]*\$/.test(t)" "!/[.!?\"')\\]”’]\$/.test(t)"; run must-fail
 
 echo "== M3 article: the ORIGINAL i-flagged a-half"
-restore; mut "$TS" "for (const m of t.matchAll(/\\ba\\s+([aeiou]\\w+)/g)) {" "for (const m of t.matchAll(/\\ba\\s+([aeiou]\\w+)/gi)) {"; run must-fail
+restore; mut "$TS" "const A_BEFORE_VOWEL = /(?:\\ba|(?:^|[.!?;:][\"”’']?\\s+)A)\\s+([aeiou][\\w-]*)/g;" "const A_BEFORE_VOWEL = /\\ba\\s+([aeiou][\\w-]*)/gi;"; run must-fail
 
 echo "== M4 article: case-sensitive but NO consonant-sound exception"
 restore; mut "$TS" "    if (A_BEFORE_CONSONANT_SOUND.test(w)) continue;" "    if (false) continue;"; run must-fail
 
 echo "== M5 article: the and/or guard removed"
-restore; mut "$TS" "    if (/^(?:and|or)\$/.test(w)) continue;" "    if (false) continue;"; run must-fail
+restore; mut "$TS" "const NOT_AN_ARTICLE = new RegExp(\`^(?:and|or|\${LETTER_VERBS})\$\`, 'i');" "const NOT_AN_ARTICLE = new RegExp(\`^(?:\${LETTER_VERBS})\$\`, 'i');"; run must-fail
 
 echo "== M6 article: the an-half deleted"
 restore; mut "$TS" "  return /\\ban\\s+(?![aeiouAEIOU]|hour|honest|honou?r)[bcdfgjklmnpqrstvwxyz]\\w/i.test(t);" "  return false;"; run must-fail
@@ -48,11 +48,12 @@ echo "== M7 article: the an-half made case-SENSITIVE"
 restore; mut "$TS" "[bcdfgjklmnpqrstvwxyz]\\w/i.test(t);" "[bcdfgjklmnpqrstvwxyz]\\w/.test(t);"; run must-fail
 
 echo "== M8 article: the a-half deleted"
-restore; mut "$TS" "    return true;
-  }
-  return /\\ban" "    return false;
-  }
-  return /\\ban"; run must-fail
+restore; mut "$TS" "    if (A_BEFORE_CONSONANT_SOUND.test(w)) continue;
+    return true;" "    if (A_BEFORE_CONSONANT_SOUND.test(w)) continue;
+    return false;"; run must-fail
+
+echo "== M15 article: the SENTENCE-INITIAL branch removed"
+restore; mut "$TS" '(?:\ba|(?:^|' '(?:\ba|(?:\bZZZNEVER'; run must-fail
 
 echo "== M9 meta: the bare cast noun removed"
 restore; mut "$TS" "  if (CAST_NOUN.test([s.name, s.row1, s.row2, s.col1, s.col2, t].filter(Boolean).join(' '))) return true;" "  if (false) return true;"; run must-fail
@@ -64,15 +65,15 @@ echo "== M11 meta: the cast noun anchored to the word 'play' rather than the nou
 restore; mut "$TS" "const CAST_NOUN = /\\bplayers?\\b/i;" "const CAST_NOUN = /play/i;"; run must-fail
 
 echo "== M12 exposure: the accepted both-parties over-fire NARROWED away"
-restore; mut "$BS" "  'at stake'," "  '(more|less|greater|smaller) at stake',"; run must-fail
+restore; mut "$BS" "  'at stake',
+  'at risk'," "  '(more|less|greater|smaller) at stake',
+  'at risk',"; run must-fail
 
 echo "== M13 exposure: the whole screen disabled"
 restore; mut "$BS" "  return EXPOSURE_PHRASE.test(s.description ?? '');" "  return false;"; run must-fail
 
 echo "== M14 exposure: 'depends heavily' removed (the no-stake-word asymmetry)"
-restore; mut "$BS" "  'depends? heavily',
-  'depend heavily'," "  'zzz_never_matches_a',
-  'zzz_never_matches_b',"; run must-fail
+restore; mut "$BS" "  '(depends?|depend|relies?|rely) heavily'," "  'zzz_never_matches',"; run must-fail
 
 restore
 echo "== restored"; run must-pass

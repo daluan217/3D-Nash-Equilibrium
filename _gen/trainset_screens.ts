@@ -6,6 +6,15 @@ import type { SuggestedScenario } from '../src/types';
 
 
 
+/**
+ * The verbs that make a bare letter a CHARACTER rather than a designation.
+ *
+ * Shared with the article screen below, deliberately. "A" is either the player
+ * letter or the indefinite article, and both screens have to decide the same
+ * question; two lists would drift and the drift would be invisible.
+ */
+const LETTER_VERBS = 'is|are|was|chooses|picks|selects|decides|must|will|can|has|holds|runs|operates|plans';
+
 /** Bare "Player A"/"Player B" as the story's characters. 7.2% of accepted
  *  draws campaign-wide; local persona_hard 11.4% vs cloud 2.5%. The vocabulary
  *  is OURS — the payload opens "Player A first, Player B second". */
@@ -23,7 +32,7 @@ const personaLeak = (s: SuggestedScenario) => {
   // hand-check of 14 random matches found 13 were that shape — it would have
   // inflated the rate nearly fourfold and thrown away a fifth of the teacher
   // corpus. "Mill A chooses" must pass.
-  if (/(?<![A-Za-z]\s)\b[AB]\s+(is|are|was|chooses|picks|selects|decides|must|will|can|has|holds|runs|operates|plans)\b/.test(t)) return true;
+  if (new RegExp(`(?<![A-Za-z]\\s)\\b[AB]\\s+(${LETTER_VERBS})\\b`).test(t)) return true;
   return false;
 };
 
@@ -189,14 +198,29 @@ const A_BEFORE_CONSONANT_SOUND = /^(?:uni|unan|usa|use|usu|uti|ute|utop|ubiq|uku
  * `and`/`or` are excluded because "player a and player b" is the bare LOWERCASE
  * letter, not an article — one hit, and `personaLeak` already rejects it.
  *
- * WHAT THIS DELIBERATELY DOES NOT CATCH: a sentence-initial article, "A upstream
- * generator is choosing…", 5 occurrences in 14,545 (0.034%). Every predicate I
- * measured that reaches them needs an open-ended list of the verbs and
- * conjunctions that follow the player letter ("A is", "A and", "A operates"),
- * and that list cannot be closed — "Team A opens early" and "Crew A adds a
- * shift" would false-fire on any version of it. The best variant scored 5/6;
- * the lowercase rule scores 15/15. Fourteenth over-firing predicate of this
- * campaign refused rather than shipped.
+ * THE SENTENCE-INITIAL ARTICLE IS NOW CAUGHT TOO, and the argument that first
+ * made me refuse it was wrong in a specific, instructive way. "A upstream
+ * generator is choosing…" is a real error, 3 occurrences, and I initially left
+ * it because every predicate reaching it seemed to need an open-ended verb list
+ * — "Team A opens early" and "Crew A adds a shift" would false-fire on any
+ * version of one. RED-CLOUD's correction: those are NOT sentence-initial. The
+ * capital A there is preceded by a noun, so anchoring to a sentence boundary
+ * deletes that entire false-positive class, and what remains is small enough to
+ * ENUMERATE rather than guess at.
+ *
+ * Enumerated, not sampled, over 9,001 descriptions from every corpus held:
+ * a sentence-initial "A <vowel-word>" has exactly SEVEN distinct followers —
+ * `is` 235, `university` 148, `and` 20, `utility` 4, `upstream` 3,
+ * `one-person` 1, `university-led` 1. The consonant-sound list kills 154 of
+ * them, the and/or guard kills 20, `LETTER_VERBS` kills 235, and the residue is
+ * exactly the 3 true errors. The set is closed on this pool, and the guard for
+ * the one verb in it is the SAME list `personaLeak` uses to decide the same
+ * question, not a second list invented here.
+ *
+ * The residual risk is priced rather than engineered around: a sentence-initial
+ * "A operates two kilns…" would be missed, and that shape is what
+ * `personaLeak`'s bare-letter rule is for — a row carrying it is dropped by
+ * that screen anyway, so the article screen missing it costs nothing.
  *
  * The "an" half KEEPS the `i` flag, and that is measured too, not inherited:
  * "An" is never a player designator, so capitalisation carries no false
@@ -204,11 +228,16 @@ const A_BEFORE_CONSONANT_SOUND = /^(?:uni|unan|usa|use|usu|uti|ute|utop|ubiq|uku
  * while dropping the flag would blind it to a sentence-initial "An downstream
  * processor".
  */
+const NOT_AN_ARTICLE = new RegExp(`^(?:and|or|${LETTER_VERBS})$`, 'i');
+/** A lowercase "a" anywhere, or a capital "A" only at a sentence boundary. */
+const A_BEFORE_VOWEL = /(?:\ba|(?:^|[.!?;:]["”’']?\s+)A)\s+([aeiou][\w-]*)/g;
+
 const articleDisagreement = (s: SuggestedScenario) => {
   const t = s.description ?? '';
-  for (const m of t.matchAll(/\ba\s+([aeiou]\w+)/g)) {
+  for (const m of t.matchAll(A_BEFORE_VOWEL)) {
     const w = m[1];
-    if (/^(?:and|or)$/.test(w)) continue;
+    if (w.length < 2) continue;
+    if (NOT_AN_ARTICLE.test(w)) continue;
     if (A_BEFORE_CONSONANT_SOUND.test(w)) continue;
     return true;
   }

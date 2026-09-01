@@ -94,6 +94,15 @@ quiet('article', articleDisagreement, 'The keeper offers it for a one-shift exch
 quiet('article', articleDisagreement, 'Two sami herders, player a and player b, are moving their reindeer herds.');
 // The `an` exceptions that were already there and must stay.
 quiet('article', articleDisagreement, 'The crew books an hourly slot and an honest appraisal of the roof.');
+// SENTENCE-INITIAL. The anchor is what makes this safe: "Team A opens early" is
+// noun-preceded and therefore untouched, which is the whole reason the earlier
+// draft of this screen refused the capital half.
+fires('article', articleDisagreement,
+  'A downstream farm chooses Early Release or Late Release. A upstream generator is choosing between Shared Gates and Reserved Gates.');
+quiet('article', articleDisagreement,
+  'Two haulage teams share a dock. Team A opens early while Team B adds a shift, and both commit at once.');
+quiet('article', articleDisagreement,
+  'A is a cider orchard cooperative. A and B decide independently.');
 
 /* ============================================= exposure asymmetry (bank) */
 // Known positive: an unambiguous asymmetry sentence, real bank output.
@@ -117,6 +126,31 @@ fires('exposure', exposureAsymmetryClaim,
 check('exposure: the both-parties "at stake" shape is a KNOWN, ACCEPTED false positive',
   exposureAsymmetryClaim(sc('Two ferry operators are assigning timetable slots on a heavily used seasonal route, with the season\'s budget and reputation at stake.')),
   'the accepted over-fire stopped firing — recall was narrowed; see _gen/bank_screens.ts before changing this');
+// SECOND ACCEPTED FALSE POSITIVE, same rule, different cause. `(more|less) of
+// (the|its|their) \w+` exists for "with more of the season's budget and
+// reputation", 13 of RED-CLOUD's recall misses. It also matches an option-label
+// paraphrase, which is the "Exposed Ridge" word-sense collision arriving through
+// a different door. One row of ~2,300; kept, and pinned so a future narrowing
+// has to be argued for rather than slipped in.
+check('exposure: an option-label paraphrase is a KNOWN, ACCEPTED false positive',
+  exposureAsymmetryClaim(sc('Cedar Grove Foragers and Valley Truffle Guild are seeking permits for the same seasonal truffle woodland. Each must choose between a Broad Permit covering more of the woodland and a Narrow Permit covering a smaller designated zone.')),
+  'the accepted over-fire stopped firing — see _gen/bank_screens.ts before changing this');
+// RED-CLOUD's over-firing candidate, recorded as a NEGATIVE fixture rather than
+// as a finding: if anyone ever widens this screen toward margin vocabulary,
+// this real draw is what stops them.
+quiet('exposure', exposureAsymmetryClaim,
+  'The archive coordinator chooses between Wide Margins and Tight Margins for the scans, while the conservator chooses between Early Batch and Late Batch.');
+// New recall, from RED-CLOUD's 38-row gap analysis and ORACLE's copular form.
+fires('exposure', exposureAsymmetryClaim,
+  'A freelance courier, who relies heavily on this assignment for the day’s income, chooses between Tight Route and Wide Route.');
+fires('exposure', exposureAsymmetryClaim,
+  'A regional seed bank responsible for a much larger reserve is arranging an exchange with a neighborhood seed bank whose exposure is smaller.');
+fires('exposure', exposureAsymmetryClaim,
+  'A neighboring drainage cooperative, with a smaller operational stake, chooses whether to open its outlet or hold water.');
+fires('exposure', exposureAsymmetryClaim,
+  'A regional flour mill, for which this contract is far more consequential, is choosing between Reserve Flour and Release Flour for that order.');
+fires('exposure', exposureAsymmetryClaim,
+  'The distributor carries much greater budget and reputation exposure into the release than the cinema does.');
 
 // It must still leave ordinary claim-free scene-setting alone.
 quiet('exposure', exposureAsymmetryClaim,
