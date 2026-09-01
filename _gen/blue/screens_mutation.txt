@@ -1,0 +1,80 @@
+== M0 baseline (must pass)
+  exit=0
+== M1 truncated: the ORIGINAL class, straight quote only
+  exit=1
+  ✗ truncated MUST fire: "wo players make their decisions independently, so no single\""
+  ✗ truncated must NOT fire: "A charcoal kiln operator chooses between “Early Burn” and “Late Burn,”"
+  ✗ no shipped bank row trips the truncated screen — 38 of 2315 — the artifact is stale, rebuild it with _gen/bank_build.ts. First: "Kiln Delivery Timing"
+✗ screens: 3 failed
+== M2 truncated: the NAIVE widening — curly quotes added to the class
+  exit=1
+  ✗ truncated MUST fire: "wo players make their decisions independently, so no single\""
+✗ screens: 1 failed
+== M3 article: the ORIGINAL i-flagged a-half
+  exit=1
+  ✗ article must NOT fire: "A is a cider orchard cooperative deciding between Early booking and La"
+  ✗ article must NOT fire: "Player A is a grower and Player B is a haulier."
+  ✗ article must NOT fire: "Two concession operators, Player A in the north stand and Player B in "
+  ✗ article must NOT fire: "When A advertises on TV and B runs an influencer campaign, the split c"
+✗ screens: 4 failed
+== M4 article: case-sensitive but NO consonant-sound exception
+  exit=1
+  ✗ article must NOT fire: "A national radio observatory and a university consortium are shaping t"
+  ✗ article must NOT fire: "A tidal-turbine contractor and a utility authority are coordinating a "
+  ✗ article must NOT fire: "A national herbarium seeks a loan of a unique type specimen."
+  ✗ article must NOT fire: "The planetarium is booking a once-in-a-generation premiere slot."
+  ✗ article must NOT fire: "The keeper offers it for a one-shift exchange."
+  ✗ no shipped bank row trips the article screen — 22 of 2315 — the artifact is stale, rebuild it with _gen/bank_build.ts. First: "Radio Telescope Scheduling"
+== M5 article: the and/or guard removed
+  exit=1
+  ✗ article must NOT fire: "Two sami herders, player a and player b, are moving their reindeer her"
+✗ screens: 1 failed
+== M6 article: the an-half deleted
+  exit=1
+  ✗ article MUST fire: "rmer and an downstream processor are coordinating a harvest."
+  ✗ article MUST fire: "processor and an upstream farmer are coordinating a harvest."
+✗ screens: 2 failed
+== M7 article: the an-half made case-SENSITIVE
+  exit=1
+  ✗ article MUST fire: "processor and an upstream farmer are coordinating a harvest."
+✗ screens: 1 failed
+== M8 article: the a-half deleted
+  exit=1
+  ✗ article MUST fire: "a apple fell from the orchard tree"
+  ✗ article MUST fire: "r are coordinating scheduling for a shared irrigation canal."
+  ✗ article MUST fire: "en Early Watering and Late Watering for a irrigation season."
+✗ screens: 3 failed
+== M9 meta: the bare cast noun removed
+  exit=1
+  ✗ meta MUST fire: " forest whose annual permit plan can be opened or tightened."
+  ✗ meta MUST fire: "e are the players. Firm A chooses Early Shift or Late Shift."
+  ✗ meta MUST fire: "wo operators who run a small rope ferry from opposite banks."
+  ✗ meta MUST fire: "tor (second player) coordinate on tidal turbine maintenance."
+  ✗ meta MUST fire: "ther Early Resurfacing or Late Resurfacing for the facility."
+  ✗ meta reaches the cast noun in a LABEL, not only the description
+== M10 meta: the cast noun scoped to the description only
+  exit=1
+  ✗ meta reaches the cast noun in a LABEL, not only the description
+✗ screens: 1 failed
+== M11 meta: the cast noun anchored to the word 'play' rather than the noun
+  exit=1
+  ✗ meta must NOT fire: "The playhouse manager and the display coordinator are scheduling the e"
+  ✗ no shipped bank row trips the meta screen — 3 of 2315 — the artifact is stale, rebuild it with _gen/bank_build.ts. First: "Bat Survey Nights"
+✗ screens: 2 failed
+== M12 exposure: the accepted both-parties over-fire NARROWED away
+  exit=1
+  ✗ exposure: the both-parties "at stake" shape is a KNOWN, ACCEPTED false positive — the accepted over-fire stopped firing — recall was narrowed; see _gen/bank_screens.ts before changing this
+✗ screens: 1 failed
+== M13 exposure: the whole screen disabled
+  exit=1
+  ✗ exposure MUST fire: " project than a small local masonry firm submitting the bid."
+  ✗ exposure MUST fire: " launch, chooses between Wide Release and Staggered Release."
+  ✗ exposure MUST fire: ", chooses between a Senior Rotation and a Flexible Rotation."
+  ✗ exposure: the both-parties "at stake" shape is a KNOWN, ACCEPTED false positive — the accepted over-fire stopped firing — recall was narrowed; see _gen/bank_screens.ts before changing this
+✗ screens: 4 failed
+== M14 exposure: 'depends heavily' removed (the no-stake-word asymmetry)
+  exit=1
+  ✗ exposure MUST fire: ", chooses between a Senior Rotation and a Flexible Rotation."
+✗ screens: 1 failed
+== restored
+  exit=0

@@ -771,9 +771,9 @@ function testFmtPayoffSubResolution() {
 /**
  * MODEL-INTERNAL DEBRIS reaching the user.
  *
- * Three real cloud draws, every one accepted by every shipped gate before this.
- * Rare (4 of 4,995 draws that reach the user, 0.080%, across 67 corpora) and
- * every one user-facing.
+ * Five distinct real cloud draws, every one accepted by every shipped gate
+ * before this. Rare (5 of 4,088 draws that reach the user, 0.122%, across 67
+ * corpora plus the scenario bank) and every one user-facing.
  *
  * EACH RULE HAS A FIXTURE ONLY IT CAN CATCH. The two observed dirty rows carry
  * more than one signal each — row 185 has Hebrew AND braces, row 805 has braces
@@ -799,6 +799,18 @@ function testModelDebris() {
     'DEBRIS: a CJK character inside an English option label must be rejected');
   assert(debris({ row2: '深-cycle Service' }).length > 0,
     'DEBRIS: the 深-cycle label that shipped in the wild must be rejected');
+  // The Arabic row existed ONLY in the bank, so no report corpus ever produced
+  // it. The script list already covered Arabic on principle; this is the draw
+  // that turned that from a boundary fixture into an observed positive.
+  assert(debris({ name: 'Herbarium Loan Request', row1: 'Approve Loan', row2: 'Defer Loan', col1: 'Rush Request', col2: 'Routine Request',
+    description: 'A university herbarium is coordinating a specimen-loan request with a botanical researcher. The herbarium chooses between "Approve Loan" and "Defer Loan," while the researcher chooses between "Rush Request" and "Routine Request." يُ}} GG. } siu' }).length > 0,
+    'DEBRIS: the Arabic + brace bank row must be rejected');
+  // The self-talk positive, first-hand from the bank rather than from a log
+  // excerpt: this is the row the rule was written against.
+  assert(debris({ name: 'Side-Table Touch-Up', row1: 'Trim Bid', row2: 'Full Bid', col1: 'Quick Approval', col2: 'Careful Review',
+    description: 'A neighborhood antique dealer and a restoration studio are discussing a bid. The dealer chooses between "Quick Approval" and "Careful Review." wait invalid. Need clean JSON.' })
+    .some((i) => /talking to itself/.test(i)),
+    'DEBRIS: the bank\'s Side-Table row is the first-hand self-talk positive');
 
   // ── ONE FIXTURE PER RULE, each isolating a single signal ─────────────────
   assert(debris({ row2: '厚 coat' }).some((i) => /outside the expected script/.test(i)),
@@ -859,7 +871,7 @@ function testModelDebris() {
       'DEBRIS CONTRACT: the report path must still call both scenario gates — otherwise the save-path assertion above is vacuous');
   }
 
-  console.log('✓ model-internal debris: 3 rules, 4 of 4,995 user-reaching draws newly rejected across 67 corpora, 0 false positives; each rule isolated by its own fixture');
+  console.log('✓ model-internal debris: 3 rules, 5 of 4,088 user-reaching draws newly rejected across 67 corpora + the shipping bank, 0 false positives; each rule isolated by its own fixture');
 }
 
 function runUnitTests() {
@@ -882,7 +894,6 @@ function runUnitTests() {
   testUserColorTerms();
   testCameraRelayoutPredicate();
   testScenarioDomains();
-  testModelDebris();
   testFmtPayoffSubResolution();
   testGateFixesAugust31();
   testOptionLabelChannel();
@@ -891,6 +902,7 @@ function runUnitTests() {
   testTwoChooserStructure();
   testRepeatedPlayRefused();
   testMetaVocabulary();
+  testModelDebris();
   console.log('All unit tests passed.');
 }
 

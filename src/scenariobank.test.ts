@@ -68,14 +68,54 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     s?.name === 'Ferry Slotting', `got ${s?.name}`);
 }
 
+/* --------------------------------- a one-name cell widens, never repeats */
+{
+  // THE DEFECT THIS FILE MISSED. 34 of the 320 cells in the shipped artifact
+  // hold exactly ONE distinct name — "lighthouse relief shifts" band 2 is eight
+  // rows all titled "Lighthouse Relief Shifts". The old picker only looked
+  // inside the exact cell when that cell was non-empty, so once the title had
+  // been shown, every remaining row fell to the "unseen entry" tier and handed
+  // the title straight back. Measured on the shipped bank with the domain held
+  // fixed: repeated-title 29.5% at 5 presses, 60.7% at 10, 90.2% at 40.
+  const bank = [entry('lighthouse relief shifts', 2, 'Lighthouse Relief Shifts', 'one'),
+                entry('lighthouse relief shifts', 2, 'Lighthouse Relief Shifts', 'two'),
+                entry('kelp farm harvesting', 2, 'Kelp Harvest Timing', 'three')];
+  const seen = new Set([bankKey(bank[0])]);
+  // `() => 0` again: a picker that repeats returns bank[1] deterministically,
+  // so this cannot pass by luck.
+  const s = pickFromBank(bank, G(20), 'lighthouse relief shifts', seen, () => 0);
+  check('a cell with no unseen NAME widens instead of repeating the title',
+    s?.name === 'Kelp Harvest Timing', `got ${s?.name}`);
+  // And it widens to the RIGHT BAND: the alternative here is off-band.
+  const bank2 = [entry('lighthouse relief shifts', 2, 'Lighthouse Relief Shifts', 'one'),
+                 entry('lighthouse relief shifts', 2, 'Lighthouse Relief Shifts', 'two'),
+                 entry('lighthouse relief shifts', 0, 'Tiny Lighthouse Job', 'three'),
+                 entry('kelp farm harvesting', 2, 'Kelp Harvest Timing', 'four')];
+  const s2 = pickFromBank(bank2, G(20), 'lighthouse relief shifts', new Set([bankKey(bank2[0])]), () => 0);
+  check('widening prefers the same band over the same domain',
+    s2?.name === 'Kelp Harvest Timing', `got ${s2?.name}`);
+}
+
 /* ------------------------------------------------- graceful widening */
 {
-  const bank = [entry('kelp', 0, 'Tiny One'), entry('kelp', 3, 'Large One')];
-  // The exact cell is empty; the DOMAIN is what a reader sees, so hold it.
-  const s = pickFromBank(bank, G(20), 'kelp', new Set());
-  check('an empty (domain,band) cell falls back within the domain', s !== null, `${s?.name}`);
+  // AN EMPTY EXACT CELL KEEPS THE STAKES BAND, NOT THE SETTING. The old order
+  // widened by DOMAIN first, so a band-3 game whose (domain, band 3) cell was
+  // empty was served that domain's band-0 story — "a modest patch of coppice"
+  // beside a swing of 120. The band comes from the user's own matrix and the
+  // mismatch is visible next to the numbers; the domain is a rotation choice
+  // the user never made.
+  const bank = [entry('coppice cutting cycles', 0, 'Modest Coppice Patch'),
+                entry('kelp farm harvesting', 3, 'Kelp Harvest Timing')];
+  const s = pickFromBank(bank, G(60), 'coppice cutting cycles', new Set(), () => 0);
+  check('an empty (domain,band) cell holds the BAND rather than the domain',
+    s?.name === 'Kelp Harvest Timing', `got ${s?.name}`);
+
+  const kelp = [entry('kelp', 0, 'Tiny One'), entry('kelp', 3, 'Large One')];
+  // Nothing at this band ANYWHERE: only then does it fall back within the domain.
+  const t = pickFromBank(kelp, G(20), 'kelp', new Set());
+  check('a band with no row in the whole bank falls back within the domain', t !== null, `${t?.name}`);
   // No domain at all: fall back on band rather than returning nothing.
-  const other = pickFromBank(bank, G(0.3), 'nonexistent-domain', new Set());
+  const other = pickFromBank(kelp, G(0.3), 'nonexistent-domain', new Set());
   check('an unknown domain falls back on the band', other?.name === 'Tiny One', `${other?.name}`);
   check('an empty bank returns null rather than throwing', pickFromBank([], G(4), 'kelp', new Set()) === null);
 }
@@ -159,4 +199,4 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
 // The exit check must be the LAST thing in the file. It was above the shipped-artifact
 // section, so those assertions ran, printed, and could not fail the suite.
 if (failures > 0) { console.error(`✗ scenario bank: ${failures} failed`); process.exit(1); }
-console.log(`✓ scenario bank: bands match stakesHint, draws are without replacement and avoid a seen NAME, thin cells widen by domain then band, an empty bank returns null, seeded picks are reproducible, and all ${bankSize()} SHIPPED rows load and still pass today's gates`);
+console.log(`✓ scenario bank: bands match stakesHint, draws are without replacement and avoid a seen NAME, a cell with no unseen name widens by BAND before domain rather than repeating a title, an empty bank returns null, seeded picks are reproducible, and all ${bankSize()} SHIPPED rows load and still pass today's gates`);

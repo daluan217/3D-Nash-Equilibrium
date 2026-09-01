@@ -14,7 +14,40 @@
 import fs from 'node:fs';
 import { validateScenario, scenarioIsClaimFree, validateProseDirections } from '../src/utils/nashValidator';
 import { stakesBand, bankKey, type BankEntry } from '../src/utils/scenarioBank';
+import { SCREENS } from './trainset_screens';
+import { exposureAsymmetryClaim } from './bank_screens';
 import type { GamePayoffs, SuggestedScenario } from '../src/types';
+
+/**
+ * The teacher screens the bank ALSO applies, and the one it refuses.
+ *
+ * WHY APPLY THEM AT ALL when the three production gates already run above. The
+ * gates are what the cloud path enforces at request time; the screens are what
+ * the teacher corpus is filtered on. They overlap heavily but not completely,
+ * and the gap runs the direction that matters: measured over 3,683 corpus rows
+ * carrying their own game (mostly LOCAL model output, which is the dirty
+ * surface), 3,301 survive all three production gates — and of those survivors,
+ * 5 still carry an article disagreement and 1 a meta leak ("Firm A (the row
+ * player)"). Persona (261 -> 0), foreign script (4 -> 0), truncation (1 -> 0)
+ * and duplicate options (14 -> 0) ARE subsumed by the gates on that evidence;
+ * they are kept here because they cost nothing and the subsumption is a
+ * property of today's gates, not a guarantee.
+ *
+ * WHAT THIS COSTS TODAY: nothing. Every one of these screens returns ZERO hits
+ * on the 2,225 gate-passing rows in the current raw log and zero on the 1,958
+ * rows of the shipped artifact. That is the point — the reach is measured on
+ * output the gates already passed, not asserted, and the row cost is measured
+ * too rather than assumed small.
+ *
+ * LABEL-COLLISION IS DELIBERATELY EXCLUDED. Both players carrying the same two
+ * option names is not a falsehood — the Prisoner's Dilemma does it — and this
+ * project refused to gate it in production. It would drop 359 of 1,958 rows
+ * here, 18% of the bank, for a shape a reader has no complaint about. The
+ * teacher corpus excludes it for a different reason (a student should not learn
+ * a habit that blinds `validateProseDirections`), and that reason does not
+ * transfer to rows that are already written.
+ */
+const BANK_SCREENS = SCREENS.filter(([name]) => name !== 'label-collision');
 
 const RAW = process.env.BANK_RAW ?? `${process.env.HOME}/nash-finetune-data/scenario_raw_v2.jsonl`;
 const OUT = process.env.BANK_OUT ?? 'src/data/scenarioBank.json';
@@ -52,6 +85,18 @@ for (const r of rows) {
   // the direction checks can speak about.
   const dir = validateProseDirections(sc.description ?? '', { row1: sc.row1, row2: sc.row2, col1: sc.col1, col2: sc.col2 }, g);
   if (dir.length) { drop[`directions: ${dir[0].slice(0, 60)}`] = (drop[`directions: ${dir[0].slice(0, 60)}`] ?? 0) + 1; continue; }
+
+  const screen = BANK_SCREENS.find(([, fn]) => fn(sc));
+  if (screen) { drop[`screen: ${screen[0]}`] = (drop[`screen: ${screen[0]}`] ?? 0) + 1; continue; }
+
+  /**
+   * THE EXPOSURE ASYMMETRY THE OLD PROMPT COULD NOT GET RIGHT. Rows generated
+   * before the `stakesHint` fix named the exposed party from a ratio that has
+   * no direction, and those guesses measured 44% wrong on the row's own game.
+   * Recall-favouring on purpose: see `_gen/bank_screens.ts` for why over-firing
+   * is the cheap direction here and what it was measured to cost.
+   */
+  if (exposureAsymmetryClaim(sc)) { drop['screen: exposure-asymmetry'] = (drop['screen: exposure-asymmetry'] ?? 0) + 1; continue; }
 
   const e: BankEntry = { d: r.domain!, b: stakesBand(g), s: sc };
   const k = bankKey(e);
