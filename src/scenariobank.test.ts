@@ -9,6 +9,8 @@
  * silently returns nothing, repeats itself, or reaches into the wrong stakes
  * band, the product regresses in a way no existing test would notice.
  */
+import { bankAvailable, bankSize, allBankRows } from './utils/bankSource';
+import { scenarioIsClaimFree, validateScenario } from './utils/nashValidator';
 import { pickFromBank, stakesBand, bankKey, type BankEntry } from './utils/scenarioBank';
 import type { GamePayoffs } from './types';
 
@@ -101,5 +103,60 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   check('pick()=1 stays in range', pickFromBank(bank, G(20), 'rail', new Set(), () => 0.999999) !== null);
 }
 
+
+/* ============================================================================
+ * THE SHIPPED ARTIFACT
+ *
+ * Everything above tests the picker against fixtures. This section tests the
+ * BANK ITSELF — the file the desktop actually shows — because it is an artifact
+ * frozen at build time while the gates that justify it keep moving. Two distinct
+ * failures are in scope and neither announces itself:
+ *
+ *   1. THE ARTIFACT DOES NOT LOAD. The first implementation used `require()`,
+ *      which is undefined under tsx/ESM, and `bankAvailable()` returned false
+ *      everywhere while the catch degraded silently to the model path. Nothing
+ *      threw. A size assertion is the only thing that distinguishes "bank
+ *      present" from "bank silently absent".
+ *
+ *   2. THE ARTIFACT GOES STALE. When a gate tightens, rows screened by the old
+ *      gate keep shipping until something re-screens them. Re-screening here
+ *      means a tightened gate FAILS CI rather than being quietly outvoted by a
+ *      file built last week.
+ * ========================================================================= */
+{
+  const size = bankSize();
+  check('the shipped bank artifact actually loads', bankAvailable() && size > 500,
+    `bankAvailable=${bankAvailable()} size=${size} — a silent load failure looks exactly like an empty cell`);
+
+  // Rows are served with the USER's game, never the one they were written for,
+  // so they are screened here against a game they have never seen. That is the
+  // real serving condition; measured at 98.78% across 1,560 cross-pairs, which
+  // is IDENTICAL to the own-game rate — claim-free prose is game-agnostic by
+  // construction, and that property is what makes a bank possible at rung 3 at
+  // all. If it ever stops holding, this fails.
+  const probes: GamePayoffs[] = [
+    { a11: 0.4, a12: -0.3, a21: -0.2, a22: 0.5, b11: -0.4, b12: 0.3, b21: 0.2, b22: -0.5 },
+    { a11: 3, a12: -2, a21: -4, a22: 5, b11: -3, b12: 2, b21: 4, b22: -5 },
+    { a11: 30, a12: -22, a21: -41, a22: 55, b11: -30, b12: 22, b21: 41, b22: -55 },
+  ];
+  let bad = 0; let firstBad = '';
+  for (const e of allBankRows()) {
+    if (!e.s?.name || !e.s.description || typeof e.d !== 'string') {
+      bad++; if (!firstBad) firstBad = `malformed row ${JSON.stringify(e).slice(0, 120)}`;
+      continue;
+    }
+    const cf = scenarioIsClaimFree(e.s);
+    if (!cf.ok) { bad++; if (!firstBad) firstBad = `"${e.s.name}" not claim-free: ${cf.reason}`; continue; }
+    for (const g of probes) {
+      const v = validateScenario(e.s, g);
+      if (!v.ok) { bad++; if (!firstBad) firstBad = `"${e.s.name}" fails validateScenario: ${v.issues[0]}`; break; }
+    }
+  }
+  check('every shipped bank row still passes the live gates', bad === 0,
+    `${bad} of ${size} shipped rows fail today's gates — the artifact is stale, rebuild it with _gen/bank_build.ts. First: ${firstBad}`);
+}
+
+// The exit check must be the LAST thing in the file. It was above the shipped-artifact
+// section, so those assertions ran, printed, and could not fail the suite.
 if (failures > 0) { console.error(`✗ scenario bank: ${failures} failed`); process.exit(1); }
-console.log('✓ scenario bank: bands match stakesHint, draws are without replacement and avoid a seen NAME, thin cells widen by domain then band, an empty bank returns null, seeded picks are reproducible');
+console.log(`✓ scenario bank: bands match stakesHint, draws are without replacement and avoid a seen NAME, thin cells widen by domain then band, an empty bank returns null, seeded picks are reproducible, and all ${bankSize()} SHIPPED rows load and still pass today's gates`);
