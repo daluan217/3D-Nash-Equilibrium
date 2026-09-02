@@ -276,6 +276,14 @@ try {
     `status ${bigRange.status}, content-length ${bigRange.headers.get('content-length')}, content-range ${bigRange.headers.get('content-range')}`);
   record('…and that range body is byte-exact', bigRangeBody.equals(DMG_CONTENT.subarray(0, 200)), `${bigRangeBody.length} bytes`);
 
+  // Exactly AT the cap: the guard is a strict less-than, so a 64-byte body with
+  // a 64-byte cap must already omit the header (a >= vs > regression would pass
+  // the 200-byte case above and still 500 on Cloud Run at the boundary).
+  const edgeRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { Range: 'bytes=0-63' } });
+  const edgeBody = Buffer.from(await edgeRange.arrayBuffer());
+  record('a range EXACTLY at the cap omits Content-Length (strict boundary)',
+    edgeRange.status === 206 && edgeRange.headers.get('content-length') === null && edgeBody.length === 64,
+    `status ${edgeRange.status}, content-length ${edgeRange.headers.get('content-length')}, ${edgeBody.length} bytes`);
   const smallRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { Range: 'bytes=0-9' } });
   await smallRange.arrayBuffer();
   record('a range BELOW the cap keeps its Content-Length (resumable downloads still get sizes)',
