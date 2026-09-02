@@ -529,7 +529,36 @@ function acquireDesktopLock(): void {
     }
     // EEXIST: someone else's lock is already there — a live process, or one
     // that crashed without cleaning up. Read it to tell the two apart.
-    const rawContent = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8") : "";
+    //
+    // TEST HOOK ONLY — never set outside a test process: lets an
+    // integration test deterministically win the race CodeRabbit found on
+    // re-review — `existsSync` and `readFileSync` are two separate calls,
+    // so a competing process (or, in the test, the test itself) can unlink
+    // the file in between, and the unguarded `readFileSync` would throw
+    // ENOENT outside any catch, crashing `startServer()` before it ever
+    // gets to initDB()/listen().
+    const readRaceDelayMs = parseInt(process.env.NASH_LOCK_TEST_READ_RACE_DELAY_MS || "", 10);
+    if (fs.existsSync(lockFile) && Number.isFinite(readRaceDelayMs) && readRaceDelayMs > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, readRaceDelayMs);
+    }
+    let rawContent: string;
+    try {
+      rawContent = fs.readFileSync(lockFile, "utf-8");
+    } catch (err: any) {
+      if (err && err.code === "ENOENT") {
+        // The lock vanished between our EEXIST and this read — someone
+        // else's own stale-takeover (or a clean release) already cleared
+        // it. Loop and re-decide from scratch instead of treating a
+        // gone/unreadable file as a real lock with empty content (which
+        // would have parsed as heldBy = NaN and fallen through as if the
+        // recorded pid were simply invalid, silently skipping straight to
+        // "stale, take over" without ever re-checking what's ACTUALLY there
+        // now — possibly a brand-new LIVE lock).
+        continue;
+      }
+      console.error("Error reading desktop lock file:", err);
+      return; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
+    }
     const heldBy = parseInt(rawContent.trim(), 10);
     let alive = false;
     if (Number.isInteger(heldBy) && heldBy > 0) {

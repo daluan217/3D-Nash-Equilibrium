@@ -255,6 +255,50 @@ try {
     rmSync(raceUserData, { recursive: true, force: true });
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 5. THE ENOENT RACE (CodeRabbit's re-review of the section-4 fix):
+  // `fs.existsSync(lockFile)` and `fs.readFileSync(lockFile)` are two
+  // separate calls — a competing process (or, deterministically here, the
+  // test itself) can unlink the file in the gap between them, and the
+  // unguarded `readFileSync` would throw ENOENT OUTSIDE any catch,
+  // crashing `startServer()` before it ever reaches `initDB()`/`listen()`.
+  // `NASH_LOCK_TEST_READ_RACE_DELAY_MS` pauses right after confirming the
+  // file exists but before reading it, so the test can delete the file out
+  // from under the process deterministically rather than racing real
+  // process timing (no second server process even needed for this one).
+  // ───────────────────────────────────────────────────────────────────────────
+  const enoentUserData = mkdtempSync(path.join(tmpdir(), 'nash-enoent-race-'));
+  const enoentLockFile = path.join(enoentUserData, '.server.lock');
+  writeFileSync(enoentLockFile, '999999999', 'utf-8'); // stale from the start
+
+  const fPort = port + 12;
+  let f = null;
+  try {
+    f = spawnServer(enoentUserData, fPort, { NASH_LOCK_TEST_READ_RACE_DELAY_MS: '1500' });
+    // Give F time to reach openSync(wx) -> EEXIST -> existsSync check
+    // (well before its own 1500ms pause ends), then delete the lock file
+    // out from under it while it's paused.
+    await new Promise((r) => setTimeout(r, 500));
+    record('fixture precondition: the lock file exists right before we delete it mid-pause',
+      existsSync(enoentLockFile));
+    rmSync(enoentLockFile, { force: true });
+
+    // F resumes, calls readFileSync against a now-missing file. On the
+    // pre-fix code this throws uncaught and the process exits/crashes
+    // abnormally without ever becoming healthy; on the fix it catches
+    // ENOENT, loops, and — since the path is now free — successfully
+    // creates its OWN fresh lock and boots normally.
+    await waitReady(f, fPort);
+    record('THE FIX: F survives the ENOENT and becomes healthy, rather than crashing on an uncaught throw',
+      true, `pid ${f.pid}`);
+    const lockAfterF = existsSync(enoentLockFile) ? readFileSync(enoentLockFile, 'utf-8').trim() : null;
+    record('F ends up holding its own fresh lock',
+      lockAfterF === String(f.pid), `lock holds "${lockAfterF}", expected ${f.pid}`);
+  } finally {
+    await stop(f);
+    rmSync(enoentUserData, { recursive: true, force: true });
+  }
+
 } finally {
   await stop(a);
   await stop(b);
