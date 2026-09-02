@@ -169,7 +169,12 @@ async function inventScreenedScenario(
  * token through `generateScenario`, and a rejected orphan would be an unhandled
  * rejection. `.catch` keeps it quiet.
  */
-const SCENARIO_DEADLINE_MS = Number(process.env.NASH_SCENARIO_TIMEOUT_MS ?? 20_000);
+const SCENARIO_DEADLINE_MS = (() => {
+  const raw = Number(process.env.NASH_SCENARIO_TIMEOUT_MS);
+  // Number(undefined) and Number('') are NaN/0; setTimeout treats both as an
+  // immediate fire, which would silently drop the scenario on every draw.
+  return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
+})();
 
 async function drawWithDeadline(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
   let timer: NodeJS.Timeout | undefined;
@@ -1223,7 +1228,9 @@ async function startServer() {
 
   // Express API health check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
+    // pid lets a test's boot() confirm it is talking to the child it spawned,
+    // not a stray process another agent left listening on the same port.
+    res.json({ status: "ok", pid: process.pid });
   });
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.

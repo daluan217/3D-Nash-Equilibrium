@@ -319,13 +319,20 @@ function testGeometryValidatorChecks() {
   // so it is the negative fixture for BOTH of the new checks.
   const BOS: GamePayoffs =
     { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 };
+  // twistA = 0 AND a11 === a21: A is indifferent between the rows at EVERY y,
+  // so the whole board is a shelf. yStar is NaN here (yStarInRange is false)
+  // while hasFlatShelfForA is correctly true — the exact degenerate case
+  // `geometry-bad-shelf` was corrected for, and the one case that distinguishes
+  // the two fields from each other.
+  const ALL_SHELF_A: GamePayoffs =
+    { a11: 4, a12: 4, a21: 4, a22: 4, b11: 1, b12: -1, b21: -1, b22: 1 };
 
   const truthFor = (g: GamePayoffs) => {
     const geo = describeGeometry(g);
     return {
       surfacesInteract: Math.abs(geo.twistA) >= 1e-9,
       opponentSurfaceIsMirror: geo.zeroSum || geo.constantSum,
-      hasFlatShelfForA: geo.yStarInRange,
+      hasFlatShelfForA: geo.hasFlatShelfForA,
       equilibriumIsInteriorFlatSpot: geo.hasInteriorFlatSpot,
       invokesMinimax: geo.minimaxApplies,
       claimsDominantStrategy: geo.dominantRowA || geo.dominantColB,
@@ -341,7 +348,8 @@ function testGeometryValidatorChecks() {
   });
 
   // --- negative fixtures: truthful declarations must not fire ---------------
-  for (const [name, g] of [['matching pennies', MATCHING_PENNIES], ['PD', PD], ['flat A', FLAT_A], ['BoS', BOS]] as const) {
+  for (const [name, g] of [['matching pennies', MATCHING_PENNIES], ['PD', PD], ['flat A', FLAT_A], ['BoS', BOS],
+    ['all-shelf A', ALL_SHELF_A]] as const) {
     const v = validateReport(reportFor(g, truthFor(g)), g);
     const geoFails = v.mismatches.filter(m => m.kind.startsWith('geometry-'));
     assert(geoFails.length === 0, `${name}: truthful geometry flagged — ${geoFails.map(m => m.detail).join('; ')}`);
@@ -1846,16 +1854,37 @@ function testRedTeamFindings() {
   // 3. PROSE AND SOLVER MUST NOT DISAGREE ON A DIGIT — one source of truth, one
   //    formatter. The prose used to compute payoffs at the EXACT point while the
   //    label computed them at the ROUNDED one (2.316 vs 2.315).
+  //
+  //    A sub-resolution payoff is a THIRD shape, neither a plain number nor a
+  //    disagreement: fmtPayoffProse renders it as "less than 0.001" or
+  //    "greater than -0.001" rather than "0.000" (`prose-false-pure`'s sibling
+  //    rule for payoffs). The old numbers-only regex read that sentence as
+  //    "prose must state expected payoffs" FAILING, which is the wrong
+  //    conclusion — the two are agreeing that the payoff is sub-resolution, not
+  //    disagreeing on a digit.
+  const THRESHOLD = /^(less than 0\.001|greater than -0\.001)$/;
   for (const g of [
     { a11: 6, a12: -4, a21: -1, a22: 8, b11: -9, b12: 6, b21: -1, b22: -8 } as GamePayoffs,
     drop,
+    // A's payoffs are engineered so the shared row-indifference value at the
+    // mixed equilibrium is 0.0002 — nonzero, but r3 rounds it to 0. The
+    // solver reports eA = 0; the prose must say "less than 0.001", not "0".
+    { a11: 0.0002, a12: 0.0002, a21: 2, a22: -2, b11: 4, b12: -1, b21: -3, b22: 5 } as GamePayoffs,
   ]) {
     const mixed = computeAllNE(g).find((n) => n.type === 'mixed');
     if (!mixed) continue;
-    const m = tieProse(g, null).match(/E\[A\] = (-?\d+(?:\.\d+)?) and E\[B\] = (-?\d+(?:\.\d+)?)/);
-    assert(!!m, 'prose must state expected payoffs');
-    assert(Number(m![1]) === mixed.eA && Number(m![2]) === mixed.eB,
-      `prose and solver disagree: prose ${m![1]}/${m![2]} vs solver ${mixed.eA}/${mixed.eB}`);
+    const prose = tieProse(g, null);
+    const m = prose.match(/E\[A\] = (-?\d+(?:\.\d+)?|less than 0\.001|greater than -0\.001) and E\[B\] = (-?\d+(?:\.\d+)?|less than 0\.001|greater than -0\.001)/);
+    assert(!!m, `prose must state expected payoffs, in numeric or threshold form: ${prose}`);
+    for (const [captured, solverValue, label] of [[m![1], mixed.eA, 'A'], [m![2], mixed.eB, 'B']] as const) {
+      if (THRESHOLD.test(captured)) {
+        assert(solverValue === 0,
+          `prose gave threshold wording "${captured}" for E[${label}] but the solver's rounded value is ${solverValue}, not 0`);
+      } else {
+        assert(Number(captured) === solverValue,
+          `prose and solver disagree on E[${label}]: prose ${captured} vs solver ${solverValue}`);
+      }
+    }
   }
 
   // 4. Canonically-equivalent Unicode labels are DUPLICATES. "Réserve" as

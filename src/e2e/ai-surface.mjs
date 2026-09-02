@@ -159,7 +159,14 @@ try {
   record('the save dialog exposes Generate', reachable > 0);
   if (reachable) {
     await gen.click();
-    await page.waitForTimeout(2500);
+    // Poll the name field rather than a fixed sleep: if generation takes
+    // longer than a fixed budget, a timed sleep reads the name/description
+    // checks as failed while the "isn't available right now" note check
+    // passes vacuously (the request just hasn't landed yet).
+    await page.waitForFunction(() => {
+      const el = document.querySelector('input[placeholder*="Battle of the Sexes 2.0" i]');
+      return !!el && el.value.length > 0;
+    }, { timeout: 15000 }).catch(() => {});
     const name = await page.getByPlaceholder(/Battle of the Sexes 2\.0/i).inputValue().catch(() => '');
     const desc = await page.getByPlaceholder(/background storyline/i).inputValue().catch(() => '');
     const note = await page.getByText(/isn't available right now/i).count();

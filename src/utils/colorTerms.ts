@@ -49,8 +49,11 @@ export function colorTermsFor(
   const a: string[] = [...STRUCTURAL_A_TERMS];
   const b: string[] = [...STRUCTURAL_B_TERMS];
   if (sc) {
-    for (const t of [sc.row1, sc.row2]) if (t) a.push(t);
-    for (const t of [sc.col1, sc.col2]) if (t) b.push(t);
+    // Trim here so a dialog's still-being-typed label (the preview's only
+    // source) builds the exact term the save path will store — App.tsx's
+    // save handlers `.trim()` every label before it reaches the record.
+    for (const t of [sc.row1, sc.row2]) if (t && t.trim()) a.push(t.trim());
+    for (const t of [sc.col1, sc.col2]) if (t && t.trim()) b.push(t.trim());
     a.push(...actorA);
     b.push(...actorB);
   }
@@ -77,7 +80,14 @@ export function colorTermsFor(
  * preset had the same defect long before any model did.
  */
 function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
-  const norm = (t: string) => t.trim().toLowerCase();
+  // Canonically-equivalent labels (NFC vs NFD "Réserve") render identically but
+  // compare unequal without normalizing first, so a shared action would survive
+  // on both sides and ColorCoded's first-match order would paint it as A's.
+  const norm = (t: string) => t
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toLowerCase();
   const inB = new Set(b.map(norm));
   const shared = new Set(a.map(norm).filter((t) => inB.has(t)));
   if (shared.size === 0) return { a, b };
@@ -240,12 +250,16 @@ export interface SavedGameColorSource {
 export function savedGameColorTerms(
   g: SavedGameColorSource | null | undefined,
 ): { a: string[]; b: string[] } {
+  // A hand-edited or migration-corrupted db.json can hold a non-array here;
+  // mergeDescriptionTerms spreads its user-term args before cleanUserColorTerms
+  // gets a chance to Array.isArray-check them, so an object or number throws
+  // TypeError instead of being cleaned away. Normalize at this boundary.
   return descriptionColorTerms(
     g ? { row1: g.row1Label, row2: g.row2Label, col1: g.col1Label, col2: g.col2Label } : null,
     [],
     [],
-    g?.colorTermsA ?? [],
-    g?.colorTermsB ?? [],
+    Array.isArray(g?.colorTermsA) ? g.colorTermsA : [],
+    Array.isArray(g?.colorTermsB) ? g.colorTermsB : [],
   );
 }
 

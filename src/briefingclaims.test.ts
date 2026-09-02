@@ -6,7 +6,7 @@
  * a sentence in the grounding payload is a factual assertion to the model, and
  * whether it earns its place is a question for measurement rather than reading.
  *
- *   npx tsx src/geometryminimax.test.ts
+ *   npx tsx src/briefingclaims.test.ts
  */
 import assert from 'node:assert';
 import { describeGeometry, geometryBriefing } from './utils/geometry';

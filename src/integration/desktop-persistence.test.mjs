@@ -68,11 +68,20 @@ async function boot(userData, thePort) {
   child.stdout.on('data', (d) => { log += d; });
   child.stderr.on('data', (d) => { log += d; });
   for (let i = 0; i < 80; i++) {
+    if (child.exitCode !== null) {
+      // Fail loudly and immediately rather than spending the rest of the
+      // 20s poll window timing out with a generic "never became ready" — a
+      // dead child (e.g. IS_ELECTRON's EADDRINUSE retry moved it to a
+      // different port) is a different failure than "still starting".
+      throw new Error(`server exited before becoming ready on ${thePort} (code ${child.exitCode})\n${log}`);
+    }
     try {
       const r = await fetch(`http://127.0.0.1:${thePort}/api/health`);
-      // Confirm we are talking to OUR server on OUR port, not one another agent
-      // left listening: a peer's process answering /api/health looks identical.
-      if (r.ok) return { child, log: () => log };
+      // Confirm we are talking to OUR child on OUR port, not another agent's
+      // process left listening: a peer's process answering /api/health with
+      // r.ok alone looks identical. /api/health echoes process.pid so the pid
+      // check below can tell them apart.
+      if (r.ok && (await r.json())?.pid === child.pid) return { child, log: () => log };
     } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -244,18 +253,25 @@ try {
     }
   })();
 
+  let writesOk = 0;
   for (let i = 0; i < 140; i++) {
-    await call(port, 'POST', '/api/games', {
+    const r = await call(port, 'POST', '/api/games', {
       token: token2,
       body: {
         name: `Race ${i}`, desc: filler,
         payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 4, b12: 3, b21: 2, b22: 1 },
       },
     });
+    if (r.status === 200 || r.status === 201) writesOk++;
   }
   writing = false;
   await reader;
 
+  // A failed write (auth, endpoint) never touches db.json, so a reader could
+  // trivially see zero torn reads without the atomicity guarantee ever being
+  // exercised. Require every write to have actually landed before trusting that.
+  record('all 140 race writes succeeded (the race actually touched db.json)',
+    writesOk === 140, `${writesOk}/140`);
   record('THE DEFECT: a concurrent reader never observes a partial db.json',
     torn_reads === 0, `${torn_reads} torn read(s) of ${reads}`);
   record('the reader saw enough of the file for that to mean something (control)',

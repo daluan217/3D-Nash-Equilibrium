@@ -238,7 +238,8 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
       description: 'Two courier companies are competing for a season-long delivery route contract. '
         + 'The first chooses between a Firm Bid and a Lean Bid, while the second weighs a Priority Bid against a Flexible Bid.',
     } as BankEntry['s'];
-    const caught = probes.some((g) => !validateScenario(planted, g).ok);
+    const caught = probes.some((g) => validateScenario(planted, g).issues
+      .some((i) => i.includes('frames the two players as rivals')));
     check('the probe set still reaches the rivalry rule (known-positive)', caught,
       'a description framing the parties as rivals must be rejected on at least one probe — if not, the probe set no longer covers the common-interest branch and the re-screen above cannot fail');
   }

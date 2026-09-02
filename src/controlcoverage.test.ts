@@ -165,9 +165,24 @@ function e2eSelectorNames(src: string): Array<string | RegExp> {
   return out;
 }
 const selectors = e2eSelectorNames(vocab);
-const covered = (label: string): boolean => selectors.some(
-  (sel) => (typeof sel === 'string' ? sel === label || sel.includes(label) || label.includes(sel) : sel.test(label)),
-);
+// FORWARD ONLY: Playwright's getByRole/getByText name option matches when the
+// SELECTOR text is a substring of the control's accessible name — the reverse
+// (`sel.includes(label)`) let a control labelled "Save" read as covered when
+// the only real selector in the suite pressed an unrelated, more specific
+// "Save Preset" control; Playwright's own substring rule runs the other way.
+function matchesSelector(label: string, sel: string | RegExp): boolean {
+  return typeof sel === 'string' ? sel === label || label.includes(sel) : sel.test(label);
+}
+const covered = (label: string): boolean => selectors.some((sel) => matchesSelector(label, sel));
+
+// Fixture: the reverse direction must not manufacture a false positive, and
+// the forward direction it was confused with must still fire.
+if (matchesSelector('Save', 'Save Preset')) {
+  fail('fixture: a control labelled "Save" must not read as covered by an unrelated, more specific "Save Preset" selector');
+}
+if (!matchesSelector('Save Preset', 'Save')) {
+  fail('fixture: a selector named "Save" must still cover a control labelled "Save Preset" — that is the real Playwright substring direction');
+}
 
 const untested = [...labels].filter((l) => !covered(l)).sort();
 const unlisted = untested.filter((l) => !(l in ALLOWLIST));
