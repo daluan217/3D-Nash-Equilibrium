@@ -178,6 +178,21 @@ jobs:
         env:
           PARITY_PORT: '3106'
 
+      # server.ts's GCS persistence path against a fake @google-cloud/storage
+      # object. Guards round3/findings/RED-DESKTOP-3/003-cloud-gcs-save-races.md:
+      # saveDB() was fire-and-forget with no serialization (N rapid saves fired
+      # N independent, overlapping uploads) and no ifGenerationMatch precondition
+      # (production runs maxScale=20 with no minScale, so a deploy rollover or
+      # any burst runs two instances concurrently; whichever instance's upload
+      # landed last silently erased the other's save). Fixed with a per-process
+      # coalescing pump plus a generation-precondition/re-download/merge/retry
+      # across instances.
+      - name: Boot the production server and run the GCS db-saves suite (fake GCS)
+        run: node src/integration/gcs-db-saves.test.mjs
+        env:
+          GCS_DB_TEST_PORT: '3131'
+          GCS_DB_TEST_GCS_PORT: '3130'
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -459,6 +459,11 @@ function loadDBFromFile(): DB {
   }
 }
 
+// GCS concurrency state. See `scheduleGcsSave`/`uploadDbToGcs` below (near
+// `saveDB`) for the full explanation of what these protect against.
+let gcsGeneration: string | null = null;
+let gcsBaselineDb: DB | null = null;
+
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
 async function initDB(): Promise<void> {
   if (process.env.ELECTRON_USER_DATA_PATH) {
@@ -472,8 +477,25 @@ async function initDB(): Promise<void> {
       if (exists) {
         const [content] = await file.download();
         inMemoryDb = JSON.parse(content.toString('utf-8'));
+        const [meta] = await file.getMetadata();
+        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
+        // A genuine deep copy, not a reference to `inMemoryDb`: the object
+        // returned here would otherwise be the SAME live object every future
+        // caller mutates in place (every `saveDB` call site does
+        // `const db = loadDB(); db.games.push(...); saveDB(db);` against the
+        // one shared singleton), which would make this "baseline" silently
+        // track every future edit instead of staying pinned to what was
+        // actually on GCS at boot — exactly the state `unionMergeDb` needs to
+        // tell "deleted since we last synced" apart from "never existed."
+        gcsBaselineDb = JSON.parse(JSON.stringify(inMemoryDb));
       } else {
         inMemoryDb = { users: [], games: [] };
+        gcsBaselineDb = { users: [], games: [] };
+        // `0` is GCS's own convention for "this object must not exist yet" —
+        // protects the very first save of a brand-new bucket against a race
+        // with another instance's own first save landing in between this
+        // exists() check and that save.
+        gcsGeneration = '0';
       }
       console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb!.users.length} users, ${inMemoryDb!.games.length} games`);
     } catch (err) {
@@ -488,6 +510,148 @@ async function initDB(): Promise<void> {
 // Returns the in-memory DB (always synchronous after initDB resolves)
 function loadDB(): DB {
   return inMemoryDb ?? { users: [], games: [] };
+}
+
+/**
+ * Union-merge two DB snapshots by id, after a GCS write lost a generation
+ * race to another instance. `remote` is the state we just re-downloaded
+ * (the OTHER instance's write); `local` is what THIS instance was about to
+ * upload; `baseline` is what this instance last knew to be true on GCS
+ * (from `initDB` or its own last successful write).
+ *
+ * WHY UNION-BY-ID WITH "LOCAL WINS ON COLLISION": neither `User` nor
+ * `SavedGame` carries an `updatedAt` field (checked: `interface User`/
+ * `SavedGame` in this file have neither), so there is no timestamp to
+ * arbitrate a genuine same-id conflict. In practice a same-id collision
+ * needs the SAME record edited by two instances in the same short window —
+ * rare. The dominant, realistic case this exists for is the one
+ * round3/findings/RED-DESKTOP-3/003-cloud-gcs-save-races.md's own
+ * reproduction plan describes: each instance handling a DIFFERENT save
+ * (disjoint ids), where union recovers BOTH regardless of which id "wins."
+ *
+ * WHY `baseline` MATTERS — DELETIONS: a plain union of `remote` and `local`
+ * would RESURRECT a record this process just deleted (present in `local`'s
+ * absence, but the OTHER instance's `remote` copy — which never saw the
+ * delete — still has it). An id present in `baseline` but absent from
+ * `local` was deleted by THIS process since it last synced; excluding it
+ * from both sides of the union honors that deletion even though `remote`
+ * doesn't know about it yet.
+ */
+function unionMergeDb(remote: DB, local: DB, baseline: DB | null): DB {
+  const baseUserIds = new Set((baseline?.users ?? []).map((u) => u.id));
+  const baseGameIds = new Set((baseline?.games ?? []).map((g) => g.id));
+  const localUserIds = new Set(local.users.map((u) => u.id));
+  const localGameIds = new Set(local.games.map((g) => g.id));
+  const deletedUserIds = new Set([...baseUserIds].filter((id) => !localUserIds.has(id)));
+  const deletedGameIds = new Set([...baseGameIds].filter((id) => !localGameIds.has(id)));
+
+  const mergedUsers = new Map<string, User>();
+  for (const u of remote.users) if (!deletedUserIds.has(u.id)) mergedUsers.set(u.id, u);
+  for (const u of local.users) if (!deletedUserIds.has(u.id)) mergedUsers.set(u.id, u); // local wins a same-id collision
+
+  const mergedGames = new Map<string, SavedGame>();
+  for (const g of remote.games) if (!deletedGameIds.has(g.id)) mergedGames.set(g.id, g);
+  for (const g of local.games) if (!deletedGameIds.has(g.id)) mergedGames.set(g.id, g);
+
+  return { users: [...mergedUsers.values()], games: [...mergedGames.values()] };
+}
+
+/**
+ * Upload the CURRENT `db` snapshot to GCS with a generation precondition,
+ * re-downloading/merging/retrying once on a conflict.
+ *
+ * WHY `resumable: false, validation: false`: `db.json` is at most a few
+ * hundred KB (never the ~120MB the DMG download path deals with), so the
+ * resumable-session protocol (POST to open a session, PUT the bytes to the
+ * returned Location) buys nothing here and would need a materially more
+ * complex fake-GCS harness to test; the simple multipart upload does the
+ * same job in one request. `validation: false` skips the client's own MD5
+ * round-trip check — reasonable for a same-connection HTTPS upload where
+ * TCP/TLS already guarantee byte-level integrity end to end, and it is what
+ * the fake-GCS integration test also mocks against.
+ */
+async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
+  if (attempt > 2) {
+    console.error('GCS write failed after repeated generation conflicts — giving up on this save. A later save will try again with fresh state.');
+    return;
+  }
+  const { Storage } = await import('@google-cloud/storage');
+  const storage = new Storage();
+  const file = storage.bucket(GCS_BUCKET!).file('db.json');
+  const bodyStr = JSON.stringify(db, null, 2);
+  const saveOpts: {
+    contentType: string; resumable: boolean; validation: boolean;
+    preconditionOpts?: { ifGenerationMatch: string };
+  } = { contentType: 'application/json', resumable: false, validation: false };
+  if (gcsGeneration !== null) {
+    saveOpts.preconditionOpts = { ifGenerationMatch: gcsGeneration };
+  }
+  try {
+    await file.save(bodyStr, saveOpts);
+    const [meta] = await file.getMetadata();
+    gcsGeneration = meta.generation != null ? String(meta.generation) : null;
+    gcsBaselineDb = JSON.parse(bodyStr); // see initDB's comment: a real copy, not a live reference
+  } catch (err: any) {
+    if (err?.code === 412) {
+      // Someone else wrote first. Re-download, merge OUR pending changes
+      // onto their state, and retry with the fresh generation.
+      try {
+        const [remoteContent] = await file.download();
+        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
+        const [meta] = await file.getMetadata();
+        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
+        const merged = unionMergeDb(remote, db, gcsBaselineDb);
+        inMemoryDb = merged; // keep this process's own view consistent with what we're about to persist
+        await uploadDbToGcs(merged, attempt + 1);
+      } catch (mergeErr) {
+        console.error('GCS write conflict: re-download/merge failed:', mergeErr);
+      }
+      return;
+    }
+    console.error('GCS write failed:', err);
+  }
+}
+
+let gcsUploadInFlight = false;
+let gcsSaveRequested = false;
+
+/**
+ * Serialize and COALESCE saves to GCS, per process.
+ *
+ * THE DEFECT THIS CLOSES (round3/findings/RED-DESKTOP-3/
+ * 003-cloud-gcs-save-races.md, case 1): the previous `saveDB` fired an
+ * independent, un-awaited `import(...).then(save)` chain on EVERY call, so
+ * two saves within the same upload's latency window raced as two
+ * concurrent HTTP uploads with no ordering guarantee between them — GCS is
+ * last-COMPLETION-wins, so an older upload finishing after a newer one
+ * silently erased the newer save.
+ *
+ * THE FIX EXPLOITS THIS FILE'S OWN ARCHITECTURE RATHER THAN FIGHTING IT:
+ * every `saveDB` call site does `const db = loadDB(); ...mutate db in
+ * place...; saveDB(db);` against the ONE shared `inMemoryDb` singleton —
+ * `db` is always the SAME object reference, never a fresh clone. That means
+ * a pump that (a) never starts a second upload while one is in flight, and
+ * (b) always uploads whatever `inMemoryDb` LOOKS LIKE AT THE MOMENT IT
+ * ACTUALLY STARTS THAT UPLOAD, automatically uploads the latest state for
+ * free — no explicit snapshot queue needed. `gcsSaveRequested` just means
+ * "at least one more save happened since the pump last looked"; when the
+ * in-flight upload finishes, the pump uploads the CURRENT state exactly
+ * once more, however many saves piled up while it was busy.
+ */
+function scheduleGcsSave(): void {
+  gcsSaveRequested = true;
+  if (gcsUploadInFlight) return;
+  gcsUploadInFlight = true;
+  (async () => {
+    while (gcsSaveRequested) {
+      gcsSaveRequested = false;
+      await uploadDbToGcs(inMemoryDb ?? { users: [], games: [] });
+    }
+    gcsUploadInFlight = false;
+  })().catch((err) => {
+    console.error('Unexpected error in the GCS save pump:', err);
+    gcsUploadInFlight = false;
+  });
 }
 
 function b64url(input: Buffer | string): string {
@@ -864,13 +1028,7 @@ function rateLimit(
 function saveDB(db: DB) {
   inMemoryDb = db;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
-    import('@google-cloud/storage').then(({ Storage }) => {
-      const storage = new Storage();
-      return storage.bucket(GCS_BUCKET!).file('db.json').save(
-        JSON.stringify(db, null, 2),
-        { contentType: 'application/json' }
-      );
-    }).catch(err => console.error('GCS write failed:', err));
+    scheduleGcsSave();
   } else {
     try {
       const dbDir = path.dirname(DB_FILE);
