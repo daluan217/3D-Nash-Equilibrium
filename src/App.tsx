@@ -38,6 +38,7 @@ import {
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
+import { cleanText } from './utils/textSafety';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -178,6 +179,18 @@ function LegendSwatch({ shape }: { shape: 'surface' | 'diamond' | 'ring' | 'dash
     default:
       return <svg {...common}><line x1="0.5" y1="6" x2="11.5" y2="6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>;
   }
+}
+
+/**
+ * Structural equality on the 8 payoff numbers — the whole content of a
+ * `GamePayoffs`. Used ONLY to detect whether the game changed out from under
+ * an in-flight `/api/report` request (RED-APP-3 finding 001): the matrix on
+ * screen and the request's own captured payoffs are the same object only
+ * within one render, so this compares by VALUE, never by reference.
+ */
+export function payoffsEqual(a: GamePayoffs, b: GamePayoffs): boolean {
+  return a.a11 === b.a11 && a.a12 === b.a12 && a.a21 === b.a21 && a.a22 === b.a22
+      && a.b11 === b.b11 && a.b12 === b.b12 && a.b21 === b.b21 && a.b22 === b.b22;
 }
 
 export default function App() {
@@ -411,6 +424,49 @@ export default function App() {
     a11: 2, b11: 1, a12: 0, b12: 0,
     a21: 0, b21: 0, a22: 1, b22: 2,
   });
+  // Always the LATEST payoffs, readable from inside an async callback whose
+  // own closure captured an OLDER value. RED-APP-3 finding 001:
+  // `fetchLlmExplanation`'s closure captures `payoffs` at the moment the
+  // button was clicked; by the time a slow `/api/report` response lands, the
+  // component may have re-rendered several times with a DIFFERENT game on
+  // screen, and that closure has no way to see it. A ref updated on every
+  // render is the standard way to give an async callback a window onto
+  // "now" instead of "when I started".
+  //
+  // Written from `useLayoutEffect`, NOT assigned directly in the render
+  // body (CodeRabbit finding, this branch): writing to a ref DURING render
+  // is a React purity violation — a render that is started but never
+  // committed (React can and does throw away speculative renders) would
+  // still have mutated `payoffsRef.current`, leaving it holding payoffs
+  // that were never actually shown. `useLayoutEffect` fires synchronously
+  // right after a render COMMITS, before the browser paints and long before
+  // any network response can possibly resolve, so it closes the same gap
+  // `fetchLlmExplanation` needs without ever running from a discarded
+  // render.
+  const payoffsRef = useRef(payoffs);
+  useLayoutEffect(() => { payoffsRef.current = payoffs; });
+
+  // CodeRabbit finding on this branch (App.tsx:924): payoff-value equality
+  // alone is not a sufficient identity check for a report request. Two
+  // saved games can share IDENTICAL payoff numbers while being different
+  // games (different labels/description) -- payoffsEqual alone would treat
+  // a stale response for game A as still valid once the user switches to a
+  // same-matrix game B. And two requests fired for the SAME game (e.g. two
+  // quick "Regenerate" clicks) can resolve out of order -- the FIRST
+  // request's late response could overwrite the SECOND (more recent, more
+  // wanted) one even though both are technically "for this game".
+  //
+  // A monotonic generation counter closes both: bumped whenever the
+  // report's underlying identity changes (the payoffs-change effect below)
+  // AND at the start of every individual request (fetchLlmExplanation),
+  // so two requests for the SAME unchanged game still get different
+  // numbers -- the later one always wins regardless of arrival order, and
+  // a stale request compares its captured number against the LATEST one,
+  // not just the latest NUMBERS. Kept alongside payoffsEqual, not instead
+  // of it -- belt and braces: a bug in the bump logic would leave
+  // payoffsEqual as a second, independent line of defense against the
+  // cross-game case finding 001 already covers.
+  const requestGenerationRef = useRef(0);
 
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
     a11: '2', b11: '1', a12: '0', b12: '0',
@@ -708,6 +764,19 @@ export default function App() {
   // On demand, never reactive: payoffs change on every slider drag, so fetching
   // per change would fire a model call per keystroke. The user asks for it.
   const [llmEnvelope, setLlmEnvelope] = useState<ReportEnvelope | null>(null);
+  // The scenario whose NOUNS actually appear in `llmEnvelope.report.prose`,
+  // captured the moment that prose was written — NOT read live off
+  // `llmEnvelope.report.suggestedScenario`. RED-PUBLIC C: "New AI scenario"
+  // (fetchFreshScenario) deliberately swaps `suggestedScenario` for a
+  // brand-new draw while leaving `prose` untouched (its own comment: "only a
+  // fresh STORY is wanted... the prose stays put"). Reading the LIVE
+  // suggestedScenario for that unchanged prose's highlight terms meant the
+  // nouns actually IN the text silently lost their colour the moment a new
+  // suggestion arrived, while terms from a story the prose never mentions
+  // got added instead — colouring text for the wrong scenario. This snapshot
+  // is what the prose was ACTUALLY generated from, and fetchFreshScenario
+  // must never touch it.
+  const [proseScenario, setProseScenario] = useState<SuggestedScenario | null>(null);
   // Whether the game ACTUALLY has a payoff tie, for the provenance line in the
   // report panel. That line used to assert a tie unconditionally, which was true
   // only while the tie path alone produced `source === 'template'`;
@@ -744,7 +813,18 @@ export default function App() {
   const llmVerified = envelopeIsTrustworthy(llmEnvelope);
 
   // Any edit to the game invalidates prose written about the previous one.
-  useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
+  // Also bumps requestGenerationRef (any in-flight request becomes stale the
+  // instant this fires) and clears the loading flags -- CodeRabbit's second
+  // point on the same finding: without this, switching away from a game
+  // with a slow request in flight left "Explain this game" / "New AI
+  // scenario" permanently disabled for the NEWLY selected game, because
+  // only the (now-superseded) old request's own `finally` block was ever
+  // going to clear them.
+  useEffect(() => {
+    requestGenerationRef.current += 1;
+    setLlmEnvelope(null); setLlmError(false); setProseScenario(null);
+    setLlmLoading(false); setScenarioLoading(false);
+  }, [payoffs]);
 
   /**
    * Keep an invented scenario ON the game, labels and all.
@@ -840,6 +920,22 @@ export default function App() {
     freshScenario = false,
     scenarioOverride?: { name?: string; row1?: string; row2?: string; col1?: string; col2?: string; description?: string },
   ) => {
+    // Snapshot: the payoffs this SPECIFIC request describes. Not just the
+    // closure's own `payoffs` read later — that would be the same frozen
+    // value the bug already reads — an explicit local so the intent (compare
+    // "what I asked about" against "what's on screen now") reads plainly at
+    // the call site below.
+    const requestPayoffs = payoffs;
+    // Bump-then-capture, not just read: two calls for the SAME game (e.g.
+    // "Regenerate" clicked twice before the first response lands) must get
+    // DIFFERENT generation numbers so the later call always wins regardless
+    // of which response arrives first -- reading without bumping would give
+    // both calls the identical number whenever the payoffs never changed
+    // between them, and an out-of-order resolution would then pass this
+    // check exactly like the bug it exists to close. The payoffs-change
+    // effect ALSO bumps this (see its declaration), so a game switch
+    // invalidates an in-flight request even with no new call at all.
+    const myGeneration = (requestGenerationRef.current += 1);
     setLlmLoading(true);
     setLlmError(false);
     try {
@@ -851,19 +947,49 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           freshScenario
-            ? { payoffs, bypassCache: true }
-            : { payoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
+            ? { payoffs: requestPayoffs, bypassCache: true }
+            : { payoffs: requestPayoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
         ),
       });
       if (!res.ok) throw new Error(String(res.status));
-      setLlmEnvelope((await res.json()) as ReportEnvelope);
+      const envelope = (await res.json()) as ReportEnvelope;
+      // RED-APP-3 finding 001: the user may have switched to a DIFFERENT
+      // game while this (possibly slow — reports have hung for minutes in
+      // this app's own history) request was in flight. `payoffsRef.current`
+      // is always the LATEST payoffs, unlike this closure's own `payoffs` /
+      // `requestPayoffs`, which are frozen at the moment this function was
+      // called. A mismatch means the response describes a game that is no
+      // longer on screen — showing it as "verified against the solver"
+      // would verify the WRONG game, so it is dropped silently. The
+      // `[payoffs]` effect has already cleared `llmEnvelope`/`proseScenario`
+      // for whatever IS on screen now; this only stops the stale response
+      // from overwriting that a moment later.
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
+      setLlmEnvelope(envelope);
+      // Snapshot the scenario THIS prose was generated from — see the
+      // proseScenario declaration above. Every fresh fetch here writes new
+      // prose, so this always tracks it; only fetchFreshScenario (which
+      // writes no new prose) must skip this line.
+      setProseScenario(envelope.report?.suggestedScenario ?? null);
     } catch {
       // Offline, unreachable server, or a non-2xx. The deterministic report
-      // above still stands; we just say so instead of failing silently.
+      // above still stands; we just say so instead of failing silently —
+      // but only for the game this request was actually about. A request
+      // for an ABANDONED game failing after the user switched away must not
+      // paint "No verified explanation available" over whatever game is on
+      // screen now, when nothing was ever asked about IT — same staleness
+      // guard as the success path above, same reason.
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       setLlmEnvelope(null);
+      setProseScenario(null);
       setLlmError(true);
     } finally {
-      setLlmLoading(false);
+      // Only the request that is still CURRENT clears the loading flag --
+      // a superseded request's finally must not clobber a newer request's
+      // still-in-flight spinner (the payoffs-change effect above already
+      // cleared it immediately on the actual game switch, for the case
+      // where nothing newer was fired).
+      if (myGeneration === requestGenerationRef.current) setLlmLoading(false);
     }
   };
 
@@ -877,15 +1003,37 @@ export default function App() {
    */
   const fetchFreshScenario = async () => {
     if (!llmVerified || !llmEnvelope?.report) return fetchLlmExplanation(true);
+    // CodeRabbit finding (this branch, on the fixup commit): this function
+    // had NO staleness guard of its own. The `prev?.report` check in the
+    // updater below only proves SOME report exists when the response
+    // lands -- not that it is the SAME game's report. Sequence that slips
+    // through unguarded: user is on game A, clicks "New AI scenario"
+    // (this request fires for A); switches to game B (the payoffs effect
+    // clears llmEnvelope); asks for game B's own explanation (llmEnvelope
+    // now HAS a report again -- B's); THEN this stale request for A
+    // resolves, `prev?.report` is truthy (it's B's), and A's invented
+    // scenario gets merged into B's envelope. Same class of bug as
+    // fetchLlmExplanation (finding 001 / App.tsx:924), same fix: snapshot
+    // the identity this request was fired for, and require it to still
+    // match before touching state.
+    const requestPayoffs = payoffs;
+    const myGeneration = (requestGenerationRef.current += 1);
     setScenarioLoading(true);
     try {
       const res = await fetch(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payoffs, scenarioOnly: true }),
+        body: JSON.stringify({ payoffs: requestPayoffs, scenarioOnly: true }),
       });
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as { scenario: SuggestedScenario | null };
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) {
+        // Stale: the user has since switched games. Neither the scenario
+        // NOR a "couldn't invent" log line belongs on whatever is on
+        // screen now -- both would be about a game that is no longer
+        // there to have an opinion about.
+        return;
+      }
       if (data.scenario) {
         setLlmEnvelope((prev) =>
           prev?.report ? { ...prev, report: { ...prev.report, suggestedScenario: data.scenario } } : prev);
@@ -893,9 +1041,12 @@ export default function App() {
         setLogEntries((prev) => [...prev, "✗ Couldn't invent a verified scenario just now — try again."]);
       }
     } catch {
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       setLogEntries((prev) => [...prev, "✗ Couldn't reach the server for a new scenario."]);
     } finally {
-      setScenarioLoading(false);
+      // Same reasoning as fetchLlmExplanation's finally: only the request
+      // that is still current may clear the loading flag.
+      if (myGeneration === requestGenerationRef.current) setScenarioLoading(false);
     }
   };
 
@@ -1263,7 +1414,7 @@ export default function App() {
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editGameId || !authToken) return;
-    if (!editName.trim()) { setEditError('Please enter a game name.'); return; }
+    if (!cleanText(editName)) { setEditError('Please enter a game name.'); return; }
     setEditError('');
     setEditLoading(true);
     try {
@@ -1271,16 +1422,19 @@ export default function App() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
         body: JSON.stringify({
-          name: editName.trim(),
-          description: editDesc.trim(),
+          // cleanText, not .trim() alone: RED-PUBLIC D — a bidi override or
+          // raw control character typed into any of these fields used to
+          // reach the saved record untouched (src/utils/textSafety.ts).
+          name: cleanText(editName),
+          description: cleanText(editDesc),
           // Sent even when blank so CLEARING a label is possible. The server
           // ignores empty strings on create, but an edit dialog that cannot
           // remove a wrong label is only half an edit dialog — see the
           // allowClear flag on the PATCH route.
-          row1Label: editLabels.row1.trim(),
-          row2Label: editLabels.row2.trim(),
-          col1Label: editLabels.col1.trim(),
-          col2Label: editLabels.col2.trim(),
+          row1Label: cleanText(editLabels.row1),
+          row2Label: cleanText(editLabels.row2),
+          col1Label: cleanText(editLabels.col1),
+          col2Label: cleanText(editLabels.col2),
           colorTermsA: editTerms.a,
           colorTermsB: editTerms.b,
           allowClear: true,
@@ -1300,11 +1454,11 @@ export default function App() {
         // emptied-out form clears rather than triggering a fresh invention.
         if (regenExplanationAfterSaveRef.current) {
           regenExplanationAfterSaveRef.current = false;
-          const labels = [editLabels.row1, editLabels.row2, editLabels.col1, editLabels.col2].map((l) => l.trim());
-          const desc = editDesc.trim();
+          const labels = [editLabels.row1, editLabels.row2, editLabels.col1, editLabels.col2].map((l) => cleanText(l));
+          const desc = cleanText(editDesc);
           if (labels.every(Boolean) || desc.split(/\s+/).length >= 12) {
             void fetchLlmExplanation(false, {
-              name: editName.trim() || undefined,
+              name: cleanText(editName) || undefined,
               row1: labels[0] || undefined, row2: labels[1] || undefined,
               col1: labels[2] || undefined, col2: labels[3] || undefined,
               description: desc || undefined,
@@ -1421,7 +1575,7 @@ export default function App() {
 
   const handleSaveGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!saveName.trim()) {
+    if (!cleanText(saveName)) {
       setSaveError('Please enter a game name.');
       return;
     }
@@ -1443,13 +1597,15 @@ export default function App() {
           'Authorization': `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          name: saveName.trim(),
-          description: saveDesc.trim(),
+          // cleanText, not .trim() alone: RED-PUBLIC D — see the matching
+          // comment in handleEditGameSubmit above.
+          name: cleanText(saveName),
+          description: cleanText(saveDesc),
           payoffs,
-          row1Label: saveLabels.row1.trim(),
-          row2Label: saveLabels.row2.trim(),
-          col1Label: saveLabels.col1.trim(),
-          col2Label: saveLabels.col2.trim(),
+          row1Label: cleanText(saveLabels.row1),
+          row2Label: cleanText(saveLabels.row2),
+          col1Label: cleanText(saveLabels.col1),
+          col2Label: cleanText(saveLabels.col2),
           // The user's own highlights. Deliberately NOT part of the scenario
           // sent to the model — they colour this description and nothing else.
           colorTermsA: saveTerms.a,
@@ -1468,12 +1624,12 @@ export default function App() {
         // fresh invention, the opposite of "use what I just saved".
         if (regenExplanationAfterSaveRef.current) {
           regenExplanationAfterSaveRef.current = false;
-          const labels = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].map((l) => l.trim());
-          const desc = saveDesc.trim();
+          const labels = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].map((l) => cleanText(l));
+          const desc = cleanText(saveDesc);
           const usable = labels.every(Boolean) || desc.split(/\s+/).length >= 12;
           if (usable) {
             void fetchLlmExplanation(false, {
-              name: saveName.trim() || undefined,
+              name: cleanText(saveName) || undefined,
               row1: labels[0] || undefined, row2: labels[1] || undefined,
               col1: labels[2] || undefined, col2: labels[3] || undefined,
               description: desc || undefined,
@@ -3126,7 +3282,7 @@ export default function App() {
             {/* Selected Preset Narrative Card */}
             {selectedPreset?.desc && (
               selectedCustomGame ? (
-                <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
+                <div data-testid="preset-narrative" className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
                   <strong>Custom - {selectedCustomGame.name}:</strong>{' '}
                   {/* descriptionColorTerms, not colorTermsFor: this is the
                       user's OWN description, so their highlights apply here —
@@ -3141,6 +3297,7 @@ export default function App() {
                 </div>
               ) : (
                 <div
+                  data-testid="preset-narrative"
                   className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3"
                   dangerouslySetInnerHTML={{ __html: selectedPreset.desc }}
                 />
@@ -3162,7 +3319,18 @@ export default function App() {
               <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
             </div>
 
-            <div data-tour="matrix" className="grid grid-cols-[auto_1fr_1fr] gap-3 text-center items-center">
+            {/* Row-label column capped at 72px (was "auto"): mobile CI caught this
+                --  an auto-sized column grows to fit whatever text is in it (e.g.
+                "Football", "Stay at Home"), stealing width from the payoff-input
+                columns on either side. On the iPhone 14 Pro profile (393px viewport,
+                the narrowest of the three CI tests) that pushed the number inputs
+                to 23-24px wide -- under the WCAG 2.2 AA 24px target floor. Capping
+                the label column forces long labels to wrap (break-words is already
+                on the label divs below) instead of shrinking the inputs. 72px was
+                chosen empirically: re-verified against BOTH the longest label this
+                branch introduced ("Stay at Home", Cops & Robbers) and the shortest
+                real preset labels, on all three mobile.mjs device profiles. */}
+            <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_1fr_1fr] gap-3 text-center items-center">
               <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
               <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col1}>B: {activeLabels.col1}</div>
               <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col2}>B: {activeLabels.col2}</div>
@@ -4003,19 +4171,28 @@ export default function App() {
                     )}
                     <p className="text-slate-600 dark:text-slate-300">
                       {/* A fresh invention's prose uses the suggestion's own
-                          option names, so those join the highlight terms. */}
+                          option names, so those join the highlight terms.
+                          Reads `proseScenario` (a SNAPSHOT taken when this
+                          exact prose was written), never the envelope's own
+                          live suggested-scenario field directly —
+                          RED-PUBLIC C: "New AI scenario" replaces that live
+                          field with a brand-new draw while intentionally
+                          leaving this prose untouched, so reading it live
+                          would name a story this text never mentions while
+                          the nouns actually IN it go uncoloured. See the
+                          proseScenario declaration. */}
                       <ColorCoded
                         text={llmEnvelope.report.prose}
                         aTerms={[
                           ...colorTerms.a,
-                          ...(llmEnvelope.report.suggestedScenario
-                            ? [llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean)
+                          ...(proseScenario
+                            ? [proseScenario.row1, proseScenario.row2].filter(Boolean)
                             : []),
                         ]}
                         bTerms={[
                           ...colorTerms.b,
-                          ...(llmEnvelope.report.suggestedScenario
-                            ? [llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean)
+                          ...(proseScenario
+                            ? [proseScenario.col1, proseScenario.col2].filter(Boolean)
                             : []),
                         ]}
                       />
