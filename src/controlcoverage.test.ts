@@ -168,7 +168,12 @@ function e2eSelectorNames(src: string): Array<NamedSelector | RegExp> {
     const opts = m[1];
     const name = opts.match(/name:\s*['"`]([^'"`]{2,60})['"`]/)?.[1];
     if (name === undefined) continue;
-    out.push({ value: name, exact: /\bexact:\s*true\b/.test(opts) });
+    // Read `exact` as an option PROPERTY: strip string VALUES (a name such as
+    // 'Save exact: true' must not count) but keep string KEYS — a literal
+    // followed by a colon, so { 'exact': true } still reads — and accept any
+    // whitespace around the colon (`exact : true` is the same option).
+    const optsNoValues = opts.replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1(?!\s*:)/g, "''");
+    out.push({ value: name, exact: /(?:^|[{,\s])['"`]?exact['"`]?\s*:\s*true\b/.test(optsNoValues) });
   }
   // The other queries take the name as their first argument.
   for (const m of src.matchAll(/get(?:By|AllBy)(?:Text|Label|Placeholder|Title)\(\s*['"`]([^'"`]{2,60})['"`]/g)) out.push({ value: m[1], exact: false });
@@ -224,6 +229,20 @@ if (!matchesSelector('Toggle dark mode', { value: 'Toggle dark mode', exact: tru
   const nonExact = e2eSelectorNames(`await page.getByRole('button', { name: 'Save' }).click();`)[0];
   if (!nonExact || nonExact instanceof RegExp || nonExact.exact !== false) {
     fail(`fixture: a role query with no exact option must still parse to exact:false, got ${JSON.stringify(nonExact)}`);
+  }
+  // `exact` is an option PROPERTY, whatever the whitespace around its colon —
+  // and the same word inside the NAME string is not the option at all.
+  const spaced = e2eSelectorNames(`await page.getByRole('button', { name: 'Go', exact : true }).click();`)[0];
+  if (!spaced || spaced instanceof RegExp || spaced.exact !== true) {
+    fail(`fixture: { name: 'Go', exact : true } (spaced colon) must parse to exact:true, got ${JSON.stringify(spaced)}`);
+  }
+  const quoted = e2eSelectorNames(`await page.getByRole('button', { name: 'Save exact: true' }).click();`)[0];
+  if (!quoted || quoted instanceof RegExp || quoted.value !== 'Save exact: true' || quoted.exact !== false) {
+    fail(`fixture: 'exact: true' INSIDE the name string is not the option — must parse to exact:false, got ${JSON.stringify(quoted)}`);
+  }
+  const quotedKey = e2eSelectorNames(`await page.getByRole('button', { name: 'Go', 'exact': true }).click();`)[0];
+  if (!quotedKey || quotedKey instanceof RegExp || quotedKey.exact !== true) {
+    fail(`fixture: a QUOTED option key { 'exact': true } is still the option — must parse to exact:true, got ${JSON.stringify(quotedKey)}`);
   }
 }
 

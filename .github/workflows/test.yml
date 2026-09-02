@@ -58,7 +58,15 @@ jobs:
           dupes="$(git ls-files | awk -F/ '{ f=$NF } f ~ / [0-9]+\.[A-Za-z0-9]+$/ { print }' \
             | while IFS= read -r p; do
                 orig="$(printf '%s' "$p" | sed -E 's/ [0-9]+(\.[A-Za-z0-9]+)$/\1/')"
-                git ls-files --error-unmatch "$orig" >/dev/null 2>&1 && echo "$p"
+                # An explicit conditional: under the runner's `bash -e`, a bare
+                # `cmd && echo` whose lookup fails on the LAST entry makes the
+                # loop — and the assignment — exit 1 before the check below
+                # runs, so an innocent "Figure 1.png" with no "Figure.png"
+                # failed the job and a real duplicate earlier in the list was
+                # reported as a silent failure (reproduced under bash -e).
+                if git ls-files --error-unmatch -- "$orig" >/dev/null 2>&1; then
+                  echo "$p"
+                fi
               done)"
           if [ -n "$dupes" ]; then
             echo "Tracked file(s) matching the Finder/iCloud duplicate-copy shape:"
