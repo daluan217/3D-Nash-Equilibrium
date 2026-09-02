@@ -110,10 +110,11 @@ function stopFakeGcs(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-async function boot(cwd, gcsEmulatorHost) {
+async function boot(cwd, gcsEmulatorHost, extraEnv = {}) {
   const child = spawn('node', [BUNDLE], {
     cwd,
     env: {
+      ...extraEnv,
       PATH: process.env.PATH,
       HOME: cwd,
       NODE_ENV: 'production',
@@ -241,6 +242,48 @@ try {
   record('THE DEFECT: a HEAD request never opens a GCS media (?alt=media) read stream',
     fakeGcs.mediaRequestCount() === mediaCountBeforeHead,
     `media requests before: ${mediaCountBeforeHead}, after: ${fakeGcs.mediaRequestCount()}`);
+
+  await stop(srv); srv = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 1b. THE LIVE 500: Cloud Run's HTTP/1 path rejects a response whose
+  // explicit Content-Length is >= 32 MiB ("Maximum HTTP/1 response size:
+  // 32 MiB per response, if not using chunked transfer encoding"). Setting
+  // Content-Length on the 137 MB DMG (section 1's fix, shipped in #82) turned
+  // EVERY full download on production into a bare HTTP 500 from 08:00 to the
+  // hotfix, while the 1-byte ranged probes above kept passing — header-only
+  // verification cannot see it. Above the cap the server must omit
+  // Content-Length (Node then chunk-encodes) and still send every byte.
+  // NASH_MAX_SIZED_RESPONSE_BYTES lowers the cap so a few-KB fake object
+  // exercises the production branch; unset, the cap is 32 MiB.
+  // ───────────────────────────────────────────────────────────────────────────
+  fakeGcs = await startFakeGcs({ dmgExists: true });
+  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`, { NASH_MAX_SIZED_RESPONSE_BYTES: '64' });
+
+  const bigFull = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+  const bigFullBody = Buffer.from(await bigFull.arrayBuffer());
+  record('THE LIVE 500: a full download >= the sized-response cap is served 200 WITHOUT Content-Length',
+    bigFull.status === 200 && bigFull.headers.get('content-length') === null,
+    `status ${bigFull.status}, content-length ${bigFull.headers.get('content-length')}`);
+  record('…and every byte still arrives (chunked, not truncated)',
+    bigFullBody.equals(DMG_CONTENT), `${bigFullBody.length} of ${DMG_CONTENT.length} bytes`);
+
+  const bigRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { Range: 'bytes=0-199' } });
+  const bigRangeBody = Buffer.from(await bigRange.arrayBuffer());
+  record('a range >= the cap is a 206 with Content-Range but WITHOUT Content-Length',
+    bigRange.status === 206 && bigRange.headers.get('content-length') === null && bigRange.headers.get('content-range') === `bytes 0-199/${DMG_CONTENT.length}`,
+    `status ${bigRange.status}, content-length ${bigRange.headers.get('content-length')}, content-range ${bigRange.headers.get('content-range')}`);
+  record('…and that range body is byte-exact', bigRangeBody.equals(DMG_CONTENT.subarray(0, 200)), `${bigRangeBody.length} bytes`);
+
+  const smallRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { Range: 'bytes=0-9' } });
+  await smallRange.arrayBuffer();
+  record('a range BELOW the cap keeps its Content-Length (resumable downloads still get sizes)',
+    smallRange.status === 206 && smallRange.headers.get('content-length') === '10', `status ${smallRange.status}, content-length ${smallRange.headers.get('content-length')}`);
+  const bigHead = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { method: 'HEAD' });
+  await bigHead.arrayBuffer();
+  record('HEAD still reports the real size (no body, so the cap does not apply)',
+    bigHead.status === 200 && bigHead.headers.get('content-length') === String(DMG_CONTENT.length), `content-length ${bigHead.headers.get('content-length')}`);
 
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
