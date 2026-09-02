@@ -35,8 +35,18 @@ export const OtherAccountsNotice: React.FC = () => {
       && window.navigator?.userAgent?.toLowerCase().includes('electron');
     if (!isElectron) return;
     if (localStorage.getItem(DISMISS_KEY) === '1') return;
-    // Already signed in on this device -> whatever the account owns is
-    // already visible; nothing to recover.
+    // The hint is about the LOCAL database only (server.ts's
+    // /api/auth/desktop-hint reads db.json, not the hosted service) — in
+    // Cloud Sync mode the app's data comes from the remote server instead,
+    // so this notice would be irrelevant at best. Checked ONLY the local
+    // token before, which meant a cloud-mode user (a valid
+    // nash_sim_token_cloud, no nash_sim_token_local) still read as
+    // "not signed in" and could be shown a notice about local games that
+    // has nothing to do with what they are looking at.
+    const dbMode = localStorage.getItem('nash_sim_db_mode') || 'local';
+    if (dbMode !== 'local') return;
+    // Already signed in locally -> whatever the account owns is already
+    // visible; nothing to recover.
     const signedIn = !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token'));
     if (signedIn) return;
 

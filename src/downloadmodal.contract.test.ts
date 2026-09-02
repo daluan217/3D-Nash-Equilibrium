@@ -99,9 +99,19 @@ ok(/setErrorKind\('unavailable'\)/.test(src),
       'that is the exact conflation this contract exists to prevent');
   }
 
-  const notBuiltBlock = src.slice(notBuiltIdx, notBuiltIdx + 2000);
-  ok(notBuiltBlock.includes('cloneCommands') || notBuiltBlock.includes('Self-Service Desktop Compiler'),
+  const notBuiltBlock = src.slice(notBuiltIdx, notBuiltIdx + 4000);
+  ok(notBuiltBlock.includes('Self-Service Desktop Compiler'),
     'the "not-built" (genuine 404) branch must still render the self-build guide');
+  // `cloneCommands` (like `installCommands`/`buildCommands`) must be
+  // RENDERED (a `{cloneCommands}` JSX interpolation), not merely referenced
+  // in a copy-button handler — `cloneCommands` was DEFINED from the start
+  // but never interpolated anywhere, so a user on an un-cloned machine hit
+  // "Step 1: npm install" with no repository to install into. A check for
+  // the bare substring "cloneCommands" would pass on the handler reference
+  // alone and miss exactly this regression.
+  ok(notBuiltBlock.includes('{cloneCommands}'),
+    'the "not-built" branch must actually RENDER {cloneCommands}, not just reference it in a copy handler — ' +
+    'the self-build guide is useless without a step to get the source first');
 }
 
 console.log(`downloadmodal.contract.test.ts: ${checks} checks passed`);

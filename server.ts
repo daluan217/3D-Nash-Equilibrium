@@ -501,8 +501,31 @@ function acquireDesktopLock(): void {
     return; // fail OPEN — do not block startup over a directory-creation error here
   }
   const lockFile = path.join(userDataPath, ".server.lock");
-  if (fs.existsSync(lockFile)) {
-    const heldBy = parseInt(fs.readFileSync(lockFile, "utf-8").trim(), 10);
+
+  // ATOMIC on purpose. An earlier version checked `fs.existsSync(lockFile)`
+  // and then `fs.writeFileSync`'d it as two separate steps — a real
+  // check-then-act race (CodeRabbit caught it): two processes launched
+  // close enough together can both observe "no lock file" before either has
+  // written one, and both then proceed to load independent database
+  // snapshots — exactly the near-simultaneous-launch case this lock exists
+  // to catch, silently defeated. `wx` (write, fail if the path already
+  // exists) makes the CREATE itself the race-free step: the filesystem, not
+  // this process, decides which of two simultaneous openers wins.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const fd = fs.openSync(lockFile, "wx", 0o600);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      break; // acquired
+    } catch (err: any) {
+      if (err.code !== "EEXIST") {
+        console.error("Error writing desktop lock file:", err);
+        return; // fail OPEN on an unexpected filesystem error
+      }
+    }
+    // EEXIST: someone else's lock is already there — a live process, or one
+    // that crashed without cleaning up. Read it to tell the two apart.
+    const heldBy = parseInt((fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8") : "").trim(), 10);
     let alive = false;
     if (Number.isInteger(heldBy) && heldBy > 0) {
       try {
@@ -522,14 +545,15 @@ function acquireDesktopLock(): void {
       );
       process.exit(1);
     }
-    // The PID in the lock file is no longer running: stale, safe to take over.
+    // Stale: the recorded PID is no longer running. Clear it and retry the
+    // atomic create on the next loop iteration. A second process racing the
+    // exact same takeover just hits EEXIST again against whichever one of
+    // us wins the recreate, and correctly reports "alive" on ITS retry —
+    // the loop bound (3) is generous headroom for that one extra round-trip,
+    // not evidence this can spin.
+    try { fs.unlinkSync(lockFile); } catch { /* already gone: fine, next attempt recreates it */ }
   }
-  try {
-    fs.writeFileSync(lockFile, String(process.pid), "utf-8");
-  } catch (err) {
-    console.error("Error writing desktop lock file:", err);
-    return;
-  }
+
   const release = () => {
     try {
       if (fs.existsSync(lockFile) && fs.readFileSync(lockFile, "utf-8").trim() === String(process.pid)) {
@@ -1868,6 +1892,20 @@ async function startServer() {
           res.setHeader('Content-Type', 'application/octet-stream');
           res.setHeader('Content-Disposition', 'attachment; filename="Nash Equilibrium Simulator.dmg"');
           if (size !== null && Number.isFinite(size)) res.setHeader('Accept-Ranges', 'bytes');
+
+          // DownloadModal.tsx does a HEAD request first, specifically to
+          // check existence/size WITHOUT downloading. Express dispatches
+          // HEAD to this same GET handler (there is no separate route), so
+          // without this guard every "just checking" HEAD probe opened a
+          // real GCS read stream and piped it into the response — wasted
+          // GCS egress for a request whose whole point was to avoid a
+          // download. HEAD gets exactly the headers a GET would send, no
+          // stream ever created.
+          if (req.method === 'HEAD') {
+            if (size !== null && Number.isFinite(size)) res.setHeader('Content-Length', String(size));
+            res.status(200).end();
+            return;
+          }
 
           const streamAndPipe = (range?: { start: number; end: number }) => {
             const stream = range ? file.createReadStream(range) : file.createReadStream();

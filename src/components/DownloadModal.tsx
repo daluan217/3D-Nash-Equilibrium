@@ -211,10 +211,30 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
 
                 {/* Steps container */}
                 <div className="space-y-3.5 mt-2">
-                  {/* Step 1 */}
+                  {/* Step 1 — was defined (cloneCommands) but never rendered
+                      anywhere: a user on a normal, un-cloned machine would
+                      hit "Step 1: npm install" with no repository to install
+                      into. */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 1 — Install dependencies</span>
+                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 1 — Clone the repository</span>
+                      <button
+                        onClick={() => copyCode(cloneCommands, 'clone')}
+                        className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedText === 'clone' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                        Copy command
+                      </button>
+                    </div>
+                    <pre className="p-2 border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-xs text-slate-600 dark:text-slate-400 rounded-lg overflow-x-auto whitespace-pre-wrap">
+                      {cloneCommands}
+                    </pre>
+                  </div>
+
+                  {/* Step 2 */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 2 — Install dependencies</span>
                       <button
                         onClick={() => copyCode(installCommands, 'inst')}
                         className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
@@ -228,10 +248,10 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                     </pre>
                   </div>
 
-                  {/* Step 2 */}
+                  {/* Step 3 */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 2 — Pack macOS DMG Installer</span>
+                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 3 — Pack macOS DMG Installer</span>
                       <button
                         onClick={() => copyCode(buildCommands, 'build')}
                         className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"

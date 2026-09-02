@@ -51,8 +51,13 @@ function record(name, pass, detail) {
 /** A fake GCS JSON API: only the two calls this endpoint makes. */
 function startFakeGcs({ dmgExists }) {
   const objectPath = `/b/${BUCKET}/o/${encodeURIComponent(DMG_OBJECT)}`;
+  // Counts requests that actually fetch OBJECT BYTES (?alt=media) — the
+  // thing a HEAD probe must never trigger. Exposed on the returned server so
+  // the HEAD test below can assert on it directly, not infer it from timing.
+  let mediaRequests = 0;
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
+    if (u.pathname === objectPath && u.searchParams.get('alt') === 'media') mediaRequests++;
     // db.json's own exists() check at startup (initDB) — always "not found" so
     // the server falls back to a fresh in-memory DB without touching disk.
     if (u.pathname !== objectPath) {
@@ -90,7 +95,19 @@ function startFakeGcs({ dmgExists }) {
       contentType: 'application/octet-stream',
     }));
   });
+  server.mediaRequestCount = () => mediaRequests;
   return new Promise((resolve) => server.listen(fakeGcsPort, () => resolve(server)));
+}
+
+/**
+ * `server.close()` is ASYNCHRONOUS (it stops accepting new connections and
+ * resolves once existing ones finish) — an un-awaited close raced the very
+ * next `startFakeGcs` call rebinding the SAME `fakeGcsPort`, which could fail
+ * EADDRINUSE if the OS had not yet released the port (CodeRabbit caught
+ * this). Await the real 'close' event instead of the synchronous call.
+ */
+function stopFakeGcs(server) {
+  return new Promise((resolve) => server.close(() => resolve()));
 }
 
 async function boot(cwd, gcsEmulatorHost) {
@@ -117,9 +134,14 @@ async function boot(cwd, gcsEmulatorHost) {
       throw new Error(`server exited before becoming ready (code ${child.exitCode})\n${log}`);
     }
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/health`);
+      // Bounded: an UNBOUNDED fetch here could hang past this loop's own
+      // 80-attempt/~20s retry budget if the health endpoint accepted the
+      // connection but never completed the response (CodeRabbit caught
+      // this) — the loop's timeout logic literally cannot run while this
+      // one `await` is still pending.
+      const r = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
       if (r.ok && (await r.json())?.pid === child.pid) return child;
-    } catch { /* not up yet */ }
+    } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((r) => setTimeout(r, 250));
   }
   child.kill('SIGKILL');
@@ -193,8 +215,21 @@ try {
   record('a range entirely past the end of the file gets 416, not a silent 200',
     badRes.status === 416, `status ${badRes.status}`);
 
+  // DownloadModal.tsx's own existence check is a HEAD request — it must get
+  // the same headers a GET would, WITHOUT opening a GCS read stream (that
+  // would defeat the whole point of checking before downloading).
+  const mediaCountBeforeHead = fakeGcs.mediaRequestCount();
+  const headRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { method: 'HEAD' });
+  const headBody = await headRes.arrayBuffer();
+  record('THE DEFECT: a HEAD request gets a 200 with the real Content-Length, no body',
+    headRes.status === 200 && headRes.headers.get('content-length') === String(DMG_CONTENT.length) && headBody.byteLength === 0,
+    `status ${headRes.status}, content-length ${headRes.headers.get('content-length')}, body ${headBody.byteLength} bytes`);
+  record('THE DEFECT: a HEAD request never opens a GCS media (?alt=media) read stream',
+    fakeGcs.mediaRequestCount() === mediaCountBeforeHead,
+    `media requests before: ${mediaCountBeforeHead}, after: ${fakeGcs.mediaRequestCount()}`);
+
   await stop(srv); srv = null;
-  fakeGcs.close(); fakeGcs = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
 
   // ───────────────────────────────────────────────────────────────────────────
   // 2. GCS says the object does not exist -> the existing 404 contract holds
@@ -207,7 +242,7 @@ try {
     res2.status === 404 && typeof json2?.message === 'string' && json2.message.includes('electron:dist'),
     `status ${res2.status}, ${JSON.stringify(json2)}`);
   await stop(srv); srv = null;
-  fakeGcs.close(); fakeGcs = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
 
   // ───────────────────────────────────────────────────────────────────────────
   // 3. GCS IS UNREACHABLE (connection refused, not "object missing") — this
@@ -230,7 +265,7 @@ try {
 
 } finally {
   await stop(srv);
-  if (fakeGcs) fakeGcs.close();
+  if (fakeGcs) await stopFakeGcs(fakeGcs);
   rmSync(userData, { recursive: true, force: true });
 }
 

@@ -62,9 +62,12 @@ async function waitReady(child, thePort) {
       throw new Error(`server exited before becoming ready on ${thePort} (code ${child.exitCode})\n${log}`);
     }
     try {
-      const r = await fetch(`http://127.0.0.1:${thePort}/api/health`);
+      // Bounded: an unbounded fetch here could hang past this loop's own
+      // retry budget if the health endpoint accepted the connection but
+      // never completed the response.
+      const r = await fetch(`http://127.0.0.1:${thePort}/api/health`, { signal: AbortSignal.timeout(2000) });
       if (r.ok && (await r.json())?.pid === child.pid) return { child, log: () => log };
-    } catch { /* not up yet */ }
+    } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((r) => setTimeout(r, 250));
   }
   child.kill('SIGKILL');
