@@ -27,6 +27,20 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const [downloading, setDownloading] = useState(false);
   const [showTerminalAlt, setShowTerminalAlt] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // THE DEFECT THIS SPLITS: a genuinely missing DMG (404 — the build just
+  // hasn't been compiled yet) and a transient server/GCS failure (500 — the
+  // file exists but couldn't be fetched right now) both used to render the
+  // SAME banner: a fabricated "this is an ephemeral cloud sandbox, the DMG
+  // can't be compiled here" story with a self-build guide whose git-clone
+  // command pointed at a literal placeholder repo owner in the URL. Neither
+  // claim is true of this app (a real, deployed Cloud Run service, not a
+  // sandbox) or reachable (the placeholder repo doesn't exist) — and a real
+  // user hitting a transient outage would be told to go compile the app
+  // themselves instead of "try again in a moment." `errorKind` keeps the
+  // self-build guidance for the one case where it is actually the right
+  // advice (404: nothing was ever uploaded) and gives every other failure a
+  // plain, honest message instead.
+  const [errorKind, setErrorKind] = useState<'not-built' | 'unavailable' | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
   // Close on Escape
@@ -42,6 +56,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const handleDownloadDmg = async () => {
     setDownloading(true);
     setErrorMsg(null);
+    setErrorKind(null);
 
     try {
       // Check if DMG exists before triggering download
@@ -51,9 +66,21 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
 
       if (!res.ok || res.headers.get('content-type')?.includes('application/json')) {
         const data = res.headers.get('content-type')?.includes('application/json')
-          ? await res.json()
+          ? await res.json().catch(() => ({}))
           : {};
-        setErrorMsg(data.message || 'No pre-compiled macOS installer found on the server.');
+        // 404 = server.ts genuinely could not find a compiled DMG anywhere
+        // (GCS object absent AND no local dist-electron/*.dmg) — the
+        // self-build guide is the right advice. Anything else (500 = GCS
+        // unreachable, or any other non-ok status) is a server-side problem
+        // that has nothing to do with what the user has locally; telling
+        // them to go compile the app themselves would be actively wrong.
+        if (res.status === 404) {
+          setErrorKind('not-built');
+          setErrorMsg(data.message || 'No pre-compiled macOS installer found on the server.');
+        } else {
+          setErrorKind('unavailable');
+          setErrorMsg('The installer is temporarily unavailable. Please try again in a moment.');
+        }
         setDownloading(false);
         return;
       }
@@ -68,6 +95,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
       setDownloading(false);
     } catch (err: any) {
       console.error(err);
+      setErrorKind('unavailable');
       setErrorMsg('Could not reach the server. Please try again.');
       setDownloading(false);
     }
@@ -79,7 +107,10 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
     setTimeout(() => setCopiedText(null), 2000);
   };
 
-  const cloneCommands = `git clone https://github.com/your-username/nash-equilibrium-simulator.git\ncd nash-equilibrium-simulator`;
+  // The real, public repo this app ships from. The placeholder-owner URL
+  // this replaced pointed nowhere; a user following it would have gotten
+  // `git clone` failing on a repo that does not exist.
+  const cloneCommands = `git clone https://github.com/daluan217/3D-Nash-Equilibrium.git\ncd 3D-Nash-Equilibrium`;
   const installCommands = `npm install`;
   const buildCommands = `npm run build && npm run electron:dist`;
 
@@ -142,15 +173,32 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             </button>
           </div>
 
+          {/* A transient/server-side failure (GCS unreachable, unexpected
+              error) — NOT the same thing as "nobody has built a DMG yet."
+              Deliberately does not reuse the self-build guidance below: a
+              user hitting a momentary outage should be told to retry, not
+              told to go compile the app from source. */}
+          {errorMsg && errorKind === 'unavailable' && (
+            <div className="p-4 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/20 dark:bg-amber-950/10 text-slate-700 dark:text-slate-300 text-xs leading-relaxed space-y-1">
+              <div className="flex items-start gap-2 text-amber-600 dark:text-amber-400 font-bold">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>Installer Temporarily Unavailable</span>
+              </div>
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400 leading-relaxed pl-6">
+                {errorMsg}
+              </p>
+            </div>
+          )}
+
           {/* Conditional Guidance / Warnings */}
-          {errorMsg && (
+          {errorMsg && errorKind === 'not-built' && (
             <div className="p-4 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/20 dark:bg-amber-950/10 text-slate-700 dark:text-slate-300 text-xs leading-relaxed space-y-3">
               <div className="flex items-start gap-2 text-amber-600 dark:text-amber-400 font-bold">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>DMG App Not Compiled On Server Yet</span>
               </div>
               <p className="text-xs font-medium text-slate-500 dark:text-slate-400 leading-relaxed pl-6">
-                Because this is an active cloud web sandbox, the final macOS installer hasn't been compiled into the server's build directory yet (building DMG binaries requires macOS environment libraries or packaging tools not typically cached inside ephemeral cloud containers).
+                No pre-built macOS installer is available from the server right now. Building a `.dmg` requires a macOS packaging toolchain, so it isn&apos;t always kept on hand — but you can build one yourself from the same source in a couple of minutes.
               </p>
               <div className="pl-6 pt-1">
                 <div className="text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wide mb-2 flex items-center gap-1">

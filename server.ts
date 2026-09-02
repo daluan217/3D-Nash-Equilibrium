@@ -459,6 +459,89 @@ function loadDBFromFile(): DB {
   }
 }
 
+/**
+ * Refuse to become a SECOND writer against the same `ELECTRON_USER_DATA_PATH`.
+ *
+ * `loadDB()`/`saveDB()` cache the ENTIRE database in memory once at startup
+ * and always overwrite the WHOLE file on save — `writeFileAtomicSync`'s own
+ * comment above promises atomicity per write, but says nothing about a
+ * SECOND writer, because there was never supposed to be one. Two
+ * `dist/server.cjs` processes pointed at the same user-data directory hold
+ * two independent, diverging in-memory snapshots, and whichever one saves
+ * LAST silently and completely erases the other's saved games from disk —
+ * with a 200 OK returned to BOTH windows at the moment each save was made.
+ * (RED-DESKTOP-3, round3/findings/RED-DESKTOP-3/001-concurrent-servers-
+ * silent-data-loss.md — reproduced independently before this fix.)
+ *
+ * Electron's own `app.requestSingleInstanceLock()` (electron-main.cjs)
+ * already blocks the ORDINARY path — double-clicking the Dock icon while the
+ * app is already open never reaches this file at all, since the second
+ * process calls `app.quit()` before `dist/server.cjs` is ever required. This
+ * lock is defense for the paths that lock does NOT cover: a support/debug
+ * script running the bundle directly against a real install's data
+ * directory, `npm run electron:start` (dev) alongside an already-open
+ * packaged .app, Electron's own documented non-instantaneous lock
+ * acquisition, or two copies of the app sharing one user-data path. Worse,
+ * IS_ELECTRON's own EADDRINUSE retry (`startListening`, below) would
+ * otherwise let a second process land quietly on the NEXT port and start
+ * serving — no crash, no port conflict, nothing to notice until a save goes
+ * missing.
+ *
+ * A PID lockfile turns that silent loss into a loud, immediate startup
+ * failure: exit BEFORE `initDB()` ever loads a second in-memory snapshot, so
+ * nothing is read, nothing is served, and no divergent write can happen.
+ */
+function acquireDesktopLock(): void {
+  const userDataPath = process.env.ELECTRON_USER_DATA_PATH;
+  if (!userDataPath) return; // hosted service: GCS's own analogous risk is a separate, product-scope question
+  try {
+    if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
+  } catch (err) {
+    console.error("Error creating user-data directory for the desktop lock:", err);
+    return; // fail OPEN — do not block startup over a directory-creation error here
+  }
+  const lockFile = path.join(userDataPath, ".server.lock");
+  if (fs.existsSync(lockFile)) {
+    const heldBy = parseInt(fs.readFileSync(lockFile, "utf-8").trim(), 10);
+    let alive = false;
+    if (Number.isInteger(heldBy) && heldBy > 0) {
+      try {
+        // Throws ESRCH if no such process exists; EPERM means it exists but
+        // is owned by someone else, which still counts as "alive" here.
+        process.kill(heldBy, 0);
+        alive = true;
+      } catch (err: any) {
+        alive = err && err.code === "EPERM";
+      }
+    }
+    if (alive) {
+      console.error(
+        `Refusing to start: another Nash Equilibrium Simulator server (pid ${heldBy}) is already using `
+        + `this data directory (${userDataPath}). Starting a second one would silently overwrite its saved `
+        + `games. Quit the other instance first.`
+      );
+      process.exit(1);
+    }
+    // The PID in the lock file is no longer running: stale, safe to take over.
+  }
+  try {
+    fs.writeFileSync(lockFile, String(process.pid), "utf-8");
+  } catch (err) {
+    console.error("Error writing desktop lock file:", err);
+    return;
+  }
+  const release = () => {
+    try {
+      if (fs.existsSync(lockFile) && fs.readFileSync(lockFile, "utf-8").trim() === String(process.pid)) {
+        fs.unlinkSync(lockFile);
+      }
+    } catch { /* best effort — a leftover lock is handled by the liveness check above */ }
+  };
+  process.on("exit", release);
+  process.on("SIGINT", () => { release(); process.exit(0); });
+  process.on("SIGTERM", () => { release(); process.exit(0); });
+}
+
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
 async function initDB(): Promise<void> {
   if (process.env.ELECTRON_USER_DATA_PATH) {
@@ -1130,6 +1213,11 @@ async function sendFeedbackEmail(
 }
 
 async function startServer() {
+  // First thing, before anything else touches the filesystem or binds a
+  // port: refuse to run as a second writer against a data directory another
+  // live process already owns. See acquireDesktopLock's own comment.
+  acquireDesktopLock();
+
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
@@ -1764,9 +1852,64 @@ async function startServer() {
         const file = new Storage().bucket(GCS_BUCKET).file('Nash Equilibrium Simulator.dmg');
         const [exists] = await file.exists();
         if (exists) {
+          // getMetadata() before piping: without it the response carries no
+          // Content-Length, so the browser shows an unknown-size download with
+          // no progress bar/ETA for a ~120MB file, and a client that reads
+          // Content-Length to detect a truncated transfer (curl -C -, some
+          // download managers) cannot tell a good download from a dropped one.
+          // Verified live against production (revision 00194-fxz):
+          // `curl -r 0-0` got a full 200 stream with no Content-Length, no
+          // Accept-Ranges, no Content-Range — the range request was silently
+          // ignored. `size` comes back as a STRING from the GCS JSON API.
+          const [metadata] = await file.getMetadata();
+          const size = metadata.size !== undefined && metadata.size !== null
+            ? parseInt(String(metadata.size), 10) : null;
+
           res.setHeader('Content-Type', 'application/octet-stream');
           res.setHeader('Content-Disposition', 'attachment; filename="Nash Equilibrium Simulator.dmg"');
-          file.createReadStream().pipe(res);
+          if (size !== null && Number.isFinite(size)) res.setHeader('Accept-Ranges', 'bytes');
+
+          const streamAndPipe = (range?: { start: number; end: number }) => {
+            const stream = range ? file.createReadStream(range) : file.createReadStream();
+            stream.on('error', (err) => {
+              console.error("Error streaming DMG from GCS:", err);
+              if (!res.headersSent) res.status(500).json({ error: "Internal Server Error" });
+              else res.destroy();
+            });
+            stream.pipe(res);
+          };
+
+          // RESUMABLE DOWNLOADS: a dropped connection on a ~120MB file
+          // otherwise means starting over. `Range: bytes=start-end`,
+          // `bytes=start-` (open-ended), and `bytes=-N` (last N bytes) are
+          // the three forms curl/browsers/download managers actually send.
+          const rangeHeader = size !== null ? req.headers.range : undefined;
+          const m = typeof rangeHeader === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim()) : null;
+          if (m && (m[1] !== '' || m[2] !== '') && size !== null) {
+            let start: number, end: number;
+            if (m[1] === '') {
+              const suffixLen = parseInt(m[2], 10);
+              start = Math.max(0, size - suffixLen);
+              end = size - 1;
+            } else {
+              start = parseInt(m[1], 10);
+              end = m[2] === '' ? size - 1 : parseInt(m[2], 10);
+            }
+            const validRange = Number.isFinite(start) && Number.isFinite(end)
+              && start >= 0 && start <= end && end < size;
+            if (!validRange) {
+              res.setHeader('Content-Range', `bytes */${size}`);
+              return res.status(416).end();
+            }
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+            res.setHeader('Content-Length', String(end - start + 1));
+            streamAndPipe({ start, end });
+            return;
+          }
+
+          if (size !== null && Number.isFinite(size)) res.setHeader('Content-Length', String(size));
+          streamAndPipe();
           return;
         }
       }
@@ -2234,6 +2377,23 @@ async function startServer() {
       success: true,
       message: "Your account and all saved game profiles have been successfully deleted from our records."
     });
+  });
+
+  // ── Desktop recovery hint ───────────────────────────────────────────────────
+  // Unauthenticated `GET /api/games` returns 200 [] both for a brand-new
+  // install (never used) AND for a real pre-existing account that saved games
+  // before `local-owner` shipped — the two are indistinguishable from that
+  // response alone, and there is nothing else in the app that would tell a
+  // returning user "sign in to see your other games." This endpoint answers
+  // exactly one boolean, computed without ever exposing which account, what
+  // its games are, or anything else pre-auth — safe to call from the empty
+  // state before the user has proven who they are.
+  app.get("/api/auth/desktop-hint", rateLimit("desktop-hint", 30, 60_000), (req, res) => {
+    if (!isDesktop()) return res.json({ hasOtherAccounts: false });
+    const db = loadDB();
+    const hasOtherAccounts = db.users.some((u) =>
+      u.id !== LOCAL_OWNER_ID && db.games.some((g) => g.userId === u.id));
+    res.json({ hasOtherAccounts });
   });
 
   // ── Custom Saved Games API ─────────────────────────────────────────────────

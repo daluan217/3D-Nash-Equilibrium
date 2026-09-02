@@ -132,4 +132,60 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
     'build.files must package electron-main.cjs — it is where the desktop environment now lives');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. THE RUNG-3 / CLAIM-FREE SCREEN IS BUILD-TIME ONLY, NEVER REQUEST-TIME
+//
+// `NASH_PAYOFF_TEMPLATE` gates the CLAIM-FREE scenario screen (server.ts:
+// under it, `inventScreenedScenario` requires the description to assert
+// nothing decidable — the solver states the mathematics instead). It is set
+// exactly ONCE, above, before `dist/server.cjs` is even required, and read
+// from `process.env` only. round3/BLUE-SERVER-DESKTOP.md's queue item 4 asks
+// to confirm this can never become a per-REQUEST toggle: a client that could
+// flip it on or off would let a request opt OUT of the claim-free guarantee
+// the desktop is supposed to enforce unconditionally, or opt IN somewhere it
+// was deliberately not measured. This is a NEGATIVE-existence check — the
+// failure mode is someone adding a `req.body.forceTemplate`-shaped backdoor
+// later, not a removal, which is why it lives beside the trio checks above
+// rather than as a positive assertion of its own.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const serverSrc = stripComments(readFileSync(join(repo, 'server.ts'), 'utf8'));
+  const flagNames = ['NASH_PAYOFF_TEMPLATE', 'NASH_LLM_TIES', 'NASH_DIRECTION_CHECKS'];
+
+  for (const name of flagNames) {
+    // server.ts must only ever COMPARE against process.env.<name>, never
+    // ASSIGN to it — an assignment there would mean some code path (a route
+    // handler, most plausibly) can change the flag after startup. The
+    // negative lookahead excludes `===`/`==`, which start with the same `=`
+    // this would otherwise flag as an assignment — checked directly below:
+    // the trio's real reads are `process.env.X === '1'` and must NOT trip
+    // this check, or the assertion would be vacuous (failing on correct code
+    // too, which is worse than not existing).
+    const assignRe = new RegExp(`process\\.env\\.${name}\\s*=(?!=)`);
+    ok(!assignRe.test(serverSrc),
+      `server.ts must never ASSIGN process.env.${name} — it is a build/launch-time flag, ` +
+      `set once in electron-main.cjs (desktop) or cloudbuild.yaml (hosted), never at request time`);
+  }
+
+  // No request-derived value (req.body / req.query / req.headers, however the
+  // property is spelled) may share a line with any of the three flag names —
+  // catches `if (req.body.forceTemplate)` guarding a flag-name reference, a
+  // destructure pulling a flag name off req.body, etc. Line-based (not just a
+  // same-file check) so a handler far away from the real gate cannot launder
+  // a match; every one of the trio's real reads is a single `process.env.X`
+  // expression with nothing req-shaped on that line, which is exactly what a
+  // literal correct implementation looks like.
+  const reqShapeRe = /\breq\s*\.\s*(body|query|headers|params)\b/;
+  const lines = serverSrc.split('\n');
+  const offending: string[] = [];
+  for (const line of lines) {
+    if (reqShapeRe.test(line) && flagNames.some((n) => line.includes(n))) {
+      offending.push(line.trim());
+    }
+  }
+  ok(offending.length === 0,
+    `server.ts must never read a rung-3 flag name from req.body/query/headers/params ` +
+    `(found: ${JSON.stringify(offending)})`);
+}
+
 console.log(`electronenv.contract.test.ts: ${checks} checks passed`);

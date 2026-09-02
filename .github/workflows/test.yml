@@ -178,6 +178,41 @@ jobs:
         env:
           PARITY_PORT: '3106'
 
+      # /api/download/dmg against a FAKE GCS object (STORAGE_EMULATOR_HOST —
+      # no real credentials, no real GCS spend). Guards RED-DESKTOP-3's live
+      # finding against production (revision 00194-fxz): the GCS-streamed DMG
+      # had no Content-Length, no Accept-Ranges, and silently ignored a byte
+      # range request (curl -r 0-0 got a full 200 stream). Also covers the
+      # 404-vs-500 (missing object vs. unreachable GCS) contract that
+      # DownloadModal.tsx's error UI depends on.
+      - name: Boot the production server and run the DMG download suite (fake GCS)
+        run: node src/integration/dmg-download.test.mjs
+        env:
+          DMG_TEST_PORT: '3109'
+          DMG_TEST_GCS_PORT: '3110'
+
+      # Two dist/server.cjs processes on the SAME ELECTRON_USER_DATA_PATH used
+      # to silently clobber each other's saved games (whole-file overwrite,
+      # last write wins, no error to either window). Electron's own
+      # single-instance lock blocks the ordinary double-launch path, so this
+      # is hardening for the paths it does NOT cover (dev-alongside-packaged,
+      # a lock-acquisition race, a support script pointed at a real data dir)
+      # — but it turns a silent, permanent loss into a loud startup failure.
+      - name: Boot the production server and run the desktop concurrent-lock suite
+        run: node src/integration/desktop-concurrent-lock.test.mjs
+        env:
+          LOCK_TEST_PORT: '3113'
+
+      # A pre-local-owner desktop install's real account is invisible to an
+      # unauthenticated GET /api/games (200 [], indistinguishable from "never
+      # used"), while GET /api/auth/me correctly 401s the same request.
+      # /api/auth/desktop-hint gives the frontend one boolean to tell the two
+      # apart without exposing which account or what it owns.
+      - name: Boot the production server and run the desktop recovery-hint suite
+        run: node src/integration/desktop-recovery-hint.test.mjs
+        env:
+          RECOVERY_HINT_PORT: '3111'
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 45

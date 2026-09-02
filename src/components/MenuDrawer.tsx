@@ -815,7 +815,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   </div>
 
                   <p className="text-xs text-slate-500 dark:text-slate-400 leading-normal">
-                    Choose whether the application saves game presets and user accounts to your offline local computer database, or synchronizes live with the central website hub.
+                    {dbMode === 'local'
+                      ? 'Local Offline Mode: your accounts and saved games live only in a database file on this computer. Nothing is sent anywhere — the app works with no internet connection and no server ever sees your data — unless you switch to Cloud Sync below.'
+                      : 'Choose whether the application saves game presets and user accounts to your offline local computer database, or synchronizes live with the central website hub.'}
                   </p>
 
                   <div className="grid grid-cols-2 gap-2.5 pt-1">

@@ -86,6 +86,7 @@ import { ColorCoded } from './components/ColorCoded';
 import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms } from './utils/colorTerms';
 import { DescriptionEditor } from './components/DescriptionEditor';
 import { DownloadModal } from './components/DownloadModal';
+import { OtherAccountsNotice } from './components/OtherAccountsNotice';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
 
@@ -4779,6 +4780,8 @@ export default function App() {
         isOpen={isDownloadModalOpen}
         onClose={() => setIsDownloadModalOpen(false)}
       />
+
+      <OtherAccountsNotice />
 
       {isAdminOpen && (
         <AdminDashboard
