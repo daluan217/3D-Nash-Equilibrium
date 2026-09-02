@@ -255,6 +255,30 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    *  so the rAF loop and event handlers can flip it without re-render races. */
   const [spinWaiting, setSpinWaiting] = useState(false);
   const spinWaitingRef = useRef(false);
+  /**
+   * `prefers-reduced-motion: reduce`, tracked reactively (RED-APP-4, round 4).
+   *
+   * The idle-spin effect below used to never check this at all — only the
+   * tour's camera-glide transition (`moveCamera`, below) did, so a visitor
+   * who had asked the OS to suppress ambient motion still got a continuous,
+   * unbounded ~40s/turn rotation on every fresh load, reset and pause,
+   * needing no interaction to start (confirmed: eye vector moved by a
+   * similar amount in each of two consecutive 6s idle windows with the
+   * preference active). React STATE rather than a one-shot `matches` read so
+   * a live OS-setting change (the `change` event) stops or starts the spin
+   * without a reload — the same guarantee `moveCamera`'s one-shot check
+   * cannot give a continuous animation.
+   */
+  const [reducedMotion, setReducedMotion] = useState<boolean>(
+    () => (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ?? false,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!mq) return;
+    const onChange = () => setReducedMotion(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   /**
    * Deadline until which the idle spin must stay quiet because the container
@@ -453,6 +477,11 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    */
   useEffect(() => {
     if (!idleSpin) return;
+    // Same guarantee `moveCamera` already gives the tour's camera glide —
+    // never move the camera on the app's own initiative under this
+    // preference. Early-return rather than starting the rAF loop and holding
+    // it still: no frame, no relayout, no main-thread cost at all.
+    if (reducedMotion) return;
     const Plotly = (window as any).Plotly;
     const container = containerRef.current;
     if (!Plotly || !container) return;
@@ -610,7 +639,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       document.removeEventListener('touchmove', noteActivity, true);
       rebindPlotInput();
     };
-  }, [idleSpin, spinNonce, spinDelayMs, spinAutoResumeMs]);
+  }, [idleSpin, spinNonce, spinDelayMs, spinAutoResumeMs, reducedMotion]);
 
   // Purge Plotly ONLY when component is unmounted
   useEffect(() => {

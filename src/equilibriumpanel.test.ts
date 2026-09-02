@@ -71,13 +71,25 @@ function preset(key: string): GamePayoffs {
   // The shipped panel used to feed `simState.cx`/`cy`, which `doStep` has already
   // pushed through r3. If the assertions above could not tell the two coordinate
   // sources apart they would be worthless, so prove they can.
+  //
+  // Under the OLD (tolerance-driven) ≈ rule this printed "0.666 ≈ 0.667" — an
+  // approximate-equality assertion between two DIFFERENT numbers, because
+  // `neTolerancePlayer` on this preset's spread comfortably covers the 0.001
+  // quantisation gap. Under the DISPLAY-anchored rule (director decision,
+  // 2026-09-02, "Option B") a 0.001 gap is >= the 5e-4 display-resolution
+  // threshold, so the SAME coordinate bug now renders as an honest — if
+  // wrong-ROOT-CAUSE — STRICT inequality instead: never an approximate-equality
+  // assertion between two numbers that read differently. This is a real,
+  // structural consequence of Option B, not a relaxation of the fixture.
   const bad = indifferenceLines(g, r3(mn.x), r3(mn.y));
   ok(bad.a.pStr === '0.666' && bad.a.qStr === '0.667',
-    `the 3dp coordinate must still reproduce the shipped defect (0.666 vs 0.667), got ${bad.a.pStr} / ${bad.a.qStr}`);
+    `the 3dp coordinate must still reproduce the shipped gap (0.666 vs 0.667), got ${bad.a.pStr} / ${bad.a.qStr}`);
   ok(bad.b.pStr === '-0.666' && bad.b.qStr === '-0.667',
-    `the 3dp coordinate must still reproduce the shipped B defect, got ${bad.b.pStr} / ${bad.b.qStr}`);
-  ok(bad.a.indifferent && bad.a.pStr !== bad.a.qStr,
-    'the defect is precisely "indifferent" asserted between two different numbers');
+    `the 3dp coordinate must still reproduce the shipped B gap, got ${bad.b.pStr} / ${bad.b.qStr}`);
+  ok(!bad.a.indifferent && bad.a.relation === '<',
+    `THE FIX: a >=5e-4 gap must never be asserted "≈" any more, got indifferent=${bad.a.indifferent} relation=${bad.a.relation}`);
+  ok(bad.a.pStr !== bad.a.qStr,
+    'the coordinate bug is still visibly WRONG (different numbers), just no longer self-contradictory (no ≈)');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,12 +104,12 @@ function preset(key: string): GamePayoffs {
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const tiny = 0.0002; // nonzero; r3(0.0002) === 0
-  const posBoth = indifferenceLine('Row 1', 'Row 2', tiny, tiny, true);
+  const posBoth = indifferenceLine('Row 1', 'Row 2', tiny, tiny);
   ok(posBoth.pRel === '<' && posBoth.pStr === '0.001' && posBoth.qRel === '<' && posBoth.qStr === '0.001',
     `a tiny POSITIVE indifferent payoff must read "< 0.001" on both sides, got ${JSON.stringify(posBoth)}`);
   ok(!/0\.000/.test(posBoth.tex), `THE DEFECT: a nonzero payoff must never render as 0.000, got tex="${posBoth.tex}"`);
 
-  const negBoth = indifferenceLine('Row 1', 'Row 2', -tiny, -tiny, true);
+  const negBoth = indifferenceLine('Row 1', 'Row 2', -tiny, -tiny);
   ok(negBoth.pRel === '>' && negBoth.pStr === '-0.001' && negBoth.qRel === '>' && negBoth.qStr === '-0.001',
     `a tiny NEGATIVE indifferent payoff must read "> -0.001" on both sides, got ${JSON.stringify(negBoth)}`);
   ok(!/-0\.000/.test(negBoth.tex), `THE DEFECT: a tiny negative payoff must never render as -0.000, got tex="${negBoth.tex}"`);
@@ -108,21 +120,21 @@ function preset(key: string): GamePayoffs {
     `the line's own operator+value must equal payoffTexRhs's, got "${posBoth.pRel} ${posBoth.pStr}" vs "${payoffTexRhs(tiny)}"`);
 
   // An EXACT zero, and an ordinary value, must be untouched by this fix.
-  const exactZero = indifferenceLine('Row 1', 'Row 2', 0, 0, true);
+  const exactZero = indifferenceLine('Row 1', 'Row 2', 0, 0);
   ok(exactZero.pRel === '=' && exactZero.pStr === '0', `an exact zero must read "= 0", got ${JSON.stringify(exactZero)}`);
-  const ordinary = indifferenceLine('Row 1', 'Row 2', 2 / 3, 2 / 3, true);
+  const ordinary = indifferenceLine('Row 1', 'Row 2', 2 / 3, 2 / 3);
   ok(ordinary.pRel === '=' && ordinary.pStr === '0.667', `an ordinary value must still read "= 0.667", got ${JSON.stringify(ordinary)}`);
 
   // THE MIDPOINT-SHARING TRAP: p and q straddling zero with a gap under 5e-4
   // average to exactly 0 — sharing that midpoint would print "= 0" on BOTH
   // sides for a quantity that is not zero on EITHER side. Caught by CodeRabbit
   // CLI's self-review of this very fix.
-  const straddle = indifferenceLine('Row 1', 'Row 2', 0.0002, -0.0002, true);
+  const straddle = indifferenceLine('Row 1', 'Row 2', 0.0002, -0.0002);
   ok(!/=\s*0\b/.test(straddle.tex), `THE DEFECT: neither side may render "= 0" here, got tex="${straddle.tex}"`);
   ok(straddle.pRel === '<' && straddle.pStr === '0.001' && straddle.qRel === '>' && straddle.qStr === '-0.001',
     `each side must keep its own honest threshold wording, got ${JSON.stringify(straddle)}`);
   // The ulp-noise case that midpoint-sharing exists FOR must still collapse.
-  const ulp = indifferenceLine('Row 1', 'Row 2', 2 * (1 / 3), 1 - (1 / 3), true);
+  const ulp = indifferenceLine('Row 1', 'Row 2', 2 * (1 / 3), 1 - (1 / 3));
   ok(ulp.pRel === '=' && ulp.pStr === '0.667' && ulp.qRel === '=' && ulp.qStr === '0.667',
     `a genuine float-dust pair must still share the midpoint, got ${JSON.stringify(ulp)}`);
 }
@@ -193,10 +205,24 @@ for (const key of ['search', 'spy', 'penalty']) {
       }
       // And the pre-fix source must still be visibly broken, so this loop is
       // not passing for the wrong reason on some later refactor.
+      //
+      // Under the OLD ≈ rule, Penalty Kick's shipped defect from
+      // simState.cx/cy was `oldL.a.indifferent && pStr !== qStr` — an
+      // approximate-equality assertion between two different numbers (RED-APP's
+      // scrape: "0.740 ≈ 0.726"). Under the DISPLAY-anchored rule that specific
+      // shape is now impossible (a >=5e-4 gap can never print `≈`), so the
+      // regression check is reframed: the WRONG coordinate source must still
+      // render VISIBLY DIFFERENTLY from the correct one (different digits
+      // and/or a different ≈-vs-strict verdict), proving the caller-fix in
+      // App.tsx (feeding resolveProfile's exact coordinates, not simState.cx/cy)
+      // still matters.
       const oldL = indifferenceLines(g, st.cx, st.cy);
       if (key === 'penalty' && mode === 'shrink') {
-        ok(oldL.a.indifferent && oldL.a.pStr !== oldL.a.qStr,
-          `Penalty Kick's shipped defect must reproduce from simState.cx/cy, got ${oldL.a.pStr} / ${oldL.a.qStr}`);
+        const oldWrong = oldL.a.pStr !== L.a.pStr || oldL.a.qStr !== L.a.qStr
+          || oldL.a.indifferent !== L.a.indifferent;
+        ok(oldWrong,
+          `Penalty Kick's shipped defect must still reproduce (wrong coordinate source `
+          + `must render differently from the correct one), got old=${JSON.stringify(oldL.a)} vs correct=${JSON.stringify(L.a)}`);
       }
     }
   }
@@ -217,7 +243,7 @@ function mk(seed: number) {
 }
 for (const SCALE of [10, 100]) {
   const rnd = mk(20260901 + SCALE);
-  let lines = 0, mismatched = 0, exponential = 0, oldMismatched = 0;
+  let lines = 0, mismatched = 0, exponential = 0, oldWrong = 0;
   for (let i = 0; i < 320; i++) {
     const v = () => Math.round((rnd() * 2 - 1) * SCALE);
     const g = { a11: v(), a12: v(), a21: v(), a22: v(), b11: v(), b12: v(), b21: v(), b22: v() } as GamePayoffs;
@@ -232,7 +258,14 @@ for (const SCALE of [10, 100]) {
         for (const side of ['a', 'b'] as const) {
           lines++;
           if (L[side].indifferent && L[side].pStr !== L[side].qStr) mismatched++;
-          if (O[side].indifferent && O[side].pStr !== O[side].qStr) oldMismatched++;
+          // The OLD regression signature ("indifferent && mismatched") is no
+          // longer reachable by construction under the display-anchored rule
+          // (see section 1's comment) — a >=5e-4 gap can never print `≈` any
+          // more, on either coordinate source. So the "is the wrong coordinate
+          // source still visibly wrong" check is now: does it render
+          // differently (digits or ≈-vs-strict verdict) from the correct one.
+          if (O[side].pStr !== L[side].pStr || O[side].qStr !== L[side].qStr
+            || O[side].indifferent !== L[side].indifferent) oldWrong++;
           if (/e[+-]/.test(L[side].pStr) || /e[+-]/.test(L[side].qStr)) exponential++;
         }
       }
@@ -242,8 +275,8 @@ for (const SCALE of [10, 100]) {
   ok(mismatched === 0, `scale ${SCALE}: ${mismatched}/${lines} "indifferent" lines print two different numbers`);
   // The sweep is only evidence if the defect is REACHABLE in it. If this ever
   // drops to zero the corpus has stopped exercising the thing under test.
-  ok(oldMismatched > lines / 4,
-    `scale ${SCALE}: the pre-fix coordinate source must still be visibly broken here (${oldMismatched}/${lines})`);
+  ok(oldWrong > lines / 4,
+    `scale ${SCALE}: the pre-fix coordinate source must still render visibly differently here (${oldWrong}/${lines})`);
   // `fmtPayoffPair`'s 8dp/exponential fallback must never reach the screen: it
   // exists to separate two values under a STRICT relation, and chasing float
   // dust under an approximate one would print "6.67e-1 ≈ 6.67e-1".
@@ -257,7 +290,7 @@ for (const SCALE of [10, 100]) {
 // reintroduce "0.030 > 0.030", which `fmtPayoffPair` was added to stop.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const strict = indifferenceLine('Row 1', 'Row 2', 0.0304, 0.0296, false);
+  const strict = indifferenceLine('Row 1', 'Row 2', 0.0304, 0.0296);
   ok(strict.relation === '>', 'a strict relation keeps its direction');
   ok(strict.pStr !== strict.qStr,
     `a strict relation must never print the same number twice, got ${strict.pStr} > ${strict.qStr}`);
@@ -320,10 +353,14 @@ for (const SCALE of [10, 100]) {
 // ─────────────────────────────────────────────────────────────────────────────
 // 6. THE WIRING
 //
-// The defect lived in the CALL SITE, not in either function it called — both
-// `indifferenceAt` and `resolveProfile` were already correct and already tested.
-// So assert the wiring itself, the way `cloudbuild.contract.test.ts` asserts a
-// deploy file it cannot execute.
+// The defect lived in the CALL SITE, not in the function that computed the
+// coordinates — `resolveProfile` was already correct and already tested.
+// (`indifferenceAt` was the panel's ≈ arbiter when this section was written;
+// since the "Option B" display-anchored rule in §7 it no longer is — the
+// panel decides ≈-vs-strict from the printed digits alone. `indifferenceAt`
+// stays a directly-tested utility with no production caller.) So assert the
+// wiring itself, the way `cloudbuild.contract.test.ts` asserts a deploy file
+// it cannot execute.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const app = readFileSync(join(here, 'App.tsx'), 'utf8');
@@ -350,59 +387,50 @@ for (const SCALE of [10, 100]) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 7. THE TOLERANCE IS UNCHANGED — reported, not silently retuned.
+// 7. JOB 1 IS UNCHANGED; JOB 2 IS NOW DISPLAY-ANCHORED (director decision,
+//    "Option B", 2026-09-02) — the panel's `≈` no longer answers job 1's
+//    question at all.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const g = preset('penalty');
   ok(Math.abs(neTolerancePlayer(g, 'A') - 4 * 5e-4 * 20) < 1e-12,
     'neTolerancePlayer must still be 0.002 x that player\'s own spread — the scaling question is a design decision, not a bug fix');
+  // `indifferenceAt` (job 1's convergence-tolerance test) is itself untouched —
+  // still answers the SAME question it always did — it is simply no longer
+  // consulted by the panel (see §6's comment and `indifferenceLines`).
   ok(indifferenceAt(g, 1 / 11, 4 / 11).a,
-    'indifferenceAt must report A indifferent at Penalty Kick\'s equilibrium — it is the arbiter of the label');
+    'indifferenceAt must still report A indifferent at Penalty Kick\'s equilibrium — its own math is unchanged');
 
-  // THE CONDITION THE "UNREACHED" CLAIM RESTS ON.
-  //
-  // Through the converged run, `≈` never sits between two different numbers.
-  // That is a fact about THE CALLER, not about the renderer: hand the renderer
-  // arbitrary profiles and 0.33% of mixed-panel renderings do print it (716 of
-  // 217,652 — `_gen/blueapp_renderer_reach.ts`), every one at a resolved point
-  // with a coordinate at a vertex, i.e. a player holding a pure strategy inside
-  // an equilibrium region.
-  //
-  // WHICH SECOND CALLER, precisely — because the obvious guess is wrong and a
-  // guard that names the wrong hazard misdirects whoever reads it
-  // (`_gen/blueapp_vertex_class.ts`, 120,000 games per alphabet):
-  //   * An NE-LIST CLICK IS SAFE on this axis. `computeAllNE` gates the mixed
-  //     root at 0 < x < 1 and returns pure NEs at corners, so it never yields a
-  //     MIXED-concept point with a coordinate at a vertex. Feeding its own
-  //     coordinates produces 0 / 16 / 0 vertex-class lines and 0 misprints.
-  //   * The hazard is a caller passing an ARBITRARY, non-equilibrium profile
-  //     and letting `resolveProfile` project it onto the EDGE of a continuum —
-  //     a restored saved game, a jumped-to step. There the vertex class is
-  //     38.6% / 0.5% / 4.9% of mixed-panel lines, ~31% of it renders "strictly
-  //     prefers" under a heading that says MIXED (correct output, surprising
-  //     screen), and 0.04-0.09% of it is the misprint.
-  // So the misprint stays rare even for the hazardous caller; what a second
-  // caller really buys is the "strictly prefers" class, and that is a display
-  // decision to take deliberately rather than discover.
-  //
-  // Rather than assume nobody adds that caller, fail when they do. This is the
-  // load-bearing check: if it ever fires, the tolerance question has become
-  // reachable and must be answered before the new caller ships.
+  // THE 1-CALLER TRIPWIRE — kept exactly as before. It no longer protects
+  // against a misprint (that is now impossible by construction, see below),
+  // but it still protects against the OTHER thing a second caller can do:
+  // render "A strictly prefers" under a heading that says MIXED, which is
+  // correct output but a surprising screen a future caller should choose
+  // deliberately rather than discover.
   const app = readFileSync(join(here, 'App.tsx'), 'utf8');
   const callers = [...app.matchAll(/indifferenceLines\s*\(/g)].length;
   ok(callers === 1,
     `indifferenceLines must have exactly ONE production caller, found ${callers}. `
     + 'A caller that passes an ARBITRARY profile (a restored saved game, a jumped-to step) '
     + 'lets resolveProfile land on a continuum EDGE, where up to 38.6% of mixed-panel lines '
-    + 'sit at a vertex: ~31% of those render "A strictly prefers" under a MIXED heading, and '
-    + '0.04-0.09% print "≈" between two different numbers. Feeding computeAllNE coordinates '
-    + '(an NE-list click) is SAFE — it never yields a mixed-concept vertex point. Decide the '
-    + 'display question before adding a caller of the first kind.');
+    + 'sit at a vertex, and ~31% of those render "A strictly prefers" under a MIXED heading '
+    + '(correct math, surprising screen). Feeding computeAllNE coordinates (an NE-list click) '
+    + 'is SAFE — it never yields a mixed-concept vertex point. Decide the "strictly prefers '
+    + 'under MIXED" display question before adding a caller of the first kind.');
   ok(/indifferenceLines\(payoffs, resolved\.x, resolved\.y\)/.test(app),
     'and that one caller must still be the converged-run profile');
 
-  // The 0.33% is real, so prove the predicate above is guarding something
-  // rather than describing a hypothetical. This is the shape it takes.
+  // THE MISPRINT CLASS IS NOW STRUCTURALLY IMPOSSIBLE, not merely rare.
+  //
+  // This is the EXACT fixture that used to print "≈" between two different
+  // numbers under the OLD (neTolerancePlayer-driven) rule: a vertex point
+  // whose gap (6.5e-4) sits comfortably inside this game's inflated tolerance
+  // (3.07e-3, `_gen/blueapp_renderer_reach.ts` measured 716/217,652 = 0.33%
+  // of adversarially-generated mixed panels doing this). Under the
+  // DISPLAY-anchored rule the SAME gap is >= the fixed 5e-4 display-resolution
+  // threshold, so it is now asserted as a STRICT relation instead — the
+  // renderer no longer needs the 1-caller tripwire to stay safe from this
+  // specific class; it is safe for ANY caller now, by construction.
   const cont = { a11: -0.993, a12: -0.67, a21: 0.54, a22: -0.766,
                  b11: 0.138, b12: 0.138, b21: -0.457, b22: -0.912 } as GamePayoffs;
   const mn = computeMixedNE(cont);
@@ -411,11 +439,79 @@ for (const SCALE of [10, 100]) {
   ok(off.concept === 'mixed' && (off.x === 0 || off.x === 1),
     `the fixture must resolve to a MIXED panel with a player at a vertex, got ${JSON.stringify(off)}`);
   const bad = indifferenceLines(cont, off.x, off.y);
-  ok(bad.a.indifferent && bad.a.pStr !== bad.a.qStr,
-    `the fixture must actually print "≈" between two different numbers (${bad.a.pStr} / ${bad.a.qStr}) — `
-    + 'if it stops doing so, either the tolerance changed or this fixture has gone stale');
   ok(Math.abs(bad.a.p - bad.a.q) < neTolerancePlayer(cont, 'A'),
-    'and it must be the TOLERANCE admitting it, not a rounding artefact');
+    'the fixture must still sit inside the OLD (job-1) tolerance, or this fixture has gone stale');
+  ok(!bad.a.indifferent,
+    `THE FIX: this exact vertex-class shape must no longer print "≈" (got indifferent=${bad.a.indifferent}, `
+    + `${bad.a.pStr} / ${bad.a.qStr}) — if it does, Option B has regressed`);
+  ok(bad.a.pStr !== bad.a.qStr,
+    'and the two numbers genuinely are different — the fixture must still exercise a REAL gap, not a rounding artefact');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7b. THE "IDENTICAL PRINTED DIGITS" PROPERTY — the display-anchored rule
+// itself, checked as a property rather than one fixture at a time.
+//
+// The claim: `indifferenceLine`'s ≈-vs-strict choice depends ONLY on
+// `Math.abs(p - q)` against the fixed 5e-4 display-resolution threshold —
+// never on the MAGNITUDE of p/q, i.e. never on payoff scale. And whenever it
+// asserts ≈ AND neither side needed sub-resolution `<`/`>` wording (the
+// ordinary case — see the MIDPOINT-SHARING TRAP fixture above for the one
+// documented exception, near zero), the two printed strings are IDENTICAL —
+// never merely close.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  function mkProp(seed: number) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rnd = mkProp(20260902);
+  let n = 0, sawIndifferent = 0, sawStrict = 0, sawNearZero = 0;
+  // Sweep payoff SCALE across six orders of magnitude — the display threshold
+  // (5e-4) must decide ≈-vs-strict the SAME way at every scale, unlike the old
+  // neTolerancePlayer-driven rule (0.002 x spread), which would have scaled
+  // its own cutoff right along with these.
+  for (const scale of [0.01, 1, 10, 1000, 100000]) {
+    for (let i = 0; i < 400; i++) {
+      const base = (rnd() * 2 - 1) * scale;
+      // Gap is drawn independently of scale — this is the point: the SAME
+      // absolute gap distribution is tested against every payoff magnitude.
+      const gap = (rnd() * 2 - 1) * 2e-3;
+      const p = base;
+      const q = base + gap;
+      const L = indifferenceLine('Row 1', 'Row 2', p, q);
+      n++;
+      ok(L.indifferent === (Math.abs(p - q) < 5e-4),
+        `scale ${scale}: indifferent must be exactly (gap < 5e-4), got indifferent=${L.indifferent} `
+        + `gap=${Math.abs(p - q)} at p=${p} q=${q}`);
+      if (L.indifferent) {
+        sawIndifferent++;
+        if (L.pRel === '=' && L.qRel === '=') {
+          ok(L.pStr === L.qStr,
+            `scale ${scale}: an ordinary-magnitude ≈ line must print IDENTICAL digits, got `
+            + `${L.pStr} / ${L.qStr} (p=${p} q=${q})`);
+        } else {
+          sawNearZero++;
+        }
+      } else {
+        sawStrict++;
+        ok(L.pStr !== L.qStr,
+          `scale ${scale}: a strict line must never print the same digits twice, got ${L.pStr} (p=${p} q=${q})`);
+      }
+    }
+  }
+  ok(n > 1500, `the property sweep must run enough cases to mean something, got ${n}`);
+  // Both branches, and the documented near-zero exception, must actually be
+  // exercised — otherwise this "property" is proving something vacuous.
+  ok(sawIndifferent > n / 10 && sawStrict > n / 10,
+    `both ≈ and strict must be reachable in this sweep, got indifferent=${sawIndifferent} strict=${sawStrict} of ${n}`);
+  ok(sawNearZero > 0,
+    `the near-zero sub-resolution exception must be reachable too, got ${sawNearZero} of ${n}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

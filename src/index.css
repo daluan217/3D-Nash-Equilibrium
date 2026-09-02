@@ -89,6 +89,21 @@
   --color-danger-500: var(--color-rose-500);
   --color-danger-600: var(--color-rose-600);
   --color-danger-950: var(--color-rose-950);
+
+  /* Muted/secondary text (RED-APP-4 finding 006, round 4, axe-core
+     color-contrast SERIOUS). `text-slate-400 dark:text-slate-500` was the
+     app-wide idiom for de-emphasized labels and helper copy — measured by
+     axe on the live-rendered app: 2.51:1 in light mode (slate-400 #90a1b9 on
+     slate-50 #f8fafc), 3.74:1 / 4.23:1 in dark mode (slate-500 #62748e on
+     the two dark panel shades #0f172b / #020618) — all under the 4.5:1 AA
+     floor for normal text, in EVERY tested page state. Use these tokens (not
+     the raw Tailwind slate-400/500 steps) for muted text everywhere.
+     Measured replacements (WCAG relative-luminance formula, same one axe
+     uses): slate-600 on slate-50 = 7.25:1, on white = 7.58:1; slate-400 on
+     slate-900 = 6.78:1, on slate-950 = 7.66:1 — real margin, not a
+     knife-edge pass. */
+  --color-muted: var(--color-slate-600);
+  --color-muted-dark: var(--color-slate-400);
 }
 
 @theme {

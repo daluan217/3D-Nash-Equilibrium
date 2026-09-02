@@ -51,7 +51,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
       <div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">{value}</div>
         <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
-        {sub && <div className="text-xs text-slate-400 dark:text-slate-500">{sub}</div>}
+        {sub && <div className="text-xs text-muted dark:text-muted-dark">{sub}</div>}
       </div>
     </div>
   );

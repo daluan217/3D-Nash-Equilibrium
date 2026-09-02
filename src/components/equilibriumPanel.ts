@@ -38,7 +38,6 @@
  * numbers used, and everything in the box is then a statement about one point.
  */
 import {
-  indifferenceAt,
   fmtPayoffPair,
   fmtPayoff,
   payoffTexRhs,
@@ -127,7 +126,37 @@ function threeRel(v: number): { str: string; rel: string } {
 /**
  * Render one relation.
  *
- * The precision rule is asymmetric ON PURPOSE, and the asymmetry is the point:
+ * WHERE `≈` COMES FROM (director decision, 2026-09-02, "Option B" — see
+ * `neTolerancePlayer` in `gameEngine.ts` and the design note it links).
+ * -----------------------------------------------------------------------
+ * This function used to take the ≈-vs-strict decision as an input
+ * (`indifferent: boolean`, supplied by `indifferenceAt`, i.e. by
+ * `neTolerancePlayer` — 0.002 x that player's own payoff spread). That
+ * constant is right for its OTHER job (deciding whether a run's QUANTISED
+ * coordinate still names a genuine equilibrium — see `neTolerance`'s
+ * docstring) but wrong for this one: it is scale-dependent, so on a
+ * large-spread game it can exceed a full display unit, and the panel could
+ * print "≈" between two numbers that read differently at the resolution
+ * shown — MEASURED at 0.04-0.09% of mixed-panel renderings when fed
+ * arbitrary (non-live-run) profiles (`_gen/blueapp_renderer_reach.ts`,
+ * `equilibriumpanel.test.ts` §7's vertex-corpus fixture).
+ *
+ * The panel's `≈` now answers a DIFFERENT, DISPLAY-anchored question,
+ * independent of payoff scale: would the two sides print the SAME digits?
+ * Decided from `p`/`q` alone, as `Math.abs(p - q) < 5e-4` — half of
+ * `fmtPayoff`'s own 3dp unit, the same constant this function already used
+ * for the "share the midpoint" case below, just now also gating the
+ * ≈-vs-strict choice itself rather than only the rendering inside it. This
+ * makes "≈ between two different printed numbers" impossible by
+ * construction for any caller, not merely absent from the one caller that
+ * exists today: if `|p - q| >= 5e-4`, the two sides are asserted with a
+ * STRICT relation, however small that gap is relative to the game's own
+ * payoff spread. `neTolerancePlayer`/`neTolerance`/`indifferenceAt`
+ * themselves are UNCHANGED — job 1 (regret-based convergence) still uses
+ * them, unaffected by this file.
+ *
+ * The precision rule below is asymmetric ON PURPOSE, and the asymmetry is
+ * the point:
  *
  * - Under a STRICT relation, `fmtPayoffPair` widens precision until the two
  *   sides read differently, because "0.030 > 0.030" is self-contradictory.
@@ -148,7 +177,6 @@ export function indifferenceLine(
   right: string,
   p: number,
   q: number,
-  indifferent: boolean,
 ): IndifferenceLine {
   // Under `≈`, a difference SMALLER than the display resolution is rendered from
   // the midpoint so both sides print one number.
@@ -163,37 +191,10 @@ export function indifferenceLine(
   // not representable at 3dp at all, so there is nothing to lose by showing the
   // one number both values round to.
   //
-  // A gap at or above 5e-4 is deliberately left visible on both sides. That is
-  // the only remaining way `≈` can print two different numbers, and it is a real
-  // statement about `neTolerancePlayer` (0.002 x spread), not about rounding —
-  // hiding it would bury the question.
-  //
-  // HOW REACHABLE THAT IS, stated as the conditional it actually is. Through the
-  // converged run it is UNREACHED: 0 of 1,896 adversarial mixed panels, and 0
-  // across two further independent sweeps. The tempting next sentence — "and
-  // unreachable, because the run commits to a corner, so `resolveProfile`
-  // projects there and `profileConcept` returns 'pure'" — is a claim about the
-  // CALL PATH, and it stops being true the moment a second caller exists.
-  // Measured rather than argued (`_gen/blueapp_renderer_reach.ts`): hand this
-  // renderer ARBITRARY profiles instead of run output — 578,526 of them, over
-  // games with manufactured continua and near-degeneracy — and 716 of 217,652
-  // mixed-panel renderings, 0.33%, DO print `≈` between two different numbers.
-  // Every one sits at a resolved point with a coordinate at a vertex: a player
-  // holding a pure strategy inside an equilibrium region, non-indifferent by
-  // less than its own tolerance.
-  //
-  // So it is a property of THE ONE CALLER, not of this function. Today `App.tsx`
-  // is that caller and it passes `resolveProfile` of the converged run.
-  //
-  // WHICH other caller would matter is itself measured, because the obvious
-  // guess is wrong. An NE-LIST CLICK IS SAFE: `computeAllNE` gates the mixed
-  // root at 0 < x < 1 and returns pure NEs at corners, so it never yields a
-  // mixed-concept point with a coordinate at a vertex — 0 of 120,000 games per
-  // alphabet. The hazard is a caller handing over an ARBITRARY, non-equilibrium
-  // profile (a restored saved game, a jumped-to step) for `resolveProfile` to
-  // project onto a continuum EDGE. `src/equilibriumpanel.test.ts` §7 fails if
-  // any second production caller appears and carries both numbers, so this is a
-  // checked condition rather than an assumption.
+  // `indifferent` is this line's OWN decision now (see the docstring above),
+  // not an input: identical printed digits, at display resolution, and
+  // nothing else.
+  const indifferent = Math.abs(p - q) < 5e-4;
   const mid = (p + q) / 2;
   // Under `≈`, a value whose r3 rounds to zero without BEING zero renders with
   // the same directional operator `payoffTexRhs` uses (`<`/`>` and the
@@ -208,8 +209,11 @@ export function indifferenceLine(
   // sub-resolution threshold: p=0.0002, q=-0.0002 straddle zero with a gap
   // under 5e-4, but mid is exactly 0 — sharing it would print "= 0" for a
   // quantity that is not zero on either side. When either side already needed
-  // `<`/`>` wording, keep that side's own honest value instead of collapsing.
-  const shareMidpoint = indifferent && Math.abs(p - q) < 5e-4 && pBase.rel === '=' && qBase.rel === '=';
+  // `<`/`>` wording, keep that side's own honest value instead of collapsing
+  // (each side then keeps its own honest threshold wording — the two strings
+  // can still differ in that one narrow band near zero, which is a statement
+  // about `<`/`>` magnitude wording, not a misprint of a genuine number).
+  const shareMidpoint = indifferent && pBase.rel === '=' && qBase.rel === '=';
   const pf = shareMidpoint ? threeRel(mid) : pBase;
   const qf = shareMidpoint ? threeRel(mid) : qBase;
   const relation = indifferent ? '\\approx' : (p > q ? '>' : '<');
@@ -238,13 +242,15 @@ export function indifferenceLines(
   x: number,
   y: number,
 ): { a: IndifferenceLine; b: IndifferenceLine } {
-  const at = indifferenceAt(g, x, y);
+  // `indifferenceAt` (job 1's tolerance-based test) is deliberately NOT
+  // consulted here any more — see `indifferenceLine`'s docstring. Each line
+  // decides its own ≈-vs-strict split from its own two payoffs.
   const eRow1 = y * g.a11 + (1 - y) * g.a12;
   const eRow2 = y * g.a21 + (1 - y) * g.a22;
   const eCol1 = x * g.b11 + (1 - x) * g.b21;
   const eCol2 = x * g.b12 + (1 - x) * g.b22;
   return {
-    a: indifferenceLine('Row 1', 'Row 2', eRow1, eRow2, at.a),
-    b: indifferenceLine('Col 1', 'Col 2', eCol1, eCol2, at.b),
+    a: indifferenceLine('Row 1', 'Row 2', eRow1, eRow2),
+    b: indifferenceLine('Col 1', 'Col 2', eCol1, eCol2),
   };
 }
