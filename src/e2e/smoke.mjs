@@ -873,12 +873,29 @@ try {
   // ══ 20. THE OTHER FOUR MODALS ALSO TRAP TAB (RED-APP-5 finding 002,
   //      round 5) — #90 (section 19 above) only fixed the expand-log
   //      dialog; Feedback/Auth/Save/Edit had NO trap at all, so Tab walked
-  //      focus onto the page behind the backdrop, and pressing Enter on the
-  //      background "Feedback" button opened a SECOND aria-modal="true"
-  //      dialog on top of the still-open first one. Checked here via the
-  //      Feedback dialog — no auth needed, so this stays fast — with the
-  //      shared `useModalTabTrap` hook wired the same way to Auth/Save/Edit
-  //      (see src/a11yfixes.test.ts for the static wiring check on all four).
+  //      focus onto the page behind the backdrop. Checked via TWO dialogs,
+  //      both no-auth-needed so this stays fast, with the shared
+  //      `useModalTabTrap` hook wired the same way to Save/Edit too (see
+  //      src/a11yfixes.test.ts for the static wiring check on all four):
+  //
+  //      - Feedback: its own Tab-trap-stays-inside check. RED-APP-5's own
+  //        probe (`probe_tab_trap.mjs`) found Feedback's pre-fix leak lands
+  //        on <body> (it is near the end of the DOM, nothing focusable
+  //        after it) — a dead end, not a second-dialog collision. So this
+  //        dialog only tests confinement, not the collision.
+  //
+  //      - Auth: the SAME confinement check, PLUS the collision RED
+  //        actually found — Auth's pre-fix leak lands specifically on the
+  //        still-visible "Feedback" launcher BUTTON (Feedback renders
+  //        earlier in the DOM), and pressing Enter there opened a SECOND
+  //        `aria-modal="true"` dialog on top of the still-open Auth one.
+  //        (CodeRabbit CLI review on this branch caught an earlier version
+  //        of this check that pressed no Enter at all, so
+  //        `secondDialogCount === 1` held in both the fixed and the
+  //        defective build — and a first attempt at fixing that ran the
+  //        Enter press against Feedback, whose own leak point is <body>, so
+  //        it STILL could not discriminate. Mutation-verified against
+  //        BOTH dialogs before shipping — see the finding's blue-note.)
   {
     const trapPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
@@ -889,36 +906,50 @@ try {
         null, { timeout: 10000 }).catch(() => {});
     }
 
+    const isInsideDialog = (label) => trapPage.evaluate((l) => {
+      const dlg = document.querySelector(`[role="dialog"][aria-label="${l}"]`);
+      return !!dlg && dlg.contains(document.activeElement);
+    }, label);
+    // More presses than either dialog's own focusable-element count, so a
+    // trap failure shows up within the loop rather than needing an exact
+    // wrap-around step guessed correctly.
+    const sweepTab = async (label) => {
+      let stayedInside = true;
+      for (let i = 0; i < 15; i++) {
+        await trapPage.keyboard.press('Tab');
+        if (!(await isInsideDialog(label))) { stayedInside = false; break; }
+      }
+      return stayedInside;
+    };
+
     const feedbackBtn = trapPage.locator('button[title="Send feedback"]');
     await feedbackBtn.waitFor({ state: 'visible', timeout: 15000 });
     await feedbackBtn.click();
     await trapPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Send feedback"]'),
       null, { timeout: 10000 }).catch(() => {});
-
-    const isInsideFeedback = () => trapPage.evaluate(() => {
-      const dlg = document.querySelector('[role="dialog"][aria-label="Send feedback"]');
-      return !!dlg && dlg.contains(document.activeElement);
-    });
     await trapPage.locator('[role="dialog"][aria-label="Send feedback"] textarea, [role="dialog"][aria-label="Send feedback"] input').first().focus();
-
-    // More presses than the dialog's own focusable-element count, so a trap
-    // failure (focus walking onto the "Feedback" button itself, or further,
-    // onto <body>) shows up within this loop.
-    let stayedInside = true;
-    for (let i = 0; i < 15; i++) {
-      await trapPage.keyboard.press('Tab');
-      if (!(await isInsideFeedback())) { stayedInside = false; break; }
-    }
     record('Tab is trapped inside the Feedback dialog (15 presses, focus never left it)',
-      stayedInside);
+      await sweepTab('Send feedback'));
+    await trapPage.keyboard.press('Escape');
+    await trapPage.waitForTimeout(150);
 
-    // Confirms the trap is the reason, not luck: without it, RED-APP-5
-    // measured focus leaking onto the background "Feedback" button by
-    // tab #4, and a subsequent Enter opening a second dialog on top of this
-    // one. With the trap, no second dialog can ever open this way.
+    await trapPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    await trapPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 10000 }).catch(() => {});
+    await trapPage.locator('[role="dialog"][aria-label="Account"] input').first().focus();
+    record('Tab is trapped inside the Auth dialog (15 presses, focus never left it)',
+      await sweepTab('Account'));
+
+    // THE COLLISION ITSELF. Tab alone never opens a dialog — the pre-fix
+    // defect needs a leaked-to control AND an Enter press on it — so the
+    // Enter press is what makes this discriminating (see the section
+    // comment above for the CodeRabbit finding that caught the first two
+    // attempts at this check).
+    await trapPage.keyboard.press('Enter');
+    await trapPage.waitForTimeout(150);
     const secondDialogCount = await trapPage.evaluate(() =>
       document.querySelectorAll('[role="dialog"][aria-modal="true"]').length);
-    record('exactly one aria-modal dialog is in the DOM after the Tab sweep (no stacked second modal)',
+    record('Enter after the Auth-dialog Tab sweep cannot stack a second aria-modal dialog',
       secondDialogCount === 1, `found ${secondDialogCount}`);
 
     await trapPage.close();
