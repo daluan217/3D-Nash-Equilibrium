@@ -82,7 +82,7 @@ function parseMultipart(contentType, rawBody) {
  * `save()` (POST, `uploadType=multipart`, optional `ifGenerationMatch`
  * query param).
  */
-function startFakeGcsDb({ port, initialContent, initialGeneration = 1 }) {
+function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferListen = false }) {
   let stored = initialContent; // null = object does not exist
   let generation = initialGeneration;
   const uploadLog = []; // { atMs, ifGenerationMatch, body }
@@ -144,16 +144,22 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1 }) {
     res.end(JSON.stringify({ error: { code: 404 } }));
   });
 
-  return new Promise((resolve) => {
-    server.listen(port, () => resolve({
-      close: () => new Promise((r) => server.close(() => r())),
-      getStored: () => stored,
-      getGeneration: () => generation,
-      uploadCount: () => uploadLog.length,
-      uploadLog: () => uploadLog,
-      setUploadDelayMs: (ms) => { uploadDelayMs = ms; },
-    }));
-  });
+  const controls = {
+    close: () => new Promise((r) => server.close(() => r())),
+    getStored: () => stored,
+    setStored: (v) => { stored = v; },
+    getGeneration: () => generation,
+    uploadCount: () => uploadLog.length,
+    uploadLog: () => uploadLog,
+    setUploadDelayMs: (ms) => { uploadDelayMs = ms; },
+    // For the "GCS was unreachable at boot, comes back later" case: the
+    // server object exists (so a spawned process pointed at `port` gets
+    // ECONNREFUSED, not a slow timeout) but does not accept connections
+    // until this is called.
+    listen: () => new Promise((r) => server.listen(port, () => r())),
+  };
+  if (deferListen) return controls;
+  return new Promise((resolve) => { server.listen(port, () => resolve(controls)); });
 }
 
 function spawnServer(cwd, thePort, gcsPort, extraEnv = {}) {
@@ -299,7 +305,14 @@ try {
     ],
     games: [],
   };
-  const gcsPortB = gcsPortA + 1;
+  // Offset by 2, not 1: with the CI env values (GCS_DB_TEST_GCS_PORT=3130,
+  // GCS_DB_TEST_PORT=3131) a +1 offset collides with port1 — the section-1
+  // SERVER's own port, not another fake-GCS port. That only "worked" because
+  // section 1's server is stopped before this runs; any change to either env
+  // var, or a lingering socket, would make the bind fail (CodeRabbit caught
+  // this). +2 stays clear of both the port1 server and the portX/portY range
+  // below (port1 + 10 / + 11).
+  const gcsPortB = gcsPortA + 2;
   fakeGcs = await startFakeGcsDb({ port: gcsPortB, initialContent: JSON.stringify(seededDb2) });
 
   const portX = port1 + 10, portY = port1 + 11;
@@ -364,6 +377,77 @@ try {
   await stop(childX);
   await stop(childY);
   await fakeGcs.close(); fakeGcs = null;
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 3. THE NULL-GENERATION HAZARD (CodeRabbit): `initDB`'s GCS read can throw
+  // (network error, GCS genuinely unreachable at boot) and falls back to
+  // `loadDBFromFile()` — in hosted mode that reads a LOCAL file that does not
+  // exist on Cloud Run, so `inMemoryDb` becomes an EMPTY database while
+  // `gcsGeneration` stays null. An unconditional upload in that state (no
+  // precondition at all, since there is no generation to match against)
+  // would REPLACE the real remote object — every other user's data — with
+  // that empty fallback the moment this process saves anything.
+  //
+  // Reproduced via a fake GCS server that is constructed but NOT listening
+  // yet: the spawned server's boot-time GCS read gets a real, immediate
+  // ECONNREFUSED (not a slow timeout), so it takes the exact fallback path.
+  // The fake is THEN started, pre-seeded with a game that only ever existed
+  // on "GCS" — never seen by this process — before the process's own save
+  // fires, so a defect here shows up as that pre-existing game vanishing.
+  // ───────────────────────────────────────────────────────────────────────────
+  const gcsPortC = gcsPortA + 4;
+  const fakeGcsDeferred = startFakeGcsDb({
+    port: gcsPortC,
+    initialContent: JSON.stringify({
+      users: [seededUser('u_z', 'userz', 'userz@example.test', 'Sup3rSecret!23')],
+      games: [{ id: 'g_preexisting', userId: 'u_z', name: 'Preexisting-Game', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: new Date().toISOString() }],
+    }),
+    deferListen: true,
+  });
+
+  const portZ = port1 + 20;
+  const childZ = spawnServer(mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-z-')), portZ, gcsPortC);
+  await waitReady(childZ, portZ); // boots fine even though its GCS read just failed — falls back to an empty local DB
+
+  const meBefore = await fetch(`http://127.0.0.1:${portZ}/api/games`, { signal: AbortSignal.timeout(2000) }).catch(() => null);
+  record('fixture precondition: the process is up despite GCS being unreachable at boot (falls back, does not crash)',
+    meBefore !== null);
+
+  // Now "GCS comes back" — the fake starts accepting connections, already
+  // holding the pre-existing game this process never saw. Note: userz only
+  // ever existed on the fake's SEEDED content, never in this process's own
+  // (empty, fallback) inMemoryDb — logging in as userz would just 401,
+  // since nothing re-syncs on a READ, only on a WRITE (that is this fix's
+  // whole point). Registration is the trigger instead: even without SMTP
+  // configured (this hosted path 500s on the email step), server.ts's own
+  // register handler calls saveDB() to ADD the new user BEFORE attempting
+  // to send the verification email, then calls saveDB() AGAIN to remove it
+  // once the email step fails — two real writes, both exercising the fix,
+  // regardless of the outer HTTP response being a 500.
+  await fakeGcsDeferred.listen();
+
+  const regZ = await fetch(`http://127.0.0.1:${portZ}/api/auth/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'freshz', email: 'freshz@example.test', password: 'Sup3rSecret!23' }),
+  });
+  record('fixture precondition: registration reaches the (expected, no-SMTP) 500 — proves the save attempts actually ran',
+    regZ.status === 500, `status ${regZ.status}`);
+
+  await new Promise((r) => setTimeout(r, 1500)); // let the async GCS re-sync + both uploads land
+
+  let finalZNames = null, finalZUsernames = null;
+  try {
+    const finalZ = JSON.parse(fakeGcsDeferred.getStored());
+    finalZNames = finalZ.games.map((g) => g.name).sort();
+    finalZUsernames = finalZ.users.map((u) => u.username).sort();
+  } catch { /* see the try/catch note in section 1 */ }
+  record('THE DEFECT: the pre-existing game (that this process never read) SURVIVES the save, not silently erased',
+    JSON.stringify(finalZNames) === JSON.stringify(['Preexisting-Game']), JSON.stringify(finalZNames));
+  record('the failed registration\'s user was still correctly removed again (the SECOND save is not itself broken by the merge)',
+    JSON.stringify(finalZUsernames) === JSON.stringify(['userz']), JSON.stringify(finalZUsernames));
+
+  await stop(childZ);
+  await fakeGcsDeferred.close();
 
 } finally {
   if (srv?.child) await stop(srv.child);

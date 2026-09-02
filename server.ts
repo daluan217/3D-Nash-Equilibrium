@@ -557,6 +557,36 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null): DB {
 }
 
 /**
+ * Publish a merged DB as the process's shared state — MUTATING the CURRENT
+ * `inMemoryDb` object's properties, never reassigning `inMemoryDb` to a
+ * different object.
+ *
+ * WHY THIS MATTERS, CONCRETELY: every route handler does
+ * `const db = loadDB(); ...mutate db in place...; saveDB(db);`, capturing a
+ * REFERENCE to whatever `inMemoryDb` was at the START of that request.
+ * `saveDB` in turn does `inMemoryDb = db` — a no-op reassignment in the
+ * ORDINARY case, because `db` already IS `inMemoryDb`. If a merge here
+ * instead reassigned `inMemoryDb` to a BRAND NEW object, any handler still
+ * mid-flight holding the OLDER reference would, on its own next `saveDB`
+ * call, silently overwrite `inMemoryDb` back to its stale copy — undoing
+ * the merge. Caught this exact interleaving in this round's own
+ * integration test: a registration handler's first save (adding a user)
+ * triggered a merge with pre-existing remote content; its second save (on
+ * the SAME stale `db` reference, removing that user again after the SMTP
+ * step failed) then overwrote the merge, silently re-erasing the
+ * pre-existing remote game a second time. Mutating in place means that
+ * handler's `db` reference IS the merged object, so its own filter/save
+ * only ever removes what it meant to remove.
+ */
+function applyMergedDb(merged: DB): DB {
+  const target = inMemoryDb ?? { users: [], games: [] };
+  target.users = merged.users;
+  target.games = merged.games;
+  inMemoryDb = target;
+  return target;
+}
+
+/**
  * Upload the CURRENT `db` snapshot to GCS with a generation precondition,
  * re-downloading/merging/retrying once on a conflict.
  *
@@ -578,6 +608,36 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
   const { Storage } = await import('@google-cloud/storage');
   const storage = new Storage();
   const file = storage.bucket(GCS_BUCKET!).file('db.json');
+
+  // `gcsGeneration === null` means we have NEVER established what is
+  // actually on GCS — most plausibly `initDB`'s GCS read threw and fell
+  // back to `loadDBFromFile()` (which, in hosted mode, reads a LOCAL file
+  // that does not exist in Cloud Run and returns an empty database).
+  // Uploading unconditionally in that state would be a real, unconditional
+  // write with no precondition at all, which would REPLACE the real remote
+  // object with that empty fallback — CodeRabbit caught this. Re-sync
+  // first rather than either writing blindly or refusing to ever write
+  // again: this makes the process self-healing once GCS is reachable,
+  // instead of a transient load failure at boot permanently disabling all
+  // future saves.
+  if (gcsGeneration === null) {
+    try {
+      const [exists] = await file.exists();
+      if (exists) {
+        const [remoteContent] = await file.download();
+        const [meta] = await file.getMetadata();
+        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
+        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
+        db = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
+      } else {
+        gcsGeneration = '0'; // GCS's own "must not exist yet" convention, matching initDB
+      }
+    } catch (err) {
+      console.error('GCS write skipped: could not establish the object generation after a previous load failure. A later save will retry:', err);
+      return; // fail SAFE — do not write blindly over state we have never read
+    }
+  }
+
   const bodyStr = JSON.stringify(db, null, 2);
   const saveOpts: {
     contentType: string; resumable: boolean; validation: boolean;
@@ -588,8 +648,15 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
   }
   try {
     await file.save(bodyStr, saveOpts);
-    const [meta] = await file.getMetadata();
-    gcsGeneration = meta.generation != null ? String(meta.generation) : null;
+    // Read the generation OFF THE UPLOAD RESPONSE ITSELF
+    // (`@google-cloud/storage` populates `file.metadata` from it), not a
+    // separate `getMetadata()` call — CodeRabbit caught the TOCTOU: between
+    // our write completing and a follow-up GET landing, a DIFFERENT writer
+    // could have already written again, and we would then silently adopt
+    // THEIR generation as if it were the result of our own write, letting
+    // our next save overwrite theirs without ever seeing a 412.
+    const generation = file.metadata?.generation;
+    gcsGeneration = generation != null ? String(generation) : null;
     gcsBaselineDb = JSON.parse(bodyStr); // see initDB's comment: a real copy, not a live reference
   } catch (err: any) {
     if (err?.code === 412) {
@@ -600,8 +667,7 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
         const [meta] = await file.getMetadata();
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
-        const merged = unionMergeDb(remote, db, gcsBaselineDb);
-        inMemoryDb = merged; // keep this process's own view consistent with what we're about to persist
+        const merged = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
         await uploadDbToGcs(merged, attempt + 1);
       } catch (mergeErr) {
         console.error('GCS write conflict: re-download/merge failed:', mergeErr);
