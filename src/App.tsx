@@ -1607,7 +1607,7 @@ export default function App() {
           lastGeneratedFillRef.current = gen;
           setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
         } else {
-          setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/labels you'd already typed — the AI wrote a scenario too, but didn't touch your text; clear a field to let it fill that one in.`);
+          setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/option names you'd already typed — the AI wrote a scenario too, but didn't touch your text. Clear ALL of those fields (not just one) to let it fill them in on the next Generate.`);
         }
       } else {
         setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
