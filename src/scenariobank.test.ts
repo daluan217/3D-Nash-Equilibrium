@@ -22,6 +22,24 @@ const G = (k: number): GamePayoffs => ({ a11: 2 * k, a12: 0, a21: 0, a22: k, b11
 const entry = (d: string, b: number, name: string, desc = 'x'): BankEntry =>
   ({ d, b, s: { name, row1: 'A', row2: 'B', col1: 'C', col2: 'D', description: desc } as never });
 
+/**
+ * SOFT STAKES (2026-09-02) added a softening draw BEFORE the widening ladder
+ * (`pickFromBank`'s `softenBand`): the FIRST `pick()` call decides whether to
+ * reach for a neighbouring band at all (a value >= `BAND_NEIGHBOR_P` keeps the
+ * exact band), and every later call is the pre-existing "which candidate"
+ * logic the tests below were written against. Tests whose POINT is the
+ * widening ladder — not the softening — use `exactPick`, which always clears
+ * the softening gate first and then delegates, so `() => 0`'s old "take the
+ * first candidate" meaning is preserved for everything downstream of it.
+ */
+const exactPick = (inner: () => number = () => 0): () => number => {
+  let first = true;
+  return () => {
+    if (first) { first = false; return 0.99; } // >= BAND_NEIGHBOR_P: keep the exact band
+    return inner();
+  };
+};
+
 /* ------------------------------------------------- bands match the hint */
 // The bank is indexed on the band, so an off-by-one here files every story
 // under the wrong stakes and the index silently stops meaning anything.
@@ -36,7 +54,7 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const seen = new Set<string>();
   const got: string[] = [];
   for (let i = 0; i < 4; i++) {
-    const s = pickFromBank(bank, G(20), 'vineyard', seen, () => 0);
+    const s = pickFromBank(bank, G(20), 'vineyard', seen, exactPick());
     if (!s) break;
     got.push(s.name ?? '');
     seen.add(bankKey(bank.find((e) => e.s.name === s.name)!));
@@ -63,7 +81,7 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   // whole campaign keeps finding. `() => 0` takes the FIRST candidate, so a
   // picker that ranks "unseen entry" above "unseen name" hands back the
   // repeated title every run.
-  const s = pickFromBank(bank, G(4), 'harbour', seen, () => 0);
+  const s = pickFromBank(bank, G(4), 'harbour', seen, exactPick());
   check('a seen NAME is avoided even when the entry differs',
     s?.name === 'Ferry Slotting', `got ${s?.name}`);
 }
@@ -83,7 +101,7 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const seen = new Set([bankKey(bank[0])]);
   // `() => 0` again: a picker that repeats returns bank[1] deterministically,
   // so this cannot pass by luck.
-  const s = pickFromBank(bank, G(20), 'lighthouse relief shifts', seen, () => 0);
+  const s = pickFromBank(bank, G(20), 'lighthouse relief shifts', seen, exactPick());
   check('a cell with no unseen NAME widens instead of repeating the title',
     s?.name === 'Kelp Harvest Timing', `got ${s?.name}`);
   // And it widens to the RIGHT BAND: the alternative here is off-band.
@@ -91,7 +109,7 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
                  entry('lighthouse relief shifts', 2, 'Lighthouse Relief Shifts', 'two'),
                  entry('lighthouse relief shifts', 0, 'Tiny Lighthouse Job', 'three'),
                  entry('kelp farm harvesting', 2, 'Kelp Harvest Timing', 'four')];
-  const s2 = pickFromBank(bank2, G(20), 'lighthouse relief shifts', new Set([bankKey(bank2[0])]), () => 0);
+  const s2 = pickFromBank(bank2, G(20), 'lighthouse relief shifts', new Set([bankKey(bank2[0])]), exactPick());
   check('widening prefers the same band over the same domain',
     s2?.name === 'Kelp Harvest Timing', `got ${s2?.name}`);
 }
@@ -106,16 +124,16 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   // the user never made.
   const bank = [entry('coppice cutting cycles', 0, 'Modest Coppice Patch'),
                 entry('kelp farm harvesting', 3, 'Kelp Harvest Timing')];
-  const s = pickFromBank(bank, G(60), 'coppice cutting cycles', new Set(), () => 0);
+  const s = pickFromBank(bank, G(60), 'coppice cutting cycles', new Set(), exactPick());
   check('an empty (domain,band) cell holds the BAND rather than the domain',
     s?.name === 'Kelp Harvest Timing', `got ${s?.name}`);
 
   const kelp = [entry('kelp', 0, 'Tiny One'), entry('kelp', 3, 'Large One')];
   // Nothing at this band ANYWHERE: only then does it fall back within the domain.
-  const t = pickFromBank(kelp, G(20), 'kelp', new Set());
+  const t = pickFromBank(kelp, G(20), 'kelp', new Set(), exactPick());
   check('a band with no row in the whole bank falls back within the domain', t !== null, `${t?.name}`);
   // No domain at all: fall back on band rather than returning nothing.
-  const other = pickFromBank(kelp, G(0.3), 'nonexistent-domain', new Set());
+  const other = pickFromBank(kelp, G(0.3), 'nonexistent-domain', new Set(), exactPick());
   check('an unknown domain falls back on the band', other?.name === 'Tiny One', `${other?.name}`);
   check('an empty bank returns null rather than throwing', pickFromBank([], G(4), 'kelp', new Set()) === null);
 }
@@ -125,9 +143,51 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const bank = [entry('mill', 0, 'Tiny'), entry('mill', 1, 'Modest'),
                 entry('mill', 2, 'Substantial'), entry('mill', 3, 'Large')];
   for (const [k, want] of [[0.3, 'Tiny'], [4, 'Modest'], [20, 'Substantial'], [60, 'Large']] as Array<[number, string]>) {
-    const s = pickFromBank(bank, G(k), 'mill', new Set());
-    check(`a swing of ${k} draws from the ${want} band`, s?.name === want, `got ${s?.name}`);
+    const s = pickFromBank(bank, G(k), 'mill', new Set(), exactPick());
+    check(`a swing of ${k} draws from the ${want} band when the softening gate clears`, s?.name === want, `got ${s?.name}`);
   }
+}
+
+/* ------------------------------------------------ soft stakes for the bank
+ * `softenBand` is the whole point of this round's change: mostly the exact
+ * band, sometimes a neighbour, never two bands over, deterministic per seed.
+ */
+{
+  const bank = [entry('mill', 0, 'Tiny'), entry('mill', 1, 'Modest'),
+                entry('mill', 2, 'Substantial'), entry('mill', 3, 'Large')];
+  // A low first draw (< BAND_NEIGHBOR_P) reaches for a neighbour; the SECOND
+  // draw picks which one when both exist.
+  const seq = (vals: number[]) => { let i = 0; return () => vals[Math.min(i++, vals.length - 1)]; };
+  const low = pickFromBank(bank, G(20), 'mill', new Set(), seq([0, 0])); // band 2 -> neighbour, low half -> band 1
+  check('a low softening draw reaches the LOWER neighbour band', low?.name === 'Modest', `got ${low?.name}`);
+  const high = pickFromBank(bank, G(20), 'mill', new Set(), seq([0, 0.99])); // band 2 -> neighbour, high half -> band 3
+  check('a low softening draw + a high half-draw reaches the UPPER neighbour band', high?.name === 'Large', `got ${high?.name}`);
+  // NEVER two bands over: band 0 (Tiny) only has ONE neighbour (band 1) — a
+  // mutant that let the ladder wander further would eventually surface
+  // "Substantial" or "Large" here, and this pins it to exactly one hop.
+  const edge = pickFromBank(bank, G(0.3), 'mill', new Set(), seq([0, 0.99]));
+  check('band 0 (no lower neighbour) only ever reaches ONE band over', edge?.name === 'Modest', `got ${edge?.name}`);
+  const edge2 = pickFromBank(bank, G(60), 'mill', new Set(), seq([0, 0]));
+  check('band 3 (no upper neighbour) only ever reaches ONE band over', edge2?.name === 'Substantial', `got ${edge2?.name}`);
+
+  // MEASURED, not just fixture-checked: over many seeds, the exact band wins
+  // roughly 1 - BAND_NEIGHBOR_P (0.3) of the time, and it is NEVER anything
+  // but the exact band or an immediate neighbour.
+  let seed = 555;
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const N = 4000;
+  let exact = 0, offByOne = 0, offByMore = 0;
+  const bandOf: Record<string, number> = { Tiny: 0, Modest: 1, Substantial: 2, Large: 3 };
+  for (let i = 0; i < N; i++) {
+    const s = pickFromBank(bank, G(20), 'mill', new Set(), rand); // true band 2
+    const b = bandOf[s?.name ?? ''];
+    const d = Math.abs(b - 2);
+    if (d === 0) exact++; else if (d === 1) offByOne++; else offByMore++;
+  }
+  check('softened band distribution: exact band ~= 1 - BAND_NEIGHBOR_P (0.3)',
+    Math.abs(exact / N - 0.7) < 0.05, `exact ${(exact / N).toFixed(3)} over ${N}`);
+  check('softened band distribution: NEVER more than one band away',
+    offByMore === 0, `${offByMore}/${N} landed two or more bands from the true one`);
 }
 
 /* ------------------------------------------------------- determinism */
