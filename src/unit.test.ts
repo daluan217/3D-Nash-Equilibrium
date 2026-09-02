@@ -1010,18 +1010,35 @@ function testOpenRouterCredentialGating() {
 
     // Gating is per-provider: an openrouter/ model must not be satisfied by
     // Foundry credentials, and a Foundry model must not be satisfied by
-    // OpenRouter credentials.
-    const savedFoundryEndpoint = process.env.AZURE_FOUNDRY_ENDPOINT;
-    const savedFoundryKey = process.env.AZURE_FOUNDRY_API_KEY;
-    delete process.env.AZURE_FOUNDRY_ENDPOINT;
-    delete process.env.AZURE_FOUNDRY_API_KEY;
+    // OpenRouter credentials. foundryCreds checks the PER-MODEL variable
+    // (`${MODEL}_AZURE_FOUNDRY_ENDPOINT`/`_API_KEY`) before the generic one,
+    // so both must be cleared or a per-model var left over in the environment
+    // would make this assertion fail for an unrelated reason.
+    const MODEL = 'gpt-5.4-mini';
+    const slug = MODEL.toUpperCase();
+    const FOUNDRY_KEYS = [
+      'AZURE_FOUNDRY_ENDPOINT', 'AZURE_FOUNDRY_API_KEY',
+      `${slug}_AZURE_FOUNDRY_ENDPOINT`, `${slug}_AZURE_FOUNDRY_API_KEY`,
+    ];
+    const savedFoundry = FOUNDRY_KEYS.map((k) => process.env[k]);
+    for (const k of FOUNDRY_KEYS) delete process.env[k];
     try {
-      assert(!hasCredentials('gpt-5.4-mini'), 'a foundry-openai model must not read OpenRouter credentials as its own');
+      assert(!hasCredentials(MODEL), 'a foundry-openai model must not read OpenRouter credentials as its own');
+
+      // The other direction: Foundry credentials must not satisfy an
+      // openrouter/ model even though both adapters happen to be OpenAI-
+      // compatible under the hood.
+      delete process.env[ENDPOINT];
+      delete process.env[KEY];
+      process.env.AZURE_FOUNDRY_ENDPOINT = 'https://example.invalid/foundry';
+      process.env.AZURE_FOUNDRY_API_KEY = 'foundry-key';
+      assert(!hasCredentials('openrouter/glm-5.3'),
+        'an openrouter/ model must not be satisfied by Foundry credentials');
     } finally {
-      if (savedFoundryEndpoint === undefined) delete process.env.AZURE_FOUNDRY_ENDPOINT;
-      else process.env.AZURE_FOUNDRY_ENDPOINT = savedFoundryEndpoint;
-      if (savedFoundryKey === undefined) delete process.env.AZURE_FOUNDRY_API_KEY;
-      else process.env.AZURE_FOUNDRY_API_KEY = savedFoundryKey;
+      FOUNDRY_KEYS.forEach((k, idx) => {
+        const v = savedFoundry[idx];
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      });
     }
   } finally {
     if (savedEndpoint === undefined) delete process.env[ENDPOINT]; else process.env[ENDPOINT] = savedEndpoint;
