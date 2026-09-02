@@ -110,4 +110,27 @@ const css = readFileSync('src/index.css', 'utf8');
   ok(activeButtonCount === 2, `both Player A active-toggle buttons must use bg-player-a-600, found ${activeButtonCount}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CodeRabbit finding, PR #87 re-review (src/components/MenuDrawer.tsx): the
+// "Central Hub Website URL" <label> was not associated with its <input> —
+// no wrapping, no htmlFor/id pair — so a screen reader announces the field
+// with no accessible name, the exact `label` axe rule finding 005 was about,
+// just on a different (non-default-visible) panel finding 005's sweep never
+// opened.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const menuDrawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  ok(/<label htmlFor="central-hub-url"[^>]*>\s*Central Hub Website URL/.test(menuDrawer),
+    'the Central Hub Website URL label must carry htmlFor="central-hub-url"');
+  const inputIdx = menuDrawer.indexOf('value={apiBaseUrl}');
+  ok(inputIdx > 0, 'the Central Hub URL input must be found');
+  const inputBlock = menuDrawer.slice(Math.max(0, inputIdx - 200), inputIdx);
+  ok(/id="central-hub-url"/.test(inputBlock),
+    `the Central Hub URL input must carry the matching id, got: ${JSON.stringify(inputBlock)}`);
+  // No duplicate id anywhere else in the tree (a duplicate id is its own
+  // a11y/DOM defect and would make the association ambiguous).
+  const idCount = (menuDrawer.match(/id="central-hub-url"/g) || []).length;
+  ok(idCount === 1, `id="central-hub-url" must appear exactly once, found ${idCount}`);
+}
+
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

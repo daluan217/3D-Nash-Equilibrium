@@ -845,11 +845,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                   {dbMode === 'cloud' && (
                     <div className="pt-2.5 space-y-1.5">
-                      <label className="text-xs font-bold text-muted dark:text-muted-dark uppercase tracking-wide">
+                      <label htmlFor="central-hub-url" className="text-xs font-bold text-muted dark:text-muted-dark uppercase tracking-wide">
                         Central Hub Website URL
                       </label>
                       <div className="flex gap-1.5">
                         <input
+                          id="central-hub-url"
                           type="text"
                           value={apiBaseUrl}
                           onChange={(e) => onUpdateApiBaseUrl(e.target.value)}

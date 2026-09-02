@@ -203,4 +203,44 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
     `the in-dialog copy near Generate must describe that typed text is protected, got: ${JSON.stringify(copy.slice(0, 300))}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. THE REF IS SYNCED FROM `useLayoutEffect`, NOT `useEffect` (CodeRabbit
+// finding, PR #87 re-review — same shape as the ALREADY-FIXED `payoffsRef`
+// a few lines above it in App.tsx).
+//
+// A passive `useEffect` runs asynchronously after paint, leaving a real
+// window between React committing a keystroke's state update and the ref
+// actually catching up. If `handleGenerateGame`'s report response resolves
+// inside that window it would read a STALE `saveFieldsRef.current` and could
+// approve overwriting text the user just typed — the exact defect class this
+// ref exists to close (finding 001). `useLayoutEffect` fires synchronously
+// right after the commit, before the browser paints and long before any
+// network response can resolve, closing the window entirely.
+//
+// There is no DOM test harness in this repo to exercise the live timing race
+// directly (same reason src/reportrace.test.ts's `payoffsRef` guard is
+// checked structurally, not by actually racing a network response — see its
+// own comment) — this is the checkable, decidable half: the ref-sync effect
+// that guards saveFieldsRef must be a layout effect.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const app = readFileSync(join(here, 'App.tsx'), 'utf8');
+  const refDeclIdx = app.indexOf('const saveFieldsRef = useRef(');
+  ok(refDeclIdx > 0, 'saveFieldsRef must be declared');
+  // The very next non-comment statement after the declaration must be the
+  // layout-effect sync — anchored tightly so a LATER, unrelated
+  // useLayoutEffect elsewhere in the file cannot satisfy this by accident.
+  const nextChunk = app.slice(refDeclIdx, refDeclIdx + 400);
+  ok(/useLayoutEffect\(\(\) => \{\s*saveFieldsRef\.current = \{ name: saveName, desc: saveDesc, labels: saveLabels \};\s*\}, \[saveName, saveDesc, saveLabels\]\);/.test(nextChunk),
+    `saveFieldsRef must be synced inside useLayoutEffect (not useEffect), got: ${JSON.stringify(nextChunk)}`);
+  ok(!/useEffect\(\(\) => \{\s*saveFieldsRef\.current/.test(app),
+    'saveFieldsRef must never be synced from a plain (passive) useEffect anywhere in the file');
+
+  // Mutation: the pre-fix (CodeRabbit-flagged) shape must actually match the
+  // negative predicate above, or that predicate is vacuous.
+  const preFixShape = `useEffect(() => {\n    saveFieldsRef.current = { name: saveName, desc: saveDesc, labels: saveLabels };\n  }, [saveName, saveDesc, saveLabels]);`;
+  ok(/useEffect\(\(\) => \{\s*saveFieldsRef\.current/.test(preFixShape),
+    'the pre-fix fixture text must itself match the forbidden pattern (fixture sanity check)');
+}
+
 console.log(`generatefill.test.ts: ${checks} checks passed`);

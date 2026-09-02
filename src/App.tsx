@@ -368,9 +368,21 @@ export default function App() {
    * them as of the CLICK, not as of whenever the await resolves — so text the
    * user types DURING the wait would not be seen as "already there" and could
    * still be silently overwritten. Kept in sync on every render instead.
+   *
+   * `useLayoutEffect`, NOT `useEffect` (CodeRabbit finding, PR #87 re-review
+   * — same shape as `payoffsRef` above). A PASSIVE effect runs asynchronously
+   * after paint, so there is a real window — between React committing a
+   * keystroke's state update and that effect actually running — during which
+   * `saveFieldsRef.current` is STALE. If `handleGenerateGame`'s report
+   * response happens to resolve inside that window, it reads the OLD field
+   * values and can approve overwriting text the user just typed, which is
+   * exactly the class of bug this ref exists to close. `useLayoutEffect`
+   * fires synchronously right after the commit, before the browser paints and
+   * long before any network response can possibly resolve, so there is no
+   * window left for an async callback to land in.
    */
   const saveFieldsRef = useRef({ name: saveName, desc: saveDesc, labels: saveLabels });
-  useEffect(() => {
+  useLayoutEffect(() => {
     saveFieldsRef.current = { name: saveName, desc: saveDesc, labels: saveLabels };
   }, [saveName, saveDesc, saveLabels]);
   /**
