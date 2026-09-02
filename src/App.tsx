@@ -667,6 +667,13 @@ export default function App() {
   // the auto-scroll would silently follow the wrong one.
   const logsExpandedRef = useRef<HTMLDivElement>(null);
   const [logExpanded, setLogExpanded] = useState(false);
+  /** The dialog's own outer element — the boundary the Tab trap searches for
+   *  focusable descendants inside. */
+  const logDialogRef = useRef<HTMLDivElement>(null);
+  /** The "Expand log" button, as a fallback opener to restore focus to on
+   *  close if `document.activeElement` was not it for some reason (e.g. the
+   *  dialog was opened programmatically rather than by a real click/Enter). */
+  const expandLogButtonRef = useRef<HTMLButtonElement>(null);
 
   // Auto-scroll the logs browser to the bottom on new entries
   useEffect(() => {
@@ -675,10 +682,53 @@ export default function App() {
     }
   }, [logEntries, logExpanded]);
 
-  // Escape closes the expanded log, matching the other modals in the app.
+  /**
+   * Focus management for the expanded-log dialog (RED-APP-4, CodeRabbit
+   * finding on PR #90): opening it left focus on the "Expand log" button
+   * underneath the overlay, so a keyboard user's next Tab walked the REST OF
+   * THE PAGE (hidden behind the backdrop) before ever reaching the dialog —
+   * and nothing ever moved focus back when it closed. WAI-ARIA APG's modal
+   * dialog pattern: move focus INTO the dialog on open, trap Tab/Shift+Tab
+   * within it while open, restore focus to the opener on close.
+   *
+   * The cleanup function (not a second effect) does the restore: it runs
+   * exactly when `logExpanded` flips back to false — right before the
+   * early-return body for that render — which is precisely "the moment the
+   * dialog closes," not sooner and not later.
+   */
   useEffect(() => {
     if (!logExpanded) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLogExpanded(false); };
+    const opener = (document.activeElement as HTMLElement | null) ?? expandLogButtonRef.current;
+    // The log region itself, not the collapse button — a keyboard user
+    // arriving here wants to read/scroll the log immediately.
+    logsExpandedRef.current?.focus();
+    return () => { opener?.focus(); };
+  }, [logExpanded]);
+
+  // Escape closes the expanded log (matching the other modals in the app);
+  // Tab/Shift+Tab is trapped to the dialog's own focusable elements so
+  // focus can never leave it onto the page underneath while it is open.
+  useEffect(() => {
+    if (!logExpanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setLogExpanded(false); return; }
+      if (e.key !== 'Tab') return;
+      const container = logDialogRef.current;
+      if (!container) return;
+      const focusables = Array.from(
+        container.querySelectorAll<HTMLElement>('button, [tabindex]:not([tabindex="-1"])'),
+      ).filter((el) => !el.hasAttribute('disabled'));
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [logExpanded]);
@@ -3023,6 +3073,7 @@ export default function App() {
           Simulation Log
         </span>
         <button
+          ref={expandLogButtonRef}
           type="button"
           onClick={() => setLogExpanded(true)}
           title="Expand log"
@@ -3032,7 +3083,13 @@ export default function App() {
           <Maximize2 className="w-3.5 h-3.5" />
         </button>
       </div>
-      <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}>
+      <div
+        ref={logsContainerRef}
+        tabIndex={0}
+        role="region"
+        aria-label="Simulation log"
+        className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900 ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}
+      >
         {logLines}
       </div>
     </div>
@@ -3051,6 +3108,7 @@ export default function App() {
       aria-label="Simulation log"
     >
       <div
+        ref={logDialogRef}
         className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
         onClick={(e) => e.stopPropagation()}
       >
@@ -3074,7 +3132,10 @@ export default function App() {
         </div>
         <div
           ref={logsExpandedRef}
-          className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text"
+          tabIndex={0}
+          role="region"
+          aria-label="Simulation log"
+          className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
         >
           {logLines}
         </div>
@@ -3397,11 +3458,11 @@ export default function App() {
                 real preset labels, on all three mobile.mjs device profiles. */}
             <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_1fr_1fr] gap-3 text-center items-center">
               <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
-              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col1}>B: {activeLabels.col1}</div>
-              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col2}>B: {activeLabels.col2}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col2}>B: {activeLabels.col2}</div>
 
               {/* Row 1 inputs */}
-              <div className="text-xs font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words" title={activeLabels.row1}>A: {activeLabels.row1}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -3450,7 +3511,7 @@ export default function App() {
               </div>
 
               {/* Row 2 inputs */}
-              <div className="text-xs font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words" title={activeLabels.row2}>A: {activeLabels.row2}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"

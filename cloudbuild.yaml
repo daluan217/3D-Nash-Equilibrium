@@ -44,6 +44,18 @@ steps:
       - '--memory=512Mi'
       - '--cpu=1'
       - '--timeout=3600'
+      # Capped at ONE instance (director's call, accepted by Daniel). Two
+      # standing single-process assumptions make more than one instance an
+      # active correctness hazard, not just a scaling knob: AUTH_SECRET falls
+      # back to a random PER-PROCESS key when unset, so a second instance
+      # would silently invalidate sessions minted by the first (and
+      # cold-starts flip which instance answers a given request); and
+      # db.json is a single local file with non-atomic writes, so two
+      # instances writing concurrently can torn-write or lose an update.
+      # Neither is fixed by this cap -- it just keeps prod at the ONE
+      # instance those assumptions were true under, instead of only
+      # accidentally.
+      - '--max-instances=1'
 
 images:
   - 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:$SHORT_SHA'

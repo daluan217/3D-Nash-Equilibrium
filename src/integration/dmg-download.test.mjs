@@ -91,7 +91,8 @@ function startFakeGcs({ dmgExists }) {
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
-      name: DMG_OBJECT, bucket: BUCKET, size: String(DMG_CONTENT.length),
+      name: DMG_OBJECT, bucket: BUCKET,
+      size: String(DMG_CONTENT.length),
       contentType: 'application/octet-stream',
     }));
   });
@@ -247,19 +248,22 @@ try {
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 1b. THE LIVE 500: Cloud Run's HTTP/1 path rejects a response whose
-  // explicit Content-Length is >= 32 MiB ("Maximum HTTP/1 response size:
-  // 32 MiB per response, if not using chunked transfer encoding"). Setting
-  // Content-Length on the 137 MB DMG (section 1's fix, shipped in #82) turned
-  // EVERY full download on production into a bare HTTP 500 from 08:00 to the
-  // hotfix, while the 1-byte ranged probes above kept passing — header-only
-  // verification cannot see it. Above the cap the server must omit
-  // Content-Length (Node then chunk-encodes) and still send every byte.
-  // NASH_MAX_SIZED_RESPONSE_BYTES lowers the cap so a few-KB fake object
-  // exercises the production branch; unset, the cap is 32 MiB.
+  // 1b. THE LIVE 500 (RED-DESKTOP-4/003; also PR #89's own hotfix, reconciled
+  // here into ONE implementation): a response whose explicit Content-Length
+  // is >= NASH_MAX_SIZED_RESPONSE_BYTES (Cloud Run's own documented HTTP/1
+  // limit, 32 MiB, unless overridden) gets a bare, header-less Google-
+  // Frontend HTTP 500 — verified live (2026-09-02) against production: a
+  // plain GET with NO Range header at all (not just a malformed one) 500s
+  // the exact same way once the DMG exceeded the cap, and pulling Cloud Run
+  // request logs by x-cloud-trace-context confirmed "Response size was too
+  // large." NASH_MAX_SIZED_RESPONSE_BYTES lowers the cap to 64 bytes here so
+  // the real (tiny) DMG_CONTENT fixture exercises the production branch
+  // byte-exactly, without this suite moving real gigabytes or needing a
+  // fake declared-vs-actual size mismatch.
   // ───────────────────────────────────────────────────────────────────────────
+  const CAP = 64;
   fakeGcs = await startFakeGcs({ dmgExists: true });
-  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`, { NASH_MAX_SIZED_RESPONSE_BYTES: '64' });
+  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`, { NASH_MAX_SIZED_RESPONSE_BYTES: String(CAP) });
 
   const bigFull = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
   const bigFullBody = Buffer.from(await bigFull.arrayBuffer());
@@ -272,13 +276,15 @@ try {
   const bigRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { Range: 'bytes=0-199' } });
   const bigRangeBody = Buffer.from(await bigRange.arrayBuffer());
   record('a range >= the cap is a 206 with Content-Range but WITHOUT Content-Length',
-    bigRange.status === 206 && bigRange.headers.get('content-length') === null && bigRange.headers.get('content-range') === `bytes 0-199/${DMG_CONTENT.length}`,
+    bigRange.status === 206 && bigRange.headers.get('content-length') === null
+      && bigRange.headers.get('content-range') === `bytes 0-199/${DMG_CONTENT.length}`,
     `status ${bigRange.status}, content-length ${bigRange.headers.get('content-length')}, content-range ${bigRange.headers.get('content-range')}`);
   record('…and that range body is byte-exact', bigRangeBody.equals(DMG_CONTENT.subarray(0, 200)), `${bigRangeBody.length} bytes`);
 
-  // Exactly AT the cap: the guard is a strict less-than, so a 64-byte body with
-  // a 64-byte cap must already omit the header (a >= vs > regression would pass
-  // the 200-byte case above and still 500 on Cloud Run at the boundary).
+  // Exactly AT the cap: the guard is a strict less-than, so a 64-byte body
+  // with a 64-byte cap must already omit the header (a >= vs > regression
+  // would pass the 200-byte case above and still 500 on Cloud Run at the
+  // boundary — this is the check that would have caught that class of bug).
   const edgeRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { Range: 'bytes=0-63' } });
   const edgeBody = Buffer.from(await edgeRange.arrayBuffer());
   record('a range EXACTLY at the cap omits Content-Length (strict boundary)',
@@ -287,11 +293,61 @@ try {
   const smallRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { Range: 'bytes=0-9' } });
   await smallRange.arrayBuffer();
   record('a range BELOW the cap keeps its Content-Length (resumable downloads still get sizes)',
-    smallRange.status === 206 && smallRange.headers.get('content-length') === '10', `status ${smallRange.status}, content-length ${smallRange.headers.get('content-length')}`);
+    smallRange.status === 206 && smallRange.headers.get('content-length') === '10',
+    `status ${smallRange.status}, content-length ${smallRange.headers.get('content-length')}`);
   const bigHead = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { method: 'HEAD' });
   await bigHead.arrayBuffer();
   record('HEAD still reports the real size (no body, so the cap does not apply)',
-    bigHead.status === 200 && bigHead.headers.get('content-length') === String(DMG_CONTENT.length), `content-length ${bigHead.headers.get('content-length')}`);
+    bigHead.status === 200 && bigHead.headers.get('content-length') === String(DMG_CONTENT.length),
+    `content-length ${bigHead.headers.get('content-length')}`);
+
+  // ── RED-DESKTOP-4/003 + director's follow-up, live-reproduced (2026-09-02):
+  // `bytes=0-0` alone already 206'd correctly on production (PR #82) — but
+  // `bytes=0-0,5-5` (multi-range), `bytes=abc` (malformed), `items=0-1`
+  // (wrong unit), and `bytes=-` (both sides empty) each got a bare, header-
+  // less Cloud-Run/Google-Frontend 500 on the live 137 MB DMG. Read by hand,
+  // server.ts's OWN Range regex (`^bytes=(\d*)-(\d*)$`, anchored) already
+  // fails to match all four — none of them can EVER be `m`, so all four
+  // ALREADY fell through to the graceful "ignore the header, serve the
+  // whole file" branch per RFC 9110 §14.1.2 (unparseable/unsupported Range
+  // -> ignore, not an error). The parser was never the bug: what turned
+  // that graceful fallback into a live 500 was the SAME sized-response cap
+  // above — the full-file branch unconditionally declared Content-Length
+  // before the fix. Proven here by running the identical five shapes
+  // against the SAME shrunk-cap server: the four "ignore" shapes must
+  // resolve 200 with NO Content-Length (the fix, reused) and complete
+  // without a socket/protocol error; the one valid shape must still 206
+  // with the correct single-byte Content-Range.
+  const rangeShapes = [
+    { label: 'multi-range (bytes=0-0,5-5)', header: 'bytes=0-0,5-5', expectIgnored: true },
+    { label: 'malformed (bytes=abc)', header: 'bytes=abc', expectIgnored: true },
+    { label: 'wrong unit (items=0-1)', header: 'items=0-1', expectIgnored: true },
+    { label: 'both sides empty (bytes=-)', header: 'bytes=-', expectIgnored: true },
+    { label: 'valid single range (bytes=0-0), control', header: 'bytes=0-0', expectIgnored: false },
+  ];
+  for (const shape of rangeShapes) {
+    let r;
+    let threw = null;
+    try {
+      r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { range: shape.header } });
+      await r.arrayBuffer(); // must fully resolve — a Content-Length/actual-bytes mismatch throws here
+    } catch (err) {
+      threw = err;
+    }
+    record(`${shape.label}: request completes without a socket/protocol error`,
+      threw === null, threw ? String(threw?.cause || threw) : 'ok');
+    if (threw) continue;
+    if (shape.expectIgnored) {
+      record(`${shape.label}: ignored -> full file, 200, no Content-Length (Cloud Run limit exempt)`,
+        r.status === 200 && r.headers.get('content-length') === null,
+        `status ${r.status}, content-length ${r.headers.get('content-length')}`);
+    } else {
+      record(`${shape.label}: still honored as a real range -> 206 with a correct Content-Range`,
+        r.status === 206 && r.headers.get('content-range') === `bytes 0-0/${DMG_CONTENT.length}`
+          && r.headers.get('content-length') === '1',
+        `status ${r.status}, content-range ${r.headers.get('content-range')}, content-length ${r.headers.get('content-length')}`);
+    }
+  }
 
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;

@@ -222,6 +222,93 @@ try {
       listed.status === 200 && Array.isArray(listed.json) && listed.json.some((x) => x.id === gameId),
       `count=${listed.json?.length}`);
 
+    // ── SECURITY — server-side bidi/control-character stripping ────────────
+    // The "Game Name"/"Game Description"/label FORM strips these before the
+    // browser ever sends a request (src/utils/textSafety.ts), but a direct
+    // POST/PATCH — curl, a script, a modified client — bypasses the form
+    // entirely. server.ts's own `cleanText` used to only `.trim().slice()`,
+    // so a name carrying a RIGHT-TO-LEFT OVERRIDE (U+202E) plus a fake
+    // extension landed and came back byte-for-byte, rendering
+    // bidi-reordered everywhere this app shows a saved name back. Numeric
+    // code points only, never a literal control character pasted into this
+    // source file (same Trojan-Source reasoning as textSafety.ts itself).
+    {
+      const RLO = String.fromCodePoint(0x202e);
+      const SOH = String.fromCodePoint(0x0001); // raw control character
+      const dirty = await call('POST', '/api/games', {
+        token,
+        body: {
+          name: `evidence${RLO}txt.exe`,
+          description: `line one${SOH}line two`,
+          payoffs: MP,
+          row1Label: `Heads${RLO}`,
+        },
+      });
+      const dg = dirty.json?.game;
+      const dirtyId = dg?.id || '';
+      record('POST /api/games strips a bidi override from the name',
+        dirty.status === 200 && dg?.name === 'evidencetxt.exe',
+        `status=${dirty.status} name=${JSON.stringify(dg?.name)}`);
+      record('POST /api/games strips a raw control character from the description',
+        dg?.description === 'line oneline two', `desc=${JSON.stringify(dg?.description)}`);
+      record('POST /api/games strips a bidi override from an option label',
+        dg?.row1Label === 'Heads', `row1Label=${JSON.stringify(dg?.row1Label)}`);
+
+      const dirtyPatch = await call('PATCH', `/api/games/${dirtyId}`, {
+        token,
+        body: { name: `Patched${RLO}Name`, col1Label: `Tails${SOH}` },
+      });
+      const pdg = dirtyPatch.json?.game;
+      record('PATCH /api/games/:id strips a bidi override from the name',
+        pdg?.name === 'PatchedName', `name=${JSON.stringify(pdg?.name)}`);
+      record('PATCH /api/games/:id strips a raw control character from a label',
+        pdg?.col1Label === 'Tails', `col1Label=${JSON.stringify(pdg?.col1Label)}`);
+
+      // CodeRabbit (2026-09-02 re-review): every check above reads the
+      // WRITE response body, so a handler that sanitizes only the outbound
+      // echo and stores the raw bytes would pass every one of them — the
+      // block's own comment says the risk is a dirty name that "landed" in
+      // STORAGE, which only a fresh read can prove. GET /api/games goes
+      // through loadDB()/inMemoryDb, not the POST/PATCH response path.
+      const readBack = await call('GET', '/api/games', { token });
+      const stored = (readBack.json || []).find((g) => g.id === dirtyId);
+      record('the stored game carries the sanitized name/description/label, not the raw bytes',
+        stored?.name === 'PatchedName' && stored?.col1Label === 'Tails'
+          && stored?.description === 'line oneline two',
+        `stored=${JSON.stringify({ name: stored?.name, col1Label: stored?.col1Label, description: stored?.description })}`);
+
+      if (dirtyId) await call('DELETE', `/api/games/${dirtyId}`, { token });
+    }
+
+    // ── SECURITY/QUALITY — cleanLabels cuts long option labels at a WORD
+    // BOUNDARY, not mid-word. RED-APP-4/CROSS.md: cleanScenario's own
+    // label() was fixed to avoid a bare 40-char slice (which cuts mid-word
+    // and the stub then repeats through a rendered paragraph), but the
+    // SIBLING path — cleanLabels, used by POST/PATCH /api/games' own
+    // row/col labels — still called the old blunt cleanText(v, 40). Only
+    // reachable via a direct API call (the Save/Edit modal's own
+    // maxlength=40 blocks this in ordinary UI use), which is exactly what
+    // this integration suite exercises.
+    {
+      const longLabel = await call('POST', '/api/games', {
+        token,
+        body: {
+          name: 'Long label truncation test',
+          payoffs: MP,
+          row1Label: 'Escalate the dispute to the regional arbitration board immediately',
+        },
+      });
+      const llg = longLabel.json?.game;
+      const llId = llg?.id || '';
+      record('POST /api/games cuts a long row1Label at a word boundary, not mid-word',
+        llg?.row1Label === 'Escalate the dispute to the regional', // <=40 chars, no partial word
+        `row1Label=${JSON.stringify(llg?.row1Label)} (len ${llg?.row1Label?.length})`);
+      record('the truncated label is at most 40 characters',
+        typeof llg?.row1Label === 'string' && llg.row1Label.length <= 40,
+        `len=${llg?.row1Label?.length}`);
+      if (llId) await call('DELETE', `/api/games/${llId}`, { token });
+    }
+
     // PATCH is the scenario-keep path: story edits only, never payoffs
     const patched = await call('PATCH', `/api/games/${gameId}`, {
       token,

@@ -43,6 +43,12 @@ function record(name, pass, detail) {
 // ── the mock provider ───────────────────────────────────────────────────────
 let calls = 0;
 let mode = 'nullscenario';
+// `sequence`: an ARRAY of per-call modes, consumed by call index (clamped to
+// the last entry once exhausted) — used to prove the BOUNDED reroll setting
+// actually reaches a THIRD draw, not just a second (NASH_SCENARIO_REROLLS,
+// default 2). A single fixed `mode` can only ever prove "always bad" or
+// "always good"; the sequence is what lets a test say "bad, bad, THEN good".
+let sequence = null;
 const STORY = {
   name: 'Mock Harbor Run', row1: 'Load Now', row2: 'Load Later',
   col1: 'Send Tug', col2: 'Hold Tug', storyClaims: null,
@@ -56,11 +62,12 @@ const mock = createServer((req, res) => {
   req.on('data', (c) => { body += c; });
   req.on('end', () => {
     calls++;
+    const effectiveMode = sequence ? sequence[Math.min(calls - 1, sequence.length - 1)] : mode;
     // 'hang' accepts the POST and never answers and never closes — the shape
     // that held a user's request open for 13m18s with no timeout at any layer.
-    if (mode === 'hang') return;
-    const content = mode === 'nullscenario' ? JSON.stringify({ suggestedScenario: null })
-      : mode === 'claimy' ? JSON.stringify({ suggestedScenario: CLAIMY })
+    if (effectiveMode === 'hang') return;
+    const content = effectiveMode === 'nullscenario' ? JSON.stringify({ suggestedScenario: null })
+      : effectiveMode === 'claimy' ? JSON.stringify({ suggestedScenario: CLAIMY })
       : JSON.stringify({ suggestedScenario: STORY });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -158,7 +165,15 @@ try {
     record(`${label} draws twice when the first draw is lost`, n === 2, `${n} provider call(s), expected 2`);
   }
 
-  // ── 2. EVERY BRANCH REROLLS A GATE REJECTION ──────────────────────────────
+  // ── 2. EVERY BRANCH REROLLS A GATE REJECTION, UP TO THE BOUNDED SETTING ──
+  // A gate-dropped draw is rerolled up to NASH_SCENARIO_REROLLS times
+  // (default 2, unset here) — a provider that is ALWAYS claimy must be asked
+  // exactly 1 + the limit = 3 times, not 2: this is the number the 2026-09-02
+  // bounded-reroll change (routed by the director from BLUE-APP-4's
+  // measurement: single-draw META-drop 7.33%, so a two-draw residual of
+  // ~0.54% was still 2.7x the 0.2% ship bar) exists to reach. Exactly 3, not
+  // "at least 3", is itself the proof the bound stops rerolling rather than
+  // spinning forever on a provider that never produces a clean draw.
   mode = 'claimy'; // well formed, but the description cites a number
   for (const [label, body] of [
     ['rung-3 report path (non-tie)', { payoffs: NONTIE }],
@@ -168,9 +183,31 @@ try {
   ]) {
     const { calls: n, res } = await countCalls(body);
     const story = res.json?.report?.suggestedScenario ?? res.json?.scenario ?? null;
-    record(`${label} draws twice when the first draw fails the gate`, n === 2, `${n} provider call(s), expected 2`);
+    record(`${label} draws exactly 3 times (1 + the default 2 gate-drop rerolls) when every draw fails the gate`,
+      n === 3, `${n} provider call(s), expected 3`);
     record(`${label} withholds the rejected story`, story === null || story === undefined, JSON.stringify(story)?.slice(0, 60));
   }
+
+  // ── 2b. THE BOUNDED REROLL REACHES A THIRD DRAW AND SHIPS IT ─────────────
+  // RED-DESKTOP-4/CROSS.md's own scenario: two independent gate-drops in a
+  // row (the ~0.54% residual) followed by a clean draw. Before the
+  // 2026-09-02 fix, `inventScreenedScenario` rerolled a gate-dropped draw
+  // exactly ONCE, so this exact sequence shipped a report with NO STORY —
+  // this must fail on the pre-fix code (assert against `main` to confirm).
+  mode = null;
+  sequence = ['claimy', 'claimy', 'ok'];
+  for (const [label, body] of [
+    ['rung-3 report path (non-tie)', { payoffs: NONTIE }],
+    ['tie report path', { payoffs: TIE }],
+  ]) {
+    const { calls: n, res } = await countCalls(body);
+    const story = res.json?.report?.suggestedScenario ?? null;
+    record(`${label}: two gate-drops then a clean draw reaches the THIRD draw (3 calls)`,
+      n === 3, `${n} provider call(s), expected 3`);
+    record(`${label}: the report carries the third draw's story, not nothing`,
+      story?.name === STORY.name, story?.name ?? 'none — the report shipped with NO story');
+  }
+  sequence = null;
 
   // ── 3. A GOOD DRAW COSTS EXACTLY ONE CALL (the reroll is not unconditional) ─
   mode = 'ok';

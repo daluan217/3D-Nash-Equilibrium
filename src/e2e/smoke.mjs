@@ -656,7 +656,82 @@ try {
     await page.waitForTimeout(300);
   }
 
-  // ══ 17. THE IDLE SPIN RESPECTS prefers-reduced-motion (RED-APP-4 round 4,
+  // ══ 17. THE 320px ROW/COL LABEL DOES NOT BREAK MID-WORD (RED-APP-4 round 4,
+  //      findings/RED-APP-4/004-320px-row-label-midword-break.md)
+  //
+  //      Prisoner's Dilemma's Row 1 label "Cooperate" (9 chars) wrapped to
+  //      "Cooper"/"ate" at a 320px viewport — the row-label column is capped
+  //      at 72px (deliberately, to protect the payoff inputs' own WCAG-24px
+  //      tap-target width), and "Cooperate" alone doesn't fit inside it at
+  //      the default text-xs size once the "A: " prefix has already wrapped.
+  //      Every OTHER built-in preset label wraps cleanly at the "A: "/word
+  //      boundary; only this one crosses the threshold. Fixed with a
+  //      narrow-viewport-only smaller font on the label cells (NOT a wider
+  //      column — widening the column's `minmax(0,X)` max has NO effect
+  //      here, confirmed empirically: the column loses to its sibling 1fr
+  //      columns' own min-content demand when its own min is 0, so only
+  //      reducing the LABEL's own min-content — via a smaller font — closes
+  //      the gap without taking width from the payoff inputs).
+  //
+  //      A SEPARATE page at a fixed 320px viewport, since the shared page
+  //      above never resizes this narrow.
+  {
+    const narrowPage = await browser.newPage({ viewport: { width: 320, height: 900 } });
+    await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
+    const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
+    if (await narrowExitTour.count() > 0) {
+      await narrowExitTour.click();
+      await narrowPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).catch(() => {});
+    }
+    // Prisoner's Dilemma is the default-selected preset; the exact fixture
+    // this defect escaped at. Explicit click rather than relying on default
+    // selection, so this check does not silently stop meaning anything if
+    // the default preset ever changes.
+    await narrowPage.getByRole('button', { name: "Prisoner's Dilemma" }).click().catch(() => {});
+    const rowLabel = narrowPage.locator('div[title="Cooperate"]', { hasText: /^A:/ }).first();
+    await rowLabel.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+
+    // THE PRECISE CHECK (CodeRabbit finding, PR #90 re-review): a total-line
+    // count of <=2 does NOT prove "Cooperate" itself is unbroken — "A: Coop"
+    // on line 1 and "erate" on line 2 is ALSO 2 lines total, with the word
+    // split mid-word just as broken as the reported 3-line case, and the old
+    // `lines <= 2` check would have passed it. Ask the DOM directly instead:
+    // build a Range over exactly the "Cooperate" substring (not the whole
+    // label, which also contains "A: ") and read `getClientRects()` — one
+    // rect per line box the range's content actually occupies. A word that
+    // renders on a single line produces exactly one rect; a word split
+    // across two lines produces two (one per fragment), regardless of how
+    // many lines the SURROUNDING label happens to wrap onto.
+    const wordRectCount = await rowLabel.evaluate((el) => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const idx = (node.textContent ?? '').indexOf('Cooperate');
+        if (idx !== -1) {
+          const range = document.createRange();
+          range.setStart(node, idx);
+          range.setEnd(node, idx + 'Cooperate'.length);
+          return range.getClientRects().length;
+        }
+      }
+      return null;
+    });
+
+    // The height/line-count read is kept as SECONDARY evidence only (folded
+    // into the failure detail), never as part of the pass/fail decision —
+    // exactly the class of check the primary one above replaces.
+    const box = await rowLabel.boundingBox();
+    const lineHeight = box ? await rowLabel.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight)) : null;
+    const lines = box && lineHeight ? Math.round(box.height / lineHeight) : null;
+
+    record('the "Cooperate" row label wraps at a word boundary, not mid-word, at 320px',
+      wordRectCount === 1,
+      `wordRectCount=${wordRectCount} (secondary: box=${JSON.stringify(box)} lineHeight=${lineHeight} lines=${lines})`);
+
+    await narrowPage.close();
+  }
+
+  // ══ 18. THE IDLE SPIN RESPECTS prefers-reduced-motion (RED-APP-4 round 4,
   //      findings/RED-APP-4/003-idle-spin-ignores-reduced-motion.md)
   //
   //      The idle spin — the plot's continuous, indefinite ~40s/turn camera
@@ -729,6 +804,70 @@ try {
       firstMoveAt === null ? `held at ${JSON.stringify(lastEye)} for 6s` : `moved to ${JSON.stringify(firstMoveAt)} from ${JSON.stringify(e0)}`);
 
     await rmPage.close();
+  }
+
+  // ══ 19. THE EXPANDED LOG DIALOG MANAGES FOCUS (CodeRabbit finding, PR #90
+  //      re-review, src/App.tsx:3086)
+  //
+  //      Activating "Expand log" opened the overlay but left focus on the
+  //      button underneath it — a keyboard user's next Tab walked the REST
+  //      OF THE PAGE (hidden behind the backdrop) before ever reaching the
+  //      dialog, and nothing ever moved focus back on close. Fixed: focus
+  //      moves into the dialog on open, Tab/Shift+Tab is trapped to the
+  //      dialog's own focusable elements while it is open, and focus
+  //      returns to the "Expand log" button on close.
+  //
+  //      A SEPARATE page (not the shared one above), since this leaves the
+  //      dialog open/closed and moves focus around — state later checks in
+  //      this suite do not expect.
+  {
+    const focusPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    await focusPage.goto(BASE, { waitUntil: 'networkidle' });
+    const focusExitTour = focusPage.getByRole('button', { name: /exit tour/i });
+    if (await focusExitTour.count() > 0) {
+      await focusExitTour.click();
+      await focusPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).catch(() => {});
+    }
+
+    const expandBtn = focusPage.getByRole('button', { name: 'Expand simulation log' });
+    await expandBtn.waitFor({ state: 'visible', timeout: 15000 });
+    await expandBtn.click();
+    await focusPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Simulation log"]'),
+      null, { timeout: 10000 }).catch(() => {});
+    // Give the focus-move effect a tick to run after the dialog mounts.
+    await focusPage.waitForTimeout(150);
+
+    const isInsideDialog = () => focusPage.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Simulation log"]');
+      return !!dlg && dlg.contains(document.activeElement);
+    });
+
+    record('opening the expanded log moves focus INTO the dialog (not left on the opener)',
+      await isInsideDialog());
+
+    // Tab several times — more than the dialog's own focusable-element count
+    // (collapse button + log region = 2), so a trap failure (focus escaping
+    // onto the page) would show up within this loop rather than needing the
+    // exact wrap-around step guessed correctly.
+    let stayedInside = true;
+    for (let i = 0; i < 5; i++) {
+      await focusPage.keyboard.press('Tab');
+      if (!(await isInsideDialog())) { stayedInside = false; break; }
+    }
+    record('Tab is trapped inside the expanded log dialog (5 presses, focus never left it)',
+      stayedInside);
+
+    await focusPage.keyboard.press('Escape');
+    await focusPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Simulation log"]'),
+      null, { timeout: 10000 }).catch(() => {});
+    await focusPage.waitForTimeout(150);
+    const restoredToOpener = await focusPage.evaluate(() =>
+      document.activeElement?.getAttribute('aria-label') === 'Expand simulation log');
+    record('closing the expanded log restores focus to the "Expand log" button',
+      restoredToOpener);
+
+    await focusPage.close();
   }
 
 } catch (e) {
