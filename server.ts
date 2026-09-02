@@ -2174,6 +2174,21 @@ async function startServer() {
   });
 
   // Serve compiled DMG file
+  // Cloud Run's HTTP/1 path caps a response with an explicit Content-Length at
+  // 32 MiB ("Maximum HTTP/1 response size: 32 MiB per response, if not using
+  // chunked transfer encoding"). Setting Content-Length on the 137 MB DMG made
+  // every full download — and any range spanning >= 32 MiB — a bare Google-
+  // Frontend HTTP 500 on production from the #82 deploy (2026-09-02 08:00) until
+  // this fix; small ranged 206s worked, which is why header-only probes missed
+  // it. Above the cap we omit Content-Length so Node chunk-encodes the body.
+  // Overridable for tests only (a fake object a few KB long exercises the cap).
+  const MAX_SIZED_RESPONSE_BYTES = (() => {
+    const v = parseInt(process.env.NASH_MAX_SIZED_RESPONSE_BYTES || "", 10);
+    return Number.isFinite(v) && v > 0 ? v : 32 * 1024 * 1024;
+  })();
+  const setBodyLength = (res: express.Response, bytes: number) => {
+    if (bytes < MAX_SIZED_RESPONSE_BYTES) res.setHeader('Content-Length', String(bytes));
+  };
   app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), async (req, res) => {
     try {
       // In Cloud Run, stream from GCS
@@ -2253,12 +2268,12 @@ async function startServer() {
             }
             res.status(206);
             res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-            res.setHeader('Content-Length', String(end - start + 1));
+            setBodyLength(res, end - start + 1);
             streamAndPipe({ start, end });
             return;
           }
 
-          if (size !== null && Number.isFinite(size)) res.setHeader('Content-Length', String(size));
+          if (size !== null && Number.isFinite(size)) setBodyLength(res, size);
           streamAndPipe();
           return;
         }
