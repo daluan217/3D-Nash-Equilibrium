@@ -100,6 +100,25 @@ if (!gotTheLock) {
   let expressPort = 14321;
   let mainWindow = null;
   let updateCheckDone = false;
+  // RED-DESKTOP-5/002: `startServer()` returns before initDB()/listen() on
+  // the lock-failure path, so `serverStarted` never becomes true and
+  // `expressPort` never advances past its hard-coded initial value — but the
+  // 800ms "slow boot sequence" fallback below and `app.on('activate')` were
+  // both unconditional on that alone, so ~800ms after `app.on('ready')` (or
+  // on a dock-icon click while the blocking dialog is still up) they called
+  // `createWindow(14321)` anyway. Nothing is listening there (correctly —
+  // the server never bound a port), so a second, blank `BrowserWindow`
+  // opened showing Chromium's own chrome-error://chromewebdata/ page RIGHT
+  // ALONGSIDE the correct native "Startup Blocked" dialog — live-reproduced
+  // via CDP against the packaged .app. Fixed two ways, deliberately: the
+  // fallback timer is CANCELLED outright the moment a lock failure is known
+  // (so it can never fire at all, the primary fix — cancelling beats
+  // checking, since a cancelled timer cannot race anything), and
+  // `lockFailurePending` is kept as defense-in-depth for `app.on('activate')`,
+  // which has no timer to cancel (a dock-icon click can happen at any time
+  // while the dialog is still up).
+  let lockFailurePending = false;
+  let slowBootFallbackTimer = null;
 
   global.onExpressListening = (port) => {
     expressPort = port;
@@ -143,6 +162,17 @@ if (!gotTheLock) {
   // no OTHER copy of Nash Equilibrium Simulator running) can delete it
   // themselves; the app never performs the destructive step on its own.
   global.onDesktopLockFailure = ({ message, lockFile }) => {
+    lockFailurePending = true;
+    // Cancel the slow-boot fallback outright — a cancelled timer cannot fire
+    // regardless of what races it against (see this block's own comment
+    // above). No-op if `app.on('ready')` has not scheduled it yet (the
+    // `require('./dist/server.cjs')` call below runs before `ready` in the
+    // normal Electron startup order, so this is typically the case) or if
+    // the `serverStarted` branch never scheduled one at all.
+    if (slowBootFallbackTimer !== null) {
+      clearTimeout(slowBootFallbackTimer);
+      slowBootFallbackTimer = null;
+    }
     dialog.showMessageBox({
       type: 'error',
       buttons: ['Quit', 'Show Lock File'],
@@ -255,9 +285,17 @@ if (!gotTheLock) {
     if (serverStarted) {
       createWindow(expressPort);
     } else {
-      // Fallback in case of slow boot sequence
-      setTimeout(() => {
-        if (!mainWindow) {
+      // Fallback in case of slow boot sequence. Must NOT fire while a lock
+      // failure is in progress (RED-DESKTOP-5/002) — that path deliberately
+      // never starts the server, so `serverStarted` staying false here is
+      // not "slow", it is "never coming", and creating a window would only
+      // ever load a dead port. `onDesktopLockFailure` cancels this timer
+      // outright the moment it knows that (see its own comment); the
+      // `!lockFailurePending` check is defense-in-depth for a lock failure
+      // detected in the narrow window before this line runs.
+      slowBootFallbackTimer = setTimeout(() => {
+        slowBootFallbackTimer = null;
+        if (!mainWindow && !lockFailurePending) {
           createWindow(expressPort);
         }
       }, 800);
@@ -271,7 +309,10 @@ if (!gotTheLock) {
   });
 
   app.on('activate', function () {
-    if (mainWindow === null) {
+    // Same guard as the ready-fallback above: a dock-icon click while the
+    // "Startup Blocked" dialog is still up (mainWindow is still null) must
+    // not open a second, blank, dead-port window behind/alongside it.
+    if (mainWindow === null && !lockFailurePending) {
       createWindow(expressPort);
     }
   });

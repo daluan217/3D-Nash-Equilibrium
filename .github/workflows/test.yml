@@ -253,6 +253,34 @@ jobs:
         env:
           RECOVERY_HINT_PORT: '3111'
 
+      # RED-CLOUD-5/001: server.ts's 40-char option-label clamp
+      # (`cutAtWordBoundary`, shared by the report path's `cleanScenario` and
+      # the save path's `cleanLabels`) used to be a bare UTF-16 `.slice()`,
+      # which cuts an astral emoji's surrogate pair in half — live-
+      # reproduced as an unpaired surrogate repeated three times in rendered
+      # report prose. Fixed with `clampGraphemeSafe` (Intl.Segmenter grapheme
+      # boundaries). Runs under NASH_PAYOFF_TEMPLATE=1 (a literal in
+      # cloudbuild.yaml on every deploy) so it reaches the exact rendering
+      # path the finding used.
+      - name: Boot the production server and run the label surrogate-clamp suite
+        run: node src/integration/label-surrogate-clamp.test.mjs
+        env:
+          LSC_TEST_PORT: '3140'
+
+      # RED-DESKTOP-5/002: electron-main.cjs's 800ms "slow boot sequence"
+      # fallback (and app.on('activate')) used to call createWindow()
+      # unconditionally, with no awareness that a desktop-lock failure
+      # (server.ts's acquireDesktopLock, via the #88 dialog hook) was in
+      # progress and had deliberately never bound a port — a stray blank
+      # chrome-error://chromewebdata/ window opened right alongside the
+      # correct native "Startup Blocked" dialog. Fixed by cancelling the
+      # fallback timer outright inside global.onDesktopLockFailure. No
+      # Electron runtime: `electron` is stubbed (in-process require, same
+      # style as src/desktop/require-probe.cjs), each scenario a fresh
+      # child process.
+      - name: Run the electron window-guard suite (stubbed electron, in-process require)
+        run: node src/integration/electron-window-guard.test.mjs
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 45

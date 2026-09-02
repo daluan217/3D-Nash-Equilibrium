@@ -644,8 +644,31 @@ function acquireDesktopLock(): boolean {
         // now — possibly a brand-new LIVE lock).
         continue;
       }
+      // RED-DESKTOP-5/001: unlike the write-side fail-open above (a
+      // directory-creation error carries no positive evidence either way),
+      // reaching HERE means `fs.openSync(lockFile, "wx", ...)` already threw
+      // EEXIST — the lock file's mere EXISTENCE *is* positive evidence some
+      // process wrote it, live or crashed. An unreadable-but-existing lock
+      // (permissions changed by a sync/backup tool, an ownership change,
+      // ...) is the single most ambiguous case this function exists to
+      // resolve, and failing OPEN on it throws away the whole protection:
+      // a second process boots normally, becomes an independent writer
+      // against the same ELECTRON_USER_DATA_PATH, and whichever one saves
+      // last silently erases the other's games — reproduced end-to-end
+      // (chmod 000 on a live instance's lock file; the second process
+      // booted anyway; db.json ended up holding only the second process's
+      // game). "Cannot resolve the ambiguity" must mean refuse, the same as
+      // a confirmed-alive pid, not proceed unprotected.
       console.error("Error reading desktop lock file:", err);
-      return true; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
+      return reportDesktopLockFailure(
+        `Refusing to start: the desktop data-directory lock at ${lockFile} exists but could not `
+        + `be read (${err && err.code ? err.code : 'unknown error'}). This usually means its file `
+        + `permissions changed (a backup/sync tool, or an ownership change) while another Nash `
+        + `Equilibrium Simulator process may still be using this data directory (${userDataPath}). `
+        + `Starting anyway could silently overwrite its saved games. Fix the file's permissions, or `
+        + `— if you're sure no other copy is open — delete the lock file and try again.`,
+        lockFile,
+      );
     }
     const heldBy = parseInt(rawContent.trim(), 10);
     let alive = false;
@@ -1212,6 +1235,52 @@ function adoptLocalGames(userId: string): number {
 }
 
 /**
+ * Clamp a string to at most `maxLength` UTF-16 code units WITHOUT ever
+ * cutting inside a surrogate pair or a multi-codepoint grapheme cluster
+ * (emoji skin-tone modifiers, ZWJ family/profession sequences, flag
+ * sequences -- all built from 2+ codepoints, several also astral so each
+ * codepoint is itself a 2-unit surrogate pair).
+ *
+ * RED-CLOUD-5/001: a bare `.slice(0, maxLength)` operates on raw UTF-16
+ * units. When an astral character (U+10000+, almost all emoji) straddles
+ * the cut, the slice keeps only its high surrogate, producing an
+ * ILL-FORMED string that then renders verbatim (a visible mojibake glyph,
+ * repeated) in report prose -- this was live-reproduced against
+ * origin/main HEAD `eed34f8`: `"A" + "\u{1F389}".repeat(20)` clamped to 40
+ * left an unpaired high surrogate (U+D83C) at string index 105 of the
+ * rendered prose. `maxLength` stays in UTF-16 units (unchanged meaning for
+ * the existing LABEL_MAX/60/80/1200 constants and every plain-ASCII/BMP
+ * caller) -- only the CUT POINT moves to the nearest grapheme boundary at
+ * or below it, so a caller never gets back MORE than `maxLength` units.
+ *
+ * `Intl.Segmenter` (available in the Node 22 runtime this app targets, and
+ * every evergreen browser) gives true grapheme-cluster boundaries; a
+ * codepoint-safe `for...of` walk (same technique textSafety.ts's own
+ * `stripUnsafeText` already uses, see its comment) is the fallback if
+ * `Intl.Segmenter` is ever unavailable -- it still closes the exact
+ * surrogate-pair defect above, just without the family/flag guarantee.
+ */
+function clampGraphemeSafe(s: string, maxLength: number): string {
+  if (s.length <= maxLength) return s;
+  const SegmenterCtor: typeof Intl.Segmenter | undefined = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (typeof SegmenterCtor === "function") {
+    const segmenter = new SegmenterCtor(undefined, { granularity: "grapheme" });
+    let out = "";
+    for (const { segment } of segmenter.segment(s)) {
+      if (out.length + segment.length > maxLength) break;
+      out += segment;
+    }
+    return out;
+  }
+  let out = "";
+  for (const ch of s) {
+    if (out.length + ch.length > maxLength) break;
+    out += ch;
+  }
+  return out;
+}
+
+/**
  * The one place every user-supplied string passes through before it is
  * persisted via POST/PATCH /api/games, so it has to carry the same
  * bidi-override/control-character stripping the UI form applies
@@ -1219,13 +1288,14 @@ function adoptLocalGames(userId: string): number {
  * a modified client) bypasses the form entirely and a RIGHT-TO-LEFT OVERRIDE
  * or raw control character reaches storage intact.
  *
- * Order matters: strip first, then trim, then slice -- stripping after trim
+ * Order matters: strip first, then trim, then clamp -- stripping after trim
  * would let a bidi override sitting at the edge of the field decide where
  * the "real" edge is before it gets removed (same reasoning as
- * textSafety.ts's own cleanText).
+ * textSafety.ts's own cleanText). The clamp itself is grapheme-safe
+ * (RED-CLOUD-5/001) rather than a bare `.slice`.
  */
 function cleanText(value: unknown, maxLength: number): string {
-  return typeof value === "string" ? stripUnsafeText(value).trim().slice(0, maxLength) : "";
+  return typeof value === "string" ? clampGraphemeSafe(stripUnsafeText(value).trim(), maxLength) : "";
 }
 
 /** How long an option label may be. Short on purpose: these render as column
@@ -1253,10 +1323,23 @@ const LABEL_MAX = 40;
  * just reproduce the same bug one step later. `at > minKeep` guards against
  * clamping to almost nothing when the first word itself runs long (no space
  * within the first `minKeep` characters).
+ *
+ * RED-CLOUD-5/001: this function's OWN `cut = s.slice(0, maxLength)` was a
+ * second, independent place a bare UTF-16 slice could split a surrogate
+ * pair — reachable even when the caller's wider pre-clamp (`cleanText`,
+ * fixed separately) never triggers, because `s` can already be <= that
+ * wider width and still > `maxLength` here (the live repro: a 41-unit
+ * label passed the 60-unit `noTags` clamp untouched, then got split by
+ * THIS function's own slice to 40). `cut` is now grapheme-safe via
+ * `clampGraphemeSafe`; the later `cut.slice(0, at)` stays a plain index
+ * slice, but `at` is always the index of a literal ASCII space character
+ * inside the already grapheme-safe `cut` — a space is a single code unit
+ * that is never part of a surrogate pair or a wider grapheme cluster, so
+ * slicing up to (excluding) it cannot reopen the same defect.
  */
 function cutAtWordBoundary(s: string, maxLength: number, minKeep = 12): string {
   if (s.length <= maxLength) return s;
-  const cut = s.slice(0, maxLength);
+  const cut = clampGraphemeSafe(s, maxLength);
   const at = cut.lastIndexOf(' ');
   return (at > minKeep ? cut.slice(0, at) : cut).trim();
 }

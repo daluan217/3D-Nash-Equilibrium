@@ -130,7 +130,50 @@ if (process.env.EXPECTED_INDEX) {
     r.status === 200 && methods.includes('PATCH'), `status=${r.status} methods=${methods}`);
 }
 
-// ══ 7. DEPLOY CONFIG, verified by behaviour rather than by reading env vars
+// ══ 7. the DMG download path — status-only, NEVER downloads the ~137 MB
+//      file. Added 2026-09-02 after a real ~3.5-hour production outage that
+//      no existing check (here or in CI) could see: a Content-Length >=
+//      Cloud Run's documented 32 MiB HTTP/1 response cap made every PLAIN
+//      GET (and every well-formed Range spanning >=32 MiB) of the live DMG
+//      come back as a bare, header-less Google-Frontend HTTP 500 — while a
+//      HEAD probe (headers only, never a body) and a small Range probe both
+//      stayed comfortably under the cap and answered fine. So a check that
+//      only ever reads headers, or only ever asks for a few bytes, cannot
+//      reach this failure mode regardless of how many of them run — the bug
+//      lives specifically in the FULL, UNRANGED download path. This is why
+//      the fix (setContentLengthIfUnderCloudRunLimit in server.ts, ~line
+//      1441) is verified here by an actual full GET, aborted right after the
+//      response headers arrive so the check never pays for 137 MB of egress.
+//
+//      Deliberately asserted on STATUS ONLY: the fix's correct behaviour for
+//      a large file is to OMIT Content-Length entirely once size is >= the
+//      cap (falls back to chunked transfer, which Cloud Run's limit exempts)
+//      — so a check that required Content-Length to be present would fail
+//      against the FIXED server, not just the broken one. Content-Length is
+//      still logged for diagnostics, never asserted on.
+{
+  async function statusOnlyGet(path, headers) {
+    const r = await fetch(`${BASE}${path}`, headers ? { headers } : undefined);
+    const status = r.status;
+    const contentLength = r.headers.get('content-length');
+    // Cancel the body stream instead of reading it — this is what makes the
+    // request "status-only": the fetch already resolved once headers arrived,
+    // and cancelling here means we never pull the (potentially 137 MB) body
+    // off the wire.
+    try { await r.body?.cancel(); } catch { /* best-effort; status is already captured */ }
+    return { status, contentLength };
+  }
+
+  const full = await statusOnlyGet('/api/download/dmg');
+  record('live DMG plain GET (no Range) is 200, not a bare Cloud Run 500',
+    full.status === 200, `status=${full.status} content-length=${full.contentLength ?? '(unset — expected once the file is >= the Cloud Run cap)'}`);
+
+  const range = await statusOnlyGet('/api/download/dmg', { Range: 'bytes=0-0' });
+  record('live DMG 1-byte Range GET is 206 (resumable downloads still work)',
+    range.status === 206, `status=${range.status} content-length=${range.contentLength ?? '(unset)'}`);
+}
+
+// ══ 8. DEPLOY CONFIG, verified by behaviour rather than by reading env vars
 //      (LIVE_DEEP=1 — spends two small model calls, so the deploy-verify run
 //      sets it and the nightly monitor does not).
 //
