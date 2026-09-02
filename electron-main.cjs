@@ -1,6 +1,5 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
-const fs = require('fs');
 
 // Override the package.json "name" so the macOS app menu (About/Hide/Quit)
 // reads the product name instead of the template default ("react-example").
@@ -127,27 +126,38 @@ if (!gotTheLock) {
   // global's presence. A real dialog turns the failure into something a
   // user can act on immediately: quit the other copy, or — since the
   // failure is frequently a MISIDENTIFIED lock (a reused pid, not a real
-  // second instance) — clear it and relaunch without ever needing to find
-  // a hidden dotfile on their own.
+  // second instance) — go find the dotfile themselves instead of it staying
+  // hidden forever.
+  //
+  // Deliberately NOT an automatic "delete the lock and relaunch" button
+  // (CodeRabbit caught this on review): `acquireDesktopLock` reaches this
+  // hook only after `process.kill(heldBy, 0)` said the recorded pid IS
+  // alive right now — which is equally true whether that pid is a reused,
+  // unrelated process OR a genuine second copy of this app. The app cannot
+  // tell those apart (no process-identity check exists), so an automatic
+  // delete-and-relaunch would just as often start a REAL second writer
+  // against the same db.json as it would recover from a false positive —
+  // exactly the data-loss scenario this whole lock exists to prevent. The
+  // safer action a click can take is "Show Lock File", which reveals its
+  // location so a user who has actually checked (e.g. Activity Monitor —
+  // no OTHER copy of Nash Equilibrium Simulator running) can delete it
+  // themselves; the app never performs the destructive step on its own.
   global.onDesktopLockFailure = ({ message, lockFile }) => {
     dialog.showMessageBox({
       type: 'error',
-      buttons: ['Quit', 'Delete Lock File and Relaunch'],
+      buttons: ['Quit', 'Show Lock File'],
       defaultId: 0,
       cancelId: 0,
       title: 'Nash Equilibrium Simulator — Startup Blocked',
       message: 'Nash Equilibrium Simulator could not start.',
-      detail: message,
+      detail: `${message}\n\nIf you're sure no other copy is running, "Show Lock File" reveals it `
+        + 'so you can delete it yourself, then relaunch.',
     }).then((result) => {
       if (result.response === 1) {
-        try {
-          fs.unlinkSync(lockFile);
-        } catch (err) {
-          // Already gone, or a real filesystem problem — either way,
-          // relaunching re-diagnoses it from scratch rather than guessing here.
-          console.error('Could not delete the lock file before relaunching:', err);
-        }
-        app.relaunch();
+        shell.showItemInFolder(lockFile);
+        // Leave the (now-informed, still-blocked) app running rather than
+        // quitting out from under a user who is mid-cleanup in Finder.
+        return;
       }
       app.exit(0);
     }).catch((err) => {

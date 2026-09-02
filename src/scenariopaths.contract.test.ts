@@ -148,15 +148,32 @@ check('the screened draw honours NASH_SCENARIO_CHECKS',
 //    fire more than once at RUNTIME) rather than as N literal call sites —
 //    a call-count floor would defeat exactly that shape, so this checks for
 //    the LOOP instead.
-check('the screened draw retries a LOST draw exactly once (unconditional, not the bounded setting)',
-  /usedTimeoutRetry/.test(helperBody), 'a draw that never produced a scenario at all must still be retried once');
-check('the screened draw rerolls a GATE-DROPPED draw up to a bounded setting',
-  /gateRerollsUsed/.test(helperBody) && /SCENARIO_REROLL_LIMIT/.test(server),
-  'a draw that came back but failed the screen must be rerolled up to NASH_SCENARIO_REROLLS, not just once');
+// CONTROL-FLOW-AWARE, not just identifier presence (a name mentioned in a
+// comment or declared-but-unused would pass a bare /usedTimeoutRetry/.test):
+// each check requires the counter actually GATE a branch (an `if` reading
+// it) AND actually be MUTATED (the loop advancing it), which together are
+// what makes it a real guard rather than dead code sitting next to a real
+// one.
+check('the screened draw retries a LOST draw exactly once, and stops on the second (guard READ)',
+  /if\s*\(\s*usedTimeoutRetry\s*\)/.test(helperBody),
+  'a draw that never produced a scenario at all must be retried once, then stop — no `if (usedTimeoutRetry)` found');
+check('...and the retry is actually consumed (guard WRITTEN)',
+  /usedTimeoutRetry\s*=\s*true/.test(helperBody),
+  'usedTimeoutRetry is read but never set — the "exactly once" bound cannot hold');
+check('the screened draw rerolls a GATE-DROPPED draw up to the bounded setting (guard READ)',
+  /gateRerollsUsed\s*>=\s*SCENARIO_REROLL_LIMIT/.test(helperBody) && /SCENARIO_REROLL_LIMIT/.test(server),
+  'a draw that came back but failed the screen must be rerolled up to NASH_SCENARIO_REROLLS — no '
+  + '`gateRerollsUsed >= SCENARIO_REROLL_LIMIT` bound found');
+check('...and the reroll count is actually consumed (guard WRITTEN)',
+  /gateRerollsUsed\s*\+\+/.test(helperBody),
+  'gateRerollsUsed is compared but never incremented — the loop cannot terminate on repeated gate-drops');
+// The draw itself must sit inside a LOOP (not N literal call sites — a
+// call-count floor would accept the OLD hand-unrolled two-call shape, which
+// is exactly the bug this file exists to catch drifting back in).
 check('the reroll happens inside a loop, so it can fire more than once at runtime',
-  /for\s*\(\s*;;\s*\)[\s\S]*?drawWithDeadline\s*\(/.test(helperBody)
-  || (helperBody.match(/drawWithDeadline\s*\(/g) ?? []).length >= 2,
-  'a lost or gate-rejected draw must be drawn again — the only instrument permitted here');
+  /for\s*\(\s*;;\s*\)[\s\S]*?drawWithDeadline\s*\(/.test(helperBody),
+  'a lost or gate-rejected draw must be drawn again from INSIDE a loop — the only instrument permitted here '
+  + '(a fixed second literal call site is the exact shape this contract must reject)');
 // 6. The draw is bounded. A provider that accepts and never answers held a real
 //    request open for 798 s with no timeout at any layer; the story is optional
 //    by construction, so it gets a deadline and the report goes out without it.

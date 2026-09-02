@@ -1244,19 +1244,77 @@ function saveDB(db: DB): boolean {
 }
 
 /**
- * `saveDB`, but a caller that is about to respond to an HTTP request can use
- * this to turn a real (desktop, synchronous) write failure into an honest
- * 500 instead of the false "success" RED-DESKTOP-4/002 found: an unwritable
- * `ELECTRON_USER_DATA_PATH` (read-only directory, full disk, ...) used to
- * accept a game save, echo it back as if it were on disk, and then lose it
- * silently and permanently on the next restart — with no signal anywhere a
- * user could see. Wired into the game-save/update/delete routes, which are
- * exactly what RED-DESKTOP-4 reproduced; the same shape exists on the
- * account routes (registration, verification, password reset, deletion) and
- * is NOT covered by this change — noted for a future pass, not claimed here.
+ * Persist a CANDIDATE database and report success/failure HONESTLY on BOTH
+ * storage backends. Used only by the game-save/update/delete routes (via
+ * `saveDBOrFail` below) — every other `saveDB` call site is UNCHANGED
+ * fire-and-forget on the GCS branch, deliberately: making that async for
+ * all ~17 of them (registration, verification, password reset, account
+ * deletion, ...) is a materially larger and untested change than this pass
+ * covers; noted as future work, not claimed here.
+ *
+ * Two things CodeRabbit found on this same PR, fixed together because they
+ * share one mechanism:
+ *
+ * (1) `saveDB`'s GCS branch is fire-and-forget, so `saveDBOrFail`'s desktop
+ *     fix (RED-DESKTOP-4/002) left the IDENTICAL false-"success" shape on
+ *     the hosted path for these exact three routes — a GCS write that
+ *     rejects AFTER the 200 response has already gone out is invisible.
+ *     This awaits the real GCS write instead.
+ *
+ * (2) `db` here must be a COPY the caller built (see the three routes),
+ *     never the live `inMemoryDb` reference mutated in place — otherwise
+ *     "roll back on failure" is meaningless, because the shared object was
+ *     already mutated before this function ever runs and there is nothing
+ *     left to roll back TO. `inMemoryDb` is reassigned to `db` ONLY after a
+ *     CONFIRMED write, so a failure leaves `inMemoryDb` exactly as it was:
+ *     a GET right after a failed POST/PATCH/DELETE sees the OLD, correct
+ *     state, not a change that was never actually saved.
  */
-function saveDBOrFail(db: DB, res: express.Response): boolean {
-  if (saveDB(db)) return true;
+async function saveDBAwaited(db: DB): Promise<boolean> {
+  if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+    try {
+      const { Storage } = await import('@google-cloud/storage');
+      const storage = new Storage();
+      await storage.bucket(GCS_BUCKET!).file('db.json').save(
+        JSON.stringify(db, null, 2),
+        { contentType: 'application/json' },
+      );
+      inMemoryDb = db;
+      return true;
+    } catch (err) {
+      console.error('GCS write failed:', err);
+      return false;
+    }
+  }
+  try {
+    const dbDir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+    writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+    inMemoryDb = db;
+    return true;
+  } catch (err) {
+    console.error("Error writing db.json:", err);
+    return false;
+  }
+}
+
+/**
+ * `saveDBAwaited`, but a caller that is about to respond to an HTTP request
+ * can use this to turn a real write failure — desktop OR hosted — into an
+ * honest 500 instead of the false "success" RED-DESKTOP-4/002 found: an
+ * unwritable `ELECTRON_USER_DATA_PATH` (read-only directory, full disk, ...)
+ * used to accept a game save, echo it back as if it were on disk, and then
+ * lose it silently and permanently on the next restart — with no signal
+ * anywhere a user could see. Wired into the game-save/update/delete routes,
+ * which are exactly what RED-DESKTOP-4 reproduced; the same shape exists on
+ * the account routes (registration, verification, password reset, deletion)
+ * and is NOT covered by this change — noted for a future pass, not claimed
+ * here.
+ */
+async function saveDBOrFail(db: DB, res: express.Response): Promise<boolean> {
+  if (await saveDBAwaited(db)) return true;
   res.status(500).json({ error: "Could not save your changes. Please try again." });
   return false;
 }
@@ -2728,7 +2786,7 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
+  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
     const db = loadDB();
     const user = getGameOwner(req);
     if (!user) {
@@ -2754,8 +2812,12 @@ async function startServer() {
       ...cleanColorTerms(req.body, true)
     };
 
-    db.games.push(newGame);
-    if (!saveDBOrFail(db, res)) return;
+    // A NEW games array, not a push onto the live `db.games` (== inMemoryDb's
+    // own array) — saveDBOrFail only commits this candidate to inMemoryDb on
+    // a CONFIRMED write, so a failure must find nothing already mutated to
+    // roll back FROM.
+    const candidate: DB = { users: db.users, games: [...db.games, newGame] };
+    if (!(await saveDBOrFail(candidate, res))) return;
 
     res.json({
       success: true,
@@ -2774,7 +2836,7 @@ async function startServer() {
   // Payoffs are deliberately NOT updatable here: changing them would silently
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
-  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -2804,19 +2866,27 @@ async function startServer() {
         && Object.keys(nextTerms).length === 0) {
       return res.status(400).json({ error: "Nothing to update." });
     }
-    if (nextName) game.name = nextName;
+    // A NEW game object and a NEW games array — never mutate `game` (a live
+    // reference into inMemoryDb.games) in place, or a failed write would
+    // have nothing left to roll back FROM (see saveDBAwaited's own comment).
+    const updatedGame: SavedGame = { ...game };
+    if (nextName) updatedGame.name = nextName;
     // Description follows the same rule as the labels: normally an empty value
     // means "not supplied", but an edit that deliberately empties the box must
     // be able to remove the text.
-    if (nextDescription || (allowClear && "description" in req.body)) game.description = nextDescription;
-    Object.assign(game, nextLabels, nextTerms);
-    if (!saveDBOrFail(db, res)) return;
+    if (nextDescription || (allowClear && "description" in req.body)) updatedGame.description = nextDescription;
+    Object.assign(updatedGame, nextLabels, nextTerms);
+    const candidate: DB = {
+      users: db.users,
+      games: db.games.map((g) => (g.id === updatedGame.id ? updatedGame : g)),
+    };
+    if (!(await saveDBOrFail(candidate, res))) return;
 
-    res.json({ success: true, message: "Game updated.", game });
+    res.json({ success: true, message: "Game updated.", game: updatedGame });
   });
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), (req, res) => {
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
@@ -2834,8 +2904,10 @@ async function startServer() {
       return res.status(403).json({ error: "You are not authorized to delete this game." });
     }
 
-    db.games.splice(gameIndex, 1);
-    if (!saveDBOrFail(db, res)) return;
+    // A NEW games array (filter, not splice on the live one) — a failed
+    // write must leave inMemoryDb's own array undisturbed.
+    const candidate: DB = { users: db.users, games: db.games.filter((_, i) => i !== gameIndex) };
+    if (!(await saveDBOrFail(candidate, res))) return;
 
     res.json({
       success: true,

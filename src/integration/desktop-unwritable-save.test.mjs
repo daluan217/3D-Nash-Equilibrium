@@ -109,6 +109,16 @@ try {
   record('the 500 response does not claim the game was saved',
     created.json?.success !== true, `body=${JSON.stringify(created.json)}`);
 
+  // CodeRabbit (2026-09-02): the 500 alone doesn't prove nothing was left
+  // mutated in memory — a route that built a NEW games array only commits
+  // it to inMemoryDb on a confirmed write, so a failed save must be
+  // invisible to the very next GET, not just absent from ITS OWN response.
+  const afterFailedPost = await call('GET', '/api/games');
+  record('a GET right after the failed POST does not show the phantom game (no rollback needed — nothing was ever committed)',
+    afterFailedPost.status === 200 && Array.isArray(afterFailedPost.json)
+      && !afterFailedPost.json.some((g) => g.name === 'Unwritable dir test'),
+    `status=${afterFailedPost.status} names=${JSON.stringify((afterFailedPost.json ?? []).map((g) => g.name))}`);
+
   // ══ 3. the SAME failure mode on update/delete of a game that already
   //      exists in memory (created before the directory went read-only, the
   //      realistic case: the app was fine, then the disk/permission problem
@@ -176,11 +186,30 @@ try {
   record('the PATCH 500 response does not claim the game was updated',
     patched.json?.success !== true, `body=${JSON.stringify(patched.json)}`);
 
+  // CodeRabbit: the route builds a NEW games array and only commits it to
+  // inMemoryDb on a confirmed write, so a failed PATCH must leave the
+  // ORIGINAL name in place, visible to the very next GET — not silently
+  // applied in memory while the write itself failed.
+  const afterFailedPatch = await call2('GET', '/api/games');
+  const stillOriginal = (afterFailedPatch.json ?? []).find((g) => g.id === gid);
+  record('a GET right after the failed PATCH still shows the ORIGINAL name, not the rejected rename',
+    afterFailedPatch.status === 200 && stillOriginal?.name === 'Will go read-only',
+    `status=${afterFailedPatch.status} name=${JSON.stringify(stillOriginal?.name)}`);
+
   const deleted = await call2('DELETE', `/api/games/${gid}`);
   record('DELETE /api/games/:id after the directory goes read-only responds 500, not 200',
     deleted.status === 500, `status=${deleted.status} body=${JSON.stringify(deleted.json)}`);
   record('the DELETE 500 response does not claim the game was deleted',
     deleted.json?.success !== true, `body=${JSON.stringify(deleted.json)}`);
+
+  // Same principle: a failed DELETE must leave the game PRESENT, visible to
+  // the very next GET — not silently removed from memory while the write
+  // itself failed.
+  const afterFailedDelete = await call2('GET', '/api/games');
+  record('a GET right after the failed DELETE still shows the game (nothing was actually removed)',
+    afterFailedDelete.status === 200
+      && (afterFailedDelete.json ?? []).some((g) => g.id === gid),
+    `status=${afterFailedDelete.status} ids=${JSON.stringify((afterFailedDelete.json ?? []).map((g) => g.id))}`);
 } finally {
   server2.kill('SIGKILL');
   await new Promise((res) => server2.once('exit', res) ?? res());
