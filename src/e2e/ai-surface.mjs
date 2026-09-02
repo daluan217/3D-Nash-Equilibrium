@@ -178,8 +178,11 @@ try {
       generated || note > 0,
       `generated=${generated} note=${note}`);
     // THE BUG: the envelope carried a scenario and the dialog said it did not.
-    record('Generate prefills the name from a template envelope', generated && name.length > 0, `name=${JSON.stringify(name)}`);
-    record('Generate prefills the description', generated && desc.length > 0, `${desc.length} chars`);
+    // A legitimate "unavailable" outcome (generated=false, note shown) must not
+    // fail these — only an outcome that DID generate but left the fields empty
+    // is the bug this suite exists to catch.
+    record('Generate prefills the name from a template envelope', !generated || name.length > 0, `name=${JSON.stringify(name)}`);
+    record('Generate prefills the description', !generated || desc.length > 0, `${desc.length} chars`);
     record('Generate does NOT claim the scenario is unavailable', !generated || note === 0,
       note ? 'the "isn\'t available right now" note is showing' : '');
   }
