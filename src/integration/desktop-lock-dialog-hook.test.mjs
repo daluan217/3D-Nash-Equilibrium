@@ -78,12 +78,21 @@ function run(withHook) {
   record('the hook receives a message naming the conflict',
     typeof parsed?.hookPayload?.message === 'string' && parsed.hookPayload.message.includes('Refusing to start'),
     `message=${JSON.stringify(parsed?.hookPayload?.message)}`);
+  // CodeRabbit (2026-09-02 re-review): a bare .endsWith('.server.lock')
+  // suffix check would pass for an unrelated path that merely ends the same
+  // way. The runner now reports the exact path it wrote the lock to
+  // (expectedLockFile); compare for equality, not a suffix.
   record('the hook receives the actual lock file path (not parsed back out of prose)',
-    typeof parsed?.hookPayload?.lockFile === 'string' && parsed.hookPayload.lockFile.endsWith('.server.lock'),
-    `lockFile=${JSON.stringify(parsed?.hookPayload?.lockFile)}`);
+    typeof parsed?.hookPayload?.lockFile === 'string'
+      && parsed.hookPayload.lockFile === parsed?.expectedLockFile,
+    `lockFile=${JSON.stringify(parsed?.hookPayload?.lockFile)} expected=${JSON.stringify(parsed?.expectedLockFile)}`);
+  // CodeRabbit (2026-09-02 re-review): log text ("Express server running")
+  // is not proof — a code path that binds a port without printing that
+  // exact line would pass. The runner instruments net.Server.prototype.listen
+  // BEFORE requiring the bundle and reports the real call count.
   record('the server never went on to bind a port (initDB/listen skipped)',
-    !(r.stdout || '').includes('Express server running'),
-    `stdout=${(r.stdout || '').slice(0, 300)}`);
+    parsed?.listenCallCount === 0,
+    `listenCallCount=${parsed?.listenCallCount}`);
 }
 
 // ══ 2. WITHOUT the hook (a standalone `node dist/server.cjs`, e.g. this

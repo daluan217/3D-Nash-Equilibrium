@@ -264,6 +264,19 @@ try {
       record('PATCH /api/games/:id strips a raw control character from a label',
         pdg?.col1Label === 'Tails', `col1Label=${JSON.stringify(pdg?.col1Label)}`);
 
+      // CodeRabbit (2026-09-02 re-review): every check above reads the
+      // WRITE response body, so a handler that sanitizes only the outbound
+      // echo and stores the raw bytes would pass every one of them — the
+      // block's own comment says the risk is a dirty name that "landed" in
+      // STORAGE, which only a fresh read can prove. GET /api/games goes
+      // through loadDB()/inMemoryDb, not the POST/PATCH response path.
+      const readBack = await call('GET', '/api/games', { token });
+      const stored = (readBack.json || []).find((g) => g.id === dirtyId);
+      record('the stored game carries the sanitized name/description/label, not the raw bytes',
+        stored?.name === 'PatchedName' && stored?.col1Label === 'Tails'
+          && stored?.description === 'line oneline two',
+        `stored=${JSON.stringify({ name: stored?.name, col1Label: stored?.col1Label, description: stored?.description })}`);
+
       if (dirtyId) await call('DELETE', `/api/games/${dirtyId}`, { token });
     }
 

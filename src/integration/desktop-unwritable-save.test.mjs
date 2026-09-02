@@ -66,9 +66,14 @@ let server = null;
 async function waitReady() {
   for (let i = 0; i < 60; i++) {
     try {
-      const r = await fetch(`${BASE}/api/health`);
+      // Bounded: an UNBOUNDED fetch here could hang past this loop's own
+      // retry budget if the health endpoint accepted the connection but
+      // never completed the response (CodeRabbit, 2026-09-02 re-review —
+      // same shape as the 798s-hang class this repo already guards
+      // elsewhere, e.g. dmg-download.test.mjs's own bounded health fetch).
+      const r = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(2000) });
       if (r.ok) return true;
-    } catch { /* not up yet */ }
+    } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((res) => setTimeout(res, 500));
   }
   return false;
@@ -107,7 +112,9 @@ try {
   record('POST /api/games on an unwritable data directory responds 500, not 200',
     created.status === 500, `status=${created.status} body=${JSON.stringify(created.json)}`);
   record('the 500 response does not claim the game was saved',
-    created.json?.success !== true, `body=${JSON.stringify(created.json)}`);
+    created.json?.success !== true
+      && created.json?.error === 'Could not save your changes. Please try again.',
+    `body=${JSON.stringify(created.json)}`);
 
   // CodeRabbit (2026-09-02): the 500 alone doesn't prove nothing was left
   // mutated in memory — a route that built a NEW games array only commits
@@ -150,9 +157,10 @@ async function call2(method, url, body) {
 async function waitReady2() {
   for (let i = 0; i < 60; i++) {
     try {
-      const r = await fetch(`${BASE2}/api/health`);
+      // Bounded — see waitReady's own comment above.
+      const r = await fetch(`${BASE2}/api/health`, { signal: AbortSignal.timeout(2000) });
       if (r.ok) return true;
-    } catch { /* not up yet */ }
+    } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((res) => setTimeout(res, 500));
   }
   return false;
@@ -184,7 +192,9 @@ try {
   record('PATCH /api/games/:id after the directory goes read-only responds 500, not 200',
     patched.status === 500, `status=${patched.status} body=${JSON.stringify(patched.json)}`);
   record('the PATCH 500 response does not claim the game was updated',
-    patched.json?.success !== true, `body=${JSON.stringify(patched.json)}`);
+    patched.json?.success !== true
+      && patched.json?.error === 'Could not save your changes. Please try again.',
+    `body=${JSON.stringify(patched.json)}`);
 
   // CodeRabbit: the route builds a NEW games array and only commits it to
   // inMemoryDb on a confirmed write, so a failed PATCH must leave the
@@ -200,7 +210,9 @@ try {
   record('DELETE /api/games/:id after the directory goes read-only responds 500, not 200',
     deleted.status === 500, `status=${deleted.status} body=${JSON.stringify(deleted.json)}`);
   record('the DELETE 500 response does not claim the game was deleted',
-    deleted.json?.success !== true, `body=${JSON.stringify(deleted.json)}`);
+    deleted.json?.success !== true
+      && deleted.json?.error === 'Could not save your changes. Please try again.',
+    `body=${JSON.stringify(deleted.json)}`);
 
   // Same principle: a failed DELETE must leave the game PRESENT, visible to
   // the very next GET — not silently removed from memory while the write

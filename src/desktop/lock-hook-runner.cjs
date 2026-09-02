@@ -31,6 +31,7 @@
  * the exit code is whatever acquireDesktopLock chose (1 in the current code).
  */
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 
 const bundlePath = process.argv[2];
@@ -43,7 +44,8 @@ if (!bundlePath || !userDataDir) {
 }
 
 fs.mkdirSync(userDataDir, { recursive: true });
-fs.writeFileSync(path.join(userDataDir, '.server.lock'), String(process.pid));
+const lockFile = path.join(userDataDir, '.server.lock');
+fs.writeFileSync(lockFile, String(process.pid));
 
 process.env.NODE_ENV = 'production';
 process.env.IS_ELECTRON = 'true';
@@ -65,12 +67,31 @@ if (withHook) {
   };
 }
 
+// CodeRabbit (2026-09-02 re-review): "the server never went on to bind a
+// port" used to be checked by scanning stdout for the literal string
+// "Express server running" -- log text a normal user never sees and this
+// test should not depend on either. Patched BEFORE require() so it also
+// catches a bind attempt that happens on a code path with NO log line at
+// all. `listenCallCount` is the actual proof; `RUNNER_RESULT` reports it
+// alongside the hook payload.
+let listenCallCount = 0;
+const originalListen = net.Server.prototype.listen;
+net.Server.prototype.listen = function patchedListen(...args) {
+  listenCallCount++;
+  return originalListen.apply(this, args);
+};
+
 require(path.resolve(bundlePath));
 
 // If acquireDesktopLock took the process.exit(1) path, execution never
 // reaches here at all -- there is no line left to print and the process's
 // own exit code (1) is the signal the test reads.
 setTimeout(() => {
-  console.log(`RUNNER_RESULT ${JSON.stringify({ hookCalled: hookPayload !== null, hookPayload })}`);
+  console.log(`RUNNER_RESULT ${JSON.stringify({
+    hookCalled: hookPayload !== null,
+    hookPayload,
+    expectedLockFile: lockFile,
+    listenCallCount,
+  })}`);
   process.exit(0);
 }, 300);
