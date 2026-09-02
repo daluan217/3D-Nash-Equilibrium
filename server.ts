@@ -25,6 +25,7 @@ import { tieProse, tieProseFull } from "./src/utils/tieProse";
 import { validateReport, validateScenario, validateProseClaims, validateProseDirections, scenarioIsClaimFree } from "./src/utils/nashValidator";
 import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
+import { stripUnsafeText } from "./src/utils/textSafety";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
 // since the materialized best-reply table landed: the 2026-08-27 follow-up
@@ -110,7 +111,49 @@ function canInvent(): boolean {
  * property with a known per-draw rate, so independent draws are precisely the
  * right instrument. Rewriting model output is not permitted here; a reroll is,
  * and it costs one extra call only on the calls that produced nothing.
+ *
+ * BOUND ON THE GATE-DROP REROLLS (2026-09-02, BLUE-APP-4's measurement,
+ * routed by the director): the single reroll above rescues a LOST draw
+ * (timeout/error/unparseable) but only ever gives a GATE-DROPPED draw (one
+ * that came back and failed `storyOk`, most often the META/persona-leak
+ * screen) ONE second chance. Two draws that are BOTH independently
+ * META-dropped is not a floor case: measured against the real teacher
+ * corpus through the shipped screens, single-draw drop rate 7.33%, so the
+ * two-in-a-row residual is ~0.54% — 2.7x the 0.2% ship bar production
+ * confirmed hitting live (two "Player A" drops 5s apart, report shipped
+ * with NO scenario at all). `NASH_SCENARIO_REROLLS` (default 2, clamped to
+ * [0, 3]) is how many EXTRA draws a GATE-DROPPED result may consume; at the
+ * default, a pure gate-drop cascade needs three independent drops in a row
+ * (~0.0395% residual) before the report goes without a story.
+ *
+ * The LOST-draw retry is UNCHANGED and NOT governed by this setting — it
+ * still fires at most once, same as before this setting existed. A
+ * timed-out or erroring provider must not be hammered a bounded-by-setting
+ * number of times; that would multiply the WORST-CASE latency (a genuinely
+ * slow/broken provider) by the reroll count instead of by a fixed 2x. Only
+ * a draw that the provider actually ANSWERED — fast, in practice — spends
+ * from the bounded gate-drop budget.
+ *
+ * LATENCY: every extra attempt still goes through `drawWithDeadline`, so
+ * each one is individually capped at `SCENARIO_DEADLINE_MS` (20s default) —
+ * the total deadline guarantee is "N draws x the per-draw cap", not
+ * unbounded. Theoretical worst case at the default setting is now 4 draws
+ * (1 lost + 1 timeout-retry that itself gate-drops, + 2 gate rerolls) x 20s
+ * = 80s, up from the old 2 x 20s = 40s ceiling. In practice a gate-drop
+ * means the provider ANSWERED (not a timeout), so the realistic added cost
+ * of the two extra rerolls is roughly two ordinary provider round-trips
+ * (production reasoning-on cloud: ~5.4-5.6s p50 each, so ~11s typical
+ * added latency, only on the ~7% of draws that gate-drop at all — most
+ * requests pay nothing extra).
  */
+const SCENARIO_REROLL_LIMIT = (() => {
+  const raw = Number(process.env.NASH_SCENARIO_REROLLS);
+  const DEFAULT = 2;
+  const MAX = 3;
+  if (!Number.isInteger(raw) || raw < 0) return DEFAULT;
+  return Math.min(raw, MAX);
+})();
+
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
@@ -125,24 +168,28 @@ async function inventScreenedScenario(
       || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0;
   };
 
-  let { scenario: invented, failure } = await drawWithDeadline(payoffs);
-  // Two ways to end up with nothing, and both now get the second chance: a draw
-  // that came back and FAILED the gate, and a draw that never came back at all
-  // (`max-tokens`, the model spending its whole budget reasoning).
-  const lost = !invented;
-  if (lost || (gateOn && !storyOk(invented))) {
-    const second = await drawWithDeadline(payoffs);
-    invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
-    if (!invented) {
-      // A draw that produced nothing reports ITS OWN reason (timeout, error,
-      // unparseable); only a draw that came back and was rejected is a
-      // validation failure.
-      failure = (!second.scenario
-        ? (second.failure ?? failure ?? "unparseable")
-        : "validation-failed") as typeof failure;
+  let usedTimeoutRetry = false;
+  let gateRerollsUsed = 0;
+  for (;;) {
+    const draw = await drawWithDeadline(payoffs);
+    if (!draw.scenario) {
+      // LOST: the draw never produced a scenario at all (timeout, provider
+      // error, unparseable output). Exactly one retry, same as before this
+      // setting existed — never governed by NASH_SCENARIO_REROLLS.
+      if (usedTimeoutRetry) return { scenario: null, failure: draw.failure ?? "unparseable" };
+      usedTimeoutRetry = true;
+      continue;
     }
+    if (!gateOn || storyOk(draw.scenario)) {
+      return { scenario: draw.scenario };
+    }
+    // GATE-DROPPED: a real draw came back and the screen rejected it. This
+    // is the only case the bounded reroll setting governs.
+    if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
+      return { scenario: null, failure: "validation-failed" };
+    }
+    gateRerollsUsed++;
   }
-  return { scenario: invented, failure };
 }
 
 /**
@@ -494,15 +541,52 @@ let gcsBaselineDb: DB | null = null;
  * A PID lockfile turns that silent loss into a loud, immediate startup
  * failure: exit BEFORE `initDB()` ever loads a second in-memory snapshot, so
  * nothing is read, nothing is served, and no divergent write can happen.
+ *
+ * "Loud" only held for a standalone `node dist/server.cjs` run, where
+ * whoever typed the command sees the message on their own terminal. The
+ * PACKAGED app requires this file IN-PROCESS (electron-main.cjs), so the
+ * original `process.exit(1)` here silently killed the entire Electron main
+ * process before any BrowserWindow existed — no window, no dialog, no
+ * "app quit unexpectedly" alert, no crash report, nothing in the unified log
+ * a normal user would ever find (RED-DESKTOP-4/001-reused-pid-silent-app-
+ * vanish.md). Worse, the liveness check below is PID-based and pid numbers
+ * get reused by unrelated processes once their original owner is gone, so an
+ * ordinary crash history can make this fire on a false positive, forever,
+ * with zero visible cause.
+ *
+ * `reportDesktopLockFailure` is the one exit for both failure sites in this
+ * function (see below). Under the packaged app it hands off to
+ * `global.onDesktopLockFailure`, which electron-main.cjs registers BEFORE
+ * requiring this file — that presence IS the signal "we are the packaged
+ * app and someone can show a dialog," so a standalone run (this file's own
+ * integration tests included) is untouched: no hook is registered, so
+ * `process.exit(1)` still fires exactly as before.
  */
-function acquireDesktopLock(): void {
+function reportDesktopLockFailure(message: string, lockFile: string): boolean {
+  console.error(message);
+  const onFailure = process.env.IS_ELECTRON === "true" ? (globalThis as any).onDesktopLockFailure : undefined;
+  if (typeof onFailure === "function") {
+    // Hands the process's fate to electron-main.cjs (dialog, then
+    // app.exit()/app.relaunch()) instead of exiting here. Returning `false`
+    // tells the caller to stop (no initDB, no listen) WITHOUT exiting itself
+    // — the Electron process must stay alive for the async dialog to render.
+    // `lockFile` is passed structurally (not parsed back out of the message)
+    // so the dialog's own "delete it and retry" action never has to guess a
+    // path out of prose.
+    onFailure({ message, lockFile });
+    return false;
+  }
+  process.exit(1);
+}
+
+function acquireDesktopLock(): boolean {
   const userDataPath = process.env.ELECTRON_USER_DATA_PATH;
-  if (!userDataPath) return; // hosted service: GCS's own analogous risk is a separate, product-scope question
+  if (!userDataPath) return true; // hosted service: GCS's own analogous risk is a separate, product-scope question
   try {
     if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
   } catch (err) {
     console.error("Error creating user-data directory for the desktop lock:", err);
-    return; // fail OPEN — do not block startup over a directory-creation error here
+    return true; // fail OPEN — do not block startup over a directory-creation error here
   }
   const lockFile = path.join(userDataPath, ".server.lock");
 
@@ -528,7 +612,7 @@ function acquireDesktopLock(): void {
     } catch (err: any) {
       if (err.code !== "EEXIST") {
         console.error("Error writing desktop lock file:", err);
-        return; // fail OPEN on an unexpected filesystem error
+        return true; // fail OPEN on an unexpected filesystem error
       }
     }
     // EEXIST: someone else's lock is already there — a live process, or one
@@ -561,7 +645,7 @@ function acquireDesktopLock(): void {
         continue;
       }
       console.error("Error reading desktop lock file:", err);
-      return; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
+      return true; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
     }
     const heldBy = parseInt(rawContent.trim(), 10);
     let alive = false;
@@ -576,12 +660,14 @@ function acquireDesktopLock(): void {
       }
     }
     if (alive) {
-      console.error(
+      return reportDesktopLockFailure(
         `Refusing to start: another Nash Equilibrium Simulator server (pid ${heldBy}) is already using `
         + `this data directory (${userDataPath}). Starting a second one would silently overwrite its saved `
-        + `games. Quit the other instance first.`
+        + `games. Quit the other instance first, or — if you're sure no other copy is open (this can happen `
+        + `after a crash whose process id has since been reused by something unrelated) — delete the lock `
+        + `file at ${lockFile} and try again.`,
+        lockFile,
       );
-      process.exit(1);
     }
     // Stale: the recorded PID is no longer running. TEST HOOK ONLY — never
     // set outside a test process — lets an integration test deterministically
@@ -623,11 +709,11 @@ function acquireDesktopLock(): void {
   {
     const finalContent = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8").trim() : "";
     if (finalContent !== String(process.pid)) {
-      console.error(
+      return reportDesktopLockFailure(
         `Refusing to start: could not acquire the desktop data-directory lock at ${lockFile} `
-        + `after repeated contention. Try again.`
+        + `after repeated contention. Try again.`,
+        lockFile,
       );
-      process.exit(1);
     }
   }
 
@@ -641,6 +727,7 @@ function acquireDesktopLock(): void {
   process.on("exit", release);
   process.on("SIGINT", () => { release(); process.exit(0); });
   process.on("SIGTERM", () => { release(); process.exit(0); });
+  return true;
 }
 
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
@@ -1124,14 +1211,55 @@ function adoptLocalGames(userId: string): number {
   return mine.length;
 }
 
+/**
+ * The one place every user-supplied string passes through before it is
+ * persisted via POST/PATCH /api/games, so it has to carry the same
+ * bidi-override/control-character stripping the UI form applies
+ * (src/utils/textSafety.ts) -- otherwise a direct API call (curl, a script,
+ * a modified client) bypasses the form entirely and a RIGHT-TO-LEFT OVERRIDE
+ * or raw control character reaches storage intact.
+ *
+ * Order matters: strip first, then trim, then slice -- stripping after trim
+ * would let a bidi override sitting at the edge of the field decide where
+ * the "real" edge is before it gets removed (same reasoning as
+ * textSafety.ts's own cleanText).
+ */
 function cleanText(value: unknown, maxLength: number): string {
-  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+  return typeof value === "string" ? stripUnsafeText(value).trim().slice(0, maxLength) : "";
 }
 
 /** How long an option label may be. Short on purpose: these render as column
  *  and row headers next to the payoff inputs, and a sentence would break the
  *  grid. Long enough for "Advertise heavily", short enough to stay a label. */
 const LABEL_MAX = 40;
+
+/**
+ * Cut a string to at most `maxLength` characters, preferring the last word
+ * boundary within that limit over a mid-word slice — a bare `.slice(0, 40)`
+ * on a label that gets PRINTED cuts mid-word and the stub then repeats
+ * verbatim through a whole rendered paragraph ("Escalate the dispute to the
+ * regional arb", rounds T1 and T2).
+ *
+ * Shared by `cleanScenario`'s `label()` and `cleanLabels()` — RED-APP-4
+ * found these had drifted: `cleanLabels` (POST/PATCH /api/games' own
+ * row/col labels) still did the bare mid-word slice this helper exists to
+ * avoid, on a sibling path `cleanScenario` had already been fixed on.
+ * Reachable only by a direct API call (the Save/Edit modal's own
+ * `maxlength=40` already blocks it in ordinary UI use).
+ *
+ * `s` must already be clamped WIDER than `maxLength` by the caller (see
+ * `cleanLabels` and `cleanScenario`'s own `noTags(v, 60)`) — cutting the
+ * word boundary out of a string already hard-sliced AT `maxLength` would
+ * just reproduce the same bug one step later. `at > minKeep` guards against
+ * clamping to almost nothing when the first word itself runs long (no space
+ * within the first `minKeep` characters).
+ */
+function cutAtWordBoundary(s: string, maxLength: number, minKeep = 12): string {
+  if (s.length <= maxLength) return s;
+  const cut = s.slice(0, maxLength);
+  const at = cut.lastIndexOf(' ');
+  return (at > minKeep ? cut.slice(0, at) : cut).trim();
+}
 
 /**
  * The four option labels off a request body, cleaned.
@@ -1144,7 +1272,11 @@ const LABEL_MAX = 40;
 function cleanLabels(body: any, allowClear = false): Partial<Pick<SavedGame, "row1Label" | "row2Label" | "col1Label" | "col2Label">> {
   const out: Record<string, string> = {};
   for (const key of ["row1Label", "row2Label", "col1Label", "col2Label"] as const) {
-    const v = cleanText(body?.[key], LABEL_MAX);
+    // Clamped WIDER (LABEL_MAX + 20) first, same pattern as cleanScenario's
+    // own noTags(v, 60) -> label() below, so cutAtWordBoundary has room to
+    // find a real space instead of working on a string already hard-sliced
+    // to exactly LABEL_MAX.
+    const v = cutAtWordBoundary(cleanText(body?.[key], LABEL_MAX + 20), LABEL_MAX);
     // Without allowClear an empty value means "not supplied", so a caller
     // updating only the description cannot blank the labels by omission. The
     // edit dialog is the opposite case: it sends every field every time, and a
@@ -1193,14 +1325,9 @@ function cleanScenario(value: any): Scenario | undefined {
   // Option labels are clamped to 40 characters and then PRINTED, so a bare
   // slice cuts mid-word and the stub is repeated four or five times in one
   // rendered paragraph ("Escalate the dispute to the regional arb" — rounds
-  // T1 and T2). Clamp at the last word boundary instead.
-  const label = (v: unknown) => {
-    const t = noTags(v, 60);
-    if (t.length <= 40) return t || undefined;
-    const cut = t.slice(0, 40);
-    const at = cut.lastIndexOf(' ');
-    return (at > 12 ? cut.slice(0, at) : cut).trim() || undefined;
-  };
+  // T1 and T2). cutAtWordBoundary (shared with cleanLabels, see its own
+  // comment) clamps at the last word boundary instead.
+  const label = (v: unknown) => cutAtWordBoundary(noTags(v, 60), LABEL_MAX) || undefined;
   const sc: Scenario = {
     name: noTags(value.name, 80) || undefined,
     row1: label(value.row1),
@@ -1279,11 +1406,71 @@ function rateLimit(
   };
 }
 
-// Updates in-memory DB immediately; persists to GCS (Cloud Run) or local file (Electron/dev)
-function saveDB(db: DB) {
+/**
+ * Cloud Run's own documented limit: an HTTP/1 response over 32 MiB fails
+ * UNLESS it is sent chunked/streamed rather than as a fixed-length body —
+ * "Maximum HTTP/1 response size: 32 MiB per response, if not using
+ * Transfer-Encoding: chunked or streaming" (Cloud Run quotas docs). Setting
+ * an explicit `Content-Length` tells Node to send a fixed-length body, NOT
+ * chunked, so a >=32 MiB DMG download hit exactly this limit: the deployed
+ * `/api/download/dmg` returned a bare Google-Frontend `HTTP 500` with an
+ * EMPTY body and NONE of this app's own headers (no x-powered-by, no CSP) —
+ * i.e. the request never reached our own error handling at all — on every
+ * plain GET (no Range) or any Range spanning >=32 MiB of the 137 MB DMG.
+ * Verified live (2026-09-02): a request with NO Range header 500s the same
+ * way as a malformed one — this is not about Range PARSING, it is the whole
+ * full-file download path (RED-DESKTOP-4/003-malformed-range-header-live-
+ * 500.md; the finding's own repro used malformed Range headers, which
+ * happen to share this exact failure because they too fall through to the
+ * >=32 MiB full-file branch — but a well-formed request for the same size
+ * fails identically, confirmed by pulling Cloud Run request logs for the
+ * `x-cloud-trace-context` of a live repro: "Response size was too large.
+ * Please consider reducing response size.").
+ *
+ * Below the limit, Content-Length is still set (unchanged from before) —
+ * small partial-range requests, the common case for a resumable download
+ * manager, keep their exact declared size for an accurate progress bar.
+ */
+// NASH_MAX_SIZED_RESPONSE_BYTES overrides the cap for TESTS ONLY (a
+// few-KB fake object then exercises the real production branch without
+// this suite moving 32 MiB per run); unset, in production, it is exactly
+// Cloud Run's own documented 32 MiB HTTP/1 limit. Reconciled with the
+// 2026-09-02 hotfix (PR #89, live incident) onto this branch's own fix —
+// same env var name and the same strict `<` boundary, kept as the one
+// surviving implementation per the director's call.
+const CLOUD_RUN_HTTP1_RESPONSE_LIMIT = (() => {
+  const v = parseInt(process.env.NASH_MAX_SIZED_RESPONSE_BYTES || "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 32 * 1024 * 1024;
+})();
+function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength: number): void {
+  if (byteLength < CLOUD_RUN_HTTP1_RESPONSE_LIMIT) {
+    res.setHeader('Content-Length', String(byteLength));
+  }
+  // >= the limit: leave Content-Length UNSET. Node/Express then sends the
+  // piped stream with `Transfer-Encoding: chunked`, which Cloud Run's own
+  // limit explicitly exempts.
+}
+
+/**
+ * Updates in-memory DB immediately; persists to GCS (Cloud Run) or local file
+ * (Electron/dev).
+ *
+ * Returns whether the write is KNOWN to have happened. The two branches are
+ * honest about what they can actually promise: the desktop/local-file branch
+ * writes SYNCHRONOUSLY, so a caught error here really does mean nothing
+ * reached disk, and `false` is returned; the hosted GCS branch is
+ * fire-and-forget (an async `.then/.catch`, unchanged), so a caller can never
+ * learn its outcome from this return value — `true` here means only "handed
+ * off", exactly the same as before this function had a return value at all.
+ * (RED-DESKTOP-4/002-unwritable-userdata-fake-save-success.md notes the GCS
+ * branch has the identical false-success shape and scopes fixing it as a
+ * separate, hosted-side question — not claimed as fixed here.)
+ */
+function saveDB(db: DB): boolean {
   inMemoryDb = db;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
-    scheduleGcsSave();
+    scheduleGcsSave(); // #85's coalescing pump; the GCS write is async, so the caller's boolean cannot reflect it
+    return true;
   } else {
     try {
       const dbDir = path.dirname(DB_FILE);
@@ -1291,10 +1478,117 @@ function saveDB(db: DB) {
         fs.mkdirSync(dbDir, { recursive: true });
       }
       writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+      return true;
     } catch (err) {
       console.error("Error writing db.json:", err);
+      return false;
     }
   }
+}
+
+/**
+ * Serializes the game-save/update/delete routes' entire read-build-save
+ * sequence into one queue, so two requests that arrive close together can
+ * never both build a candidate off the SAME `inMemoryDb` snapshot and have
+ * whichever commits second silently clobber the other's change.
+ *
+ * ORIGIN (CodeRabbit, 2026-09-02, second review round): an earlier version
+ * of `saveDBAwaited` awaited a real per-request GCS write, which is a
+ * genuine yield point on Node's single-threaded event loop — a second
+ * request's handler could run `loadDB()` while the first was still
+ * mid-write. That GCS-await design was replaced (see `saveDBAwaited`'s own
+ * comment, reconciled with #85's coalescing pump) with a SYNCHRONOUS
+ * hand-off to `scheduleGcsSave()`, which removes that specific yield point
+ * — so this queue is no longer load-bearing for GCS mode, and the DESKTOP
+ * branch (a synchronous file write) was never at risk either. Left in place
+ * anyway as cheap insurance: correct and free given `--max-instances=1`
+ * (this same PR, so there is only ever one process to serialize against),
+ * and it costs nothing to keep the three game routes fully ordered against
+ * each other if a future change ever reintroduces a real await in this
+ * path. `.catch(() => {})` on the chain link is load-bearing regardless —
+ * without it, one caller's write throwing would leave every LATER caller
+ * permanently chained onto a rejected promise.
+ */
+let gameWriteQueue: Promise<unknown> = Promise.resolve();
+function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const run = gameWriteQueue.then(fn, fn);
+  gameWriteQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/**
+ * Persist a CANDIDATE `games` array. Used only by the game-save/update/
+ * delete routes (via `saveDBOrFail` below) — every other `saveDB` call site
+ * is untouched.
+ *
+ * THE HONESTY GUARANTEE IS DESKTOP-ONLY, BY DIRECTOR'S CALL (2026-09-02,
+ * reconciling this with #85 after a merge): the desktop/local-file branch
+ * writes SYNCHRONOUSLY, so a caught error here really does mean nothing
+ * reached disk, `false` is returned, and the caller gets an honest 500
+ * instead of RED-DESKTOP-4/002's false "success" (an unwritable
+ * `ELECTRON_USER_DATA_PATH` echoing a save that then vanishes on restart).
+ *
+ * The GCS/hosted branch does NOT await a real upload here — it delegates to
+ * `scheduleGcsSave()`, #85's per-process COALESCING PUMP (generation
+ * preconditions, 412 conflict re-download/merge, one upload in flight at a
+ * time). An earlier version of this function ran its OWN raw, unawaited-
+ * elsewhere `.save()` call with none of that machinery: no
+ * `ifGenerationMatch`, a DIFFERENT upload wire shape than the pump's
+ * (`resumable`/`validation` defaults, vs. the pump's explicit
+ * `resumable:false, validation:false`) — which silently desynced the local
+ * `gcsGeneration` tracker from GCS's real state and broke
+ * `src/integration/gcs-db-saves.test.mjs`'s wire-format assumptions
+ * (all four rapid saves stopped returning 200). Trying to ALSO get a
+ * per-request honest 500/rollback out of GCS would mean either awaiting the
+ * pump (defeating its whole coalescing purpose — the pump exists precisely
+ * so N rapid saves become one upload, not N) or duplicating its generation/
+ * merge logic a second time. Not worth it: the pump's own retry-on-412 and
+ * `--max-instances=1` (this same PR) already make hosted data loss the
+ * class of defect #85 exists to close; RED-DESKTOP-4/002's own repro was
+ * desktop-only (an unwritable directory is a desktop/Electron concept —
+ * `ELECTRON_USER_DATA_PATH` has no hosted analogue), so scoping the honest-
+ * failure guarantee to desktop is not a regression on what was ever proven.
+ *
+ * `users` is still read FRESH from `inMemoryDb` right before committing —
+ * not carried as a stale snapshot from before this function was called —
+ * so a concurrent account-route write (registration, deletion, ...; the
+ * ~17 OTHER `saveDB` call sites, still untouched) is never silently undone
+ * by a game write that started before it and finishes after.
+ */
+async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
+  if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+    inMemoryDb = { users: inMemoryDb?.users ?? [], games };
+    scheduleGcsSave(); // #85's coalescing pump — see this function's own comment for why this branch cannot also await a per-request result
+    return true;
+  }
+  try {
+    const dbDir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+    const payload: DB = { users: inMemoryDb?.users ?? [], games };
+    writeFileAtomicSync(DB_FILE, JSON.stringify(payload, null, 2));
+    inMemoryDb = { users: inMemoryDb?.users ?? [], games };
+    return true;
+  } catch (err) {
+    console.error("Error writing db.json:", err);
+    return false;
+  }
+}
+
+/**
+ * `saveDBAwaited`, but a caller that is about to respond to an HTTP request
+ * can use this to turn a real DESKTOP write failure into an honest 500
+ * instead of the false "success" RED-DESKTOP-4/002 found — see
+ * `saveDBAwaited`'s own comment for why the GCS/hosted branch cannot make
+ * the same promise (it delegates to #85's coalescing pump, which is
+ * deliberately not awaited per-request) and instead always reports success
+ * once handed off, exactly like every other `saveDB` call site.
+ */
+async function saveDBOrFail(games: SavedGame[], res: express.Response): Promise<boolean> {
+  if (await saveDBAwaited(games)) return true;
+  res.status(500).json({ error: "Could not save your changes. Please try again." });
+  return false;
 }
 
 // Helper to get NodeMailer transporter
@@ -1545,8 +1839,11 @@ async function sendFeedbackEmail(
 async function startServer() {
   // First thing, before anything else touches the filesystem or binds a
   // port: refuse to run as a second writer against a data directory another
-  // live process already owns. See acquireDesktopLock's own comment.
-  acquireDesktopLock();
+  // live process already owns. See acquireDesktopLock's own comment. A
+  // `false` return means the failure has already been reported (a
+  // standalone run's process.exit(1), or the packaged app's dialog hook) —
+  // either way this function must stop here: no initDB, no listen.
+  if (!acquireDesktopLock()) return;
 
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -2173,22 +2470,11 @@ async function startServer() {
     }
   });
 
-  // Serve compiled DMG file
-  // Cloud Run's HTTP/1 path caps a response with an explicit Content-Length at
-  // 32 MiB ("Maximum HTTP/1 response size: 32 MiB per response, if not using
-  // chunked transfer encoding"). Setting Content-Length on the 137 MB DMG made
-  // every full download — and any range spanning >= 32 MiB — a bare Google-
-  // Frontend HTTP 500 on production from the #82 deploy (2026-09-02 08:00) until
-  // this fix; small ranged 206s worked, which is why header-only probes missed
-  // it. Above the cap we omit Content-Length so Node chunk-encodes the body.
-  // Overridable for tests only (a fake object a few KB long exercises the cap).
-  const MAX_SIZED_RESPONSE_BYTES = (() => {
-    const v = parseInt(process.env.NASH_MAX_SIZED_RESPONSE_BYTES || "", 10);
-    return Number.isFinite(v) && v > 0 ? v : 32 * 1024 * 1024;
-  })();
-  const setBodyLength = (res: express.Response, bytes: number) => {
-    if (bytes < MAX_SIZED_RESPONSE_BYTES) res.setHeader('Content-Length', String(bytes));
-  };
+  // Serve compiled DMG file. Content-Length above the sized-response cap is
+  // handled by setContentLengthIfUnderCloudRunLimit (module scope, above) —
+  // reconciled from two independent fixes (this branch's own root-cause
+  // finding, RED-DESKTOP-4/003, and PR #89's live hotfix) into ONE
+  // implementation per the director's call; see that function's own comment.
   app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), async (req, res) => {
     try {
       // In Cloud Run, stream from GCS
@@ -2268,12 +2554,12 @@ async function startServer() {
             }
             res.status(206);
             res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-            setBodyLength(res, end - start + 1);
+            setContentLengthIfUnderCloudRunLimit(res, end - start + 1);
             streamAndPipe({ start, end });
             return;
           }
 
-          if (size !== null && Number.isFinite(size)) setBodyLength(res, size);
+          if (size !== null && Number.isFinite(size)) setContentLengthIfUnderCloudRunLimit(res, size);
           streamAndPipe();
           return;
         }
@@ -2776,8 +3062,7 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
-    const db = loadDB();
+  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -2791,24 +3076,38 @@ async function startServer() {
       return res.status(400).json({ error: "Game name and payoffs matrix are required." });
     }
 
-    const newGame: SavedGame = {
-      id: makeId("g"),
-      userId: user.id,
-      name: cleanName,
-      description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
-      payoffs: cleanMatrix,
-      createdAt: new Date().toISOString(),
-      ...cleanLabels(req.body),
-      ...cleanColorTerms(req.body, true)
-    };
+    // The ENTIRE read-build-save sequence is serialized (see
+    // serializeGameWrite's own comment): `loadDB()` happens INSIDE the
+    // queued function so it reads whatever the most recently queued write
+    // actually committed, not a snapshot taken before this request had to
+    // wait its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const newGame: SavedGame = {
+        id: makeId("g"),
+        userId: user.id,
+        name: cleanName,
+        description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
+        payoffs: cleanMatrix,
+        createdAt: new Date().toISOString(),
+        ...cleanLabels(req.body),
+        ...cleanColorTerms(req.body, true)
+      };
 
-    db.games.push(newGame);
-    saveDB(db);
+      // A NEW games array, not a push onto the live `db.games` (==
+      // inMemoryDb's own array) — saveDBOrFail only commits this candidate
+      // to inMemoryDb on a CONFIRMED write, so a failure must find nothing
+      // already mutated to roll back FROM. `users` is NOT part of this
+      // candidate (saveDBAwaited reads it fresh at write/commit time) — see
+      // its own comment for why a users SNAPSHOT here would race a
+      // concurrent, unserialized account write.
+      if (!(await saveDBOrFail([...db.games, newGame], res))) return;
 
-    res.json({
-      success: true,
-      message: "Game saved successfully!",
-      game: newGame
+      res.json({
+        success: true,
+        message: "Game saved successfully!",
+        game: newGame
+      });
     });
   });
 
@@ -2822,18 +3121,10 @@ async function startServer() {
   // Payoffs are deliberately NOT updatable here: changing them would silently
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
-  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
-    }
-    const db = loadDB();
-    const game = db.games.find(g => g.id === req.params.id);
-    if (!game) {
-      return res.status(404).json({ error: "Game not found." });
-    }
-    if (game.userId !== user.id) {
-      return res.status(403).json({ error: "You are not authorized to edit this game." });
     }
 
     // The edit dialog sends every field, so it opts into clearing; the
@@ -2852,42 +3143,76 @@ async function startServer() {
         && Object.keys(nextTerms).length === 0) {
       return res.status(400).json({ error: "Nothing to update." });
     }
-    if (nextName) game.name = nextName;
-    // Description follows the same rule as the labels: normally an empty value
-    // means "not supplied", but an edit that deliberately empties the box must
-    // be able to remove the text.
-    if (nextDescription || (allowClear && "description" in req.body)) game.description = nextDescription;
-    Object.assign(game, nextLabels, nextTerms);
-    saveDB(db);
 
-    res.json({ success: true, message: "Game updated.", game });
+    // The ENTIRE read-find-build-save sequence is serialized (see
+    // serializeGameWrite's own comment) — including the not-found/ownership
+    // checks, which must read whatever the most recently queued write
+    // committed, not a snapshot from before this request waited its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const game = db.games.find(g => g.id === req.params.id);
+      if (!game) {
+        return res.status(404).json({ error: "Game not found." });
+      }
+      if (game.userId !== user.id) {
+        return res.status(403).json({ error: "You are not authorized to edit this game." });
+      }
+      // A NEW game object and a NEW games array — never mutate `game` (a
+      // live reference into inMemoryDb.games) in place, or a failed write
+      // would have nothing left to roll back FROM (saveDBAwaited's own
+      // comment).
+      const updatedGame: SavedGame = { ...game };
+      if (nextName) updatedGame.name = nextName;
+      // Description follows the same rule as the labels: normally an empty
+      // value means "not supplied", but an edit that deliberately empties
+      // the box must be able to remove the text.
+      if (nextDescription || (allowClear && "description" in req.body)) updatedGame.description = nextDescription;
+      Object.assign(updatedGame, nextLabels, nextTerms);
+      // `users` is NOT part of this candidate — see saveDBAwaited's own
+      // comment for why a users snapshot here would race a concurrent,
+      // unserialized account write.
+      const candidateGames = db.games.map((g) => (g.id === updatedGame.id ? updatedGame : g));
+      if (!(await saveDBOrFail(candidateGames, res))) return;
+
+      res.json({ success: true, message: "Game updated.", game: updatedGame });
+    });
   });
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), (req, res) => {
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
     }
     const gameId = req.params.id;
-    const db = loadDB();
 
-    const gameIndex = db.games.findIndex(g => g.id === gameId);
-    if (gameIndex === -1) {
-      return res.status(404).json({ error: "Game not found." });
-    }
+    // The ENTIRE read-find-save sequence is serialized (see
+    // serializeGameWrite's own comment) — including the not-found/ownership
+    // checks, which must read whatever the most recently queued write
+    // committed, not a snapshot from before this request waited its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const gameIndex = db.games.findIndex(g => g.id === gameId);
+      if (gameIndex === -1) {
+        return res.status(404).json({ error: "Game not found." });
+      }
 
-    const game = db.games[gameIndex];
-    if (game.userId !== user.id) {
-      return res.status(403).json({ error: "You are not authorized to delete this game." });
-    }
+      const game = db.games[gameIndex];
+      if (game.userId !== user.id) {
+        return res.status(403).json({ error: "You are not authorized to delete this game." });
+      }
 
-    db.games.splice(gameIndex, 1);
-    saveDB(db);
+      // A NEW games array (filter, not splice on the live one) — a failed
+      // write must leave inMemoryDb's own array undisturbed. `users` is NOT
+      // part of this candidate — see saveDBAwaited's own comment for why a
+      // users snapshot here would race a concurrent, unserialized account
+      // write.
+      if (!(await saveDBOrFail(db.games.filter((_, i) => i !== gameIndex), res))) return;
 
-    res.json({
-      success: true,
-      message: "Game deleted successfully."
+      res.json({
+        success: true,
+        message: "Game deleted successfully."
+      });
     });
   });
 

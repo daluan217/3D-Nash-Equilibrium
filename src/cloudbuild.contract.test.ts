@@ -189,8 +189,37 @@ if (!/^ENV NODE_ENV=production\s*$/m.test(dockerfile)) {
   );
 }
 
+// ── the deploy must cap at ONE instance ──────────────────────────────────────
+// Two standing single-process assumptions make a second Cloud Run instance an
+// active correctness hazard: AUTH_SECRET falls back to a random PER-PROCESS
+// key when unset (a second instance would silently invalidate sessions minted
+// by the first), and db.json is a single local file with non-atomic writes
+// (two instances writing concurrently can torn-write or lose an update).
+// Nothing else in the deploy pins instance count, so a routine flag reorder
+// or a copy-pasted `gcloud run deploy` example could drop this silently.
+//
+// Scoped to the deploy step specifically (from its own `- name:` line to the
+// top-level `images:` key) rather than the whole file, so this can never be
+// satisfied by a flag that landed in the wrong step. The env-var block has
+// long inline comments between `-` entries, so this is a plain substring
+// search on the step's own slice, not a "one contiguous run of `- '...'`
+// lines" regex (which a comment between args would break).
+const deployStepAt = cloudbuild.indexOf("- name: 'gcr.io/cloud-builders/gcloud'");
+if (deployStepAt < 0) fail('no gcloud deploy step found in cloudbuild.yaml');
+const imagesAt = cloudbuild.indexOf('\nimages:');
+const deployStepBlock = cloudbuild.slice(deployStepAt, imagesAt > deployStepAt ? imagesAt : undefined);
+if (!/^\s*-\s*'--max-instances=1'\s*$/m.test(deployStepBlock)) {
+  fail(
+    "the deploy step must pass '--max-instances=1'. Without it Cloud Run may scale to more "
+    + 'than one instance, and this service has two standing single-process assumptions '
+    + '(per-process AUTH_SECRET fallback, non-atomic db.json writes) that a second instance '
+    + 'breaks silently.',
+  );
+}
+
 console.log(
   `✓ cloudbuild contract: ${actual.size} env names match deploy/cloudrun-env-manifest.txt; `
   + 'rung-3 flags literal, REPORT_MODEL non-empty, substitutions declared, images: tags built, '
-  + 'no secret-shaped defaults, image is NODE_ENV=production by construction',
+  + 'no secret-shaped defaults, image is NODE_ENV=production by construction, '
+  + 'deploy capped at --max-instances=1',
 );
