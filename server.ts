@@ -1244,6 +1244,36 @@ function saveDB(db: DB): boolean {
 }
 
 /**
+ * Serializes the game-save/update/delete routes' entire read-build-save
+ * sequence into one queue, so two requests that arrive close together can
+ * never both build a candidate off the SAME `inMemoryDb` snapshot and have
+ * whichever commits second silently clobber the other's change.
+ *
+ * CodeRabbit (2026-09-02, second review round): awaiting the real GCS write
+ * (above) closed the false-"success" gap but opened exactly this race on
+ * the HOSTED path — a genuine network `await` is a real yield point on
+ * Node's single-threaded event loop, so a second request's handler can run
+ * `loadDB()` while the first one is still mid-write. The DESKTOP branch was
+ * never at risk (a synchronous file write has no yield point to interleave
+ * on), which is why this queue only needed adding once the GCS branch
+ * became genuinely async.
+ *
+ * A single in-process queue is CORRECT here, not just convenient:
+ * `cloudbuild.yaml`'s `--max-instances=1` (this same PR) guarantees exactly
+ * one process ever runs, so there is no second process this queue would
+ * need to coordinate with. `.catch(() => {})` on the chain link is load-
+ * bearing — without it, one caller's write throwing would leave every LATER
+ * caller permanently chained onto a rejected promise, so a single transient
+ * GCS failure would appear to hang every game mutation after it forever.
+ */
+let gameWriteQueue: Promise<unknown> = Promise.resolve();
+function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const run = gameWriteQueue.then(fn, fn);
+  gameWriteQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/**
  * Persist a CANDIDATE database and report success/failure HONESTLY on BOTH
  * storage backends. Used only by the game-save/update/delete routes (via
  * `saveDBOrFail` below) — every other `saveDB` call site is UNCHANGED
@@ -2787,7 +2817,6 @@ async function startServer() {
 
   // Create/Save a Custom Game
   app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
-    const db = loadDB();
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -2801,28 +2830,36 @@ async function startServer() {
       return res.status(400).json({ error: "Game name and payoffs matrix are required." });
     }
 
-    const newGame: SavedGame = {
-      id: makeId("g"),
-      userId: user.id,
-      name: cleanName,
-      description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
-      payoffs: cleanMatrix,
-      createdAt: new Date().toISOString(),
-      ...cleanLabels(req.body),
-      ...cleanColorTerms(req.body, true)
-    };
+    // The ENTIRE read-build-save sequence is serialized (see
+    // serializeGameWrite's own comment): `loadDB()` happens INSIDE the
+    // queued function so it reads whatever the most recently queued write
+    // actually committed, not a snapshot taken before this request had to
+    // wait its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const newGame: SavedGame = {
+        id: makeId("g"),
+        userId: user.id,
+        name: cleanName,
+        description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
+        payoffs: cleanMatrix,
+        createdAt: new Date().toISOString(),
+        ...cleanLabels(req.body),
+        ...cleanColorTerms(req.body, true)
+      };
 
-    // A NEW games array, not a push onto the live `db.games` (== inMemoryDb's
-    // own array) — saveDBOrFail only commits this candidate to inMemoryDb on
-    // a CONFIRMED write, so a failure must find nothing already mutated to
-    // roll back FROM.
-    const candidate: DB = { users: db.users, games: [...db.games, newGame] };
-    if (!(await saveDBOrFail(candidate, res))) return;
+      // A NEW games array, not a push onto the live `db.games` (==
+      // inMemoryDb's own array) — saveDBOrFail only commits this candidate
+      // to inMemoryDb on a CONFIRMED write, so a failure must find nothing
+      // already mutated to roll back FROM.
+      const candidate: DB = { users: db.users, games: [...db.games, newGame] };
+      if (!(await saveDBOrFail(candidate, res))) return;
 
-    res.json({
-      success: true,
-      message: "Game saved successfully!",
-      game: newGame
+      res.json({
+        success: true,
+        message: "Game saved successfully!",
+        game: newGame
+      });
     });
   });
 
@@ -2841,14 +2878,6 @@ async function startServer() {
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
-    const db = loadDB();
-    const game = db.games.find(g => g.id === req.params.id);
-    if (!game) {
-      return res.status(404).json({ error: "Game not found." });
-    }
-    if (game.userId !== user.id) {
-      return res.status(403).json({ error: "You are not authorized to edit this game." });
-    }
 
     // The edit dialog sends every field, so it opts into clearing; the
     // save-this-scenario path sends only what it means to change.
@@ -2866,23 +2895,39 @@ async function startServer() {
         && Object.keys(nextTerms).length === 0) {
       return res.status(400).json({ error: "Nothing to update." });
     }
-    // A NEW game object and a NEW games array — never mutate `game` (a live
-    // reference into inMemoryDb.games) in place, or a failed write would
-    // have nothing left to roll back FROM (see saveDBAwaited's own comment).
-    const updatedGame: SavedGame = { ...game };
-    if (nextName) updatedGame.name = nextName;
-    // Description follows the same rule as the labels: normally an empty value
-    // means "not supplied", but an edit that deliberately empties the box must
-    // be able to remove the text.
-    if (nextDescription || (allowClear && "description" in req.body)) updatedGame.description = nextDescription;
-    Object.assign(updatedGame, nextLabels, nextTerms);
-    const candidate: DB = {
-      users: db.users,
-      games: db.games.map((g) => (g.id === updatedGame.id ? updatedGame : g)),
-    };
-    if (!(await saveDBOrFail(candidate, res))) return;
 
-    res.json({ success: true, message: "Game updated.", game: updatedGame });
+    // The ENTIRE read-find-build-save sequence is serialized (see
+    // serializeGameWrite's own comment) — including the not-found/ownership
+    // checks, which must read whatever the most recently queued write
+    // committed, not a snapshot from before this request waited its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const game = db.games.find(g => g.id === req.params.id);
+      if (!game) {
+        return res.status(404).json({ error: "Game not found." });
+      }
+      if (game.userId !== user.id) {
+        return res.status(403).json({ error: "You are not authorized to edit this game." });
+      }
+      // A NEW game object and a NEW games array — never mutate `game` (a
+      // live reference into inMemoryDb.games) in place, or a failed write
+      // would have nothing left to roll back FROM (saveDBAwaited's own
+      // comment).
+      const updatedGame: SavedGame = { ...game };
+      if (nextName) updatedGame.name = nextName;
+      // Description follows the same rule as the labels: normally an empty
+      // value means "not supplied", but an edit that deliberately empties
+      // the box must be able to remove the text.
+      if (nextDescription || (allowClear && "description" in req.body)) updatedGame.description = nextDescription;
+      Object.assign(updatedGame, nextLabels, nextTerms);
+      const candidate: DB = {
+        users: db.users,
+        games: db.games.map((g) => (g.id === updatedGame.id ? updatedGame : g)),
+      };
+      if (!(await saveDBOrFail(candidate, res))) return;
+
+      res.json({ success: true, message: "Game updated.", game: updatedGame });
+    });
   });
 
   // Delete a Custom Game
@@ -2892,26 +2937,32 @@ async function startServer() {
       return res.status(401).json({ error: "Unauthorized access." });
     }
     const gameId = req.params.id;
-    const db = loadDB();
 
-    const gameIndex = db.games.findIndex(g => g.id === gameId);
-    if (gameIndex === -1) {
-      return res.status(404).json({ error: "Game not found." });
-    }
+    // The ENTIRE read-find-save sequence is serialized (see
+    // serializeGameWrite's own comment) — including the not-found/ownership
+    // checks, which must read whatever the most recently queued write
+    // committed, not a snapshot from before this request waited its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const gameIndex = db.games.findIndex(g => g.id === gameId);
+      if (gameIndex === -1) {
+        return res.status(404).json({ error: "Game not found." });
+      }
 
-    const game = db.games[gameIndex];
-    if (game.userId !== user.id) {
-      return res.status(403).json({ error: "You are not authorized to delete this game." });
-    }
+      const game = db.games[gameIndex];
+      if (game.userId !== user.id) {
+        return res.status(403).json({ error: "You are not authorized to delete this game." });
+      }
 
-    // A NEW games array (filter, not splice on the live one) — a failed
-    // write must leave inMemoryDb's own array undisturbed.
-    const candidate: DB = { users: db.users, games: db.games.filter((_, i) => i !== gameIndex) };
-    if (!(await saveDBOrFail(candidate, res))) return;
+      // A NEW games array (filter, not splice on the live one) — a failed
+      // write must leave inMemoryDb's own array undisturbed.
+      const candidate: DB = { users: db.users, games: db.games.filter((_, i) => i !== gameIndex) };
+      if (!(await saveDBOrFail(candidate, res))) return;
 
-    res.json({
-      success: true,
-      message: "Game deleted successfully."
+      res.json({
+        success: true,
+        message: "Game deleted successfully."
+      });
     });
   });
 

@@ -228,6 +228,23 @@ jobs:
           UNWRITABLE_SAVE_PORT: '3119'
           UNWRITABLE_SAVE_PORT2: '3120'
 
+      # Awaiting the real GCS write (above) closed a false-"success" gap but
+      # opened a NEW race CodeRabbit found on this same PR: a genuine network
+      # await is a real yield point, so two concurrent game mutations on the
+      # HOSTED path could both build a candidate off the same stale snapshot
+      # and the later commit would silently clobber the earlier one.
+      # serializeGameWrite (server.ts) queues the whole read-build-save
+      # sequence; --max-instances=1 (cloudbuild.yaml, this same PR) is what
+      # makes a single in-process queue correct (there is only ever one
+      # process). Against a fake GCS emulating the real resumable-upload
+      # protocol (probed against the real client), with an artificial delay
+      # forcing two concurrent writes to actually overlap.
+      - name: Boot the production server and run the GCS game-write race suite (fake GCS)
+        run: node src/integration/gcs-game-write-race.test.mjs
+        env:
+          GCS_RACE_PORT: '3123'
+          GCS_RACE_GCS_PORT: '3124'
+
       # A pre-local-owner desktop install's real account is invisible to an
       # unauthenticated GET /api/games (200 [], indistinguishable from "never
       # used"), while GET /api/auth/me correctly 401s the same request.
