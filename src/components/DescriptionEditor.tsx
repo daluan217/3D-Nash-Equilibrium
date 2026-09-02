@@ -142,7 +142,7 @@ export function DescriptionEditor({
             Player {p}
           </button>
         ))}
-        <span className="text-[11px] text-slate-400 dark:text-slate-500">
+        <span className="text-[11px] text-muted dark:text-muted-dark">
           ({termsA.length + termsB.length}/{USER_TERMS_MAX})
         </span>
       </div>
@@ -171,7 +171,7 @@ export function DescriptionEditor({
         </>
       )}
 
-      <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+      <p className="mt-1 text-[11px] text-muted dark:text-muted-dark">
         Your highlights colour this description only — they never change the AI
         explanation or how it colours its own writing. Up to {USER_TERM_MAX_LEN} characters each.
       </p>

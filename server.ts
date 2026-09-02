@@ -2470,7 +2470,11 @@ async function startServer() {
     }
   });
 
-  // Serve compiled DMG file
+  // Serve compiled DMG file. Content-Length above the sized-response cap is
+  // handled by setContentLengthIfUnderCloudRunLimit (module scope, above) —
+  // reconciled from two independent fixes (this branch's own root-cause
+  // finding, RED-DESKTOP-4/003, and PR #89's live hotfix) into ONE
+  // implementation per the director's call; see that function's own comment.
   app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), async (req, res) => {
     try {
       // In Cloud Run, stream from GCS
