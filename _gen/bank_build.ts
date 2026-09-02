@@ -13,9 +13,9 @@
  */
 import fs from 'node:fs';
 import { validateScenario, scenarioIsClaimFree, validateProseDirections } from '../src/utils/nashValidator';
-import { stakesBand, bankKey, type BankEntry } from '../src/utils/scenarioBank';
+import { stakesBand, bankKey, SERVE_PROBES, type BankEntry } from '../src/utils/scenarioBank';
 import { SCREENS } from './trainset_screens';
-import { exposureAsymmetryClaim } from './bank_screens';
+import { exposureAsymmetryClaim, doubledTerminalStop } from './bank_screens';
 import type { GamePayoffs, SuggestedScenario } from '../src/types';
 
 /**
@@ -77,8 +77,32 @@ let dupes = 0;
 
 for (const r of rows) {
   const sc = r.scenario!; const g = r.game!;
+  /**
+   * GATED AGAINST THE GAME IT WILL BE SERVED WITH, NOT ONLY THE ONE IT WAS
+   * WRITTEN FOR.
+   *
+   * This line used to be `validateScenario(sc, g)` alone, where `g` is the row's
+   * OWN generation matrix. But `pickFromBank` hands the row to whatever game the
+   * user typed, so every game-dependent rule in the gate answers differently at
+   * serve time — and a row admitted here could then be rejected in front of a
+   * reader, on a path with no model to fall back to and no reroll, leaving the
+   * response silently carrying no story at all.
+   *
+   * 19 shipped rows did exactly that: rivalry vocabulary is rejected on any
+   * COMMON-INTEREST matrix, which is the plain pure-coordination game and also
+   * the all-zero matrix a user gets by clearing the payoff fields. Two agents
+   * reproduced the same 19 from opposite directions — a 270-game probe sweep and
+   * one probe per game-conditional branch.
+   *
+   * `SERVE_PROBES` is one game per condition the gates branch on, at three
+   * magnitudes; see its comment in scenarioBank.ts for why it must NOT be
+   * band-scoped and why most of its zeros mean "the corpus never says that"
+   * rather than "the artifact is safe".
+   */
   const v = validateScenario(sc, g);
   if (!v.ok) { for (const i of v.issues) drop[bucket(i)] = (drop[bucket(i)] ?? 0) + 1; continue; }
+  const probeFail = SERVE_PROBES.map((p) => validateScenario(sc, p)).find((r) => !r.ok);
+  if (probeFail) { for (const i of probeFail.issues) drop[`serve-probe: ${bucket(i)}`] = (drop[`serve-probe: ${bucket(i)}`] ?? 0) + 1; continue; }
   const cf = scenarioIsClaimFree(sc);
   if (!cf.ok) { drop[`claim-free: ${cf.reason ?? '?'}`] = (drop[`claim-free: ${cf.reason ?? '?'}`] ?? 0) + 1; continue; }
   // The description is the only prose the bank ships, so it is the only prose
@@ -97,6 +121,15 @@ for (const r of rows) {
    * is the cheap direction here and what it was measured to cost.
    */
   if (exposureAsymmetryClaim(sc)) { drop['screen: exposure-asymmetry'] = (drop['screen: exposure-asymmetry'] ?? 0) + 1; continue; }
+
+  /**
+   * A doubled terminal stop (`…and "Late trim.".`). A typo rather than a claim,
+   * gated HERE and deliberately not in production: on the report path a
+   * rejection deletes the whole story with no reroll, which is the wrong trade
+   * for a stray full stop, while here it costs one row of ~2,500 and the picker
+   * simply hands over another. See `bank_screens.ts` for the measurement.
+   */
+  if (doubledTerminalStop(sc)) { drop['screen: doubled-terminal-stop'] = (drop['screen: doubled-terminal-stop'] ?? 0) + 1; continue; }
 
   const e: BankEntry = { d: r.domain!, b: stakesBand(g), s: sc };
   const k = bankKey(e);

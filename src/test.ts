@@ -583,12 +583,24 @@ function testProseDirectionCheck() {
     name: 'Toll Bridge', row1: 'Pay Toll', row2: 'Ford River', col1: 'Open Gate', col2: 'Close Gate', description,
     ...(actors ? { actorA: ['traveller'], actorB: ['gatekeeper'] } : {}),
   });
-  assert(validateScenario(tollSc('Once the gatekeeper chooses Ford River, the road clears.'), TOLLA).issues.some((i) => i.includes("player A's option")),
-    "a role noun given the OTHER player's option must be flagged once actors are declared");
-  assert(validateScenario(tollSc('Once the gatekeeper chooses Open Gate, the road clears.'), TOLLA).ok,
-    'the correct attribution must pass');
-  assert(validateScenario(tollSc('Once the gatekeeper chooses Ford River, the road clears.', false), TOLLA).ok,
-    'with no actors declared the check must stay silent rather than guess');
+  // THE THREE ROLE-NOUN ASSERTIONS THAT USED TO BE HERE ARE GONE WITH THE RULE.
+  //
+  // They passed `actorA`/`actorB` straight into `validateScenario` — a shape the
+  // product cannot produce. `SCENARIO_SCHEMA` declares neither field and
+  // providers.ts sends `additionalProperties:false` with `strict:true`, so a
+  // cloud draw cannot carry them, and the local server has never emitted them.
+  // The assertions were green for as long as the rule existed and proved only
+  // that the rule worked on input nothing generates.
+  //
+  // The defect itself was then measured directly, without the actor mapping, in
+  // its two decidable forms (two subjects both naming one player's pair; one
+  // subject naming both pairs) over 8,069 scannable scenarios from every corpus
+  // held: zero, with planted controls confirming the instrument fires. See the
+  // block comment in nashValidator.ts where the rule used to be for what stays
+  // unguarded and why reviving it was tested and does not pay.
+  //
+  // What replaces them below is the LETTER form, which needs no declaration and
+  // is the check that actually caught the one real instance ever captured.
 
   // DeepSeek-V4-Flash killed the 40-row battery at row 12 with
   // "TypeError: (list ?? []).map is not a function" — actorA came back as a
@@ -1287,13 +1299,29 @@ function testClaimFreeScreen() {
   // block was written to protect, and it still holds. They ARE now dropped, by
   // the META screen, for naming the mathematical object in user-facing fiction.
   // True and out of register are independent questions; both are asked here.
+  //
+  // THE FIRST GOLD CARRIES TWO DEFECT SIGNALS AND IS THEREFORE NOT ISOLATING.
+  // Its text opens "A and B are rival campaign managers", which is also a
+  // conjoined bare-letter leak, and once that rule existed this row started
+  // being rejected for THAT reason first. The verbatim text is kept — a
+  // paraphrased regression fixture has already let a real defect ship in this
+  // repo — so the assertion accepts either register reason for it, and an
+  // ISOLATING third row carrying the payoffs signal ALONE is added so the
+  // proposition this block exists for is still tested on its own. Without that
+  // third row, deleting the META payoff rule would leave this block green.
+  const REGISTER_REASON = /mathematical object|bare letters standing in/;
   for (const d of [
     'A and B are rival campaign managers deciding where to send a field team. Each independently chooses North or South, and the matrix records their strategic payoffs.',
     'Firms A and B simultaneously choose whether to build around a shared industry standard or their own proprietary platform. Their payoffs represent the resulting commercial success for each firm.',
+    'Two rival campaign managers decide where to send a field team. Each independently chooses North or South, and the matrix records their strategic payoffs.',
   ]) {
     const w = scenarioIsClaimFree({ description: d } as never).reason ?? '';
-    assert(/mathematical object/.test(w),
+    assert(REGISTER_REASON.test(w),
       `the "payoffs" golds are dropped for REGISTER: ${d.slice(0, 60)} -> ${w || '(allowed)'}`);
+    if (!/^A and B/.test(d) && !/^Firms A and B/.test(d)) {
+      assert(/mathematical object/.test(w),
+        `the ISOLATING payoffs gold must be dropped for the PAYOFF rule specifically, not for a letter leak: ${w || '(allowed)'}`);
+    }
     assert(!/comparative|attached to a comparison|conditional outcome|moves first|offers and the other accepts/.test(w),
       `no FALSEHOOD screen may fire on a bare "payoffs" gold — that is what this block protects: ${d.slice(0, 60)} -> ${w}`);
   }
