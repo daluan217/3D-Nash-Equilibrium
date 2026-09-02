@@ -85,6 +85,7 @@ import {
 import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
 import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms } from './utils/colorTerms';
+import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { DescriptionEditor } from './components/DescriptionEditor';
 import { DownloadModal } from './components/DownloadModal';
 import { OtherAccountsNotice } from './components/OtherAccountsNotice';
@@ -357,6 +358,40 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authToken]);
+
+  /**
+   * The save form's CURRENT name/description/labels, readable from async code.
+   *
+   * `handleGenerateGame` awaits a report call (2-6s against the live model)
+   * before deciding whether to prefill these fields. Reading `saveName` /
+   * `saveDesc` / `saveLabels` through the function's own closure would see
+   * them as of the CLICK, not as of whenever the await resolves — so text the
+   * user types DURING the wait would not be seen as "already there" and could
+   * still be silently overwritten. Kept in sync on every render instead.
+   *
+   * `useLayoutEffect`, NOT `useEffect` (CodeRabbit finding, PR #87 re-review
+   * — same shape as `payoffsRef` above). A PASSIVE effect runs asynchronously
+   * after paint, so there is a real window — between React committing a
+   * keystroke's state update and that effect actually running — during which
+   * `saveFieldsRef.current` is STALE. If `handleGenerateGame`'s report
+   * response happens to resolve inside that window, it reads the OLD field
+   * values and can approve overwriting text the user just typed, which is
+   * exactly the class of bug this ref exists to close. `useLayoutEffect`
+   * fires synchronously right after the commit, before the browser paints and
+   * long before any network response can possibly resolve, so there is no
+   * window left for an async callback to land in.
+   */
+  const saveFieldsRef = useRef({ name: saveName, desc: saveDesc, labels: saveLabels });
+  useLayoutEffect(() => {
+    saveFieldsRef.current = { name: saveName, desc: saveDesc, labels: saveLabels };
+  }, [saveName, saveDesc, saveLabels]);
+  /**
+   * What the LAST successful Generate call itself wrote into the save form —
+   * `null` until the first fill. Lets a re-roll ("Generate" clicked again,
+   * fields still holding the PREVIOUS AI story untouched) recognise its own
+   * prior output as safe to replace, while text the user typed by hand is not.
+   */
+  const lastGeneratedFillRef = useRef<GeneratedFill | null>(null);
 
   // Feedback Modal States
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
@@ -1524,6 +1559,19 @@ export default function App() {
    * form with the invention. The matrix is applied BEFORE the model call and
    * kept even if that call fails — the game is real either way; only the
    * story is best-effort.
+   *
+   * THE FORM PREFILL NEVER DESTROYS TYPED TEXT (RED-APP-4, round 4). This used
+   * to overwrite `saveName`/`saveDesc`/`saveLabels` unconditionally on every
+   * successful call, with no guard for whether the user had already typed
+   * into the very form Generate sits inside — reproduced 1/1 against the live
+   * site: type a name/description/labels by hand, click Generate once, and
+   * they were gone with no undo. The invented story is now applied ONLY when
+   * every one of those six fields is either still empty, or still holds
+   * exactly what a PRIOR Generate call itself wrote (a re-roll recognising its
+   * own earlier output is fine to replace) — never text the user typed. If
+   * any field has been hand-edited, none of the six are touched; the matrix
+   * still rolls (it was never the field this defect was about), and the note
+   * says so instead of silently doing nothing.
    */
   const handleGenerateGame = async () => {
     setGenerateLoading(true);
@@ -1555,13 +1603,24 @@ export default function App() {
       // contradict the very equilibria the user just asked for.
       const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;
       if (sc) {
-        setSaveName((sc.name ?? '').slice(0, 40));
-        setSaveDesc((sc.description ?? '').slice(0, 800));
-        setSaveLabels({
+        const gen: GeneratedFill = {
+          name: (sc.name ?? '').slice(0, 40),
+          desc: (sc.description ?? '').slice(0, 800),
           row1: sc.row1 ?? '', row2: sc.row2 ?? '',
           col1: sc.col1 ?? '', col2: sc.col2 ?? '',
-        });
-        setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
+        };
+        // Read the LIVE form values, not this closure's — the user may have
+        // typed during the await above (see the doc comment on saveFieldsRef).
+        const safe = generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current);
+        if (safe) {
+          setSaveName(gen.name);
+          setSaveDesc(gen.desc);
+          setSaveLabels({ row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 });
+          lastGeneratedFillRef.current = gen;
+          setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
+        } else {
+          setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/option names you'd already typed — the AI wrote a scenario too, but didn't touch your text. Clear ALL of those fields (not just one) to let it fill them in on the next Generate.`);
+        }
       } else {
         setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
       }
@@ -1642,6 +1701,11 @@ export default function App() {
         setSaveDesc('');
         setSaveTerms({ a: [], b: [] });
         setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });
+        // The fields are blank again, so any earlier Generate fill is spent —
+        // the empty-field branch of handleGenerateGame's guard already covers
+        // this, but clearing the ref too keeps it from describing content that
+        // no longer exists.
+        lastGeneratedFillRef.current = null;
         setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
       } else {
         setSaveError(data.error || 'Failed to save game.');
@@ -3000,7 +3064,7 @@ export default function App() {
           <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
             <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
             Simulation Log
-            <span className="normal-case tracking-normal text-slate-400 dark:text-slate-500 font-normal">
+            <span className="normal-case tracking-normal text-muted dark:text-muted-dark font-normal">
               — {logEntries.length} {logEntries.length === 1 ? 'line' : 'lines'}
             </span>
           </span>
@@ -3234,7 +3298,7 @@ export default function App() {
                 </button>
               </div>
             ) : userCustomGames.length === 0 ? (
-              <div className="text-xs text-slate-400 dark:text-slate-500 bg-slate-50/70 dark:bg-slate-950/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-4 text-center">
+              <div className="text-xs text-muted dark:text-muted-dark bg-slate-50/70 dark:bg-slate-950/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-4 text-center">
                 No saved custom games. Adapt payoffs and click <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to persist your first game!
               </div>
             ) : (
@@ -3322,11 +3386,11 @@ export default function App() {
                 <Sliders className="w-4 h-4 text-player-b-500" />
                 <span>
                   Payoff Matrix — (
-                  <span className="text-player-a-500 font-semibold font-mono">A</span>,{' '}
+                  <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold font-mono">A</span>,{' '}
                   <span className="text-player-b-600 dark:text-player-b-400 font-semibold font-mono">B</span>)
                 </span>
               </div>
-              <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
+              <span className="text-xs text-muted dark:text-muted-dark font-mono">Range: [-100, 100]</span>
             </div>
 
             {/* Row-label column capped at 72px (was "auto"): mobile CI caught this
@@ -3341,12 +3405,12 @@ export default function App() {
                 branch introduced ("Stay at Home", Cops & Robbers) and the shortest
                 real preset labels, on all three mobile.mjs device profiles. */}
             <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_1fr_1fr] gap-3 text-center items-center">
-              <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
+              <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col2}>B: {activeLabels.col2}</div>
 
               {/* Row 1 inputs */}
-              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -3354,8 +3418,9 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.a11}
                   onChange={(e) => updatePayoffField('a11', e.target.value)}
+                  aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a11')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3364,6 +3429,7 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.b11}
                   onChange={(e) => updatePayoffField('b11', e.target.value)}
+                  aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
                   onBlur={() => handlePayoffBlur('b11')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -3375,8 +3441,9 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.a12}
                   onChange={(e) => updatePayoffField('a12', e.target.value)}
+                  aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a12')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3385,13 +3452,14 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.b12}
                   onChange={(e) => updatePayoffField('b12', e.target.value)}
+                  aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
                   onBlur={() => handlePayoffBlur('b12')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
               </div>
 
               {/* Row 2 inputs */}
-              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -3399,8 +3467,9 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.a21}
                   onChange={(e) => updatePayoffField('a21', e.target.value)}
+                  aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a21')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3409,6 +3478,7 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.b21}
                   onChange={(e) => updatePayoffField('b21', e.target.value)}
+                  aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
                   onBlur={() => handlePayoffBlur('b21')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -3420,8 +3490,9 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.a22}
                   onChange={(e) => updatePayoffField('a22', e.target.value)}
+                  aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a22')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3430,6 +3501,7 @@ export default function App() {
                   pattern="[0-9.\-]*"
                   value={rawPayoffs.b22}
                   onChange={(e) => updatePayoffField('b22', e.target.value)}
+                  aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
                   onBlur={() => handlePayoffBlur('b22')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -3466,7 +3538,7 @@ export default function App() {
             {/* Starting coordinate fields */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
+                <label className="block text-xs text-player-a-ink dark:text-player-a-ink-dark font-semibold mb-1">Row Start Point (x₀)</label>
                 <div className="relative">
                   <input
                     type="number"
@@ -3479,6 +3551,7 @@ export default function App() {
                       setInitialized(false);
                     }}
                     onBlur={() => commitStartField('x')}
+                    aria-label="Row Start Point (x0)"
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-rose-200 focus:outline-none"
                   />
                   <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
@@ -3517,6 +3590,7 @@ export default function App() {
                       setInitialized(false);
                     }}
                     onBlur={() => commitStartField('y')}
+                    aria-label="Col Start Point (y0)"
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-accent-100 focus:outline-none"
                   />
                   <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
@@ -3555,7 +3629,7 @@ export default function App() {
                       onClick={() => changeFirstMover(player)}
                       className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all ${active
                           ? player === 'A'
-                            ? 'bg-player-a-500 text-white border-player-a-500'
+                            ? 'bg-player-a-600 text-white border-player-a-600'
                             : 'bg-player-b-600 text-white border-player-b-600'
                           : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                         }`}
@@ -3579,7 +3653,7 @@ export default function App() {
                       onClick={() => setTrackingMode(m)}
                       className={`py-2 px-1 text-xs font-semibold rounded-xl border transition-all text-center ${active
                           ? m === 'A'
-                            ? 'bg-player-a-500 text-white border-player-a-500'
+                            ? 'bg-player-a-600 text-white border-player-a-600'
                             : m === 'B'
                               ? 'bg-player-b-600 text-white border-player-b-600'
                               : 'bg-ne-mixed-600 text-white border-ne-mixed-600'
@@ -3616,7 +3690,7 @@ export default function App() {
                   );
                 })}
               </div>
-              <span className="text-xs text-slate-400 dark:text-slate-500 mt-1.5 block">
+              <span className="text-xs text-muted dark:text-muted-dark mt-1.5 block">
                 {stepMode === 'regret'
                   ? "Steps each player's strategy by the opponent's regret, animating the strategy line flattening into the indifference line (mixed-strategy games only)."
                   : 'Contracts the search corridor by a fixed step, bisecting when a coordinate is overshot.'}
@@ -3640,6 +3714,7 @@ export default function App() {
                     setShrinkStep(clamped);
                     setShrinkStepRaw(clamped.toFixed(3));
                   }}
+                  aria-label={stepMode === 'regret' ? 'Regret Step Weight (lambda)' : 'Initial Domain Shrink Step Size'}
                   className="w-20 font-mono font-semibold text-accent-600 dark:text-accent-400 text-right bg-transparent border-b border-accent-300 dark:border-accent-700 focus:outline-none focus:border-accent-500"
                 />
               </div>
@@ -3650,9 +3725,10 @@ export default function App() {
                 step="0.001"
                 value={shrinkStep}
                 onChange={(e) => { const v = commitStepSize(e.target.value, shrinkStep); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); }}
+                aria-label={stepMode === 'regret' ? 'Regret Step Weight (lambda) slider' : 'Initial Domain Shrink Step Size slider'}
                 className="w-full accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
-              <span className="text-xs text-slate-400 dark:text-slate-500 mt-1 block">
+              <span className="text-xs text-muted dark:text-muted-dark mt-1 block">
                 {stepMode === 'regret'
                   ? 'Larger λ glides in faster; keep it modest so the line flattens smoothly without overshooting. As the opponent’s regret → 0, the steps shrink and the line eases into the flat shelf.'
                   : 'Sets how much the search corridor contracts per detected cycle; switches to bisection method when a Player overshoots a mixed equilibrium coordinate.'}
@@ -3668,7 +3744,7 @@ export default function App() {
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-xs text-slate-500 justify-center lg:justify-start">
             <span className="flex items-center gap-1 text-player-a-600 dark:text-player-a-400"><LegendSwatch shape="surface" /> E[A] Surface</span>
             <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400"><LegendSwatch shape="surface" /> E[B] Surface</span>
-            <span className="flex items-center gap-1 text-player-a-500 dark:text-player-a-400 font-medium"><LegendSwatch shape="line" /> A Moves</span>
+            <span className="flex items-center gap-1 text-player-a-ink dark:text-player-a-ink-dark font-medium"><LegendSwatch shape="line" /> A Moves</span>
             <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400 font-medium"><LegendSwatch shape="line" /> B Moves</span>
             <span className="flex items-center gap-1 font-semibold text-ne-pure dark:text-ne-pure"><LegendSwatch shape="diamond" /> Pure NE</span>
             <span className="flex items-center gap-1 text-ne-mixed-600 dark:text-ne-mixed-400 font-bold"><LegendSwatch shape="diamond" /> Mixed NE</span>
@@ -3843,16 +3919,17 @@ export default function App() {
                   max="10"
                   value={speed}
                   onChange={(e) => setSpeed(commitStepIndex(e.target.value) ?? 5)}
+                  aria-label="Loop Speed"
                   className="w-20 accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
                 />
-                <span className="text-xs font-mono text-slate-400 font-semibold">{speed}x</span>
+                <span className="text-xs font-mono text-muted dark:text-muted-dark font-semibold">{speed}x</span>
               </div>
             </div>
 
             {/* Realtime coordinates outputs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
+                <span className="text-xs text-player-a-ink dark:text-player-a-ink-dark font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
@@ -3871,7 +3948,7 @@ export default function App() {
                 <span className="text-xs text-slate-500 dark:text-slate-400 block tracking-wider">
                   Expected Payoff E[A]
                 </span>
-                <span className="text-sm font-bold text-player-a-500 font-mono">
+                <span className="text-sm font-bold text-player-a-ink dark:text-player-a-ink-dark font-mono">
                   {fmtPayoff(EA(simState.cx, simState.cy, payoffs))}
                 </span>
               </div>
@@ -3953,7 +4030,7 @@ export default function App() {
                   the caveat would be noise. Wording kept in step with the
                   convention comment in gameEngine.ts. */}
               {realisedConcept === 'mixed' && (
-                <p className="text-[11px] leading-snug text-slate-400 dark:text-slate-500 -mt-1 px-1">
+                <p className="text-[11px] leading-snug text-muted dark:text-muted-dark -mt-1 px-1">
                   Computed at the exact equilibrium, then rounded to 3 dp for display — recomputing E[A] from the rounded x* and y* can differ in the last digits.
                 </p>
               )}
@@ -3973,7 +4050,7 @@ export default function App() {
                       </span>
                       <MathTex tex={lines.b.tex} />
                     </div>
-                    <div className="text-xs text-slate-400 dark:text-slate-500 mt-2 font-sans font-medium">
+                    <div className="text-xs text-muted dark:text-muted-dark mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
                           cycleCount too), but "search corridors" is the shrink
                           method's furniture — the regret log has no corridor
@@ -4155,7 +4232,7 @@ export default function App() {
                 </div>
 
                 {llmLoading && (
-                  <p className="italic text-slate-400 dark:text-slate-500">
+                  <p className="italic text-muted dark:text-muted-dark">
                     Writing an explanation and checking it against the solver…
                   </p>
                 )}
@@ -4166,7 +4243,7 @@ export default function App() {
                       // Say plainly who wrote what: on a tie game the sentences
                       // are generated from the solver, and only the scenario
                       // came from the model.
-                      <p className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                      <p className="text-[11px] uppercase tracking-wide text-muted dark:text-muted-dark">
                         {/* This said "this game has a payoff tie" unconditionally.
                             True while only the tie path produced `template`, but
                             NASH_PAYOFF_TEMPLATE=1 routes EVERY game here, so a
@@ -4269,7 +4346,7 @@ export default function App() {
                 )}
 
                 {!llmLoading && llmEnvelope && !llmVerified && (
-                  <p className="text-slate-400 dark:text-slate-500 italic">
+                  <p className="text-muted dark:text-muted-dark italic">
                     No verified explanation available
                     {llmEnvelope.fallbackReason ? ` (${llmEnvelope.fallbackReason})` : ''} — the computed
                     report above is authoritative.
@@ -4284,7 +4361,7 @@ export default function App() {
                 )}
 
                 {!llmLoading && !llmEnvelope && !llmError && (
-                  <p className="text-slate-400 dark:text-slate-500">
+                  <p className="text-muted dark:text-muted-dark">
                     Get a written walkthrough of what each player is trading off. The equilibria are
                     always computed exactly; the explanation is checked against them before it appears.
                   </p>
@@ -4306,7 +4383,7 @@ export default function App() {
       </main>
 
       <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center">
-        <p className="text-xs text-slate-400 dark:text-slate-500">© 2026 Daniel Luan</p>
+        <p className="text-xs text-muted dark:text-muted-dark">© 2026 Daniel Luan</p>
       </footer>
 
       {expandedLogOverlay}
@@ -4675,7 +4752,7 @@ export default function App() {
 
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
-                  Option Names <span className="font-normal text-slate-400 dark:text-slate-500">(optional)</span>
+                  Option Names <span className="font-normal text-muted dark:text-muted-dark">(optional)</span>
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   {([
@@ -4685,7 +4762,7 @@ export default function App() {
                     ['col2', "B's Col 2", 'e.g. Ignore'],
                   ] as const).map(([key, label, placeholder]) => (
                     <div key={key}>
-                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-ink dark:text-player-a-ink-dark' : 'text-player-b-600 dark:text-player-b-400'}`}>
                         {label}
                       </span>
                       <input
@@ -4699,13 +4776,13 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                <p className="mt-1 text-[10px] text-muted dark:text-muted-dark">
                   Naming all four lets the AI explainer reuse this scenario instead of inventing a new one.
                   Clear a box to remove that name.
                 </p>
               </div>
 
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 -mt-1">
+              <p className="text-[10px] text-muted dark:text-muted-dark -mt-1">
                 To change the payoff numbers, edit them on the board and save as a new game — the
                 description here would no longer match.
               </p>
@@ -4815,7 +4892,9 @@ export default function App() {
               </span>
               <p className="text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
                 Rolls a fresh random matrix with the equilibrium type you pick and has the AI write
-                a scenario for it. Replaces the matrix shown above.
+                a scenario for it. Replaces the matrix shown above, and fills in the name,
+                description and option names below — but only while you haven't typed your own;
+                your own text is never overwritten.
               </p>
               <div className="flex gap-2">
                 <select
@@ -4884,7 +4963,7 @@ export default function App() {
                   they replace "Row 1"/"Col 2" in the matrix headers. */}
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
-                  Option Names <span className="font-normal text-slate-400 dark:text-slate-500">(optional)</span>
+                  Option Names <span className="font-normal text-muted dark:text-muted-dark">(optional)</span>
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   {([
@@ -4894,7 +4973,7 @@ export default function App() {
                     ['col2', "B's Col 2", 'e.g. Ignore'],
                   ] as const).map(([key, label, placeholder]) => (
                     <div key={key}>
-                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-ink dark:text-player-a-ink-dark' : 'text-player-b-600 dark:text-player-b-400'}`}>
                         {label}
                       </span>
                       <input
@@ -4908,7 +4987,7 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                <p className="mt-1 text-[10px] text-muted dark:text-muted-dark">
                   Naming all four lets the AI explainer reuse this scenario instead of inventing a new one.
                 </p>
               </div>
