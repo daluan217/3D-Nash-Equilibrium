@@ -48,17 +48,8 @@ function record(name, pass, detail) {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
 
-/**
- * A fake GCS JSON API: only the two calls this endpoint makes.
- *
- * `reportedSize`, when given, overrides the `size` field getMetadata() sees
- * WITHOUT changing how many bytes ?alt=media actually streams. That's what
- * lets the >=32 MiB Cloud Run threshold (below) be exercised without this
- * suite actually moving 32 MiB per test run: the app only ever reads the
- * declared size to decide whether to set Content-Length; it never compares
- * that against what the stream really delivers.
- */
-function startFakeGcs({ dmgExists, reportedSize }) {
+/** A fake GCS JSON API: only the two calls this endpoint makes. */
+function startFakeGcs({ dmgExists }) {
   const objectPath = `/b/${BUCKET}/o/${encodeURIComponent(DMG_OBJECT)}`;
   // Counts requests that actually fetch OBJECT BYTES (?alt=media) — the
   // thing a HEAD probe must never trigger. Exposed on the returned server so
@@ -101,7 +92,7 @@ function startFakeGcs({ dmgExists, reportedSize }) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       name: DMG_OBJECT, bucket: BUCKET,
-      size: String(reportedSize ?? DMG_CONTENT.length),
+      size: String(DMG_CONTENT.length),
       contentType: 'application/octet-stream',
     }));
   });
