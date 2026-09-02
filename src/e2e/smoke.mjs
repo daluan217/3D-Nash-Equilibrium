@@ -261,22 +261,59 @@ try {
   //       code too and the check would be measuring the wrong thing.
   {
     const ROWCOL = /\b(row|col(?:umn)?)\s*\d\b/i;
-    const presetNames = [
-      'Search Game', 'Battle of the Sexes', 'Prisoners Dilemma',
-      'Cops & Robbers', 'Spy vs. Analyst', 'Penalty Kick',
+    // Each preset's own row1Label (src/utils/gameEngine.ts PRESETS) — a
+    // POSITIVE marker, not just the ROWCOL absence check below. Presence is
+    // not participation: a check that only asserts "Row N" text is ABSENT
+    // would pass vacuously on a click that silently failed, a stale
+    // previous preset's screen, or an empty/missing container (CodeRabbit
+    // finding, this branch) — none of those are "the fix working", but
+    // none would be caught without also requiring the RIGHT content.
+    const presets = [
+      ['Search Game', 'Search L'],
+      ['Battle of the Sexes', 'Opera'],
+      ['Prisoners Dilemma', 'Cooperate'],
+      ['Cops & Robbers', 'Stay at Home'],
+      ['Spy vs. Analyst', 'Leak Intel'],
+      ['Penalty Kick', 'Aim Left'],
     ];
     let allClean = true;
+    let allMarked = true;
+    let allPresent = true;
     const offenders = [];
-    for (const name of presetNames) {
+    const unmarked = [];
+    const missing = [];
+    for (const [name, marker] of presets) {
       await page.getByRole('button', { name, exact: true }).first().click();
-      await page.waitForTimeout(250);
-      const scoped = await page.evaluate(() => {
+      // Poll for the header to actually show THIS preset's label rather than
+      // a fixed sleep (CodeRabbit finding, this branch): a fixed wait can
+      // sample stale React state on a slow runner, silently passing a check
+      // that never really looked at the right screen.
+      const state = await page.waitForFunction((expectedMarker) => {
         const matrix = document.querySelector('[data-tour="matrix"]');
         const narrative = document.querySelector('[data-testid="preset-narrative"]');
-        return `${matrix ? matrix.textContent : ''} ${narrative ? narrative.textContent : ''}`;
-      });
-      if (ROWCOL.test(scoped)) { allClean = false; offenders.push(name); }
+        if (!matrix || !narrative) return null; // keep polling — containers may not have mounted yet
+        const matrixText = matrix.textContent || '';
+        const narrativeText = narrative.textContent || '';
+        if (!matrixText.includes(expectedMarker) && !narrativeText.includes(expectedMarker)) return null;
+        return { matrixText, narrativeText, hadBoth: true };
+      }, marker, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null);
+      if (!state) {
+        // Either a container never mounted, or the marker never showed up —
+        // both are real failures, not "clean" by default.
+        allPresent = false; allMarked = false; missing.push(name);
+        continue;
+      }
+      if (!(state.matrixText.includes(marker) || state.narrativeText.includes(marker))) {
+        allMarked = false; unmarked.push(name);
+      }
+      if (ROWCOL.test(state.matrixText + ' ' + state.narrativeText)) {
+        allClean = false; offenders.push(name);
+      }
     }
+    record('every standard preset\'s header/narrative container mounts and reports state',
+      allPresent, missing.join(', '));
+    record('every standard preset shows its OWN label somewhere (header or narrative)',
+      allMarked, unmarked.join(', '));
     record('no standard preset renders "Row N" / "Col N" in its header or narrative card',
       allClean, offenders.join(', '));
     await $.reset.click(); await page.waitForTimeout(300);

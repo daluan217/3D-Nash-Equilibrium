@@ -2202,6 +2202,8 @@ function testRedTeamFindings14() {
   }
   // Combines with the existing fullwidth minus (already normalised above) --
   // the two normalisations must compose, not just work in isolation.
+  assert(isNaN(parseFloat('－４')),
+    'fixture integrity: bare parseFloat really does fail on fullwidth minus+digit too');
   assert(commitPayoffInput('－４') === -4,
     `fullwidth minus + fullwidth digit "－４" must commit as -4, got ${commitPayoffInput('－４')}`);
   // The fullwidth full stop must ALSO normalise, and be tested together with
@@ -2213,8 +2215,16 @@ function testRedTeamFindings14() {
   // at least falls back to the field's own documented default (0.217 here),
   // where a silently-parsed 0 does not. Caught by writing this assertion
   // against the wrong expected value first and reading why it failed.
-  assert(commitStartCoordinate('０．５') === 0.5,
-    `a fullwidth "０．５" must commit as 0.5, got ${commitStartCoordinate('０．５')}`);
+  // Fixture integrity, same discipline as fixture A's charCodeAt check above:
+  // this string must actually BE the fullwidth code points, not something
+  // that happens to read the same in a monospace font while secretly being
+  // plain ASCII "0.5" -- which would pass this assertion for the wrong
+  // reason (ASCII "0.5" also commits to 0.5, fixed or not).
+  const fwDecimal = '０．５';
+  assert(fwDecimal.charCodeAt(0) === 0xff10 && fwDecimal.charCodeAt(1) === 0xff0e && fwDecimal.charCodeAt(2) === 0xff15,
+    'fixture integrity: the fullwidth-decimal fixture must be U+FF10 U+FF0E U+FF15, not ASCII lookalikes');
+  assert(commitStartCoordinate(fwDecimal) === 0.5,
+    `a fullwidth "${fwDecimal}" must commit as 0.5, got ${commitStartCoordinate(fwDecimal)}`);
   // Every OTHER numeric field shares this same parser core -- x0/y0 and the
   // step index are equally exposed, and equally fixed by one change at the
   // source rather than needing a fix at every call site.

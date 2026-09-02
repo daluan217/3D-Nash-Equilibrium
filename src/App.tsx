@@ -431,11 +431,20 @@ export default function App() {
   // component may have re-rendered several times with a DIFFERENT game on
   // screen, and that closure has no way to see it. A ref updated on every
   // render is the standard way to give an async callback a window onto
-  // "now" instead of "when I started" — reassigning `.current` in the render
-  // body (not inside an effect) is deliberate: the effect version would run
-  // one render late, exactly the same gap this exists to close.
+  // "now" instead of "when I started".
+  //
+  // Written from `useLayoutEffect`, NOT assigned directly in the render
+  // body (CodeRabbit finding, this branch): writing to a ref DURING render
+  // is a React purity violation — a render that is started but never
+  // committed (React can and does throw away speculative renders) would
+  // still have mutated `payoffsRef.current`, leaving it holding payoffs
+  // that were never actually shown. `useLayoutEffect` fires synchronously
+  // right after a render COMMITS, before the browser paints and long before
+  // any network response can possibly resolve, so it closes the same gap
+  // `fetchLlmExplanation` needs without ever running from a discarded
+  // render.
   const payoffsRef = useRef(payoffs);
-  payoffsRef.current = payoffs;
+  useLayoutEffect(() => { payoffsRef.current = payoffs; });
 
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
     a11: '2', b11: '1', a12: '0', b12: '0',
