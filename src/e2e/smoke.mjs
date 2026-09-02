@@ -656,6 +656,56 @@ try {
     await page.waitForTimeout(300);
   }
 
+  // ══ 17. THE 320px ROW/COL LABEL DOES NOT BREAK MID-WORD (RED-APP-4 round 4,
+  //      findings/RED-APP-4/004-320px-row-label-midword-break.md)
+  //
+  //      Prisoner's Dilemma's Row 1 label "Cooperate" (9 chars) wrapped to
+  //      "Cooper"/"ate" at a 320px viewport — the row-label column is capped
+  //      at 72px (deliberately, to protect the payoff inputs' own WCAG-24px
+  //      tap-target width), and "Cooperate" alone doesn't fit inside it at
+  //      the default text-xs size once the "A: " prefix has already wrapped.
+  //      Every OTHER built-in preset label wraps cleanly at the "A: "/word
+  //      boundary; only this one crosses the threshold. Fixed with a
+  //      narrow-viewport-only smaller font on the label cells (NOT a wider
+  //      column — widening the column's `minmax(0,X)` max has NO effect
+  //      here, confirmed empirically: the column loses to its sibling 1fr
+  //      columns' own min-content demand when its own min is 0, so only
+  //      reducing the LABEL's own min-content — via a smaller font — closes
+  //      the gap without taking width from the payoff inputs).
+  //
+  //      A SEPARATE page at a fixed 320px viewport, since the shared page
+  //      above never resizes this narrow.
+  {
+    const narrowPage = await browser.newPage({ viewport: { width: 320, height: 900 } });
+    await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
+    const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
+    if (await narrowExitTour.count() > 0) {
+      await narrowExitTour.click();
+      await narrowPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).catch(() => {});
+    }
+    // Prisoner's Dilemma is the default-selected preset; the exact fixture
+    // this defect escaped at. Explicit click rather than relying on default
+    // selection, so this check does not silently stop meaning anything if
+    // the default preset ever changes.
+    await narrowPage.getByRole('button', { name: "Prisoner's Dilemma" }).click().catch(() => {});
+    const rowLabel = narrowPage.locator('div[title="Cooperate"]', { hasText: /^A:/ }).first();
+    await rowLabel.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+
+    // Two lines ("A:" / "Cooperate") is correct; a THIRD line is exactly the
+    // mid-word-break signature ("A:" / "Cooper" / "ate") — so bound the
+    // rendered height rather than inspect text content (the DOM text is
+    // "Cooperate" either way; only the WRAPPING differs).
+    const box = await rowLabel.boundingBox();
+    const lineHeight = box ? await rowLabel.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight)) : null;
+    const lines = box && lineHeight ? Math.round(box.height / lineHeight) : null;
+    record('the "Cooperate" row label wraps at a word boundary (2 lines), not mid-word, at 320px',
+      lines !== null && lines <= 2,
+      `box=${JSON.stringify(box)} lineHeight=${lineHeight} lines=${lines}`);
+
+    await narrowPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page

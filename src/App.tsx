@@ -2968,7 +2968,12 @@ export default function App() {
           <Maximize2 className="w-3.5 h-3.5" />
         </button>
       </div>
-      <div ref={logsContainerRef} className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}>
+      <div
+        ref={logsContainerRef}
+        tabIndex={0}
+        aria-label="Simulation log"
+        className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900 ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}
+      >
         {logLines}
       </div>
     </div>
@@ -3010,7 +3015,9 @@ export default function App() {
         </div>
         <div
           ref={logsExpandedRef}
-          className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text"
+          tabIndex={0}
+          aria-label="Simulation log"
+          className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
         >
           {logLines}
         </div>
@@ -3333,11 +3340,11 @@ export default function App() {
                 real preset labels, on all three mobile.mjs device profiles. */}
             <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_1fr_1fr] gap-3 text-center items-center">
               <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
-              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col1}>B: {activeLabels.col1}</div>
-              <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col2}>B: {activeLabels.col2}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col2}>B: {activeLabels.col2}</div>
 
               {/* Row 1 inputs */}
-              <div className="text-xs font-bold text-player-a-500 text-left pr-2 break-words" title={activeLabels.row1}>A: {activeLabels.row1}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -3382,7 +3389,7 @@ export default function App() {
               </div>
 
               {/* Row 2 inputs */}
-              <div className="text-xs font-bold text-player-a-500 text-left pr-2 break-words" title={activeLabels.row2}>A: {activeLabels.row2}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
