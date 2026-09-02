@@ -1431,7 +1431,17 @@ function rateLimit(
  * small partial-range requests, the common case for a resumable download
  * manager, keep their exact declared size for an accurate progress bar.
  */
-const CLOUD_RUN_HTTP1_RESPONSE_LIMIT = 32 * 1024 * 1024; // 32 MiB
+// NASH_MAX_SIZED_RESPONSE_BYTES overrides the cap for TESTS ONLY (a
+// few-KB fake object then exercises the real production branch without
+// this suite moving 32 MiB per run); unset, in production, it is exactly
+// Cloud Run's own documented 32 MiB HTTP/1 limit. Reconciled with the
+// 2026-09-02 hotfix (PR #89, live incident) onto this branch's own fix —
+// same env var name and the same strict `<` boundary, kept as the one
+// surviving implementation per the director's call.
+const CLOUD_RUN_HTTP1_RESPONSE_LIMIT = (() => {
+  const v = parseInt(process.env.NASH_MAX_SIZED_RESPONSE_BYTES || "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 32 * 1024 * 1024;
+})();
 function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength: number): void {
   if (byteLength < CLOUD_RUN_HTTP1_RESPONSE_LIMIT) {
     res.setHeader('Content-Length', String(byteLength));
