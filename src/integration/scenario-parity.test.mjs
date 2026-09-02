@@ -266,8 +266,11 @@ try {
   // as fire-immediately, which would resolve the deadline before any provider
   // could ever answer — every draw on the whole box would silently lose its
   // scenario, with the report shipping anyway. Both malformed shapes must fall
-  // back to the 20s default instead.
-  for (const bad of ['not-a-number', '']) {
+  // back to the 20s default instead. So must a value setTimeout itself
+  // normalizes to an immediate fire: anything under 1ms, and anything past
+  // Node's 32-bit signed timer field (2147483647) — both passed a bare
+  // `Number.isFinite && > 0` guard and fired just as instantly as NaN/0 did.
+  for (const bad of ['not-a-number', '', '0.5', '2147483648']) {
     PORT += 1;
     await boot({ NASH_SCENARIO_TIMEOUT_MS: bad });
     mode = 'ok';

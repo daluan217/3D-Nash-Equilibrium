@@ -173,7 +173,11 @@ const SCENARIO_DEADLINE_MS = (() => {
   const raw = Number(process.env.NASH_SCENARIO_TIMEOUT_MS);
   // Number(undefined) and Number('') are NaN/0; setTimeout treats both as an
   // immediate fire, which would silently drop the scenario on every draw.
-  return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
+  // setTimeout also normalizes a delay under 1ms, or one that overflows
+  // Node's 32-bit signed timer field (> 2147483647), to an immediate 1ms
+  // fire — so 0.5 and 2147483648 pass a bare `> 0` check and still drop
+  // every scenario the same way NaN/0 did.
+  return Number.isInteger(raw) && raw >= 1 && raw <= 2147483647 ? raw : 20_000;
 })();
 
 async function drawWithDeadline(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {

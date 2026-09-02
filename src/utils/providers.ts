@@ -298,8 +298,15 @@ export function buildChatRequestBody(
   variant: Record<string, unknown>,
   extraBody: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
+  // Both token-limit ALIASES, not just the one `variant` happens to use:
+  // `variant` sets exactly one of max_tokens / max_completion_tokens per the
+  // negotiation ladder above, and spreading `extraBody` before it only
+  // overwrites the SAME key — the other alias, if extraBody supplied it,
+  // would survive untouched and ship alongside variant's own choice. Some
+  // Foundry deployments reject a request carrying both.
+  const { max_tokens: _mt, max_completion_tokens: _mct, ...extraBodyRest } = extraBody ?? {};
   return {
-    ...(extraBody ?? {}),
+    ...extraBodyRest,
     model,
     messages,
     ...variant,

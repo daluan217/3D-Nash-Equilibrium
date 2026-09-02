@@ -928,7 +928,20 @@ function testBuildChatRequestBody() {
   assert(bare.model === 'm' && bare.messages === messages && bare.max_tokens === 700,
     'buildChatRequestBody with no extraBody must still assemble the canonical shape');
 
-  console.log('✓ buildChatRequestBody: extraBody cannot replace model, messages or the negotiated variant');
+  // THE OTHER token-limit ALIAS must not survive either: `variant` sets
+  // exactly one of max_tokens / max_completion_tokens, and spreading extraBody
+  // first only overwrites the SAME key — the other alias would otherwise ship
+  // alongside variant's own choice, which some Foundry deployments reject.
+  const variantMct = { response_format: { type: 'json_object' }, max_completion_tokens: 700 };
+  const bodyBothAliases = buildChatRequestBody('m', messages, variantMct, { max_tokens: 999999 });
+  assert(bodyBothAliases.max_completion_tokens === 700 && !('max_tokens' in bodyBothAliases),
+    `only variant's own token-limit alias may reach the request, got ${JSON.stringify(bodyBothAliases)}`);
+  const variantMt = { response_format: { type: 'json_object' }, max_tokens: 700 };
+  const bodyBothAliases2 = buildChatRequestBody('m', messages, variantMt, { max_completion_tokens: 999999 });
+  assert(bodyBothAliases2.max_tokens === 700 && !('max_completion_tokens' in bodyBothAliases2),
+    `and the reverse alias pairing, got ${JSON.stringify(bodyBothAliases2)}`);
+
+  console.log('✓ buildChatRequestBody: extraBody cannot replace model, messages, the negotiated variant, or add the OTHER token-limit alias');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1732,8 +1745,10 @@ function testGateFixesAugust31() {
   // sit on matching pairs") rather than widening the predicate.
   assert(!validateScenario(coordSc(MATCH_TALK), ONE_MATCH).ok,
     'F1 CONTROL: COORD_TALK vocabulary must still be rejected where there is only ONE matching equilibrium — that is not a coordination game');
+  // Exact text, not a substring: a named regression test must be sensitive to
+  // an incorrect qualifier, prefix, or suffix creeping into the wording later.
   assert(validateScenario(coordSc(MATCH_TALK), ONE_MATCH).issues
-    .some((i) => i.includes('does not have multiple pure equilibria that all sit on matching pairs')),
+    .includes('description frames the game as coordination (matching the opponent), but this game does not have multiple pure equilibria that all sit on matching pairs'),
     'F1 CONTROL: and the issue string must be true of the game (a single equilibrium, not "not all" of a set with more than one)');
   // The job title, which is a scenario noun and never a claim.
   assert(validateScenario(coordSc('A shipyards and a harbor coordinator are coordinating dredging operations for a shared canal.'), ANTI).ok,
@@ -2143,6 +2158,14 @@ function testInterestAlignment() {
     'ALIGNMENT (rivalry): a NEGATED FIRST mention must not suppress a later real claim');
   assert(!ok_("A roastery picks a supplier. Weather does not determine the result. The partner's decision determines the outcome.", AFLAT),
     'ALIGNMENT (determines): a NEGATED FIRST mention must not suppress a later real claim');
+  // THE MIRROR CASE (CodeRabbit CLI, self-review of the fix above): scanning
+  // every DETERMINES sentence for a non-joint subject must not ALSO stop
+  // checking that sentence's OWN negation. Reusing the whole-description
+  // `negatedBefore` here asked "is every occurrence negated", which an
+  // unnegated joint OPENER always fails — wrongly rejecting a later singular
+  // sentence that correctly denies the claim.
+  assert(ok_("Their choices determine the outcome for the season. The mill's decision does not determine the result.", AFLAT),
+    'ALIGNMENT (determines): a joint TRUE opener followed by a properly NEGATED singular sentence must pass');
   // And the other direction, or the fix has simply disabled the guard: a claim
   // negated at EVERY occurrence must still pass.
   assert(ok_('They do not work together toward the same goal. The two firms never work together toward the same goal either.', MP),

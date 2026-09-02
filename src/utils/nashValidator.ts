@@ -2081,6 +2081,7 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     // SHARED_GOAL comment below deliberately tolerates — and the shipped rule
     // ALREADY fires on that sentence when no negation precedes it (verified both
     // ways). The leading negation was never the reason it was safe.
+    const NEGATION_MARKER = /\b(?:no|not|never|neither|nor|without|rather\s+than|far\s+from|cannot)\b|n['\u2019]t\b/i;
     const negatedBefore = (re: RegExp) => {
       const all = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
       for (const m of desc.matchAll(all)) {
@@ -2090,7 +2091,7 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
         // One unnegated occurrence is an assertion; later negated ones cannot
         // take it back. Callers guard with `RE.test(desc)`, so the no-match case
         // never reaches here.
-        if (!/\b(?:no|not|never|neither|nor|without|rather\s+than|far\s+from|cannot)\b|n['\u2019]t\b/i.test(clause)) return false;
+        if (!NEGATION_MARKER.test(clause)) return false;
       }
       return true;
     };
@@ -2175,9 +2176,19 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     /** A subject that names the PAIR: the claim is then true of any matrix. */
     const JOINT_SUBJECT = /\b(?:their|both|the\s+two|these|jointly|together|combination|combined|the\s+pair\s+of|each\s+other)\b/i;
     const detSentences = desc.split(/(?<=[.!?])\s+|;\s+/).filter((x) => DETERMINES.test(x));
-    // One singular attribution is a claim; an earlier joint sentence cannot excuse it.
-    const singularDet = detSentences.some((x) => !JOINT_SUBJECT.test(x));
-    if ((aFlat || bFlat) && singularDet && !negatedBefore(DETERMINES)) {
+    // One singular, UNNEGATED attribution is a claim; an earlier joint sentence
+    // cannot excuse it, and a later negated one is not the claim at all — reusing
+    // the whole-description `negatedBefore(DETERMINES)` here would ask "is EVERY
+    // DETERMINES occurrence negated", which a truthful, unnegated joint opener
+    // sentence always fails, wrongly rejecting a later singular sentence that IS
+    // properly negated ("...determine the outcome. B's decision does not
+    // determine the result."). Negation is checked per sentence instead.
+    const singularDet = detSentences.some((x) => {
+      if (JOINT_SUBJECT.test(x)) return false;
+      const m = DETERMINES.exec(x);
+      return !!m && !NEGATION_MARKER.test(x.slice(0, m.index).slice(-60));
+    });
+    if ((aFlat || bFlat) && singularDet) {
       const who = aFlat ? 'A' : 'B';
       issues.push(`description says one player's choice determines the outcome, but player ${who}'s payoff is flat — it is the same whichever option the opponent takes`);
     }
