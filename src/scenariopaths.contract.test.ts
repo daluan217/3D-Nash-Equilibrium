@@ -147,7 +147,20 @@ check('the draw is bounded by a deadline', /function drawWithDeadline/.test(serv
   'an unanswered provider must not hold the user request open');
 
 const allSites = screeningSites(server);
+// A floor, or every check below is satisfied by a regex that stopped matching:
+// hoist `validateScenario(...)` into a local before reading `.ok` off it and
+// `allSites` goes to zero, the per-site loop never runs, and every "claim-free
+// site N ..." check silently vanishes instead of failing.
+check('the screening-site scan still finds the sites it reasons about',
+  allSites.length > 0, 'screeningSites matched nothing in server.ts — the site checks below cannot fail');
 const sites = allSites.filter(isClaimFreeSurface);
+// NOTE: `sites` is legitimately [] against today's server.ts — the unification
+// above collapsed the three inline call sites this scan was built for into the
+// single `inventScreenedScenario` helper, whose internal statements sit further
+// apart than this regex's window. The per-site loop below runs 0 times against
+// real code today; it stays as regression insurance against someone re-inlining
+// a screen at a call site, proven by the MUST_FLAG synthetic fixtures further
+// down. A floor here would fail on correct code, so it is not added.
 // The full-report path must still be OUT of scope, or this contract would fail
 // the rung-0/1/2 code it has to leave alone.
 check('the full-report path is out of scope',

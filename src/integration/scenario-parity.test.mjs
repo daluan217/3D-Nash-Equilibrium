@@ -257,7 +257,25 @@ try {
       res.json?.source === 'template' && typeof res.json?.report?.prose === 'string'
       && res.json.report.prose.length > 40 && !res.json?.report?.suggestedScenario,
       `source=${res.json?.source} prose=${(res.json?.report?.prose ?? '').length} chars`);
-    record('the deadline is not so eager it fires on a healthy draw (control)', ms > 1400, `${ms}ms`);
+    record('the deadline waited its full budget rather than firing instantly', ms > 1400, `${ms}ms`);
+  }
+  await stop();
+
+  // ── 8. A MALFORMED NASH_SCENARIO_TIMEOUT_MS FALLS BACK, NOT TO AN INSTANT FIRE ──
+  // Number('not-a-number') is NaN and Number('') is 0; setTimeout treats both
+  // as fire-immediately, which would resolve the deadline before any provider
+  // could ever answer — every draw on the whole box would silently lose its
+  // scenario, with the report shipping anyway. Both malformed shapes must fall
+  // back to the 20s default instead.
+  for (const bad of ['not-a-number', '']) {
+    PORT += 1;
+    await boot({ NASH_SCENARIO_TIMEOUT_MS: bad });
+    mode = 'ok';
+    const res = await post({ payoffs: NONTIE });
+    record(`NASH_SCENARIO_TIMEOUT_MS=${JSON.stringify(bad)} still lets a fast draw through`,
+      res.json?.report?.suggestedScenario?.name === 'Mock Harbor Run',
+      res.json?.report?.suggestedScenario?.name ?? 'none (deadline fired instantly)');
+    await stop();
   }
 } finally {
   await stop();

@@ -1987,7 +1987,20 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
       // `||` condition and is now false of the commonest case this screen
       // catches — an all-MISMATCH game, whose equilibria do sit on mismatching
       // pairs. An issue string is a claim about the game like any other.
-      issues.push('description frames the game as coordination (matching the opponent), but its pure equilibria do not all sit on matching pairs');
+      //
+      // "its pure equilibria do not all sit on matching pairs" is ALSO false
+      // of a game with exactly ONE pure equilibrium that IS on the matching
+      // diagonal (Prisoner's Dilemma's unique NE happens to land there by an
+      // accident of option ordering) — "all" of one thing that matches is
+      // vacuously true, so the old string denied something true. The real
+      // reason COORD_TALK is rejected there is the one this file's own comment
+      // above states: "asserts the game IS a coordination game, which needs
+      // TWO matching equilibria to be true" — a lone equilibrium is dominant-
+      // strategy convergence, not a coordination problem with a shape to pick
+      // between. Phrased on that requirement, the string is true whether
+      // `matchingShape` is false for having too few equilibria or for having
+      // the wrong ones.
+      issues.push('description frames the game as coordination (matching the opponent), but this game does not have multiple pure equilibria that all sit on matching pairs');
     }
     // The mirror case (C13 draw 25): a pure COORDINATION game — every pure
     // equilibrium on the matching diagonal — described as one where you want
@@ -2161,11 +2174,10 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     const DETERMINES = /\b(?:determines?|dictates?|drives?|controls?|sets?)\b[^.;]{0,40}?\b(?:outcome|payoff|return|result|position)\b|\b(?:outcome|payoff|return|result)\b[^.;]{0,30}?\b(?:is|are)\s+determined\s+by\b/i;
     /** A subject that names the PAIR: the claim is then true of any matrix. */
     const JOINT_SUBJECT = /\b(?:their|both|the\s+two|these|jointly|together|combination|combined|the\s+pair\s+of|each\s+other)\b/i;
-    const detHit = DETERMINES.exec(desc);
-    const detSentence = detHit
-      ? (desc.split(/(?<=[.!?])\s+|;\s+/).find((x) => DETERMINES.test(x)) ?? '')
-      : '';
-    if ((aFlat || bFlat) && detHit && !negatedBefore(DETERMINES) && !JOINT_SUBJECT.test(detSentence)) {
+    const detSentences = desc.split(/(?<=[.!?])\s+|;\s+/).filter((x) => DETERMINES.test(x));
+    // One singular attribution is a claim; an earlier joint sentence cannot excuse it.
+    const singularDet = detSentences.some((x) => !JOINT_SUBJECT.test(x));
+    if ((aFlat || bFlat) && singularDet && !negatedBefore(DETERMINES)) {
       const who = aFlat ? 'A' : 'B';
       issues.push(`description says one player's choice determines the outcome, but player ${who}'s payoff is flat — it is the same whichever option the opponent takes`);
     }

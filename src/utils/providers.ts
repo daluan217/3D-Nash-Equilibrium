@@ -261,27 +261,62 @@ function normalizeOpenAIUsage(u: OpenAI.CompletionUsage | undefined): Normalized
 }
 
 /**
+ * AgentRouter gates on the CLIENT, not just the key.
+ *
+ * It is a free relay aimed at Claude Code / Codex / Gemini CLI, and it
+ * rejects anything that does not look like one of them — with
+ * `401 {"message":"UNAUTHENTICATED", "error":"unauthorized client
+ * detected"}`, which is BYTE-IDENTICAL to what it returns for a request
+ * carrying no credential at all. That identity is what makes the failure so
+ * hard to read: the message tells you nothing about your key, and the
+ * obvious conclusion (bad token) is wrong. A valid, enabled, unlimited token
+ * fails exactly the same way until the User-Agent is right.
+ *
+ * Scoped to that host so nothing else sees a fabricated agent string — an
+ * exact hostname match, not a substring, so a lookalike host
+ * (agentrouter.org.evil.example) or a path fragment (//agentrouter.org in the
+ * URL's path rather than its host) cannot pick up the fabricated header.
+ */
+export function isAgentRouterEndpoint(endpoint: string | undefined): boolean {
+  try {
+    const hostname = endpoint ? new URL(endpoint).hostname.toLowerCase() : '';
+    return hostname === 'agentrouter.org' || hostname.endsWith('.agentrouter.org');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build a chat-completion request body with `extraBody` spread FIRST, so
+ * `model`, `messages` and the negotiated `variant` (schema, response format,
+ * token limit) are canonical and cannot be overridden by whatever a caller
+ * supplies there.
+ */
+export function buildChatRequestBody(
+  model: string,
+  messages: unknown,
+  variant: Record<string, unknown>,
+  extraBody: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  return {
+    ...(extraBody ?? {}),
+    model,
+    messages,
+    ...variant,
+    // No temperature/top_p: the request shape is kept uniform across every
+    // model in the sweep so the comparison table means something. Variance is
+    // measured by the N passes the harness runs, not tuned away here.
+  };
+}
+
+/**
  * Microsoft Foundry exposes GPT *and* the open-weight catalog (DeepSeek, Kimi,
  * Qwen, Grok…) through one OpenAI-compatible endpoint, so a single adapter
  * covers both families — `model` is the DEPLOYMENT name, not a catalog id.
  */
 async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> {
   const { endpoint, apiKey } = foundryCreds(req.model);
-  /**
-   * AgentRouter gates on the CLIENT, not just the key.
-   *
-   * It is a free relay aimed at Claude Code / Codex / Gemini CLI, and it
-   * rejects anything that does not look like one of them — with
-   * `401 {"message":"UNAUTHENTICATED", "error":"unauthorized client
-   * detected"}`, which is BYTE-IDENTICAL to what it returns for a request
-   * carrying no credential at all. That identity is what makes the failure so
-   * hard to read: the message tells you nothing about your key, and the
-   * obvious conclusion (bad token) is wrong. A valid, enabled, unlimited token
-   * fails exactly the same way until the User-Agent is right.
-   *
-   * Scoped to that host so nothing else sees a fabricated agent string.
-   */
-  const isAgentRouter = /(^|\/\/)([^/]*\.)?agentrouter\.org/i.test(endpoint ?? '');
+  const isAgentRouter = isAgentRouterEndpoint(endpoint);
   const client = new OpenAI({
     baseURL: endpoint,
     apiKey,
@@ -331,15 +366,9 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
   let lastErr: unknown;
   for (const variant of variants) {
     try {
-      response = await client.chat.completions.create({
-        model: req.model,
-        messages,
-        ...variant,
-        ...(req.extraBody ?? {}),
-        // No temperature/top_p: the request shape is kept uniform across every
-        // model in the sweep so the comparison table means something. Variance is
-        // measured by the N passes the harness runs, not tuned away here.
-      } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming);
+      const body = buildChatRequestBody(req.model, messages, variant, req.extraBody) as unknown as
+        OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
+      response = await client.chat.completions.create(body);
       break;
     } catch (err) {
       lastErr = err;

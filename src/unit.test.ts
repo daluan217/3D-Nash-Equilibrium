@@ -19,6 +19,7 @@
 import { GamePayoffs } from './types';
 import { payoffTexRhs, fmtPayoffPair, indifferenceAt as indifferenceAtForDisplay } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
+import { isAgentRouterEndpoint, buildChatRequestBody } from './utils/providers';
 import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms } from './utils/colorTerms';
@@ -871,6 +872,65 @@ function testCameraRelayoutPredicate() {
   console.log('✓ camera relayout predicate: granular scene.camera.* keys count as camera changes');
 }
 
+function testIsAgentRouterEndpoint() {
+  // AgentRouter gates on the User-Agent header, and the fabricated header is
+  // meant to reach ONLY agentrouter.org — a substring match instead of a
+  // hostname match would leak it to a lookalike host or a path fragment.
+  const mustMatch: Array<[string, string]> = [
+    ['https://agentrouter.org/v1', 'the bare host'],
+    ['https://agentrouter.org', 'no path at all'],
+    ['https://api.agentrouter.org/v1', 'a real subdomain'],
+    ['http://agentrouter.org:8080/v1', 'a non-default port'],
+    ['https://AgentRouter.ORG/v1', 'case-insensitive host'],
+  ];
+  for (const [endpoint, why] of mustMatch) {
+    assert(isAgentRouterEndpoint(endpoint), `isAgentRouterEndpoint must return true for ${why}: ${endpoint}`);
+  }
+
+  const mustNotMatch: Array<[string | undefined, string]> = [
+    ['https://agentrouter.org.evil.example/v1', 'a lookalike host with agentrouter.org as a prefix'],
+    ['https://evil.example/proxy//agentrouter.org/v1', 'agentrouter.org appearing only in the path'],
+    ['https://notagentrouter.org/v1', 'a different host that merely ends in the same suffix'],
+    ['not a url', 'a malformed endpoint'],
+    [undefined, 'no endpoint configured'],
+    ['', 'an empty endpoint'],
+  ];
+  for (const [endpoint, why] of mustNotMatch) {
+    assert(!isAgentRouterEndpoint(endpoint), `isAgentRouterEndpoint must return false for ${why}: ${endpoint}`);
+  }
+
+  console.log('✓ isAgentRouterEndpoint: exact-hostname match only — lookalike hosts and path fragments do not leak the fabricated User-Agent');
+}
+
+function testBuildChatRequestBody() {
+  // extraBody is an escape hatch, but the canonical request fields are not
+  // negotiable: a caller supplying `model`, `messages` or a variant field
+  // (response_format, a token-limit key) in extraBody must not be able to
+  // replace the production prompt, schema or token budget.
+  const messages = [{ role: 'system', content: 'the real prompt' }];
+  const variant = { response_format: { type: 'json_object' }, max_tokens: 700 };
+  const body = buildChatRequestBody('real-model', messages, variant, {
+    model: 'attacker-model',
+    messages: [{ role: 'user', content: 'pwned' }],
+    response_format: { type: 'text' },
+    max_tokens: 999999,
+    temperature: 0.9, // NOT canonical — an extraBody field with no collision must survive
+  });
+  assert(body.model === 'real-model', 'extraBody must not override model');
+  assert(body.messages === messages, 'extraBody must not override messages');
+  assert(JSON.stringify(body.response_format) === JSON.stringify(variant.response_format),
+    'extraBody must not override the negotiated response_format');
+  assert(body.max_tokens === 700, 'extraBody must not override the negotiated token limit');
+  assert(body.temperature === 0.9, 'a non-colliding extraBody field must still reach the request');
+
+  // No extraBody at all must behave exactly like the bare canonical shape.
+  const bare = buildChatRequestBody('m', messages, variant, undefined);
+  assert(bare.model === 'm' && bare.messages === messages && bare.max_tokens === 700,
+    'buildChatRequestBody with no extraBody must still assemble the canonical shape');
+
+  console.log('✓ buildChatRequestBody: extraBody cannot replace model, messages or the negotiated variant');
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 16. COLOR-CODING TERM PARITY
 //
@@ -958,6 +1018,27 @@ function testColorTermParity() {
     'shared-option detection must be case- and whitespace-insensitive');
   assert(messy.a.includes('Flood Plan') && messy.b.includes('Divert'),
     'options owned by exactly one player keep their colour');
+
+  // Canonically-equivalent Unicode must not smuggle a shared term through
+  // either: NFC (\u00e9 as one precomposed code point) vs NFD (e followed
+  // by a combining acute, \u0065\u0301) render identically but compare
+  // unequal without normalizing. Built from \u escapes, not a literal
+  // combining character, so the fixture cannot be silently re-normalized by
+  // an editor or a copy/paste.
+  // Typed `string`, not inferred as a literal: TS statically knows two DIFFERENT
+  // string literal types can never be equal and flags `!==` between them as
+  // "always true" (TS2367) \u2014 a real fact about the literal types, not about
+  // whether the fixture is testing the right thing at runtime.
+  const nfc: string = 'R\u00e9serve';
+  const nfd: string = 'Re\u0301serve';
+  assert(nfc !== nfd, 'the fixture must actually be two different code point sequences');
+  assert(nfc.normalize('NFC') === nfd.normalize('NFC'),
+    'the fixture must actually be canonically equivalent (same rendering)');
+  const unicodeShared = colorTermsFor({ row1: nfc, row2: 'Hold', col1: nfd, col2: 'Ignore' });
+  assert(!unicodeShared.a.includes(nfc) && !unicodeShared.b.includes(nfd),
+    `NFC/NFD forms of the same rendered text must be recognised as shared and dropped, got ${JSON.stringify(unicodeShared)}`);
+  assert(unicodeShared.a.includes('Hold') && unicodeShared.b.includes('Ignore'),
+    'unambiguous options on the same call keep their colour');
 
   console.log('✓ color-coding term parity: card and saved description derive identical terms');
 }
@@ -1207,20 +1288,36 @@ function testSavedGameColorTermsBehaviour() {
     'a label-less, highlight-less saved game gets exactly the structural terms');
   assert(savedGameColorTerms(null).a.length === STRUCTURAL_A_TERMS.length, 'null is a game with no labels');
 
+  // A hand-edited or migration-corrupted db.json can hold a non-array
+  // colorTermsA/B. mergeDescriptionTerms spreads its user-term args before
+  // cleanUserColorTerms gets to Array.isArray-check them, so this must be
+  // normalized at the savedGameColorTerms boundary or MenuDrawer crashes
+  // rendering the drawer's game list.
+  let corruptThrew = false;
+  try { savedGameColorTerms({ colorTermsA: { oops: true } as any, colorTermsB: 42 as any }); }
+  catch { corruptThrew = true; }
+  assert(!corruptThrew, 'a non-array colorTermsA/B must not throw — it must be treated as no highlights');
+
   console.log('✓ savedGameColorTerms: user highlights, shared-name suppression and structural terms '
     + 'all reach a saved game\'s card, and match the main panel');
 }
 
 function testDescriptionPreviewMatchesSave() {
   // The preview's contract, in its own words: "what this preview shows is what
-  // the game will show". Both sides are spelled out the way their call sites
-  // spell them, so this compares two independent expressions rather than one
-  // function against itself.
+  // the game will show". `saved` drives the REAL entry point the saved card's
+  // component calls — savedGameColorTerms, on a record-SHAPED object
+  // (row1Label, not row1) — rather than re-deriving the preview's own
+  // composition. Both reduce to mergeDescriptionTerms(colorTermsFor(...), ...)
+  // internally, but pinning the record shape here is what can actually catch a
+  // row1-vs-row1Label mapping mistake at either call site.
   const preview = (labels: any, uA: string[], uB: string[]) =>
     mergeDescriptionTerms(dialogBaseColorTerms(labels), uA, uB);          // DescriptionEditor.tsx
   const saved = (labels: any, uA: string[], uB: string[]) =>
-    descriptionColorTerms({ row1: labels.row1, row2: labels.row2, col1: labels.col1, col2: labels.col2 },
-      [], [], uA, uB);                                                     // the saved game's card
+    savedGameColorTerms({
+      row1Label: labels.row1, row2Label: labels.row2,
+      col1Label: labels.col1, col2Label: labels.col2,
+      colorTermsA: uA, colorTermsB: uB,
+    });                                                                    // the saved game's card
 
   const CASES: Array<[string, any, string[], string[]]> = [
     // Save dialog: a preset saved under four NEW option names. The preview used
@@ -1236,6 +1333,9 @@ function testDescriptionPreviewMatchesSave() {
     ['reassigned structural', { row1: 'Advertise', row2: 'Hold back', col1: 'Match', col2: 'Ignore' }, [], ['Row 1']],
     // A symmetric game typed into the dialog: shared names drop on both sides.
     ['symmetric labels', { row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect' }, ['the hedge'], []],
+    // The dialog holds labels UNTRIMMED; the save path sends `.trim()`. The
+    // preview must promise what the trimmed record will deliver.
+    ['padded labels', { row1: '  Advertise ', row2: 'Hold back', col1: 'Match ', col2: ' Ignore' }, [], []],
     ['nothing at all', { row1: '', row2: '', col1: '', col2: '' }, [], []],
   ];
   for (const [why, labels, uA, uB] of CASES) {
@@ -1516,6 +1616,8 @@ function runUnitTests() {
   testDescriptionsAreNeverHtml();
   testUserColorTerms();
   testCameraRelayoutPredicate();
+  testIsAgentRouterEndpoint();
+  testBuildChatRequestBody();
   testScenarioDomains();
   testFmtPayoffSubResolution();
   testFmtPayoffProseExhaustive();
@@ -1618,6 +1720,21 @@ function testGateFixesAugust31() {
     'F1-vocab CONTROL: the identical sentence where both pure equilibria MATCH must pass');
   assert(validateScenario(coordSc(CLAIM), ONE_MATCH).ok,
     'F1-vocab CONTROL: and where the single pure equilibrium IS a matching pair — the issue string would be false there');
+  // COORD_TALK on a game with exactly ONE pure equilibrium that IS on the
+  // matching diagonal (F1, not F1-vocab): this must still be REJECTED — "both
+  // want to coordinate" asserts the game IS a coordination game, which this
+  // file's own comment says needs TWO matching equilibria to be true. A lone
+  // equilibrium landing on a "matching" index is dominant-strategy
+  // convergence (Prisoner's Dilemma's own shape), not a coordination problem.
+  // The OLD issue string was literally false here ("its pure equilibria do
+  // not all sit on matching pairs" — the one it has does); the fix reworded
+  // the string onto the real claim ("does not have multiple ... that all
+  // sit on matching pairs") rather than widening the predicate.
+  assert(!validateScenario(coordSc(MATCH_TALK), ONE_MATCH).ok,
+    'F1 CONTROL: COORD_TALK vocabulary must still be rejected where there is only ONE matching equilibrium — that is not a coordination game');
+  assert(validateScenario(coordSc(MATCH_TALK), ONE_MATCH).issues
+    .some((i) => i.includes('does not have multiple pure equilibria that all sit on matching pairs')),
+    'F1 CONTROL: and the issue string must be true of the game (a single equilibrium, not "not all" of a set with more than one)');
   // The job title, which is a scenario noun and never a claim.
   assert(validateScenario(coordSc('A shipyards and a harbor coordinator are coordinating dredging operations for a shared canal.'), ANTI).ok,
     'F1-vocab CONTROL (red 2, load-bearing): a job title AND a named-actor coordination verb in one sentence must pass');

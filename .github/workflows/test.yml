@@ -47,6 +47,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # iCloud/Finder duplicate a file mid-copy as "name 2.ext"; one of these
+      # was committed and shipped as untested "coverage" of stale behaviour.
+      # No npm install needed for this one, so it runs first and fails fast.
+      - name: No Finder/iCloud duplicate files ("name 2.ext") are tracked
+        run: |
+          dupes="$(git ls-files | grep -E ' [0-9]+\.[A-Za-z0-9]+$' || true)"
+          if [ -n "$dupes" ]; then
+            echo "Tracked file(s) matching the Finder/iCloud duplicate-copy shape:"
+            echo "$dupes"
+            exit 1
+          fi
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
