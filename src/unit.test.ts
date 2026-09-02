@@ -19,9 +19,14 @@
 import { GamePayoffs } from './types';
 import { payoffTexRhs, fmtPayoffPair, indifferenceAt as indifferenceAtForDisplay } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
+import { isAgentRouterEndpoint, buildChatRequestBody } from './utils/providers';
 import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
-import { readFileSync as readFileForContract } from 'node:fs';
+import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms } from './utils/colorTerms';
+import { readFileSync as readFileForContract, readdirSync as readDirForContract } from 'node:fs';
+import ReactForRender from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ColorCoded } from './components/ColorCoded';
 import {
   EA, EB, regretA, regretB, r3,
   parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepSize, commitStepIndex,
@@ -867,6 +872,78 @@ function testCameraRelayoutPredicate() {
   console.log('✓ camera relayout predicate: granular scene.camera.* keys count as camera changes');
 }
 
+function testIsAgentRouterEndpoint() {
+  // AgentRouter gates on the User-Agent header, and the fabricated header is
+  // meant to reach ONLY agentrouter.org — a substring match instead of a
+  // hostname match would leak it to a lookalike host or a path fragment.
+  const mustMatch: Array<[string, string]> = [
+    ['https://agentrouter.org/v1', 'the bare host'],
+    ['https://agentrouter.org', 'no path at all'],
+    ['https://api.agentrouter.org/v1', 'a real subdomain'],
+    ['http://agentrouter.org:8080/v1', 'a non-default port'],
+    ['https://AgentRouter.ORG/v1', 'case-insensitive host'],
+  ];
+  for (const [endpoint, why] of mustMatch) {
+    assert(isAgentRouterEndpoint(endpoint), `isAgentRouterEndpoint must return true for ${why}: ${endpoint}`);
+  }
+
+  const mustNotMatch: Array<[string | undefined, string]> = [
+    ['https://agentrouter.org.evil.example/v1', 'a lookalike host with agentrouter.org as a prefix'],
+    ['https://evil.example/proxy//agentrouter.org/v1', 'agentrouter.org appearing only in the path'],
+    ['https://notagentrouter.org/v1', 'a different host that merely ends in the same suffix'],
+    ['not a url', 'a malformed endpoint'],
+    [undefined, 'no endpoint configured'],
+    ['', 'an empty endpoint'],
+  ];
+  for (const [endpoint, why] of mustNotMatch) {
+    assert(!isAgentRouterEndpoint(endpoint), `isAgentRouterEndpoint must return false for ${why}: ${endpoint}`);
+  }
+
+  console.log('✓ isAgentRouterEndpoint: exact-hostname match only — lookalike hosts and path fragments do not leak the fabricated User-Agent');
+}
+
+function testBuildChatRequestBody() {
+  // extraBody is an escape hatch, but the canonical request fields are not
+  // negotiable: a caller supplying `model`, `messages` or a variant field
+  // (response_format, a token-limit key) in extraBody must not be able to
+  // replace the production prompt, schema or token budget.
+  const messages = [{ role: 'system', content: 'the real prompt' }];
+  const variant = { response_format: { type: 'json_object' }, max_tokens: 700 };
+  const body = buildChatRequestBody('real-model', messages, variant, {
+    model: 'attacker-model',
+    messages: [{ role: 'user', content: 'pwned' }],
+    response_format: { type: 'text' },
+    max_tokens: 999999,
+    temperature: 0.9, // NOT canonical — an extraBody field with no collision must survive
+  });
+  assert(body.model === 'real-model', 'extraBody must not override model');
+  assert(body.messages === messages, 'extraBody must not override messages');
+  assert(JSON.stringify(body.response_format) === JSON.stringify(variant.response_format),
+    'extraBody must not override the negotiated response_format');
+  assert(body.max_tokens === 700, 'extraBody must not override the negotiated token limit');
+  assert(body.temperature === 0.9, 'a non-colliding extraBody field must still reach the request');
+
+  // No extraBody at all must behave exactly like the bare canonical shape.
+  const bare = buildChatRequestBody('m', messages, variant, undefined);
+  assert(bare.model === 'm' && bare.messages === messages && bare.max_tokens === 700,
+    'buildChatRequestBody with no extraBody must still assemble the canonical shape');
+
+  // THE OTHER token-limit ALIAS must not survive either: `variant` sets
+  // exactly one of max_tokens / max_completion_tokens, and spreading extraBody
+  // first only overwrites the SAME key — the other alias would otherwise ship
+  // alongside variant's own choice, which some Foundry deployments reject.
+  const variantMct = { response_format: { type: 'json_object' }, max_completion_tokens: 700 };
+  const bodyBothAliases = buildChatRequestBody('m', messages, variantMct, { max_tokens: 999999 });
+  assert(bodyBothAliases.max_completion_tokens === 700 && !('max_tokens' in bodyBothAliases),
+    `only variant's own token-limit alias may reach the request, got ${JSON.stringify(bodyBothAliases)}`);
+  const variantMt = { response_format: { type: 'json_object' }, max_tokens: 700 };
+  const bodyBothAliases2 = buildChatRequestBody('m', messages, variantMt, { max_completion_tokens: 999999 });
+  assert(bodyBothAliases2.max_tokens === 700 && !('max_completion_tokens' in bodyBothAliases2),
+    `and the reverse alias pairing, got ${JSON.stringify(bodyBothAliases2)}`);
+
+  console.log('✓ buildChatRequestBody: extraBody cannot replace model, messages, the negotiated variant, or add the OTHER token-limit alias');
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 16. COLOR-CODING TERM PARITY
 //
@@ -954,6 +1031,27 @@ function testColorTermParity() {
     'shared-option detection must be case- and whitespace-insensitive');
   assert(messy.a.includes('Flood Plan') && messy.b.includes('Divert'),
     'options owned by exactly one player keep their colour');
+
+  // Canonically-equivalent Unicode must not smuggle a shared term through
+  // either: NFC (\u00e9 as one precomposed code point) vs NFD (e followed
+  // by a combining acute, \u0065\u0301) render identically but compare
+  // unequal without normalizing. Built from \u escapes, not a literal
+  // combining character, so the fixture cannot be silently re-normalized by
+  // an editor or a copy/paste.
+  // Typed `string`, not inferred as a literal: TS statically knows two DIFFERENT
+  // string literal types can never be equal and flags `!==` between them as
+  // "always true" (TS2367) \u2014 a real fact about the literal types, not about
+  // whether the fixture is testing the right thing at runtime.
+  const nfc: string = 'R\u00e9serve';
+  const nfd: string = 'Re\u0301serve';
+  assert(nfc !== nfd, 'the fixture must actually be two different code point sequences');
+  assert(nfc.normalize('NFC') === nfd.normalize('NFC'),
+    'the fixture must actually be canonically equivalent (same rendering)');
+  const unicodeShared = colorTermsFor({ row1: nfc, row2: 'Hold', col1: nfd, col2: 'Ignore' });
+  assert(!unicodeShared.a.includes(nfc) && !unicodeShared.b.includes(nfd),
+    `NFC/NFD forms of the same rendered text must be recognised as shared and dropped, got ${JSON.stringify(unicodeShared)}`);
+  assert(unicodeShared.a.includes('Hold') && unicodeShared.b.includes('Ignore'),
+    'unambiguous options on the same call keep their colour');
 
   console.log('✓ color-coding term parity: card and saved description derive identical terms');
 }
@@ -1051,6 +1149,266 @@ function testUserColorTerms() {
     'reassigning one phrase must not disturb the rest');
 
   console.log('✓ user colour terms: cleaning rules hold and never cross into model prose');
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// COLOUR TERMS: ONE SOURCE, AND A GUARD THAT FAILS WHEN A SECOND ONE APPEARS
+//
+// `colorTerms.ts` says in its own docstring that it exists so "the amount of
+// highlighting cannot depend on which surface you happen to be looking at".
+// It shipped anyway with three surfaces colouring a saved description and only
+// one of them asking the module: the workspace drawer assembled its own pair
+// inline, and both description dialogs previewed against the terms of whichever
+// game was selected in the MAIN PANEL rather than their own.
+//
+// Every defect below was a term list built somewhere other than colorTerms.ts,
+// so the tests come in two halves: behaviour (the single source does the right
+// thing for each surface) and a SOURCE-LEVEL guard (no second list exists).
+// The behavioural half alone cannot catch the regression — a new hand-rolled
+// list in a component passes every assertion written against the module.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Every .ts/.tsx under src/, minus the module under test and the tests. */
+function colorTermSourceFiles(): Array<{ path: string; src: string }> {
+  const out: Array<{ path: string; src: string }> = [];
+  const walk = (dir: string) => {
+    for (const e of readDirForContract(dir, { withFileTypes: true })) {
+      const p = `${dir}/${e.name}`;
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!/\.tsx?$/.test(e.name)) continue;
+      if (/\.test\.tsx?$/.test(e.name) || e.name === 'test.ts') continue;
+      if (p.endsWith('src/utils/colorTerms.ts')) continue;   // the one source
+      out.push({ path: p, src: readFileForContract(p, 'utf8') });
+    }
+  };
+  walk('src');
+  return out;
+}
+
+function testColorTermSingleSource() {
+  const files = colorTermSourceFiles();
+  assert(files.length > 10, `source scan found only ${files.length} files — the walk is broken`);
+
+  // ── (1) nobody assembles an option-name list by hand ──
+  // The exact shape that shipped in MenuDrawer:
+  //   aTerms: [g.row1Label, g.row2Label].filter(Boolean)
+  // A list built this way silently skips everything colorTerms.ts does for a
+  // living: the structural Row/Col terms, `dropAmbiguous`, and the user's own
+  // `colorTermsA`/`colorTermsB`.
+  const HAND_ROLLED = [
+    { re: /\[[^\]\n]*\brow1Label\b[^\]\n]*\brow2Label\b[^\]\n]*\]/, what: 'a [row1Label, row2Label] array' },
+    { re: /\[[^\]\n]*\bcol1Label\b[^\]\n]*\bcol2Label\b[^\]\n]*\]/, what: 'a [col1Label, col2Label] array' },
+    // Case-SENSITIVE, both entries required, single space enforced. The first
+    // draft of these two was /i with only the first entry, and it fired on the
+    // Option Names form, whose field keys are the strings 'row1' and 'col1' —
+    // a list of input names, not a term list. Kept as written so the negative
+    // is permanent: the form is still in App.tsx and would light this up again.
+    { re: /\[\s*(['"])Row [12]\1\s*,\s*(['"])Row [12]\2/, what: "a ['Row 1', 'Row 2'] literal" },
+    { re: /\[\s*(['"])Col(?:umn)? [12]\1\s*,\s*(['"])Col(?:umn)? [12]\2/, what: "a ['Col 1', 'Col 2'] literal" },
+  ];
+  for (const f of files) {
+    for (const { re, what } of HAND_ROLLED) {
+      assert(!re.test(f.src),
+        `${f.path} builds ${what} of its own. Colour terms have ONE source: import from `
+        + 'src/utils/colorTerms.ts (savedGameColorTerms for a saved game\'s record, '
+        + 'dialogBaseColorTerms for a dialog\'s own labels) instead of assembling a list here. '
+        + 'A second list drifts from the first — that is the whole defect class.');
+    }
+  }
+
+  // ── (2) anything that FEEDS ColorCoded terms must get them from the module ──
+  // Catches a hand-rolled list in a shape rule (1) did not anticipate.
+  for (const f of files) {
+    if (!/\baTerms=|\bbTerms=/.test(f.src)) continue;
+    assert(/from ['"][^'"]*utils\/colorTerms['"]/.test(f.src),
+      `${f.path} passes aTerms/bTerms to ColorCoded but imports nothing from utils/colorTerms — `
+      + 'so whatever it passes was assembled locally.');
+  }
+
+  // ── (3) the dialog previews read their OWN labels, never the selection ──
+  // Defect 3, both directions. `colorTerms` is the selected game's pair; a
+  // preview fed from it promises highlights the save will not deliver (pencil
+  // path) or hides ones it will (save-with-new-labels path).
+  const app = readFileForContract('src/App.tsx', 'utf8');
+  const bases = [...app.matchAll(/\bbase([AB])=\{([^}]*)\}/g)];
+  assert(bases.length >= 4, `expected both DescriptionEditor call sites to set baseA/baseB, found ${bases.length}`);
+  for (const m of bases) {
+    assert(!/\bcolorTerms\b/.test(m[2]),
+      `App.tsx passes base${m[1]}={${m[2]}} to a description preview. That is the SELECTED game's `
+      + 'pair, which is neither the game the dialog edits nor the option names being typed into it. '
+      + 'Derive it from the dialog\'s own labels (dialogBaseColorTerms) so the preview keeps the '
+      + 'promise its own comment makes: "what this preview shows is what the game will show".');
+  }
+
+  console.log('✓ colour terms single source: no surface assembles its own term list, and both '
+    + 'description previews read the dialog\'s own labels');
+}
+
+function testSavedGameColorTermsBehaviour() {
+  // The three surfaces that colour a saved description must agree. `panel` is
+  // written the long way ON PURPOSE — spelling out what App.tsx passes for a
+  // custom game (no actor nouns: `mergedPresets` merges saved games in without
+  // them) so this is a real comparison and not `f(x) === f(x)`.
+  const panelPair = (g: any) => descriptionColorTerms(
+    { row1: g.row1Label, row2: g.row2Label, col1: g.col1Label, col2: g.col2Label },
+    [], [], g.colorTermsA ?? [], g.colorTermsB ?? []);
+
+  // Fixture 1 — the user's own highlights. The drawer dropped these entirely,
+  // which made the whole hand-highlighting feature invisible one click from
+  // where it worked.
+  const withUserTerms = {
+    row1Label: 'Advertise', row2Label: 'Hold back', col1Label: 'Match', col2Label: 'Ignore',
+    colorTermsA: ['the haulier'], colorTermsB: ['the council', 'the tender'],
+  };
+  const drawn = savedGameColorTerms(withUserTerms);
+  assert(drawn.a.includes('the haulier') && drawn.b.includes('the council') && drawn.b.includes('the tender'),
+    `a saved game's own highlights must colour on every surface — got A=${drawn.a} B=${drawn.b}`);
+  assert(drawn.a.includes('Advertise') && drawn.b.includes('Ignore'), 'option names still colour');
+  for (const t of STRUCTURAL_A_TERMS) assert(drawn.a.includes(t), `structural "${t}" must be present`);
+  for (const t of STRUCTURAL_B_TERMS) assert(drawn.b.includes(t), `structural "${t}" must be present`);
+  assert(JSON.stringify(drawn) === JSON.stringify(panelPair(withUserTerms)),
+    'the drawer card and the main-panel card render the SAME sentence and must use the same terms');
+
+  // Fixture 2 — a symmetric game. Both players own "Cooperate", so neither
+  // colour is true and the drawer used to paint it as A's. The bank ships
+  // 489/2505 scenarios (19.5%) with a shared option name, and the built-in
+  // Prisoner's Dilemma has the same shape, so this is the common case.
+  const symmetric = {
+    row1Label: 'Cooperate', row2Label: 'Defect', col1Label: 'Cooperate', col2Label: 'Defect',
+    colorTermsA: [], colorTermsB: [],
+  };
+  const sym = savedGameColorTerms(symmetric);
+  assert(!sym.a.includes('Cooperate') && !sym.b.includes('Cooperate'),
+    `a phrase BOTH players can play belongs to neither colour — got A=${sym.a} B=${sym.b}`);
+  assert(!sym.a.includes('Defect') && !sym.b.includes('Defect'), 'same for the second shared name');
+  assert(JSON.stringify(sym) === JSON.stringify(panelPair(symmetric)), 'drawer and panel agree here too');
+
+  // Fixture 3 — the NEGATIVE control. Without it, a mutant that returns only
+  // the structural terms and drops every option name passes fixtures 1 and 2.
+  const asymmetric = {
+    row1Label: 'Advertise', row2Label: 'Hold back', col1Label: 'Match', col2Label: 'Ignore',
+    colorTermsA: [], colorTermsB: [],
+  };
+  const asym = savedGameColorTerms(asymmetric);
+  assert(asym.a.includes('Advertise') && asym.a.includes('Hold back'),
+    'an UNSHARED option name must survive — dropAmbiguous must not fire here');
+  assert(asym.b.includes('Match') && asym.b.includes('Ignore'), 'same for B');
+
+  // A game with nothing on it still colours its structural notation.
+  const bare = savedGameColorTerms({});
+  assert(bare.a.length === STRUCTURAL_A_TERMS.length && bare.b.length === STRUCTURAL_B_TERMS.length,
+    'a label-less, highlight-less saved game gets exactly the structural terms');
+  assert(savedGameColorTerms(null).a.length === STRUCTURAL_A_TERMS.length, 'null is a game with no labels');
+
+  // A hand-edited or migration-corrupted db.json can hold a non-array
+  // colorTermsA/B. mergeDescriptionTerms spreads its user-term args before
+  // cleanUserColorTerms gets to Array.isArray-check them, so this must be
+  // normalized at the savedGameColorTerms boundary or MenuDrawer crashes
+  // rendering the drawer's game list.
+  let corruptThrew = false;
+  try { savedGameColorTerms({ colorTermsA: { oops: true } as any, colorTermsB: 42 as any }); }
+  catch { corruptThrew = true; }
+  assert(!corruptThrew, 'a non-array colorTermsA/B must not throw — it must be treated as no highlights');
+
+  console.log('✓ savedGameColorTerms: user highlights, shared-name suppression and structural terms '
+    + 'all reach a saved game\'s card, and match the main panel');
+}
+
+function testDescriptionPreviewMatchesSave() {
+  // The preview's contract, in its own words: "what this preview shows is what
+  // the game will show". `saved` drives the REAL entry point the saved card's
+  // component calls — savedGameColorTerms, on a record-SHAPED object
+  // (row1Label, not row1) — rather than re-deriving the preview's own
+  // composition. Both reduce to mergeDescriptionTerms(colorTermsFor(...), ...)
+  // internally, but pinning the record shape here is what can actually catch a
+  // row1-vs-row1Label mapping mistake at either call site.
+  const preview = (labels: any, uA: string[], uB: string[]) =>
+    mergeDescriptionTerms(dialogBaseColorTerms(labels), uA, uB);          // DescriptionEditor.tsx
+  const saved = (labels: any, uA: string[], uB: string[]) =>
+    savedGameColorTerms({
+      row1Label: labels.row1, row2Label: labels.row2,
+      col1Label: labels.col1, col2Label: labels.col2,
+      colorTermsA: uA, colorTermsB: uB,
+    });                                                                    // the saved game's card
+
+  const CASES: Array<[string, any, string[], string[]]> = [
+    // Save dialog: a preset saved under four NEW option names. The preview used
+    // to show one highlight and the save delivered four.
+    ['new option names', { row1: 'Advertise', row2: 'Hold back', col1: 'Match', col2: 'Ignore' }, ['Opera'], []],
+    // Pencil path: the edited game has no labels at all, while some OTHER game
+    // is still selected behind the dialog. The preview used to promise three
+    // highlights and the save delivered one.
+    ['no labels at all', { row1: '', row2: '', col1: '', col2: '' }, [], ['crew']],
+    // A half-filled form, mid-typing.
+    ['half-filled', { row1: 'Advertise', row2: '', col1: '', col2: 'Ignore' }, ['the depot'], ['the yard']],
+    // The user reassigns a structural term to the other player.
+    ['reassigned structural', { row1: 'Advertise', row2: 'Hold back', col1: 'Match', col2: 'Ignore' }, [], ['Row 1']],
+    // A symmetric game typed into the dialog: shared names drop on both sides.
+    ['symmetric labels', { row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect' }, ['the hedge'], []],
+    // The dialog holds labels UNTRIMMED; the save path sends `.trim()`. The
+    // preview must promise what the trimmed record will deliver.
+    ['padded labels', { row1: '  Advertise ', row2: 'Hold back', col1: 'Match ', col2: ' Ignore' }, [], []],
+    ['nothing at all', { row1: '', row2: '', col1: '', col2: '' }, [], []],
+  ];
+  for (const [why, labels, uA, uB] of CASES) {
+    const p = preview(labels, uA, uB), s = saved(labels, uA, uB);
+    assert(JSON.stringify(p) === JSON.stringify(s),
+      `preview and save disagree for "${why}": preview A=${p.a} B=${p.b} vs saved A=${s.a} B=${s.b}`);
+  }
+
+  // NEGATIVE CONTROL — the assertions above are only worth something if this
+  // comparison can fail at all. Feeding the preview a DIFFERENT game's labels
+  // is precisely the shipped defect, and it must be caught.
+  const otherGamesTerms = dialogBaseColorTerms({ row1: 'Advertise', row2: 'Hold back', col1: 'Match', col2: 'Ignore' });
+  const wrong = mergeDescriptionTerms(otherGamesTerms, [], ['crew']);
+  const right = saved({ row1: '', row2: '', col1: '', col2: '' }, [], ['crew']);
+  assert(JSON.stringify(wrong) !== JSON.stringify(right),
+    'the preview/save comparison is tautological — it cannot tell a wrong base from a right one');
+
+  console.log('✓ description preview: what the preview shows is what the game will show, on six '
+    + 'label shapes, and a wrong base is still detectable');
+}
+
+function testDescriptionsAreNeverHtml() {
+  // The property is the BRANCH, not a sanitiser: `cleanText` on the server does
+  // NOT strip tags, so a saved description keeps its markup byte-for-byte in
+  // the database. What makes it safe is that a CUSTOM game's description is
+  // rendered through <ColorCoded> (React text nodes) while only BUILT-IN
+  // presets take the dangerouslySetInnerHTML branch. If a saved game ever
+  // reaches that branch, the hole reopens with the payload already stored.
+  const PAYLOADS = [
+    '<img src=x onerror=alert(1)> and <b>bold</b> text',
+    '<script>alert(document.domain)</script>hello',
+  ];
+  for (const text of PAYLOADS) {
+    const html = renderToStaticMarkup(
+      ReactForRender.createElement(ColorCoded, { text, aTerms: ['bold'], bTerms: ['hello'] }),
+    );
+    assert(!/<(img|script|b)[\s>/]/i.test(html),
+      `ColorCoded emitted a live tag for ${JSON.stringify(text)}: ${html}`);
+    assert(html.includes('&lt;'), `the markup must survive as ESCAPED text, not be stripped: ${html}`);
+  }
+  // ColorCoded is the safe renderer precisely because it never takes this door.
+  assert(!/dangerouslySetInnerHTML/.test(readFileForContract('src/components/ColorCoded.tsx', 'utf8')),
+    'ColorCoded must never set innerHTML — it exists to colour UNTRUSTED text');
+
+  // The branch itself: a custom game's description goes to ColorCoded, and the
+  // innerHTML branch is the `:` alternative reached only when there is none.
+  const app = readFileForContract('src/App.tsx', 'utf8');
+  const card = app.match(/\{selectedPreset\?\.desc && \([\s\S]*?\n {12}\)\}/);
+  assert(!!card, 'could not locate the selected-game description card in App.tsx');
+  const block = card![0];
+  const iColor = block.indexOf('<ColorCoded');
+  const iHtml = block.indexOf('dangerouslySetInnerHTML');
+  assert(/selectedCustomGame \?/.test(block),
+    'the description card must branch on selectedCustomGame — that branch IS the injection guard');
+  assert(iColor !== -1 && iHtml !== -1 && iColor < iHtml,
+    'a custom game must be rendered by <ColorCoded> in the TRUE arm, with innerHTML only in the '
+    + 'built-in-preset arm. Reversing these arms would feed stored user markup to innerHTML.');
+
+  console.log('✓ descriptions are never HTML: stored markup renders as literal escaped text, and a '
+    + 'custom game cannot reach the innerHTML branch');
 }
 
 
@@ -1265,8 +1623,14 @@ function runUnitTests() {
   testTieProseUnitTable();
   testGroundingPayload();
   testColorTermParity();
+  testColorTermSingleSource();
+  testSavedGameColorTermsBehaviour();
+  testDescriptionPreviewMatchesSave();
+  testDescriptionsAreNeverHtml();
   testUserColorTerms();
   testCameraRelayoutPredicate();
+  testIsAgentRouterEndpoint();
+  testBuildChatRequestBody();
   testScenarioDomains();
   testFmtPayoffSubResolution();
   testFmtPayoffProseExhaustive();
@@ -1369,6 +1733,23 @@ function testGateFixesAugust31() {
     'F1-vocab CONTROL: the identical sentence where both pure equilibria MATCH must pass');
   assert(validateScenario(coordSc(CLAIM), ONE_MATCH).ok,
     'F1-vocab CONTROL: and where the single pure equilibrium IS a matching pair — the issue string would be false there');
+  // COORD_TALK on a game with exactly ONE pure equilibrium that IS on the
+  // matching diagonal (F1, not F1-vocab): this must still be REJECTED — "both
+  // want to coordinate" asserts the game IS a coordination game, which this
+  // file's own comment says needs TWO matching equilibria to be true. A lone
+  // equilibrium landing on a "matching" index is dominant-strategy
+  // convergence (Prisoner's Dilemma's own shape), not a coordination problem.
+  // The OLD issue string was literally false here ("its pure equilibria do
+  // not all sit on matching pairs" — the one it has does); the fix reworded
+  // the string onto the real claim ("does not have multiple ... that all
+  // sit on matching pairs") rather than widening the predicate.
+  assert(!validateScenario(coordSc(MATCH_TALK), ONE_MATCH).ok,
+    'F1 CONTROL: COORD_TALK vocabulary must still be rejected where there is only ONE matching equilibrium — that is not a coordination game');
+  // Exact text, not a substring: a named regression test must be sensitive to
+  // an incorrect qualifier, prefix, or suffix creeping into the wording later.
+  assert(validateScenario(coordSc(MATCH_TALK), ONE_MATCH).issues
+    .includes('description frames the game as coordination (matching the opponent), but this game does not have multiple pure equilibria that all sit on matching pairs'),
+    'F1 CONTROL: and the issue string must be true of the game (a single equilibrium, not "not all" of a set with more than one)');
   // The job title, which is a scenario noun and never a claim.
   assert(validateScenario(coordSc('A shipyards and a harbor coordinator are coordinating dredging operations for a shared canal.'), ANTI).ok,
     'F1-vocab CONTROL (red 2, load-bearing): a job title AND a named-actor coordination verb in one sentence must pass');
@@ -1777,6 +2158,14 @@ function testInterestAlignment() {
     'ALIGNMENT (rivalry): a NEGATED FIRST mention must not suppress a later real claim');
   assert(!ok_("A roastery picks a supplier. Weather does not determine the result. The partner's decision determines the outcome.", AFLAT),
     'ALIGNMENT (determines): a NEGATED FIRST mention must not suppress a later real claim');
+  // THE MIRROR CASE (CodeRabbit CLI, self-review of the fix above): scanning
+  // every DETERMINES sentence for a non-joint subject must not ALSO stop
+  // checking that sentence's OWN negation. Reusing the whole-description
+  // `negatedBefore` here asked "is every occurrence negated", which an
+  // unnegated joint OPENER always fails — wrongly rejecting a later singular
+  // sentence that correctly denies the claim.
+  assert(ok_("Their choices determine the outcome for the season. The mill's decision does not determine the result.", AFLAT),
+    'ALIGNMENT (determines): a joint TRUE opener followed by a properly NEGATED singular sentence must pass');
   // And the other direction, or the fix has simply disabled the guard: a claim
   // negated at EVERY occurrence must still pass.
   assert(ok_('They do not work together toward the same goal. The two firms never work together toward the same goal either.', MP),

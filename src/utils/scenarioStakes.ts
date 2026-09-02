@@ -255,9 +255,50 @@ export function stakesHint(g: GamePayoffs): string {
   // `swingA !== swingB` and wrote a test for it; mutation testing showed the
   // test could not fail, because the case never arrives. The guard was dead code
   // and the comment justifying it was false, so both are gone.
-  const exposedFirst = s.swingA >= s.swingB;
-  const gap = s.playerGap >= PLAYER_GAP_NOTABLE
-    ? `${exposedFirst ? 'Player A has far more riding on this than Player B' : 'Player B has far more riding on this than Player A'} — make that difference in exposure part of who the two parties are. Never write "Player A", "Player B", "the players" or a bare letter in the description itself.`
+  // THE WORDS AND THE STATISTIC HAVE TO NAME THE SAME PARTY, OR THE LINE IS
+  // WITHHELD. This is the only guard here that was added because we were caught
+  // AUTHORING a falsehood rather than failing to catch the model's.
+  //
+  // "far more riding on this" is, in ordinary English, about exposure to the
+  // OUTCOME. `swingA`/`swingB` measure something else: how far a party's OWN
+  // choice moves their own payoff. Usually those coincide. When they do not,
+  // this line told the model to build the wrong party as the exposed one, and
+  // the model obeyed perfectly.
+  //
+  // THE CASE THAT FORCED THIS, measured end to end on gpt-5.6-luna through the
+  // product path: A = [[-8, 6], [-8, 7]], B = [[3, 8], [4, 3]]. A's outcomes
+  // span -8..7; B's span 3..8, so B CANNOT LOSE under any pair of choices. But
+  // swingA = 1 and swingB = 5, so the old line named B as the exposed party. Of
+  // 9 draws, 8 asserted in prose that the column party was the more exposed one
+  // ("whose livelihood is more exposed", "has the larger financial commitment",
+  // "carries most of the operational exposure"), 0 named the row party, and ALL
+  // NINE passed validateScenario and scenarioIsClaimFree. A decidable
+  // comparative, contradicted by the matrix printed beside it, that every
+  // shipped screen accepts — because the screens check the model against us,
+  // and here we were the ones who were wrong.
+  //
+  // WHY NOT SIMPLY SWITCH TO THE RANGE READING: the whole measured benefit of
+  // this line (87% at gap 25, 93% at gap 4) was obtained with the exposure
+  // WORDING, and swapping the statistic under it would invalidate that without
+  // re-measuring. WHY NOT REWORD IT TO DESCRIBE `swing`: "one party's own
+  // decision moves their fortunes more than the other's" is a much weaker thing
+  // to build a character on, and it is also untested. Requiring AGREEMENT keeps
+  // the measured wording and the measured threshold exactly as they were, and
+  // pays for it only on the games where the two readings conflict.
+  //
+  // COST, corpora named (_gen/blue_in3_gap.mjs): the line fires on 11.6% ->
+  // 10.3% of hand-typed int[-9,9] games, and the hint is BYTE-IDENTICAL on
+  // 99.999% of games overall — every game where the readings already agreed,
+  // which is every game outside the conflicting ~11% of the ~12% that fire.
+  const exposedBySwing = s.swingA >= s.swingB ? 'A' : 'B';
+  // Exposure to the outcome: the span of everything that can happen to a party,
+  // regardless of who caused it. A tie names nobody, which counts as disagreement.
+  const rangeA = Math.max(g.a11, g.a12, g.a21, g.a22) - Math.min(g.a11, g.a12, g.a21, g.a22);
+  const rangeB = Math.max(g.b11, g.b12, g.b21, g.b22) - Math.min(g.b11, g.b12, g.b21, g.b22);
+  const exposedByRange = rangeA > rangeB ? 'A' : rangeB > rangeA ? 'B' : null;
+  const readingsAgree = exposedByRange === exposedBySwing;
+  const gap = s.playerGap >= PLAYER_GAP_NOTABLE && readingsAgree
+    ? `${exposedBySwing === 'A' ? 'Player A has far more riding on this than Player B' : 'Player B has far more riding on this than Player A'} — make that difference in exposure part of who the two parties are. Never write "Player A", "Player B", "the players" or a bare letter in the description itself.`
     : '';
 
   const parts = [size, gap].filter(Boolean);

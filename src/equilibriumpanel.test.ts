@@ -62,10 +62,10 @@ function preset(key: string): GamePayoffs {
 
   // The headline row and the line under it must be the same number. This is the
   // referee-visible claim: at a mixed NE, E[A] IS E[Row 1] IS E[Row 2].
-  ok(payoffTexRhs(EA(mn.x, mn.y, g)) === `= ${L.a.pStr}`,
-    `E[A] and E[Row 1] must render identically, got "${payoffTexRhs(EA(mn.x, mn.y, g))}" vs "= ${L.a.pStr}"`);
-  ok(payoffTexRhs(EB(mn.x, mn.y, g)) === `= ${L.b.pStr}`,
-    `E[B] and E[Col 1] must render identically, got "${payoffTexRhs(EB(mn.x, mn.y, g))}" vs "= ${L.b.pStr}"`);
+  ok(payoffTexRhs(EA(mn.x, mn.y, g)) === `${L.a.pRel} ${L.a.pStr}`,
+    `E[A] and E[Row 1] must render identically, got "${payoffTexRhs(EA(mn.x, mn.y, g))}" vs "${L.a.pRel} ${L.a.pStr}"`);
+  ok(payoffTexRhs(EB(mn.x, mn.y, g)) === `${L.b.pRel} ${L.b.pStr}`,
+    `E[B] and E[Col 1] must render identically, got "${payoffTexRhs(EB(mn.x, mn.y, g))}" vs "${L.b.pRel} ${L.b.pStr}"`);
 
   // MUTATION / NEGATIVE FIXTURE — the defect itself, verbatim.
   // The shipped panel used to feed `simState.cx`/`cy`, which `doStep` has already
@@ -78,6 +78,53 @@ function preset(key: string): GamePayoffs {
     `the 3dp coordinate must still reproduce the shipped B defect, got ${bad.b.pStr} / ${bad.b.qStr}`);
   ok(bad.a.indifferent && bad.a.pStr !== bad.a.qStr,
     'the defect is precisely "indifferent" asserted between two different numbers');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1b. A SUB-RESOLUTION PAYOFF UNDER `≈` MUST NOT ASSERT "0.000"
+//
+// `three()` (the panel's own 3dp formatter) collapsed a nonzero value below
+// display resolution to a bald "0.000"/"-0.000" — the same false-precision
+// defect `fmtPayoff`/`payoffTexRhs` were already fixed for one layer up, just
+// never ported to this one remaining formatter. Fixed by routing the ≈ branch
+// through `payoffTexRhs` itself (split into operator + magnitude) rather than
+// re-deriving 3dp rounding, so the line and the headline are the same call.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const tiny = 0.0002; // nonzero; r3(0.0002) === 0
+  const posBoth = indifferenceLine('Row 1', 'Row 2', tiny, tiny, true);
+  ok(posBoth.pRel === '<' && posBoth.pStr === '0.001' && posBoth.qRel === '<' && posBoth.qStr === '0.001',
+    `a tiny POSITIVE indifferent payoff must read "< 0.001" on both sides, got ${JSON.stringify(posBoth)}`);
+  ok(!/0\.000/.test(posBoth.tex), `THE DEFECT: a nonzero payoff must never render as 0.000, got tex="${posBoth.tex}"`);
+
+  const negBoth = indifferenceLine('Row 1', 'Row 2', -tiny, -tiny, true);
+  ok(negBoth.pRel === '>' && negBoth.pStr === '-0.001' && negBoth.qRel === '>' && negBoth.qStr === '-0.001',
+    `a tiny NEGATIVE indifferent payoff must read "> -0.001" on both sides, got ${JSON.stringify(negBoth)}`);
+  ok(!/-0\.000/.test(negBoth.tex), `THE DEFECT: a tiny negative payoff must never render as -0.000, got tex="${negBoth.tex}"`);
+
+  // The headline formula must be reconstructible from pRel/pStr exactly —
+  // this IS the "one rendering of one quantity" contract the fix exists for.
+  ok(payoffTexRhs(tiny) === `${posBoth.pRel} ${posBoth.pStr}`,
+    `the line's own operator+value must equal payoffTexRhs's, got "${posBoth.pRel} ${posBoth.pStr}" vs "${payoffTexRhs(tiny)}"`);
+
+  // An EXACT zero, and an ordinary value, must be untouched by this fix.
+  const exactZero = indifferenceLine('Row 1', 'Row 2', 0, 0, true);
+  ok(exactZero.pRel === '=' && exactZero.pStr === '0', `an exact zero must read "= 0", got ${JSON.stringify(exactZero)}`);
+  const ordinary = indifferenceLine('Row 1', 'Row 2', 2 / 3, 2 / 3, true);
+  ok(ordinary.pRel === '=' && ordinary.pStr === '0.667', `an ordinary value must still read "= 0.667", got ${JSON.stringify(ordinary)}`);
+
+  // THE MIDPOINT-SHARING TRAP: p and q straddling zero with a gap under 5e-4
+  // average to exactly 0 — sharing that midpoint would print "= 0" on BOTH
+  // sides for a quantity that is not zero on EITHER side. Caught by CodeRabbit
+  // CLI's self-review of this very fix.
+  const straddle = indifferenceLine('Row 1', 'Row 2', 0.0002, -0.0002, true);
+  ok(!/=\s*0\b/.test(straddle.tex), `THE DEFECT: neither side may render "= 0" here, got tex="${straddle.tex}"`);
+  ok(straddle.pRel === '<' && straddle.pStr === '0.001' && straddle.qRel === '>' && straddle.qStr === '-0.001',
+    `each side must keep its own honest threshold wording, got ${JSON.stringify(straddle)}`);
+  // The ulp-noise case that midpoint-sharing exists FOR must still collapse.
+  const ulp = indifferenceLine('Row 1', 'Row 2', 2 * (1 / 3), 1 - (1 / 3), true);
+  ok(ulp.pRel === '=' && ulp.pStr === '0.667' && ulp.qRel === '=' && ulp.qStr === '0.667',
+    `a genuine float-dust pair must still share the midpoint, got ${JSON.stringify(ulp)}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,12 +184,12 @@ for (const key of ['search', 'spy', 'penalty']) {
       }
       // The four headline numbers and the two lines describe ONE point.
       if (L.a.indifferent) {
-        ok(payoffTexRhs(EA(res.x, res.y, g)) === `= ${L.a.pStr}`,
-          `${key} [${mode}/${fm}]: E[A] "${payoffTexRhs(EA(res.x, res.y, g))}" must equal E[Row 1] "= ${L.a.pStr}"`);
+        ok(payoffTexRhs(EA(res.x, res.y, g)) === `${L.a.pRel} ${L.a.pStr}`,
+          `${key} [${mode}/${fm}]: E[A] "${payoffTexRhs(EA(res.x, res.y, g))}" must equal E[Row 1] "${L.a.pRel} ${L.a.pStr}"`);
       }
       if (L.b.indifferent) {
-        ok(payoffTexRhs(EB(res.x, res.y, g)) === `= ${L.b.pStr}`,
-          `${key} [${mode}/${fm}]: E[B] "${payoffTexRhs(EB(res.x, res.y, g))}" must equal E[Col 1] "= ${L.b.pStr}"`);
+        ok(payoffTexRhs(EB(res.x, res.y, g)) === `${L.b.pRel} ${L.b.pStr}`,
+          `${key} [${mode}/${fm}]: E[B] "${payoffTexRhs(EB(res.x, res.y, g))}" must equal E[Col 1] "${L.b.pRel} ${L.b.pStr}"`);
       }
       // And the pre-fix source must still be visibly broken, so this loop is
       // not passing for the wrong reason on some later refactor.
@@ -309,7 +356,8 @@ for (const SCALE of [10, 100]) {
   const g = preset('penalty');
   ok(Math.abs(neTolerancePlayer(g, 'A') - 4 * 5e-4 * 20) < 1e-12,
     'neTolerancePlayer must still be 0.002 x that player\'s own spread — the scaling question is a design decision, not a bug fix');
-  ok(indifferenceAt(g, 1 / 11, 4 / 11).a || true, 'indifferenceAt is still the arbiter of the label');
+  ok(indifferenceAt(g, 1 / 11, 4 / 11).a,
+    'indifferenceAt must report A indifferent at Penalty Kick\'s equilibrium — it is the arbiter of the label');
 
   // THE CONDITION THE "UNREACHED" CLAIM RESTS ON.
   //

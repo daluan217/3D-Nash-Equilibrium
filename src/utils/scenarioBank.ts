@@ -130,3 +130,74 @@ export function pickFromBank(
 export function bankKey(e: BankEntry): string {
   return `${e.d}|${e.s.name}|${(e.s.description ?? '').slice(0, 40)}`;
 }
+
+/**
+ * THE GAMES A BANK ROW MUST SURVIVE — the serving condition, written down.
+ *
+ * `_gen/bank_build.ts` gates each row against the game it was GENERATED for.
+ * `pickFromBank` then serves it with the game the USER typed. Every
+ * game-dependent rule in `validateScenario` therefore gets a different answer at
+ * serve time than it did at build time, and a row can be admitted to the bank
+ * and rejected in front of a reader — where the desktop has no model to fall
+ * back to and, measured through the real path, the response silently carries no
+ * story at all.
+ *
+ * That is not hypothetical. 19 shipped rows carry rivalry vocabulary ("competing
+ * for", "are rivals") and `validateScenario` rejects those on any COMMON-INTEREST
+ * matrix, which is the plain pure-coordination game and also the all-zero matrix
+ * a user gets by clearing the payoff fields. Reproduced independently by two
+ * agents from opposite directions — a 270-game probe sweep and a
+ * one-probe-per-conditional-branch sweep — and both found the same 19 and only
+ * those 19.
+ *
+ * So a row must survive EVERY shape it can be served with, and this is that set:
+ * one entry per condition the gates actually branch on, read off the code rather
+ * than guessed, at three magnitudes because `stakesBand` and the near-tolerances
+ * are scale-dependent.
+ *
+ * NOT BAND-SCOPED, DELIBERATELY. `pickFromBank`'s ladder is band-locked at tiers
+ * 1 and 2, so a band-0 game cannot reach a band-3 row until every band-0 name is
+ * exhausted — which means an incidence measured on one band says nothing about
+ * another (the same 19 rows are 1.50% of presses on a band-3 common-interest
+ * game and 0.00% on a band-0 one). Reachability is what matters here, not
+ * incidence: tiers 3 and 4 mean ANY row can eventually be served for ANY game,
+ * so the screen must ignore bands entirely. Do not "optimise" this by matching
+ * the probe's band to the row's.
+ *
+ * AND A WARNING ABOUT ITS ZEROS. Most of these shapes currently return zero
+ * rejections, and that is NOT evidence the artifact is safe on them — it is
+ * evidence the corpus never says the things those rules look for
+ * (`SHARED_GOAL`, `ABSTRACT_COORD`, `COORD_TALK`, `ANTI_TALK` and `DETERMINES`
+ * all have zero vocabulary presence in the bank). The probes earn their keep the
+ * day a generation run or a narrowed screen lets that vocabulary back in.
+ */
+export const SERVE_PROBES: GamePayoffs[] = (() => {
+  const shapes: Array<(k: number) => GamePayoffs> = [
+    // common interest — both payoffs identical in every cell (rivalry rule)
+    (k) => ({ a11: 9 * k, a12: -4 * k, a21: -4 * k, a22: 7 * k, b11: 9 * k, b12: -4 * k, b21: -4 * k, b22: 7 * k }),
+    // constant sum, NON-zero total (shared-goal rule) — every cell sums to 10k.
+    // A zero total would be the zero-sum shape below rather than a distinct one.
+    (k) => ({ a11: 3 * k, a12: -2 * k, a21: -4 * k, a22: 5 * k, b11: 7 * k, b12: 12 * k, b21: 14 * k, b22: 5 * k }),
+    // zero sum on the matching diagonal
+    (k) => ({ a11: 2 * k, a12: -2 * k, a21: -2 * k, a22: 2 * k, b11: -2 * k, b12: 2 * k, b21: 2 * k, b22: -2 * k }),
+    // A indifferent between its OWN actions: a11 === a21 and a12 === a22, so
+    // A's two rows pay the same against either column and a whole line is in
+    // equilibrium. B stays strict, so exactly one player is indifferent.
+    (k) => ({ a11: 5 * k, a12: 2 * k, a21: 5 * k, a22: 2 * k, b11: 1 * k, b12: 4 * k, b21: 3 * k, b22: 0 }),
+    // B indifferent between its OWN actions: b11 === b12 and b21 === b22.
+    (k) => ({ a11: 1 * k, a12: 4 * k, a21: 3 * k, a22: 0, b11: 5 * k, b12: 5 * k, b21: 2 * k, b22: 2 * k }),
+    // dominance for both (dependence-framing rules)
+    (k) => ({ a11: 3 * k, a12: 0, a21: 5 * k, a22: 1 * k, b11: 3 * k, b12: 5 * k, b21: 0, b22: 1 * k }),
+    // pure equilibria on MATCHING pairs (coordination direction check)
+    (k) => ({ a11: 4 * k, a12: 0, a21: 0, a22: 3 * k, b11: 3 * k, b12: 0, b21: 0, b22: 4 * k }),
+    // pure equilibria on MISMATCHED pairs (anti-coordination direction check)
+    (k) => ({ a11: 0, a12: 4 * k, a21: 3 * k, a22: 0, b11: 0, b12: 3 * k, b21: 4 * k, b22: 0 }),
+    // no pure equilibrium at all
+    (k) => ({ a11: 2 * k, a12: -1 * k, a21: -1 * k, a22: 1 * k, b11: -2 * k, b12: 1 * k, b21: 1 * k, b22: -1 * k }),
+  ];
+  const out: GamePayoffs[] = shapes.flatMap((f) => [f(0.1), f(1), f(20)]);
+  // BOTH players indifferent — the all-zero matrix a user gets by clearing every
+  // field. Scale-free, so it is added once rather than three times.
+  out.push({ a11: 0, a12: 0, a21: 0, a22: 0, b11: 0, b12: 0, b21: 0, b22: 0 });
+  return out;
+})();

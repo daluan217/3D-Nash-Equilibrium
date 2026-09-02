@@ -47,6 +47,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # iCloud/Finder duplicate a file mid-copy as "name 2.ext"; one of these
+      # was committed and shipped as untested "coverage" of stale behaviour.
+      # No npm install needed for this one, so it runs first and fails fast.
+      - name: No Finder/iCloud duplicate files ("name 2.ext") are tracked
+        run: |
+          # Only flag "name N.ext" when "name.ext" is also tracked — the
+          # Finder/iCloud mid-copy shape, not an ordinary numbered filename
+          # (e.g. "Figure 1.png").
+          dupes="$(git ls-files | awk -F/ '{ f=$NF } f ~ / [0-9]+\.[A-Za-z0-9]+$/ { print }' \
+            | while IFS= read -r p; do
+                orig="$(printf '%s' "$p" | sed -E 's/ [0-9]+(\.[A-Za-z0-9]+)$/\1/')"
+                # An explicit conditional: under the runner's `bash -e`, a bare
+                # `cmd && echo` whose lookup fails on the LAST entry makes the
+                # loop — and the assignment — exit 1 before the check below
+                # runs, so an innocent "Figure 1.png" with no "Figure.png"
+                # failed the job and a real duplicate earlier in the list was
+                # reported as a silent failure (reproduced under bash -e).
+                if git ls-files --error-unmatch -- "$orig" >/dev/null 2>&1; then
+                  echo "$p"
+                fi
+              done)"
+          if [ -n "$dupes" ]; then
+            echo "Tracked file(s) matching the Finder/iCloud duplicate-copy shape:"
+            echo "$dupes"
+            exit 1
+          fi
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -132,6 +159,24 @@ jobs:
         env:
           INTEGRATION_PORT: '3098'
           INTEGRATION_BASE: http://localhost:3098
+
+      # The desktop's persistence guarantees, booted from a temp cwd so dotenv
+      # loads nothing — the packaged condition. Guards two defects RED-DESKTOP
+      # found in the real .app: a per-launch session secret that signed the user
+      # out on every restart, and a truncating db.json write that turned an
+      # unreadable database into a deleted one.
+      - name: Boot the production server and run the desktop persistence suite
+        run: node src/integration/desktop-persistence.test.mjs
+        env:
+          DESKTOP_PERSIST_PORT: '3104'
+
+      # Every scenario-invention path draws, screens and REROLLS the same way.
+      # Counts PROVIDER CALLS against a mock, because a missing retry is
+      # invisible to any assertion on the response body.
+      - name: Boot the production server and run the scenario-parity suite
+        run: node src/integration/scenario-parity.test.mjs
+        env:
+          PARITY_PORT: '3106'
 
   e2e:
     runs-on: ubuntu-latest

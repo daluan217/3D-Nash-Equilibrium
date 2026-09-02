@@ -49,8 +49,11 @@ export function colorTermsFor(
   const a: string[] = [...STRUCTURAL_A_TERMS];
   const b: string[] = [...STRUCTURAL_B_TERMS];
   if (sc) {
-    for (const t of [sc.row1, sc.row2]) if (t) a.push(t);
-    for (const t of [sc.col1, sc.col2]) if (t) b.push(t);
+    // Trim here so a dialog's still-being-typed label (the preview's only
+    // source) builds the exact term the save path will store — App.tsx's
+    // save handlers `.trim()` every label before it reaches the record.
+    for (const t of [sc.row1, sc.row2]) if (t && t.trim()) a.push(t.trim());
+    for (const t of [sc.col1, sc.col2]) if (t && t.trim()) b.push(t.trim());
     a.push(...actorA);
     b.push(...actorB);
   }
@@ -77,7 +80,14 @@ export function colorTermsFor(
  * preset had the same defect long before any model did.
  */
 function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
-  const norm = (t: string) => t.trim().toLowerCase();
+  // Canonically-equivalent labels (NFC vs NFD "Réserve") render identically but
+  // compare unequal without normalizing first, so a shared action would survive
+  // on both sides and ColorCoded's first-match order would paint it as A's.
+  const norm = (t: string) => t
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toLowerCase();
   const inB = new Set(b.map(norm));
   const shared = new Set(a.map(norm).filter((t) => inB.has(t)));
   if (shared.size === 0) return { a, b };
@@ -201,4 +211,79 @@ export function descriptionColorTerms(
   userB: readonly string[] = [],
 ): { a: string[]; b: string[] } {
   return mergeDescriptionTerms(colorTermsFor(sc, actorA, actorB), userA, userB);
+}
+
+/** A saved game's stored record, as far as colouring is concerned. */
+export interface SavedGameColorSource {
+  row1Label?: string | null;
+  row2Label?: string | null;
+  col1Label?: string | null;
+  col2Label?: string | null;
+  colorTermsA?: string[] | null;
+  colorTermsB?: string[] | null;
+}
+
+/**
+ * Terms for a saved game's description, derived from THE GAME'S OWN RECORD.
+ *
+ * This is the entry point for any surface that renders a saved game's
+ * description straight out of the library — the workspace drawer's game cards
+ * today, anything list-shaped tomorrow. It exists because those surfaces have
+ * no "currently selected game" to read from: they show many games at once, so
+ * each card's colouring has to come from that card's own row.
+ *
+ * The drawer used to build its own pair inline as
+ *   aTerms: [g.row1Label, g.row2Label].filter(Boolean)
+ *   bTerms: [g.col1Label, g.col2Label].filter(Boolean)
+ * which is this module's whole reason for existing, made concrete three ways at
+ * once. That list had no structural Row/Col terms, never ran `dropAmbiguous`,
+ * and — the one users could actually notice — never read `colorTermsA` /
+ * `colorTermsB`, so every highlight a user placed by hand was invisible on that
+ * surface while showing correctly in the main panel one click away.
+ *
+ * Actor nouns are deliberately absent: they are a property of the built-in
+ * presets, and a saved game has no `actorA`/`actorB` (see `mergedPresets` in
+ * App.tsx, which merges saved games in without them). Passing none here is
+ * therefore exactly what the main panel already passes for a custom game, not a
+ * simplification of it.
+ */
+export function savedGameColorTerms(
+  g: SavedGameColorSource | null | undefined,
+): { a: string[]; b: string[] } {
+  // A hand-edited or migration-corrupted db.json can hold a non-array here;
+  // mergeDescriptionTerms spreads its user-term args before cleanUserColorTerms
+  // gets a chance to Array.isArray-check them, so an object or number throws
+  // TypeError instead of being cleaned away. Normalize at this boundary.
+  return descriptionColorTerms(
+    g ? { row1: g.row1Label, row2: g.row2Label, col1: g.col1Label, col2: g.col2Label } : null,
+    [],
+    [],
+    Array.isArray(g?.colorTermsA) ? g.colorTermsA : [],
+    Array.isArray(g?.colorTermsB) ? g.colorTermsB : [],
+  );
+}
+
+/**
+ * The automatic terms a description-editor preview must merge the user's
+ * highlights onto: the ones belonging to THE DIALOG'S OWN option names.
+ *
+ * The preview promises, in its own comment, that "what this preview shows is
+ * what the game will show". It kept that promise only by accident, because both
+ * dialogs fed it the terms of whatever game was selected in the main panel —
+ * which is neither the game being edited nor the option names being typed into
+ * the form a few rows below. It broke in both directions: saving a preset under
+ * new option names previewed one highlight and saved four, and the pencil on an
+ * unselected row previewed three and saved one.
+ *
+ * Labels arrive as the dialogs hold them — `''` for "not filled in" — and empty
+ * strings are dropped by `colorTermsFor`, so a blank form previews exactly the
+ * structural terms and nothing else.
+ */
+export function dialogBaseColorTerms(labels: {
+  row1: string;
+  row2: string;
+  col1: string;
+  col2: string;
+}): { a: string[]; b: string[] } {
+  return colorTermsFor(labels);
 }

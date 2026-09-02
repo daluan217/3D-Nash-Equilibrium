@@ -89,11 +89,14 @@ function e2eVocabulary(): string {
   if (!realSel.length) fail('fixture: a real role selector was not read');
   // The role is not the name.
   const named = e2eSelectorNames("page.getByRole('button', { name: 'Run' })");
-  if (!named.includes('Run')) fail(`fixture: a STRING role name was not read — got ${JSON.stringify(named)}`);
-  if (named.includes('button')) fail('fixture: the ROLE was recorded as if it were a control name');
-  // The raw-attribute form the smoke suite actually uses.
+  if (!named.some((s) => !(s instanceof RegExp) && s.value === 'Run' && !s.exact))
+    fail(`fixture: a STRING role name was not read as a substring (non-exact) selector — got ${JSON.stringify(named)}`);
+  if (named.some((s) => !(s instanceof RegExp) && s.value === 'button')) fail('fixture: the ROLE was recorded as if it were a control name');
+  // The raw-attribute form the smoke suite actually uses. It must be tagged
+  // EXACT, not the same substring contract as an accessible-name selector.
   const attr = e2eSelectorNames('page.locator(\'[aria-label="Toggle dark mode"]\').first().click()');
-  if (!attr.includes('Toggle dark mode')) fail(`fixture: an attribute selector was not read — got ${JSON.stringify(attr)}`);
+  if (!attr.some((s) => !(s instanceof RegExp) && s.value === 'Toggle dark mode' && s.exact))
+    fail(`fixture: an attribute selector was not read as EXACT — got ${JSON.stringify(attr)}`);
 }
 
 /* ------------------------------------------------------------- the audit */
@@ -145,29 +148,103 @@ const vocab = e2eVocabulary();
  * A predicate that says "covered" when nothing presses the control is worse
  * than no audit, because it reports a clean number.
  */
-function e2eSelectorNames(src: string): Array<string | RegExp> {
-  const out: Array<string | RegExp> = [];
+/**
+ * A named selector, tagged with its OWN matching contract. Playwright's
+ * accessible-name queries (getByRole/getByText/…) substring-match; a raw CSS
+ * attribute selector (`[aria-label="X"]`) matches only an EXACT attribute
+ * value — conflating the two let a control labelled "Toggle dark mode
+ * settings" read as covered by `locator('[aria-label="Toggle dark mode"]')`,
+ * a selector that would never actually find it.
+ */
+interface NamedSelector { value: string; exact: boolean }
+function e2eSelectorNames(src: string): Array<NamedSelector | RegExp> {
+  const out: Array<NamedSelector | RegExp> = [];
   // getByRole('button', { name: 'X' }) — take the NAME, not the role. The first
   // draft grabbed the first quoted string, which is the ROLE ("button"), so
   // every role query recorded a useless token and the controls it selects read
   // as untested. Under-crediting is the mirror of the word-soup bug this file
   // was written to fix, and just as wrong.
-  for (const m of src.matchAll(/get(?:By|AllBy)Role\(\s*['"`][^'"`]+['"`]\s*,\s*\{[^}]*?name:\s*['"`]([^'"`]{2,60})['"`]/g)) out.push(m[1]);
+  for (const m of src.matchAll(/get(?:By|AllBy)Role\(\s*['"`][^'"`]+['"`]\s*,\s*(\{[^}]*?name:\s*['"`][^'"`]{2,60}['"`][^}]*\})/g)) {
+    const opts = m[1];
+    const name = opts.match(/name:\s*['"`]([^'"`]{2,60})['"`]/)?.[1];
+    if (name === undefined) continue;
+    // Read `exact` as an option PROPERTY: strip string VALUES (a name such as
+    // 'Save exact: true' must not count) but keep string KEYS — a literal
+    // followed by a colon, so { 'exact': true } still reads — and accept any
+    // whitespace around the colon (`exact : true` is the same option).
+    const optsNoValues = opts.replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1(?!\s*:)/g, "''");
+    out.push({ value: name, exact: /(?:^|[{,\s])['"`]?exact['"`]?\s*:\s*true\b/.test(optsNoValues) });
+  }
   // The other queries take the name as their first argument.
-  for (const m of src.matchAll(/get(?:By|AllBy)(?:Text|Label|Placeholder|Title)\(\s*['"`]([^'"`]{2,60})['"`]/g)) out.push(m[1]);
+  for (const m of src.matchAll(/get(?:By|AllBy)(?:Text|Label|Placeholder|Title)\(\s*['"`]([^'"`]{2,60})['"`]/g)) out.push({ value: m[1], exact: false });
   // The suites also select by raw attribute — smoke.mjs presses the theme
   // toggle as page.locator('[aria-label="Toggle dark mode"]'). A parser that
   // does not read the form the tests actually use is not measuring coverage.
-  for (const m of src.matchAll(/locator\(\s*['"`]\[(?:aria-label|title)="([^"]{2,60})"\]/g)) out.push(m[1]);
+  // EXACT: a CSS attribute selector matches only that literal value.
+  for (const m of src.matchAll(/locator\(\s*['"`]\[(?:aria-label|title)="([^"]{2,60})"\]/g)) out.push({ value: m[1], exact: true });
   for (const m of src.matchAll(/get(?:By|AllBy)(?:Role|Text|Label|Placeholder|Title)\([^)]*?\/((?:[^/\\]|\\.){2,80})\/([gimsuy]*)/g)) {
     try { out.push(new RegExp(m[1], m[2].replace(/[gy]/g, ''))); } catch { /* unparseable selector */ }
   }
   return out;
 }
 const selectors = e2eSelectorNames(vocab);
-const covered = (label: string): boolean => selectors.some(
-  (sel) => (typeof sel === 'string' ? sel === label || sel.includes(label) || label.includes(sel) : sel.test(label)),
-);
+// FORWARD ONLY, and only for a NON-exact selector: Playwright's getByRole/
+// getByText name option matches when the SELECTOR text is a substring of the
+// control's accessible name — the reverse (`sel.includes(label)`) let a
+// control labelled "Save" read as covered when the only real selector in the
+// suite pressed an unrelated, more specific "Save Preset" control;
+// Playwright's own substring rule runs the other way. A raw CSS attribute
+// selector shares neither direction: it matches only an EXACT value.
+function matchesSelector(label: string, sel: NamedSelector | RegExp): boolean {
+  if (sel instanceof RegExp) return sel.test(label);
+  return sel.exact ? sel.value === label : sel.value === label || label.includes(sel.value);
+}
+const covered = (label: string): boolean => selectors.some((sel) => matchesSelector(label, sel));
+
+// Fixture: the reverse direction must not manufacture a false positive, and
+// the forward direction it was confused with must still fire.
+if (matchesSelector('Save', { value: 'Save Preset', exact: false })) {
+  fail('fixture: a control labelled "Save" must not read as covered by an unrelated, more specific "Save Preset" selector');
+}
+if (!matchesSelector('Save Preset', { value: 'Save', exact: false })) {
+  fail('fixture: a selector named "Save" must still cover a control labelled "Save Preset" — that is the real Playwright substring direction');
+}
+// EXACT-selector fixture: a raw CSS attribute selector must not credit a
+// control whose accessible name only CONTAINS the selector's exact value.
+if (matchesSelector('Toggle dark mode settings', { value: 'Toggle dark mode', exact: true })) {
+  fail('fixture: a raw CSS attribute selector must not cover a control whose name merely contains its exact value');
+}
+if (!matchesSelector('Toggle dark mode', { value: 'Toggle dark mode', exact: true })) {
+  fail('fixture: a raw CSS attribute selector must still cover the control it actually matches exactly');
+}
+// PARSER fixture: real suites use `getByRole('button', { name: 'Go', exact: true })`
+// (src/e2e/smoke.mjs, src/e2e/mobile.mjs) — the parser must read that `exact`
+// option out of the source rather than hard-coding false for every role query.
+{
+  const parsed = e2eSelectorNames(`await page.getByRole('button', { name: 'Go', exact: true }).click();`);
+  const one = parsed[0];
+  if (!one || one instanceof RegExp || one.value !== 'Go' || one.exact !== true) {
+    fail(`fixture: getByRole('button', { name: 'Go', exact: true }) must parse to exact:true, got ${JSON.stringify(one)}`);
+  }
+  const nonExact = e2eSelectorNames(`await page.getByRole('button', { name: 'Save' }).click();`)[0];
+  if (!nonExact || nonExact instanceof RegExp || nonExact.exact !== false) {
+    fail(`fixture: a role query with no exact option must still parse to exact:false, got ${JSON.stringify(nonExact)}`);
+  }
+  // `exact` is an option PROPERTY, whatever the whitespace around its colon —
+  // and the same word inside the NAME string is not the option at all.
+  const spaced = e2eSelectorNames(`await page.getByRole('button', { name: 'Go', exact : true }).click();`)[0];
+  if (!spaced || spaced instanceof RegExp || spaced.exact !== true) {
+    fail(`fixture: { name: 'Go', exact : true } (spaced colon) must parse to exact:true, got ${JSON.stringify(spaced)}`);
+  }
+  const quoted = e2eSelectorNames(`await page.getByRole('button', { name: 'Save exact: true' }).click();`)[0];
+  if (!quoted || quoted instanceof RegExp || quoted.value !== 'Save exact: true' || quoted.exact !== false) {
+    fail(`fixture: 'exact: true' INSIDE the name string is not the option — must parse to exact:false, got ${JSON.stringify(quoted)}`);
+  }
+  const quotedKey = e2eSelectorNames(`await page.getByRole('button', { name: 'Go', 'exact': true }).click();`)[0];
+  if (!quotedKey || quotedKey instanceof RegExp || quotedKey.exact !== true) {
+    fail(`fixture: a QUOTED option key { 'exact': true } is still the option — must parse to exact:true, got ${JSON.stringify(quotedKey)}`);
+  }
+}
 
 const untested = [...labels].filter((l) => !covered(l)).sort();
 const unlisted = untested.filter((l) => !(l in ALLOWLIST));

@@ -10,8 +10,8 @@
  * band, the product regresses in a way no existing test would notice.
  */
 import { bankAvailable, bankSize, allBankRows } from './utils/bankSource';
-import { scenarioIsClaimFree, validateScenario } from './utils/nashValidator';
-import { pickFromBank, stakesBand, bankKey, type BankEntry } from './utils/scenarioBank';
+import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
+import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, type BankEntry } from './utils/scenarioBank';
 import type { GamePayoffs } from './types';
 
 let failures = 0;
@@ -174,11 +174,38 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   // is IDENTICAL to the own-game rate — claim-free prose is game-agnostic by
   // construction, and that property is what makes a bank possible at rung 3 at
   // all. If it ever stops holding, this fails.
-  const probes: GamePayoffs[] = [
-    { a11: 0.4, a12: -0.3, a21: -0.2, a22: 0.5, b11: -0.4, b12: 0.3, b21: 0.2, b22: -0.5 },
-    { a11: 3, a12: -2, a21: -4, a22: 5, b11: -3, b12: 2, b21: 4, b22: -5 },
-    { a11: 30, a12: -22, a21: -41, a22: 55, b11: -30, b12: 22, b21: 41, b22: -55 },
-  ];
+  /**
+   * THE PROBE SET WAS THREE GAMES AND ALL THREE WERE THE SAME SHAPE.
+   *
+   * All three were zero-sum-ish, so no probe was COMMON-INTEREST — and
+   * `validateScenario`'s rivalry rule fires only on a common-interest matrix.
+   * 19 shipped rows are rejected on that shape and this test printed "all 2505
+   * SHIPPED rows load and still pass today's gates" anyway. It was not a weak
+   * assertion; it was an assertion that could not fail for a whole family of
+   * rules, and the family it could not see contains the plain pure-coordination
+   * game and the all-zero matrix a user gets by clearing every payoff field.
+   *
+   * `SERVE_PROBES` is now shared with `_gen/bank_build.ts` rather than written
+   * twice. That matters more than it looks: the build and the re-screen must ask
+   * the same question, and two lists drift silently — every row would still look
+   * verified. See its comment in scenarioBank.ts for why it is not band-scoped.
+   *
+   * WHAT ELSE THIS RE-SCREEN WAS BLIND TO. `bank_build.ts` filters with THREE
+   * production gates plus six teacher screens plus two bank screens; this test
+   * re-ran TWO of them. `validateProseDirections` was never re-run, and neither
+   * were the screens — so the "when a gate tightens, rows screened by the old
+   * gate keep shipping until something re-screens them" guarantee in the comment
+   * above did not cover most of what does the screening. All of it runs here now.
+   *
+   * `validateProseDirections` is INERT on this artifact today and is expected to
+   * be: a description that has passed `scenarioIsClaimFree` has no directional
+   * claim left to check (measured 0 of 2,505 across 46 games, and separately 0
+   * across 300 random games on colliding-label, already-shipped and control
+   * subsets). It is here as staleness insurance, not because it currently earns
+   * its keep — and that zero means "the vocabulary is not there", not "the
+   * artifact is safe".
+   */
+  const probes: GamePayoffs[] = SERVE_PROBES;
   let bad = 0; let firstBad = '';
   for (const e of allBankRows()) {
     if (!e.s?.name || !e.s.description || typeof e.d !== 'string') {
@@ -187,10 +214,34 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     }
     const cf = scenarioIsClaimFree(e.s);
     if (!cf.ok) { bad++; if (!firstBad) firstBad = `"${e.s.name}" not claim-free: ${cf.reason}`; continue; }
+    const labels = { row1: e.s.row1, row2: e.s.row2, col1: e.s.col1, col2: e.s.col2 };
+    let rowBad = false;
     for (const g of probes) {
       const v = validateScenario(e.s, g);
-      if (!v.ok) { bad++; if (!firstBad) firstBad = `"${e.s.name}" fails validateScenario: ${v.issues[0]}`; break; }
+      if (!v.ok) { rowBad = true; if (!firstBad) firstBad = `"${e.s.name}" fails validateScenario: ${v.issues[0]}`; break; }
+      const dir = validateProseDirections(e.s.description ?? '', labels, g);
+      if (dir.length) { rowBad = true; if (!firstBad) firstBad = `"${e.s.name}" fails validateProseDirections: ${dir[0]}`; break; }
     }
+    if (rowBad) { bad++; continue; }
+  }
+
+  /**
+   * THE PROBE SET MUST BE ABLE TO FAIL. A probe list is exactly the kind of
+   * fixture that silently stops covering what it was written for — the previous
+   * one did, for a whole family of rules — so a KNOWN-POSITIVE row is screened
+   * through the same loop and must be rejected. Without this the section above
+   * is green whether or not the probes reach anything.
+   */
+  {
+    const planted = {
+      name: 'Route Contract', row1: 'Firm Bid', row2: 'Lean Bid', col1: 'Priority Bid', col2: 'Flexible Bid',
+      description: 'Two courier companies are competing for a season-long delivery route contract. '
+        + 'The first chooses between a Firm Bid and a Lean Bid, while the second weighs a Priority Bid against a Flexible Bid.',
+    } as BankEntry['s'];
+    const caught = probes.some((g) => validateScenario(planted, g).issues
+      .some((i) => i.includes('frames the two players as rivals')));
+    check('the probe set still reaches the rivalry rule (known-positive)', caught,
+      'a description framing the parties as rivals must be rejected on at least one probe — if not, the probe set no longer covers the common-interest branch and the re-screen above cannot fail');
   }
   check('every shipped bank row still passes the live gates', bad === 0,
     `${bad} of ${size} shipped rows fail today's gates — the artifact is stale, rebuild it with _gen/bank_build.ts. First: ${firstBad}`);

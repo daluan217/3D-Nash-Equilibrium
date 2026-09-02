@@ -319,13 +319,20 @@ function testGeometryValidatorChecks() {
   // so it is the negative fixture for BOTH of the new checks.
   const BOS: GamePayoffs =
     { a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 };
+  // twistA = 0 AND a11 === a21: A is indifferent between the rows at EVERY y,
+  // so the whole board is a shelf. yStar is NaN here (yStarInRange is false)
+  // while hasFlatShelfForA is correctly true — the exact degenerate case
+  // `geometry-bad-shelf` was corrected for, and the one case that distinguishes
+  // the two fields from each other.
+  const ALL_SHELF_A: GamePayoffs =
+    { a11: 4, a12: 4, a21: 4, a22: 4, b11: 1, b12: -1, b21: -1, b22: 1 };
 
   const truthFor = (g: GamePayoffs) => {
     const geo = describeGeometry(g);
     return {
       surfacesInteract: Math.abs(geo.twistA) >= 1e-9,
       opponentSurfaceIsMirror: geo.zeroSum || geo.constantSum,
-      hasFlatShelfForA: geo.yStarInRange,
+      hasFlatShelfForA: geo.hasFlatShelfForA,
       equilibriumIsInteriorFlatSpot: geo.hasInteriorFlatSpot,
       invokesMinimax: geo.minimaxApplies,
       claimsDominantStrategy: geo.dominantRowA || geo.dominantColB,
@@ -341,7 +348,8 @@ function testGeometryValidatorChecks() {
   });
 
   // --- negative fixtures: truthful declarations must not fire ---------------
-  for (const [name, g] of [['matching pennies', MATCHING_PENNIES], ['PD', PD], ['flat A', FLAT_A], ['BoS', BOS]] as const) {
+  for (const [name, g] of [['matching pennies', MATCHING_PENNIES], ['PD', PD], ['flat A', FLAT_A], ['BoS', BOS],
+    ['all-shelf A', ALL_SHELF_A]] as const) {
     const v = validateReport(reportFor(g, truthFor(g)), g);
     const geoFails = v.mismatches.filter(m => m.kind.startsWith('geometry-'));
     assert(geoFails.length === 0, `${name}: truthful geometry flagged — ${geoFails.map(m => m.detail).join('; ')}`);
@@ -352,6 +360,10 @@ function testGeometryValidatorChecks() {
     { label: 'claims interaction on a flat surface', g: FLAT_A, field: 'surfacesInteract', kind: 'geometry-bad-twist' },
     { label: 'claims a mirror on non-zero-sum PD', g: PD, field: 'opponentSurfaceIsMirror', kind: 'geometry-bad-mirror' },
     { label: 'claims a shelf where y* is off-board', g: PD, field: 'hasFlatShelfForA', kind: 'geometry-bad-shelf' },
+    // The degenerate direction: A is level along its own axis at EVERY y, so
+    // DENYING the shelf is the false claim. y* is NaN here, which is why the
+    // old yStarInRange predicate accepted the denial.
+    { label: 'denies the shelf on a board that is level everywhere', g: ALL_SHELF_A, field: 'hasFlatShelfForA', kind: 'geometry-bad-shelf' },
     { label: 'claims an interior flat spot at a corner NE', g: PD, field: 'equilibriumIsInteriorFlatSpot', kind: 'geometry-bad-flatspot' },
     // The observed failure: minimax asserted on a non-constant-sum game.
     { label: 'invokes minimax on a non-zero-sum game', g: BOS, field: 'invokesMinimax', kind: 'geometry-bad-minimax' },
@@ -583,12 +595,24 @@ function testProseDirectionCheck() {
     name: 'Toll Bridge', row1: 'Pay Toll', row2: 'Ford River', col1: 'Open Gate', col2: 'Close Gate', description,
     ...(actors ? { actorA: ['traveller'], actorB: ['gatekeeper'] } : {}),
   });
-  assert(validateScenario(tollSc('Once the gatekeeper chooses Ford River, the road clears.'), TOLLA).issues.some((i) => i.includes("player A's option")),
-    "a role noun given the OTHER player's option must be flagged once actors are declared");
-  assert(validateScenario(tollSc('Once the gatekeeper chooses Open Gate, the road clears.'), TOLLA).ok,
-    'the correct attribution must pass');
-  assert(validateScenario(tollSc('Once the gatekeeper chooses Ford River, the road clears.', false), TOLLA).ok,
-    'with no actors declared the check must stay silent rather than guess');
+  // THE THREE ROLE-NOUN ASSERTIONS THAT USED TO BE HERE ARE GONE WITH THE RULE.
+  //
+  // They passed `actorA`/`actorB` straight into `validateScenario` — a shape the
+  // product cannot produce. `SCENARIO_SCHEMA` declares neither field and
+  // providers.ts sends `additionalProperties:false` with `strict:true`, so a
+  // cloud draw cannot carry them, and the local server has never emitted them.
+  // The assertions were green for as long as the rule existed and proved only
+  // that the rule worked on input nothing generates.
+  //
+  // The defect itself was then measured directly, without the actor mapping, in
+  // its two decidable forms (two subjects both naming one player's pair; one
+  // subject naming both pairs) over 8,069 scannable scenarios from every corpus
+  // held: zero, with planted controls confirming the instrument fires. See the
+  // block comment in nashValidator.ts where the rule used to be for what stays
+  // unguarded and why reviving it was tested and does not pay.
+  //
+  // What replaces them below is the LETTER form, which needs no declaration and
+  // is the check that actually caught the one real instance ever captured.
 
   // DeepSeek-V4-Flash killed the 40-row battery at row 12 with
   // "TypeError: (list ?? []).map is not a function" — actorA came back as a
@@ -1287,13 +1311,29 @@ function testClaimFreeScreen() {
   // block was written to protect, and it still holds. They ARE now dropped, by
   // the META screen, for naming the mathematical object in user-facing fiction.
   // True and out of register are independent questions; both are asked here.
+  //
+  // THE FIRST GOLD CARRIES TWO DEFECT SIGNALS AND IS THEREFORE NOT ISOLATING.
+  // Its text opens "A and B are rival campaign managers", which is also a
+  // conjoined bare-letter leak, and once that rule existed this row started
+  // being rejected for THAT reason first. The verbatim text is kept — a
+  // paraphrased regression fixture has already let a real defect ship in this
+  // repo — so the assertion accepts either register reason for it, and an
+  // ISOLATING third row carrying the payoffs signal ALONE is added so the
+  // proposition this block exists for is still tested on its own. Without that
+  // third row, deleting the META payoff rule would leave this block green.
+  const REGISTER_REASON = /mathematical object|bare letters standing in/;
   for (const d of [
     'A and B are rival campaign managers deciding where to send a field team. Each independently chooses North or South, and the matrix records their strategic payoffs.',
     'Firms A and B simultaneously choose whether to build around a shared industry standard or their own proprietary platform. Their payoffs represent the resulting commercial success for each firm.',
+    'Two rival campaign managers decide where to send a field team. Each independently chooses North or South, and the matrix records their strategic payoffs.',
   ]) {
     const w = scenarioIsClaimFree({ description: d } as never).reason ?? '';
-    assert(/mathematical object/.test(w),
+    assert(REGISTER_REASON.test(w),
       `the "payoffs" golds are dropped for REGISTER: ${d.slice(0, 60)} -> ${w || '(allowed)'}`);
+    if (!/^A and B/.test(d) && !/^Firms A and B/.test(d)) {
+      assert(/mathematical object/.test(w),
+        `the ISOLATING payoffs gold must be dropped for the PAYOFF rule specifically, not for a letter leak: ${w || '(allowed)'}`);
+    }
     assert(!/comparative|attached to a comparison|conditional outcome|moves first|offers and the other accepts/.test(w),
       `no FALSEHOOD screen may fire on a bare "payoffs" gold — that is what this block protects: ${d.slice(0, 60)} -> ${w}`);
   }
@@ -1818,17 +1858,42 @@ function testRedTeamFindings() {
   // 3. PROSE AND SOLVER MUST NOT DISAGREE ON A DIGIT — one source of truth, one
   //    formatter. The prose used to compute payoffs at the EXACT point while the
   //    label computed them at the ROUNDED one (2.316 vs 2.315).
+  //
+  //    A sub-resolution payoff is a THIRD shape, neither a plain number nor a
+  //    disagreement: fmtPayoffProse renders it as "less than 0.001" or
+  //    "greater than -0.001" rather than "0.000" (`prose-false-pure`'s sibling
+  //    rule for payoffs). The old numbers-only regex read that sentence as
+  //    "prose must state expected payoffs" FAILING, which is the wrong
+  //    conclusion — the two are agreeing that the payoff is sub-resolution, not
+  //    disagreeing on a digit.
+  const THRESHOLD = /^(less than 0\.001|greater than -0\.001)$/;
+  let thresholdHits = 0;
   for (const g of [
     { a11: 6, a12: -4, a21: -1, a22: 8, b11: -9, b12: 6, b21: -1, b22: -8 } as GamePayoffs,
     drop,
+    // A's payoffs are engineered so the shared row-indifference value at the
+    // mixed equilibrium is 0.0002 — nonzero, but r3 rounds it to 0. The
+    // solver reports eA = 0; the prose must say "less than 0.001", not "0".
+    { a11: 0.0002, a12: 0.0002, a21: 2, a22: -2, b11: 4, b12: -1, b21: -3, b22: 5 } as GamePayoffs,
   ]) {
     const mixed = computeAllNE(g).find((n) => n.type === 'mixed');
     if (!mixed) continue;
-    const m = tieProse(g, null).match(/E\[A\] = (-?\d+(?:\.\d+)?) and E\[B\] = (-?\d+(?:\.\d+)?)/);
-    assert(!!m, 'prose must state expected payoffs');
-    assert(Number(m![1]) === mixed.eA && Number(m![2]) === mixed.eB,
-      `prose and solver disagree: prose ${m![1]}/${m![2]} vs solver ${mixed.eA}/${mixed.eB}`);
+    const prose = tieProse(g, null);
+    const m = prose.match(/E\[A\] = (-?\d+(?:\.\d+)?|less than 0\.001|greater than -0\.001) and E\[B\] = (-?\d+(?:\.\d+)?|less than 0\.001|greater than -0\.001)/);
+    assert(!!m, `prose must state expected payoffs, in numeric or threshold form: ${prose}`);
+    for (const [captured, solverValue, label] of [[m![1], mixed.eA, 'A'], [m![2], mixed.eB, 'B']] as const) {
+      if (THRESHOLD.test(captured)) {
+        thresholdHits++;
+        assert(solverValue === 0,
+          `prose gave threshold wording "${captured}" for E[${label}] but the solver's rounded value is ${solverValue}, not 0`);
+      } else {
+        assert(Number(captured) === solverValue,
+          `prose and solver disagree on E[${label}]: prose ${captured} vs solver ${solverValue}`);
+      }
+    }
   }
+  assert(thresholdHits > 0,
+    'no fixture produced the sub-resolution payoff wording — the THRESHOLD branch above was never exercised');
 
   // 4. Canonically-equivalent Unicode labels are DUPLICATES. "Réserve" as
   //    e+U+0301 vs U+00E9 renders identically, so byte comparison let both
@@ -2226,6 +2291,51 @@ function testFirstMoverHasOneWriter() {
   assert(/const changeFirstMover = \(next: 'A' \| 'B'\) => \{[\s\S]{0,400}?if \(runCtx\) handleReset\(\);/.test(src),
     'changeFirstMover must still reset the run when the mover actually changes');
   console.log('✓ class guard: firstMover has exactly one writer');
+}
+
+// The simulation log colours each equilibrium line with the colour the GRAPH
+// draws for that equilibrium — pure diamond green, mixed diamond purple — and
+// the Start line with the starting-point sphere's grey, so a reader can match
+// log to plot by colour alone (Daniel, 2026-09-01). Three files must agree:
+// plotting.ts (the Plotly literal), index.css (the token), App.tsx (the class).
+// Two of them agreeing while the third drifts is the whole failure mode, so
+// this checks all three against each other rather than any one in isolation.
+function testLogLineColoursMatchPlotMarkers() {
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const css = readFileSync('src/index.css', 'utf8');
+  const plot = readFileSync('src/utils/plotting.ts', 'utf8');
+  const tok = (name: string) => (css.match(new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})`)) ?? [])[1]?.toLowerCase();
+  const plotColours = (pattern: RegExp) => [...new Set([...plot.matchAll(pattern)].map((m) => m[1].toLowerCase()))];
+  // 1. tokens equal the Plotly literals
+  const pureDiamond = plotColours(/color: '(#[0-9a-fA-F]{6})', symbol: 'diamond'/g);
+  assert(pureDiamond.includes(tok('ne-pure')!), `ne-pure token ${tok('ne-pure')} is not a diamond colour in plotting.ts (${pureDiamond.join(', ')})`);
+  assert(pureDiamond.includes(tok('ne-mixed-marker')!), `ne-mixed-marker token ${tok('ne-mixed-marker')} is not a diamond colour in plotting.ts (${pureDiamond.join(', ')})`);
+  const startSphere = plotColours(/name: 'Starting Point'[\s\S]{0,2000}?color: '(#[0-9a-fA-F]{6})'/g);
+  assert(startSphere.length === 1 && startSphere[0] === tok('sim-start'),
+    `sim-start token ${tok('sim-start')} must equal the Starting Point marker colour (${startSphere.join(', ')})`);
+  // 2. the renderer routes each line kind to the right token and never to a hardcoded palette
+  // From the kind decision (logKind / neLineClass) through the renderer that consumes it.
+  const rendererFrom = app.indexOf('const logKind:');
+  const rendererTo = app.indexOf('const simulationLogPanel');
+  assert(rendererFrom >= 0 && rendererTo > rendererFrom,
+    `log renderer bounds not found in App.tsx (logKind at ${rendererFrom}, simulationLogPanel at ${rendererTo}) — a -1 here silently widens the window to the rest of the file`);
+  const renderer = app.slice(rendererFrom, rendererTo);
+  assert(renderer.length > 200, 'log renderer not found in App.tsx');
+  const branch = (needle: string) => {
+    const i = renderer.indexOf(needle);
+    assert(i >= 0, `no renderer branch for ${needle}`);
+    const end = renderer.indexOf('} else', i + 1);
+    return renderer.slice(i, end >= 0 ? end : undefined);
+  };
+  assert(/neLineClass/.test(branch("line.includes('✓')")) && !/text-emerald/.test(branch("line.includes('✓')")),
+    "the ✓ (coordinate discovered) line must take the equilibrium marker colour, not a hardcoded emerald");
+  assert(/neLineClass/.test(branch("━━ Pure NE")) && !/text-accent/.test(branch("━━ Pure NE")),
+    "the ━━ Pure/Mixed NE line must take the equilibrium marker colour, not the accent");
+  assert(/text-sim-start/.test(branch("line.startsWith('Start (')")),
+    "the Start line must take the starting-point marker grey");
+  assert(/text-ne-pure/.test(renderer) && /text-ne-mixed-marker/.test(renderer) && /'━━ Pure NE'/.test(renderer) && /'━━ Mixed NE'/.test(renderer),
+    'the pure/mixed decision must read the run\'s own final ━━ line and map to the two marker tokens');
+  console.log('✓ class guard: simulation-log colours are the plot marker colours (plotting.ts = index.css token = App.tsx class)');
 }
 
 function testPayoffsWritersAllInvalidate() {
@@ -2828,6 +2938,7 @@ function runTests() {
   testNoAdHocNumericParsers();
   testFirstMoverHasOneWriter();
   testPayoffsWritersAllInvalidate();
+  testLogLineColoursMatchPlotMarkers();
   testValidatorUnicodeMinus();
   testTwoNegativesInOneSentence();
   testRedTeamRound15BreakA();

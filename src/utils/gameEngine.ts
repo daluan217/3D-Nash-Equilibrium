@@ -144,6 +144,20 @@ export function r3(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
+/**
+ * Strip a "-" from a fixed-precision string whose digits are ALL zero.
+ *
+ * `.toFixed` preserves the sign of the original number regardless of whether
+ * any printed digit survives — `(-0.0001).toFixed(3)` is `"-0.000"` — so a
+ * tiny negative value that merely ROUNDS to zero at some precision prints as
+ * if it were a negative quantity, when the honest reading at that precision
+ * is "zero, sign unknown". Only strips when EVERY digit is 0 — a real nonzero
+ * digit (e.g. "-0.001") keeps its sign.
+ */
+function collapseNegZeroDisplay(s: string): string {
+  return /^-0(\.0*)?$/.test(s) ? s.slice(1) : s;
+}
+
 // ── Typed-field input ────────────────────────────────────────────────────────
 /**
  * The ONE conversion from a typed or pasted field to a number.
@@ -491,7 +505,13 @@ export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
   }
   // Widen only as far as it takes to tell them apart; 3dp stays the common case.
   for (let dp = 3; dp <= 8; dp++) {
-    const sp = p.toFixed(dp), sq = q.toFixed(dp);
+    // `.toFixed` preserves the ORIGINAL sign even when every printed digit is
+    // zero — unlike `r3(p).toFixed(3)` above, whose `-0` prints as "0.000"
+    // (JS quirk: `(-0).toFixed(3)` drops the sign) — so a tiny negative left
+    // side that widening never needed to separate (the other side already
+    // differs at dp=3) would print "-0.000". Collapse that sign artifact the
+    // same way the `p === q` branch already does.
+    const sp = collapseNegZeroDisplay(p.toFixed(dp)), sq = collapseNegZeroDisplay(q.toFixed(dp));
     if (sp !== sq) return { p: sp, q: sq };
   }
   return { p: p.toExponential(2), q: q.toExponential(2) };

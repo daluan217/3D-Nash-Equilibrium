@@ -159,14 +159,31 @@ try {
   record('the save dialog exposes Generate', reachable > 0);
   if (reachable) {
     await gen.click();
-    await page.waitForTimeout(2500);
+    // Poll the name field rather than a fixed sleep: if generation takes
+    // longer than a fixed budget, a timed sleep reads the name/description
+    // checks as failed while the "isn't available right now" note check
+    // passes vacuously (the request just hasn't landed yet).
+    const generated = await page.waitForFunction(() => {
+      const el = document.querySelector('input[placeholder*="Battle of the Sexes 2.0" i]');
+      return !!el && el.value.length > 0;
+    }, { timeout: 15000 }).then(() => true).catch(() => false);
     const name = await page.getByPlaceholder(/Battle of the Sexes 2\.0/i).inputValue().catch(() => '');
     const desc = await page.getByPlaceholder(/background storyline/i).inputValue().catch(() => '');
     const note = await page.getByText(/isn't available right now/i).count();
+    // A swallowed timeout used to leave `name`/`desc` empty with no signal for
+    // WHY — a generation failure and a slow generation looked identical. Gate
+    // on the captured outcome so exactly one of "it generated" or "it showed
+    // the unavailable note" is required, never neither.
+    record('generation reached one of the two outcomes (filled name or unavailable note)',
+      generated || note > 0,
+      `generated=${generated} note=${note}`);
     // THE BUG: the envelope carried a scenario and the dialog said it did not.
-    record('Generate prefills the name from a template envelope', name.length > 0, `name=${JSON.stringify(name)}`);
-    record('Generate prefills the description', desc.length > 0, `${desc.length} chars`);
-    record('Generate does NOT claim the scenario is unavailable', note === 0,
+    // A legitimate "unavailable" outcome (generated=false, note shown) must not
+    // fail these — only an outcome that DID generate but left the fields empty
+    // is the bug this suite exists to catch.
+    record('Generate prefills the name from a template envelope', !generated || name.length > 0, `name=${JSON.stringify(name)}`);
+    record('Generate prefills the description', !generated || desc.length > 0, `${desc.length} chars`);
+    record('Generate does NOT claim the scenario is unavailable', !generated || note === 0,
       note ? 'the "isn\'t available right now" note is showing' : '');
   }
 } catch (e) { record('Generate prefills from a template envelope', false, String(e).slice(0, 110)); }

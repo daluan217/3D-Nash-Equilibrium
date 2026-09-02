@@ -41,7 +41,7 @@ import {
   indifferenceAt,
   fmtPayoffPair,
   fmtPayoff,
-  r3,
+  payoffTexRhs,
   EA,
   EB,
 } from '../utils/gameEngine';
@@ -93,22 +93,35 @@ export interface IndifferenceLine {
   /** The two rendered numbers, exactly as KaTeX receives them. */
   pStr: string;
   qStr: string;
+  /**
+   * The operator each side's own value is stated under: `=` for an ordinary
+   * value, `<`/`>` for one whose r3 rounds to zero without being zero — the
+   * same directional form `payoffTexRhs` uses, so `${pRel} ${pStr}` is what
+   * `payoffTexRhs` returns for the identical quantity. Always `=` under a
+   * strict relation, where `fmtPayoffPair` already exists to tell two values
+   * apart.
+   */
+  pRel: string;
+  qRel: string;
   /** The complete TeX for the line. */
   tex: string;
 }
 
 /**
- * 3dp for display, with JavaScript's negative zero collapsed.
+ * 3dp for display, split from its operator.
  *
- * `r3(-1e-9)` is `-0`, and `(-0).toFixed(3)` is "0.000" while
- * `(-1e-9).toFixed(3)` is "-0.000"; going through `r3` first is what keeps the
- * minus sign off a quantity that is not negative at display resolution. Same
- * rule `fmtPayoff` applies one layer up.
+ * Delegates entirely to `payoffTexRhs` rather than re-deriving 3dp formatting
+ * (`r3(-1e-9)` is `-0`, and `(-0).toFixed(3)` is "0.000" while
+ * `(-1e-9).toFixed(3)` is "-0.000" — the same trap `payoffTexRhs` already
+ * closed one layer up) so a nonzero value whose r3 rounds to zero gets `<`/`>`
+ * and its threshold magnitude instead of `=` and a false "0.000": the
+ * headline (`payoffTexRhs`, in `App.tsx`) and this line can never disagree,
+ * because they are now the same call.
  */
-function three(v: number): string {
-  if (!Number.isFinite(v)) return '—';
-  const s = r3(v);
-  return (Object.is(s, -0) ? 0 : s).toFixed(3);
+function threeRel(v: number): { str: string; rel: string } {
+  const s = payoffTexRhs(v);
+  const i = s.indexOf(' ');
+  return i < 0 ? { str: s, rel: '=' } : { rel: s.slice(0, i), str: s.slice(i + 1) };
 }
 
 /**
@@ -182,18 +195,34 @@ export function indifferenceLine(
   // any second production caller appears and carries both numbers, so this is a
   // checked condition rather than an assumption.
   const mid = (p + q) / 2;
-  const f = indifferent
-    ? (Math.abs(p - q) < 5e-4 ? { p: three(mid), q: three(mid) } : { p: three(p), q: three(q) })
-    : fmtPayoffPair(p, q);
+  // Under `≈`, a value whose r3 rounds to zero without BEING zero renders with
+  // the same directional operator `payoffTexRhs` uses (`<`/`>` and the
+  // threshold magnitude) instead of a plain "=" next to a false "0.000" — the
+  // headline and this line are then one rendering of one quantity, never two.
+  // Under a strict relation `fmtPayoffPair` already tells the two sides apart,
+  // so both operators stay `=`.
+  const strict = indifferent ? null : fmtPayoffPair(p, q);
+  const pBase = indifferent ? threeRel(p) : { str: strict!.p, rel: '=' };
+  const qBase = indifferent ? threeRel(q) : { str: strict!.q, rel: '=' };
+  // Sharing the midpoint is only safe when NEITHER side is itself a
+  // sub-resolution threshold: p=0.0002, q=-0.0002 straddle zero with a gap
+  // under 5e-4, but mid is exactly 0 — sharing it would print "= 0" for a
+  // quantity that is not zero on either side. When either side already needed
+  // `<`/`>` wording, keep that side's own honest value instead of collapsing.
+  const shareMidpoint = indifferent && Math.abs(p - q) < 5e-4 && pBase.rel === '=' && qBase.rel === '=';
+  const pf = shareMidpoint ? threeRel(mid) : pBase;
+  const qf = shareMidpoint ? threeRel(mid) : qBase;
   const relation = indifferent ? '\\approx' : (p > q ? '>' : '<');
   return {
     indifferent,
     relation,
     p,
     q,
-    pStr: f.p,
-    qStr: f.q,
-    tex: `\\mathbb{E}[\\text{${left}}] = ${f.p} ${relation} \\mathbb{E}[\\text{${right}}] = ${f.q}`,
+    pStr: pf.str,
+    qStr: qf.str,
+    pRel: pf.rel,
+    qRel: qf.rel,
+    tex: `\\mathbb{E}[\\text{${left}}] ${pf.rel} ${pf.str} ${relation} \\mathbb{E}[\\text{${right}}] ${qf.rel} ${qf.str}`,
   };
 }
 

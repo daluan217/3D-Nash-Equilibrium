@@ -112,8 +112,22 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
 {
   const files = pkg.build?.files ?? [];
   ok(files.length > 0, 'package.json build.files must exist');
-  ok(!files.some((f) => /(^|\/)\.env/.test(f)),
+  // A leading `!` is a glob NEGATION (exclude), not an include — testing the
+  // raw string here would flag the exclusion pattern below as if it were
+  // itself packaging a .env.
+  ok(!files.some((f) => !f.startsWith('!') && /(^|\/)\.env/.test(f)),
     `build.files must not package a .env: ${JSON.stringify(files)}`);
+  // The literal check above only catches a `.env`-shaped INCLUDE pattern. It
+  // cannot see a broad glob (`dist/**/*`) silently sweeping up a `dist/.env`
+  // that got there some other way — electron-builder does not exclude
+  // dotfiles by default. An explicit negation pattern is the one shape that
+  // protects the resolved list regardless of how a dotfile got into `dist/`.
+  //
+  // MUST BE `.env*`, not just `.env`: Vite/dotenv's own convention is
+  // `.env.local` / `.env.production` / `.env.*.local` (see .gitignore), and
+  // `!**/.env` alone would leave every one of those packageable.
+  ok(files.includes('!**/.env*'),
+    `build.files must carry the repo-wide exclusion '!**/.env*' so no .env variant (.env.local, .env.production, ...) can be packaged from any directory: ${JSON.stringify(files)}`);
   ok(files.includes('electron-main.cjs'),
     'build.files must package electron-main.cjs — it is where the desktop environment now lives');
 }

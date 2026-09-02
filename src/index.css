@@ -94,6 +94,12 @@
 @theme {
   /* Pure-NE marker green — must match the diamond markers in plotting.ts */
   --color-ne-pure: #4ca47a;
+  /* The two colours below are the OTHER markers the simulation log must match.
+     They are the exact values Plotly draws (plotting.ts), not Tailwind shades:
+     the mixed diamond is #8E44AD (the ne-mixed-* scale is Tailwind purple and
+     sits close but is not it), and the starting-point sphere is #7F8C8D. */
+  --color-ne-mixed-marker: #8E44AD;
+  --color-sim-start: #7F8C8D;
 
   /* ── Typography ──────────────────────────────────────────────────────────
      Modular scale, minor third (1.2), anchored at 15px body:
