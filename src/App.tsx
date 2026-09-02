@@ -1003,15 +1003,37 @@ export default function App() {
    */
   const fetchFreshScenario = async () => {
     if (!llmVerified || !llmEnvelope?.report) return fetchLlmExplanation(true);
+    // CodeRabbit finding (this branch, on the fixup commit): this function
+    // had NO staleness guard of its own. The `prev?.report` check in the
+    // updater below only proves SOME report exists when the response
+    // lands -- not that it is the SAME game's report. Sequence that slips
+    // through unguarded: user is on game A, clicks "New AI scenario"
+    // (this request fires for A); switches to game B (the payoffs effect
+    // clears llmEnvelope); asks for game B's own explanation (llmEnvelope
+    // now HAS a report again -- B's); THEN this stale request for A
+    // resolves, `prev?.report` is truthy (it's B's), and A's invented
+    // scenario gets merged into B's envelope. Same class of bug as
+    // fetchLlmExplanation (finding 001 / App.tsx:924), same fix: snapshot
+    // the identity this request was fired for, and require it to still
+    // match before touching state.
+    const requestPayoffs = payoffs;
+    const myGeneration = (requestGenerationRef.current += 1);
     setScenarioLoading(true);
     try {
       const res = await fetch(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payoffs, scenarioOnly: true }),
+        body: JSON.stringify({ payoffs: requestPayoffs, scenarioOnly: true }),
       });
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as { scenario: SuggestedScenario | null };
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) {
+        // Stale: the user has since switched games. Neither the scenario
+        // NOR a "couldn't invent" log line belongs on whatever is on
+        // screen now -- both would be about a game that is no longer
+        // there to have an opinion about.
+        return;
+      }
       if (data.scenario) {
         setLlmEnvelope((prev) =>
           prev?.report ? { ...prev, report: { ...prev.report, suggestedScenario: data.scenario } } : prev);
@@ -1019,9 +1041,12 @@ export default function App() {
         setLogEntries((prev) => [...prev, "✗ Couldn't invent a verified scenario just now — try again."]);
       }
     } catch {
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       setLogEntries((prev) => [...prev, "✗ Couldn't reach the server for a new scenario."]);
     } finally {
-      setScenarioLoading(false);
+      // Same reasoning as fetchLlmExplanation's finally: only the request
+      // that is still current may clear the loading flag.
+      if (myGeneration === requestGenerationRef.current) setScenarioLoading(false);
     }
   };
 

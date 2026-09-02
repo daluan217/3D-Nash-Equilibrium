@@ -246,10 +246,16 @@ try {
     // branch), not a fixed sleep: the very next section clicks a preset
     // button and reads the resulting screen, so a reset that has not yet
     // committed would let that section start from stale state on a
-    // stalled CI runner.
+    // stalled CI runner. NO `.catch(() => {})` (a second CodeRabbit
+    // finding on the same line): swallowing the timeout would let the
+    // suite continue on a genuinely BROKEN Reset, exactly the "check that
+    // cannot fail for the reason it claims" this repo's own standing
+    // lesson warns about -- the outer try/catch around the whole suite
+    // (bottom of this file) already turns an uncaught rejection here into
+    // a proper failure with evidence capture.
     await $.reset.click();
     await page.waitForFunction(() => document.querySelectorAll('div.overflow-y-auto.font-mono p').length === 1,
-      null, { timeout: 5000 }).catch(() => {});
+      null, { timeout: 5000 });
   }
 
   // ══ 6b. every standard preset reads as a story, not a grid reference
@@ -339,10 +345,11 @@ try {
     // Poll for the reset (CodeRabbit finding, this branch), same reason as
     // section 6's ending reset above — the next section (regret mode)
     // reads screen state right after this and must not start from a
-    // still-settling reset on a stalled runner.
+    // still-settling reset on a stalled runner. No swallowed timeout here
+    // either, same reasoning as the first instance.
     await $.reset.click();
     await page.waitForFunction(() => document.querySelectorAll('div.overflow-y-auto.font-mono p').length === 1,
-      null, { timeout: 5000 }).catch(() => {});
+      null, { timeout: 5000 });
   }
 
   // ══ 7. regret mode converges and names what it did (round 14 wording defect;

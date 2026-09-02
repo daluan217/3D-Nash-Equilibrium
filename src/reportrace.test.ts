@@ -154,4 +154,45 @@ ok(/const myGeneration = \(requestGenerationRef\.current \+= 1\);/.test(body),
 ok(/if \(myGeneration === requestGenerationRef\.current\) setLlmLoading\(false\);/.test(finallySection),
   'the finally block must gate setLlmLoading(false) on the request still being current');
 
+// ── 4. fetchFreshScenario ("New AI scenario") needs the SAME guard, and had
+//      none of its own -- CodeRabbit finding on the fixup commit. Its
+//      updater `setLlmEnvelope((prev) => prev?.report ? ... : prev)` only
+//      proves SOME report exists when the response lands, not that it is
+//      the SAME game's report: game A fires this, the user switches to
+//      game B, game B gets its OWN report (so `prev?.report` is now
+//      truthy again, just for B), and A's late scenario merges into B's
+//      envelope. Isolate fetchFreshScenario's own body the same way as
+//      fetchLlmExplanation's above.
+const fetchFreshEnd2 = /\n  (const |function )/.exec(src.slice(fetchFreshStart + 40));
+const freshBody = src.slice(fetchFreshStart, fetchFreshEnd2 ? fetchFreshStart + 40 + fetchFreshEnd2.index : fetchFreshStart + 3000);
+
+ok(/const requestPayoffs = payoffs;/.test(freshBody),
+  'REGRESSION GUARD: fetchFreshScenario must snapshot the payoffs it was called for, same as fetchLlmExplanation');
+ok(/const myGeneration = \(requestGenerationRef\.current \+= 1\);/.test(freshBody),
+  'REGRESSION GUARD: fetchFreshScenario must bump-then-capture its own generation number');
+
+const freshGuardCount = (freshBody.match(/myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/g) || []).length;
+ok(freshGuardCount >= 2,
+  `REGRESSION GUARD: the staleness check must appear at least twice in fetchFreshScenario `
+  + `(once before touching state on the success path, once in the catch) -- found ${freshGuardCount}`);
+
+// The success-path guard must run BEFORE setLlmEnvelope is ever called with
+// the fetched scenario -- checking staleness after already merging it in
+// would be too late. Isolated before fetchFreshScenario's own catch, same
+// pattern as section 2 above.
+const freshCatchStart = freshBody.indexOf('} catch {');
+ok(freshCatchStart !== -1, 'fetchFreshScenario must have a catch block');
+const freshSuccessSection = freshBody.slice(0, freshCatchStart);
+const freshGuardIdx = freshSuccessSection.search(/myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/);
+const freshSetEnvelopeIdx = freshSuccessSection.indexOf('setLlmEnvelope((prev)');
+ok(freshGuardIdx !== -1 && freshSetEnvelopeIdx !== -1 && freshGuardIdx < freshSetEnvelopeIdx,
+  'the staleness check must run BEFORE fetchFreshScenario merges the new scenario into the envelope, not after');
+
+// Its own finally must ALSO only clear scenarioLoading for the request
+// that is still current, same reasoning as fetchLlmExplanation's finally.
+const freshFinallyIdx = freshBody.indexOf('} finally {');
+const freshFinallySection = freshFinallyIdx !== -1 ? freshBody.slice(freshFinallyIdx) : '';
+ok(/if \(myGeneration === requestGenerationRef\.current\) setScenarioLoading\(false\);/.test(freshFinallySection),
+  'fetchFreshScenario\'s finally block must gate setScenarioLoading(false) on the request still being current');
+
 console.log(`reportrace.test.ts: ${checks} checks passed`);
