@@ -120,16 +120,34 @@ export interface ProviderRequest {
   extraBody?: Record<string, unknown>;
 }
 
-export type ProviderName = 'gemini' | 'foundry-openai' | 'foundry-anthropic';
+export type ProviderName = 'gemini' | 'foundry-openai' | 'foundry-anthropic' | 'openrouter';
 
-/** True for transient 429/503/500 responses that are worth retrying. */
+/**
+ * True for transient 429/503/500 responses that are worth retrying.
+ *
+ * FOUND WIRING THE OPENROUTER ROUTE (2026-09-02): the message-pattern check
+ * used to run case-INSENSITIVELY over every alternative, including Gemini's
+ * own SCREAMING_CASE status tokens `RESOURCE_EXHAUSTED` / `UNAVAILABLE`. That
+ * let an unrelated 400 whose text merely contains the ordinary English word
+ * "unavailable" — observed verbatim from the relay behind OPEN_ROUTER_ENDPOINT:
+ * `"This response_format type is unavailable now"` for a structured-output
+ * variant it doesn't support — get misclassified as an infra rate limit. The
+ * consequence is not cosmetic: `callFoundryOpenAI` and `callOpenRouter` both
+ * treat `isRateLimit` as "stop negotiating, surface immediately" specifically
+ * so a genuine 429 isn't hidden behind three more failed variant attempts —
+ * so the false positive was aborting the shape-negotiation ladder on its FIRST
+ * variant, before it ever reached the `json_object` fallback that would have
+ * succeeded. Gemini's own tokens are matched exactly (word-boundary,
+ * case-sensitive) instead, since that is the only form Google's SDK actually
+ * emits them in.
+ */
 export function isRateLimit(err: unknown): boolean {
   const e = err as { status?: number; code?: number; message?: unknown };
   const code = e?.status ?? e?.code;
   if (code === 429 || code === 503 || code === 500) return true;
-  return /RESOURCE_EXHAUSTED|UNAVAILABLE|overloaded|rate.?limit|too many requests|"code":\s*(429|503|500)/i.test(
-    String(e?.message ?? ''),
-  );
+  const msg = String(e?.message ?? '');
+  if (/\bRESOURCE_EXHAUSTED\b|\bUNAVAILABLE\b/.test(msg)) return true;
+  return /overloaded|rate.?limit|too many requests|"code":\s*(429|503|500)/i.test(msg);
 }
 
 // ── Gemini ────────────────────────────────────────────────────────────────────
@@ -484,6 +502,160 @@ async function callFoundryAnthropic(req: ProviderRequest): Promise<ProviderResul
   return { text: JSON.stringify(toolUse.input), stopReason: stop, usage, failure: null };
 }
 
+// ── OpenRouter ────────────────────────────────────────────────────────────────
+
+/**
+ * A model routed through OpenRouter is named `openrouter/<catalog-id>` — the
+ * prefix is how `resolveProvider` picks this adapter, and the rest is passed
+ * to OpenRouter verbatim (whatever shape ITS catalog uses: OpenRouter proper
+ * nests as `vendor/model`, e.g. `deepseek/deepseek-chat`; the relay this repo
+ * currently points OPEN_ROUTER_ENDPOINT at — see below — uses flat ids like
+ * `glm-5.3`). Stripping only the ONE leading `openrouter/` segment keeps
+ * either shape intact.
+ */
+export function openrouterModelId(model: string): string {
+  return model.replace(/^openrouter\//, '');
+}
+
+/**
+ * `OPEN_ROUTER_ENDPOINT` / `OPEN_ROUTER_API_KEY` are a credential pair
+ * distinct from `AZURE_FOUNDRY_*`, so a script can use OpenRouter models
+ * without needing (or disturbing) the Foundry sweep's credentials.
+ *
+ * MEASURED 2026-09-02: in THIS deployment's `.env`, `OPEN_ROUTER_ENDPOINT`
+ * happens to resolve to the same `agentrouter.org` host the Foundry adapter
+ * already reaches via `AZURE_FOUNDRY_ENDPOINT` (different path prefix, same
+ * relay) — so `isAgentRouterEndpoint` below correctly recognises it and sends
+ * the same `claude-cli` User-Agent that host requires. That is a fact about
+ * THIS environment's credentials, not a design assumption: nothing here
+ * requires OPEN_ROUTER_ENDPOINT to point at agentrouter.org, and pointing it
+ * at the real openrouter.ai host works unchanged (isAgentRouterEndpoint
+ * simply returns false there, so no extra header is sent).
+ */
+function openrouterCreds(): { endpoint?: string; apiKey?: string } {
+  return { endpoint: process.env.OPEN_ROUTER_ENDPOINT, apiKey: process.env.OPEN_ROUTER_API_KEY };
+}
+
+/**
+ * The request-body VARIANTS callOpenRouter tries in order, extracted as a
+ * pure function so the shape (max_tokens present on every variant,
+ * reasoning_effort present only when requested, and tried BEFORE the
+ * reasoning-free fallbacks) is unit-testable without a network call.
+ *
+ * Same negotiate-don't-hard-code approach as callFoundryOpenAI: OpenRouter
+ * fans out to many backends and not all of them honour strict structured
+ * outputs. `max_tokens` is the one OpenRouter documents (its unified API
+ * does not use the `max_completion_tokens` alias), so that axis is not
+ * negotiated — only the response-format strictness is.
+ *
+ * `reasoning_effort` is included ONLY when a reasoning level was requested;
+ * several relayed models (glm-5.3 confirmed, see extraBody's doc comment)
+ * reject unrecognised reasoning fields outright, so spreading it into every
+ * attempt unconditionally would fail models that have no thinking mode at
+ * all. The actual "stop thinking" knob for models that ignore
+ * reasoning_effort is `extraBody` (e.g. `{ thinking: { type: 'disabled' } }`
+ * for deepseek-v4-flash) — deliberately untyped and passed through verbatim,
+ * same contract as the Foundry adapter.
+ */
+export function openrouterVariants(
+  maxOutputTokens: number,
+  reasoning: ReasoningEffort | undefined,
+  jsonSchema: Record<string, unknown>,
+): Record<string, unknown>[] {
+  const shapes: Record<string, unknown>[] = [
+    { response_format: jsonSchema, max_tokens: maxOutputTokens },
+    { response_format: { type: 'json_object' }, max_tokens: maxOutputTokens },
+  ];
+  return reasoning ? [...shapes.map((s) => ({ ...s, reasoning_effort: reasoning })), ...shapes] : shapes;
+}
+
+async function callOpenRouter(req: ProviderRequest): Promise<ProviderResult> {
+  const { endpoint, apiKey } = openrouterCreds();
+  const isAgentRouter = isAgentRouterEndpoint(endpoint);
+  const model = openrouterModelId(req.model);
+  const client = new OpenAI({
+    baseURL: endpoint,
+    apiKey,
+    // OpenRouter's own docs ask for these two so a request can be attributed
+    // in their dashboard/rankings; harmless no-ops on a relay (like
+    // agentrouter.org) that ignores them.
+    defaultHeaders: {
+      'HTTP-Referer': 'https://nash-equilibrium-simulator.com',
+      'X-Title': 'Nash Equilibrium Simulator',
+      ...(isAgentRouter ? { 'user-agent': 'claude-cli/2.1.0 (external, cli)' } : {}),
+    },
+  });
+
+  const messages = [
+    { role: 'system' as const, content: req.systemPrompt },
+    { role: 'user' as const, content: req.userPrompt },
+  ];
+  const jsonSchema = {
+    type: 'json_schema' as const,
+    json_schema: {
+      name: 'nash_report',
+      strict: true,
+      schema: withAdditionalPropertiesFalse(req.schema) as Record<string, unknown>,
+    },
+  };
+
+  // Same negotiate-don't-hard-code approach as callFoundryOpenAI: OpenRouter
+  // fans out to many backends and not all of them honour strict structured
+  // outputs. `max_tokens` is the one OpenRouter documents (its unified API
+  // does not use the `max_completion_tokens` alias), so that axis is not
+  // negotiated here — only the response-format strictness is.
+  //
+  // `reasoning_effort` is included ONLY when a reasoning level was requested;
+  // several relayed models (glm-5.3 confirmed, see extraBody's doc comment)
+  // reject unrecognised reasoning fields outright, so spreading it into every
+  // attempt unconditionally would fail models that have no thinking mode at
+  // all. The actual "stop thinking" knob for models that ignore
+  // reasoning_effort is `extraBody` (e.g. `{ thinking: { type: 'disabled' } }`
+  // for deepseek-v4-flash) — deliberately untyped and passed through verbatim,
+  // same contract as the Foundry adapter.
+  const variants = openrouterVariants(req.maxOutputTokens, req.reasoning, jsonSchema);
+
+  let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
+  let lastErr: unknown;
+  for (const variant of variants) {
+    try {
+      const body = buildChatRequestBody(model, messages, variant, req.extraBody) as unknown as
+        OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
+      response = await client.chat.completions.create(body);
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (isRateLimit(err)) {
+        return { text: null, stopReason: null, usage: null, failure: 'rate-limited' };
+      }
+    }
+  }
+  if (!response) {
+    return { text: null, stopReason: null, usage: null, failure: isRateLimit(lastErr) ? 'rate-limited' : 'error' };
+  }
+
+  const usage = normalizeOpenAIUsage(response.usage);
+  const choice = response.choices?.[0];
+  const finish = choice?.finish_reason ?? null;
+
+  if (choice?.message?.refusal) {
+    return { text: null, stopReason: 'refusal', usage, failure: 'refusal' };
+  }
+  if (finish === 'content_filter') {
+    return { text: null, stopReason: finish, usage, failure: 'refusal' };
+  }
+
+  const text = choice?.message?.content ?? null;
+
+  if (finish === 'length') {
+    return { text, stopReason: finish, usage, failure: 'max-tokens' };
+  }
+  if (!text) {
+    return { text: null, stopReason: finish, usage, failure: 'unparseable' };
+  }
+  return { text, stopReason: finish, usage, failure: null };
+}
+
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 /**
@@ -494,7 +666,20 @@ async function callFoundryAnthropic(req: ProviderRequest): Promise<ProviderResul
  */
 export function resolveProvider(model: string): ProviderName {
   const override = process.env[`EVAL_PROVIDER_${model}`];
-  if (override === 'gemini' || override === 'foundry-openai' || override === 'foundry-anthropic') return override;
+  if (
+    override === 'gemini' ||
+    override === 'foundry-openai' ||
+    override === 'foundry-anthropic' ||
+    override === 'openrouter'
+  ) {
+    return override;
+  }
+  // Checked before the Gemini/Foundry heuristics: an `openrouter/`-prefixed
+  // model id is an explicit routing instruction, not a name pattern to guess
+  // at, so it always wins regardless of what the rest of the id looks like
+  // (a caller could route `openrouter/gemini-...` or `openrouter/claude-...`
+  // through OpenRouter on purpose).
+  if (model.startsWith('openrouter/')) return 'openrouter';
   if (/^gemini-/i.test(model)) return 'gemini';
   // Anthropic models on Foundry speak Messages, not chat-completions.
   if (/^claude-/i.test(model)) return 'foundry-anthropic';
@@ -505,13 +690,19 @@ export async function callProvider(req: ProviderRequest): Promise<ProviderResult
   switch (resolveProvider(req.model)) {
     case 'gemini': return callGemini(req);
     case 'foundry-anthropic': return callFoundryAnthropic(req);
+    case 'openrouter': return callOpenRouter(req);
     default: return callFoundryOpenAI(req);
   }
 }
 
 /** Whether the credentials for a model's provider are present. */
 export function hasCredentials(model: string): boolean {
-  if (resolveProvider(model) === 'gemini') return !!process.env.GEMINI_API_KEY;
+  const provider = resolveProvider(model);
+  if (provider === 'gemini') return !!process.env.GEMINI_API_KEY;
+  if (provider === 'openrouter') {
+    const { endpoint, apiKey } = openrouterCreds();
+    return !!(endpoint && apiKey);
+  }
   // Both Foundry adapters read the same per-resource endpoint + key.
   const { endpoint, apiKey } = foundryCreds(model);
   return !!(endpoint && apiKey);
