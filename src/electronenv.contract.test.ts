@@ -132,4 +132,101 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
     'build.files must package electron-main.cjs — it is where the desktop environment now lives');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. THE RUNG-3 / CLAIM-FREE SCREEN IS BUILD-TIME ONLY, NEVER REQUEST-TIME
+//
+// `NASH_PAYOFF_TEMPLATE` gates the CLAIM-FREE scenario screen (server.ts:
+// under it, `inventScreenedScenario` requires the description to assert
+// nothing decidable — the solver states the mathematics instead). It is set
+// exactly ONCE, above, before `dist/server.cjs` is even required, and read
+// from `process.env` only. round3/BLUE-SERVER-DESKTOP.md's queue item 4 asks
+// to confirm this can never become a per-REQUEST toggle: a client that could
+// flip it on or off would let a request opt OUT of the claim-free guarantee
+// the desktop is supposed to enforce unconditionally, or opt IN somewhere it
+// was deliberately not measured. This is a NEGATIVE-existence check — the
+// failure mode is someone adding a `req.body.forceTemplate`-shaped backdoor
+// later, not a removal, which is why it lives beside the trio checks above
+// rather than as a positive assertion of its own.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const serverSrc = stripComments(readFileSync(join(repo, 'server.ts'), 'utf8'));
+  const flagNames = ['NASH_PAYOFF_TEMPLATE', 'NASH_LLM_TIES', 'NASH_DIRECTION_CHECKS'];
+
+  for (const name of flagNames) {
+    // server.ts must only ever COMPARE against process.env.<name>, never
+    // ASSIGN to it — an assignment there would mean some code path (a route
+    // handler, most plausibly) can change the flag after startup. The
+    // negative lookahead excludes `===`/`==`, which start with the same `=`
+    // this would otherwise flag as an assignment — checked directly below:
+    // the trio's real reads are `process.env.X === '1'` and must NOT trip
+    // this check, or the assertion would be vacuous (failing on correct code
+    // too, which is worse than not existing).
+    //
+    // TWO FORMS (CodeRabbit caught the dot-only version missing the second):
+    // dot notation `process.env.NAME = ` and bracket notation
+    // `process.env['NAME'] = ` / `process.env["NAME"] = ` — JS treats them
+    // identically at runtime, so a check that only sees one is a check that
+    // can be silently routed around.
+    const assignReDot = new RegExp(`process\\.env\\.${name}\\s*=(?!=)`);
+    const assignReBracket = new RegExp(`process\\.env\\[['"]${name}['"]\\]\\s*=(?!=)`);
+    ok(!assignReDot.test(serverSrc) && !assignReBracket.test(serverSrc),
+      `server.ts must never ASSIGN process.env.${name} (dot OR bracket notation) — it is a ` +
+      `build/launch-time flag, set once in electron-main.cjs (desktop) or cloudbuild.yaml ` +
+      `(hosted), never at request time`);
+  }
+
+  // No request-derived value (req.body / req.query / req.headers / req.params,
+  // however the property is spelled) may share a line with any of the three
+  // flag names — catches `if (req.body.forceTemplate)` guarding a flag-name
+  // reference, a destructure pulling a flag name off req.body, etc.
+  const reqShapeRe = /\breq\s*\.\s*(body|query|headers|params)\b/;
+  const lines = serverSrc.split('\n');
+  const offending: string[] = [];
+  for (const line of lines) {
+    if (reqShapeRe.test(line) && flagNames.some((n) => line.includes(n))) {
+      offending.push(line.trim());
+    }
+  }
+
+  // CROSS-STATEMENT form (CodeRabbit's finding — the same-line check above
+  // cannot see this): a request-derived value assigned to an intermediate
+  // VARIABLE on one line, that variable's NAME then appearing near a flag
+  // read on a LATER line — `const wantsTemplate = req.body.forceTemplate;`
+  // ... `if (wantsTemplate) { ...process.env.NASH_PAYOFF_TEMPLATE... }`.
+  //
+  // DELIBERATELY NARROW, and here is why: an EARLIER, broader version of
+  // this check flagged "any req.body/query/headers/params reference
+  // anywhere in the flag's enclosing route handler" — and FAILED ITS OWN
+  // FIRST RUN, on real, correct code: `/api/report` legitimately reads
+  // `req.body.payoffs`/`req.body.scenario` for unrelated business logic in
+  // the SAME large handler that also reads the rung-3 flags, so that
+  // version was 100% false positives on the very thing it exists to guard
+  // (predicates over-fire on the first draft — the standing lesson this
+  // repo has hit five separate times before). This version instead tracks
+  // only NAMED VARIABLES actually assigned from req.*, and only flags one
+  // when that SPECIFIC variable's name appears within a few lines of a flag
+  // read — a real data-flow signal, not "req.* exists somewhere nearby."
+  const reqVarRe = /\b(?:const|let|var)\s+(\w+)\s*=\s*req\s*\.\s*(?:body|query|headers|params)\b/g;
+  const reqDerivedVars = new Set<string>();
+  { let vm: RegExpExecArray | null; while ((vm = reqVarRe.exec(serverSrc)) !== null) reqDerivedVars.add(vm[1]); }
+  if (reqDerivedVars.size > 0) {
+    // lines before/after the flag read
+    for (const name of flagNames) {
+      lines.forEach((line, i) => {
+        if (!line.includes(name)) return;
+        const windowText = lines.slice(Math.max(0, i - 3), Math.min(lines.length, i + 3 + 1)).join('\n');
+        for (const v of reqDerivedVars) {
+          if (new RegExp(`\\b${v}\\b`).test(windowText)) {
+            offending.push(`${name} near line ${i + 1} shares a 3-line window with request-derived variable "${v}"`);
+          }
+        }
+      });
+    }
+  }
+
+  ok(offending.length === 0,
+    `server.ts must never let a request-derived value (same line, or a named variable within ` +
+    `${3} lines) reach the code that reads a rung-3 flag name (found: ${JSON.stringify(offending)})`);
+}
+
 console.log(`electronenv.contract.test.ts: ${checks} checks passed`);

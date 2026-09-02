@@ -459,6 +459,186 @@ function loadDBFromFile(): DB {
   }
 }
 
+/**
+ * Refuse to become a SECOND writer against the same `ELECTRON_USER_DATA_PATH`.
+ *
+ * `loadDB()`/`saveDB()` cache the ENTIRE database in memory once at startup
+ * and always overwrite the WHOLE file on save — `writeFileAtomicSync`'s own
+ * comment above promises atomicity per write, but says nothing about a
+ * SECOND writer, because there was never supposed to be one. Two
+ * `dist/server.cjs` processes pointed at the same user-data directory hold
+ * two independent, diverging in-memory snapshots, and whichever one saves
+ * LAST silently and completely erases the other's saved games from disk —
+ * with a 200 OK returned to BOTH windows at the moment each save was made.
+ * (RED-DESKTOP-3, round3/findings/RED-DESKTOP-3/001-concurrent-servers-
+ * silent-data-loss.md — reproduced independently before this fix.)
+ *
+ * Electron's own `app.requestSingleInstanceLock()` (electron-main.cjs)
+ * already blocks the ORDINARY path — double-clicking the Dock icon while the
+ * app is already open never reaches this file at all, since the second
+ * process calls `app.quit()` before `dist/server.cjs` is ever required. This
+ * lock is defense for the paths that lock does NOT cover: a support/debug
+ * script running the bundle directly against a real install's data
+ * directory, `npm run electron:start` (dev) alongside an already-open
+ * packaged .app, Electron's own documented non-instantaneous lock
+ * acquisition, or two copies of the app sharing one user-data path. Worse,
+ * IS_ELECTRON's own EADDRINUSE retry (`startListening`, below) would
+ * otherwise let a second process land quietly on the NEXT port and start
+ * serving — no crash, no port conflict, nothing to notice until a save goes
+ * missing.
+ *
+ * A PID lockfile turns that silent loss into a loud, immediate startup
+ * failure: exit BEFORE `initDB()` ever loads a second in-memory snapshot, so
+ * nothing is read, nothing is served, and no divergent write can happen.
+ */
+function acquireDesktopLock(): void {
+  const userDataPath = process.env.ELECTRON_USER_DATA_PATH;
+  if (!userDataPath) return; // hosted service: GCS's own analogous risk is a separate, product-scope question
+  try {
+    if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
+  } catch (err) {
+    console.error("Error creating user-data directory for the desktop lock:", err);
+    return; // fail OPEN — do not block startup over a directory-creation error here
+  }
+  const lockFile = path.join(userDataPath, ".server.lock");
+
+  // ATOMIC on purpose. An earlier version checked `fs.existsSync(lockFile)`
+  // and then `fs.writeFileSync`'d it as two separate steps — a real
+  // check-then-act race (CodeRabbit caught it): two processes launched
+  // close enough together can both observe "no lock file" before either has
+  // written one, and both then proceed to load independent database
+  // snapshots — exactly the near-simultaneous-launch case this lock exists
+  // to catch, silently defeated. `wx` (write, fail if the path already
+  // exists) makes the CREATE itself the race-free step: the filesystem, not
+  // this process, decides which of two simultaneous openers wins.
+  // Bound raised from 3 to 5: the content-recheck below can now consume an
+  // attempt WITHOUT creating the lock (a detected race just loops to
+  // re-decide), so a genuine two-way stale-takeover race needs one extra
+  // round-trip of headroom over the original bound.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const fd = fs.openSync(lockFile, "wx", 0o600);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      break; // acquired
+    } catch (err: any) {
+      if (err.code !== "EEXIST") {
+        console.error("Error writing desktop lock file:", err);
+        return; // fail OPEN on an unexpected filesystem error
+      }
+    }
+    // EEXIST: someone else's lock is already there — a live process, or one
+    // that crashed without cleaning up. Read it to tell the two apart.
+    //
+    // TEST HOOK ONLY — never set outside a test process: lets an
+    // integration test deterministically win the race CodeRabbit found on
+    // re-review — `existsSync` and `readFileSync` are two separate calls,
+    // so a competing process (or, in the test, the test itself) can unlink
+    // the file in between, and the unguarded `readFileSync` would throw
+    // ENOENT outside any catch, crashing `startServer()` before it ever
+    // gets to initDB()/listen().
+    const readRaceDelayMs = parseInt(process.env.NASH_LOCK_TEST_READ_RACE_DELAY_MS || "", 10);
+    if (fs.existsSync(lockFile) && Number.isFinite(readRaceDelayMs) && readRaceDelayMs > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, readRaceDelayMs);
+    }
+    let rawContent: string;
+    try {
+      rawContent = fs.readFileSync(lockFile, "utf-8");
+    } catch (err: any) {
+      if (err && err.code === "ENOENT") {
+        // The lock vanished between our EEXIST and this read — someone
+        // else's own stale-takeover (or a clean release) already cleared
+        // it. Loop and re-decide from scratch instead of treating a
+        // gone/unreadable file as a real lock with empty content (which
+        // would have parsed as heldBy = NaN and fallen through as if the
+        // recorded pid were simply invalid, silently skipping straight to
+        // "stale, take over" without ever re-checking what's ACTUALLY there
+        // now — possibly a brand-new LIVE lock).
+        continue;
+      }
+      console.error("Error reading desktop lock file:", err);
+      return; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
+    }
+    const heldBy = parseInt(rawContent.trim(), 10);
+    let alive = false;
+    if (Number.isInteger(heldBy) && heldBy > 0) {
+      try {
+        // Throws ESRCH if no such process exists; EPERM means it exists but
+        // is owned by someone else, which still counts as "alive" here.
+        process.kill(heldBy, 0);
+        alive = true;
+      } catch (err: any) {
+        alive = err && err.code === "EPERM";
+      }
+    }
+    if (alive) {
+      console.error(
+        `Refusing to start: another Nash Equilibrium Simulator server (pid ${heldBy}) is already using `
+        + `this data directory (${userDataPath}). Starting a second one would silently overwrite its saved `
+        + `games. Quit the other instance first.`
+      );
+      process.exit(1);
+    }
+    // Stale: the recorded PID is no longer running. TEST HOOK ONLY — never
+    // set outside a test process — lets an integration test deterministically
+    // win the exact interleaving below rather than hoping real OS scheduling
+    // cooperates (a 12-process stress test against the UNFIXED code still
+    // serialized to 1 winner in this sandbox's process-spawn timing, so real
+    // timing cannot be trusted to exercise this path).
+    const testDelayMs = parseInt(process.env.NASH_LOCK_TEST_DELAY_MS || "", 10);
+    if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, testDelayMs);
+    }
+    // CodeRabbit's finding: unconditionally unlinking here is not atomic
+    // with the read above. Between that read and this unlink, a DIFFERENT
+    // process can run this exact same stale-detection-and-takeover sequence
+    // to completion, creating a fresh, LIVE lock with ITS OWN pid — and this
+    // process would then delete that live lock out from under it, blind to
+    // the change, and go on to create a SECOND live lock of its own. Two
+    // writers, the exact thing this file exists to prevent. Re-reading
+    // immediately before the unlink and comparing against what we just
+    // inspected closes that: if the content changed, someone else already
+    // acted on this exact staleness — do NOT touch their fresh lock, loop
+    // and re-evaluate whatever is there now instead. Full atomicity would
+    // need an OS-level advisory lock (flock) this codebase does not have;
+    // this narrows the surviving race to the few instructions between the
+    // re-read and the unlink, which is what the loop bound below accounts
+    // for as a needed extra round-trip, not evidence of unbounded spinning.
+    let recheck: string | null = null;
+    try { recheck = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8") : ""; } catch { recheck = null; }
+    if (recheck !== rawContent) {
+      continue; // someone else changed it — re-read and re-decide from scratch
+    }
+    try { fs.unlinkSync(lockFile); } catch { /* already gone: fine, next attempt recreates it */ }
+  }
+
+  // Defensive: if every attempt was consumed by repeated recheck-misses
+  // without ever reaching the `break` above, we do NOT actually hold the
+  // lock. Falling through un-locked would silently defeat the whole
+  // guarantee — verify, and refuse loudly rather than serve unprotected.
+  {
+    const finalContent = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8").trim() : "";
+    if (finalContent !== String(process.pid)) {
+      console.error(
+        `Refusing to start: could not acquire the desktop data-directory lock at ${lockFile} `
+        + `after repeated contention. Try again.`
+      );
+      process.exit(1);
+    }
+  }
+
+  const release = () => {
+    try {
+      if (fs.existsSync(lockFile) && fs.readFileSync(lockFile, "utf-8").trim() === String(process.pid)) {
+        fs.unlinkSync(lockFile);
+      }
+    } catch { /* best effort — a leftover lock is handled by the liveness check above */ }
+  };
+  process.on("exit", release);
+  process.on("SIGINT", () => { release(); process.exit(0); });
+  process.on("SIGTERM", () => { release(); process.exit(0); });
+}
+
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
 async function initDB(): Promise<void> {
   if (process.env.ELECTRON_USER_DATA_PATH) {
@@ -1130,6 +1310,11 @@ async function sendFeedbackEmail(
 }
 
 async function startServer() {
+  // First thing, before anything else touches the filesystem or binds a
+  // port: refuse to run as a second writer against a data directory another
+  // live process already owns. See acquireDesktopLock's own comment.
+  acquireDesktopLock();
+
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
@@ -1764,9 +1949,84 @@ async function startServer() {
         const file = new Storage().bucket(GCS_BUCKET).file('Nash Equilibrium Simulator.dmg');
         const [exists] = await file.exists();
         if (exists) {
+          // getMetadata() before piping: without it the response carries no
+          // Content-Length, so the browser shows an unknown-size download with
+          // no progress bar/ETA for a ~120MB file, and a client that reads
+          // Content-Length to detect a truncated transfer (curl -C -, some
+          // download managers) cannot tell a good download from a dropped one.
+          // Verified live against production (revision 00194-fxz):
+          // `curl -r 0-0` got a full 200 stream with no Content-Length, no
+          // Accept-Ranges, no Content-Range — the range request was silently
+          // ignored. `size` comes back as a STRING from the GCS JSON API.
+          const [metadata] = await file.getMetadata();
+          const size = metadata.size !== undefined && metadata.size !== null
+            ? parseInt(String(metadata.size), 10) : null;
+
           res.setHeader('Content-Type', 'application/octet-stream');
           res.setHeader('Content-Disposition', 'attachment; filename="Nash Equilibrium Simulator.dmg"');
-          file.createReadStream().pipe(res);
+          if (size !== null && Number.isFinite(size)) res.setHeader('Accept-Ranges', 'bytes');
+
+          // DownloadModal.tsx does a HEAD request first, specifically to
+          // check existence/size WITHOUT downloading. Express dispatches
+          // HEAD to this same GET handler (there is no separate route), so
+          // without this guard every "just checking" HEAD probe opened a
+          // real GCS read stream and piped it into the response — wasted
+          // GCS egress for a request whose whole point was to avoid a
+          // download. HEAD gets exactly the headers a GET would send, no
+          // stream ever created.
+          if (req.method === 'HEAD') {
+            if (size !== null && Number.isFinite(size)) res.setHeader('Content-Length', String(size));
+            res.status(200).end();
+            return;
+          }
+
+          const streamAndPipe = (range?: { start: number; end: number }) => {
+            const stream = range ? file.createReadStream(range) : file.createReadStream();
+            stream.on('error', (err) => {
+              console.error("Error streaming DMG from GCS:", err);
+              if (!res.headersSent) res.status(500).json({ error: "Internal Server Error" });
+              else res.destroy();
+            });
+            stream.pipe(res);
+          };
+
+          // RESUMABLE DOWNLOADS: a dropped connection on a ~120MB file
+          // otherwise means starting over. `Range: bytes=start-end`,
+          // `bytes=start-` (open-ended), and `bytes=-N` (last N bytes) are
+          // the three forms curl/browsers/download managers actually send.
+          const rangeHeader = size !== null ? req.headers.range : undefined;
+          const m = typeof rangeHeader === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim()) : null;
+          if (m && (m[1] !== '' || m[2] !== '') && size !== null) {
+            let start: number, end: number;
+            if (m[1] === '') {
+              const suffixLen = parseInt(m[2], 10);
+              start = Math.max(0, size - suffixLen);
+              end = size - 1;
+            } else {
+              start = parseInt(m[1], 10);
+              // RFC 9110 §14.1.2: an explicit last-byte-pos AT OR PAST the
+              // object's length is not an error — it means "to the end of
+              // the representation," clamped to size-1. Only a first-byte-
+              // pos beyond the object's length is unsatisfiable (416).
+              // CodeRabbit caught this: `bytes=0-999999` on a 7500-byte
+              // object was rejected 416 instead of served as the whole file.
+              end = m[2] === '' ? size - 1 : Math.min(parseInt(m[2], 10), size - 1);
+            }
+            const validRange = Number.isFinite(start) && Number.isFinite(end)
+              && start >= 0 && start < size && start <= end;
+            if (!validRange) {
+              res.setHeader('Content-Range', `bytes */${size}`);
+              return res.status(416).end();
+            }
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+            res.setHeader('Content-Length', String(end - start + 1));
+            streamAndPipe({ start, end });
+            return;
+          }
+
+          if (size !== null && Number.isFinite(size)) res.setHeader('Content-Length', String(size));
+          streamAndPipe();
           return;
         }
       }
@@ -2234,6 +2494,23 @@ async function startServer() {
       success: true,
       message: "Your account and all saved game profiles have been successfully deleted from our records."
     });
+  });
+
+  // ── Desktop recovery hint ───────────────────────────────────────────────────
+  // Unauthenticated `GET /api/games` returns 200 [] both for a brand-new
+  // install (never used) AND for a real pre-existing account that saved games
+  // before `local-owner` shipped — the two are indistinguishable from that
+  // response alone, and there is nothing else in the app that would tell a
+  // returning user "sign in to see your other games." This endpoint answers
+  // exactly one boolean, computed without ever exposing which account, what
+  // its games are, or anything else pre-auth — safe to call from the empty
+  // state before the user has proven who they are.
+  app.get("/api/auth/desktop-hint", rateLimit("desktop-hint", 30, 60_000), (req, res) => {
+    if (!isDesktop()) return res.json({ hasOtherAccounts: false });
+    const db = loadDB();
+    const hasOtherAccounts = db.users.some((u) =>
+      u.id !== LOCAL_OWNER_ID && db.games.some((g) => g.userId === u.id));
+    res.json({ hasOtherAccounts });
   });
 
   // ── Custom Saved Games API ─────────────────────────────────────────────────
