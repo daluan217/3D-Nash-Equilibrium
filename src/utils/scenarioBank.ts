@@ -50,6 +50,35 @@ export function stakesBand(g: GamePayoffs): number {
 }
 
 /**
+ * SOFT STAKES for the bank (2026-09-02, same ruling as `stakesHint`'s
+ * `SIZE_STRONG_P`/`blendedSizeBand` — see that file's comment for the full
+ * argument: payoff scale should INFLUENCE which story gets served, not
+ * DETERMINE it). Every bank row was written for an EXACT band at generation
+ * time, so unlike the prompt hint there is no "say nothing" option here — the
+ * only lever is WHICH band to draw from, so this reaches one band over,
+ * sometimes, instead of always the exact one.
+ *
+ * DELIBERATELY NEVER TWO BANDS OVER: a tiny game served a very-large row would
+ * contradict the numbers on screen as badly as the thing `pickFromBank`'s own
+ * WIDENING LADDER treats as a last resort, not a first choice. Reaching one
+ * band over is the discrete-artifact version of the boundary blend below —
+ * "9.5 next to a cut at 10 is not a different decision" — not a general
+ * license to serve any register to any game.
+ *
+ * Applied BEFORE the widening ladder, not as a substitute for it: a softened
+ * target band that turns out to be empty for this (domain, seen) still widens
+ * through the same four tiers, using the softened band as tier 1/2's `band`.
+ */
+const BAND_NEIGHBOR_P = 0.3;
+
+function softenBand(exact: number, pick: () => number): number {
+  if (pick() >= BAND_NEIGHBOR_P) return exact;
+  const neighbors = [exact - 1, exact + 1].filter((b) => b >= 0 && b <= 3);
+  if (!neighbors.length) return exact;
+  return neighbors.length === 1 ? neighbors[0] : (pick() < 0.5 ? neighbors[0] : neighbors[1]);
+}
+
+/**
  * Pick a story for this game, WITHOUT REPLACEMENT within a session.
  *
  * The naive picker — uniform with replacement inside a cell — returns a
@@ -101,7 +130,7 @@ export function pickFromBank(
   seen: ReadonlySet<string>,
   pick: () => number = Math.random,
 ): SuggestedScenario | null {
-  const band = stakesBand(g);
+  const band = softenBand(stakesBand(g), pick);
   const ladder: BankEntry[][] = [
     bank.filter((e) => e.d === domain && e.b === band),
     bank.filter((e) => e.b === band),
