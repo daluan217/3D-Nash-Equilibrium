@@ -242,7 +242,14 @@ try {
     await page.waitForSelector('text=Converged', { timeout: 240000 });
     const pill = await page.locator('text=Converged').count();
     record('Spy vs. Analyst converges in Domain Shrink mode', pill > 0);
-    await $.reset.click(); await page.waitForTimeout(300);
+    // Poll for the reset to actually land (CodeRabbit finding, this
+    // branch), not a fixed sleep: the very next section clicks a preset
+    // button and reads the resulting screen, so a reset that has not yet
+    // committed would let that section start from stale state on a
+    // stalled CI runner.
+    await $.reset.click();
+    await page.waitForFunction(() => document.querySelectorAll('div.overflow-y-auto.font-mono p').length === 1,
+      null, { timeout: 5000 }).catch(() => {});
   }
 
   // ══ 6b. every standard preset reads as a story, not a grid reference
@@ -261,62 +268,81 @@ try {
   //       code too and the check would be measuring the wrong thing.
   {
     const ROWCOL = /\b(row|col(?:umn)?)\s*\d\b/i;
-    // Each preset's own row1Label (src/utils/gameEngine.ts PRESETS) — a
-    // POSITIVE marker, not just the ROWCOL absence check below. Presence is
-    // not participation: a check that only asserts "Row N" text is ABSENT
-    // would pass vacuously on a click that silently failed, a stale
-    // previous preset's screen, or an empty/missing container (CodeRabbit
-    // finding, this branch) — none of those are "the fix working", but
-    // none would be caught without also requiring the RIGHT content.
+    // Each preset's own row1Label (headerMarker) AND a distinct phrase that
+    // only appears in that preset's PROSE (narrativeMarker) — two separate
+    // positive markers for two separate containers, not just the ROWCOL
+    // absence check below. Presence is not participation: a check that only
+    // asserts "Row N" text is ABSENT would pass vacuously on a click that
+    // silently failed, a stale previous preset's screen, or an empty/
+    // missing container — none of those are "the fix working". And
+    // (CodeRabbit finding, this branch) a check that accepts the header
+    // marker OR the narrative marker in EITHER container cannot tell a
+    // STALE header (still showing the PREVIOUS preset's label) from a
+    // correct one, as long as the narrative card happens to satisfy the
+    // marker — the header specifically is what RED-PUBLIC A found broken,
+    // so the header marker must be required IN THE HEADER, not "somewhere".
     const presets = [
-      ['Search Game', 'Search L'],
-      ['Battle of the Sexes', 'Opera'],
-      ['Prisoners Dilemma', 'Cooperate'],
-      ['Cops & Robbers', 'Stay at Home'],
-      ['Spy vs. Analyst', 'Leak Intel'],
-      ['Penalty Kick', 'Aim Left'],
+      ['Search Game', 'Search L', 'searcher'],
+      ['Battle of the Sexes', 'Opera', 'Opera'],
+      ['Prisoners Dilemma', 'Cooperate', 'Cooperate'],
+      ['Cops & Robbers', 'Stay at Home', 'robber'],
+      ['Spy vs. Analyst', 'Leak Intel', 'spy'],
+      ['Penalty Kick', 'Aim Left', 'kicker'],
     ];
     let allClean = true;
-    let allMarked = true;
+    let allHeaderMarked = true;
+    let allNarrativeMarked = true;
     let allPresent = true;
     const offenders = [];
-    const unmarked = [];
+    const headerUnmarked = [];
+    const narrativeUnmarked = [];
     const missing = [];
-    for (const [name, marker] of presets) {
+    for (const [name, headerMarker, narrativeMarker] of presets) {
       await page.getByRole('button', { name, exact: true }).first().click();
       // Poll for the header to actually show THIS preset's label rather than
       // a fixed sleep (CodeRabbit finding, this branch): a fixed wait can
       // sample stale React state on a slow runner, silently passing a check
-      // that never really looked at the right screen.
-      const state = await page.waitForFunction((expectedMarker) => {
+      // that never really looked at the right screen. Polls for the HEADER
+      // marker specifically — the container that must have actually updated.
+      const state = await page.waitForFunction((expectedHeaderMarker) => {
         const matrix = document.querySelector('[data-tour="matrix"]');
         const narrative = document.querySelector('[data-testid="preset-narrative"]');
         if (!matrix || !narrative) return null; // keep polling — containers may not have mounted yet
         const matrixText = matrix.textContent || '';
         const narrativeText = narrative.textContent || '';
-        if (!matrixText.includes(expectedMarker) && !narrativeText.includes(expectedMarker)) return null;
-        return { matrixText, narrativeText, hadBoth: true };
-      }, marker, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null);
+        if (!matrixText.includes(expectedHeaderMarker)) return null; // keep polling — header hasn't updated yet
+        return { matrixText, narrativeText };
+      }, headerMarker, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null);
       if (!state) {
-        // Either a container never mounted, or the marker never showed up —
-        // both are real failures, not "clean" by default.
-        allPresent = false; allMarked = false; missing.push(name);
+        // Either a container never mounted, or the HEADER marker never
+        // showed up — both are real failures, not "clean" by default.
+        allPresent = false; allHeaderMarked = false; missing.push(name);
         continue;
       }
-      if (!(state.matrixText.includes(marker) || state.narrativeText.includes(marker))) {
-        allMarked = false; unmarked.push(name);
-      }
+      // Header marker is already guaranteed present by the poll above (it is
+      // the wait condition) — asserted again here so a future edit to the
+      // poll cannot silently drop this check without a visible red test.
+      if (!state.matrixText.includes(headerMarker)) { allHeaderMarked = false; headerUnmarked.push(name); }
+      if (!state.narrativeText.includes(narrativeMarker)) { allNarrativeMarked = false; narrativeUnmarked.push(name); }
       if (ROWCOL.test(state.matrixText + ' ' + state.narrativeText)) {
         allClean = false; offenders.push(name);
       }
     }
     record('every standard preset\'s header/narrative container mounts and reports state',
       allPresent, missing.join(', '));
-    record('every standard preset shows its OWN label somewhere (header or narrative)',
-      allMarked, unmarked.join(', '));
+    record('every standard preset\'s MATRIX HEADER shows its own row1Label',
+      allHeaderMarked, headerUnmarked.join(', '));
+    record('every standard preset\'s NARRATIVE CARD shows its own expected content',
+      allNarrativeMarked, narrativeUnmarked.join(', '));
     record('no standard preset renders "Row N" / "Col N" in its header or narrative card',
       allClean, offenders.join(', '));
-    await $.reset.click(); await page.waitForTimeout(300);
+    // Poll for the reset (CodeRabbit finding, this branch), same reason as
+    // section 6's ending reset above — the next section (regret mode)
+    // reads screen state right after this and must not start from a
+    // still-settling reset on a stalled runner.
+    await $.reset.click();
+    await page.waitForFunction(() => document.querySelectorAll('div.overflow-y-auto.font-mono p').length === 1,
+      null, { timeout: 5000 }).catch(() => {});
   }
 
   // ══ 7. regret mode converges and names what it did (round 14 wording defect;

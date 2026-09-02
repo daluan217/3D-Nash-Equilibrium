@@ -446,6 +446,28 @@ export default function App() {
   const payoffsRef = useRef(payoffs);
   useLayoutEffect(() => { payoffsRef.current = payoffs; });
 
+  // CodeRabbit finding on this branch (App.tsx:924): payoff-value equality
+  // alone is not a sufficient identity check for a report request. Two
+  // saved games can share IDENTICAL payoff numbers while being different
+  // games (different labels/description) -- payoffsEqual alone would treat
+  // a stale response for game A as still valid once the user switches to a
+  // same-matrix game B. And two requests fired for the SAME game (e.g. two
+  // quick "Regenerate" clicks) can resolve out of order -- the FIRST
+  // request's late response could overwrite the SECOND (more recent, more
+  // wanted) one even though both are technically "for this game".
+  //
+  // A monotonic generation counter closes both: bumped whenever the
+  // report's underlying identity changes (the payoffs-change effect below)
+  // AND at the start of every individual request (fetchLlmExplanation),
+  // so two requests for the SAME unchanged game still get different
+  // numbers -- the later one always wins regardless of arrival order, and
+  // a stale request compares its captured number against the LATEST one,
+  // not just the latest NUMBERS. Kept alongside payoffsEqual, not instead
+  // of it -- belt and braces: a bug in the bump logic would leave
+  // payoffsEqual as a second, independent line of defense against the
+  // cross-game case finding 001 already covers.
+  const requestGenerationRef = useRef(0);
+
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
     a11: '2', b11: '1', a12: '0', b12: '0',
     a21: '0', b21: '0', a22: '1', b22: '2',
@@ -791,7 +813,18 @@ export default function App() {
   const llmVerified = envelopeIsTrustworthy(llmEnvelope);
 
   // Any edit to the game invalidates prose written about the previous one.
-  useEffect(() => { setLlmEnvelope(null); setLlmError(false); setProseScenario(null); }, [payoffs]);
+  // Also bumps requestGenerationRef (any in-flight request becomes stale the
+  // instant this fires) and clears the loading flags -- CodeRabbit's second
+  // point on the same finding: without this, switching away from a game
+  // with a slow request in flight left "Explain this game" / "New AI
+  // scenario" permanently disabled for the NEWLY selected game, because
+  // only the (now-superseded) old request's own `finally` block was ever
+  // going to clear them.
+  useEffect(() => {
+    requestGenerationRef.current += 1;
+    setLlmEnvelope(null); setLlmError(false); setProseScenario(null);
+    setLlmLoading(false); setScenarioLoading(false);
+  }, [payoffs]);
 
   /**
    * Keep an invented scenario ON the game, labels and all.
@@ -893,6 +926,16 @@ export default function App() {
     // "what I asked about" against "what's on screen now") reads plainly at
     // the call site below.
     const requestPayoffs = payoffs;
+    // Bump-then-capture, not just read: two calls for the SAME game (e.g.
+    // "Regenerate" clicked twice before the first response lands) must get
+    // DIFFERENT generation numbers so the later call always wins regardless
+    // of which response arrives first -- reading without bumping would give
+    // both calls the identical number whenever the payoffs never changed
+    // between them, and an out-of-order resolution would then pass this
+    // check exactly like the bug it exists to close. The payoffs-change
+    // effect ALSO bumps this (see its declaration), so a game switch
+    // invalidates an in-flight request even with no new call at all.
+    const myGeneration = (requestGenerationRef.current += 1);
     setLlmLoading(true);
     setLlmError(false);
     try {
@@ -921,7 +964,7 @@ export default function App() {
       // `[payoffs]` effect has already cleared `llmEnvelope`/`proseScenario`
       // for whatever IS on screen now; this only stops the stale response
       // from overwriting that a moment later.
-      if (!payoffsEqual(requestPayoffs, payoffsRef.current)) return;
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       setLlmEnvelope(envelope);
       // Snapshot the scenario THIS prose was generated from — see the
       // proseScenario declaration above. Every fresh fetch here writes new
@@ -936,12 +979,17 @@ export default function App() {
       // paint "No verified explanation available" over whatever game is on
       // screen now, when nothing was ever asked about IT — same staleness
       // guard as the success path above, same reason.
-      if (!payoffsEqual(requestPayoffs, payoffsRef.current)) return;
+      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       setLlmEnvelope(null);
       setProseScenario(null);
       setLlmError(true);
     } finally {
-      setLlmLoading(false);
+      // Only the request that is still CURRENT clears the loading flag --
+      // a superseded request's finally must not clobber a newer request's
+      // still-in-flight spinner (the payoffs-change effect above already
+      // cleared it immediately on the actual game switch, for the case
+      // where nothing newer was fired).
+      if (myGeneration === requestGenerationRef.current) setLlmLoading(false);
     }
   };
 
@@ -3246,7 +3294,18 @@ export default function App() {
               <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">Range: [-100, 100]</span>
             </div>
 
-            <div data-tour="matrix" className="grid grid-cols-[auto_1fr_1fr] gap-3 text-center items-center">
+            {/* Row-label column capped at 72px (was "auto"): mobile CI caught this
+                --  an auto-sized column grows to fit whatever text is in it (e.g.
+                "Football", "Stay at Home"), stealing width from the payoff-input
+                columns on either side. On the iPhone 14 Pro profile (393px viewport,
+                the narrowest of the three CI tests) that pushed the number inputs
+                to 23-24px wide -- under the WCAG 2.2 AA 24px target floor. Capping
+                the label column forces long labels to wrap (break-words is already
+                on the label divs below) instead of shrinking the inputs. 72px was
+                chosen empirically: re-verified against BOTH the longest label this
+                branch introduced ("Stay at Home", Cops & Robbers) and the shortest
+                real preset labels, on all three mobile.mjs device profiles. */}
+            <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_1fr_1fr] gap-3 text-center items-center">
               <div className="text-xs font-bold text-slate-400 dark:text-slate-500 pr-2 text-left">Tactics</div>
               <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col1}>B: {activeLabels.col1}</div>
               <div className="text-xs font-bold text-player-b-600 dark:text-player-b-400 break-words" title={activeLabels.col2}>B: {activeLabels.col2}</div>

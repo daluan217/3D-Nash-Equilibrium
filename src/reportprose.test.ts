@@ -42,7 +42,7 @@ function ok(cond: boolean, msg: string) {
 // ── the state exists and is cleared alongside the envelope it describes ────
 ok(/const \[proseScenario, setProseScenario\] = useState/.test(src),
   'proseScenario state must be declared');
-ok(/setLlmEnvelope\(null\); setLlmError\(false\); setProseScenario\(null\); \}, \[payoffs\]\)/.test(src),
+ok(/setLlmEnvelope\(null\); setLlmError\(false\); setProseScenario\(null\);[\s\S]{0,200}\}, \[payoffs\]\);/.test(src),
   'proseScenario must be cleared in the same effect that clears llmEnvelope on a payoff edit '
   + '(otherwise a stale scenario from the OLD game colours prose about the NEW one)');
 
@@ -69,8 +69,21 @@ ok(fetchLlmStart !== -1 && fetchFreshStart !== -1 && fetchLlmStart < fetchFreshS
   'both fetchLlmExplanation and fetchFreshScenario must exist, in that order');
 
 const fetchLlmBody = src.slice(fetchLlmStart, fetchFreshStart);
-ok(fetchLlmBody.includes('setProseScenario('),
-  'fetchLlmExplanation writes NEW prose every time it succeeds, so it must (re)set proseScenario to match');
+// CodeRabbit finding (this branch): fetchLlmExplanation's CATCH branch also
+// calls setProseScenario(null) (error cleanup) -- a bare
+// fetchLlmBody.includes('setProseScenario(') check would still pass if the
+// SUCCESS-path snapshot assignment were deleted entirely, because the
+// catch's call alone satisfies "the string appears somewhere in this
+// function". Isolate the section BEFORE the catch block and require the
+// ENVELOPE-DERIVED assignment specifically, not just any call to the setter.
+const fetchLlmCatchStart = fetchLlmBody.indexOf('} catch {');
+ok(fetchLlmCatchStart !== -1, 'fetchLlmExplanation must have a catch block');
+const fetchLlmSuccessSection = fetchLlmBody.slice(0, fetchLlmCatchStart);
+ok(/setProseScenario\(envelope\.report\?\.suggestedScenario \?\? null\)/.test(fetchLlmSuccessSection),
+  'REGRESSION GUARD: the SUCCESS branch (isolated from the catch branch, which also calls '
+  + 'setProseScenario for unrelated error-cleanup reasons) must assign proseScenario from the '
+  + 'envelope this specific response carried -- fetchLlmExplanation writes NEW prose every time '
+  + 'it succeeds, so it must (re)set proseScenario to match');
 
 // Bound the fetchFreshScenario body at the next top-level function/hook
 // declaration so this does not accidentally read past it into unrelated code.

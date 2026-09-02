@@ -89,18 +89,69 @@ ok(/payoffsRef\.current = payoffs;/.test(src),
   'a ref tracking the LATEST payoffs must be kept current every render '
   + '(without it there is nothing fresher than the closure to compare against)');
 
-const guardCount = (body.match(/payoffsEqual\(requestPayoffs, payoffsRef\.current\)/g) || []).length;
-ok(guardCount >= 2,
-  `REGRESSION GUARD: the staleness check must appear at least twice in fetchLlmExplanation `
-  + `(once before the success-path setLlmEnvelope, once before the catch-path setLlmEnvelope) `
-  + `-- found ${guardCount}`);
+// CodeRabbit finding (this branch): a total count of 2 does not prove ONE
+// of them protects the catch path specifically -- two occurrences in the
+// SUCCESS branch alone would satisfy a bare count check while a stale
+// FAILED request still ran setLlmEnvelope(null) unguarded for whatever
+// game is on screen now. Isolate the try-block's success section and the
+// catch block SEPARATELY and check each in its own right.
+const catchStart = body.indexOf('} catch {');
+const finallyStart = body.indexOf('} finally {');
+ok(catchStart !== -1 && finallyStart !== -1 && catchStart < finallyStart,
+  'fetchLlmExplanation must have a catch block followed by a finally block');
+const successSection = body.slice(0, catchStart);
+const catchSection = body.slice(catchStart, finallyStart);
+const finallySection = body.slice(finallyStart);
 
-// The guard in the success path must come BEFORE the line that shows the
-// report, not after -- checking staleness after already rendering it would
-// be too late.
-const successGuardIdx = body.indexOf('payoffsEqual(requestPayoffs, payoffsRef.current)');
-const setEnvelopeIdx = body.indexOf('setLlmEnvelope(envelope)');
+const GUARD_RE = /myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/;
+ok(GUARD_RE.test(successSection),
+  'REGRESSION GUARD: the success branch must contain the combined generation + payoffs staleness check');
+ok(GUARD_RE.test(catchSection),
+  'REGRESSION GUARD: the catch branch, checked SEPARATELY from the success branch, must ALSO contain '
+  + 'the combined staleness check -- a stale failed request must not paint an error over the current game');
+
+// Ordering within EACH branch: the guard must run BEFORE that branch's own
+// state-setting calls, not after -- checking staleness after already
+// rendering/erroring would be too late.
+const successGuardIdx = successSection.search(GUARD_RE);
+const setEnvelopeIdx = successSection.indexOf('setLlmEnvelope(envelope)');
 ok(successGuardIdx !== -1 && setEnvelopeIdx !== -1 && successGuardIdx < setEnvelopeIdx,
-  'the staleness check must run BEFORE setLlmEnvelope(envelope), not after');
+  'the staleness check must run BEFORE setLlmEnvelope(envelope) in the success branch, not after');
+
+const catchGuardIdx = catchSection.search(GUARD_RE);
+const catchSetNullIdx = catchSection.indexOf('setLlmEnvelope(null)');
+ok(catchGuardIdx !== -1 && catchSetNullIdx !== -1 && catchGuardIdx < catchSetNullIdx,
+  'the staleness check must run BEFORE setLlmEnvelope(null) in the catch branch, not after');
+
+// ── 3. the generation-token mechanism (CodeRabbit finding: payoff equality
+//      alone is not a sufficient identity check -- two DIFFERENT games can
+//      share identical payoff numbers, and two requests for the SAME
+//      unchanged game can still resolve out of order). A monotonic counter,
+//      bumped both on a real identity change (payoffs effect) and at the
+//      START of every individual request, closes both: kept alongside
+//      payoffsEqual as a second, independent guard, not a replacement.
+ok(/const requestGenerationRef = useRef\(0\);/.test(src),
+  'requestGenerationRef must be declared');
+// Bumped in the payoffs-change effect -- ANY identity change (including
+// switching between two different games that happen to share numerically
+// identical payoffs) invalidates whatever is in flight.
+const payoffsEffectMatch = src.match(/useEffect\(\(\) => \{\s*requestGenerationRef\.current \+= 1;[\s\S]{0,400}?\}, \[payoffs\]\);/);
+ok(!!payoffsEffectMatch,
+  'the payoffs-change effect must bump requestGenerationRef, not just clear llmEnvelope/proseScenario');
+ok(!!payoffsEffectMatch && /setLlmLoading\(false\); setScenarioLoading\(false\);/.test(payoffsEffectMatch[0]),
+  'the payoffs-change effect must also reset the loading flags, so switching away from a game with a '
+  + 'slow request in flight does not leave the report controls stuck disabled for the NEWLY selected game');
+// Bump-THEN-capture inside fetchLlmExplanation itself -- reading without
+// bumping would give two same-game requests (e.g. two Regenerate clicks)
+// the IDENTICAL generation number, and the guard above would then be
+// unable to tell which of the two responses is the more recent one.
+ok(/const myGeneration = \(requestGenerationRef\.current \+= 1\);/.test(body),
+  'REGRESSION GUARD: fetchLlmExplanation must BUMP requestGenerationRef when capturing myGeneration, '
+  + 'not merely read it -- a read-only capture cannot distinguish two requests for the same unchanged game');
+// The finally block must only clear the loading flag for the request that
+// is STILL current -- a superseded request's finally must not clobber a
+// newer, still-in-flight request's spinner.
+ok(/if \(myGeneration === requestGenerationRef\.current\) setLlmLoading\(false\);/.test(finallySection),
+  'the finally block must gate setLlmLoading(false) on the request still being current');
 
 console.log(`reportrace.test.ts: ${checks} checks passed`);

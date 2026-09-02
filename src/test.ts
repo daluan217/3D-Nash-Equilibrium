@@ -2206,6 +2206,19 @@ function testRedTeamFindings14() {
     'fixture integrity: bare parseFloat really does fail on fullwidth minus+digit too');
   assert(commitPayoffInput('－４') === -4,
     `fullwidth minus + fullwidth digit "－４" must commit as -4, got ${commitPayoffInput('－４')}`);
+  // CodeRabbit finding (this branch): the minus+digit composition case above
+  // does not prove the PLUS case composes too -- NUMERIC_INPUT_PLUS is a
+  // separate character class from NUMERIC_INPUT_MINUS, and a regression that
+  // broke ONLY the plus normalisation (e.g. an edit that narrowed
+  // NUMERIC_INPUT_PLUS's character class) would leave every assertion above
+  // passing while `commitPayoffInput('＋４')` silently fell back to 0.
+  const fwPlusDigit = '＋４';
+  assert(fwPlusDigit.charCodeAt(0) === 0xff0b && fwPlusDigit.charCodeAt(1) === 0xff14,
+    'fixture integrity: the fullwidth plus+digit fixture must be U+FF0B U+FF14, not ASCII lookalikes');
+  assert(isNaN(parseFloat(fwPlusDigit)),
+    'fixture integrity: bare parseFloat really does fail on fullwidth plus+digit too');
+  assert(commitPayoffInput(fwPlusDigit) === 4,
+    `fullwidth plus + fullwidth digit "${fwPlusDigit}" must commit as 4, got ${commitPayoffInput(fwPlusDigit)}`);
   // The fullwidth full stop must ALSO normalise, and be tested together with
   // the digits, not in isolation: fixing only the digits and leaving the
   // fullwidth "." alone would make a fullwidth-typed "0.5" digit-normalise
