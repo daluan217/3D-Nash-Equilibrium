@@ -1274,16 +1274,16 @@ function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Persist a CANDIDATE database and report success/failure HONESTLY on BOTH
- * storage backends. Used only by the game-save/update/delete routes (via
- * `saveDBOrFail` below) — every other `saveDB` call site is UNCHANGED
+ * Persist a CANDIDATE `games` array and report success/failure HONESTLY on
+ * BOTH storage backends. Used only by the game-save/update/delete routes
+ * (via `saveDBOrFail` below) — every other `saveDB` call site is UNCHANGED
  * fire-and-forget on the GCS branch, deliberately: making that async for
  * all ~17 of them (registration, verification, password reset, account
  * deletion, ...) is a materially larger and untested change than this pass
  * covers; noted as future work, not claimed here.
  *
- * Two things CodeRabbit found on this same PR, fixed together because they
- * share one mechanism:
+ * Three things CodeRabbit found on this same PR, across two review rounds,
+ * fixed together because they share one mechanism:
  *
  * (1) `saveDB`'s GCS branch is fire-and-forget, so `saveDBOrFail`'s desktop
  *     fix (RED-DESKTOP-4/002) left the IDENTICAL false-"success" shape on
@@ -1291,25 +1291,42 @@ function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
  *     rejects AFTER the 200 response has already gone out is invisible.
  *     This awaits the real GCS write instead.
  *
- * (2) `db` here must be a COPY the caller built (see the three routes),
- *     never the live `inMemoryDb` reference mutated in place — otherwise
- *     "roll back on failure" is meaningless, because the shared object was
- *     already mutated before this function ever runs and there is nothing
- *     left to roll back TO. `inMemoryDb` is reassigned to `db` ONLY after a
- *     CONFIRMED write, so a failure leaves `inMemoryDb` exactly as it was:
- *     a GET right after a failed POST/PATCH/DELETE sees the OLD, correct
- *     state, not a change that was never actually saved.
+ * (2) The three routes build a NEW `games` array rather than mutating the
+ *     live `inMemoryDb.games` in place — otherwise "roll back on failure"
+ *     is meaningless, because the shared array was already mutated before
+ *     this function ever runs and there is nothing left to roll back TO.
+ *     `inMemoryDb` only picks up the new `games` after a CONFIRMED write,
+ *     so a failure leaves it exactly as it was: a GET right after a failed
+ *     POST/PATCH/DELETE sees the OLD, correct state.
+ *
+ * (3) THIS FUNCTION TAKES `games: SavedGame[]`, NOT a whole candidate `DB`
+ *     — deliberately, found on re-review. Awaiting the GCS write (1) is a
+ *     real yield point on Node's event loop, and `serializeGameWrite`
+ *     (below) only serializes the THREE GAME routes against each other; the
+ *     ~17 UNSERIALIZED account routes (registration, deletion, ...) can
+ *     still mutate `inMemoryDb.users` while a game write is in flight. A
+ *     candidate built with a SNAPSHOT of `db.users` taken before that await
+ *     would silently UNDO a concurrent account change the moment it
+ *     commits (an account deletion reappearing, for instance). Reading
+ *     `inMemoryDb!.users` fresh, twice — once for the bytes actually
+ *     persisted, once again at the final in-memory commit — narrows that
+ *     window to the width of this one write instead of the width of the
+ *     whole queued wait. A byte-for-byte closure of the residual (bringing
+ *     the account routes into this same queue) is future work, not claimed
+ *     here — this fixes the more severe, more visible half: an account
+ *     change silently reappearing in what the server reports back.
  */
-async function saveDBAwaited(db: DB): Promise<boolean> {
+async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
     try {
       const { Storage } = await import('@google-cloud/storage');
       const storage = new Storage();
+      const payload: DB = { users: inMemoryDb?.users ?? [], games };
       await storage.bucket(GCS_BUCKET!).file('db.json').save(
-        JSON.stringify(db, null, 2),
+        JSON.stringify(payload, null, 2),
         { contentType: 'application/json' },
       );
-      inMemoryDb = db;
+      inMemoryDb = { users: inMemoryDb?.users ?? [], games };
       return true;
     } catch (err) {
       console.error('GCS write failed:', err);
@@ -1321,8 +1338,9 @@ async function saveDBAwaited(db: DB): Promise<boolean> {
     if (!fs.existsSync(dbDir)) {
       fs.mkdirSync(dbDir, { recursive: true });
     }
-    writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
-    inMemoryDb = db;
+    const payload: DB = { users: inMemoryDb?.users ?? [], games };
+    writeFileAtomicSync(DB_FILE, JSON.stringify(payload, null, 2));
+    inMemoryDb = { users: inMemoryDb?.users ?? [], games };
     return true;
   } catch (err) {
     console.error("Error writing db.json:", err);
@@ -1343,8 +1361,8 @@ async function saveDBAwaited(db: DB): Promise<boolean> {
  * and is NOT covered by this change — noted for a future pass, not claimed
  * here.
  */
-async function saveDBOrFail(db: DB, res: express.Response): Promise<boolean> {
-  if (await saveDBAwaited(db)) return true;
+async function saveDBOrFail(games: SavedGame[], res: express.Response): Promise<boolean> {
+  if (await saveDBAwaited(games)) return true;
   res.status(500).json({ error: "Could not save your changes. Please try again." });
   return false;
 }
@@ -2851,9 +2869,11 @@ async function startServer() {
       // A NEW games array, not a push onto the live `db.games` (==
       // inMemoryDb's own array) — saveDBOrFail only commits this candidate
       // to inMemoryDb on a CONFIRMED write, so a failure must find nothing
-      // already mutated to roll back FROM.
-      const candidate: DB = { users: db.users, games: [...db.games, newGame] };
-      if (!(await saveDBOrFail(candidate, res))) return;
+      // already mutated to roll back FROM. `users` is NOT part of this
+      // candidate (saveDBAwaited reads it fresh at write/commit time) — see
+      // its own comment for why a users SNAPSHOT here would race a
+      // concurrent, unserialized account write.
+      if (!(await saveDBOrFail([...db.games, newGame], res))) return;
 
       res.json({
         success: true,
@@ -2920,11 +2940,11 @@ async function startServer() {
       // the box must be able to remove the text.
       if (nextDescription || (allowClear && "description" in req.body)) updatedGame.description = nextDescription;
       Object.assign(updatedGame, nextLabels, nextTerms);
-      const candidate: DB = {
-        users: db.users,
-        games: db.games.map((g) => (g.id === updatedGame.id ? updatedGame : g)),
-      };
-      if (!(await saveDBOrFail(candidate, res))) return;
+      // `users` is NOT part of this candidate — see saveDBAwaited's own
+      // comment for why a users snapshot here would race a concurrent,
+      // unserialized account write.
+      const candidateGames = db.games.map((g) => (g.id === updatedGame.id ? updatedGame : g));
+      if (!(await saveDBOrFail(candidateGames, res))) return;
 
       res.json({ success: true, message: "Game updated.", game: updatedGame });
     });
@@ -2955,9 +2975,11 @@ async function startServer() {
       }
 
       // A NEW games array (filter, not splice on the live one) — a failed
-      // write must leave inMemoryDb's own array undisturbed.
-      const candidate: DB = { users: db.users, games: db.games.filter((_, i) => i !== gameIndex) };
-      if (!(await saveDBOrFail(candidate, res))) return;
+      // write must leave inMemoryDb's own array undisturbed. `users` is NOT
+      // part of this candidate — see saveDBAwaited's own comment for why a
+      // users snapshot here would race a concurrent, unserialized account
+      // write.
+      if (!(await saveDBOrFail(db.games.filter((_, i) => i !== gameIndex), res))) return;
 
       res.json({
         success: true,
