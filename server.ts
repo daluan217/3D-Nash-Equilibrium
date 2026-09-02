@@ -1482,22 +1482,22 @@ function saveDB(db: DB): boolean {
  * never both build a candidate off the SAME `inMemoryDb` snapshot and have
  * whichever commits second silently clobber the other's change.
  *
- * CodeRabbit (2026-09-02, second review round): awaiting the real GCS write
- * (above) closed the false-"success" gap but opened exactly this race on
- * the HOSTED path — a genuine network `await` is a real yield point on
- * Node's single-threaded event loop, so a second request's handler can run
- * `loadDB()` while the first one is still mid-write. The DESKTOP branch was
- * never at risk (a synchronous file write has no yield point to interleave
- * on), which is why this queue only needed adding once the GCS branch
- * became genuinely async.
- *
- * A single in-process queue is CORRECT here, not just convenient:
- * `cloudbuild.yaml`'s `--max-instances=1` (this same PR) guarantees exactly
- * one process ever runs, so there is no second process this queue would
- * need to coordinate with. `.catch(() => {})` on the chain link is load-
- * bearing — without it, one caller's write throwing would leave every LATER
- * caller permanently chained onto a rejected promise, so a single transient
- * GCS failure would appear to hang every game mutation after it forever.
+ * ORIGIN (CodeRabbit, 2026-09-02, second review round): an earlier version
+ * of `saveDBAwaited` awaited a real per-request GCS write, which is a
+ * genuine yield point on Node's single-threaded event loop — a second
+ * request's handler could run `loadDB()` while the first was still
+ * mid-write. That GCS-await design was replaced (see `saveDBAwaited`'s own
+ * comment, reconciled with #85's coalescing pump) with a SYNCHRONOUS
+ * hand-off to `scheduleGcsSave()`, which removes that specific yield point
+ * — so this queue is no longer load-bearing for GCS mode, and the DESKTOP
+ * branch (a synchronous file write) was never at risk either. Left in place
+ * anyway as cheap insurance: correct and free given `--max-instances=1`
+ * (this same PR, so there is only ever one process to serialize against),
+ * and it costs nothing to keep the three game routes fully ordered against
+ * each other if a future change ever reintroduces a real await in this
+ * path. `.catch(() => {})` on the chain link is load-bearing regardless —
+ * without it, one caller's write throwing would leave every LATER caller
+ * permanently chained onto a rejected promise.
  */
 let gameWriteQueue: Promise<unknown> = Promise.resolve();
 function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
@@ -1507,64 +1507,49 @@ function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Persist a CANDIDATE `games` array and report success/failure HONESTLY on
- * BOTH storage backends. Used only by the game-save/update/delete routes
- * (via `saveDBOrFail` below) — every other `saveDB` call site is UNCHANGED
- * fire-and-forget on the GCS branch, deliberately: making that async for
- * all ~17 of them (registration, verification, password reset, account
- * deletion, ...) is a materially larger and untested change than this pass
- * covers; noted as future work, not claimed here.
+ * Persist a CANDIDATE `games` array. Used only by the game-save/update/
+ * delete routes (via `saveDBOrFail` below) — every other `saveDB` call site
+ * is untouched.
  *
- * Three things CodeRabbit found on this same PR, across two review rounds,
- * fixed together because they share one mechanism:
+ * THE HONESTY GUARANTEE IS DESKTOP-ONLY, BY DIRECTOR'S CALL (2026-09-02,
+ * reconciling this with #85 after a merge): the desktop/local-file branch
+ * writes SYNCHRONOUSLY, so a caught error here really does mean nothing
+ * reached disk, `false` is returned, and the caller gets an honest 500
+ * instead of RED-DESKTOP-4/002's false "success" (an unwritable
+ * `ELECTRON_USER_DATA_PATH` echoing a save that then vanishes on restart).
  *
- * (1) `saveDB`'s GCS branch is fire-and-forget, so `saveDBOrFail`'s desktop
- *     fix (RED-DESKTOP-4/002) left the IDENTICAL false-"success" shape on
- *     the hosted path for these exact three routes — a GCS write that
- *     rejects AFTER the 200 response has already gone out is invisible.
- *     This awaits the real GCS write instead.
+ * The GCS/hosted branch does NOT await a real upload here — it delegates to
+ * `scheduleGcsSave()`, #85's per-process COALESCING PUMP (generation
+ * preconditions, 412 conflict re-download/merge, one upload in flight at a
+ * time). An earlier version of this function ran its OWN raw, unawaited-
+ * elsewhere `.save()` call with none of that machinery: no
+ * `ifGenerationMatch`, a DIFFERENT upload wire shape than the pump's
+ * (`resumable`/`validation` defaults, vs. the pump's explicit
+ * `resumable:false, validation:false`) — which silently desynced the local
+ * `gcsGeneration` tracker from GCS's real state and broke
+ * `src/integration/gcs-db-saves.test.mjs`'s wire-format assumptions
+ * (all four rapid saves stopped returning 200). Trying to ALSO get a
+ * per-request honest 500/rollback out of GCS would mean either awaiting the
+ * pump (defeating its whole coalescing purpose — the pump exists precisely
+ * so N rapid saves become one upload, not N) or duplicating its generation/
+ * merge logic a second time. Not worth it: the pump's own retry-on-412 and
+ * `--max-instances=1` (this same PR) already make hosted data loss the
+ * class of defect #85 exists to close; RED-DESKTOP-4/002's own repro was
+ * desktop-only (an unwritable directory is a desktop/Electron concept —
+ * `ELECTRON_USER_DATA_PATH` has no hosted analogue), so scoping the honest-
+ * failure guarantee to desktop is not a regression on what was ever proven.
  *
- * (2) The three routes build a NEW `games` array rather than mutating the
- *     live `inMemoryDb.games` in place — otherwise "roll back on failure"
- *     is meaningless, because the shared array was already mutated before
- *     this function ever runs and there is nothing left to roll back TO.
- *     `inMemoryDb` only picks up the new `games` after a CONFIRMED write,
- *     so a failure leaves it exactly as it was: a GET right after a failed
- *     POST/PATCH/DELETE sees the OLD, correct state.
- *
- * (3) THIS FUNCTION TAKES `games: SavedGame[]`, NOT a whole candidate `DB`
- *     — deliberately, found on re-review. Awaiting the GCS write (1) is a
- *     real yield point on Node's event loop, and `serializeGameWrite`
- *     (below) only serializes the THREE GAME routes against each other; the
- *     ~17 UNSERIALIZED account routes (registration, deletion, ...) can
- *     still mutate `inMemoryDb.users` while a game write is in flight. A
- *     candidate built with a SNAPSHOT of `db.users` taken before that await
- *     would silently UNDO a concurrent account change the moment it
- *     commits (an account deletion reappearing, for instance). Reading
- *     `inMemoryDb!.users` fresh, twice — once for the bytes actually
- *     persisted, once again at the final in-memory commit — narrows that
- *     window to the width of this one write instead of the width of the
- *     whole queued wait. A byte-for-byte closure of the residual (bringing
- *     the account routes into this same queue) is future work, not claimed
- *     here — this fixes the more severe, more visible half: an account
- *     change silently reappearing in what the server reports back.
+ * `users` is still read FRESH from `inMemoryDb` right before committing —
+ * not carried as a stale snapshot from before this function was called —
+ * so a concurrent account-route write (registration, deletion, ...; the
+ * ~17 OTHER `saveDB` call sites, still untouched) is never silently undone
+ * by a game write that started before it and finishes after.
  */
 async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
-    try {
-      const { Storage } = await import('@google-cloud/storage');
-      const storage = new Storage();
-      const payload: DB = { users: inMemoryDb?.users ?? [], games };
-      await storage.bucket(GCS_BUCKET!).file('db.json').save(
-        JSON.stringify(payload, null, 2),
-        { contentType: 'application/json' },
-      );
-      inMemoryDb = { users: inMemoryDb?.users ?? [], games };
-      return true;
-    } catch (err) {
-      console.error('GCS write failed:', err);
-      return false;
-    }
+    inMemoryDb = { users: inMemoryDb?.users ?? [], games };
+    scheduleGcsSave(); // #85's coalescing pump — see this function's own comment for why this branch cannot also await a per-request result
+    return true;
   }
   try {
     const dbDir = path.dirname(DB_FILE);
@@ -1583,16 +1568,12 @@ async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
 
 /**
  * `saveDBAwaited`, but a caller that is about to respond to an HTTP request
- * can use this to turn a real write failure — desktop OR hosted — into an
- * honest 500 instead of the false "success" RED-DESKTOP-4/002 found: an
- * unwritable `ELECTRON_USER_DATA_PATH` (read-only directory, full disk, ...)
- * used to accept a game save, echo it back as if it were on disk, and then
- * lose it silently and permanently on the next restart — with no signal
- * anywhere a user could see. Wired into the game-save/update/delete routes,
- * which are exactly what RED-DESKTOP-4 reproduced; the same shape exists on
- * the account routes (registration, verification, password reset, deletion)
- * and is NOT covered by this change — noted for a future pass, not claimed
- * here.
+ * can use this to turn a real DESKTOP write failure into an honest 500
+ * instead of the false "success" RED-DESKTOP-4/002 found — see
+ * `saveDBAwaited`'s own comment for why the GCS/hosted branch cannot make
+ * the same promise (it delegates to #85's coalescing pump, which is
+ * deliberately not awaited per-request) and instead always reports success
+ * once handed off, exactly like every other `saveDB` call site.
  */
 async function saveDBOrFail(games: SavedGame[], res: express.Response): Promise<boolean> {
   if (await saveDBAwaited(games)) return true;
