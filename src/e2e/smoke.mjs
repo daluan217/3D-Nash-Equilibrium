@@ -656,6 +656,58 @@ try {
     await page.waitForTimeout(300);
   }
 
+  // ══ 17. THE IDLE SPIN RESPECTS prefers-reduced-motion (RED-APP-4 round 4,
+  //      findings/RED-APP-4/003-idle-spin-ignores-reduced-motion.md)
+  //
+  //      The idle spin — the plot's continuous, indefinite ~40s/turn camera
+  //      rotation while nothing else is happening — never checked the OS-level
+  //      reduced-motion preference at all; only a DIFFERENT animation on the
+  //      same component (the tour's camera-glide transition) did. Reproduced
+  //      against production: camera eye moved by a similar amount in each of
+  //      two consecutive idle windows with the preference active. This is the
+  //      app's DEFAULT idle state, reachable with zero interaction, so it is
+  //      the more consequential of the two animations to miss.
+  //
+  //      A SEPARATE page (not the shared one above) because the preference
+  //      must be readable from the very first render, and setting it mid-way
+  //      through this suite would contaminate every later check.
+  {
+    const rmPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    const eye = () => rmPage.evaluate(() => {
+      const el = document.getElementById('plotly-3d-market-simulation');
+      return el?._fullLayout?.scene?.camera?.eye ?? null;
+    });
+    const moved = (a, b2) => !!a && !!b2 && Math.hypot(a.x - b2.x, a.y - b2.y, a.z - b2.z);
+
+    // CONTROL, on this same fresh page, BEFORE the preference is set: the
+    // spin must actually be reachable here, or a "no movement" result below
+    // would prove nothing (a broken idle spin would pass this check too).
+    await rmPage.goto(BASE, { waitUntil: 'networkidle' });
+    await rmPage.waitForTimeout(800);
+    const rmExitTour = rmPage.getByRole('button', { name: /exit tour/i });
+    if (await rmExitTour.count() > 0) { await rmExitTour.click(); await rmPage.waitForTimeout(300); }
+    const c0 = await eye();
+    await rmPage.waitForTimeout(4000);
+    const c1 = await eye();
+    record('CONTROL: the idle spin turns the camera with NO motion preference set',
+      moved(c0, c1) > 0.05, `displacement=${moved(c0, c1)}`);
+
+    // THE CHECK: enable the preference on this same live page (also exercises
+    // the `change` event path, not just the initial-mount read) and confirm
+    // the camera then holds perfectly still.
+    await rmPage.emulateMedia({ reducedMotion: 'reduce' });
+    const sees = await rmPage.evaluate(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    record('the page observes the emulated prefers-reduced-motion preference', sees === true);
+    await rmPage.waitForTimeout(300);
+    const e0 = await eye();
+    await rmPage.waitForTimeout(4000);
+    const e1 = await eye();
+    record('the idle spin does not move the camera once prefers-reduced-motion is set',
+      moved(e0, e1) === 0, `eye ${JSON.stringify(e0)} -> ${JSON.stringify(e1)} (displacement=${moved(e0, e1)})`);
+
+    await rmPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page

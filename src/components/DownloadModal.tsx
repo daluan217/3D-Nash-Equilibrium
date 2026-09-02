@@ -217,7 +217,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                       into. */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 1 — Clone the repository</span>
+                      <span className="text-xs font-bold text-muted dark:text-muted-dark uppercase">Step 1 — Clone the repository</span>
                       <button
                         onClick={() => copyCode(cloneCommands, 'clone')}
                         className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
@@ -234,7 +234,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                   {/* Step 2 */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 2 — Install dependencies</span>
+                      <span className="text-xs font-bold text-muted dark:text-muted-dark uppercase">Step 2 — Install dependencies</span>
                       <button
                         onClick={() => copyCode(installCommands, 'inst')}
                         className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
@@ -251,7 +251,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
                   {/* Step 3 */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase">Step 3 — Pack macOS DMG Installer</span>
+                      <span className="text-xs font-bold text-muted dark:text-muted-dark uppercase">Step 3 — Pack macOS DMG Installer</span>
                       <button
                         onClick={() => copyCode(buildCommands, 'build')}
                         className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
@@ -299,7 +299,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             <div className="border-t border-amber-200 dark:border-amber-900/40 pt-2">
               <button
                 onClick={() => setShowTerminalAlt(v => !v)}
-                className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500 hover:text-accent-500 dark:hover:text-accent-400 cursor-pointer"
+                className="flex items-center gap-1 text-xs text-muted dark:text-muted-dark hover:text-accent-500 dark:hover:text-accent-400 cursor-pointer"
               >
                 <ChevronDown className={`w-3 h-3 transition-transform ${showTerminalAlt ? 'rotate-180' : ''}`} />
                 Prefer the terminal?
@@ -307,7 +307,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
               {showTerminalAlt && (
                 <div className="mt-2 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1"><Terminal className="w-3 h-3" /> Terminal command</span>
+                    <span className="text-xs font-bold text-muted dark:text-muted-dark uppercase flex items-center gap-1"><Terminal className="w-3 h-3" /> Terminal command</span>
                     <button
                       onClick={() => copyCode(`xattr -dr com.apple.quarantine "/Applications/Nash Equilibrium Simulator.app"`, 'xattr')}
                       className="text-xs text-accent-500 hover:text-accent-600 font-bold flex items-center gap-1 cursor-pointer"
