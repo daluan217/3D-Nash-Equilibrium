@@ -200,7 +200,9 @@ async function waitReady(child, thePort) {
 }
 
 async function stop(child) {
-  if (!child || child.exitCode !== null) return;
+  // A child that already left by SIGNAL has exitCode === null but signalCode set;
+  // waiting on its 'exit' event again would never resolve (unsettled top-level await).
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const ended = new Promise((res) => child.once('exit', res));
   child.kill('SIGTERM');
   const timer = setTimeout(() => child.kill('SIGKILL'), 4000);
@@ -224,6 +226,14 @@ function seededUser(id, username, email, password) {
 
 const gcsPortA = Number(process.env.GCS_DB_TEST_GCS_PORT || 3130);
 let srv = null, fakeGcs = null;
+// Every child process, fake bucket and temp dir is registered here as it is
+// created, so `finally` can release ALL of them — not just the two variables
+// that happen to be in scope — when an assertion throws mid-run (otherwise
+// orphans hold ports 3131-3151 and the rerun fails for a confusing second reason).
+const children = [], fakes = [], tmpDirs = [];
+const track = (c) => { children.push(c); return c; };
+const trackFake = (f) => { fakes.push(f); return f; };
+const trackDir = (d) => { tmpDirs.push(d); return d; };
 
 try {
   // ───────────────────────────────────────────────────────────────────────────
@@ -232,9 +242,9 @@ try {
   // several more saves pile up behind it before any second upload can start.
   // ───────────────────────────────────────────────────────────────────────────
   const seededDb1 = { users: [seededUser('u_gcsrace', 'gcsraceuser', 'gcsraceuser@example.test', 'Sup3rSecret!23')], games: [] };
-  fakeGcs = await startFakeGcsDb({ port: gcsPortA, initialContent: JSON.stringify(seededDb1) });
+  fakeGcs = await trackFake(startFakeGcsDb({ port: gcsPortA, initialContent: JSON.stringify(seededDb1) }));
   const port1 = Number(process.env.GCS_DB_TEST_PORT || 3131);
-  srv = await waitReady(spawnServer(mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-')), port1, gcsPortA), port1);
+  srv = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-'))), port1, gcsPortA)), port1);
 
   // Login (not register — see the seededUser comment above) ALSO calls
   // saveDB internally (it rehashes the legacy password on first use) — let
@@ -263,8 +273,19 @@ try {
   record('all 4 rapid saves are accepted (200) regardless of GCS upload timing',
     saveResults.every((r) => r.status === 200), saveResults.map((r) => r.status).join(','));
 
-  // Give the (delayed) in-flight upload and any coalesced follow-up time to land.
-  await new Promise((r) => setTimeout(r, 2500));
+  // The saves are accepted: drop the artificial delay so the coalesced
+  // follow-up lands quickly, then POLL for the final content with a deadline
+  // instead of sleeping a fixed margin (~100 ms of slack on a loaded runner).
+  fakeGcs.setUploadDelayMs(0);
+  {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      let names = null;
+      try { names = JSON.parse(fakeGcs.getStored()).games.map((g) => g.name); } catch { /* not parseable yet */ }
+      if (names && names.length >= 4) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
 
   const gameUploadCount = fakeGcs.uploadCount() - uploadsBeforeGames;
   record('THE DEFECT: 4 rapid saves produce at most 2 NEW upload requests (coalesced), not 4',
@@ -313,13 +334,13 @@ try {
   // this). +2 stays clear of both the port1 server and the portX/portY range
   // below (port1 + 10 / + 11).
   const gcsPortB = gcsPortA + 2;
-  fakeGcs = await startFakeGcsDb({ port: gcsPortB, initialContent: JSON.stringify(seededDb2) });
+  fakeGcs = await trackFake(startFakeGcsDb({ port: gcsPortB, initialContent: JSON.stringify(seededDb2) }));
 
   const portX = port1 + 10, portY = port1 + 11;
-  const cwdX = mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-x-'));
-  const cwdY = mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-y-'));
-  const childX = spawnServer(cwdX, portX, gcsPortB);
-  const childY = spawnServer(cwdY, portY, gcsPortB);
+  const cwdX = trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-x-')));
+  const cwdY = trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-y-')));
+  const childX = track(spawnServer(cwdX, portX, gcsPortB));
+  const childY = track(spawnServer(cwdY, portY, gcsPortB));
   const readyX = await waitReady(childX, portX);
   const readyY = await waitReady(childY, portY);
 
@@ -396,17 +417,17 @@ try {
   // fires, so a defect here shows up as that pre-existing game vanishing.
   // ───────────────────────────────────────────────────────────────────────────
   const gcsPortC = gcsPortA + 4;
-  const fakeGcsDeferred = startFakeGcsDb({
+  const fakeGcsDeferred = trackFake(startFakeGcsDb({
     port: gcsPortC,
     initialContent: JSON.stringify({
       users: [seededUser('u_z', 'userz', 'userz@example.test', 'Sup3rSecret!23')],
       games: [{ id: 'g_preexisting', userId: 'u_z', name: 'Preexisting-Game', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: new Date().toISOString() }],
     }),
     deferListen: true,
-  });
+  }));
 
   const portZ = port1 + 20;
-  const childZ = spawnServer(mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-z-')), portZ, gcsPortC);
+  const childZ = track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcsdb-z-'))), portZ, gcsPortC));
   await waitReady(childZ, portZ); // boots fine even though its GCS read just failed — falls back to an empty local DB
 
   const meBefore = await fetch(`http://127.0.0.1:${portZ}/api/games`, { signal: AbortSignal.timeout(2000) }).catch(() => null);
@@ -450,8 +471,9 @@ try {
   await fakeGcsDeferred.close();
 
 } finally {
-  if (srv?.child) await stop(srv.child);
-  if (fakeGcs) await fakeGcs.close();
+  for (const c of children) { try { await stop(c); } catch { /* already gone */ } }
+  for (const f of fakes) { try { await f.close(); } catch { /* already closed */ } }
+  for (const d of tmpDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
 }
 
 const failed = results.filter((r) => !r.pass);

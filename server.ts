@@ -475,9 +475,14 @@ async function initDB(): Promise<void> {
       const file = storage.bucket(GCS_BUCKET).file('db.json');
       const [exists] = await file.exists();
       if (exists) {
-        const [content] = await file.download();
-        inMemoryDb = JSON.parse(content.toString('utf-8'));
+        // Metadata FIRST, then a download BOUND to that generation:
+        // `download()` ignores `preconditionOpts` in @google-cloud/storage 7,
+        // so content and a separately fetched generation could straddle a
+        // concurrent write, and the next conditional save would overwrite
+        // that write without ever seeing a 412 (CodeRabbit, PR #85).
         const [meta] = await file.getMetadata();
+        const [content] = await file.bucket.file('db.json', { generation: meta.generation }).download();
+        inMemoryDb = JSON.parse(content.toString('utf-8'));
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         // A genuine deep copy, not a reference to `inMemoryDb`: the object
         // returned here would otherwise be the SAME live object every future
@@ -624,8 +629,8 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
     try {
       const [exists] = await file.exists();
       if (exists) {
-        const [remoteContent] = await file.download();
-        const [meta] = await file.getMetadata();
+        const [meta] = await file.getMetadata(); // metadata first, generation-bound download — see initDB
+        const [remoteContent] = await file.bucket.file('db.json', { generation: meta.generation }).download();
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
         db = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
@@ -640,9 +645,14 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
 
   const bodyStr = JSON.stringify(db, null, 2);
   const saveOpts: {
-    contentType: string; resumable: boolean; validation: boolean;
+    contentType: string; resumable: boolean; validation: boolean; timeout: number;
     preconditionOpts?: { ifGenerationMatch: string };
-  } = { contentType: 'application/json', resumable: false, validation: false };
+  } = {
+    contentType: 'application/json', resumable: false, validation: false,
+    // The non-resumable path defaults to timeout 0 (wait forever); a hung
+    // request would pin `gcsUploadInFlight` and starve every later save.
+    timeout: 30_000,
+  };
   if (gcsGeneration !== null) {
     saveOpts.preconditionOpts = { ifGenerationMatch: gcsGeneration };
   }
@@ -663,10 +673,10 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
       // Someone else wrote first. Re-download, merge OUR pending changes
       // onto their state, and retry with the fresh generation.
       try {
-        const [remoteContent] = await file.download();
-        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        const [meta] = await file.getMetadata();
+        const [meta] = await file.getMetadata(); // metadata first, generation-bound download — see initDB
+        const [remoteContent] = await file.bucket.file('db.json', { generation: meta.generation }).download();
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
+        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
         const merged = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
         await uploadDbToGcs(merged, attempt + 1);
       } catch (mergeErr) {
