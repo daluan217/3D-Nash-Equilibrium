@@ -2183,7 +2183,67 @@ function testRedTeamFindings14() {
     'null is the ONLY "not a number" signal — that is what keeps 0 distinguishable from absent');
   assert(commitStepIndex('0') === 0, 'step 0 is a real step index, not a missing one');
 
-  console.log('✓ red-team #14: one parser per typed field; a pasted minus survives blur and a zero is a value');
+  // ── C. Fullwidth digits (RED-APP-3 finding 002) ────────────────────────────
+  // The minus/plus normalisation above never covered the DIGITS themselves.
+  // A fullwidth "３１" (U+FF13 U+FF11 -- what an IME's fullwidth mode or a
+  // pasted CJK document produces) made `parseFloat` return NaN immediately
+  // (it only recognises ASCII 0-9), so the null-fallback silently committed
+  // 0 -- indistinguishable on screen from the user having typed zero on
+  // purpose. Same failure shape as section A above, just for digits instead
+  // of the sign.
+  assert(commitPayoffInput('３１') === 31,
+    `a fullwidth "３１" must commit as 31, got ${commitPayoffInput('３１')}`);
+  assert(parseFloat('３１') !== 31,
+    'fixture integrity: bare parseFloat really does fail on fullwidth digits -- this is what made the defect');
+  for (let d = 0; d <= 9; d++) {
+    const fw = String.fromCharCode(0xff10 + d); // the fullwidth form of this single digit
+    assert(commitPayoffInput(fw) === d,
+      `fullwidth digit U+${(0xff10 + d).toString(16).toUpperCase()} must read as ${d}, got ${commitPayoffInput(fw)}`);
+  }
+  // Combines with the existing fullwidth minus (already normalised above) --
+  // the two normalisations must compose, not just work in isolation.
+  assert(isNaN(parseFloat('－４')),
+    'fixture integrity: bare parseFloat really does fail on fullwidth minus+digit too');
+  assert(commitPayoffInput('－４') === -4,
+    `fullwidth minus + fullwidth digit "－４" must commit as -4, got ${commitPayoffInput('－４')}`);
+  // CodeRabbit finding (this branch): the minus+digit composition case above
+  // does not prove the PLUS case composes too -- NUMERIC_INPUT_PLUS is a
+  // separate character class from NUMERIC_INPUT_MINUS, and a regression that
+  // broke ONLY the plus normalisation (e.g. an edit that narrowed
+  // NUMERIC_INPUT_PLUS's character class) would leave every assertion above
+  // passing while `commitPayoffInput('＋４')` silently fell back to 0.
+  const fwPlusDigit = '＋４';
+  assert(fwPlusDigit.charCodeAt(0) === 0xff0b && fwPlusDigit.charCodeAt(1) === 0xff14,
+    'fixture integrity: the fullwidth plus+digit fixture must be U+FF0B U+FF14, not ASCII lookalikes');
+  assert(isNaN(parseFloat(fwPlusDigit)),
+    'fixture integrity: bare parseFloat really does fail on fullwidth plus+digit too');
+  assert(commitPayoffInput(fwPlusDigit) === 4,
+    `fullwidth plus + fullwidth digit "${fwPlusDigit}" must commit as 4, got ${commitPayoffInput(fwPlusDigit)}`);
+  // The fullwidth full stop must ALSO normalise, and be tested together with
+  // the digits, not in isolation: fixing only the digits and leaving the
+  // fullwidth "." alone would make a fullwidth-typed "0.5" digit-normalise
+  // to ASCII "0" followed by an UNRECOGNISED fullwidth dot -- parseFloat
+  // then stops right after that leading "0" and returns the NUMBER 0 (a
+  // real, parseable value), which is WORSE than the pre-fix behaviour: null
+  // at least falls back to the field's own documented default (0.217 here),
+  // where a silently-parsed 0 does not. Caught by writing this assertion
+  // against the wrong expected value first and reading why it failed.
+  // Fixture integrity, same discipline as fixture A's charCodeAt check above:
+  // this string must actually BE the fullwidth code points, not something
+  // that happens to read the same in a monospace font while secretly being
+  // plain ASCII "0.5" -- which would pass this assertion for the wrong
+  // reason (ASCII "0.5" also commits to 0.5, fixed or not).
+  const fwDecimal = '０．５';
+  assert(fwDecimal.charCodeAt(0) === 0xff10 && fwDecimal.charCodeAt(1) === 0xff0e && fwDecimal.charCodeAt(2) === 0xff15,
+    'fixture integrity: the fullwidth-decimal fixture must be U+FF10 U+FF0E U+FF15, not ASCII lookalikes');
+  assert(commitStartCoordinate(fwDecimal) === 0.5,
+    `a fullwidth "${fwDecimal}" must commit as 0.5, got ${commitStartCoordinate(fwDecimal)}`);
+  // Every OTHER numeric field shares this same parser core -- x0/y0 and the
+  // step index are equally exposed, and equally fixed by one change at the
+  // source rather than needing a fix at every call site.
+  assert(commitStepIndex('３') === 3, 'the step-index field shares the same core parser, so it is fixed too');
+
+  console.log('✓ red-team #14: one parser per typed field; a pasted minus survives blur and a zero is a value; fullwidth digits normalise the same way as fullwidth minus/plus');
 }
 
 function testRedTeamBreak1StaleReplay() {
