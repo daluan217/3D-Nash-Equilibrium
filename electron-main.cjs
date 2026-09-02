@@ -111,6 +111,63 @@ if (!gotTheLock) {
     }
   };
 
+  // The backend's own data-directory lock (server.ts's acquireDesktopLock)
+  // used to fail with a bare `process.exit(1)` on every path, which — because
+  // that file is require()'d IN-PROCESS below, not spawned — silently killed
+  // this ENTIRE Electron main process before any window ever existed: no
+  // dialog, no crash report, nothing in the unified log. A user hitting this
+  // (routine after any crash/force-quit, since the pid the stale lock
+  // recorded gets reused by an unrelated process eventually) saw the dock
+  // icon bounce once and nothing else, forever, with no way to know why.
+  // (RED-DESKTOP-4/001-reused-pid-silent-app-vanish.md)
+  //
+  // Registering this hook BEFORE requiring the server is what tells
+  // server.ts "someone can show a dialog" — its own check is exactly this
+  // global's presence. A real dialog turns the failure into something a
+  // user can act on immediately: quit the other copy, or — since the
+  // failure is frequently a MISIDENTIFIED lock (a reused pid, not a real
+  // second instance) — go find the dotfile themselves instead of it staying
+  // hidden forever.
+  //
+  // Deliberately NOT an automatic "delete the lock and relaunch" button
+  // (CodeRabbit caught this on review): `acquireDesktopLock` reaches this
+  // hook only after `process.kill(heldBy, 0)` said the recorded pid IS
+  // alive right now — which is equally true whether that pid is a reused,
+  // unrelated process OR a genuine second copy of this app. The app cannot
+  // tell those apart (no process-identity check exists), so an automatic
+  // delete-and-relaunch would just as often start a REAL second writer
+  // against the same db.json as it would recover from a false positive —
+  // exactly the data-loss scenario this whole lock exists to prevent. The
+  // safer action a click can take is "Show Lock File", which reveals its
+  // location so a user who has actually checked (e.g. Activity Monitor —
+  // no OTHER copy of Nash Equilibrium Simulator running) can delete it
+  // themselves; the app never performs the destructive step on its own.
+  global.onDesktopLockFailure = ({ message, lockFile }) => {
+    dialog.showMessageBox({
+      type: 'error',
+      buttons: ['Quit', 'Show Lock File'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Nash Equilibrium Simulator — Startup Blocked',
+      message: 'Nash Equilibrium Simulator could not start.',
+      detail: `${message}\n\nIf you're sure no other copy is running, "Show Lock File" reveals it `
+        + 'so you can delete it yourself, then relaunch.',
+    }).then((result) => {
+      if (result.response === 1) {
+        shell.showItemInFolder(lockFile);
+        // Leave the (now-informed, still-blocked) app running rather than
+        // quitting out from under a user who is mid-cleanup in Finder.
+        return;
+      }
+      app.exit(0);
+    }).catch((err) => {
+      // The dialog itself failed to show — still must not leave the process
+      // silently hanging with no window and no way out.
+      console.error('Failed to show the startup-blocked dialog:', err);
+      app.exit(1);
+    });
+  };
+
   // Boot our compiled full-stack Express server inside Electron
   try {
     require('./dist/server.cjs');
