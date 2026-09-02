@@ -25,6 +25,7 @@ import { tieProse, tieProseFull } from "./src/utils/tieProse";
 import { validateReport, validateScenario, validateProseClaims, validateProseDirections, scenarioIsClaimFree } from "./src/utils/nashValidator";
 import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
+import { stripUnsafeText } from "./src/utils/textSafety";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
 // since the materialized best-reply table landed: the 2026-08-27 follow-up
@@ -110,7 +111,49 @@ function canInvent(): boolean {
  * property with a known per-draw rate, so independent draws are precisely the
  * right instrument. Rewriting model output is not permitted here; a reroll is,
  * and it costs one extra call only on the calls that produced nothing.
+ *
+ * BOUND ON THE GATE-DROP REROLLS (2026-09-02, BLUE-APP-4's measurement,
+ * routed by the director): the single reroll above rescues a LOST draw
+ * (timeout/error/unparseable) but only ever gives a GATE-DROPPED draw (one
+ * that came back and failed `storyOk`, most often the META/persona-leak
+ * screen) ONE second chance. Two draws that are BOTH independently
+ * META-dropped is not a floor case: measured against the real teacher
+ * corpus through the shipped screens, single-draw drop rate 7.33%, so the
+ * two-in-a-row residual is ~0.54% — 2.7x the 0.2% ship bar production
+ * confirmed hitting live (two "Player A" drops 5s apart, report shipped
+ * with NO scenario at all). `NASH_SCENARIO_REROLLS` (default 2, clamped to
+ * [0, 3]) is how many EXTRA draws a GATE-DROPPED result may consume; at the
+ * default, a pure gate-drop cascade needs three independent drops in a row
+ * (~0.0395% residual) before the report goes without a story.
+ *
+ * The LOST-draw retry is UNCHANGED and NOT governed by this setting — it
+ * still fires at most once, same as before this setting existed. A
+ * timed-out or erroring provider must not be hammered a bounded-by-setting
+ * number of times; that would multiply the WORST-CASE latency (a genuinely
+ * slow/broken provider) by the reroll count instead of by a fixed 2x. Only
+ * a draw that the provider actually ANSWERED — fast, in practice — spends
+ * from the bounded gate-drop budget.
+ *
+ * LATENCY: every extra attempt still goes through `drawWithDeadline`, so
+ * each one is individually capped at `SCENARIO_DEADLINE_MS` (20s default) —
+ * the total deadline guarantee is "N draws x the per-draw cap", not
+ * unbounded. Theoretical worst case at the default setting is now 4 draws
+ * (1 lost + 1 timeout-retry that itself gate-drops, + 2 gate rerolls) x 20s
+ * = 80s, up from the old 2 x 20s = 40s ceiling. In practice a gate-drop
+ * means the provider ANSWERED (not a timeout), so the realistic added cost
+ * of the two extra rerolls is roughly two ordinary provider round-trips
+ * (production reasoning-on cloud: ~5.4-5.6s p50 each, so ~11s typical
+ * added latency, only on the ~7% of draws that gate-drop at all — most
+ * requests pay nothing extra).
  */
+const SCENARIO_REROLL_LIMIT = (() => {
+  const raw = Number(process.env.NASH_SCENARIO_REROLLS);
+  const DEFAULT = 2;
+  const MAX = 3;
+  if (!Number.isInteger(raw) || raw < 0) return DEFAULT;
+  return Math.min(raw, MAX);
+})();
+
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
@@ -125,24 +168,28 @@ async function inventScreenedScenario(
       || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0;
   };
 
-  let { scenario: invented, failure } = await drawWithDeadline(payoffs);
-  // Two ways to end up with nothing, and both now get the second chance: a draw
-  // that came back and FAILED the gate, and a draw that never came back at all
-  // (`max-tokens`, the model spending its whole budget reasoning).
-  const lost = !invented;
-  if (lost || (gateOn && !storyOk(invented))) {
-    const second = await drawWithDeadline(payoffs);
-    invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
-    if (!invented) {
-      // A draw that produced nothing reports ITS OWN reason (timeout, error,
-      // unparseable); only a draw that came back and was rejected is a
-      // validation failure.
-      failure = (!second.scenario
-        ? (second.failure ?? failure ?? "unparseable")
-        : "validation-failed") as typeof failure;
+  let usedTimeoutRetry = false;
+  let gateRerollsUsed = 0;
+  for (;;) {
+    const draw = await drawWithDeadline(payoffs);
+    if (!draw.scenario) {
+      // LOST: the draw never produced a scenario at all (timeout, provider
+      // error, unparseable output). Exactly one retry, same as before this
+      // setting existed — never governed by NASH_SCENARIO_REROLLS.
+      if (usedTimeoutRetry) return { scenario: null, failure: draw.failure ?? "unparseable" };
+      usedTimeoutRetry = true;
+      continue;
     }
+    if (!gateOn || storyOk(draw.scenario)) {
+      return { scenario: draw.scenario };
+    }
+    // GATE-DROPPED: a real draw came back and the screen rejected it. This
+    // is the only case the bounded reroll setting governs.
+    if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
+      return { scenario: null, failure: "validation-failed" };
+    }
+    gateRerollsUsed++;
   }
-  return { scenario: invented, failure };
 }
 
 /**
@@ -490,15 +537,52 @@ function loadDBFromFile(): DB {
  * A PID lockfile turns that silent loss into a loud, immediate startup
  * failure: exit BEFORE `initDB()` ever loads a second in-memory snapshot, so
  * nothing is read, nothing is served, and no divergent write can happen.
+ *
+ * "Loud" only held for a standalone `node dist/server.cjs` run, where
+ * whoever typed the command sees the message on their own terminal. The
+ * PACKAGED app requires this file IN-PROCESS (electron-main.cjs), so the
+ * original `process.exit(1)` here silently killed the entire Electron main
+ * process before any BrowserWindow existed — no window, no dialog, no
+ * "app quit unexpectedly" alert, no crash report, nothing in the unified log
+ * a normal user would ever find (RED-DESKTOP-4/001-reused-pid-silent-app-
+ * vanish.md). Worse, the liveness check below is PID-based and pid numbers
+ * get reused by unrelated processes once their original owner is gone, so an
+ * ordinary crash history can make this fire on a false positive, forever,
+ * with zero visible cause.
+ *
+ * `reportDesktopLockFailure` is the one exit for both failure sites in this
+ * function (see below). Under the packaged app it hands off to
+ * `global.onDesktopLockFailure`, which electron-main.cjs registers BEFORE
+ * requiring this file — that presence IS the signal "we are the packaged
+ * app and someone can show a dialog," so a standalone run (this file's own
+ * integration tests included) is untouched: no hook is registered, so
+ * `process.exit(1)` still fires exactly as before.
  */
-function acquireDesktopLock(): void {
+function reportDesktopLockFailure(message: string, lockFile: string): boolean {
+  console.error(message);
+  const onFailure = process.env.IS_ELECTRON === "true" ? (globalThis as any).onDesktopLockFailure : undefined;
+  if (typeof onFailure === "function") {
+    // Hands the process's fate to electron-main.cjs (dialog, then
+    // app.exit()/app.relaunch()) instead of exiting here. Returning `false`
+    // tells the caller to stop (no initDB, no listen) WITHOUT exiting itself
+    // — the Electron process must stay alive for the async dialog to render.
+    // `lockFile` is passed structurally (not parsed back out of the message)
+    // so the dialog's own "delete it and retry" action never has to guess a
+    // path out of prose.
+    onFailure({ message, lockFile });
+    return false;
+  }
+  process.exit(1);
+}
+
+function acquireDesktopLock(): boolean {
   const userDataPath = process.env.ELECTRON_USER_DATA_PATH;
-  if (!userDataPath) return; // hosted service: GCS's own analogous risk is a separate, product-scope question
+  if (!userDataPath) return true; // hosted service: GCS's own analogous risk is a separate, product-scope question
   try {
     if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
   } catch (err) {
     console.error("Error creating user-data directory for the desktop lock:", err);
-    return; // fail OPEN — do not block startup over a directory-creation error here
+    return true; // fail OPEN — do not block startup over a directory-creation error here
   }
   const lockFile = path.join(userDataPath, ".server.lock");
 
@@ -524,7 +608,7 @@ function acquireDesktopLock(): void {
     } catch (err: any) {
       if (err.code !== "EEXIST") {
         console.error("Error writing desktop lock file:", err);
-        return; // fail OPEN on an unexpected filesystem error
+        return true; // fail OPEN on an unexpected filesystem error
       }
     }
     // EEXIST: someone else's lock is already there — a live process, or one
@@ -557,7 +641,7 @@ function acquireDesktopLock(): void {
         continue;
       }
       console.error("Error reading desktop lock file:", err);
-      return; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
+      return true; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
     }
     const heldBy = parseInt(rawContent.trim(), 10);
     let alive = false;
@@ -572,12 +656,14 @@ function acquireDesktopLock(): void {
       }
     }
     if (alive) {
-      console.error(
+      return reportDesktopLockFailure(
         `Refusing to start: another Nash Equilibrium Simulator server (pid ${heldBy}) is already using `
         + `this data directory (${userDataPath}). Starting a second one would silently overwrite its saved `
-        + `games. Quit the other instance first.`
+        + `games. Quit the other instance first, or — if you're sure no other copy is open (this can happen `
+        + `after a crash whose process id has since been reused by something unrelated) — delete the lock `
+        + `file at ${lockFile} and try again.`,
+        lockFile,
       );
-      process.exit(1);
     }
     // Stale: the recorded PID is no longer running. TEST HOOK ONLY — never
     // set outside a test process — lets an integration test deterministically
@@ -619,11 +705,11 @@ function acquireDesktopLock(): void {
   {
     const finalContent = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8").trim() : "";
     if (finalContent !== String(process.pid)) {
-      console.error(
+      return reportDesktopLockFailure(
         `Refusing to start: could not acquire the desktop data-directory lock at ${lockFile} `
-        + `after repeated contention. Try again.`
+        + `after repeated contention. Try again.`,
+        lockFile,
       );
-      process.exit(1);
     }
   }
 
@@ -637,6 +723,7 @@ function acquireDesktopLock(): void {
   process.on("exit", release);
   process.on("SIGINT", () => { release(); process.exit(0); });
   process.on("SIGTERM", () => { release(); process.exit(0); });
+  return true;
 }
 
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
@@ -885,14 +972,55 @@ function adoptLocalGames(userId: string): number {
   return mine.length;
 }
 
+/**
+ * The one place every user-supplied string passes through before it is
+ * persisted via POST/PATCH /api/games, so it has to carry the same
+ * bidi-override/control-character stripping the UI form applies
+ * (src/utils/textSafety.ts) -- otherwise a direct API call (curl, a script,
+ * a modified client) bypasses the form entirely and a RIGHT-TO-LEFT OVERRIDE
+ * or raw control character reaches storage intact.
+ *
+ * Order matters: strip first, then trim, then slice -- stripping after trim
+ * would let a bidi override sitting at the edge of the field decide where
+ * the "real" edge is before it gets removed (same reasoning as
+ * textSafety.ts's own cleanText).
+ */
 function cleanText(value: unknown, maxLength: number): string {
-  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+  return typeof value === "string" ? stripUnsafeText(value).trim().slice(0, maxLength) : "";
 }
 
 /** How long an option label may be. Short on purpose: these render as column
  *  and row headers next to the payoff inputs, and a sentence would break the
  *  grid. Long enough for "Advertise heavily", short enough to stay a label. */
 const LABEL_MAX = 40;
+
+/**
+ * Cut a string to at most `maxLength` characters, preferring the last word
+ * boundary within that limit over a mid-word slice — a bare `.slice(0, 40)`
+ * on a label that gets PRINTED cuts mid-word and the stub then repeats
+ * verbatim through a whole rendered paragraph ("Escalate the dispute to the
+ * regional arb", rounds T1 and T2).
+ *
+ * Shared by `cleanScenario`'s `label()` and `cleanLabels()` — RED-APP-4
+ * found these had drifted: `cleanLabels` (POST/PATCH /api/games' own
+ * row/col labels) still did the bare mid-word slice this helper exists to
+ * avoid, on a sibling path `cleanScenario` had already been fixed on.
+ * Reachable only by a direct API call (the Save/Edit modal's own
+ * `maxlength=40` already blocks it in ordinary UI use).
+ *
+ * `s` must already be clamped WIDER than `maxLength` by the caller (see
+ * `cleanLabels` and `cleanScenario`'s own `noTags(v, 60)`) — cutting the
+ * word boundary out of a string already hard-sliced AT `maxLength` would
+ * just reproduce the same bug one step later. `at > minKeep` guards against
+ * clamping to almost nothing when the first word itself runs long (no space
+ * within the first `minKeep` characters).
+ */
+function cutAtWordBoundary(s: string, maxLength: number, minKeep = 12): string {
+  if (s.length <= maxLength) return s;
+  const cut = s.slice(0, maxLength);
+  const at = cut.lastIndexOf(' ');
+  return (at > minKeep ? cut.slice(0, at) : cut).trim();
+}
 
 /**
  * The four option labels off a request body, cleaned.
@@ -905,7 +1033,11 @@ const LABEL_MAX = 40;
 function cleanLabels(body: any, allowClear = false): Partial<Pick<SavedGame, "row1Label" | "row2Label" | "col1Label" | "col2Label">> {
   const out: Record<string, string> = {};
   for (const key of ["row1Label", "row2Label", "col1Label", "col2Label"] as const) {
-    const v = cleanText(body?.[key], LABEL_MAX);
+    // Clamped WIDER (LABEL_MAX + 20) first, same pattern as cleanScenario's
+    // own noTags(v, 60) -> label() below, so cutAtWordBoundary has room to
+    // find a real space instead of working on a string already hard-sliced
+    // to exactly LABEL_MAX.
+    const v = cutAtWordBoundary(cleanText(body?.[key], LABEL_MAX + 20), LABEL_MAX);
     // Without allowClear an empty value means "not supplied", so a caller
     // updating only the description cannot blank the labels by omission. The
     // edit dialog is the opposite case: it sends every field every time, and a
@@ -954,14 +1086,9 @@ function cleanScenario(value: any): Scenario | undefined {
   // Option labels are clamped to 40 characters and then PRINTED, so a bare
   // slice cuts mid-word and the stub is repeated four or five times in one
   // rendered paragraph ("Escalate the dispute to the regional arb" — rounds
-  // T1 and T2). Clamp at the last word boundary instead.
-  const label = (v: unknown) => {
-    const t = noTags(v, 60);
-    if (t.length <= 40) return t || undefined;
-    const cut = t.slice(0, 40);
-    const at = cut.lastIndexOf(' ');
-    return (at > 12 ? cut.slice(0, at) : cut).trim() || undefined;
-  };
+  // T1 and T2). cutAtWordBoundary (shared with cleanLabels, see its own
+  // comment) clamps at the last word boundary instead.
+  const label = (v: unknown) => cutAtWordBoundary(noTags(v, 60), LABEL_MAX) || undefined;
   const sc: Scenario = {
     name: noTags(value.name, 80) || undefined,
     row1: label(value.row1),
@@ -1040,8 +1167,57 @@ function rateLimit(
   };
 }
 
-// Updates in-memory DB immediately; persists to GCS (Cloud Run) or local file (Electron/dev)
-function saveDB(db: DB) {
+/**
+ * Cloud Run's own documented limit: an HTTP/1 response over 32 MiB fails
+ * UNLESS it is sent chunked/streamed rather than as a fixed-length body —
+ * "Maximum HTTP/1 response size: 32 MiB per response, if not using
+ * Transfer-Encoding: chunked or streaming" (Cloud Run quotas docs). Setting
+ * an explicit `Content-Length` tells Node to send a fixed-length body, NOT
+ * chunked, so a >=32 MiB DMG download hit exactly this limit: the deployed
+ * `/api/download/dmg` returned a bare Google-Frontend `HTTP 500` with an
+ * EMPTY body and NONE of this app's own headers (no x-powered-by, no CSP) —
+ * i.e. the request never reached our own error handling at all — on every
+ * plain GET (no Range) or any Range spanning >=32 MiB of the 137 MB DMG.
+ * Verified live (2026-09-02): a request with NO Range header 500s the same
+ * way as a malformed one — this is not about Range PARSING, it is the whole
+ * full-file download path (RED-DESKTOP-4/003-malformed-range-header-live-
+ * 500.md; the finding's own repro used malformed Range headers, which
+ * happen to share this exact failure because they too fall through to the
+ * >=32 MiB full-file branch — but a well-formed request for the same size
+ * fails identically, confirmed by pulling Cloud Run request logs for the
+ * `x-cloud-trace-context` of a live repro: "Response size was too large.
+ * Please consider reducing response size.").
+ *
+ * Below the limit, Content-Length is still set (unchanged from before) —
+ * small partial-range requests, the common case for a resumable download
+ * manager, keep their exact declared size for an accurate progress bar.
+ */
+const CLOUD_RUN_HTTP1_RESPONSE_LIMIT = 32 * 1024 * 1024; // 32 MiB
+function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength: number): void {
+  if (byteLength < CLOUD_RUN_HTTP1_RESPONSE_LIMIT) {
+    res.setHeader('Content-Length', String(byteLength));
+  }
+  // >= the limit: leave Content-Length UNSET. Node/Express then sends the
+  // piped stream with `Transfer-Encoding: chunked`, which Cloud Run's own
+  // limit explicitly exempts.
+}
+
+/**
+ * Updates in-memory DB immediately; persists to GCS (Cloud Run) or local file
+ * (Electron/dev).
+ *
+ * Returns whether the write is KNOWN to have happened. The two branches are
+ * honest about what they can actually promise: the desktop/local-file branch
+ * writes SYNCHRONOUSLY, so a caught error here really does mean nothing
+ * reached disk, and `false` is returned; the hosted GCS branch is
+ * fire-and-forget (an async `.then/.catch`, unchanged), so a caller can never
+ * learn its outcome from this return value — `true` here means only "handed
+ * off", exactly the same as before this function had a return value at all.
+ * (RED-DESKTOP-4/002-unwritable-userdata-fake-save-success.md notes the GCS
+ * branch has the identical false-success shape and scopes fixing it as a
+ * separate, hosted-side question — not claimed as fixed here.)
+ */
+function saveDB(db: DB): boolean {
   inMemoryDb = db;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
     import('@google-cloud/storage').then(({ Storage }) => {
@@ -1051,6 +1227,7 @@ function saveDB(db: DB) {
         { contentType: 'application/json' }
       );
     }).catch(err => console.error('GCS write failed:', err));
+    return true;
   } else {
     try {
       const dbDir = path.dirname(DB_FILE);
@@ -1058,10 +1235,30 @@ function saveDB(db: DB) {
         fs.mkdirSync(dbDir, { recursive: true });
       }
       writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+      return true;
     } catch (err) {
       console.error("Error writing db.json:", err);
+      return false;
     }
   }
+}
+
+/**
+ * `saveDB`, but a caller that is about to respond to an HTTP request can use
+ * this to turn a real (desktop, synchronous) write failure into an honest
+ * 500 instead of the false "success" RED-DESKTOP-4/002 found: an unwritable
+ * `ELECTRON_USER_DATA_PATH` (read-only directory, full disk, ...) used to
+ * accept a game save, echo it back as if it were on disk, and then lose it
+ * silently and permanently on the next restart — with no signal anywhere a
+ * user could see. Wired into the game-save/update/delete routes, which are
+ * exactly what RED-DESKTOP-4 reproduced; the same shape exists on the
+ * account routes (registration, verification, password reset, deletion) and
+ * is NOT covered by this change — noted for a future pass, not claimed here.
+ */
+function saveDBOrFail(db: DB, res: express.Response): boolean {
+  if (saveDB(db)) return true;
+  res.status(500).json({ error: "Could not save your changes. Please try again." });
+  return false;
 }
 
 // Helper to get NodeMailer transporter
@@ -1312,8 +1509,11 @@ async function sendFeedbackEmail(
 async function startServer() {
   // First thing, before anything else touches the filesystem or binds a
   // port: refuse to run as a second writer against a data directory another
-  // live process already owns. See acquireDesktopLock's own comment.
-  acquireDesktopLock();
+  // live process already owns. See acquireDesktopLock's own comment. A
+  // `false` return means the failure has already been reported (a
+  // standalone run's process.exit(1), or the packaged app's dialog hook) —
+  // either way this function must stop here: no initDB, no listen.
+  if (!acquireDesktopLock()) return;
 
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -2020,12 +2220,12 @@ async function startServer() {
             }
             res.status(206);
             res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-            res.setHeader('Content-Length', String(end - start + 1));
+            setContentLengthIfUnderCloudRunLimit(res, end - start + 1);
             streamAndPipe({ start, end });
             return;
           }
 
-          if (size !== null && Number.isFinite(size)) res.setHeader('Content-Length', String(size));
+          if (size !== null && Number.isFinite(size)) setContentLengthIfUnderCloudRunLimit(res, size);
           streamAndPipe();
           return;
         }
@@ -2555,7 +2755,7 @@ async function startServer() {
     };
 
     db.games.push(newGame);
-    saveDB(db);
+    if (!saveDBOrFail(db, res)) return;
 
     res.json({
       success: true,
@@ -2610,7 +2810,7 @@ async function startServer() {
     // be able to remove the text.
     if (nextDescription || (allowClear && "description" in req.body)) game.description = nextDescription;
     Object.assign(game, nextLabels, nextTerms);
-    saveDB(db);
+    if (!saveDBOrFail(db, res)) return;
 
     res.json({ success: true, message: "Game updated.", game });
   });
@@ -2635,7 +2835,7 @@ async function startServer() {
     }
 
     db.games.splice(gameIndex, 1);
-    saveDB(db);
+    if (!saveDBOrFail(db, res)) return;
 
     res.json({
       success: true,

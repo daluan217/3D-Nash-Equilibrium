@@ -134,10 +134,28 @@ check('the screened draw returns false on a claim-free failure',
 check('the screened draw honours NASH_SCENARIO_CHECKS',
   /NASH_SCENARIO_CHECKS/.test(helperBody),
   'the flag promises each gate is measurable in isolation; it must be read where the gate runs');
-// 5. And the reroll lives in it, so no branch can be the one without a second draw.
-check('the screened draw takes a second draw when the first is lost or rejected',
-  /const lost = !invented/.test(helperBody)
-  && (helperBody.match(/drawWithDeadline\s*\(/g) ?? []).length >= 2,
+// 5. And the reroll lives in it, so no branch can be the one without a second
+//    draw. Two DIFFERENT instruments, both structurally required:
+//      - a LOST draw (timeout/error/unparseable — no scenario at all) gets
+//        exactly ONE retry, unconditionally (`usedTimeoutRetry` guards it).
+//      - a GATE-DROPPED draw (a real draw the screen rejected) gets rerolled
+//        up to the BOUNDED `NASH_SCENARIO_REROLLS` setting
+//        (`gateRerollsUsed` against `SCENARIO_REROLL_LIMIT`), added
+//        2026-09-02 after production shipped a report with no story on two
+//        independent gate-drops in a row (~0.54% residual on the old
+//        single-reroll shape, 2.7x the 0.2% ship bar).
+//    `drawWithDeadline` appears ONCE in the source (inside a loop, so it can
+//    fire more than once at RUNTIME) rather than as N literal call sites —
+//    a call-count floor would defeat exactly that shape, so this checks for
+//    the LOOP instead.
+check('the screened draw retries a LOST draw exactly once (unconditional, not the bounded setting)',
+  /usedTimeoutRetry/.test(helperBody), 'a draw that never produced a scenario at all must still be retried once');
+check('the screened draw rerolls a GATE-DROPPED draw up to a bounded setting',
+  /gateRerollsUsed/.test(helperBody) && /SCENARIO_REROLL_LIMIT/.test(server),
+  'a draw that came back but failed the screen must be rerolled up to NASH_SCENARIO_REROLLS, not just once');
+check('the reroll happens inside a loop, so it can fire more than once at runtime',
+  /for\s*\(\s*;;\s*\)[\s\S]*?drawWithDeadline\s*\(/.test(helperBody)
+  || (helperBody.match(/drawWithDeadline\s*\(/g) ?? []).length >= 2,
   'a lost or gate-rejected draw must be drawn again — the only instrument permitted here');
 // 6. The draw is bounded. A provider that accepts and never answers held a real
 //    request open for 798 s with no timeout at any layer; the story is optional

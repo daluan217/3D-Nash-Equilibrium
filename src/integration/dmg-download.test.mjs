@@ -48,8 +48,17 @@ function record(name, pass, detail) {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
 
-/** A fake GCS JSON API: only the two calls this endpoint makes. */
-function startFakeGcs({ dmgExists }) {
+/**
+ * A fake GCS JSON API: only the two calls this endpoint makes.
+ *
+ * `reportedSize`, when given, overrides the `size` field getMetadata() sees
+ * WITHOUT changing how many bytes ?alt=media actually streams. That's what
+ * lets the >=32 MiB Cloud Run threshold (below) be exercised without this
+ * suite actually moving 32 MiB per test run: the app only ever reads the
+ * declared size to decide whether to set Content-Length; it never compares
+ * that against what the stream really delivers.
+ */
+function startFakeGcs({ dmgExists, reportedSize }) {
   const objectPath = `/b/${BUCKET}/o/${encodeURIComponent(DMG_OBJECT)}`;
   // Counts requests that actually fetch OBJECT BYTES (?alt=media) — the
   // thing a HEAD probe must never trigger. Exposed on the returned server so
@@ -91,7 +100,8 @@ function startFakeGcs({ dmgExists }) {
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
-      name: DMG_OBJECT, bucket: BUCKET, size: String(DMG_CONTENT.length),
+      name: DMG_OBJECT, bucket: BUCKET,
+      size: String(reportedSize ?? DMG_CONTENT.length),
       contentType: 'application/octet-stream',
     }));
   });
@@ -242,6 +252,125 @@ try {
     fakeGcs.mediaRequestCount() === mediaCountBeforeHead,
     `media requests before: ${mediaCountBeforeHead}, after: ${fakeGcs.mediaRequestCount()}`);
 
+  await stop(srv); srv = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 1b. THE DEFECT (RED-DESKTOP-4/003): a >=32 MiB response must NOT carry a
+  // fixed Content-Length, or Cloud Run's own documented HTTP/1 response-size
+  // limit rejects it with a bare, header-less Google-Frontend 500 — verified
+  // live (2026-09-02) against production: a plain GET with NO Range header
+  // at all (not just a malformed one) 500s the exact same way once the DMG
+  // exceeded 32 MiB, and pulling Cloud Run request logs by x-cloud-trace-
+  // context confirmed the message "Response size was too large." This fake
+  // GCS object reports a size at/above the 32 MiB threshold (via
+  // `reportedSize`, NOT by actually streaming 32 MiB) so the boundary is
+  // exercised without this suite moving real gigabytes.
+  // ───────────────────────────────────────────────────────────────────────────
+  const LIMIT = 32 * 1024 * 1024;
+  fakeGcs = await startFakeGcs({ dmgExists: true, reportedSize: LIMIT });
+  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`);
+
+  const bigFull = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+  record('THE FIX: a full-file response AT the 32 MiB threshold has NO Content-Length',
+    bigFull.status === 200 && bigFull.headers.get('content-length') === null,
+    `status ${bigFull.status}, content-length ${bigFull.headers.get('content-length')}`);
+  record('THE FIX: that response is chunked, which Cloud Run\'s 32 MiB limit exempts',
+    (bigFull.headers.get('transfer-encoding') || '').includes('chunked'),
+    bigFull.headers.get('transfer-encoding'));
+  // drain the body so the socket can be reused for the next request
+  await bigFull.arrayBuffer();
+
+  const bigRange = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: `bytes=0-${LIMIT - 1}` }, // exactly 32 MiB requested
+  });
+  record('THE FIX: a 32 MiB RANGE response also has no Content-Length (still a real 206)',
+    bigRange.status === 206 && bigRange.headers.get('content-length') === null
+      && bigRange.headers.get('content-range') === `bytes 0-${LIMIT - 1}/${LIMIT}`,
+    `status ${bigRange.status}, content-length ${bigRange.headers.get('content-length')}, `
+    + `content-range ${bigRange.headers.get('content-range')}`);
+  await bigRange.arrayBuffer();
+
+  // A SMALL range on the SAME huge object must keep its Content-Length —
+  // the common resumable-download-manager case must not lose its progress
+  // bar just because the FILE happens to be large.
+  const smallRangeOnBigFile = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: 'bytes=0-99' },
+  });
+  record('a small range on a huge file KEEPS Content-Length (progress bar preserved)',
+    smallRangeOnBigFile.status === 206 && smallRangeOnBigFile.headers.get('content-length') === '100',
+    `status ${smallRangeOnBigFile.status}, content-length ${smallRangeOnBigFile.headers.get('content-length')}`);
+  await smallRangeOnBigFile.arrayBuffer();
+
+  // ── RED-DESKTOP-4/003 + director's follow-up, live-reproduced (2026-09-02):
+  // `bytes=0-0` alone already 206'd correctly on production (PR #82) — but
+  // `bytes=0-0,5-5` (multi-range), `bytes=abc` (malformed), `items=0-1`
+  // (wrong unit), and `bytes=-` (both sides empty) each got a bare, header-
+  // less Cloud-Run/Google-Frontend 500 on the live 137 MB DMG. Read by hand,
+  // server.ts's OWN Range regex (`^bytes=(\d*)-(\d*)$`, anchored) already
+  // fails to match all four — none of them can EVER be `m`, so all four
+  // ALREADY fell through to the graceful "ignore the header, serve the
+  // whole file" branch per RFC 9110 §14.1.2 (unparseable/unsupported Range
+  // -> ignore, not an error). The parser was never the bug: what turned
+  // that graceful fallback into a live 500 was the SAME 32 MiB Cloud Run
+  // response-size limit fixed above — the full-file branch unconditionally
+  // declared Content-Length before this session's fix. Proven here by
+  // running the identical five shapes against the >=32 MiB fake object: the
+  // four "ignore" shapes must resolve 200 with NO Content-Length (the fix,
+  // reused) and complete without a socket/protocol error; the one valid
+  // shape must still 206 with the correct single-byte Content-Range.
+  const rangeShapes = [
+    { label: 'multi-range (bytes=0-0,5-5)', header: 'bytes=0-0,5-5', expectIgnored: true },
+    { label: 'malformed (bytes=abc)', header: 'bytes=abc', expectIgnored: true },
+    { label: 'wrong unit (items=0-1)', header: 'items=0-1', expectIgnored: true },
+    { label: 'both sides empty (bytes=-)', header: 'bytes=-', expectIgnored: true },
+    { label: 'valid single range (bytes=0-0), control', header: 'bytes=0-0', expectIgnored: false },
+  ];
+  for (const shape of rangeShapes) {
+    let r;
+    let threw = null;
+    try {
+      r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, { headers: { range: shape.header } });
+      await r.arrayBuffer(); // must fully resolve — a Content-Length/actual-bytes mismatch throws here
+    } catch (err) {
+      threw = err;
+    }
+    record(`${shape.label}: request completes without a socket/protocol error`,
+      threw === null, threw ? String(threw?.cause || threw) : 'ok');
+    if (threw) continue;
+    if (shape.expectIgnored) {
+      record(`${shape.label}: ignored -> full file, 200, no Content-Length (Cloud Run limit exempt)`,
+        r.status === 200 && r.headers.get('content-length') === null,
+        `status ${r.status}, content-length ${r.headers.get('content-length')}`);
+    } else {
+      record(`${shape.label}: still honored as a real range -> 206 with a correct Content-Range`,
+        r.status === 206 && r.headers.get('content-range') === `bytes 0-0/${LIMIT}`
+          && r.headers.get('content-length') === '1',
+        `status ${r.status}, content-range ${r.headers.get('content-range')}, content-length ${r.headers.get('content-length')}`);
+    }
+  }
+
+  await stop(srv); srv = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
+
+  // Boundary: one byte UNDER the limit must still carry Content-Length —
+  // proves this is a >= comparison, not an off-by-one that starts omitting
+  // the header a byte too early for an otherwise-fine ~32 MiB download.
+  fakeGcs = await startFakeGcs({ dmgExists: true, reportedSize: LIMIT - 1 });
+  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`);
+  const justUnder = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+  record('one byte UNDER the 32 MiB threshold still gets a real Content-Length',
+    justUnder.status === 200 && justUnder.headers.get('content-length') === String(LIMIT - 1),
+    `status ${justUnder.status}, content-length ${justUnder.headers.get('content-length')}`);
+  // Deliberately NOT draining the body here: the declared Content-Length
+  // (LIMIT - 1, ~32 MiB) is real and correct per the app's own logic, but
+  // the FAKE GCS object behind it only actually streams the small
+  // DMG_CONTENT buffer (see startFakeGcs's own doc comment) — a real
+  // 32 MiB object would have no such mismatch, but making this fixture
+  // stream true 32 MiB just to read past this header check would slow the
+  // suite for nothing this check needs. Killing the server (below) closes
+  // the socket outright rather than waiting out a body that will never
+  // reach its declared length.
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 

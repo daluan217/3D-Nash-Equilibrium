@@ -203,6 +203,31 @@ jobs:
         env:
           LOCK_TEST_PORT: '3113'
 
+      # A lock-acquisition failure used to be a bare process.exit(1) always.
+      # Because electron-main.cjs require()s dist/server.cjs IN-PROCESS (not
+      # as a spawned child), that silently killed the whole Electron main
+      # process before any window existed — no dialog, no crash report,
+      # nothing in the unified log a normal user could ever find
+      # (RED-DESKTOP-4/001, a real reused-pid false positive against the
+      # packaged .app). Requires the bundle in-process itself (no HTTP: the
+      # failure happens before any port is bound) to prove the packaged-app
+      # path (globalThis.onDesktopLockFailure registered) survives and hands
+      # off to a dialog hook instead of exiting, while the standalone path
+      # (no hook — this suite's own sibling above) is unchanged.
+      - name: Run the desktop lock dialog-hook suite (in-process require)
+        run: node src/integration/desktop-lock-dialog-hook.test.mjs
+
+      # An unwritable ELECTRON_USER_DATA_PATH (read-only dir, full disk, ...)
+      # used to accept a game save/update/delete, tell the user it worked,
+      # and lose it permanently on the next restart with no signal anywhere.
+      # (RED-DESKTOP-4/002.) Chmods a real directory read-only, so this job
+      # must not run as root (which ignores directory permissions).
+      - name: Boot the production server and run the desktop unwritable-save suite
+        run: node src/integration/desktop-unwritable-save.test.mjs
+        env:
+          UNWRITABLE_SAVE_PORT: '3119'
+          UNWRITABLE_SAVE_PORT2: '3120'
+
       # A pre-local-owner desktop install's real account is invisible to an
       # unauthenticated GET /api/games (200 [], indistinguishable from "never
       # used"), while GET /api/auth/me correctly 401s the same request.

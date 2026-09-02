@@ -1,5 +1,6 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
 // Override the package.json "name" so the macOS app menu (About/Hide/Quit)
 // reads the product name instead of the template default ("react-example").
@@ -109,6 +110,52 @@ if (!gotTheLock) {
     } else if (mainWindow) {
       mainWindow.loadURL(`http://127.0.0.1:${port}`);
     }
+  };
+
+  // The backend's own data-directory lock (server.ts's acquireDesktopLock)
+  // used to fail with a bare `process.exit(1)` on every path, which — because
+  // that file is require()'d IN-PROCESS below, not spawned — silently killed
+  // this ENTIRE Electron main process before any window ever existed: no
+  // dialog, no crash report, nothing in the unified log. A user hitting this
+  // (routine after any crash/force-quit, since the pid the stale lock
+  // recorded gets reused by an unrelated process eventually) saw the dock
+  // icon bounce once and nothing else, forever, with no way to know why.
+  // (RED-DESKTOP-4/001-reused-pid-silent-app-vanish.md)
+  //
+  // Registering this hook BEFORE requiring the server is what tells
+  // server.ts "someone can show a dialog" — its own check is exactly this
+  // global's presence. A real dialog turns the failure into something a
+  // user can act on immediately: quit the other copy, or — since the
+  // failure is frequently a MISIDENTIFIED lock (a reused pid, not a real
+  // second instance) — clear it and relaunch without ever needing to find
+  // a hidden dotfile on their own.
+  global.onDesktopLockFailure = ({ message, lockFile }) => {
+    dialog.showMessageBox({
+      type: 'error',
+      buttons: ['Quit', 'Delete Lock File and Relaunch'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Nash Equilibrium Simulator — Startup Blocked',
+      message: 'Nash Equilibrium Simulator could not start.',
+      detail: message,
+    }).then((result) => {
+      if (result.response === 1) {
+        try {
+          fs.unlinkSync(lockFile);
+        } catch (err) {
+          // Already gone, or a real filesystem problem — either way,
+          // relaunching re-diagnoses it from scratch rather than guessing here.
+          console.error('Could not delete the lock file before relaunching:', err);
+        }
+        app.relaunch();
+      }
+      app.exit(0);
+    }).catch((err) => {
+      // The dialog itself failed to show — still must not leave the process
+      // silently hanging with no window and no way out.
+      console.error('Failed to show the startup-blocked dialog:', err);
+      app.exit(1);
+    });
   };
 
   // Boot our compiled full-stack Express server inside Electron
