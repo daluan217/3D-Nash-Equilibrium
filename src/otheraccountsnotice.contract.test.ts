@@ -9,13 +9,23 @@
  * and `desktopcopy.contract.test.ts`: no component-test harness exists in
  * this repo, so this asserts the source still says the right words.
  *
- * WHY THIS EXISTS. CodeRabbit caught a real gap: the component's very first
- * version checked only `nash_sim_token_local` to decide "already signed
- * in," which meant a Cloud Sync user (a valid `nash_sim_token_cloud`, no
- * local token) still read as "not signed in" and could be shown a notice
- * about recovering LOCAL games — which has nothing to do with Cloud Sync
- * mode, since `/api/auth/desktop-hint` reads the local `db.json`, not the
- * hosted service. The fix gates the whole check on `dbMode === 'local'`.
+ * TWO ROUNDS OF CodeRabbit FIXES HERE, ON THE SAME COMPONENT:
+ *
+ *   1. The FIRST version checked only `nash_sim_token_local` for "already
+ *      signed in," so a Cloud Sync user (a valid `nash_sim_token_cloud`, no
+ *      local token) still read as "not signed in." Fixed by gating on
+ *      `dbMode === 'local'` — but that version read `dbMode` from
+ *      `localStorage` inside a MOUNT-ONLY effect (`useEffect(..., [])`),
+ *      deliberately zero-prop to keep App.tsx's touch to one line.
+ *
+ *   2. That mount-only design was ITSELF the second finding: App updates
+ *      `dbMode` and auth state continuously while this component stays
+ *      mounted, but the effect never re-ran, so switching from Cloud Sync
+ *      to Local mode never started the check at all, and signing in while
+ *      the notice was showing left it visibly stale. Fixed by taking
+ *      `dbMode`/`signedIn` as PROPS (dropping the zero-prop constraint —
+ *      correctness beats that self-imposed design limit) and re-running /
+ *      re-clearing the effect on every change to either.
  *
  *   npx tsx src/otheraccountsnotice.contract.test.ts
  */
@@ -32,28 +42,54 @@ function ok(cond: boolean, msg: string) {
 }
 
 const src = readFileSync(join(repo, 'components/OtherAccountsNotice.tsx'), 'utf8');
+const appSrc = readFileSync(join(repo, 'App.tsx'), 'utf8');
 
-ok(src.includes("localStorage.getItem('nash_sim_db_mode')"),
-  'OtherAccountsNotice must read the ACTUAL db mode from localStorage, not assume local mode');
+// The component must take dbMode and signedIn as PROPS now (not read them
+// from localStorage internally) — that internal-read design is exactly what
+// made it impossible to react to a LIVE change.
+ok(/interface\s+OtherAccountsNoticeProps\b/.test(src),
+  'OtherAccountsNotice must declare a real props interface');
+ok(/dbMode\s*:\s*'local'\s*\|\s*'cloud'/.test(src),
+  'OtherAccountsNoticeProps must include dbMode');
+ok(/signedIn\s*:\s*boolean/.test(src),
+  'OtherAccountsNoticeProps must include signedIn');
+ok(/OtherAccountsNotice:\s*React\.FC<OtherAccountsNoticeProps>\s*=\s*\(\s*\{\s*dbMode,\s*signedIn\s*\}/.test(src),
+  'the component must actually DESTRUCTURE dbMode and signedIn from its props, not just declare the type');
 
-// The gate must run BEFORE the fetch to /api/auth/desktop-hint, and BEFORE
-// setVisible could ever be reached — a check placed after the fetch would
-// not stop the wasted/irrelevant request, only hide its result.
+// THE ACTUAL FIX: the effect's dependency array must include BOTH props —
+// `useEffect(..., [])` (mount-only) is exactly the defect CodeRabbit found,
+// so this must not regress back to it.
+ok(/\},\s*\[dbMode,\s*signedIn\]\)/.test(src),
+  'the useEffect that decides visibility must depend on [dbMode, signedIn] — a mount-only ' +
+  '`[]` dependency array cannot react to a live mode switch or sign-in');
+
+// Ineligibility must ACTIVELY clear an already-visible notice (setVisible(false)),
+// not merely skip showing a NEW one — a passive "return" alone would leave a
+// stale notice on screen after the user signs in or switches modes.
+ok(/dbMode !== 'local' \|\| signedIn \|\|[\s\S]{0,80}setVisible\(false\)/.test(src),
+  'the ineligibility branch must call setVisible(false), not just return, so an already-visible ' +
+  'notice is cleared the instant it becomes stale');
+
+// The async-boundary re-check: eligibility must be re-verified INSIDE the
+// fetch's .then() before setVisible(true), in case dbMode/signedIn changed
+// while the request was in flight — a stale response landing late must not
+// resurrect a notice that is no longer appropriate.
 {
-  const dbModeIdx = src.indexOf("dbMode !== 'local'");
   const fetchIdx = src.indexOf("fetch('/api/auth/desktop-hint')");
-  ok(dbModeIdx > 0, "the effect must bail out early when dbMode !== 'local'");
-  ok(fetchIdx > 0, 'the component must still call /api/auth/desktop-hint (in local mode)');
-  ok(dbModeIdx < fetchIdx,
-    "the dbMode gate must run BEFORE the fetch — gating only the RESULT would still spend " +
-    "the request in cloud mode");
+  const setVisibleTrueIdx = src.indexOf('setVisible(true)');
+  ok(fetchIdx > 0 && setVisibleTrueIdx > fetchIdx, 'setVisible(true) must be reachable only after the fetch');
+  const betweenFetchAndShow = src.slice(fetchIdx, setVisibleTrueIdx);
+  ok(/dbMode !== 'local' \|\| signedIn/.test(betweenFetchAndShow),
+    'eligibility must be RE-CHECKED between the fetch starting and setVisible(true) — otherwise a ' +
+    'stale in-flight response can show the notice after the user already signed in or switched modes');
 }
 
-// Self-contained design (director's requirement): no props, still reads its
-// own state from localStorage/window rather than App.tsx threading dbMode
-// in — the gate must be an localStorage read, not a new prop.
-ok(!/dbMode\s*:\s*['"]local['"]\s*\|\s*['"]cloud['"]/.test(src) && !src.includes('React.FC<'),
-  'OtherAccountsNotice must stay a zero-prop component (React.FC, no props interface) — ' +
-  'the dbMode fix must read localStorage, not add a prop');
+// App.tsx must actually PASS both props on the mount line — declaring them
+// on the component with nothing supplying them would be a silent no-op
+// (both props undefined, effect deps always the same reference-unstable
+// undefined/undefined, no re-runs).
+ok(/<OtherAccountsNotice\s+dbMode=\{dbMode\}\s+signedIn=\{!!authToken\}\s*\/>/.test(appSrc),
+  'App.tsx must mount <OtherAccountsNotice dbMode={dbMode} signedIn={!!authToken} /> — ' +
+  'declaring the props on the component alone does nothing without a caller supplying them');
 
 console.log(`otheraccountsnotice.contract.test.ts: ${checks} checks passed`);

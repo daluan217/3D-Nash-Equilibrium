@@ -7,10 +7,20 @@ import React, { useEffect, useState } from 'react';
 
 const DISMISS_KEY = 'nash_sim_dismissed_desktop_hint';
 
+interface OtherAccountsNoticeProps {
+  /** The app's current sync mode. The hint is meaningless outside 'local' —
+   * server.ts's /api/auth/desktop-hint reads db.json (the local database),
+   * not the hosted service, so a Cloud Sync user's session tells us nothing
+   * about it either way. */
+  dbMode: 'local' | 'cloud';
+  /** Is there a valid session for the CURRENT dbMode right now? Once true,
+   * whatever that account owns is already visible; nothing to recover. */
+  signedIn: boolean;
+}
+
 /**
- * Desktop-only, self-contained notice: tells a returning user whose saved
- * games live under a real (non-local-owner) account that signing in will
- * recover them.
+ * Desktop-only notice: tells a returning user whose saved games live under a
+ * real (non-local-owner) account that signing in will recover them.
  *
  * WHY THIS EXISTS. `GET /api/games` on an unauthenticated desktop request
  * returns 200 [] both for a brand-new install and for a machine that has a
@@ -21,44 +31,52 @@ const DISMISS_KEY = 'nash_sim_dismissed_desktop_hint';
  * `server.ts`'s `GET /api/auth/desktop-hint` and
  * `round3/findings/RED-DESKTOP-3/002-upgrade-hides-old-account-games-silently.md`.
  *
- * Deliberately reads its own Electron/auth/dismissal state from
- * window.navigator/localStorage rather than taking props (the same
- * `isElectron` User-Agent check App.tsx already uses), so mounting it is a
- * single `<OtherAccountsNotice />` line with nothing else to keep in sync as
- * App.tsx's own auth state changes shape.
+ * TAKES PROPS, ON PURPOSE, REVISED FROM THE ORIGINAL PROP-FREE DESIGN.
+ * The first version read `dbMode`/the local token from `localStorage`
+ * itself, entirely inside a mount-only effect, to keep App.tsx's touch to a
+ * single mount line. CodeRabbit caught the real cost of that: App updates
+ * `dbMode` and auth state continuously while this stays mounted, but the
+ * effect ran ONCE — so switching from Cloud Sync to Local mode never
+ * started the check at all (the component had already decided "not
+ * eligible" on first mount and never looked again), and signing in after
+ * the notice was already showing left it visibly wrong (still telling a
+ * now-signed-in user to sign in). `localStorage` also has no same-tab
+ * change event to react to even if the effect DID re-run on some interval.
+ * Taking `dbMode`/`signedIn` as props and re-running the effect on every
+ * change fixes both: eligibility is re-evaluated live, and `visible` is
+ * explicitly cleared the instant either prop makes the notice moot.
  */
-export const OtherAccountsNotice: React.FC = () => {
+export const OtherAccountsNotice: React.FC<OtherAccountsNoticeProps> = ({ dbMode, signedIn }) => {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
     const isElectron = typeof window !== 'undefined'
       && window.navigator?.userAgent?.toLowerCase().includes('electron');
     if (!isElectron) return;
-    if (localStorage.getItem(DISMISS_KEY) === '1') return;
-    // The hint is about the LOCAL database only (server.ts's
-    // /api/auth/desktop-hint reads db.json, not the hosted service) — in
-    // Cloud Sync mode the app's data comes from the remote server instead,
-    // so this notice would be irrelevant at best. Checked ONLY the local
-    // token before, which meant a cloud-mode user (a valid
-    // nash_sim_token_cloud, no nash_sim_token_local) still read as
-    // "not signed in" and could be shown a notice about local games that
-    // has nothing to do with what they are looking at.
-    const dbMode = localStorage.getItem('nash_sim_db_mode') || 'local';
-    if (dbMode !== 'local') return;
-    // Already signed in locally -> whatever the account owns is already
-    // visible; nothing to recover.
-    const signedIn = !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token'));
-    if (signedIn) return;
+
+    // Re-evaluate eligibility on EVERY dependency change, not just at mount:
+    // a mode switch away from 'local', or a fresh sign-in, must clear an
+    // already-visible notice immediately rather than leave it stale.
+    if (dbMode !== 'local' || signedIn || localStorage.getItem(DISMISS_KEY) === '1') {
+      setVisible(false);
+      return;
+    }
 
     let cancelled = false;
     fetch('/api/auth/desktop-hint')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (!cancelled && data?.hasOtherAccounts) setVisible(true);
+        // Re-check eligibility on the async boundary too: dbMode/signedIn
+        // (or a dismissal) could have changed while this request was in
+        // flight, and a stale response landing after that must not
+        // resurrect a notice that is no longer appropriate.
+        if (cancelled) return;
+        if (dbMode !== 'local' || signedIn || localStorage.getItem(DISMISS_KEY) === '1') return;
+        if (data?.hasOtherAccounts) setVisible(true);
       })
       .catch(() => { /* offline or unreachable: say nothing, never disrupt */ });
     return () => { cancelled = true; };
-  }, []);
+  }, [dbMode, signedIn]);
 
   if (!visible) return null;
 

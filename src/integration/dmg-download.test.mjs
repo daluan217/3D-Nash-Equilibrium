@@ -215,6 +215,20 @@ try {
   record('a range entirely past the end of the file gets 416, not a silent 200',
     badRes.status === 416, `status ${badRes.status}`);
 
+  // RFC 9110 §14.1.2 (CodeRabbit caught the pre-fix behavior): an explicit
+  // last-byte-pos AT OR PAST the object's length is NOT an error — the
+  // server must clamp it to size-1 and serve the rest of the file, not 416.
+  // Only a first-byte-pos beyond the length is unsatisfiable.
+  const overshootRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: `bytes=0-${DMG_CONTENT.length + 999999}` },
+  });
+  const overshootBody = Buffer.from(await overshootRes.arrayBuffer());
+  record('THE DEFECT: an explicit range end past the object length is CLAMPED to size-1, not 416',
+    overshootRes.status === 206
+      && overshootRes.headers.get('content-range') === `bytes 0-${DMG_CONTENT.length - 1}/${DMG_CONTENT.length}`
+      && overshootBody.equals(DMG_CONTENT),
+    `status ${overshootRes.status}, content-range ${overshootRes.headers.get('content-range')}, ${overshootBody.length} bytes`);
+
   // DownloadModal.tsx's own existence check is a HEAD request — it must get
   // the same headers a GET would, WITHOUT opening a GCS read stream (that
   // would defeat the whole point of checking before downloading).

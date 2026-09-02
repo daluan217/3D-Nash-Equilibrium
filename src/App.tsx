@@ -4781,7 +4781,7 @@ export default function App() {
         onClose={() => setIsDownloadModalOpen(false)}
       />
 
-      <OtherAccountsNotice />
+      <OtherAccountsNotice dbMode={dbMode} signedIn={!!authToken} />
 
       {isAdminOpen && (
         <AdminDashboard

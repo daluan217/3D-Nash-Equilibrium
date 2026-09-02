@@ -91,13 +91,22 @@ try {
     fresh?.hasOtherAccounts === false, JSON.stringify(fresh));
 
   // Save one game as the local owner — still no OTHER account, still false.
-  await fetch(`http://127.0.0.1:${port}/api/games`, {
+  const localSave = await fetch(`http://127.0.0.1:${port}/api/games`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       name: 'Local owner game',
       payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 },
     }),
   });
+  // Fixture precondition, not the interesting check: without this, a SILENT
+  // save failure would make "still false" pass VACUOUSLY (no local-owner
+  // game was ever added, so of course the predicate stays false — that
+  // proves nothing about whether the predicate correctly ignores the local
+  // owner's own games, only that setup itself didn't do anything) —
+  // CodeRabbit caught this: a setup failure was indistinguishable from a
+  // passing filtering check.
+  record('fixture precondition: the local-owner save itself succeeded',
+    localSave.status === 200, `status ${localSave.status}`);
   const stillFresh = await (await fetch(`http://127.0.0.1:${port}/api/auth/desktop-hint`)).json();
   record('a local-owner-only install (its own games) still reports false',
     stillFresh?.hasOtherAccounts === false, JSON.stringify(stillFresh));

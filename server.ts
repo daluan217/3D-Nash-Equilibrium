@@ -511,7 +511,11 @@ function acquireDesktopLock(): void {
   // to catch, silently defeated. `wx` (write, fail if the path already
   // exists) makes the CREATE itself the race-free step: the filesystem, not
   // this process, decides which of two simultaneous openers wins.
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // Bound raised from 3 to 5: the content-recheck below can now consume an
+  // attempt WITHOUT creating the lock (a detected race just loops to
+  // re-decide), so a genuine two-way stale-takeover race needs one extra
+  // round-trip of headroom over the original bound.
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const fd = fs.openSync(lockFile, "wx", 0o600);
       fs.writeSync(fd, String(process.pid));
@@ -525,7 +529,8 @@ function acquireDesktopLock(): void {
     }
     // EEXIST: someone else's lock is already there — a live process, or one
     // that crashed without cleaning up. Read it to tell the two apart.
-    const heldBy = parseInt((fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8") : "").trim(), 10);
+    const rawContent = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8") : "";
+    const heldBy = parseInt(rawContent.trim(), 10);
     let alive = false;
     if (Number.isInteger(heldBy) && heldBy > 0) {
       try {
@@ -545,13 +550,52 @@ function acquireDesktopLock(): void {
       );
       process.exit(1);
     }
-    // Stale: the recorded PID is no longer running. Clear it and retry the
-    // atomic create on the next loop iteration. A second process racing the
-    // exact same takeover just hits EEXIST again against whichever one of
-    // us wins the recreate, and correctly reports "alive" on ITS retry —
-    // the loop bound (3) is generous headroom for that one extra round-trip,
-    // not evidence this can spin.
+    // Stale: the recorded PID is no longer running. TEST HOOK ONLY — never
+    // set outside a test process — lets an integration test deterministically
+    // win the exact interleaving below rather than hoping real OS scheduling
+    // cooperates (a 12-process stress test against the UNFIXED code still
+    // serialized to 1 winner in this sandbox's process-spawn timing, so real
+    // timing cannot be trusted to exercise this path).
+    const testDelayMs = parseInt(process.env.NASH_LOCK_TEST_DELAY_MS || "", 10);
+    if (Number.isFinite(testDelayMs) && testDelayMs > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, testDelayMs);
+    }
+    // CodeRabbit's finding: unconditionally unlinking here is not atomic
+    // with the read above. Between that read and this unlink, a DIFFERENT
+    // process can run this exact same stale-detection-and-takeover sequence
+    // to completion, creating a fresh, LIVE lock with ITS OWN pid — and this
+    // process would then delete that live lock out from under it, blind to
+    // the change, and go on to create a SECOND live lock of its own. Two
+    // writers, the exact thing this file exists to prevent. Re-reading
+    // immediately before the unlink and comparing against what we just
+    // inspected closes that: if the content changed, someone else already
+    // acted on this exact staleness — do NOT touch their fresh lock, loop
+    // and re-evaluate whatever is there now instead. Full atomicity would
+    // need an OS-level advisory lock (flock) this codebase does not have;
+    // this narrows the surviving race to the few instructions between the
+    // re-read and the unlink, which is what the loop bound below accounts
+    // for as a needed extra round-trip, not evidence of unbounded spinning.
+    let recheck: string | null = null;
+    try { recheck = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8") : ""; } catch { recheck = null; }
+    if (recheck !== rawContent) {
+      continue; // someone else changed it — re-read and re-decide from scratch
+    }
     try { fs.unlinkSync(lockFile); } catch { /* already gone: fine, next attempt recreates it */ }
+  }
+
+  // Defensive: if every attempt was consumed by repeated recheck-misses
+  // without ever reaching the `break` above, we do NOT actually hold the
+  // lock. Falling through un-locked would silently defeat the whole
+  // guarantee — verify, and refuse loudly rather than serve unprotected.
+  {
+    const finalContent = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf-8").trim() : "";
+    if (finalContent !== String(process.pid)) {
+      console.error(
+        `Refusing to start: could not acquire the desktop data-directory lock at ${lockFile} `
+        + `after repeated contention. Try again.`
+      );
+      process.exit(1);
+    }
   }
 
   const release = () => {
@@ -1931,10 +1975,16 @@ async function startServer() {
               end = size - 1;
             } else {
               start = parseInt(m[1], 10);
-              end = m[2] === '' ? size - 1 : parseInt(m[2], 10);
+              // RFC 9110 §14.1.2: an explicit last-byte-pos AT OR PAST the
+              // object's length is not an error — it means "to the end of
+              // the representation," clamped to size-1. Only a first-byte-
+              // pos beyond the object's length is unsatisfiable (416).
+              // CodeRabbit caught this: `bytes=0-999999` on a 7500-byte
+              // object was rejected 416 instead of served as the whole file.
+              end = m[2] === '' ? size - 1 : Math.min(parseInt(m[2], 10), size - 1);
             }
             const validRange = Number.isFinite(start) && Number.isFinite(end)
-              && start >= 0 && start <= end && end < size;
+              && start >= 0 && start < size && start <= end;
             if (!validRange) {
               res.setHeader('Content-Range', `bytes */${size}`);
               return res.status(416).end();

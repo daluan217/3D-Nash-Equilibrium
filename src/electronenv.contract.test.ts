@@ -161,20 +161,24 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
     // the trio's real reads are `process.env.X === '1'` and must NOT trip
     // this check, or the assertion would be vacuous (failing on correct code
     // too, which is worse than not existing).
-    const assignRe = new RegExp(`process\\.env\\.${name}\\s*=(?!=)`);
-    ok(!assignRe.test(serverSrc),
-      `server.ts must never ASSIGN process.env.${name} — it is a build/launch-time flag, ` +
-      `set once in electron-main.cjs (desktop) or cloudbuild.yaml (hosted), never at request time`);
+    //
+    // TWO FORMS (CodeRabbit caught the dot-only version missing the second):
+    // dot notation `process.env.NAME = ` and bracket notation
+    // `process.env['NAME'] = ` / `process.env["NAME"] = ` — JS treats them
+    // identically at runtime, so a check that only sees one is a check that
+    // can be silently routed around.
+    const assignReDot = new RegExp(`process\\.env\\.${name}\\s*=(?!=)`);
+    const assignReBracket = new RegExp(`process\\.env\\[['"]${name}['"]\\]\\s*=(?!=)`);
+    ok(!assignReDot.test(serverSrc) && !assignReBracket.test(serverSrc),
+      `server.ts must never ASSIGN process.env.${name} (dot OR bracket notation) — it is a ` +
+      `build/launch-time flag, set once in electron-main.cjs (desktop) or cloudbuild.yaml ` +
+      `(hosted), never at request time`);
   }
 
-  // No request-derived value (req.body / req.query / req.headers, however the
-  // property is spelled) may share a line with any of the three flag names —
-  // catches `if (req.body.forceTemplate)` guarding a flag-name reference, a
-  // destructure pulling a flag name off req.body, etc. Line-based (not just a
-  // same-file check) so a handler far away from the real gate cannot launder
-  // a match; every one of the trio's real reads is a single `process.env.X`
-  // expression with nothing req-shaped on that line, which is exactly what a
-  // literal correct implementation looks like.
+  // No request-derived value (req.body / req.query / req.headers / req.params,
+  // however the property is spelled) may share a line with any of the three
+  // flag names — catches `if (req.body.forceTemplate)` guarding a flag-name
+  // reference, a destructure pulling a flag name off req.body, etc.
   const reqShapeRe = /\breq\s*\.\s*(body|query|headers|params)\b/;
   const lines = serverSrc.split('\n');
   const offending: string[] = [];
@@ -183,9 +187,46 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
       offending.push(line.trim());
     }
   }
+
+  // CROSS-STATEMENT form (CodeRabbit's finding — the same-line check above
+  // cannot see this): a request-derived value assigned to an intermediate
+  // VARIABLE on one line, that variable's NAME then appearing near a flag
+  // read on a LATER line — `const wantsTemplate = req.body.forceTemplate;`
+  // ... `if (wantsTemplate) { ...process.env.NASH_PAYOFF_TEMPLATE... }`.
+  //
+  // DELIBERATELY NARROW, and here is why: an EARLIER, broader version of
+  // this check flagged "any req.body/query/headers/params reference
+  // anywhere in the flag's enclosing route handler" — and FAILED ITS OWN
+  // FIRST RUN, on real, correct code: `/api/report` legitimately reads
+  // `req.body.payoffs`/`req.body.scenario` for unrelated business logic in
+  // the SAME large handler that also reads the rung-3 flags, so that
+  // version was 100% false positives on the very thing it exists to guard
+  // (predicates over-fire on the first draft — the standing lesson this
+  // repo has hit five separate times before). This version instead tracks
+  // only NAMED VARIABLES actually assigned from req.*, and only flags one
+  // when that SPECIFIC variable's name appears within a few lines of a flag
+  // read — a real data-flow signal, not "req.* exists somewhere nearby."
+  const reqVarRe = /\b(?:const|let|var)\s+(\w+)\s*=\s*req\s*\.\s*(?:body|query|headers|params)\b/g;
+  const reqDerivedVars = new Set<string>();
+  { let vm: RegExpExecArray | null; while ((vm = reqVarRe.exec(serverSrc)) !== null) reqDerivedVars.add(vm[1]); }
+  if (reqDerivedVars.size > 0) {
+    // lines before/after the flag read
+    for (const name of flagNames) {
+      lines.forEach((line, i) => {
+        if (!line.includes(name)) return;
+        const windowText = lines.slice(Math.max(0, i - 3), Math.min(lines.length, i + 3 + 1)).join('\n');
+        for (const v of reqDerivedVars) {
+          if (new RegExp(`\\b${v}\\b`).test(windowText)) {
+            offending.push(`${name} near line ${i + 1} shares a 3-line window with request-derived variable "${v}"`);
+          }
+        }
+      });
+    }
+  }
+
   ok(offending.length === 0,
-    `server.ts must never read a rung-3 flag name from req.body/query/headers/params ` +
-    `(found: ${JSON.stringify(offending)})`);
+    `server.ts must never let a request-derived value (same line, or a named variable within ` +
+    `${3} lines) reach the code that reads a rung-3 flag name (found: ${JSON.stringify(offending)})`);
 }
 
 console.log(`electronenv.contract.test.ts: ${checks} checks passed`);

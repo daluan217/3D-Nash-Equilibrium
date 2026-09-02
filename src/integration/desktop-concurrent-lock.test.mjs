@@ -38,7 +38,7 @@ function record(name, pass, detail) {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
 
-function spawnServer(userData, thePort) {
+function spawnServer(userData, thePort, extraEnv = {}) {
   return spawn('node', [BUNDLE], {
     cwd: userData,
     env: {
@@ -48,6 +48,7 @@ function spawnServer(userData, thePort) {
       PORT: String(thePort),
       IS_ELECTRON: 'true',
       ELECTRON_USER_DATA_PATH: userData,
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -79,11 +80,21 @@ async function waitExit(child, timeoutMs = 8000) {
   let log = '';
   child.stdout.on('data', (d) => { log += d; });
   child.stderr.on('data', (d) => { log += d; });
-  const code = await Promise.race([
-    new Promise((res) => child.once('exit', (c) => res(c))),
-    new Promise((_, rej) => setTimeout(() => rej(new Error('timed out waiting for exit')), timeoutMs)),
-  ]);
-  return { code, log };
+  // The timeout timer must be CLEARED on the normal (exit-first) path, or it
+  // keeps the test process alive for the rest of `timeoutMs` on every single
+  // call — harmless to correctness, but it makes the whole suite needlessly
+  // slow and (with enough calls) risks tripping a CI job's own wall-clock
+  // budget for no reason (CodeRabbit caught this).
+  let timer;
+  try {
+    const code = await Promise.race([
+      new Promise((res) => child.once('exit', (c) => res(c))),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timed out waiting for exit')), timeoutMs); }),
+    ]);
+    return { code, log };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function stop(child) {
@@ -171,6 +182,78 @@ try {
   await stop(c);
   record('a clean SIGTERM shutdown removes the lock file', !existsSync(lockFile));
   c = null;
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 4. THE STALE-TAKEOVER RACE (CodeRabbit): unconditionally unlinking a
+  // lock file it had already decided was stale, without re-checking right
+  // before the delete, let one process delete ANOTHER process's brand-new
+  // LIVE lock — the exact interleaving: process D reads a stale lock and
+  // decides to take it over; before D unlinks it, process E independently
+  // does the same read-decide-takeover and SUCCEEDS, becoming the live
+  // owner; D's unconditional unlink then deletes E's fresh lock anyway,
+  // and D goes on to create a SECOND live lock — two writers.
+  //
+  // Real OS-timing cannot be trusted to hit this deterministically (a
+  // 12-process stress test against the pre-recheck code still serialized to
+  // 1 winner in this sandbox — see the round's REPORT). `NASH_LOCK_TEST_DELAY_MS`
+  // is a test-only hook: it makes D pause, synchronously, AFTER deciding the
+  // lock is stale but BEFORE its recheck-and-unlink, giving E time to
+  // complete a full takeover in between. This exercises the exact
+  // vulnerable window directly instead of hoping to get lucky on timing.
+  // ───────────────────────────────────────────────────────────────────────────
+  const raceUserData = mkdtempSync(path.join(tmpdir(), 'nash-stale-race-'));
+  const raceLockFile = path.join(raceUserData, '.server.lock');
+  // A lock held by a PID that is guaranteed not to exist (Linux/macOS PIDs
+  // don't reach this range in practice) — genuinely stale from the start.
+  writeFileSync(raceLockFile, '999999999', 'utf-8');
+
+  const dPort = port + 10;
+  const ePort = port + 11;
+  let d = null, e = null;
+  try {
+    // D starts first and will pause mid-takeover.
+    d = spawnServer(raceUserData, dPort, { NASH_LOCK_TEST_DELAY_MS: '2500' });
+    // Give D time to reach its read-decide-stale point (well before its
+    // 2500ms pause ends) before E starts its own takeover attempt.
+    await new Promise((r) => setTimeout(r, 800));
+    e = spawnServer(raceUserData, ePort, {});
+
+    // E should win cleanly and become the live, healthy server.
+    await waitReady(e, ePort);
+    record('process E completes its stale takeover and becomes healthy',
+      true, `pid ${e.pid}`);
+    const lockAfterE = readFileSync(raceLockFile, 'utf-8').trim();
+    record('the lock now holds E\'s pid (E genuinely took over)',
+      lockAfterE === String(e.pid), `lock holds "${lockAfterE}", expected ${e.pid}`);
+
+    // Now D wakes from its pause, rechecks, and (on the fix) MUST detect the
+    // change and refuse rather than deleting E's fresh lock.
+    const { code: dExit, log: dLog } = await waitExit(d, 8000);
+    record('THE FIX: D detects the change and refuses (exits non-zero), rather than winning a second lock',
+      dExit !== 0, `exit code ${dExit}`);
+
+    // The clinching check: E must still be alive and healthy AFTER D's
+    // whole sequence completes — on the pre-fix code, D's blind unlink would
+    // have deleted E's lock file (E itself stays alive in-process, unaware,
+    // but the FILE protecting it is gone), and D would then create its own
+    // second lock and start serving too.
+    const eStillUp = await fetch(`http://127.0.0.1:${ePort}/api/health`, { signal: AbortSignal.timeout(2000) })
+      .then((r) => r.ok).catch(() => false);
+    record('E is still running and healthy after D\'s whole attempt',
+      eStillUp);
+    const lockAfterD = existsSync(raceLockFile) ? readFileSync(raceLockFile, 'utf-8').trim() : null;
+    record('the lock file still holds E\'s pid, undisturbed by D',
+      lockAfterD === String(e.pid), `lock holds "${lockAfterD}", expected ${e.pid}`);
+
+    // D must never have bound its own port either.
+    const dBound = await fetch(`http://127.0.0.1:${dPort}/api/health`, { signal: AbortSignal.timeout(500) })
+      .then((r) => r.ok).catch(() => false);
+    record('D never bound a port of its own (no second live writer)', !dBound);
+  } finally {
+    await stop(d);
+    await stop(e);
+    rmSync(raceUserData, { recursive: true, force: true });
+  }
 
 } finally {
   await stop(a);
