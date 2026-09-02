@@ -1,0 +1,21 @@
+Invariance under scaling (N=4000 games x 8 scale factors):
+  CURRENT cut (absolute swing thresholds):   23322/32000 band changes under pure rescaling
+  NORMALISED cut (swing / payoff range):     1/32000 band changes under pure rescaling
+  example current-cut moves:
+    k=3: swing 0.710 -> 2.130, band tiny -> modest
+    k=10: swing 0.710 -> 7.100, band tiny -> modest
+    k=37: swing 0.710 -> 26.270, band tiny -> substantial
+    k=1000: swing 0.710 -> 710.000, band tiny -> very large
+    k=100000: swing 0.710 -> 71000.000, band tiny -> very large
+
+PROPERTY TEST: current cut FAILS invariance (expected FAIL); normalised cut PASSES invariance (expected PASS, tolerating <=2 float-boundary artefacts out of 32000).
+  (1 float-boundary artefact(s) at an exact cut edge — not a real scale-dependence; see _gen/blue3_debug_norm.ts)
+
+normalizedRatio distribution (n=30000): p10=0.484 p40=0.743 p50=0.804 p85=0.995 p95=1.000
+  (the shipped absolute cuts sit near the swing distribution's own p40/p85-ish positions per scenarioStakes.ts's own comment; the naive 0.05/0.2/0.5 guess above is NOT calibrated to this distribution and over-fills "very large" as a result — a real proposal would recalibrate to these percentiles, e.g. roughly tiny<0.35, modest<0.55, substantial<0.75.)
+
+Reach over 20000 mixed-magnitude random games (same sweep both cuts see):
+  current (absolute):    tiny 25.0%, modest 25.2%, substantial 22.7%, very large 27.1%
+  normalised (illustrative cuts 0.05/0.2/0.5): tiny 0.0%, modest 0.4%, substantial 10.7%, very large 88.9%
+
+On UNSCALED random games (mag in {0.5,5,30,100}), the two cuts disagree on 14312/20000 (71.6%) — this is the size of the design question at TYPICAL game magnitudes; the invariance test above is the size of it at the EXTREMES (Daniel's 100-vs-0.001 example, or a rescaled preset).
