@@ -2256,6 +2256,42 @@ function testFirstMoverHasOneWriter() {
   console.log('✓ class guard: firstMover has exactly one writer');
 }
 
+// The simulation log colours each equilibrium line with the colour the GRAPH
+// draws for that equilibrium — pure diamond green, mixed diamond purple — and
+// the Start line with the starting-point sphere's grey, so a reader can match
+// log to plot by colour alone (Daniel, 2026-09-01). Three files must agree:
+// plotting.ts (the Plotly literal), index.css (the token), App.tsx (the class).
+// Two of them agreeing while the third drifts is the whole failure mode, so
+// this checks all three against each other rather than any one in isolation.
+function testLogLineColoursMatchPlotMarkers() {
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const css = readFileSync('src/index.css', 'utf8');
+  const plot = readFileSync('src/utils/plotting.ts', 'utf8');
+  const tok = (name: string) => (css.match(new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})`)) ?? [])[1]?.toLowerCase();
+  const plotColours = (pattern: RegExp) => [...new Set([...plot.matchAll(pattern)].map((m) => m[1].toLowerCase()))];
+  // 1. tokens equal the Plotly literals
+  const pureDiamond = plotColours(/color: '(#[0-9a-fA-F]{6})', symbol: 'diamond'/g);
+  assert(pureDiamond.includes(tok('ne-pure')!), `ne-pure token ${tok('ne-pure')} is not a diamond colour in plotting.ts (${pureDiamond.join(', ')})`);
+  assert(pureDiamond.includes(tok('ne-mixed-marker')!), `ne-mixed-marker token ${tok('ne-mixed-marker')} is not a diamond colour in plotting.ts (${pureDiamond.join(', ')})`);
+  const startSphere = plotColours(/name: 'Starting Point'[\s\S]{0,2000}?color: '(#[0-9a-fA-F]{6})'/g);
+  assert(startSphere.length === 1 && startSphere[0] === tok('sim-start'),
+    `sim-start token ${tok('sim-start')} must equal the Starting Point marker colour (${startSphere.join(', ')})`);
+  // 2. the renderer routes each line kind to the right token and never to a hardcoded palette
+  // From the kind decision (logKind / neLineClass) through the renderer that consumes it.
+  const renderer = app.slice(app.indexOf('const logKind:'), app.indexOf('const simulationLogPanel'));
+  assert(renderer.length > 200, 'log renderer not found in App.tsx');
+  const branch = (needle: string) => { const i = renderer.indexOf(needle); assert(i >= 0, `no renderer branch for ${needle}`); return renderer.slice(i, renderer.indexOf('} else', i + 1)); };
+  assert(/neLineClass/.test(branch("line.includes('✓')")) && !/text-emerald/.test(branch("line.includes('✓')")),
+    "the ✓ (coordinate discovered) line must take the equilibrium marker colour, not a hardcoded emerald");
+  assert(/neLineClass/.test(branch("━━ Pure NE")) && !/text-accent/.test(branch("━━ Pure NE")),
+    "the ━━ Pure/Mixed NE line must take the equilibrium marker colour, not the accent");
+  assert(/text-sim-start/.test(branch("line.startsWith('Start (')")),
+    "the Start line must take the starting-point marker grey");
+  assert(/text-ne-pure/.test(renderer) && /text-ne-mixed-marker/.test(renderer) && /'━━ Pure NE'/.test(renderer) && /'━━ Mixed NE'/.test(renderer),
+    'the pure/mixed decision must read the run\'s own final ━━ line and map to the two marker tokens');
+  console.log('✓ class guard: simulation-log colours are the plot marker colours (plotting.ts = index.css token = App.tsx class)');
+}
+
 function testPayoffsWritersAllInvalidate() {
   const src = readFileSync('src/App.tsx', 'utf8');
   const sites = src.split('\n')
@@ -2856,6 +2892,7 @@ function runTests() {
   testNoAdHocNumericParsers();
   testFirstMoverHasOneWriter();
   testPayoffsWritersAllInvalidate();
+  testLogLineColoursMatchPlotMarkers();
   testValidatorUnicodeMinus();
   testTwoNegativesInOneSentence();
   testRedTeamRound15BreakA();

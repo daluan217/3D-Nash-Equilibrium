@@ -2703,10 +2703,24 @@ export default function App() {
 
   // Rendered once and used by BOTH the inline panel and the expanded overlay, so
   // the two can never drift apart in colouring or content.
+  // Equilibrium lines take the colour of the marker the graph draws for that
+  // equilibrium — the pure diamond's green or the mixed diamond's purple — so a
+  // reader can match the log to the plot by colour alone. The KIND is read from
+  // the run's own final "━━ Pure NE" / "━━ Mixed NE" line when it exists; before
+  // convergence it follows the nearest equilibrium, defaulting to mixed because
+  // a "✓ coordinate discovered" line is a coordinate of the mixed search.
+  const logKind: 'pure' | 'mixed' = logEntries.some((l) => l.includes('━━ Pure NE'))
+    ? 'pure'
+    : logEntries.some((l) => l.includes('━━ Mixed NE'))
+      ? 'mixed'
+      : (nearestNE?.type ?? 'mixed');
+  const neLineClass = logKind === 'pure'
+    ? 'text-ne-pure dark:text-ne-pure'
+    : 'text-ne-mixed-marker dark:text-ne-mixed-marker';
   const logLines = logEntries.map((line, idx) => {
     let colClass = 'text-slate-600 dark:text-slate-300';
     if (line.includes('✓')) {
-      colClass = 'text-emerald-600 dark:text-emerald-400 font-semibold';
+      colClass = `${neLineClass} font-semibold`;
     } else if (line.includes('↺')) {
       if (line.includes('Ghost cycle')) {
         if (line.includes('(A)')) {
@@ -2719,8 +2733,14 @@ export default function App() {
       } else {
         colClass = 'text-amber-600 dark:text-amber-400 font-semibold';
       }
-    } else if (line.includes('━━') || line.includes('Start')) {
+    } else if (line.includes('━━ Pure NE') || line.includes('━━ Mixed NE')) {
+      colClass = `${neLineClass} font-semibold`;
+    } else if (line.includes('━━')) {
+      // "━━ Settled … NOT an equilibrium" is neither marker; keep the accent.
       colClass = 'text-accent-600 dark:text-accent-400 font-semibold';
+    } else if (line.startsWith('Start (')) {
+      // The starting-point sphere's grey, so the first line matches its marker.
+      colClass = 'text-sim-start dark:text-sim-start font-semibold';
     } else if (line.includes('(A)')) {
       colClass = 'text-player-a-600 dark:text-player-a-400 font-semibold';
     } else if (line.includes('(B)')) {
