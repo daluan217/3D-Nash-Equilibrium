@@ -409,16 +409,6 @@ export function profileConcept(x: number, y: number): 'pure' | 'mixed' {
 }
 
 /**
- * Which players are ACTUALLY indifferent at (x, y).
- *
- * The converged box used to assume that a "mixed" profile means both players
- * are indifferent, and printed both indifference equations. On a CONTINUUM only
- * one player is indifferent — the other strictly prefers the pure strategy it
- * is sitting on, which is precisely why it sits there. That box printed
- * "A indifferent: E[Row 1] = 3.783 ≈ E[Row 2] = -0.698" — a 4.481 gap asserted
- * as an approximate equality. Ask, never assume.
- */
-/**
  * `fmtProb` for KaTeX. Its non-numeric forms ("more than 0.999") are PROSE, and
  * dropping prose into math mode renders it as concatenated italic variables —
  * "x∗=morethan0.999". Wrap those in \text{} so the honest form stays readable;
@@ -429,6 +419,27 @@ export function texProb(v: number): string {
   return /^-?[0-9.]+$/.test(s) ? s : `\\text{${s}}`;
 }
 
+/**
+ * Which players are ACTUALLY indifferent at (x, y), per the CONVERGENCE
+ * tolerance (`neTolerancePlayer`, job 1 — see its own docstring).
+ *
+ * The converged box used to assume that a "mixed" profile means both players
+ * are indifferent, and printed both indifference equations. On a CONTINUUM only
+ * one player is indifferent — the other strictly prefers the pure strategy it
+ * is sitting on, which is precisely why it sits there. That box printed
+ * "A indifferent: E[Row 1] = 3.783 ≈ E[Row 2] = -0.698" — a 4.481 gap asserted
+ * as an approximate equality. Ask, never assume.
+ *
+ * NOT the panel's arbiter any more (director decision, 2026-09-02, "Option
+ * B"): `src/components/equilibriumPanel.ts`'s `indifferenceLine` used to take
+ * this function's verdict as its ≈-vs-strict decision, which let a
+ * large-spread game's tolerance exceed a full display unit and print "≈"
+ * between two numbers that read differently on screen. The panel now decides
+ * that question itself, from the printed digits alone — this function has no
+ * production caller left, kept as a directly-tested utility answering the
+ * game-theoretic question it was built for (job 1's kind of tolerance, not
+ * job 2's display question).
+ */
 export function indifferenceAt(g: GamePayoffs, x: number, y: number): { a: boolean; b: boolean } {
   // Per-player: the combined tolerance let A's +/-100 spread decide that B was
   // "indifferent" across a gap of 0.3599 — 90% of B's entire payoff range.

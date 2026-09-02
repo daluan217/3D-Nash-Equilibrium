@@ -343,7 +343,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                   {/* Fig 1 */}
                   <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center">
-                    <span className="text-xs uppercase tracking-wider font-extrabold text-slate-400 dark:text-slate-500 mb-4 text-center">
+                    <span className="text-xs uppercase tracking-wider font-extrabold text-muted dark:text-muted-dark mb-4 text-center">
                       Fig 1. Coordinate Grid & Strategy Axes
                     </span>
                     <svg width="200" height="200" viewBox="0 0 200 200" className="overflow-visible select-none">
@@ -378,7 +378,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                   {/* Fig 2 */}
                   <div className="bg-slate-50/50 dark:bg-slate-950/40 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex flex-col items-center">
-                    <span className="text-xs uppercase tracking-wider font-extrabold text-slate-400 dark:text-slate-500 mb-4 text-center">
+                    <span className="text-xs uppercase tracking-wider font-extrabold text-muted dark:text-muted-dark mb-4 text-center">
                       Fig 2. Best-Response Intersections
                     </span>
                     <svg width="200" height="200" viewBox="0 0 200 200" className="overflow-visible select-none">
@@ -585,7 +585,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
               {/* Default Presets Segment */}
               <div>
-                <div className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3.5 flex items-center gap-1">
+                <div className="text-xs font-bold uppercase tracking-wider text-muted dark:text-muted-dark mb-3.5 flex items-center gap-1">
                   <FileText className="w-3.5 h-3.5" /> Core Preset Profiles
                 </div>
 
@@ -656,7 +656,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                               }}
                               disabled={isSelected}
                               className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${isSelected
-                                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-transparent cursor-not-allowed'
+                                  ? 'bg-slate-100 dark:bg-slate-800 text-muted dark:text-muted-dark border border-transparent cursor-not-allowed'
                                   : 'bg-accent-600 hover:bg-accent-700 text-white shadow-xs'
                                 }`}
                             >
@@ -672,7 +672,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
               {/* Custom Games Saved Segment */}
               <div className="border-t border-slate-100 dark:border-slate-800 pt-6">
-                <div className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-3.5 flex items-center justify-between">
+                <div className="text-xs font-bold uppercase tracking-wider text-muted dark:text-muted-dark mb-3.5 flex items-center justify-between">
                   <span>Custom User Profiles ({formattedCustomGames.length})</span>
                   {!user && (
                     <span className="text-xs text-accent-500 normal-case font-medium">
@@ -757,7 +757,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                 }}
                                 disabled={isSelected}
                                 className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${isSelected
-                                    ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-transparent cursor-not-allowed'
+                                    ? 'bg-slate-100 dark:bg-slate-800 text-muted dark:text-muted-dark border border-transparent cursor-not-allowed'
                                     : 'bg-accent-600 hover:bg-accent-700 text-white shadow-xs'
                                   }`}
                               >
@@ -845,11 +845,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                   {dbMode === 'cloud' && (
                     <div className="pt-2.5 space-y-1.5">
-                      <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">
+                      <label htmlFor="central-hub-url" className="text-xs font-bold text-muted dark:text-muted-dark uppercase tracking-wide">
                         Central Hub Website URL
                       </label>
                       <div className="flex gap-1.5">
                         <input
+                          id="central-hub-url"
                           type="text"
                           value={apiBaseUrl}
                           onChange={(e) => onUpdateApiBaseUrl(e.target.value)}
@@ -876,7 +877,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                           Test
                         </button>
                       </div>
-                      <p className="text-xs text-slate-400 dark:text-slate-500 leading-normal pl-0.5">
+                      <p className="text-xs text-muted dark:text-muted-dark leading-normal pl-0.5">
                         Prefilled with your active digital workspace server URL. Saving custom games in Cloud Sync Mode will instantly sync them across any browser or app linked to your account!
                       </p>
                     </div>
@@ -905,11 +906,11 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </h4>
                     <div className="grid grid-cols-2 gap-4 pt-1.5 border-t border-slate-100 dark:border-slate-800">
                       <div className="min-w-0">
-                        <span className="text-slate-400 dark:text-slate-500 block">Username badge</span>
+                        <span className="text-muted dark:text-muted-dark block">Username badge</span>
                         <strong className="text-slate-700 dark:text-slate-200 block text-xs md:text-sm break-all">@{user.username}</strong>
                       </div>
                       <div className="min-w-0">
-                        <span className="text-slate-400 dark:text-slate-500 block">Registered Email</span>
+                        <span className="text-muted dark:text-muted-dark block">Registered Email</span>
                         <strong className="text-slate-700 dark:text-slate-200 block text-xs md:text-sm break-all">{user.email}</strong>
                       </div>
                     </div>
