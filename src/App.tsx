@@ -83,7 +83,7 @@ import {
 
 import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor, descriptionColorTerms } from './utils/colorTerms';
+import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms } from './utils/colorTerms';
 import { DescriptionEditor } from './components/DescriptionEditor';
 import { DownloadModal } from './components/DownloadModal';
 import { AdminDashboard } from './components/AdminDashboard';
@@ -1858,6 +1858,44 @@ export default function App() {
     return colorTermsFor(scenarioForReport, p?.actorA ?? [], p?.actorB ?? []);
   }, [scenarioForReport, mergedPresets, activePreset]);
 
+  /**
+   * The same terms plus the user's own highlights — for the selected custom
+   * game's description card, and ONLY that. `colorTerms` above stays the pair
+   * the AI explanation renders with, so a user's highlights can never reach the
+   * model's prose.
+   *
+   * Hoisted out of the JSX because it was called twice there with identical
+   * arguments, once for `aTerms` and once for `bTerms`. Two calls that must
+   * agree is the same shape as two lists that must agree, one `??` away from
+   * the drawer defect this change set exists to remove.
+   */
+  const descriptionTerms = useMemo(() => descriptionColorTerms(
+    scenarioForReport,
+    mergedPresets[activePreset]?.actorA ?? [],
+    mergedPresets[activePreset]?.actorB ?? [],
+    selectedPreset?.colorTermsA ?? [],
+    selectedPreset?.colorTermsB ?? [],
+  ), [scenarioForReport, mergedPresets, activePreset, selectedPreset]);
+
+  /**
+   * The automatic terms each description dialog's PREVIEW merges the user's
+   * highlights onto — built from that dialog's own Option Names.
+   *
+   * Both previews used to be handed `colorTerms`, i.e. the terms of whatever
+   * game was selected in the main panel. That is neither the game the dialog is
+   * editing nor the labels being typed into the form, and it broke the
+   * preview's stated promise in both directions: the save dialog under-coloured
+   * (type four new option names, preview one highlight, save four), and the
+   * pencil over-coloured, because it opens the edit dialog WITHOUT selecting
+   * the row — so the preview borrowed the still-selected game's option names
+   * and promised highlights the save then dropped.
+   *
+   * A pleasant side effect of reading the dialog's own state: the preview now
+   * updates as the Option Names are typed, which it never did.
+   */
+  const saveBaseTerms = useMemo(() => dialogBaseColorTerms(saveLabels), [saveLabels]);
+  const editBaseTerms = useMemo(() => dialogBaseColorTerms(editLabels), [editLabels]);
+
 
   // Clamp a whole matrix through the one cell parser, and derive its editable
   // string twin from the RESULT — so payoffs and rawPayoffs cannot disagree
@@ -3097,8 +3135,8 @@ export default function App() {
                       alter how the model's prose is coloured. */}
                   <ColorCoded
                     text={selectedPreset.desc}
-                    aTerms={descriptionColorTerms(scenarioForReport, mergedPresets[activePreset]?.actorA ?? [], mergedPresets[activePreset]?.actorB ?? [], selectedPreset.colorTermsA ?? [], selectedPreset.colorTermsB ?? []).a}
-                    bTerms={descriptionColorTerms(scenarioForReport, mergedPresets[activePreset]?.actorA ?? [], mergedPresets[activePreset]?.actorB ?? [], selectedPreset.colorTermsA ?? [], selectedPreset.colorTermsB ?? []).b}
+                    aTerms={descriptionTerms.a}
+                    bTerms={descriptionTerms.b}
                   />
                 </div>
               ) : (
@@ -4442,8 +4480,8 @@ export default function App() {
                   termsA={editTerms.a}
                   termsB={editTerms.b}
                   onTermsChange={(a, b) => setEditTerms({ a, b })}
-                  baseA={colorTerms.a}
-                  baseB={colorTerms.b}
+                  baseA={editBaseTerms.a}
+                  baseB={editBaseTerms.b}
                   maxLength={800}
                 />
               </div>
@@ -4646,8 +4684,8 @@ export default function App() {
                   termsA={saveTerms.a}
                   termsB={saveTerms.b}
                   onTermsChange={(a, b) => setSaveTerms({ a, b })}
-                  baseA={colorTerms.a}
-                  baseB={colorTerms.b}
+                  baseA={saveBaseTerms.a}
+                  baseB={saveBaseTerms.b}
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   maxLength={800}
                 />
