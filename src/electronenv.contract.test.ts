@@ -122,8 +122,12 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
   // that got there some other way — electron-builder does not exclude
   // dotfiles by default. An explicit negation pattern is the one shape that
   // protects the resolved list regardless of how a dotfile got into `dist/`.
-  ok(files.some((f) => f === '!**/.env' || f === '!dist/**/.env'),
-    `build.files must explicitly exclude .env (a broad include glob does not skip dotfiles by default): ${JSON.stringify(files)}`);
+  //
+  // MUST BE `.env*`, not just `.env`: Vite/dotenv's own convention is
+  // `.env.local` / `.env.production` / `.env.*.local` (see .gitignore), and
+  // `!**/.env` alone would leave every one of those packageable.
+  ok(files.some((f) => f === '!**/.env*' || f === '!dist/**/.env*'),
+    `build.files must explicitly exclude .env AND its variants (.env.local, .env.production, ...): ${JSON.stringify(files)}`);
   ok(files.includes('electron-main.cjs'),
     'build.files must package electron-main.cjs — it is where the desktop environment now lives');
 }

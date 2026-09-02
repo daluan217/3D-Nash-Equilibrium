@@ -86,7 +86,7 @@
       "electron-main.cjs",
       "electron-preload.cjs",
       "db.json",
-      "!**/.env"
+      "!**/.env*"
     ],
     "asar": true
   }

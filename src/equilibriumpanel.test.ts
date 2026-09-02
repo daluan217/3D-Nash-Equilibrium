@@ -112,6 +112,19 @@ function preset(key: string): GamePayoffs {
   ok(exactZero.pRel === '=' && exactZero.pStr === '0', `an exact zero must read "= 0", got ${JSON.stringify(exactZero)}`);
   const ordinary = indifferenceLine('Row 1', 'Row 2', 2 / 3, 2 / 3, true);
   ok(ordinary.pRel === '=' && ordinary.pStr === '0.667', `an ordinary value must still read "= 0.667", got ${JSON.stringify(ordinary)}`);
+
+  // THE MIDPOINT-SHARING TRAP: p and q straddling zero with a gap under 5e-4
+  // average to exactly 0 — sharing that midpoint would print "= 0" on BOTH
+  // sides for a quantity that is not zero on EITHER side. Caught by CodeRabbit
+  // CLI's self-review of this very fix.
+  const straddle = indifferenceLine('Row 1', 'Row 2', 0.0002, -0.0002, true);
+  ok(!/=\s*0\b/.test(straddle.tex), `THE DEFECT: neither side may render "= 0" here, got tex="${straddle.tex}"`);
+  ok(straddle.pRel === '<' && straddle.pStr === '0.001' && straddle.qRel === '>' && straddle.qStr === '-0.001',
+    `each side must keep its own honest threshold wording, got ${JSON.stringify(straddle)}`);
+  // The ulp-noise case that midpoint-sharing exists FOR must still collapse.
+  const ulp = indifferenceLine('Row 1', 'Row 2', 2 * (1 / 3), 1 - (1 / 3), true);
+  ok(ulp.pRel === '=' && ulp.pStr === '0.667' && ulp.qRel === '=' && ulp.qStr === '0.667',
+    `a genuine float-dust pair must still share the midpoint, got ${JSON.stringify(ulp)}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

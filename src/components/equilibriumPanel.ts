@@ -202,8 +202,16 @@ export function indifferenceLine(
   // Under a strict relation `fmtPayoffPair` already tells the two sides apart,
   // so both operators stay `=`.
   const strict = indifferent ? null : fmtPayoffPair(p, q);
-  const pf = indifferent ? threeRel(Math.abs(p - q) < 5e-4 ? mid : p) : { str: strict!.p, rel: '=' };
-  const qf = indifferent ? threeRel(Math.abs(p - q) < 5e-4 ? mid : q) : { str: strict!.q, rel: '=' };
+  const pBase = indifferent ? threeRel(p) : { str: strict!.p, rel: '=' };
+  const qBase = indifferent ? threeRel(q) : { str: strict!.q, rel: '=' };
+  // Sharing the midpoint is only safe when NEITHER side is itself a
+  // sub-resolution threshold: p=0.0002, q=-0.0002 straddle zero with a gap
+  // under 5e-4, but mid is exactly 0 — sharing it would print "= 0" for a
+  // quantity that is not zero on either side. When either side already needed
+  // `<`/`>` wording, keep that side's own honest value instead of collapsing.
+  const shareMidpoint = indifferent && Math.abs(p - q) < 5e-4 && pBase.rel === '=' && qBase.rel === '=';
+  const pf = shareMidpoint ? threeRel(mid) : pBase;
+  const qf = shareMidpoint ? threeRel(mid) : qBase;
   const relation = indifferent ? '\\approx' : (p > q ? '>' : '<');
   return {
     indifferent,
