@@ -74,6 +74,123 @@ function canInvent(): boolean {
   return hasCredentials(DEFAULT_MODEL) || (process.env.IS_ELECTRON === 'true' && bankAvailable());
 }
 
+/**
+ * THE ONE SCREENED, REROLLED SCENARIO DRAW. Every path that invents a scenario
+ * goes through here, so none of them can drift from the others again.
+ *
+ * WHY THIS IS A FUNCTION AND NOT THREE COPIES. server.ts invents a scenario at
+ * three places — the rung-3 report path, the tie report path, and the
+ * `scenarioOnly` path behind "New AI scenario". They have now drifted THREE
+ * separate times, in three different properties, and every time the split was
+ * on the MATRIX rather than on anything the user does:
+ *
+ *   SCREENING drifted first and was unified in #56. That fix's comment is still
+ *   in this file, still correct, and reads as a guarantee about this whole
+ *   surface — which is exactly why the next two drifts were so easy to miss.
+ *   THE RETRY drifted next and was NOT unified, with the polarity reversed, so
+ *   the 12.7% tie minority became the weak side. RED-PIPELINE measured the SAME
+ *   BUTTON against the shipped bank, n=3000 per cell: 1.30% of tie-game presses
+ *   returned no story against 0.00% of non-tie presses, z=6.3. Where the reroll
+ *   existed it was a complete rescue — 23 losses to zero.
+ *   THE OPT-OUT FLAG drifted third. `NASH_SCENARIO_CHECKS=0` was read only in
+ *   `scenarioOnly` and in the now-unreachable LLM path, so it was INERT on both
+ *   branches production serves. Its own comment promises that "each gate's
+ *   effect is measurable in isolation"; an operator flipping it to measure the
+ *   scenario gate on the report path saw no difference and would conclude the
+ *   gate does nothing. A measurement instrument that silently does not measure
+ *   is worse than a dead flag.
+ *
+ * WHAT THE MISSING REROLL COST, measured end to end against a real provider at
+ * PRODUCTION settings (no `reasoning` argument — thirteen harnesses in this
+ * repo hard-code 'low', and every number they produced is at the wrong
+ * setting): 4 of 60 reports came back with NO STORY, 6.7%, Wilson 95% CI
+ * [2.6%, 15.9%]. One of the four took 83.5 seconds to return a report with no
+ * story. The lost draws are persona/META leaks — a bare letter standing in for
+ * a character, or the prompt's own "Player A" in the prose — a model-side
+ * property with a known per-draw rate, so independent draws are precisely the
+ * right instrument. Rewriting model output is not permitted here; a reroll is,
+ * and it costs one extra call only on the calls that produced nothing.
+ */
+async function inventScreenedScenario(
+  payoffs: GamePayoffs,
+  onDrop?: (reason: string) => void,
+): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+  // Honoured on EVERY path now. That is the point of the flag.
+  const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
+  const storyOk = (sc: SuggestedScenario): boolean => {
+    if (!validateScenario(sc, payoffs).ok) return false;
+    const claimFree = scenarioIsClaimFree(sc);
+    if (!claimFree.ok) { onDrop?.(claimFree.reason); return false; }
+    return process.env.NASH_DIRECTION_CHECKS !== '1'
+      || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0;
+  };
+
+  let { scenario: invented, failure } = await drawWithDeadline(payoffs);
+  // Two ways to end up with nothing, and both now get the second chance: a draw
+  // that came back and FAILED the gate, and a draw that never came back at all
+  // (`max-tokens`, the model spending its whole budget reasoning).
+  const lost = !invented;
+  if (lost || (gateOn && !storyOk(invented))) {
+    const second = await drawWithDeadline(payoffs);
+    invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
+    if (!invented) {
+      failure = (lost && !second.scenario ? (second.failure ?? failure) : "validation-failed") as typeof failure;
+    }
+  }
+  return { scenario: invented, failure };
+}
+
+/**
+ * A DEADLINE ON THE STORY, because the story is the optional part.
+ *
+ * A provider that ACCEPTS the connection and then never answers used to hold
+ * the user's request open indefinitely. RED-PIPELINE measured it against a mock
+ * that accepts and never responds: 798 seconds — 13m18s — still open, exactly
+ * one provider attempt, no timeout at any layer. Every link in that chain is a
+ * default nobody chose. `new OpenAI({ baseURL, apiKey })` sets no `timeout` and
+ * no `maxRetries`, so the SDK's own 600s x 3 applies; `providers.ts` then walks
+ * up to four request shapes and each gets that full budget; and Cloud Run's
+ * request timeout on this service is 3600s, not the 300s default. The outer
+ * bound in production was an HOUR of a spinning "Explain this game", ending in
+ * the client saying the deterministic report above still stands.
+ *
+ * WHY THE DEADLINE BELONGS HERE and not on the OpenAI client: a `timeout` there
+ * caps one ATTEMPT, and the shape ladder multiplies it. This call site is the
+ * one that knows the work is OPTIONAL — `suggestedScenario` may be absent on
+ * every branch by construction, and the templated report needs no model at all.
+ * The same handler already degrades perfectly on eleven provider failures that
+ * ARRIVE (500, 400, 429, HTML, empty choices, null content, truncation,
+ * refusal, no scenario, prose-not-JSON, null scenario — all under 1.5s). The
+ * one badly handled case was the one where the right answer was most obviously
+ * already in hand.
+ *
+ * The draw is abandoned, not cancelled: the provider promise is left to settle
+ * on its own (its result is simply discarded) because there is no cancellation
+ * token through `generateScenario`, and a rejected orphan would be an unhandled
+ * rejection. `.catch` keeps it quiet.
+ */
+const SCENARIO_DEADLINE_MS = Number(process.env.NASH_SCENARIO_TIMEOUT_MS ?? 20_000);
+
+async function drawWithDeadline(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<{ scenario: null; failure: string }>((resolve) => {
+    timer = setTimeout(() => resolve({ scenario: null, failure: "timeout" }), SCENARIO_DEADLINE_MS);
+    // Never hold the process open for a draw nobody is waiting for.
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([
+      inventScenario(payoffs).catch((err) => {
+        console.warn(`[report] scenario draw failed: ${err?.message ?? err}`);
+        return { scenario: null, failure: "error" as const };
+      }),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function inventScenario(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
   const domain = pickScenarioDomain();
   if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
@@ -175,12 +292,69 @@ interface DB {
 
 const PASSWORD_ITERATIONS = 210_000;
 const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * THE DESKTOP'S SESSION SECRET, persisted beside its database.
+ *
+ * WHY. Every auth token is an HMAC under `AUTH_SECRET`. A packaged app ships no
+ * `.env` — correctly, since a distributed binary must not carry credentials —
+ * and `electron-main.cjs` sets NODE_ENV/PORT/IS_ELECTRON/ELECTRON_USER_DATA_PATH
+ * plus the rung-3 trio, but no secret. So the fallback below minted a NEW random
+ * secret on every launch and every token ever issued stopped verifying.
+ *
+ * MEASURED against the real packaged .app (`electron-builder --dir`, launched
+ * with cwd=/ so dotenv loads nothing): register, sign in, save a game, quit,
+ * relaunch against the SAME user-data directory —
+ *   before: GET /api/auth/me -> 401 "Invalid session."
+ *           GET /api/games   -> 401 "Invalid or expired session."
+ * The rows are still in `db.json`; the token in localStorage is simply dead. On
+ * a local-first desktop app that reads as "my saved games are gone", and it
+ * happened on every launch.
+ *
+ * SCOPE, deliberately narrow. This persists ONLY under
+ * `ELECTRON_USER_DATA_PATH` — the desktop, where the user's own machine is the
+ * trust boundary and the key sits in the same directory as the database it
+ * protects. The hosted path keeps its per-process random fallback on purpose:
+ * writing a secret to a Cloud Run container's ephemeral disk would make an
+ * unkeyed deploy LOOK fixed while still dropping every session on scale-out or
+ * a revision roll, which is worse than the loud warning below. An explicitly
+ * configured secret still wins over both, so the deployed service is untouched.
+ *
+ * Degrades rather than throws: if the file cannot be read or written (read-only
+ * home, permissions) this returns null and the caller falls back to exactly
+ * today's behaviour — a random per-process secret — rather than failing to boot.
+ */
+function desktopAuthSecret(): string | null {
+  const dir = process.env.ELECTRON_USER_DATA_PATH;
+  if (!dir) return null;
+  const file = path.join(dir, "auth-secret");
+  try {
+    if (fs.existsSync(file)) {
+      const existing = fs.readFileSync(file, "utf-8").trim();
+      // Only accept something that is actually a key. A truncated or empty file
+      // must not silently become a one-character HMAC secret that still "works".
+      if (/^[0-9a-f]{64}$/.test(existing)) return existing;
+    }
+    const fresh = crypto.randomBytes(32).toString("hex");
+    fs.mkdirSync(dir, { recursive: true });
+    // 0600: the database beside it is only as private as the user's home
+    // directory, but a session key should not be world-readable.
+    fs.writeFileSync(file, fresh, { encoding: "utf-8", mode: 0o600 });
+    return fresh;
+  } catch (err) {
+    console.error("Could not persist the desktop session secret; sessions will not survive a restart:", err);
+    return null;
+  }
+}
+
 const AUTH_SECRET = process.env.AUTH_SECRET
   || process.env.SESSION_SECRET
   || process.env.ADMIN_SECRET
+  || desktopAuthSecret()
   || crypto.randomBytes(32).toString("hex");
 
-if (process.env.NODE_ENV === "production" && !process.env.AUTH_SECRET && !process.env.SESSION_SECRET && !process.env.ADMIN_SECRET) {
+if (process.env.NODE_ENV === "production" && !process.env.AUTH_SECRET && !process.env.SESSION_SECRET && !process.env.ADMIN_SECRET
+    && !process.env.ELECTRON_USER_DATA_PATH) {
   console.warn("AUTH_SECRET/SESSION_SECRET is not configured; auth sessions will be invalidated on server restart.");
 }
 
@@ -188,6 +362,41 @@ const GCS_BUCKET = process.env.GCS_BUCKET_NAME;
 const DB_FILE = process.env.ELECTRON_USER_DATA_PATH
   ? path.join(process.env.ELECTRON_USER_DATA_PATH, "db.json")
   : path.join(process.cwd(), "db.json");
+
+/**
+ * Replace a file's contents in one indivisible step.
+ *
+ * `fs.writeFileSync` truncates the target and then writes into it, so between
+ * those two operations the file on disk is short. On the desktop `db.json` is
+ * the ONLY copy of the user's account and saved games — the GCS branch is
+ * skipped whenever ELECTRON_USER_DATA_PATH is set — and a crash, force-quit or
+ * power loss in that window leaves a truncated file. `loadDBFromFile` then
+ * catches the parse error and returns an empty database, so the app opens
+ * looking exactly like a fresh install, and the next save writes that empty
+ * database over whatever was left.
+ *
+ * Write to a sibling temp file, flush it to the platter, then `rename` over the
+ * target. POSIX rename within a directory is atomic: a reader sees either the
+ * whole old file or the whole new one, never a partial. The fsync is what makes
+ * that hold after a power loss rather than only after a process crash.
+ */
+function writeFileAtomicSync(file: string, data: string): void {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(tmp, "w", 0o600);
+    fs.writeFileSync(fd, data, "utf-8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    // Never leave the scratch file behind to be mistaken for data.
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best effort */ }
+    throw err;
+  }
+}
 
 let inMemoryDb: DB | null = null;
 
@@ -203,7 +412,7 @@ function loadDBFromFile(): DB {
   if (!fs.existsSync(DB_FILE)) {
     const fresh: DB = { users: [], games: [] };
     try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(fresh, null, 2), "utf-8");
+      writeFileAtomicSync(DB_FILE, JSON.stringify(fresh, null, 2));
     } catch (err) {
       console.error("Error creating fresh db.json:", err);
     }
@@ -213,7 +422,19 @@ function loadDBFromFile(): DB {
     const data = fs.readFileSync(DB_FILE, "utf-8");
     return JSON.parse(data);
   } catch (err) {
-    console.error("Error reading db.json, resetting database:", err);
+    // A database we cannot parse is not a database we may DELETE. Returning the
+    // empty DB here is survivable on its own; what made it destructive is what
+    // happens next — the first `saveDB` writes that empty object straight over
+    // the file, so the unreadable-but-present rows become genuinely gone. Move
+    // the bad file aside first, so the bytes still exist to be recovered from
+    // and the next save lands on a clean path.
+    const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    try {
+      fs.renameSync(DB_FILE, aside);
+      console.error(`Error reading db.json, resetting database. The unreadable file has been kept at ${aside}:`, err);
+    } catch (renameErr) {
+      console.error("Error reading db.json, resetting database (and the unreadable file could NOT be preserved):", err, renameErr);
+    }
     return { users: [], games: [] };
   }
 }
@@ -636,7 +857,7 @@ function saveDB(db: DB) {
       if (!fs.existsSync(dbDir)) {
         fs.mkdirSync(dbDir, { recursive: true });
       }
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
+      writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
     } catch (err) {
       console.error("Error writing db.json:", err);
     }
@@ -1051,37 +1272,60 @@ async function startServer() {
       const isTie = p2.a11 === p2.a21 || p2.a12 === p2.a22 || p2.b11 === p2.b12 || p2.b21 === p2.b22;
       if (!isTie && req.body?.scenarioOnly !== true) {
         let invented: SuggestedScenario | null = null;
-        if (!scenario && canInvent()) {
+        // `scenarioIsUsable`, NOT the truthiness of `scenario`.
+        //
+        // `cleanScenario` returns an OBJECT when ANY of name/row1/row2/col1/
+        // col2/description is non-empty, so `!scenario` treated a game with
+        // nothing but a NAME as "the user already has a scenario". Every other
+        // site in the codebase asks `scenarioIsUsable` — all four labels, or a
+        // description of >=12 words — including `scenarioBlock`, the
+        // `scenarioOnly` path, and the client's own post-save regen guard.
+        // So a scenario that was "supplied" here was "unusable" everywhere
+        // else, and rung 3 then neither used it nor replaced it.
+        //
+        // REACHED IN FOUR CLICKS ON THE DEFAULT SAVE PATH: the save dialog
+        // requires only a name, and the server itself manufactures a
+        // description ("Custom payoff matrix saved by <username>") below. So a
+        // user who saves a game with just a name got generic Row/Col prose and
+        // no story on every explain, forever — while the same request at rung 0
+        // reaches scenarioBlock's "Nothing usable: let the model invent one"
+        // and gets a story. The fix must therefore test USABILITY, not
+        // presence.
+        const supplied = scenarioIsUsable(scenario);
+        if (!supplied && canInvent()) {
           try {
-            const r = (await inventScenario(payoffs)).scenario;
-            // Under rung 3 the scenario must also be CLAIM-FREE: the solver
-            // states the mathematics, so a description that asserts anything
-            // decidable is both unnecessary and the only remaining defect
-            // surface (T1 measured it at 11.4%).
-            // `claimFree` was `false | {ok, reason}` and was read through two
-            // `as any` casts. It behaved correctly, but a cast is where the next
-            // edit goes wrong silently — and this is the screen that decides
-            // whether a decidable claim reaches the user. Narrowed to the same
-            // shape the other two scenario paths use.
-            const claimFree = r ? scenarioIsClaimFree(r) : null;
-            const ok = !!r && validateScenario(r, payoffs).ok && claimFree?.ok === true
-              && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(r.description ?? '', r, payoffs).length === 0);
-            if (r && ok) invented = r;
-            else if (r && claimFree && !claimFree.ok) console.warn(`[report] rung-3 scenario dropped: ${claimFree.reason}`);
+            // Screened AND rerolled, exactly like the other two paths. Under
+            // rung 3 the scenario must also be CLAIM-FREE: the solver states
+            // the mathematics, so a description that asserts anything decidable
+            // is both unnecessary and the only remaining defect surface (T1
+            // measured it at 11.4%).
+            invented = (await inventScreenedScenario(
+              payoffs,
+              (reason) => console.warn(`[report] rung-3 scenario dropped: ${reason}`),
+            )).scenario;
           } catch { invented = null; }
         }
-        const labels2 = scenario ?? invented;
+        // Labels follow USABILITY too. A name-only scenario is truthy, so
+        // `scenario ?? invented` kept selecting it and rendered the prose in
+        // Row/Col even once a fully-labelled story had been invented beside it.
+        const labels2 = supplied ? scenario : (invented ?? scenario);
         const truth2 = computeAllNE(payoffs);
+        // ONE pass, used twice. The comment below says the claims are "derived
+        // in the SAME pass as the prose so the two cannot drift" — and the code
+        // called tieProseFull twice, so that was true only because the function
+        // happens to be pure. Bind it and the comment is a guarantee instead of
+        // a coincidence.
+        const rendered2 = tieProseFull(payoffs, labels2 ?? null);
         return res.json({
           source: 'template',
           report: {
             claimedEquilibria: truth2.map((n) => ({ type: n.type, x: n.x, y: n.y })),
-            prose: tieProseFull(payoffs, labels2 ?? null).prose,
+            prose: rendered2.prose,
             // The renderer declares what it asserts, derived in the SAME pass as
             // the prose so the two cannot drift. Was `null`, which made the
             // DETERMINISTIC surface less verifiable than the model's.
-            proseClaims: tieProseFull(payoffs, labels2 ?? null).claims,
-            suggestedScenario: scenario ? undefined : invented ?? undefined,
+            proseClaims: rendered2.claims,
+            suggestedScenario: supplied ? undefined : invented ?? undefined,
           },
           groundTruth: truth2,
           validation: null,
@@ -1115,15 +1359,25 @@ async function startServer() {
           // supplied "Night Shift / Day Shift" was shown a mathematically
           // perfect paragraph about options that were not in their game.)
           let invented: SuggestedScenario | null = null;
-          if (!scenario && canInvent()) {
+          let inventFailure: string | undefined;
+          // Usability, not presence — the same predicate the non-tie branch and
+          // every other site now use.
+          const suppliedTie = scenarioIsUsable(scenario);
+          if (!suppliedTie && canInvent()) {
             try {
-              const s = (await inventScenario(payoffs)).scenario;
-              // The scenario still faces its own gate; a failed story costs the
-              // labels, not the explanation.
-              // Same screen the non-tie path applies: the declarations gate,
-              // the CLAIM-FREE screen, AND the label-aware direction/dependence
-              // checks over the free description. C15 draw 56's story denied a
-              // payoff tie that the template paragraph beside it stated aloud.
+              // Screened AND rerolled through the shared draw. The screening
+              // half of this was unified in #56 and its comment (kept below)
+              // already claimed parity; the RETRY half was not, and this was
+              // the branch left without one. Same button, same user, same
+              // model: 1.30% of tie-game presses of "New AI scenario" returned
+              // no story against 0.00% of non-tie presses, z=6.3 at n=3000 per
+              // cell — decided entirely by whether the matrix happens to
+              // contain a payoff tie, which the user never sees.
+              //
+              // The screen itself: the declarations gate, the CLAIM-FREE
+              // screen, AND the label-aware direction/dependence checks over
+              // the free description. C15 draw 56's story denied a payoff tie
+              // that the template paragraph beside it stated aloud.
               //
               // The claim-free screen was MISSING here until 2026-08-29, while
               // this comment already claimed parity. Every claim-free rule —
@@ -1133,28 +1387,45 @@ async function startServer() {
               // Open Records and Restrict Records when responding to the
               // review" shipped on a tie game (b11 = b12 = -1) even though the
               // screen drops that exact description.
-              const claimFreeOk = !!s && scenarioIsClaimFree(s).ok;
-              const storyOk = !!s && validateScenario(s, payoffs).ok && claimFreeOk
-                && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(s.description ?? '', s, payoffs).length === 0);
-              if (s && !claimFreeOk) console.warn(`[report] tie-path scenario dropped: ${scenarioIsClaimFree(s).reason}`);
-              if (s && storyOk) invented = s;
+              const drawn = await inventScreenedScenario(
+                payoffs,
+                (reason) => console.warn(`[report] tie-path scenario dropped: ${reason}`),
+              );
+              invented = drawn.scenario;
+              inventFailure = drawn.failure;
             } catch { invented = null; }
           }
-          // Labels for the rendered sentences: the user's own scenario first,
-          // an invented one only when they supplied none.
-          const labels = scenario ?? invented;
+          // Labels for the rendered sentences: the user's own scenario when it
+          // is USABLE, an invented one otherwise.
+          const labels = suppliedTie ? scenario : (invented ?? scenario);
           if (req.body?.scenarioOnly === true) {
-            return res.json(invented ? { scenario: invented } : { scenario: null, failure: scenario ? 'scenario-supplied' : 'validation-failed' });
+            // The reason must name what actually happened. This reported
+            // 'validation-failed' for a provider error, an unparseable draw,
+            // and for NO CREDENTIALS AT ALL — the non-tie path on the same
+            // server correctly says 'no-key' for the last of those. Not
+            // user-visible today, because the client prints one fixed string
+            // whatever it receives, but it is the envelope's contract and an
+            // eval reading it would be misled.
+            return res.json(invented
+              ? { scenario: invented }
+              : {
+                  scenario: null,
+                  failure: suppliedTie ? 'scenario-supplied'
+                    : !canInvent() ? 'no-key'
+                    : (inventFailure ?? 'validation-failed'),
+                });
           }
           const truth = computeAllNE(payoffs);
+          // One pass, used twice — see the note on the non-tie branch.
+          const rendered = tieProseFull(payoffs, labels ?? null);
           return res.json({
             source: 'template',
             report: {
               claimedEquilibria: truth.map((n) => ({ type: n.type, x: n.x, y: n.y })),
-              prose: tieProseFull(payoffs, labels ?? null).prose,
-              proseClaims: tieProseFull(payoffs, labels ?? null).claims,
+              prose: rendered.prose,
+              proseClaims: rendered.claims,
               // Never offer a replacement the user did not ask for.
-              suggestedScenario: scenario ? undefined : invented ?? undefined,
+              suggestedScenario: suppliedTie ? undefined : invented ?? undefined,
             },
             groundTruth: truth,
             validation: null,
@@ -1186,52 +1457,73 @@ async function startServer() {
       if (scenarioIsUsable(scenario)) {
         return res.json({ scenario: null, failure: "scenario-supplied" });
       }
-      const invent = () => inventScenario(payoffs);
-      let { scenario: invented, failure } = await invent();
+      // ONE shared draw with the other two paths. The screening half of this
+      // was unified in #56 and the comment below records why; the RETRY and the
+      // NASH_SCENARIO_CHECKS opt-out were left behind, and the reroll that used
+      // to live here inline is now the shared instrument every branch uses.
+      //
+      // The original note, still the reason the shared screen exists:
       // The claim-free screen belongs here too, and its absence was the single
-      // biggest hole in the scenario surface. The rung-3 report path (:899) and
-      // the tie path (:963) both call it; this path did not, so it dropped the
-      // digit rule and all six CLAIMY rules — and then retried, meaning the
-      // LOOSEST gate was the one that got two draws while the strictest got one.
-      //
-      // What made it user-visible is that the split is on the MATRIX, not on the
-      // button. "New AI scenario" on a TIE game is served from the tie block and
-      // is screened; on any other game it lands here and was not. Ties are 12.7%
-      // of a random sample, so roughly 87% of clicks on that button took the
-      // weaker path — same button, same user, same model, different screening
-      // because of something about the matrix the user never sees.
-      //
+      // biggest hole in the scenario surface. The rung-3 report path and the
+      // tie path both called it; this path did not, so it dropped the digit
+      // rule and all six CLAIMY rules — and then retried, meaning the LOOSEST
+      // gate was the one that got two draws while the strictest got one.
+      // What made it user-visible is that the split is on the MATRIX, not on
+      // the button. Ties are 12.7% of a random sample, so roughly 87% of clicks
+      // on that button took the weaker path — same button, same user, same
+      // model, different screening because of something about the matrix the
+      // user never sees.
       // Measured before changing it: 4 of 4 known positives the report path
       // rejects sailed through here, including a real "Col1 or Col2" draw that
       // was rejected in the wild on the other path. Cost of parity across 890
       // stored draws: 2 newly withheld, 0.23%.
-      const storyOk = (sc: NonNullable<typeof invented>) => validateScenario(sc, payoffs).ok
-        && scenarioIsClaimFree(sc).ok
-        && (process.env.NASH_DIRECTION_CHECKS !== '1' || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0);
-      // Two different ways to end up with nothing, and only one used to get a
-      // second chance.
       //
-      // A draw that came back and FAILED the gate was retried. A draw that
-      // never came back at all — `max-tokens`, the model spending its whole
-      // budget reasoning — was not, because `invented` is null and the
-      // condition below started with `invented &&`. So the user clicked "New AI
-      // scenario" and got nothing, silently, with a second draw sitting right
-      // there. Measured at 7.5% of calls once the stakes hint lengthened the
-      // prompt (9 of 120 vs 0 of 120 without it, p=0.0033), and a pre-existing
-      // 1.1-1.7% before that. Roughly one click in thirteen.
-      //
-      // A reroll is the sanctioned instrument here — nothing is rewritten, a
-      // lost draw is simply drawn again — and it costs one extra call only on
-      // the calls that produced nothing.
-      const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
-      const lost = !invented;
-      if (lost || (gateOn && !storyOk(invented))) {
-        const second = await invent();
-        invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
-        if (!invented) failure = (lost && !second.scenario ? (second.failure ?? failure) : "validation-failed") as typeof failure;
-      }
+      // The reroll's own measurement, unchanged: a draw that never came back at
+      // all (`max-tokens`) used to get no second chance, at 7.5% of calls once
+      // the stakes hint lengthened the prompt (9 of 120 vs 0 of 120 without it,
+      // p=0.0033). Roughly one click in thirteen.
+      const { scenario: invented, failure } = await inventScreenedScenario(
+        payoffs,
+        (reason) => console.warn(`[report] scenarioOnly scenario dropped: ${reason}`),
+      );
       return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // EVERYTHING BELOW THIS LINE IS UNREACHABLE IN PRODUCTION. Read this before
+    // trusting anything in it.
+    //
+    // Production sets NASH_PAYOFF_TEMPLATE=1 and NASH_LLM_TIES=template
+    // (cloudbuild.yaml for the site, electron-main.cjs for the desktop), and
+    // those two flags PARTITION the input space: every request returns from the
+    // rung-3 branch, the tie branch, or the scenarioOnly branch above. PROVEN
+    // ON THE WIRE by RED-PIPELINE rather than by reading — seven requests
+    // covering every shape (plain, bypassCache, an identical repeat, tie,
+    // scenarioOnly on tie and non-tie, and a fully usable supplied scenario)
+    // produced six provider calls, and all six were the SCENARIO call. Zero
+    // report calls.
+    //
+    // FOUR GUARANTEES ARE THEREFORE BELIEVED AND NOT HELD:
+    //   * `generateReport`, `validateReport`, `validateProseClaims`, the
+    //     rank-and-replace retry, `orphanedLabels` and `proseClaimsFailed` are
+    //     all unreachable.
+    //   * `source: 'llm'` and `source: 'deterministic'` are unreachable, so
+    //     EVERY `fallbackReason` is unreachable — including 'no-key'. On an
+    //     unkeyed deploy the client is never told there is no model; it just
+    //     gets a template report with no story.
+    //   * App.tsx's `source === 'llm' && validation?.ok === true` clause, and
+    //     with it the client's whole untrusted-envelope rendering, is dead.
+    //   * THE REPORT CACHE NEVER SERVES. `reportCache` is written only under
+    //     `source === 'llm'`, so it is never populated, and the note below
+    //     about serving an identical request "instantly" describes behaviour
+    //     that no longer happens. Harmless in practice — the presets supply
+    //     their own scenario and cost zero calls anyway.
+    //
+    // NOT DELETED ON PURPOSE: rung 2 (model states the payoffs, solver still
+    // states the equilibria) is on the roadmap and will need all of it.
+    // Labelled instead, because the cost of this code is not that it runs — it
+    // is that four guarantees look live to anyone reading the file.
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Cache: serve a previously validated envelope for the identical
     // (matrix, scenario) instantly. bypassCache comes from an explicit
