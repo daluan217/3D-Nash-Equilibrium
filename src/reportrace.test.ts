@@ -188,6 +188,24 @@ const freshSetEnvelopeIdx = freshSuccessSection.indexOf('setLlmEnvelope((prev)')
 ok(freshGuardIdx !== -1 && freshSetEnvelopeIdx !== -1 && freshGuardIdx < freshSetEnvelopeIdx,
   'the staleness check must run BEFORE fetchFreshScenario merges the new scenario into the envelope, not after');
 
+// Director finding (this branch, second re-review): the aggregate count
+// above does not prove the CATCH-path occurrence actually runs BEFORE
+// that branch's own state-setting call -- two occurrences that are BOTH
+// in the success section would satisfy a bare count check while the catch
+// branch appends a "couldn't reach the server" log line for an abandoned
+// game, unguarded. Isolate the catch section specifically (between
+// `} catch {` and `} finally {`) and check its OWN guard ordering,
+// independent of the success-path check above.
+const freshFinallyIdxForCatch = freshBody.indexOf('} finally {');
+ok(freshFinallyIdxForCatch !== -1, 'fetchFreshScenario must have a finally block');
+const freshCatchSection = freshBody.slice(freshCatchStart, freshFinallyIdxForCatch);
+const freshCatchGuardIdx = freshCatchSection.search(/myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/);
+const freshCatchSetLogIdx = freshCatchSection.indexOf('setLogEntries(');
+ok(freshCatchGuardIdx !== -1 && freshCatchSetLogIdx !== -1 && freshCatchGuardIdx < freshCatchSetLogIdx,
+  'REGRESSION GUARD: the staleness check must run BEFORE setLogEntries in fetchFreshScenario\'s catch '
+  + 'branch specifically, not merely appear somewhere in the function -- a stale FAILED scenario '
+  + 'request must not append a "couldn\'t reach the server" line about a game the user has since left');
+
 // Its own finally must ALSO only clear scenarioLoading for the request
 // that is still current, same reasoning as fetchLlmExplanation's finally.
 const freshFinallyIdx = freshBody.indexOf('} finally {');
