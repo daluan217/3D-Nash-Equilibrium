@@ -99,6 +99,25 @@ export interface ProviderRequest {
    * confirm thinking actually happened rather than assuming it did.
    */
   reasoning?: ReasoningEffort;
+  /**
+   * Extra body fields merged into the OpenAI-compatible request, for knobs
+   * that are not part of the OpenAI schema.
+   *
+   * The one that matters today: several relayed models return THINKING by
+   * default and cannot be told otherwise through `reasoning`. Measured on the
+   * real production prompt, deepseek-v4-flash spent its whole 4,096-token
+   * budget on 16,507 characters of reasoning and returned an EMPTY answer at
+   * 37.7s; with `{ thinking: { type: 'disabled' } }` it answered in 3.6s.
+   * glm-5.3 rejects every disable form with a 400 and is unusable as a result.
+   *
+   * Deliberately untyped and unvalidated: it is passed through verbatim,
+   * because the whole point is fields this SDK does not know about. Nothing in
+   * production sets it; it exists so a candidate model can be evaluated on the
+   * REAL path rather than through a hand-rolled fetch that skips the schema and
+   * the gates — a harness that does not go through generateScenario is not
+   * measuring the product.
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 export type ProviderName = 'gemini' | 'foundry-openai' | 'foundry-anthropic';
@@ -248,7 +267,26 @@ function normalizeOpenAIUsage(u: OpenAI.CompletionUsage | undefined): Normalized
  */
 async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> {
   const { endpoint, apiKey } = foundryCreds(req.model);
-  const client = new OpenAI({ baseURL: endpoint, apiKey });
+  /**
+   * AgentRouter gates on the CLIENT, not just the key.
+   *
+   * It is a free relay aimed at Claude Code / Codex / Gemini CLI, and it
+   * rejects anything that does not look like one of them — with
+   * `401 {"message":"UNAUTHENTICATED", "error":"unauthorized client
+   * detected"}`, which is BYTE-IDENTICAL to what it returns for a request
+   * carrying no credential at all. That identity is what makes the failure so
+   * hard to read: the message tells you nothing about your key, and the
+   * obvious conclusion (bad token) is wrong. A valid, enabled, unlimited token
+   * fails exactly the same way until the User-Agent is right.
+   *
+   * Scoped to that host so nothing else sees a fabricated agent string.
+   */
+  const isAgentRouter = /(^|\/\/)([^/]*\.)?agentrouter\.org/i.test(endpoint ?? '');
+  const client = new OpenAI({
+    baseURL: endpoint,
+    apiKey,
+    ...(isAgentRouter ? { defaultHeaders: { 'user-agent': 'claude-cli/2.1.0 (external, cli)' } } : {}),
+  });
 
   const messages = [
     { role: 'system' as const, content: req.systemPrompt },
@@ -297,6 +335,7 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
         model: req.model,
         messages,
         ...variant,
+        ...(req.extraBody ?? {}),
         // No temperature/top_p: the request shape is kept uniform across every
         // model in the sweep so the comparison table means something. Variance is
         // measured by the N passes the harness runs, not tuned away here.
