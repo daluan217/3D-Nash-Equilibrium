@@ -28,24 +28,56 @@ function ok(cond: boolean, msg: string) {
 
 const app = readFileSync('src/App.tsx', 'utf8');
 
+/**
+ * The JSX opening tag (attributes only, `<div ... >`) that CONTAINS byte
+ * offset `refIdx`.
+ *
+ * CodeRabbit finding (this branch): slicing forward to `{logLines}` instead
+ * pulled in the element's own CHILDREN too — a descendant carrying
+ * `tabIndex`/`aria-label` (a log line, say) would satisfy the assertions
+ * below while the scroll container with the `ref` itself has neither, and
+ * the keyboard-focus defect this file exists to catch would silently
+ * return. Anchoring on the nearest `<` before the ref and the nearest `>`
+ * after it isolates exactly the opening tag's own attributes.
+ */
+function openingTagAt(src: string, refIdx: number): string {
+  const start = src.lastIndexOf('<', refIdx);
+  const end = src.indexOf('>', refIdx);
+  return src.slice(start, end + 1);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FINDING 007 — both the compact and expanded Simulation Log containers.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const compactIdx = app.indexOf('ref={logsContainerRef}');
   ok(compactIdx > 0, 'the compact log container (logsContainerRef) must be found');
-  const compactBlock = app.slice(compactIdx, app.indexOf('>', app.indexOf('{logLines}', compactIdx)));
-  const compactTag = app.slice(compactIdx - 20, app.indexOf('{logLines}', compactIdx));
-  ok(/tabIndex=\{0\}/.test(compactTag), 'the compact log container must carry tabIndex={0}');
+  const compactTag = openingTagAt(app, compactIdx);
+  ok(/tabIndex=\{0\}/.test(compactTag), `the compact log container's OWN opening tag must carry tabIndex={0}, got: ${JSON.stringify(compactTag)}`);
+  ok(/role="region"/.test(compactTag), 'the compact log container must carry role="region" (a bare div does not support an accessible name)');
   ok(/aria-label="Simulation log"/.test(compactTag), 'the compact log container must carry an aria-label');
 
   const expandedIdx = app.indexOf('ref={logsExpandedRef}');
   ok(expandedIdx > 0, 'the expanded log container (logsExpandedRef) must be found');
-  const expandedTag = app.slice(expandedIdx - 20, app.indexOf('{logLines}', expandedIdx));
-  ok(/tabIndex=\{0\}/.test(expandedTag), 'the expanded log container must carry tabIndex={0}');
+  const expandedTag = openingTagAt(app, expandedIdx);
+  ok(/tabIndex=\{0\}/.test(expandedTag), `the expanded log container's OWN opening tag must carry tabIndex={0}, got: ${JSON.stringify(expandedTag)}`);
+  ok(/role="region"/.test(expandedTag), 'the expanded log container must carry role="region"');
   ok(/aria-label="Simulation log"/.test(expandedTag), 'the expanded log container must carry an aria-label');
+}
 
-  void compactBlock; // kept for readability of the slice above, not asserted on directly
+// ─────────────────────────────────────────────────────────────────────────────
+// Isolation self-check for `openingTagAt` — the exact shape CodeRabbit's
+// finding warned about: attributes present on a DESCENDANT, absent from the
+// element with the ref. Proves the function isolates the right tag rather
+// than merely looking plausible against the real (already-fixed) source.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const decoy = '<div ref={x}><span tabIndex={0} role="region" aria-label="Simulation log" /></div>';
+  const decoyRefIdx = decoy.indexOf('ref={x}');
+  const decoyTag = openingTagAt(decoy, decoyRefIdx);
+  ok(decoyTag === '<div ref={x}>', `openingTagAt must isolate ONLY the ref-bearing opening tag, got: ${JSON.stringify(decoyTag)}`);
+  ok(!/tabIndex=\{0\}/.test(decoyTag) && !/role="region"/.test(decoyTag) && !/aria-label=/.test(decoyTag),
+    'the isolated tag must NOT pick up attributes that only exist on a descendant — this is the exact defect the old (unanchored) slice missed');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

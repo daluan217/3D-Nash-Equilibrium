@@ -2971,6 +2971,7 @@ export default function App() {
       <div
         ref={logsContainerRef}
         tabIndex={0}
+        role="region"
         aria-label="Simulation log"
         className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900 ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}
       >
@@ -3016,6 +3017,7 @@ export default function App() {
         <div
           ref={logsExpandedRef}
           tabIndex={0}
+          role="region"
           aria-label="Simulation log"
           className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
         >
