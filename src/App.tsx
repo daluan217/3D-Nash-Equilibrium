@@ -1873,8 +1873,8 @@ export default function App() {
     scenarioForReport,
     mergedPresets[activePreset]?.actorA ?? [],
     mergedPresets[activePreset]?.actorB ?? [],
-    selectedPreset?.colorTermsA ?? [],
-    selectedPreset?.colorTermsB ?? [],
+    Array.isArray(selectedPreset?.colorTermsA) ? selectedPreset.colorTermsA : [],
+    Array.isArray(selectedPreset?.colorTermsB) ? selectedPreset.colorTermsB : [],
   ), [scenarioForReport, mergedPresets, activePreset, selectedPreset]);
 
   /**

@@ -360,6 +360,10 @@ function testGeometryValidatorChecks() {
     { label: 'claims interaction on a flat surface', g: FLAT_A, field: 'surfacesInteract', kind: 'geometry-bad-twist' },
     { label: 'claims a mirror on non-zero-sum PD', g: PD, field: 'opponentSurfaceIsMirror', kind: 'geometry-bad-mirror' },
     { label: 'claims a shelf where y* is off-board', g: PD, field: 'hasFlatShelfForA', kind: 'geometry-bad-shelf' },
+    // The degenerate direction: A is level along its own axis at EVERY y, so
+    // DENYING the shelf is the false claim. y* is NaN here, which is why the
+    // old yStarInRange predicate accepted the denial.
+    { label: 'denies the shelf on a board that is level everywhere', g: ALL_SHELF_A, field: 'hasFlatShelfForA', kind: 'geometry-bad-shelf' },
     { label: 'claims an interior flat spot at a corner NE', g: PD, field: 'equilibriumIsInteriorFlatSpot', kind: 'geometry-bad-flatspot' },
     // The observed failure: minimax asserted on a non-constant-sum game.
     { label: 'invokes minimax on a non-zero-sum game', g: BOS, field: 'invokesMinimax', kind: 'geometry-bad-minimax' },
@@ -1863,6 +1867,7 @@ function testRedTeamFindings() {
   //    conclusion — the two are agreeing that the payoff is sub-resolution, not
   //    disagreeing on a digit.
   const THRESHOLD = /^(less than 0\.001|greater than -0\.001)$/;
+  let thresholdHits = 0;
   for (const g of [
     { a11: 6, a12: -4, a21: -1, a22: 8, b11: -9, b12: 6, b21: -1, b22: -8 } as GamePayoffs,
     drop,
@@ -1878,6 +1883,7 @@ function testRedTeamFindings() {
     assert(!!m, `prose must state expected payoffs, in numeric or threshold form: ${prose}`);
     for (const [captured, solverValue, label] of [[m![1], mixed.eA, 'A'], [m![2], mixed.eB, 'B']] as const) {
       if (THRESHOLD.test(captured)) {
+        thresholdHits++;
         assert(solverValue === 0,
           `prose gave threshold wording "${captured}" for E[${label}] but the solver's rounded value is ${solverValue}, not 0`);
       } else {
@@ -1886,6 +1892,8 @@ function testRedTeamFindings() {
       }
     }
   }
+  assert(thresholdHits > 0,
+    'no fixture produced the sub-resolution payoff wording — the THRESHOLD branch above was never exercised');
 
   // 4. Canonically-equivalent Unicode labels are DUPLICATES. "Réserve" as
   //    e+U+0301 vs U+00E9 renders identically, so byte comparison let both
@@ -2307,9 +2315,18 @@ function testLogLineColoursMatchPlotMarkers() {
     `sim-start token ${tok('sim-start')} must equal the Starting Point marker colour (${startSphere.join(', ')})`);
   // 2. the renderer routes each line kind to the right token and never to a hardcoded palette
   // From the kind decision (logKind / neLineClass) through the renderer that consumes it.
-  const renderer = app.slice(app.indexOf('const logKind:'), app.indexOf('const simulationLogPanel'));
+  const rendererFrom = app.indexOf('const logKind:');
+  const rendererTo = app.indexOf('const simulationLogPanel');
+  assert(rendererFrom >= 0 && rendererTo > rendererFrom,
+    `log renderer bounds not found in App.tsx (logKind at ${rendererFrom}, simulationLogPanel at ${rendererTo}) — a -1 here silently widens the window to the rest of the file`);
+  const renderer = app.slice(rendererFrom, rendererTo);
   assert(renderer.length > 200, 'log renderer not found in App.tsx');
-  const branch = (needle: string) => { const i = renderer.indexOf(needle); assert(i >= 0, `no renderer branch for ${needle}`); return renderer.slice(i, renderer.indexOf('} else', i + 1)); };
+  const branch = (needle: string) => {
+    const i = renderer.indexOf(needle);
+    assert(i >= 0, `no renderer branch for ${needle}`);
+    const end = renderer.indexOf('} else', i + 1);
+    return renderer.slice(i, end >= 0 ? end : undefined);
+  };
   assert(/neLineClass/.test(branch("line.includes('✓')")) && !/text-emerald/.test(branch("line.includes('✓')")),
     "the ✓ (coordinate discovered) line must take the equilibrium marker colour, not a hardcoded emerald");
   assert(/neLineClass/.test(branch("━━ Pure NE")) && !/text-accent/.test(branch("━━ Pure NE")),

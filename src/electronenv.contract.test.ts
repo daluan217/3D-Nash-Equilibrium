@@ -126,8 +126,8 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
   // MUST BE `.env*`, not just `.env`: Vite/dotenv's own convention is
   // `.env.local` / `.env.production` / `.env.*.local` (see .gitignore), and
   // `!**/.env` alone would leave every one of those packageable.
-  ok(files.some((f) => f === '!**/.env*' || f === '!dist/**/.env*'),
-    `build.files must explicitly exclude .env AND its variants (.env.local, .env.production, ...): ${JSON.stringify(files)}`);
+  ok(files.includes('!**/.env*'),
+    `build.files must carry the repo-wide exclusion '!**/.env*' so no .env variant (.env.local, .env.production, ...) can be packaged from any directory: ${JSON.stringify(files)}`);
   ok(files.includes('electron-main.cjs'),
     'build.files must package electron-main.cjs — it is where the desktop environment now lives');
 }

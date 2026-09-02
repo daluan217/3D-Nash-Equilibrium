@@ -97,7 +97,20 @@ async function boot(extraEnv = {}) {
   child.stdout.on('data', () => {});
   child.stderr.on('data', () => {});
   for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`http://127.0.0.1:${PORT}/api/health`)).ok) return; } catch { /* not up */ }
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/api/health`);
+      if (r.ok) {
+        // The pid proves this is the child we spawned. A stray listener on the
+        // same port answers `ok` too, and every count below would then be
+        // measured against a server this file never configured.
+        const { pid } = await r.json();
+        if (pid === child.pid) return;
+        throw new Error(`port ${PORT} is held by pid ${pid}, not the spawned child ${child.pid}`);
+      }
+    } catch (err) {
+      if (String(err?.message ?? '').includes('is held by pid')) throw err;
+      /* not up yet */
+    }
     await new Promise((r) => setTimeout(r, 250));
   }
   throw new Error(`server never became ready on ${PORT}`);

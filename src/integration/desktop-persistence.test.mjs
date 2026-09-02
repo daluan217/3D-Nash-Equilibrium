@@ -194,6 +194,10 @@ try {
 
   const wholeDb = readFileSync(DB, 'utf-8');
   const torn = wholeDb.slice(0, 220); // exactly RED-DESKTOP's repro: a truncated write
+  let tornIsUnparseable = false;
+  try { JSON.parse(torn); } catch { tornIsUnparseable = true; }
+  record('the corruption fixture is genuinely unparseable (fixture precondition)',
+    tornIsUnparseable, `${wholeDb.length} byte db.json truncated to ${torn.length}`);
   writeFileSync(DB, torn, 'utf-8');
 
   port += 1;

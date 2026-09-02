@@ -164,7 +164,12 @@ function e2eSelectorNames(src: string): Array<NamedSelector | RegExp> {
   // every role query recorded a useless token and the controls it selects read
   // as untested. Under-crediting is the mirror of the word-soup bug this file
   // was written to fix, and just as wrong.
-  for (const m of src.matchAll(/get(?:By|AllBy)Role\(\s*['"`][^'"`]+['"`]\s*,\s*\{[^}]*?name:\s*['"`]([^'"`]{2,60})['"`]/g)) out.push({ value: m[1], exact: false });
+  for (const m of src.matchAll(/get(?:By|AllBy)Role\(\s*['"`][^'"`]+['"`]\s*,\s*(\{[^}]*?name:\s*['"`][^'"`]{2,60}['"`][^}]*\})/g)) {
+    const opts = m[1];
+    const name = opts.match(/name:\s*['"`]([^'"`]{2,60})['"`]/)?.[1];
+    if (name === undefined) continue;
+    out.push({ value: name, exact: /\bexact:\s*true\b/.test(opts) });
+  }
   // The other queries take the name as their first argument.
   for (const m of src.matchAll(/get(?:By|AllBy)(?:Text|Label|Placeholder|Title)\(\s*['"`]([^'"`]{2,60})['"`]/g)) out.push({ value: m[1], exact: false });
   // The suites also select by raw attribute — smoke.mjs presses the theme
@@ -206,6 +211,20 @@ if (matchesSelector('Toggle dark mode settings', { value: 'Toggle dark mode', ex
 }
 if (!matchesSelector('Toggle dark mode', { value: 'Toggle dark mode', exact: true })) {
   fail('fixture: a raw CSS attribute selector must still cover the control it actually matches exactly');
+}
+// PARSER fixture: real suites use `getByRole('button', { name: 'Go', exact: true })`
+// (src/e2e/smoke.mjs, src/e2e/mobile.mjs) — the parser must read that `exact`
+// option out of the source rather than hard-coding false for every role query.
+{
+  const parsed = e2eSelectorNames(`await page.getByRole('button', { name: 'Go', exact: true }).click();`);
+  const one = parsed[0];
+  if (!one || one instanceof RegExp || one.value !== 'Go' || one.exact !== true) {
+    fail(`fixture: getByRole('button', { name: 'Go', exact: true }) must parse to exact:true, got ${JSON.stringify(one)}`);
+  }
+  const nonExact = e2eSelectorNames(`await page.getByRole('button', { name: 'Save' }).click();`)[0];
+  if (!nonExact || nonExact instanceof RegExp || nonExact.exact !== false) {
+    fail(`fixture: a role query with no exact option must still parse to exact:false, got ${JSON.stringify(nonExact)}`);
+  }
 }
 
 const untested = [...labels].filter((l) => !covered(l)).sort();

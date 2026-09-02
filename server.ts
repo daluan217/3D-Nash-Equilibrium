@@ -134,7 +134,12 @@ async function inventScreenedScenario(
     const second = await drawWithDeadline(payoffs);
     invented = second.scenario && (!gateOn || storyOk(second.scenario)) ? second.scenario : null;
     if (!invented) {
-      failure = (lost && !second.scenario ? (second.failure ?? failure) : "validation-failed") as typeof failure;
+      // A draw that produced nothing reports ITS OWN reason (timeout, error,
+      // unparseable); only a draw that came back and was rejected is a
+      // validation failure.
+      failure = (!second.scenario
+        ? (second.failure ?? failure ?? "unparseable")
+        : "validation-failed") as typeof failure;
     }
   }
   return { scenario: invented, failure };
@@ -399,6 +404,12 @@ function writeFileAtomicSync(file: string, data: string): void {
     fs.closeSync(fd);
     fd = null;
     fs.renameSync(tmp, file);
+    // The rename is a DIRECTORY operation, so the directory must be flushed
+    // too; flushing the file alone leaves the new name unpersisted.
+    try {
+      const dirFd = fs.openSync(path.dirname(file), "r");
+      try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+    } catch { /* not fsyncable on every platform; contents are already flushed */ }
   } catch (err) {
     if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
     // Never leave the scratch file behind to be mistaken for data.

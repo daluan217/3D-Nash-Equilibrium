@@ -175,14 +175,17 @@ export const SERVE_PROBES: GamePayoffs[] = (() => {
   const shapes: Array<(k: number) => GamePayoffs> = [
     // common interest — both payoffs identical in every cell (rivalry rule)
     (k) => ({ a11: 9 * k, a12: -4 * k, a21: -4 * k, a22: 7 * k, b11: 9 * k, b12: -4 * k, b21: -4 * k, b22: 7 * k }),
-    // constant sum (shared-goal rule)
-    (k) => ({ a11: 3 * k, a12: -2 * k, a21: -4 * k, a22: 5 * k, b11: -3 * k, b12: 2 * k, b21: 4 * k, b22: -5 * k }),
+    // constant sum, NON-zero total (shared-goal rule) — every cell sums to 10k.
+    // A zero total would be the zero-sum shape below rather than a distinct one.
+    (k) => ({ a11: 3 * k, a12: -2 * k, a21: -4 * k, a22: 5 * k, b11: 7 * k, b12: 12 * k, b21: 14 * k, b22: 5 * k }),
     // zero sum on the matching diagonal
     (k) => ({ a11: 2 * k, a12: -2 * k, a21: -2 * k, a22: 2 * k, b11: -2 * k, b12: 2 * k, b21: 2 * k, b22: -2 * k }),
-    // A indifferent between its own actions (flat-payoff rules)
-    (k) => ({ a11: 5 * k, a12: 5 * k, a21: 2 * k, a22: 2 * k, b11: 1 * k, b12: 4 * k, b21: 3 * k, b22: 0 }),
-    // B indifferent
-    (k) => ({ a11: 1 * k, a12: 4 * k, a21: 3 * k, a22: 0, b11: 5 * k, b12: 2 * k, b21: 5 * k, b22: 2 * k }),
+    // A indifferent between its OWN actions: a11 === a21 and a12 === a22, so
+    // A's two rows pay the same against either column and a whole line is in
+    // equilibrium. B stays strict, so exactly one player is indifferent.
+    (k) => ({ a11: 5 * k, a12: 2 * k, a21: 5 * k, a22: 2 * k, b11: 1 * k, b12: 4 * k, b21: 3 * k, b22: 0 }),
+    // B indifferent between its OWN actions: b11 === b12 and b21 === b22.
+    (k) => ({ a11: 1 * k, a12: 4 * k, a21: 3 * k, a22: 0, b11: 5 * k, b12: 5 * k, b21: 2 * k, b22: 2 * k }),
     // dominance for both (dependence-framing rules)
     (k) => ({ a11: 3 * k, a12: 0, a21: 5 * k, a22: 1 * k, b11: 3 * k, b12: 5 * k, b21: 0, b22: 1 * k }),
     // pure equilibria on MATCHING pairs (coordination direction check)

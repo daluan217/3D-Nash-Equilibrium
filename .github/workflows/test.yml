@@ -52,7 +52,14 @@ jobs:
       # No npm install needed for this one, so it runs first and fails fast.
       - name: No Finder/iCloud duplicate files ("name 2.ext") are tracked
         run: |
-          dupes="$(git ls-files | grep -E ' [0-9]+\.[A-Za-z0-9]+$' || true)"
+          # Only flag "name N.ext" when "name.ext" is also tracked — the
+          # Finder/iCloud mid-copy shape, not an ordinary numbered filename
+          # (e.g. "Figure 1.png").
+          dupes="$(git ls-files | awk -F/ '{ f=$NF } f ~ / [0-9]+\.[A-Za-z0-9]+$/ { print }' \
+            | while IFS= read -r p; do
+                orig="$(printf '%s' "$p" | sed -E 's/ [0-9]+(\.[A-Za-z0-9]+)$/\1/')"
+                git ls-files --error-unmatch "$orig" >/dev/null 2>&1 && echo "$p"
+              done)"
           if [ -n "$dupes" ]; then
             echo "Tracked file(s) matching the Finder/iCloud duplicate-copy shape:"
             echo "$dupes"
