@@ -870,6 +870,60 @@ try {
     await focusPage.close();
   }
 
+  // ══ 20. THE OTHER FOUR MODALS ALSO TRAP TAB (RED-APP-5 finding 002,
+  //      round 5) — #90 (section 19 above) only fixed the expand-log
+  //      dialog; Feedback/Auth/Save/Edit had NO trap at all, so Tab walked
+  //      focus onto the page behind the backdrop, and pressing Enter on the
+  //      background "Feedback" button opened a SECOND aria-modal="true"
+  //      dialog on top of the still-open first one. Checked here via the
+  //      Feedback dialog — no auth needed, so this stays fast — with the
+  //      shared `useModalTabTrap` hook wired the same way to Auth/Save/Edit
+  //      (see src/a11yfixes.test.ts for the static wiring check on all four).
+  {
+    const trapPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    await trapPage.goto(BASE, { waitUntil: 'networkidle' });
+    const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
+    if (await trapExitTour.count() > 0) {
+      await trapExitTour.click();
+      await trapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).catch(() => {});
+    }
+
+    const feedbackBtn = trapPage.locator('button[title="Send feedback"]');
+    await feedbackBtn.waitFor({ state: 'visible', timeout: 15000 });
+    await feedbackBtn.click();
+    await trapPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Send feedback"]'),
+      null, { timeout: 10000 }).catch(() => {});
+
+    const isInsideFeedback = () => trapPage.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Send feedback"]');
+      return !!dlg && dlg.contains(document.activeElement);
+    });
+    await trapPage.locator('[role="dialog"][aria-label="Send feedback"] textarea, [role="dialog"][aria-label="Send feedback"] input').first().focus();
+
+    // More presses than the dialog's own focusable-element count, so a trap
+    // failure (focus walking onto the "Feedback" button itself, or further,
+    // onto <body>) shows up within this loop.
+    let stayedInside = true;
+    for (let i = 0; i < 15; i++) {
+      await trapPage.keyboard.press('Tab');
+      if (!(await isInsideFeedback())) { stayedInside = false; break; }
+    }
+    record('Tab is trapped inside the Feedback dialog (15 presses, focus never left it)',
+      stayedInside);
+
+    // Confirms the trap is the reason, not luck: without it, RED-APP-5
+    // measured focus leaking onto the background "Feedback" button by
+    // tab #4, and a subsequent Enter opening a second dialog on top of this
+    // one. With the trap, no second dialog can ever open this way.
+    const secondDialogCount = await trapPage.evaluate(() =>
+      document.querySelectorAll('[role="dialog"][aria-modal="true"]').length);
+    record('exactly one aria-modal dialog is in the DOM after the Tab sweep (no stacked second modal)',
+      secondDialogCount === 1, `found ${secondDialogCount}`);
+
+    await trapPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page
