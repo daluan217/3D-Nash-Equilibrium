@@ -38,6 +38,7 @@ import {
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
+import { cleanText } from './utils/textSafety';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -178,6 +179,18 @@ function LegendSwatch({ shape }: { shape: 'surface' | 'diamond' | 'ring' | 'dash
     default:
       return <svg {...common}><line x1="0.5" y1="6" x2="11.5" y2="6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>;
   }
+}
+
+/**
+ * Structural equality on the 8 payoff numbers — the whole content of a
+ * `GamePayoffs`. Used ONLY to detect whether the game changed out from under
+ * an in-flight `/api/report` request (RED-APP-3 finding 001): the matrix on
+ * screen and the request's own captured payoffs are the same object only
+ * within one render, so this compares by VALUE, never by reference.
+ */
+export function payoffsEqual(a: GamePayoffs, b: GamePayoffs): boolean {
+  return a.a11 === b.a11 && a.a12 === b.a12 && a.a21 === b.a21 && a.a22 === b.a22
+      && a.b11 === b.b11 && a.b12 === b.b12 && a.b21 === b.b21 && a.b22 === b.b22;
 }
 
 export default function App() {
@@ -411,6 +424,18 @@ export default function App() {
     a11: 2, b11: 1, a12: 0, b12: 0,
     a21: 0, b21: 0, a22: 1, b22: 2,
   });
+  // Always the LATEST payoffs, readable from inside an async callback whose
+  // own closure captured an OLDER value. RED-APP-3 finding 001:
+  // `fetchLlmExplanation`'s closure captures `payoffs` at the moment the
+  // button was clicked; by the time a slow `/api/report` response lands, the
+  // component may have re-rendered several times with a DIFFERENT game on
+  // screen, and that closure has no way to see it. A ref updated on every
+  // render is the standard way to give an async callback a window onto
+  // "now" instead of "when I started" — reassigning `.current` in the render
+  // body (not inside an effect) is deliberate: the effect version would run
+  // one render late, exactly the same gap this exists to close.
+  const payoffsRef = useRef(payoffs);
+  payoffsRef.current = payoffs;
 
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
     a11: '2', b11: '1', a12: '0', b12: '0',
@@ -708,6 +733,19 @@ export default function App() {
   // On demand, never reactive: payoffs change on every slider drag, so fetching
   // per change would fire a model call per keystroke. The user asks for it.
   const [llmEnvelope, setLlmEnvelope] = useState<ReportEnvelope | null>(null);
+  // The scenario whose NOUNS actually appear in `llmEnvelope.report.prose`,
+  // captured the moment that prose was written — NOT read live off
+  // `llmEnvelope.report.suggestedScenario`. RED-PUBLIC C: "New AI scenario"
+  // (fetchFreshScenario) deliberately swaps `suggestedScenario` for a
+  // brand-new draw while leaving `prose` untouched (its own comment: "only a
+  // fresh STORY is wanted... the prose stays put"). Reading the LIVE
+  // suggestedScenario for that unchanged prose's highlight terms meant the
+  // nouns actually IN the text silently lost their colour the moment a new
+  // suggestion arrived, while terms from a story the prose never mentions
+  // got added instead — colouring text for the wrong scenario. This snapshot
+  // is what the prose was ACTUALLY generated from, and fetchFreshScenario
+  // must never touch it.
+  const [proseScenario, setProseScenario] = useState<SuggestedScenario | null>(null);
   // Whether the game ACTUALLY has a payoff tie, for the provenance line in the
   // report panel. That line used to assert a tie unconditionally, which was true
   // only while the tie path alone produced `source === 'template'`;
@@ -744,7 +782,7 @@ export default function App() {
   const llmVerified = envelopeIsTrustworthy(llmEnvelope);
 
   // Any edit to the game invalidates prose written about the previous one.
-  useEffect(() => { setLlmEnvelope(null); setLlmError(false); }, [payoffs]);
+  useEffect(() => { setLlmEnvelope(null); setLlmError(false); setProseScenario(null); }, [payoffs]);
 
   /**
    * Keep an invented scenario ON the game, labels and all.
@@ -840,6 +878,12 @@ export default function App() {
     freshScenario = false,
     scenarioOverride?: { name?: string; row1?: string; row2?: string; col1?: string; col2?: string; description?: string },
   ) => {
+    // Snapshot: the payoffs this SPECIFIC request describes. Not just the
+    // closure's own `payoffs` read later — that would be the same frozen
+    // value the bug already reads — an explicit local so the intent (compare
+    // "what I asked about" against "what's on screen now") reads plainly at
+    // the call site below.
+    const requestPayoffs = payoffs;
     setLlmLoading(true);
     setLlmError(false);
     try {
@@ -851,16 +895,41 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           freshScenario
-            ? { payoffs, bypassCache: true }
-            : { payoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
+            ? { payoffs: requestPayoffs, bypassCache: true }
+            : { payoffs: requestPayoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
         ),
       });
       if (!res.ok) throw new Error(String(res.status));
-      setLlmEnvelope((await res.json()) as ReportEnvelope);
+      const envelope = (await res.json()) as ReportEnvelope;
+      // RED-APP-3 finding 001: the user may have switched to a DIFFERENT
+      // game while this (possibly slow — reports have hung for minutes in
+      // this app's own history) request was in flight. `payoffsRef.current`
+      // is always the LATEST payoffs, unlike this closure's own `payoffs` /
+      // `requestPayoffs`, which are frozen at the moment this function was
+      // called. A mismatch means the response describes a game that is no
+      // longer on screen — showing it as "verified against the solver"
+      // would verify the WRONG game, so it is dropped silently. The
+      // `[payoffs]` effect has already cleared `llmEnvelope`/`proseScenario`
+      // for whatever IS on screen now; this only stops the stale response
+      // from overwriting that a moment later.
+      if (!payoffsEqual(requestPayoffs, payoffsRef.current)) return;
+      setLlmEnvelope(envelope);
+      // Snapshot the scenario THIS prose was generated from — see the
+      // proseScenario declaration above. Every fresh fetch here writes new
+      // prose, so this always tracks it; only fetchFreshScenario (which
+      // writes no new prose) must skip this line.
+      setProseScenario(envelope.report?.suggestedScenario ?? null);
     } catch {
       // Offline, unreachable server, or a non-2xx. The deterministic report
-      // above still stands; we just say so instead of failing silently.
+      // above still stands; we just say so instead of failing silently —
+      // but only for the game this request was actually about. A request
+      // for an ABANDONED game failing after the user switched away must not
+      // paint "No verified explanation available" over whatever game is on
+      // screen now, when nothing was ever asked about IT — same staleness
+      // guard as the success path above, same reason.
+      if (!payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       setLlmEnvelope(null);
+      setProseScenario(null);
       setLlmError(true);
     } finally {
       setLlmLoading(false);
@@ -1263,7 +1332,7 @@ export default function App() {
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editGameId || !authToken) return;
-    if (!editName.trim()) { setEditError('Please enter a game name.'); return; }
+    if (!cleanText(editName)) { setEditError('Please enter a game name.'); return; }
     setEditError('');
     setEditLoading(true);
     try {
@@ -1271,16 +1340,19 @@ export default function App() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
         body: JSON.stringify({
-          name: editName.trim(),
-          description: editDesc.trim(),
+          // cleanText, not .trim() alone: RED-PUBLIC D — a bidi override or
+          // raw control character typed into any of these fields used to
+          // reach the saved record untouched (src/utils/textSafety.ts).
+          name: cleanText(editName),
+          description: cleanText(editDesc),
           // Sent even when blank so CLEARING a label is possible. The server
           // ignores empty strings on create, but an edit dialog that cannot
           // remove a wrong label is only half an edit dialog — see the
           // allowClear flag on the PATCH route.
-          row1Label: editLabels.row1.trim(),
-          row2Label: editLabels.row2.trim(),
-          col1Label: editLabels.col1.trim(),
-          col2Label: editLabels.col2.trim(),
+          row1Label: cleanText(editLabels.row1),
+          row2Label: cleanText(editLabels.row2),
+          col1Label: cleanText(editLabels.col1),
+          col2Label: cleanText(editLabels.col2),
           colorTermsA: editTerms.a,
           colorTermsB: editTerms.b,
           allowClear: true,
@@ -1300,11 +1372,11 @@ export default function App() {
         // emptied-out form clears rather than triggering a fresh invention.
         if (regenExplanationAfterSaveRef.current) {
           regenExplanationAfterSaveRef.current = false;
-          const labels = [editLabels.row1, editLabels.row2, editLabels.col1, editLabels.col2].map((l) => l.trim());
-          const desc = editDesc.trim();
+          const labels = [editLabels.row1, editLabels.row2, editLabels.col1, editLabels.col2].map((l) => cleanText(l));
+          const desc = cleanText(editDesc);
           if (labels.every(Boolean) || desc.split(/\s+/).length >= 12) {
             void fetchLlmExplanation(false, {
-              name: editName.trim() || undefined,
+              name: cleanText(editName) || undefined,
               row1: labels[0] || undefined, row2: labels[1] || undefined,
               col1: labels[2] || undefined, col2: labels[3] || undefined,
               description: desc || undefined,
@@ -1421,7 +1493,7 @@ export default function App() {
 
   const handleSaveGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!saveName.trim()) {
+    if (!cleanText(saveName)) {
       setSaveError('Please enter a game name.');
       return;
     }
@@ -1443,13 +1515,15 @@ export default function App() {
           'Authorization': `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          name: saveName.trim(),
-          description: saveDesc.trim(),
+          // cleanText, not .trim() alone: RED-PUBLIC D — see the matching
+          // comment in handleEditGameSubmit above.
+          name: cleanText(saveName),
+          description: cleanText(saveDesc),
           payoffs,
-          row1Label: saveLabels.row1.trim(),
-          row2Label: saveLabels.row2.trim(),
-          col1Label: saveLabels.col1.trim(),
-          col2Label: saveLabels.col2.trim(),
+          row1Label: cleanText(saveLabels.row1),
+          row2Label: cleanText(saveLabels.row2),
+          col1Label: cleanText(saveLabels.col1),
+          col2Label: cleanText(saveLabels.col2),
           // The user's own highlights. Deliberately NOT part of the scenario
           // sent to the model — they colour this description and nothing else.
           colorTermsA: saveTerms.a,
@@ -1468,12 +1542,12 @@ export default function App() {
         // fresh invention, the opposite of "use what I just saved".
         if (regenExplanationAfterSaveRef.current) {
           regenExplanationAfterSaveRef.current = false;
-          const labels = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].map((l) => l.trim());
-          const desc = saveDesc.trim();
+          const labels = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].map((l) => cleanText(l));
+          const desc = cleanText(saveDesc);
           const usable = labels.every(Boolean) || desc.split(/\s+/).length >= 12;
           if (usable) {
             void fetchLlmExplanation(false, {
-              name: saveName.trim() || undefined,
+              name: cleanText(saveName) || undefined,
               row1: labels[0] || undefined, row2: labels[1] || undefined,
               col1: labels[2] || undefined, col2: labels[3] || undefined,
               description: desc || undefined,
@@ -3126,7 +3200,7 @@ export default function App() {
             {/* Selected Preset Narrative Card */}
             {selectedPreset?.desc && (
               selectedCustomGame ? (
-                <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
+                <div data-testid="preset-narrative" className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3">
                   <strong>Custom - {selectedCustomGame.name}:</strong>{' '}
                   {/* descriptionColorTerms, not colorTermsFor: this is the
                       user's OWN description, so their highlights apply here —
@@ -3141,6 +3215,7 @@ export default function App() {
                 </div>
               ) : (
                 <div
+                  data-testid="preset-narrative"
                   className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-900/45 rounded-xl p-3"
                   dangerouslySetInnerHTML={{ __html: selectedPreset.desc }}
                 />
@@ -4003,19 +4078,28 @@ export default function App() {
                     )}
                     <p className="text-slate-600 dark:text-slate-300">
                       {/* A fresh invention's prose uses the suggestion's own
-                          option names, so those join the highlight terms. */}
+                          option names, so those join the highlight terms.
+                          Reads `proseScenario` (a SNAPSHOT taken when this
+                          exact prose was written), never the envelope's own
+                          live suggested-scenario field directly —
+                          RED-PUBLIC C: "New AI scenario" replaces that live
+                          field with a brand-new draw while intentionally
+                          leaving this prose untouched, so reading it live
+                          would name a story this text never mentions while
+                          the nouns actually IN it go uncoloured. See the
+                          proseScenario declaration. */}
                       <ColorCoded
                         text={llmEnvelope.report.prose}
                         aTerms={[
                           ...colorTerms.a,
-                          ...(llmEnvelope.report.suggestedScenario
-                            ? [llmEnvelope.report.suggestedScenario.row1, llmEnvelope.report.suggestedScenario.row2].filter(Boolean)
+                          ...(proseScenario
+                            ? [proseScenario.row1, proseScenario.row2].filter(Boolean)
                             : []),
                         ]}
                         bTerms={[
                           ...colorTerms.b,
-                          ...(llmEnvelope.report.suggestedScenario
-                            ? [llmEnvelope.report.suggestedScenario.col1, llmEnvelope.report.suggestedScenario.col2].filter(Boolean)
+                          ...(proseScenario
+                            ? [proseScenario.col1, proseScenario.col2].filter(Boolean)
                             : []),
                         ]}
                       />

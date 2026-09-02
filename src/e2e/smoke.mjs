@@ -242,6 +242,44 @@ try {
     await page.waitForSelector('text=Converged', { timeout: 240000 });
     const pill = await page.locator('text=Converged').count();
     record('Spy vs. Analyst converges in Domain Shrink mode', pill > 0);
+    await $.reset.click(); await page.waitForTimeout(300);
+  }
+
+  // ══ 6b. every standard preset reads as a story, not a grid reference
+  //       (RED-PUBLIC A/B: 4 of 6 presets fell back to the generic "Row 1" /
+  //       "Col 2" matrix header, and even the two with real labels still
+  //       named the same option "(Row 1)" in the prose two lines below the
+  //       header that called it something else). Checks the RENDERED page —
+  //       matrix header (data-tour="matrix") AND narrative card
+  //       (data-testid="preset-narrative") — for every standard preset, not
+  //       just the data in gameEngine.ts.
+  //
+  //       Scoped to those two containers, NOT document.body: the
+  //       Expected-Payoff panel permanently renders the general convention
+  //       "x = P(A plays Row 1), y = P(B plays Col 1)" via MathTex on every
+  //       game, preset or not — a body-wide check would fail on the FIXED
+  //       code too and the check would be measuring the wrong thing.
+  {
+    const ROWCOL = /\b(row|col(?:umn)?)\s*\d\b/i;
+    const presetNames = [
+      'Search Game', 'Battle of the Sexes', 'Prisoners Dilemma',
+      'Cops & Robbers', 'Spy vs. Analyst', 'Penalty Kick',
+    ];
+    let allClean = true;
+    const offenders = [];
+    for (const name of presetNames) {
+      await page.getByRole('button', { name, exact: true }).first().click();
+      await page.waitForTimeout(250);
+      const scoped = await page.evaluate(() => {
+        const matrix = document.querySelector('[data-tour="matrix"]');
+        const narrative = document.querySelector('[data-testid="preset-narrative"]');
+        return `${matrix ? matrix.textContent : ''} ${narrative ? narrative.textContent : ''}`;
+      });
+      if (ROWCOL.test(scoped)) { allClean = false; offenders.push(name); }
+    }
+    record('no standard preset renders "Row N" / "Col N" in its header or narrative card',
+      allClean, offenders.join(', '));
+    await $.reset.click(); await page.waitForTimeout(300);
   }
 
   // ══ 7. regret mode converges and names what it did (round 14 wording defect;

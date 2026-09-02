@@ -25,8 +25,15 @@ export const PRESETS: Record<string, PresetGame> = {
     row1Label: 'Search L', row2Label: 'Search R',
     col1Label: 'Hide L',   col2Label: 'Hide R',
     actorA: ['searcher'], actorB: ['hider'],
-    desc: `<strong>Search Game:</strong> A ${spanA('searcher')} chooses to look ${spanA('Left (Row 1)')} or ${spanA('Right (Row 2)')}; `
-        + `a ${spanB('hider')} simultaneously picks ${spanB('Left (Col 1)')} or ${spanB('Right (Col 2)')}. `
+    // RED-PUBLIC B: this preset already carried real row/col labels
+    // ("Search L"/"Hide R") but the prose named the same options by their
+    // internal index instead ("Left (Row 1)") — a reader sees one name over
+    // the matrix and a different one two lines below it, naming the same
+    // cell. The label IS the option's name now; prose says "Left"/"Right"
+    // and lets the header supply "Search L"/"Search R" rather than repeating
+    // (and contradicting) it.
+    desc: `<strong>Search Game:</strong> A ${spanA('searcher')} chooses to look ${spanA('Left')} or ${spanA('Right')}; `
+        + `a ${spanB('hider')} simultaneously picks ${spanB('Left')} or ${spanB('Right')}. `
         + `The ${spanA('searcher')} wins 2 by finding the ${spanB('hider')} at the left door, and 1 at the right door. `
         + `The ${spanB("hider's")} payoffs are the exact negatives (zero-sum). Neither player has a dominant strategy; both must randomize. `
         + `The unique Nash Equilibrium is mixed: ${spanA('Searcher plays Left with probability 1/3')}, ${spanB('Hider hides Left with probability 1/3')}. `
@@ -37,10 +44,17 @@ export const PRESETS: Record<string, PresetGame> = {
     name: 'Battle of the Sexes',
     a11: 2, b11: 1,  a12: 0, b12: 0,
     a21: 0, b21: 0,  a22: 1, b22: 2,
+    // RED-PUBLIC A: this preset had no row/col labels of its own, so the
+    // matrix header fell back to the generic "Row 1"/"Col 2" — technical
+    // grid jargon sitting under a matrix whose whole point is Opera vs.
+    // Football. Both players choose between the same two venues, so both
+    // sides share one label pair.
+    row1Label: 'Opera', row2Label: 'Football',
+    col1Label: 'Opera', col2Label: 'Football',
     actorA: ['Opera'], actorB: ['Football'],
     desc: '<strong>Battle of the Sexes:</strong> Two partners want to spend the evening together but prefer different activities. '
-        + `Player A prefers the ${spanA('Opera (Row 1)')}, `
-        + `Player B prefers ${spanB('Football (Col 2)')}. `
+        + `Player A prefers the ${spanA('Opera')}, `
+        + `Player B prefers ${spanB('Football')}. `
         + 'Being together matters to both, but each would rather be at their favourite venue. '
         + `Payoffs: (Opera,Opera)=(${spanA('2')},${spanB('1')}), (Opera,Football)=(${spanA('0')},${spanB('0')}), `
         + `(Football,Opera)=(${spanA('0')},${spanB('0')}), (Football,Football)=(${spanA('1')},${spanB('2')}).`
@@ -50,8 +64,15 @@ export const PRESETS: Record<string, PresetGame> = {
     name: 'Prisoners Dilemma',
     a11: 3, b11: 3,  a12: 0, b12: 5,
     a21: 5, b21: 0,  a22: 1, b22: 1,
+    // Both suspects face the same choice (Cooperate/Defect), so one label
+    // pair for both sides, same reasoning as Battle of the Sexes above. No
+    // actorA/actorB: the story never distinguishes "suspect one" from
+    // "suspect two" by name or role, and inventing a noun neither the desc
+    // nor the game states would color text the reader never sees justified.
+    row1Label: 'Cooperate', row2Label: 'Defect',
+    col1Label: 'Cooperate', col2Label: 'Defect',
     desc: '<strong>Prisoner\'s Dilemma:</strong> Two suspects are arrested and held in separate cells. '
-        + `Each can Cooperate (${spanA('Row 1')}/${spanB('Col 1')}) with their partner by remaining silent, or Defect (${spanA('Row 2')}/${spanB('Col 2')}) by confessing. `
+        + `Each can ${spanA('Cooperate')}/${spanB('Cooperate')} with their partner by remaining silent, or ${spanA('Defect')}/${spanB('Defect')} by confessing. `
         + 'Defecting is a strictly dominant strategy for both players, leading them inexorably to the unique dominant strategy Nash Equilibrium of '
         + `mutual defection (${spanA('1')},${spanB('1')}), `
         + `even though mutual cooperation would have yielded a much higher payoff (${spanA('3')},${spanB('3')}) for both.`
@@ -61,9 +82,11 @@ export const PRESETS: Record<string, PresetGame> = {
     name: 'Cops & Robbers',
     a11: 3, b11: 2,  a12: 3, b12: 3,
     a21: 2, b21: 4,  a22: 4, b22: 1,
+    row1Label: 'Stay at Home', row2Label: 'Commit a Crime',
+    col1Label: 'Patrol',       col2Label: 'Eat Donuts',
     actorA: ['robber'], actorB: ['cop'],
-    desc: `<strong>Cops &amp; Robbers:</strong> A ${spanA('robber')} chooses to ${spanA('Stay at Home (Row 1)')} or ${spanA('Commit a Crime (Row 2)')}. `
-        + `A ${spanB('cop')} simultaneously decides to ${spanB('Patrol (Col 1)')} or ${spanB('Eat Donuts (Col 2)')}. `
+    desc: `<strong>Cops &amp; Robbers:</strong> A ${spanA('robber')} chooses to ${spanA('Stay at Home')} or ${spanA('Commit a Crime')}. `
+        + `A ${spanB('cop')} simultaneously decides to ${spanB('Patrol')} or ${spanB('Eat Donuts')}. `
         + `The ${spanA('robber')} wants to commit crime undetected, while the ${spanB('cop')} wants to patrol and catch them. `
         + `${spanA("Robber's payoff")} is maximized (${spanA('4')}) when they commit crime while the cop eats donuts; `
         + `${spanB("cop's payoff")} is maximized (${spanB('4')}) when patrolling while a crime is committed. `
@@ -74,9 +97,11 @@ export const PRESETS: Record<string, PresetGame> = {
     name: 'Spy vs. Analyst',
     a11: 3, b11: -3,  a12: -2, b12: 2,
     a21: -1, b21: 1,  a22: 0, b22: 0,
+    row1Label: 'Leak Intel', row2Label: 'Stay Silent',
+    col1Label: 'Publish',    col2Label: 'Hold Story',
     actorA: ['spy'], actorB: ['analyst'],
-    desc: `<strong>Spy vs. Analyst:</strong> A ${spanA('spy')} chooses to ${spanA('leak classified intel (Row 1)')} or ${spanA('stay silent (Row 2)')}. `
-        + `An ${spanB('analyst')} simultaneously decides to ${spanB('publish a story (Col 1)')} or ${spanB('hold it (Col 2)')}. `
+    desc: `<strong>Spy vs. Analyst:</strong> A ${spanA('spy')} chooses to ${spanA('leak classified intel')} or ${spanA('stay silent')}. `
+        + `An ${spanB('analyst')} simultaneously decides to ${spanB('publish a story')} or ${spanB('hold it')}. `
         + `The ${spanA('spy')} gains from publication when leaking but loses credibility if silent and published. `
         + `The ${spanB('analyst')} profits from a confirmed scoop but risks backlash if they publish without a leak. `
         + 'This zero-sum-adjacent game has no pure Nash Equilibrium — both players must mix their strategies. '
@@ -99,8 +124,8 @@ export const PRESETS: Record<string, PresetGame> = {
     row1Label: 'Aim Left', row2Label: 'Aim Right',
     col1Label: 'Dive Left', col2Label: 'Dive Right',
     actorA: ['kicker'], actorB: ['goalie'],
-    desc: `<strong>Penalty Kick:</strong> A ${spanA('kicker')} picks a side to shoot (${spanA('Row 1 = Aim Left')}, ${spanA('Row 2 = Aim Right')}); `
-        + `the ${spanB('goalie')} simultaneously picks a side to dive (${spanB('Col 1 = Dive Left')}, ${spanB('Col 2 = Dive Right')}). `
+    desc: `<strong>Penalty Kick:</strong> A ${spanA('kicker')} picks a side to shoot (${spanA('Aim Left')} or ${spanA('Aim Right')}); `
+        + `the ${spanB('goalie')} simultaneously picks a side to dive (${spanB('Dive Left')} or ${spanB('Dive Right')}). `
         + `The ${spanA("kicker's")} left-side strike is lethal when the ${spanB('goalie')} guesses wrong but easily smothered when read; `
         + 'the right side is safer but weaker. Zero-sum with no pure Nash Equilibrium — both players must mix. '
         + `Payoffs (clockwise from top-left): (${spanA('−12')},${spanB('12')}), (${spanA('8')},${spanB('−8')}), (${spanA('0')},${spanB('0')}), (${spanA('2')},${spanB('−2')}).`
@@ -193,10 +218,44 @@ function collapseNegZeroDisplay(s: string): string {
 // by that five times.
 const NUMERIC_INPUT_MINUS = /[\u2212\u2013\u2014\u2015\u2012\u2010\u2011\u2043\u02D7\uFF0D\uFE63\uFE58]/g;
 const NUMERIC_INPUT_PLUS = /[\uFF0B\uFE62]/g;
+// RED-APP-3 finding 002: fullwidth digits (code points U+FF10 through
+// U+FF19 -- the digit forms an IME's fullwidth input mode, or a pasted CJK
+// document, produces) were never added to this normalisation, only the
+// fullwidth minus/plus signs were. parseFloat only recognises ASCII 0-9, so
+// a fullwidth-typed "31" (using the fullwidth digit glyphs, not the ASCII
+// ones) made it return NaN immediately, and the caller's null-fallback
+// silently committed 0 -- indistinguishable on screen from the user having
+// typed zero on purpose. Same bug class as the minus-sign block above (a
+// real, meaningful keystroke discarded with no signal), just never extended
+// to digits.
+//
+// Also normalises the fullwidth full stop (U+FF0E) to ASCII "." for the
+// same reason: without it, a fullwidth-typed "0.5" digit-normalises to
+// ASCII "0" followed by an unrecognised fullwidth dot, and parseFloat then
+// stops right after that leading "0" -- returning the NUMBER 0 (a real,
+// parseable value) rather than null, which is actually WORSE than the
+// pre-fix behaviour: null at least falls back to each field's own
+// documented default, where a silently-parsed 0 does not. Both characters
+// must normalise together for a fullwidth decimal to survive at all.
+//
+// U+FF10-U+FF19 is contiguous and exactly 0xFEE0 above its ASCII digit
+// (U+FF10 - 0xFEE0 = 0x30 = the character "0"), so a single codepoint-shift
+// covers all ten digits -- normalised the same "escape, not glyph" way as
+// the minus/plus classes above, for the same reason (five bites is enough
+// to distrust a literal character pasted into this file).
+const FULLWIDTH_DIGIT_OFFSET = 0xff10 - 0x30;
+const FULLWIDTH_FULL_STOP = 0xff0e;
+function normalizeFullwidthDigits(s: string): string {
+  return s
+    .replace(/[\uFF10-\uFF19]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - FULLWIDTH_DIGIT_OFFSET))
+    .replace(new RegExp(String.fromCharCode(FULLWIDTH_FULL_STOP), 'g'), '.');
+}
 
 export function parseNumericInput(raw: string | null | undefined): number | null {
   if (typeof raw !== 'string') return null;
-  const canonical = raw.replace(NUMERIC_INPUT_MINUS, '-').replace(NUMERIC_INPUT_PLUS, '+');
+  const canonical = normalizeFullwidthDigits(
+    raw.replace(NUMERIC_INPUT_MINUS, '-').replace(NUMERIC_INPUT_PLUS, '+'),
+  );
   const v = parseFloat(canonical);
   return Number.isFinite(v) ? v : null;
 }
