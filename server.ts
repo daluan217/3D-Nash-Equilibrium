@@ -43,6 +43,50 @@ const REPORT_REASONING: ReasoningEffort | undefined =
 // an invention-mode report instead of the separate scenario prompt.
 const LOCAL_PROMPT = process.env.REPORT_LOCAL_PROMPT === '1' ? LOCAL_SYSTEM_PROMPT : undefined;
 
+/**
+ * WHERE AN INVENTED SCENARIO COMES FROM — one function, three callers.
+ *
+ * This was three copies of the same ternary. The copies are what
+ * `scenariopaths.contract.test.ts` exists to police, because they had already
+ * drifted once: a branch took `server.ts` wholesale from a pre-fix tree and
+ * silently reverted the claim-free screen on one path only. A single source
+ * makes that particular drift unrepresentable rather than merely detectable.
+ *
+ * ORDER IS DELIBERATE. The bank is consulted first and ONLY on the desktop,
+ * because it exists to replace a bundled model, not to override the cloud. A
+ * miss falls through to the model path instead of failing: a thin (domain,
+ * band) cell should cost variety, never a report.
+ *
+ * WHAT THIS DOES NOT DO is decide whether the scenario may be SHOWN. Every
+ * caller screens the result — bank rows included — through the same live gates
+ * it applies to model output. The bank is frozen at build time while the gates
+ * keep moving, so "already verified" must never read as "need not be checked".
+ */
+/**
+ * Can this process produce a scenario at all?
+ *
+ * A key is no longer the only way. The desktop ships a bank precisely so the
+ * offline app has a story WITHOUT credentials, so gating invention on
+ * `hasCredentials` alone would have made the bank unreachable in the exact
+ * situation it was built for — present, loaded, correct, and never consulted.
+ */
+function canInvent(): boolean {
+  return hasCredentials(DEFAULT_MODEL) || (process.env.IS_ELECTRON === 'true' && bankAvailable());
+}
+
+async function inventScenario(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+  const domain = pickScenarioDomain();
+  if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
+    const sc = bankScenario(payoffs, domain);
+    if (sc) return { scenario: sc };
+  }
+  if (!LOCAL_PROMPT) {
+    return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true });
+  }
+  const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
+  return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
+}
+
 // Validated-report cache. The same eight numbers always have the same
 // equilibria, and only envelopes that passed EVERY gate are stored — so a
 // hit serves certified content instantly and for free. The six standard
@@ -60,6 +104,7 @@ const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number;
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair } from "./src/utils/colorTerms";
 import { pickScenarioDomain } from "./src/utils/scenarioDomains";
+import { bankAvailable, bankScenario } from "./src/utils/bankSource";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -337,6 +382,88 @@ function getAuthUser(req: express.Request): User | null {
   return user;
 }
 
+/**
+ * The desktop's local owner — the reason the offline app no longer asks you to
+ * invent a password to save a file to your own disk.
+ *
+ * On the hosted service an account is what separates one visitor's games from
+ * another's. On the desktop there is no other visitor: the database is
+ * `db.json` inside this OS user's own data directory, and the "tenant" is the
+ * person at the keyboard, who already owns the file. Requiring registration
+ * and e-mail verification there was a hosted constraint imposed where it means
+ * nothing — the same mistake as rate-limiting a user against a server they do
+ * not share.
+ *
+ * SCOPED TO THE GAME ROUTES ON PURPOSE. `getAuthUser` is also what guards
+ * account DELETION, and a fallback identity there would let anyone at the
+ * keyboard start a deletion flow against a real account. Those routes keep the
+ * strict check; only the routes that read and write this machine's own saved
+ * games use the owner below. That distinction is the whole safety argument, so
+ * it is asserted in the tests rather than left to the reader.
+ */
+const LOCAL_OWNER_ID = 'local-owner';
+
+function isDesktop(): boolean {
+  return process.env.IS_ELECTRON === 'true';
+}
+
+/** Provision the local owner on first use. Never on the hosted service. */
+function ensureLocalOwner(): User | null {
+  if (!isDesktop()) return null;
+  const db = loadDB();
+  const existing = db.users.find((u) => u.id === LOCAL_OWNER_ID);
+  if (existing) return existing;
+  // Built to the real User shape, with NO cast. The first version set
+  // `verified: true` — a field this interface does not have — so the owner
+  // read as UNVERIFIED everywhere `isVerified` is checked, and the
+  // `as unknown as User` cast is precisely what hid the mismatch. A cast is
+  // how a schema drift ships looking correct.
+  const owner: User = {
+    id: LOCAL_OWNER_ID,
+    username: 'This device',
+    // A reserved, unroutable address: the local owner has no e-mail, and a
+    // blank one would collide with any other record missing the field.
+    email: 'local-owner@localhost.invalid',
+    passwordHash: '',
+    isVerified: true,
+    verificationCode: '',
+    verificationCodeExpires: 0,
+    tokenVersion: 0,
+  };
+  db.users.push(owner);
+  saveDB(db);
+  return owner;
+}
+
+/**
+ * Who owns the saved games for this request: the signed-in user if there is
+ * one, otherwise — on the desktop only — the local owner.
+ */
+function getGameOwner(req: express.Request): User | null {
+  return getAuthUser(req) ?? ensureLocalOwner();
+}
+
+/**
+ * Sign-in ADOPTS whatever was saved locally.
+ *
+ * Daniel's call: a local owner who later signs in takes their games with them,
+ * exactly as a signed-in user's games already follow them. Without this, using
+ * the app before making an account would silently strand that work behind an
+ * identity the user can no longer reach.
+ *
+ * Re-parenting rather than copying, so signing in twice cannot duplicate a
+ * library.
+ */
+function adoptLocalGames(userId: string): number {
+  if (!isDesktop() || userId === LOCAL_OWNER_ID) return 0;
+  const db = loadDB();
+  const mine = db.games.filter((g) => g.userId === LOCAL_OWNER_ID);
+  if (!mine.length) return 0;
+  for (const g of mine) g.userId = userId;
+  saveDB(db);
+  return mine.length;
+}
+
 function cleanText(value: unknown, maxLength: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
@@ -447,8 +574,34 @@ function pruneRateBuckets(now: number) {
   }
 }
 
-function rateLimit(label: string, max: number, windowMs: number): express.RequestHandler {
+/**
+ * Per-IP throttle for the hosted service.
+ *
+ * `hosted-only` marks a limit that exists ONLY to protect a SHARED server from
+ * one user. On the desktop there is no shared server: the model runs on the
+ * user's own machine, a report costs them nothing, and since this build binds
+ * 127.0.0.1 there is nobody else on the socket to throttle. Capping generation
+ * there is a pure downgrade — unlimited regeneration at no cost is one of the
+ * few things the local app has BY CONSTRUCTION that the hosted one cannot
+ * offer, and at ~0.75s per local report, 20/min is under half a minute of
+ * ordinary use.
+ *
+ * Limits that protect the USER rather than the server — sign-in attempts,
+ * verification and recovery codes, account deletion, admin endpoints — are
+ * deliberately NOT marked and stay in force everywhere. They guard the local
+ * database against whoever is at the keyboard, which is a real threat model on
+ * a desktop and not one on Cloud Run, so the desktop is the last place to
+ * relax them.
+ */
+function rateLimit(
+  label: string,
+  max: number,
+  windowMs: number,
+  scope: 'always' | 'hosted-only' = 'always',
+): express.RequestHandler {
+  const liftedForDesktop = scope === 'hosted-only' && process.env.IS_ELECTRON === 'true';
   return (req, res, next) => {
+    if (liftedForDesktop) return next();
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     const key = `${label}:${ip}`;
     const now = Date.now();
@@ -854,7 +1007,7 @@ async function startServer() {
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
   // The installed Electron app polls this to decide whether to prompt for an update.
-  app.get("/api/version", rateLimit("version", 60, 60_000), async (req, res) => {
+  app.get("/api/version", rateLimit("version", 60, 60_000, 'hosted-only'), async (req, res) => {
     try {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
@@ -878,7 +1031,7 @@ async function startServer() {
   // prose only when validation passes; a refusal, truncation, or hallucination
   // degrades to the existing deterministic panel rather than showing something
   // wrong. That makes the fallback path exercised in normal operation.
-  app.post("/api/report", rateLimit("report", 20, 60_000), async (req, res) => {
+  app.post("/api/report", rateLimit("report", 20, 60_000, 'hosted-only'), async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
     const scenario = cleanScenario(req.body?.scenario);
     if (!payoffs) {
@@ -898,11 +1051,9 @@ async function startServer() {
       const isTie = p2.a11 === p2.a21 || p2.a12 === p2.a22 || p2.b11 === p2.b12 || p2.b21 === p2.b22;
       if (!isTie && req.body?.scenarioOnly !== true) {
         let invented: SuggestedScenario | null = null;
-        if (!scenario && hasCredentials(DEFAULT_MODEL)) {
+        if (!scenario && canInvent()) {
           try {
-            const r = LOCAL_PROMPT
-              ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-              : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
+            const r = (await inventScenario(payoffs)).scenario;
             // Under rung 3 the scenario must also be CLAIM-FREE: the solver
             // states the mathematics, so a description that asserts anything
             // decidable is both unnecessary and the only remaining defect
@@ -964,11 +1115,9 @@ async function startServer() {
           // supplied "Night Shift / Day Shift" was shown a mathematically
           // perfect paragraph about options that were not in their game.)
           let invented: SuggestedScenario | null = null;
-          if (!scenario && hasCredentials(DEFAULT_MODEL)) {
+          if (!scenario && canInvent()) {
             try {
-              const s = LOCAL_PROMPT
-                ? (await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT })).report?.suggestedScenario ?? null
-                : (await generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true })).scenario;
+              const s = (await inventScenario(payoffs)).scenario;
               // The scenario still faces its own gate; a failed story costs the
               // labels, not the explanation.
               // Same screen the non-tie path applies: the declarations gate,
@@ -1028,7 +1177,7 @@ async function startServer() {
     // retry. Same story-claims gate, one retry, suggestion withheld on a
     // double failure. Never cached: freshness is the request.
     if (req.body?.scenarioOnly === true) {
-      if (!hasCredentials(DEFAULT_MODEL)) {
+      if (!canInvent()) {
         return res.json({ scenario: null, failure: "no-key" });
       }
       // The tie path already refuses to replace a scenario the user supplied;
@@ -1037,11 +1186,7 @@ async function startServer() {
       if (scenarioIsUsable(scenario)) {
         return res.json({ scenario: null, failure: "scenario-supplied" });
       }
-      const invent = async () => {
-        if (!LOCAL_PROMPT) return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain: pickScenarioDomain(), stakes: true });
-        const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
-        return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
-      };
+      const invent = () => inventScenario(payoffs);
       let { scenario: invented, failure } = await invent();
       // The claim-free screen belongs here too, and its absence was the single
       // biggest hole in the scenario surface. The rung-3 report path (:899) and
@@ -1557,6 +1702,12 @@ async function startServer() {
       user.passwordHash = hashPassword(password);
       saveDB(db);
     }
+      // A local owner who signs in takes their games with them. Without this,
+      // anything saved before making an account would be stranded behind an
+      // identity the user can no longer reach.
+      const adopted = adoptLocalGames(user.id);
+      if (adopted) console.log(`[auth] adopted ${adopted} local game(s) into ${user.id}`);
+
 
     res.json({
       success: true,
@@ -1774,8 +1925,8 @@ async function startServer() {
   // ── Custom Saved Games API ─────────────────────────────────────────────────
 
   // Get User's Custom Games
-  app.get("/api/games", rateLimit("games-read", 60, 60_000), (req, res) => {
-    const user = getAuthUser(req);
+  app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -1786,9 +1937,9 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", rateLimit("games-write", 20, 60_000), (req, res) => {
+  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
     const db = loadDB();
-    const user = getAuthUser(req);
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -1832,8 +1983,8 @@ async function startServer() {
   // Payoffs are deliberately NOT updatable here: changing them would silently
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
-  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000), (req, res) => {
-    const user = getAuthUser(req);
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), (req, res) => {
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -1874,8 +2025,8 @@ async function startServer() {
   });
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000), (req, res) => {
-    const user = getAuthUser(req);
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), (req, res) => {
+    const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
     }
@@ -1943,8 +2094,25 @@ async function startServer() {
 
   // Dynamic port assignment with automatic fallback in case of port collisions
   const startListening = (port: number) => {
-    const serverInstance = app.listen(port, "0.0.0.0", () => {
-      console.log(`Express server running on http://0.0.0.0:${port}`);
+    // BIND HOST IS A DEFECT FIX, not a preference.
+    //
+    // On macOS, bind(0.0.0.0:P) SUCCEEDS while another process holds
+    // 127.0.0.1:P — no EADDRINUSE — and the more specific bind then wins every
+    // loopback connection. In the desktop app that had two consequences. The
+    // API was reachable from the LOCAL NETWORK: verified against a running
+    // installed copy, http://<lan-ip>:14321/ answered 200, and on a build with
+    // the offline model bundled a POST to /api/report from another machine
+    // returned a freshly invented scenario. CORS is irrelevant there; a direct
+    // request is not a browser. And the port-retry loop below could
+    // "successfully" bind a port another local server already owned, log
+    // nothing, and leave the window talking to that other server.
+    //
+    // Binding the loopback at the SAME specificity makes the kernel refuse the
+    // second bind, so the retry actually advances. Cloud Run must still bind
+    // 0.0.0.0 or the container is unreachable, hence the gate on IS_ELECTRON.
+    const host = process.env.IS_ELECTRON === 'true' ? '127.0.0.1' : '0.0.0.0';
+    const serverInstance = app.listen(port, host, () => {
+      console.log(`Express server running on http://${host}:${port}`);
       if (process.env.IS_ELECTRON === 'true') {
         (global as any).expressPort = port;
         if ((global as any).onExpressListening) {
