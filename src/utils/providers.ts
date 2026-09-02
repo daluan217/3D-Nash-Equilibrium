@@ -137,16 +137,30 @@ export type ProviderName = 'gemini' | 'foundry-openai' | 'foundry-anthropic' | '
  * so a genuine 429 isn't hidden behind three more failed variant attempts —
  * so the false positive was aborting the shape-negotiation ladder on its FIRST
  * variant, before it ever reached the `json_object` fallback that would have
- * succeeded. Gemini's own tokens are matched exactly (word-boundary,
- * case-sensitive) instead, since that is the only form Google's SDK actually
- * emits them in.
+ * succeeded.
+ *
+ * FIRST FIX matched Gemini's tokens exactly (word-boundary, case-sensitive)
+ * instead of case-insensitively — that closed the specific message observed,
+ * but left the underlying discriminator as CASING rather than the thing that
+ * actually distinguishes an infra failure from a content-shape rejection: the
+ * HTTP status. `RESPONSE_FORMAT UNAVAILABLE for this model` — same shape,
+ * upper case — would still have matched. STRUCTURAL FIX: when a numeric
+ * status/code IS present (true for every error this codebase's adapters
+ * throw — Gemini's own `ApiError.status` is literally the HTTP status; the
+ * OpenAI SDK always sets `.status`), it is now the ONLY thing consulted: a
+ * non-{429,503,500} status can never be a rate limit no matter what its
+ * message says, full stop. The message-pattern fallback exists only for
+ * error shapes with NO numeric status/code at all, and Gemini's own
+ * SCREAMING_CASE tokens are checked ONLY when the caller identifies the call
+ * as talking to Gemini (`isGeminiCall`) — never for an arbitrary provider's
+ * message that happens to contain the same English word.
  */
-export function isRateLimit(err: unknown): boolean {
+export function isRateLimit(err: unknown, isGeminiCall = false): boolean {
   const e = err as { status?: number; code?: number; message?: unknown };
   const code = e?.status ?? e?.code;
-  if (code === 429 || code === 503 || code === 500) return true;
+  if (typeof code === 'number') return code === 429 || code === 503 || code === 500;
   const msg = String(e?.message ?? '');
-  if (/\bRESOURCE_EXHAUSTED\b|\bUNAVAILABLE\b/.test(msg)) return true;
+  if (isGeminiCall && /\bRESOURCE_EXHAUSTED\b|\bUNAVAILABLE\b/.test(msg)) return true;
   return /overloaded|rate.?limit|too many requests|"code":\s*(429|503|500)/i.test(msg);
 }
 
@@ -197,7 +211,7 @@ async function callGemini(req: ProviderRequest): Promise<ProviderResult> {
       },
     });
   } catch (err) {
-    return { text: null, stopReason: null, usage: null, failure: isRateLimit(err) ? 'rate-limited' : 'error' };
+    return { text: null, stopReason: null, usage: null, failure: isRateLimit(err, true) ? 'rate-limited' : 'error' };
   }
 
   const usage = normalizeGeminiUsage(response.usageMetadata);
@@ -548,14 +562,26 @@ function openrouterCreds(): { endpoint?: string; apiKey?: string } {
  * does not use the `max_completion_tokens` alias), so that axis is not
  * negotiated — only the response-format strictness is.
  *
- * `reasoning_effort` is included ONLY when a reasoning level was requested;
- * several relayed models (glm-5.3 confirmed, see extraBody's doc comment)
- * reject unrecognised reasoning fields outright, so spreading it into every
- * attempt unconditionally would fail models that have no thinking mode at
- * all. The actual "stop thinking" knob for models that ignore
- * reasoning_effort is `extraBody` (e.g. `{ thinking: { type: 'disabled' } }`
- * for deepseek-v4-flash) — deliberately untyped and passed through verbatim,
- * same contract as the Foundry adapter.
+ * `reasoning_effort` is included ONLY when `thinkingRequested` says thinking
+ * was actually asked for — NOT on the bare truthiness of `reasoning`, which
+ * would also fire for `'none'`. `'none'` is a MEMBER of `ReasoningEffort` and
+ * is truthy, but it means "explicitly disable thinking", the same meaning
+ * `callGemini` and `callFoundryAnthropic` give it via `thinkingRequested`.
+ * `reasoning_effort` on OpenRouter's/OpenAI's chat-completions API is not a
+ * disable switch — it only accepts `low`/`medium`/`high` (`xhigh` here is
+ * this benchmark's own extension) — so sending `reasoning_effort: 'none'`
+ * would itself be an "unrecognised reasoning field" to a model that rejects
+ * those outright (glm-5.3 confirmed, see extraBody's doc comment below),
+ * wasting the same two variant attempts this negotiation exists to avoid
+ * wasting. `'none'` therefore takes the SAME no-reasoning-field variants as
+ * `undefined`; several relayed models still reject unrecognised reasoning
+ * fields outright when a real level (`low`/`medium`/`high`/`xhigh`) IS
+ * requested, so spreading it into every attempt unconditionally would fail
+ * models that have no thinking mode at all. The actual "stop thinking" knob
+ * for models that ignore `reasoning_effort` (or reject it) is `extraBody`
+ * (e.g. `{ thinking: { type: 'disabled' } }` for deepseek-v4-flash) —
+ * deliberately untyped and passed through verbatim, same contract as the
+ * Foundry adapter.
  */
 export function openrouterVariants(
   maxOutputTokens: number,
@@ -566,7 +592,9 @@ export function openrouterVariants(
     { response_format: jsonSchema, max_tokens: maxOutputTokens },
     { response_format: { type: 'json_object' }, max_tokens: maxOutputTokens },
   ];
-  return reasoning ? [...shapes.map((s) => ({ ...s, reasoning_effort: reasoning })), ...shapes] : shapes;
+  return thinkingRequested(reasoning)
+    ? [...shapes.map((s) => ({ ...s, reasoning_effort: reasoning })), ...shapes]
+    : shapes;
 }
 
 async function callOpenRouter(req: ProviderRequest): Promise<ProviderResult> {

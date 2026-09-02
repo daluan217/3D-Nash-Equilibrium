@@ -1049,16 +1049,14 @@ function testOpenRouterCredentialGating() {
 }
 
 function testIsRateLimit() {
-  // Real transient infra failures must still be caught: numeric status codes,
-  // and Gemini's own SCREAMING_CASE tokens (the only form Google's SDK emits
-  // them in), and ordinary-English rate-limit phrasing regardless of case.
+  // Real transient infra failures must still be caught: numeric status
+  // codes/`code` fields, and ordinary-English rate-limit phrasing regardless
+  // of case, on the DEFAULT (non-Gemini) call path.
   const mustBeRateLimit: Array<[unknown, string]> = [
     [{ status: 429 }, 'HTTP 429'],
     [{ status: 503 }, 'HTTP 503'],
     [{ status: 500 }, 'HTTP 500'],
     [{ code: 429 }, 'a `code` field instead of `status`'],
-    [{ message: 'RESOURCE_EXHAUSTED: quota exceeded' }, "Gemini's RESOURCE_EXHAUSTED token"],
-    [{ message: 'model is UNAVAILABLE right now' }, "Gemini's UNAVAILABLE token"],
     [{ message: 'Too Many Requests' }, 'the plain English phrase, mixed case'],
     [{ message: 'the service is overloaded, try again' }, 'overloaded'],
     [{ message: 'rate limit exceeded' }, 'rate limit with a space'],
@@ -1069,17 +1067,23 @@ function testIsRateLimit() {
     assert(isRateLimit(err), `isRateLimit must return true for ${why}: ${JSON.stringify(err)}`);
   }
 
-  // REGRESSION (found wiring the OpenRouter route, 2026-09-02): a 400 whose
-  // message merely CONTAINS the ordinary lowercase word "unavailable" is NOT
-  // an infra failure — it is DeepSeek-v4-flash's real rejection of the
-  // json_schema strict response_format, observed verbatim over
-  // OPEN_ROUTER_ENDPOINT. The old case-insensitive /UNAVAILABLE/i match
-  // treated this as a rate limit and short-circuited callOpenRouter's
-  // shape-negotiation ladder before it ever reached the json_object fallback
-  // that succeeds — a real production model call was silently mis-bucketed.
+  // STRUCTURAL FIX (2026-09-02, CodeRabbit on PR #92): the first fix matched
+  // Gemini's tokens exactly instead of case-insensitively, which closed the
+  // ONE observed message but left the real discriminator as casing rather
+  // than the thing that actually separates an infra failure from a
+  // content-shape rejection — the HTTP status. Now: whenever a numeric
+  // status/code is present at all (true for every error this codebase's
+  // adapters throw — Gemini's `ApiError.status` IS the HTTP status, the
+  // OpenAI SDK always sets `.status`), it is the ONLY thing consulted. A 400
+  // can never be a rate limit no matter what its message says — casing
+  // included — so this closes CodeRabbit's own "KNOWN OPEN" follow-up
+  // (`RESPONSE_FORMAT UNAVAILABLE`, uppercase, still a 400) along with the
+  // original DeepSeek/OpenRouter regression, rather than tuning the regex a
+  // second time to cover one more shape.
   const mustNotBeRateLimit: Array<[unknown, string]> = [
     [{ status: 400, message: 'This response_format type is unavailable now' }, 'the exact DeepSeek/OpenRouter regression'],
     [{ status: 400, message: 'this feature is currently unavailable' }, 'any other lowercase "unavailable" substring'],
+    [{ status: 400, message: 'RESPONSE_FORMAT UNAVAILABLE for this model' }, 'CodeRabbit\'s follow-up: an UPPERCASE UNAVAILABLE in a 400 — casing is no longer the discriminator, status is'],
     [{ status: 400, message: 'content-blocked' }, 'a content-policy 400'],
     [{ status: 401 }, 'an auth failure'],
     [{ status: 404 }, 'a not-found'],
@@ -1091,7 +1095,25 @@ function testIsRateLimit() {
     assert(!isRateLimit(err), `isRateLimit must return false for ${why}: ${JSON.stringify(err)}`);
   }
 
-  console.log('✓ isRateLimit: numeric codes and Gemini\'s exact SCREAMING_CASE tokens count as an infra rate limit; an unrelated 400 that merely contains the lowercase word "unavailable" (DeepSeek/OpenRouter regression) does not');
+  // The Gemini-token fallback exists only for error shapes with NO numeric
+  // status/code, and only fires when the CALLER identifies the call as
+  // Gemini's — never for an arbitrary provider's message that merely
+  // contains the same English word. Both directions pinned:
+  assert(isRateLimit({ message: 'RESOURCE_EXHAUSTED: quota exceeded' }, true),
+    "on the Gemini path, RESOURCE_EXHAUSTED with no status must still count");
+  assert(isRateLimit({ message: 'model is UNAVAILABLE right now' }, true),
+    "on the Gemini path, UNAVAILABLE with no status must still count");
+  assert(!isRateLimit({ message: 'RESOURCE_EXHAUSTED: quota exceeded' }, false),
+    "off the Gemini path (the default), the same token must NOT count — it is not this call's SDK");
+  assert(!isRateLimit({ message: 'model is UNAVAILABLE right now' }),
+    "isGeminiCall defaults to false, so a bare call must not honour Gemini's tokens either");
+  // And a numeric status still overrides the Gemini flag in either direction:
+  // a genuine Gemini 400 must not become a rate limit just because the
+  // caller happens to pass isGeminiCall: true.
+  assert(!isRateLimit({ status: 400, message: 'UNAVAILABLE for this request' }, true),
+    'a numeric non-{429,503,500} status wins even on the Gemini path');
+
+  console.log('✓ isRateLimit: a numeric status/code is the ONLY signal consulted when present (400 never a rate limit, regardless of message casing); the Gemini SCREAMING_CASE token fallback fires only with no numeric status AND only on the Gemini call path');
 }
 
 function testOpenRouterModelId() {
@@ -1135,7 +1157,25 @@ function testOpenRouterRequestVariants() {
     assert(v.max_tokens === 4096, `max_tokens must survive on every reasoning variant too, got ${JSON.stringify(v)}`);
   }
 
-  console.log('✓ openrouterVariants: max_tokens on every variant, reasoning_effort passthrough tried first then dropped as a fallback, never the max_completion_tokens alias');
+  // BOUNDARY (CodeRabbit on PR #92): 'none' is a MEMBER of ReasoningEffort
+  // and is truthy, so a bare `reasoning ? ... : shapes` check would wrongly
+  // take the reasoning branch and ship `reasoning_effort: 'none'` — not a
+  // value OpenAI-compatible APIs recognise, so a model that rejects
+  // unrecognised reasoning fields (glm-5.3) would fail its first two
+  // attempts for nothing. Fixed to gate on `thinkingRequested`, the same
+  // predicate callGemini/callFoundryAnthropic use, under which 'none' means
+  // "explicitly disable" and therefore takes the SAME reasoning-free
+  // variants as `undefined` — the real disable knob for a model that ignores
+  // reasoning_effort is extraBody's `{ thinking: { type: 'disabled' } }`.
+  const none = openrouterVariants(4096, 'none', schema);
+  assert(none.length === 2, `'none' must take the same 2 reasoning-free variants as undefined, got ${none.length}`);
+  for (const v of none) {
+    assert(!('reasoning_effort' in v), `'none' must not carry reasoning_effort, got ${JSON.stringify(v)}`);
+  }
+  assert(JSON.stringify(none) === JSON.stringify(noReasoning),
+    "'none' and undefined must produce byte-identical variants — both mean no reasoning_effort field");
+
+  console.log('✓ openrouterVariants: max_tokens on every variant, reasoning_effort passthrough tried first then dropped as a fallback, never the max_completion_tokens alias, and \'none\' (a truthy ReasoningEffort member meaning explicit disable) takes the same path as undefined rather than shipping an unrecognised reasoning_effort: \'none\'');
 }
 
 // ════════════════════════════════════════════════════════════════════════════

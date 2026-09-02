@@ -270,7 +270,11 @@ async function main(): Promise<void> {
       const p = resolveProvider(m);
       console.error(
         `${m}: missing credentials for provider '${p}' — set ` +
-          (p === 'gemini' ? 'GEMINI_API_KEY' : 'AZURE_FOUNDRY_ENDPOINT and AZURE_FOUNDRY_API_KEY'),
+          (p === 'gemini'
+            ? 'GEMINI_API_KEY'
+            : p === 'openrouter'
+              ? 'OPEN_ROUTER_ENDPOINT and OPEN_ROUTER_API_KEY'
+              : 'AZURE_FOUNDRY_ENDPOINT and AZURE_FOUNDRY_API_KEY'),
       );
     }
     process.exit(2);
