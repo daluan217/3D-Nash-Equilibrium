@@ -134,7 +134,104 @@ export function describeStakes(g: GamePayoffs): StakesProfile {
  */
 const PLAYER_GAP_NOTABLE = 4;
 
-export function stakesHint(g: GamePayoffs): string {
+/**
+ * SOFT STAKES (2026-09-02, Daniel's call). The absolute-swing cut above makes
+ * register track PAYOFF SCALE, not the decision — the same strategic game,
+ * typed in different units, gets a maximally different-register story
+ * (measured: the current cut's band changes under pure rescaling on 72.9% of
+ * (game, scale) pairs, `_gen/blue3_stakes_scale_invariance.ts`), and RED-CLOUD-3
+ * independently confirmed the absolute cut WORKS mechanically — 20/20 blind
+ * register separation at a 1000x rescale (round3/notes/RED-CLOUD-3). Both are
+ * true at once: the mechanism is reliable, and what it is reliable ABOUT is an
+ * arbitrary unit choice. Daniel's ruling: payoff scale should INFLUENCE the
+ * story, not DETERMINE it. This is not a rewording — the wording is softened
+ * too — but the ONLY instrument here is the INPUT to the model, same as the
+ * `no-rewriting-rung3-ceiling` rule requires: gate, prompt, retrain, never the
+ * model's own words.
+ *
+ * TWO INDEPENDENT SOFTENING MECHANISMS, deliberately decoupled so each can be
+ * reasoned about (and reverted) on its own:
+ *
+ *   1. STRENGTH — the graded size line fires only `SIZE_STRONG_P` of the time;
+ *      the rest of the time the hint says nothing about magnitude and leaves
+ *      the register to the story's own logic. This is what turns a 1000x
+ *      rescale from 20/20 separation into PARTIAL separation, uniformly
+ *      regardless of how extreme the rescale is — a game deep in the "tiny"
+ *      band and a game deep in the "very large" band are equally likely to
+ *      draw the silent branch, so blind-rank on extreme pairs is bounded well
+ *      below 100% by construction, not by chance.
+ *   2. BOUNDARY BLEND — near a band cut (within `BOUNDARY_WINDOW` log10 units)
+ *      the STRONG branch sometimes reaches for the NEIGHBOURING band's wording
+ *      instead of the exact one, ramping from 0 at the window's edge to 50/50
+ *      exactly on the cut. This is the literal "stochastic overlap between
+ *      adjacent bands" — a game whose swing sits at 9.5 (just under the
+ *      modest/substantial cut at 10) can draw either register, honestly,
+ *      because 9.5 and 10.5 are not meaningfully different decisions.
+ *
+ * WINDOW IS DELIBERATELY NARROW (0.15 log10 units, about a 1.4x margin either
+ * side of a cut) so the #55 arithmetic-axis fidelity ladder — the four
+ * magnitudes (`_gen/stakes_ab.ts`'s mag:0.2/3/15/45, log-distances 0.398 /
+ * 0.222 / 0.222 / 0.255 from their nearest cuts) — sits OUTSIDE the window on
+ * every rung and so keeps drawing its exact band whenever the STRONG branch
+ * fires. Mechanism 2 changes nothing about #55's own measurement; only
+ * mechanism 1 (whether the line fires at all) can move that number, and it
+ * moves it by attenuation, not by reversing the direction.
+ *
+ * `pick` is injectable, matching `pickScenarioDomain`/`pickFromBank`: a caller
+ * (or NASH_REPRODUCIBLE mode, once wired) supplies a seeded generator and the
+ * same (game, seed) sequence always produces the same hint — see
+ * `scenariostakes.test.ts`'s determinism section, mutation-tested against a
+ * `Math.random`-shaped stub that is NOT stable across calls.
+ */
+const SIZE_STRONG_P = 0.6;
+const SIZE_BOUNDARIES_LOG = [0, 1, Math.log10(50)]; // swing cuts at 1, 10, 50
+const BOUNDARY_WINDOW = 0.15;
+
+const SIZE_WORDING = [
+  'Stakes lean tiny here, more a matter of fine adjustment than of fortunes.',
+  'Stakes lean modest here, an everyday matter where both parties care but neither is transformed.',
+  'Stakes lean substantial here, enough to matter to a season, a budget or a reputation.',
+  'Stakes lean very large here — this could genuinely change the parties\' situation.',
+] as const;
+// Says nothing about magnitude at all. This is the branch that keeps register
+// from being DETERMINED by scale: the model is reminded stakes exist, not told
+// how big they are.
+const SIZE_NEUTRAL = 'How big a deal this is can follow the setting\'s own logic.';
+
+/**
+ * The exact band from the absolute-swing cuts, unchanged from the deterministic
+ * design — this is what `SIZE_WORDING` is indexed by and what `scenarioBank`'s
+ * `stakesBand` still matches, so nothing downstream needs to know softening
+ * exists.
+ */
+function exactSizeBand(swing: number): number {
+  return swing < 1 ? 0 : swing < 10 ? 1 : swing < 50 ? 2 : 3;
+}
+
+/**
+ * Reach into the neighbouring band near a cut, honestly — see the block
+ * comment above. Consumes `pick()` only when the swing is close enough to a
+ * cut to matter; deep-interior games (most of them) never pay for it and
+ * never move.
+ */
+function blendedSizeBand(exact: number, swing: number, pick: () => number): number {
+  if (swing <= 0) return exact;
+  const x = Math.log10(swing);
+  let nearestDist = Infinity, nearestIdx = -1;
+  for (let i = 0; i < SIZE_BOUNDARIES_LOG.length; i++) {
+    const d = Math.abs(x - SIZE_BOUNDARIES_LOG[i]);
+    if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
+  }
+  if (nearestDist >= BOUNDARY_WINDOW) return exact;
+  const belowBand = nearestIdx;      // band on the low side of this cut
+  const aboveBand = nearestIdx + 1;  // band on the high side
+  const isBelow = x < SIZE_BOUNDARIES_LOG[nearestIdx];
+  const flipProb = 0.5 * (1 - nearestDist / BOUNDARY_WINDOW);
+  if (pick() < flipProb) return isBelow ? aboveBand : belowBand;
+  return exact;
+}
+
+export function stakesHint(g: GamePayoffs, pick: () => number = Math.random): string {
   const s = describeStakes(g);
 
   // A game where nobody's choice moves anything has no stakes to describe, and
@@ -149,14 +246,12 @@ export function stakesHint(g: GamePayoffs): string {
   // instruction, which is the exact failure this function's caller documents
   // and that the 2048 -> 8192 raise was meant to end. A user cannot see prose
   // that was never returned, so a longer hint that buys better stories for
-  // twelve users and nothing at all for the thirteenth is a bad trade.
-  const size = s.swing < 1
-    ? 'Stakes are tiny: a matter of fine adjustment, not of fortunes. Keep the setting small and ordinary.'
-    : s.swing < 10
-      ? 'Stakes are modest: an everyday setting where both parties care but neither is transformed.'
-      : s.swing < 50
-        ? 'Stakes are substantial: enough to matter to a season, a budget or a reputation, without being catastrophic.'
-        : 'Stakes are very large: the outcome genuinely changes the parties\' situation.';
+  // twelve users and nothing at all for the thirteenth is a bad trade. Every
+  // branch below (SIZE_WORDING and SIZE_NEUTRAL alike) stays under that same
+  // budget — softening the determinism must not reopen the length cost.
+  const size = pick() < SIZE_STRONG_P
+    ? SIZE_WORDING[blendedSizeBand(exactSizeBand(s.swing), s.swing, pick)]
+    : SIZE_NEUTRAL;
 
   // THE GEOMETRIC LINES ARE DELIBERATELY ABSENT, and this is the most important
   // thing in the file. A first draft said "the weightiest decision here matters

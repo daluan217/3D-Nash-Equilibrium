@@ -60,13 +60,22 @@ const G = (a11: number, a12: number, a21: number, a22: number,
     moot.lopsidedness === Infinity && Number.isFinite(moot.swing));
 }
 
-/* --------------------------------------- known positives: every band fires */
+/* --------------------------------------- known positives: every band fires
+ *
+ * SOFT STAKES (2026-09-02): the size line no longer fires on every call —
+ * `pick() < SIZE_STRONG_P` gates it, and near a band cut it can reach for the
+ * neighbouring band's wording instead. `() => 0` always clears the STRONG gate
+ * (0 < SIZE_STRONG_P) and, for these deep-interior fixtures, is never even
+ * consumed a second time — see the "boundary blend never touches deep-interior
+ * fixtures" mutation check below, which proves that rather than assuming it.
+ */
 type Band = 'sub-unit' | 'modest' | 'substantial' | 'very large';
 const sizeBand = (h: string): Band | null =>
-  /Stakes are tiny/.test(h) ? 'sub-unit'
-  : /Stakes are modest/.test(h) ? 'modest'
-  : /Stakes are substantial/.test(h) ? 'substantial'
-  : /Stakes are very large/.test(h) ? 'very large' : null;
+  /Stakes lean tiny/.test(h) ? 'sub-unit'
+  : /Stakes lean modest/.test(h) ? 'modest'
+  : /Stakes lean substantial/.test(h) ? 'substantial'
+  : /Stakes lean very large/.test(h) ? 'very large' : null;
+const isNeutral = (h: string): boolean => /own logic/.test(h);
 const SIZE_FIXTURES: Array<[Band, GamePayoffs]> = [
   ['sub-unit', G(0.4, 0, 0, 0.2, 0.3, 0, 0, 0.1)],
   ['modest', G(6, 0, 0, 3, 5, 0, 0, 2)],
@@ -74,8 +83,111 @@ const SIZE_FIXTURES: Array<[Band, GamePayoffs]> = [
   ['very large', G(90, 0, 0, 60, 80, 0, 0, 55)],
 ];
 for (const [want, g] of SIZE_FIXTURES) {
-  const got = sizeBand(stakesHint(g));
-  check(`size band "${want}" fires`, got === want, `got "${got}"`);
+  const got = sizeBand(stakesHint(g, () => 0));
+  check(`size band "${want}" fires when the STRONG gate clears`, got === want, `got "${got}"`);
+}
+
+/* ------------------------------------------------- the STRONG gate is real
+ * The whole point of the redesign: the size register must NOT be printed on
+ * every call. `pick() >= SIZE_STRONG_P` must reach the neutral branch, which
+ * says nothing about magnitude — this is what turns 20/20 blind-rank
+ * separation into partial separation. A mutant that hard-codes the STRONG
+ * branch (deletes the gate) passes every fixture above unchanged and only
+ * this section catches it.
+ */
+{
+  const g = SIZE_FIXTURES[3][1]; // very-large fixture; deep interior
+  const strong = stakesHint(g, () => 0);
+  const neutral = stakesHint(g, () => 0.999999);
+  check('pick() just under SIZE_STRONG_P takes the graded branch', sizeBand(strong) === 'very large', strong);
+  check('pick() at the top of the range takes the neutral branch', isNeutral(neutral), neutral);
+  check('the neutral branch names no band', sizeBand(neutral) === null, neutral);
+  check('the neutral branch still says nothing decidable',
+    !/very large|substantial|modest|\btiny\b/.test(neutral), neutral);
+}
+
+/* --------------------------------------------------- boundary blend, honest
+ * Near a band cut the STRONG branch can reach for the NEIGHBOURING band's
+ * wording, ramping from 0 at the window's edge to 50/50 exactly on the cut.
+ * `swing = 10` sits exactly on the modest/substantial cut (log10(10) = 1,
+ * distance 0 from that boundary) — deliberately chosen so flipProb = 0.5 and
+ * both a low and a high second draw are decisive.
+ */
+{
+  const onCut = G(10, 0, 0, 5, 8, 0, 0, 4); // swing = 10, exactly the cut
+  // pick() is a single sequence: the FIRST value must clear the STRONG gate
+  // (< 0.6), the SECOND is the boundary-blend draw.
+  const seq = (vals: number[]) => { let i = 0; return () => vals[Math.min(i++, vals.length - 1)]; };
+  const exactStays = stakesHint(onCut, seq([0, 1]));    // blend draw 1, well above flipProb=0.5
+  const lowBlend = stakesHint(onCut, seq([0, 0]));      // blend draw 0 < flipProb -> flips
+  const highBlend = stakesHint(onCut, seq([0, 0.99]));  // blend draw 0.99, does not flip
+  check('sanity: exactSizeBand(10) is substantial, not tiny/modest mixed up',
+    sizeBand(exactStays) === 'substantial', exactStays);
+  check('a low blend draw exactly on a cut reaches the band BELOW',
+    sizeBand(lowBlend) === 'modest', lowBlend);
+  check('a high blend draw exactly on a cut stays at the exact band',
+    sizeBand(highBlend) === 'substantial', highBlend);
+}
+{
+  // Deep-interior fixtures must NEVER pay for a second pick() call — this is
+  // what protects the #55 arithmetic-axis magnitudes (their log-distance from
+  // every cut is 0.222-0.398, all outside the 0.15 window) from the blend.
+  // A poisoned generator that throws on a second call turns "never consumed"
+  // into a hard failure rather than a coincidence of what the second value
+  // happened to be.
+  let calls = 0;
+  const poisoned = () => { calls++; if (calls > 1) throw new Error('blendedSizeBand consumed a second draw for a deep-interior swing'); return 0; };
+  for (const [, g] of SIZE_FIXTURES) {
+    calls = 0;
+    let threw = false;
+    try { stakesHint(g, poisoned); } catch { threw = true; }
+    check('a deep-interior fixture never consumes a second pick() call', !threw);
+  }
+}
+
+/* -------------------------------------------------------------- determinism
+ * `pick` is injectable exactly like `pickScenarioDomain`/`pickFromBank`, so a
+ * seeded caller (a future NASH_REPRODUCIBLE mode) gets a BYTE-IDENTICAL hint
+ * for the same (game, seed) sequence — required by this round's brief.
+ * Mutation check: a stub that returns a fresh Math.random() each call (i.e.
+ * genuinely ignores its own state) would fail the repeat-call assertion; a
+ * `pick` that closes over real seeded state passes it.
+ */
+{
+  const mulberry32 = (a: number) => () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const g = G(7, -3, 2, 9, -4, 6, 1, -8);
+  let sawStrong = false, sawNeutral = false, mismatched = 0;
+  for (let seed = 1; seed <= 200; seed++) {
+    const first = stakesHint(g, mulberry32(seed));
+    const repeat = stakesHint(g, mulberry32(seed));
+    if (first !== repeat) mismatched++;
+    if (isNeutral(first)) sawNeutral = true; else if (sizeBand(first)) sawStrong = true;
+  }
+  check('every one of 200 seeds reproduces byte-identically on repeat', mismatched === 0, `${mismatched}/200 mismatched`);
+  check('the same 200-seed sweep actually visits the STRONG branch', sawStrong);
+  check('and actually visits the NEUTRAL branch (not silently still deterministic)', sawNeutral);
+}
+
+/* ---------------------------------------------------------- the mix, measured
+ * SIZE_STRONG_P is a design constant, not a decoration — assert its empirical
+ * rate rather than trust the literal. A deterministic seeded sweep so the
+ * assertion itself is reproducible.
+ */
+{
+  let seed = 424242;
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const g = G(90, 0, 0, 60, 80, 0, 0, 55); // very-large fixture, deep interior
+  const N = 4000;
+  let strongCount = 0;
+  for (let i = 0; i < N; i++) if (sizeBand(stakesHint(g, rand)) !== null) strongCount++;
+  const rate = strongCount / N;
+  check('the STRONG rate matches SIZE_STRONG_P (0.6) within sampling noise',
+    Math.abs(rate - 0.6) < 0.05, `measured ${rate.toFixed(3)} over ${N} draws`);
 }
 // The CONTINGENT geometric clauses stay out. Blind rating found no effect for
 // the lopsidedness line (p=0.37 against p=0.0006 for the arithmetic ones), and
@@ -89,10 +201,12 @@ for (const [why, g] of [
   ['extreme lopsidedness', G(100, 0, 0, 0.001, 0, 100, 0.001, 0)],
   ['a moot choice', G(5, 9, 5, 1, 2, 8, 3, 0)],
 ] as Array<[string, GamePayoffs]>) {
-  const h = stakesHint(g);
+  // Forced STRONG (`() => 0`): this checks WHICH clauses the line can contain
+  // when it fires, not whether it fires — that is the section above.
+  const h = stakesHint(g, () => 0);
   check(`no unmeasured geometric clause for ${why}`,
     !/times more|comparable weight|no difference whatsoever/.test(h), h.slice(0, 160));
-  check(`${why} still gets its arithmetic line`, sizeBand(h) !== null, h.slice(0, 80));
+  check(`${why} still gets its arithmetic line when STRONG`, sizeBand(h) !== null, h.slice(0, 80));
 }
 // describeStakes still computes the full profile — the hint just does not use
 // the geometric half yet. Keep it correct so re-adding it is a prompt change.
@@ -117,10 +231,15 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
   const CLAIM_WORDS = /\b(equilibri\w*|dominan\w*|best response|should choose|will choose|better off|prefers?|optimal|wins?|loses?)\b/i;
   let seed = 7;
   const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  // A SEPARATE seeded stream drives `pick`, so this test is reproducible
+  // end-to-end rather than depending on the real Math.random default — the
+  // stream must visit BOTH branches for the claim below to mean anything.
+  let pickSeed = 71;
+  const pick = () => { pickSeed = (pickSeed * 1103515245 + 12345) & 0x7fffffff; return pickSeed / 0x7fffffff; };
   let claims = 0, digits = 0;
   for (let i = 0; i < 20000; i++) {
     const p = () => Math.round((rand() * 200 - 100) * 1000) / 1000;
-    const h = stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p()));
+    const h = stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p()), pick);
     if (CLAIM_WORDS.test(h)) claims++;
     // With the geometric clauses gone the hint contains NO figures at all, so
     // this is now an absolute check rather than one with an exemption.
@@ -134,17 +253,20 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
 {
   let seed = 99;
   const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  let pickSeed = 991;
+  const pick = () => { pickSeed = (pickSeed * 1103515245 + 12345) & 0x7fffffff; return pickSeed / 0x7fffffff; };
   const seen: Record<string, number> = {};
+  let neutral = 0;
   const N = 20000;
   for (let i = 0; i < N; i++) {
     // Mixed scales, because a single scale would leave the size bands at the
     // other end of the range unreachable and the reach check would pass anyway.
     const mag = [0.5, 5, 30, 100][i % 4];
     const p = () => Math.round((rand() * 2 - 1) * mag * 1000) / 1000;
-    const h = stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p()));
+    const h = stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p()), pick);
     const b = sizeBand(h);
     if (b) seen[b] = (seen[b] ?? 0) + 1;
-
+    else if (isNeutral(h)) neutral++;
   }
   // "Reachable" is deliberately a low bar (0.1%): the point is to catch a band
   // that is DEAD, not to legislate a distribution.
@@ -152,8 +274,12 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
     const n = seen[band] ?? 0;
     check(`band "${band}" is reachable on real games`, n >= N / 1000, `${n}/${N} — nothing reaches it`);
   }
+  // The neutral branch must ALSO be reachable in real play — a dead neutral
+  // branch would mean SIZE_STRONG_P is silently 1.0 again.
+  check('the neutral (no-register) branch is reachable', neutral >= N / 1000, `${neutral}/${N}`);
   const pct = (k: string) => `${k} ${(100 * (seen[k] ?? 0) / N).toFixed(1)}%`;
-  console.log('  reach: ' + ['sub-unit', 'modest', 'substantial', 'very large'].map(pct).join(', '));
+  console.log('  reach: ' + ['sub-unit', 'modest', 'substantial', 'very large'].map(pct).join(', ')
+    + `, neutral ${(100 * neutral / N).toFixed(1)}%`);
 }
 
 /* ------------------------------------------------------ length is a defect */
@@ -166,11 +292,13 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
 {
   let seed = 3;
   const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  let pickSeed = 31;
+  const pick = () => { pickSeed = (pickSeed * 1103515245 + 12345) & 0x7fffffff; return pickSeed / 0x7fffffff; };
   let longest = 0, longestNoGap = 0;
   for (let i = 0; i < 5000; i++) {
     const mag = [0.5, 5, 30, 100][i % 4];
     const p = () => Math.round((rand() * 2 - 1) * mag * 1000) / 1000;
-    const h = stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p()));
+    const h = stakesHint(G(p(), p(), p(), p(), p(), p(), p(), p()), pick);
     longest = Math.max(longest, h.length);
     if (!/far more riding/.test(h)) longestNoGap = Math.max(longestNoGap, h.length);
   }
@@ -179,8 +307,13 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
   // of games and its yield cost was measured directly across three thresholds
   // (1, 2 and 1 lost draws, all max-tokens, with the CONTROL losing 2 at gap=4
   // — so the loss is not clean-attributable to it), which buys it more room.
-  check('the always-on size line stays short', longestNoGap <= 220, `longest ${longestNoGap} chars`);
-  check('the full hint stays bounded', longest <= 440, `longest ${longest} chars`);
+  // SOFT STAKES (2026-09-02) made the SIZE branch itself shorter (dropped the
+  // second imperative sentence: 95 chars longest vs 150+ before), so the
+  // no-gap bound (header + size + trailer, no gap line) tightens with it —
+  // measured worst case 160 (34 header + 95 size + a few trailer/space
+  // chars over 33 due to the possessive apostrophe's byte width).
+  check('the always-on size line stays short', longestNoGap <= 180, `longest ${longestNoGap} chars`);
+  check('the full hint stays bounded', longest <= 400, `longest ${longest} chars`);
 }
 
 /* ------------------------------------------------------- exposure DIRECTION
