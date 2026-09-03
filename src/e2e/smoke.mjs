@@ -947,8 +947,21 @@ try {
     // "Sign In / Sign Up" launcher button until the user's FIRST Tab press.
     // Checked BEFORE the manual `.focus()` call below, which would
     // otherwise overwrite the natural target and hide a regression here.
+    // POLLED, not read once immediately (CodeRabbit review, same PR):
+    // `useModalTabTrap`'s mount-focus branch runs from a PASSIVE effect
+    // AFTER mount + paint, so reading `document.activeElement` in the same
+    // tick the dialog appears can false-fail on a slow render. Only a
+    // timeout counts as a real failure.
+    let authFocusedInsideOnOpen = false;
+    try {
+      await trapPage.waitForFunction(() => {
+        const dlg = document.querySelector('[role="dialog"][aria-label="Account"]');
+        return !!dlg && dlg.contains(document.activeElement);
+      }, null, { timeout: 5000 });
+      authFocusedInsideOnOpen = true;
+    } catch { /* timed out — focus never landed inside; recorded as failure below */ }
     record('opening the Auth dialog moves focus into it without a Tab press',
-      await isInsideDialog('Account'));
+      authFocusedInsideOnOpen);
     await trapPage.locator('[role="dialog"][aria-label="Account"] input').first().focus();
     record('Tab is trapped inside the Auth dialog (15 presses, focus never left it)',
       await sweepTab('Account'));
