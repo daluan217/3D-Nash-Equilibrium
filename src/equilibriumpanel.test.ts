@@ -125,7 +125,8 @@ function preset(key: string): GamePayoffs {
   const ordinary = indifferenceLine('Row 1', 'Row 2', 2 / 3, 2 / 3);
   ok(ordinary.pRel === '=' && ordinary.pStr === '0.667', `an ordinary value must still read "= 0.667", got ${JSON.stringify(ordinary)}`);
 
-  // THE MIDPOINT-SHARING TRAP, REVISED (RED-MATH-5 finding 001, round 5).
+  // THE MIDPOINT-SHARING TRAP, REVISED TWICE (RED-MATH-5 finding 001, round
+  // 5; CodeRabbit review on PR #91, same round).
   //
   // This fixture used to require p and q straddling zero to KEEP their own
   // independently-rounded directional strings ("< 0.001" / "> -0.001"),
@@ -140,18 +141,27 @@ function preset(key: string): GamePayoffs {
   // vs "0.001"). See `_gen/redmath5_minimal_repro.ts` for the real-game
   // repro (A=[[-3,2],[6,-4]], B=[[5,1],[-7,1]]) and section 9 below.
   //
-  // The fix shares ONE rendering unconditionally whenever `indifferent` is
-  // true — sub-resolution or not — so this exact contrived case (a REAL,
-  // non-noise ~4e-4 gap) now ALSO collapses to a single "= 0", the same
-  // outcome RED's own finding proposed ("a single honest '0' ... instead of
-  // two conflicting ones"). The two sides can never again print different
-  // digits under `≈`: that is the invariant this file now enforces (section
-  // 9), not "sub-resolution keeps its own wording".
+  // RED-MATH-5's fix shared ONE rendering unconditionally whenever
+  // `indifferent` is true, and used `threeRel(shared)` for it — which made
+  // this exact fixture (a REAL, non-noise ~4e-4 gap whose average happens to
+  // be the literal double 0) ALSO collapse to "= 0". CodeRabbit's review on
+  // PR #91 caught that this is ITSELF a false statement: p=0.0002 and
+  // q=-0.0002 are not zero, so asserting "= 0" — an EXACT equality — on
+  // either side is wrong, however display-honest the single shared string
+  // is. The fix keeps single-string sharing (still required below — the two
+  // sides can never again print different digits under `≈`) but no longer
+  // trusts a literal-zero `shared` unless p AND q are themselves within
+  // float-noise distance of zero (~1e-9; real noise here measures ~1e-16).
+  // Failing that, the honest single string is "≈ 0" — `\approx` on each
+  // side, not `=` — since no directional `<`/`>` claim would be true for
+  // BOTH a positive and a negative input.
   const straddle = indifferenceLine('Row 1', 'Row 2', 0.0002, -0.0002);
   ok(straddle.pStr === straddle.qStr && straddle.pRel === straddle.qRel,
     `THE FIX: both sides of an indifferent line must always print identically, got tex="${straddle.tex}"`);
-  ok(straddle.pRel === '=' && straddle.pStr === '0',
-    `the shared midpoint here is exactly 0, so both sides read "= 0", got ${JSON.stringify(straddle)}`);
+  ok(straddle.pRel === '\\approx' && straddle.pStr === '0',
+    `neither payoff is 0, so the shared "0" here must be approximate, not an equality, got ${JSON.stringify(straddle)}`);
+  ok(!straddle.tex.includes('= 0'),
+    `THE CODERABBIT DEFECT: a straddling nonzero pair must never render "= 0" on either side, got tex="${straddle.tex}"`);
   // The ulp-noise case that midpoint-sharing exists FOR must still collapse.
   const ulp = indifferenceLine('Row 1', 'Row 2', 2 * (1 / 3), 1 - (1 / 3));
   ok(ulp.pRel === '=' && ulp.pStr === '0.667' && ulp.qRel === '=' && ulp.qStr === '0.667',

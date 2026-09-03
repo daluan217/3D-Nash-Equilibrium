@@ -228,10 +228,41 @@ export function indifferenceLine(
   // back to the plain midpoint, unchanged from before this fix.
   const shared = anchor !== undefined ? anchor : (p + q) / 2;
   const strict = indifferent ? null : fmtPayoffPair(p, q);
+  // CodeRabbit, PR #91 review on `d173b58`: `shared` can be the LITERAL
+  // double `0` without the quantity it stands for being genuinely zero.
+  // p=0.0002, q=-0.0002 is the fixture — a REAL ~4e-4 gap, not noise — whose
+  // average is exactly 0.0 in double arithmetic; `threeRel(0)` then takes
+  // `payoffTexRhs`'s `v === 0` branch and both sides print "= 0", asserting
+  // an equality that is false on both sides (neither payoff is 0).
+  //
+  // The earlier version of this fix (RED-MATH-5/001) could not tell that
+  // case apart from the one it exists for — a genuine mixed-NE indifference
+  // point, whose TRUE value the panel already knows is exactly 0 (that is
+  // what "indifferent" means), landed at literal 0.0 by an anchor/average of
+  // ~1e-16 float dust (`_gen/redmath5_minimal_repro.ts`: p=-2.22e-16,
+  // q=4.44e-16, anchor=EA(x,y,g)=0 exactly). That case MUST keep "= 0" — it
+  // is the one place an unqualified equality is the honest statement.
+  //
+  // The two are distinguishable: float noise from a few arithmetic ops on
+  // payoffs bounded by ±100 is many orders of magnitude below 1e-9 (measured
+  // here at ~1e-16); nothing that started as a real, distinct input — the
+  // smallest the matrix accepts is 0.001 — collapses to under 1e-9 by
+  // accident. So `shared === 0` earns the `= 0` reading only when p and q
+  // are BOTH already within that float-noise band; otherwise the zero is an
+  // artifact of the average/anchor cancelling two values that are not the
+  // same number, and the honest single-string form is "approximately 0" —
+  // `≈` on EACH side, not `=` on either — never a signed `< 0.001` /
+  // `> -0.001` either, since the two sides can carry opposite signs (as here)
+  // and no single directional claim would be true for both.
+  const FLOAT_NOISE_EPS = 1e-9;
+  const sharedIsArtifactZero =
+    shared === 0 && !(Math.abs(p) < FLOAT_NOISE_EPS && Math.abs(q) < FLOAT_NOISE_EPS);
   // ONE format call under `≈`, reused for both sides — the two rendered
   // objects are the SAME object, not merely equal, so `pStr === qStr` and
   // `pRel === qRel` cannot drift apart by future edits to either branch.
-  const sharedFmt = indifferent ? threeRel(shared) : null;
+  const sharedFmt = indifferent
+    ? (sharedIsArtifactZero ? { str: '0', rel: '\\approx' } : threeRel(shared))
+    : null;
   const pf = indifferent ? sharedFmt! : { str: strict!.p, rel: '=' };
   const qf = indifferent ? sharedFmt! : { str: strict!.q, rel: '=' };
   const relation = indifferent ? '\\approx' : (p > q ? '>' : '<');
