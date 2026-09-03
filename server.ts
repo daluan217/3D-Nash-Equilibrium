@@ -584,9 +584,30 @@ function acquireDesktopLock(): boolean {
   if (!userDataPath) return true; // hosted service: GCS's own analogous risk is a separate, product-scope question
   try {
     if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
-  } catch (err) {
+  } catch (err: any) {
+    // RED-DESKTOP-5b (following up on 001's read-side fix): this branch can
+    // ONLY be reached when `fs.existsSync(userDataPath)` just returned false
+    // — i.e. there is no accessible pre-existing directory here, for THIS
+    // process or any other. Unlike the write-side lock-file branch below
+    // (which now checks explicitly), there is no scenario where failing
+    // open here reaches a user's real, existing data: `loadDBFromFile`
+    // needs the exact same directory access this call just failed to get,
+    // so proceeding does not "let them in" — it walks straight into
+    // `loadDBFromFile`'s own catch (server.ts ~470-478), which silently
+    // returns a FRESH EMPTY database with only a console.error nobody in
+    // the packaged app ever sees. That is strictly worse than refusing
+    // loudly here with the real error: the user would see an empty library
+    // and could easily mistake it for "no games saved yet" rather than "the
+    // app can't reach your data directory". Fail CLOSED.
     console.error("Error creating user-data directory for the desktop lock:", err);
-    return true; // fail OPEN — do not block startup over a directory-creation error here
+    return reportDesktopLockFailure(
+      `Refusing to start: could not create or access the desktop data directory at ${userDataPath} `
+      + `(${err && err.code ? err.code : "unknown error"}). This usually means a permissions problem, `
+      + `a read-only filesystem, or a missing/inaccessible parent directory. Starting anyway would risk `
+      + `showing an empty games library instead of a clear error, since your saved games (if any) live `
+      + `in this same directory. Fix its permissions/availability and try again.`,
+      userDataPath,
+    );
   }
   const lockFile = path.join(userDataPath, ".server.lock");
 
@@ -611,8 +632,75 @@ function acquireDesktopLock(): boolean {
       break; // acquired
     } catch (err: any) {
       if (err.code !== "EEXIST") {
-        console.error("Error writing desktop lock file:", err);
-        return true; // fail OPEN on an unexpected filesystem error
+        // RED-DESKTOP-5b: `err.code !== "EEXIST"` is NOT reliable proof that
+        // no lock file exists. POSIX does not guarantee the O_EXCL
+        // existence check runs before an access check: if this process
+        // lacks *search/lookup* permission on the directory itself (e.g. its
+        // mode has no execute bit — verified empirically: a directory
+        // chmod'd 000 reports EACCES for a lock-file path REGARDLESS of
+        // whether that lock file exists or not), the kernel can report
+        // EACCES/EPERM without ever reaching the "does it exist" test, even
+        // though a live lock is sitting right there. Failing open on that
+        // would recreate exactly the 001 hole (an ambiguous "can't tell"
+        // case discarding the protection) via a different errno.
+        //
+        // `fs.existsSync` cannot resolve this — it swallows every error
+        // internally and returns `false` for BOTH "genuinely absent" and
+        // "cannot even check", which are exactly the two cases that must be
+        // told apart here (verified empirically: a directory with no search
+        // permission makes `existsSync` say `false` whether or not the file
+        // is really there). `fs.statSync`'s own error CODE distinguishes
+        // them: `ENOENT` is the one code that means the lookup itself
+        // succeeded and the name genuinely is not there (verified: a
+        // read+execute-but-not-writable directory — the shape
+        // desktop-unwritable-save.test.mjs exercises — gives ENOENT for a
+        // truly absent lock file); any other code means the lookup itself
+        // could not be completed, so absence was never established.
+        let statErr: any = null;
+        try {
+          fs.statSync(lockFile);
+          // Succeeded: the file DOES exist. Fall through (no return) to the
+          // EEXIST handling below, exactly as a real EEXIST would have.
+        } catch (e: any) {
+          statErr = e;
+        }
+        if (statErr) {
+          if (statErr.code === "ENOENT") {
+            // Positively confirmed absent. This directory is otherwise
+            // reachable (we already passed the mkdir/existsSync stage above,
+            // which now fails closed on its own if the directory itself is
+            // not usable), so any EXISTING games remain readable by
+            // `loadDBFromFile`; this failure is specifically about creating
+            // a NEW file (a read-only mount, a full disk, a permission that
+            // blocks *creates* specifically, ...) and carries no positive
+            // evidence of a live second writer. Per round4/#88's
+            // `saveDBOrFail`, an actual write attempt under the same
+            // condition will fail LOUDLY and honestly at save time, not
+            // silently diverge, so this cannot reproduce 001's split-brain
+            // scenario. Failing CLOSED here instead would deny the user read
+            // access to their existing data for a write-only problem with no
+            // real data-loss risk. Fail OPEN — but only for this,
+            // positively-confirmed-absent case.
+            console.error("Error writing desktop lock file:", err);
+            return true;
+          }
+          // Cannot determine either way (EACCES/EPERM/... on the stat
+          // itself — the directory blocks even looking). Unlike the ENOENT
+          // case above, this is genuinely ambiguous: a live lock could be
+          // sitting right there, invisible to us. Same principle as 001's
+          // read-side fix — "cannot resolve" must mean refuse, not proceed
+          // unprotected.
+          console.error("Error writing desktop lock file:", err, "— and could not determine whether one already exists:", statErr);
+          return reportDesktopLockFailure(
+            `Refusing to start: could not create the desktop data-directory lock at ${lockFile} `
+            + `(${err && err.code ? err.code : "unknown error"}), and could not determine whether one `
+            + `already exists either (${statErr && statErr.code ? statErr.code : "unknown error"}). This `
+            + `usually means a permissions problem on ${userDataPath} itself. Starting anyway could `
+            + `silently overwrite another process's saved games if one is currently running. Fix the `
+            + `directory's permissions and try again.`,
+            lockFile,
+          );
+        }
       }
     }
     // EEXIST: someone else's lock is already there — a live process, or one

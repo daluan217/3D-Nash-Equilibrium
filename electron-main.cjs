@@ -157,10 +157,18 @@ if (!gotTheLock) {
   // delete-and-relaunch would just as often start a REAL second writer
   // against the same db.json as it would recover from a false positive —
   // exactly the data-loss scenario this whole lock exists to prevent. The
-  // safer action a click can take is "Show Lock File", which reveals its
-  // location so a user who has actually checked (e.g. Activity Monitor —
-  // no OTHER copy of Nash Equilibrium Simulator running) can delete it
+  // safer action a click can take is "Show Location", which reveals it in
+  // Finder so a user who has actually checked (e.g. Activity Monitor — no
+  // OTHER copy of Nash Equilibrium Simulator running) can delete/repair it
   // themselves; the app never performs the destructive step on its own.
+  //
+  // `lockFile` is named for its original, and still most common, case (the
+  // `.server.lock` file itself) but is NOT always a file: RED-DESKTOP-5b
+  // added a second, directory-creation failure site that also routes
+  // through this same hook and passes the DIRECTORY path instead (there is
+  // no lock file yet when the data directory itself cannot even be
+  // created/accessed). `shell.showItemInFolder` and the generic "Show
+  // Location" wording below both work correctly for either.
   global.onDesktopLockFailure = ({ message, lockFile }) => {
     lockFailurePending = true;
     // Cancel the slow-boot fallback outright — a cancelled timer cannot fire
@@ -175,13 +183,13 @@ if (!gotTheLock) {
     }
     dialog.showMessageBox({
       type: 'error',
-      buttons: ['Quit', 'Show Lock File'],
+      buttons: ['Quit', 'Show Location'],
       defaultId: 0,
       cancelId: 0,
       title: 'Nash Equilibrium Simulator — Startup Blocked',
       message: 'Nash Equilibrium Simulator could not start.',
-      detail: `${message}\n\nIf you're sure no other copy is running, "Show Lock File" reveals it `
-        + 'so you can delete it yourself, then relaunch.',
+      detail: `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
+        + 'so you can inspect/delete it yourself, then relaunch.',
     }).then((result) => {
       if (result.response === 1) {
         shell.showItemInFolder(lockFile);

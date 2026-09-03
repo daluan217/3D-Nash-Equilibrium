@@ -231,6 +231,22 @@ jobs:
       - name: Run the desktop lock dialog-hook suite (in-process require)
         run: node src/integration/desktop-lock-dialog-hook.test.mjs
 
+      # RED-DESKTOP-5/001 (an EXISTING-but-unreadable lock file, chmod'd
+      # after a real live holder started, must refuse loudly rather than
+      # fail open on the ambiguity — director's own reproduction) plus
+      # RED-DESKTOP-5b's follow-up: the two WRITE-side "unexpected
+      # filesystem error" branches in acquireDesktopLock are not symmetric —
+      # a blocked directory-creation now fails closed (nothing real could
+      # have been at risk there), and a blocked lock-file-creation fails
+      # open ONLY when fs.statSync positively proves no lock file exists
+      # (ENOENT), refusing otherwise, since err.code alone cannot be trusted
+      # to prove absence (chmod 000 on the directory yields the same errno
+      # whether or not a live lock is sitting there).
+      - name: Boot the production server and run the desktop lock write-side suite
+        run: node src/integration/desktop-lock-write-side.test.mjs
+        env:
+          LOCK_WS_PORT: '3150'
+
       # An unwritable ELECTRON_USER_DATA_PATH (read-only dir, full disk, ...)
       # used to accept a game save/update/delete, tell the user it worked,
       # and lose it permanently on the next restart with no signal anywhere.
