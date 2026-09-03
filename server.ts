@@ -584,9 +584,30 @@ function acquireDesktopLock(): boolean {
   if (!userDataPath) return true; // hosted service: GCS's own analogous risk is a separate, product-scope question
   try {
     if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
-  } catch (err) {
+  } catch (err: any) {
+    // RED-DESKTOP-5b (following up on 001's read-side fix): this branch can
+    // ONLY be reached when `fs.existsSync(userDataPath)` just returned false
+    // — i.e. there is no accessible pre-existing directory here, for THIS
+    // process or any other. Unlike the write-side lock-file branch below
+    // (which now checks explicitly), there is no scenario where failing
+    // open here reaches a user's real, existing data: `loadDBFromFile`
+    // needs the exact same directory access this call just failed to get,
+    // so proceeding does not "let them in" — it walks straight into
+    // `loadDBFromFile`'s own catch (server.ts ~470-478), which silently
+    // returns a FRESH EMPTY database with only a console.error nobody in
+    // the packaged app ever sees. That is strictly worse than refusing
+    // loudly here with the real error: the user would see an empty library
+    // and could easily mistake it for "no games saved yet" rather than "the
+    // app can't reach your data directory". Fail CLOSED.
     console.error("Error creating user-data directory for the desktop lock:", err);
-    return true; // fail OPEN — do not block startup over a directory-creation error here
+    return reportDesktopLockFailure(
+      `Refusing to start: could not create or access the desktop data directory at ${userDataPath} `
+      + `(${err && err.code ? err.code : "unknown error"}). This usually means a permissions problem, `
+      + `a read-only filesystem, or a missing/inaccessible parent directory. Starting anyway would risk `
+      + `showing an empty games library instead of a clear error, since your saved games (if any) live `
+      + `in this same directory. Fix its permissions/availability and try again.`,
+      userDataPath,
+    );
   }
   const lockFile = path.join(userDataPath, ".server.lock");
 
@@ -611,8 +632,92 @@ function acquireDesktopLock(): boolean {
       break; // acquired
     } catch (err: any) {
       if (err.code !== "EEXIST") {
-        console.error("Error writing desktop lock file:", err);
-        return true; // fail OPEN on an unexpected filesystem error
+        // RED-DESKTOP-5b: `err.code !== "EEXIST"` is NOT reliable proof that
+        // no lock file exists. POSIX does not guarantee the O_EXCL
+        // existence check runs before an access check: if this process
+        // lacks *search/lookup* permission on the directory itself (e.g. its
+        // mode has no execute bit — verified empirically: a directory
+        // chmod'd 000 reports EACCES for a lock-file path REGARDLESS of
+        // whether that lock file exists or not), the kernel can report
+        // EACCES/EPERM without ever reaching the "does it exist" test, even
+        // though a live lock is sitting right there. Failing open on that
+        // would recreate exactly the 001 hole (an ambiguous "can't tell"
+        // case discarding the protection) via a different errno.
+        //
+        // `fs.existsSync` cannot resolve this — it swallows every error
+        // internally and returns `false` for BOTH "genuinely absent" and
+        // "cannot even check", which are exactly the two cases that must be
+        // told apart here (verified empirically: a directory with no search
+        // permission makes `existsSync` say `false` whether or not the file
+        // is really there). `fs.statSync`'s own error CODE distinguishes
+        // them: `ENOENT` is the one code that means the lookup itself
+        // succeeded and the name genuinely is not there (verified: a
+        // read+execute-but-not-writable directory — the shape
+        // desktop-unwritable-save.test.mjs exercises — gives ENOENT for a
+        // truly absent lock file); any other code means the lookup itself
+        // could not be completed, so absence was never established.
+        let statErr: any = null;
+        try {
+          fs.statSync(lockFile);
+          // Succeeded: the file DOES exist. Fall through (no return) to the
+          // EEXIST handling below, exactly as a real EEXIST would have.
+        } catch (e: any) {
+          statErr = e;
+        }
+        if (statErr) {
+          // CodeRabbit (this round): ENOENT on the LOCK FILE alone is not
+          // enough — the mkdir/existsSync check above only proved the
+          // directory was there AT THAT POINT IN TIME. If `userDataPath`
+          // itself was removed in the window between that check and here
+          // (another process/tool deleting it, or a race), `openSync`/
+          // `statSync` on a path INSIDE a now-missing directory ALSO report
+          // ENOENT — indistinguishable from "directory fine, lock file
+          // legitimately never existed" by this code alone. Failing open on
+          // that would walk into exactly the case the mkdir branch above was
+          // fixed to avoid: `loadDBFromFile` finds DB_FILE missing too and
+          // silently returns a fresh EMPTY database. Re-check the directory
+          // itself, fresh, before trusting the ENOENT.
+          const directoryStillThere = fs.existsSync(userDataPath);
+          if (statErr.code === "ENOENT" && directoryStillThere) {
+            // Positively confirmed: the directory is there RIGHT NOW, and
+            // the lock file specifically is not. Any EXISTING games remain
+            // readable by `loadDBFromFile`; this failure is specifically
+            // about creating a NEW file (a read-only mount, a full disk, a
+            // permission that blocks *creates* specifically, ...) and
+            // carries no positive evidence of a live second writer. Per
+            // round4/#88's `saveDBOrFail`, an actual write attempt under the
+            // same condition will fail LOUDLY and honestly at save time, not
+            // silently diverge, so this cannot reproduce 001's split-brain
+            // scenario. Failing CLOSED here instead would deny the user read
+            // access to their existing data for a write-only problem with no
+            // real data-loss risk. Fail OPEN — but only for this,
+            // positively-confirmed-absent-with-directory-intact case.
+            console.error("Error writing desktop lock file:", err);
+            return true;
+          }
+          // Cannot determine either way. Two shapes land here: (a)
+          // EACCES/EPERM/... on the stat itself (the directory blocks even
+          // looking), or (b) ENOENT on the lock file WHILE `userDataPath`
+          // itself is ALSO gone right now (`directoryStillThere` false) —
+          // the directory that passed the mkdir/existsSync check above did
+          // not survive to this point, so the earlier check's "the
+          // directory is fine" no longer holds. Both are genuinely
+          // ambiguous: a live lock (or real, now-unreachable data) could be
+          // sitting right there, invisible to us. Same principle as 001's
+          // read-side fix — "cannot resolve" must mean refuse, not proceed
+          // unprotected.
+          console.error("Error writing desktop lock file:", err, "— and could not determine whether one already exists:", statErr);
+          return reportDesktopLockFailure(
+            `Refusing to start: could not create the desktop data-directory lock at ${lockFile} `
+            + `(${err && err.code ? err.code : "unknown error"}), and could not determine whether one `
+            + `already exists either (${statErr && statErr.code ? statErr.code : "unknown error"}). This `
+            + `usually means a permissions problem on ${userDataPath}, or that it stopped being `
+            + `accessible partway through startup. Starting anyway could silently overwrite another `
+            + `process's saved games if one is currently running, or show an empty library instead of `
+            + `a clear error. Fix its permissions/availability and try again.`,
+            lockFile,
+          );
+        }
       }
     }
     // EEXIST: someone else's lock is already there — a live process, or one
@@ -644,8 +749,31 @@ function acquireDesktopLock(): boolean {
         // now — possibly a brand-new LIVE lock).
         continue;
       }
+      // RED-DESKTOP-5/001: unlike the write-side fail-open above (a
+      // directory-creation error carries no positive evidence either way),
+      // reaching HERE means `fs.openSync(lockFile, "wx", ...)` already threw
+      // EEXIST — the lock file's mere EXISTENCE *is* positive evidence some
+      // process wrote it, live or crashed. An unreadable-but-existing lock
+      // (permissions changed by a sync/backup tool, an ownership change,
+      // ...) is the single most ambiguous case this function exists to
+      // resolve, and failing OPEN on it throws away the whole protection:
+      // a second process boots normally, becomes an independent writer
+      // against the same ELECTRON_USER_DATA_PATH, and whichever one saves
+      // last silently erases the other's games — reproduced end-to-end
+      // (chmod 000 on a live instance's lock file; the second process
+      // booted anyway; db.json ended up holding only the second process's
+      // game). "Cannot resolve the ambiguity" must mean refuse, the same as
+      // a confirmed-alive pid, not proceed unprotected.
       console.error("Error reading desktop lock file:", err);
-      return true; // fail OPEN on an unexpected filesystem error, matching the write-side handling above
+      return reportDesktopLockFailure(
+        `Refusing to start: the desktop data-directory lock at ${lockFile} exists but could not `
+        + `be read (${err && err.code ? err.code : 'unknown error'}). This usually means its file `
+        + `permissions changed (a backup/sync tool, or an ownership change) while another Nash `
+        + `Equilibrium Simulator process may still be using this data directory (${userDataPath}). `
+        + `Starting anyway could silently overwrite its saved games. Fix the file's permissions, or `
+        + `— if you're sure no other copy is open — delete the lock file and try again.`,
+        lockFile,
+      );
     }
     const heldBy = parseInt(rawContent.trim(), 10);
     let alive = false;
@@ -1212,6 +1340,52 @@ function adoptLocalGames(userId: string): number {
 }
 
 /**
+ * Clamp a string to at most `maxLength` UTF-16 code units WITHOUT ever
+ * cutting inside a surrogate pair or a multi-codepoint grapheme cluster
+ * (emoji skin-tone modifiers, ZWJ family/profession sequences, flag
+ * sequences -- all built from 2+ codepoints, several also astral so each
+ * codepoint is itself a 2-unit surrogate pair).
+ *
+ * RED-CLOUD-5/001: a bare `.slice(0, maxLength)` operates on raw UTF-16
+ * units. When an astral character (U+10000+, almost all emoji) straddles
+ * the cut, the slice keeps only its high surrogate, producing an
+ * ILL-FORMED string that then renders verbatim (a visible mojibake glyph,
+ * repeated) in report prose -- this was live-reproduced against
+ * origin/main HEAD `eed34f8`: `"A" + "\u{1F389}".repeat(20)` clamped to 40
+ * left an unpaired high surrogate (U+D83C) at string index 105 of the
+ * rendered prose. `maxLength` stays in UTF-16 units (unchanged meaning for
+ * the existing LABEL_MAX/60/80/1200 constants and every plain-ASCII/BMP
+ * caller) -- only the CUT POINT moves to the nearest grapheme boundary at
+ * or below it, so a caller never gets back MORE than `maxLength` units.
+ *
+ * `Intl.Segmenter` (available in the Node 22 runtime this app targets, and
+ * every evergreen browser) gives true grapheme-cluster boundaries; a
+ * codepoint-safe `for...of` walk (same technique textSafety.ts's own
+ * `stripUnsafeText` already uses, see its comment) is the fallback if
+ * `Intl.Segmenter` is ever unavailable -- it still closes the exact
+ * surrogate-pair defect above, just without the family/flag guarantee.
+ */
+function clampGraphemeSafe(s: string, maxLength: number): string {
+  if (s.length <= maxLength) return s;
+  const SegmenterCtor: typeof Intl.Segmenter | undefined = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (typeof SegmenterCtor === "function") {
+    const segmenter = new SegmenterCtor(undefined, { granularity: "grapheme" });
+    let out = "";
+    for (const { segment } of segmenter.segment(s)) {
+      if (out.length + segment.length > maxLength) break;
+      out += segment;
+    }
+    return out;
+  }
+  let out = "";
+  for (const ch of s) {
+    if (out.length + ch.length > maxLength) break;
+    out += ch;
+  }
+  return out;
+}
+
+/**
  * The one place every user-supplied string passes through before it is
  * persisted via POST/PATCH /api/games, so it has to carry the same
  * bidi-override/control-character stripping the UI form applies
@@ -1219,13 +1393,14 @@ function adoptLocalGames(userId: string): number {
  * a modified client) bypasses the form entirely and a RIGHT-TO-LEFT OVERRIDE
  * or raw control character reaches storage intact.
  *
- * Order matters: strip first, then trim, then slice -- stripping after trim
+ * Order matters: strip first, then trim, then clamp -- stripping after trim
  * would let a bidi override sitting at the edge of the field decide where
  * the "real" edge is before it gets removed (same reasoning as
- * textSafety.ts's own cleanText).
+ * textSafety.ts's own cleanText). The clamp itself is grapheme-safe
+ * (RED-CLOUD-5/001) rather than a bare `.slice`.
  */
 function cleanText(value: unknown, maxLength: number): string {
-  return typeof value === "string" ? stripUnsafeText(value).trim().slice(0, maxLength) : "";
+  return typeof value === "string" ? clampGraphemeSafe(stripUnsafeText(value).trim(), maxLength) : "";
 }
 
 /** How long an option label may be. Short on purpose: these render as column
@@ -1253,10 +1428,23 @@ const LABEL_MAX = 40;
  * just reproduce the same bug one step later. `at > minKeep` guards against
  * clamping to almost nothing when the first word itself runs long (no space
  * within the first `minKeep` characters).
+ *
+ * RED-CLOUD-5/001: this function's OWN `cut = s.slice(0, maxLength)` was a
+ * second, independent place a bare UTF-16 slice could split a surrogate
+ * pair — reachable even when the caller's wider pre-clamp (`cleanText`,
+ * fixed separately) never triggers, because `s` can already be <= that
+ * wider width and still > `maxLength` here (the live repro: a 41-unit
+ * label passed the 60-unit `noTags` clamp untouched, then got split by
+ * THIS function's own slice to 40). `cut` is now grapheme-safe via
+ * `clampGraphemeSafe`; the later `cut.slice(0, at)` stays a plain index
+ * slice, but `at` is always the index of a literal ASCII space character
+ * inside the already grapheme-safe `cut` — a space is a single code unit
+ * that is never part of a surrogate pair or a wider grapheme cluster, so
+ * slicing up to (excluding) it cannot reopen the same defect.
  */
 function cutAtWordBoundary(s: string, maxLength: number, minKeep = 12): string {
   if (s.length <= maxLength) return s;
-  const cut = s.slice(0, maxLength);
+  const cut = clampGraphemeSafe(s, maxLength);
   const at = cut.lastIndexOf(' ');
   return (at > minKeep ? cut.slice(0, at) : cut).trim();
 }
