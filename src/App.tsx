@@ -2926,7 +2926,20 @@ export default function App() {
   const [tourSpinAllowed, setTourSpinAllowed] = useState(true);
 
   /**
-   * Runs on EVERY load, including a refresh — but not for a signed-in visitor.
+   * RED-APP-8/001: distinguishes "never signed in this session" from
+   * "was signed in and just got 401'd" (e.g. an expired token cleared by
+   * updateAuthToken(null) on a failed Save/Edit/Delete). Without this, the
+   * effect below — keyed on every `authToken` transition, not just mount —
+   * cannot tell the two apart and reopens the tour mid-session for a visitor
+   * who was never anonymous to begin with.
+   */
+  const everAuthedRef = useRef(!!authToken);
+
+  /**
+   * Runs on EVERY load, including a refresh — but not for a signed-in visitor,
+   * and not for a visitor whose token merely died mid-session (that visitor
+   * already saw the app once; auto-opening the tour on top of their own game
+   * would be uninvited, and the tour's first step replaces the active game).
    *
    * Gated on `authToken` rather than on `user`, because the token is read from
    * localStorage synchronously while `user` only arrives after /api/auth/me
@@ -2934,7 +2947,11 @@ export default function App() {
    * few hundred milliseconds on every page load.
    */
   useEffect(() => {
-    if (authToken) return;
+    if (authToken) {
+      everAuthedRef.current = true;
+      return;
+    }
+    if (everAuthedRef.current) return;
     const t = setTimeout(() => setTourOpen(true), 700);
     return () => clearTimeout(t);
   }, [authToken]);

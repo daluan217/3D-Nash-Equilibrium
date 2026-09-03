@@ -1752,6 +1752,77 @@ try {
     await stalePage.close();
   }
 
+  // ══ 33. RED-APP-8/001 — a write-action 401 that clears the auth token
+  //      (#101's own fix: updateAuthToken(null) so the app's state agrees
+  //      with the server's) must never reopen the guided tour mid-session or
+  //      touch the active game. The tour-open effect (App.tsx ~2936) used to
+  //      be keyed only on `authToken` truthiness with no memory of "was this
+  //      visitor ever signed in this session" — so the SAME transition #101
+  //      introduced re-armed it for a visitor who had already been signed
+  //      in, and the tour's first step swaps the board for the Prisoner's
+  //      Dilemma preset, discarding whatever the user was looking at. Models
+  //      the 401 with a route interception (byte-identical downstream code
+  //      path to a real TTL expiry — `res.status === 401` is all the client
+  //      reads) rather than waiting out AUTH_TOKEN_TTL_MS.
+  {
+    const tourPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(tourPage, 'e2e8tourreopen');
+    record('control: a signed-in load does not auto-open the tour',
+      !(await tourPage.locator('[role="dialog"][aria-label="Guided tour"]').isVisible({ timeout: 1500 }).catch(() => false)));
+
+    const tourMatrix = tourPage.locator('input[inputmode="decimal"][class*="text-center"]');
+    const myValues = ['9', '8', '7', '6', '5', '4', '3', '2']; // distinct from every preset, esp. PD's [3,3,0,5,5,0,1,1]
+    for (let i = 0; i < 8; i++) { await tourMatrix.nth(i).fill(myValues[i]); await tourMatrix.nth(i).blur(); }
+    await tourPage.waitForTimeout(200);
+    const readMatrix = async () => {
+      const out = [];
+      for (let i = 0; i < 8; i++) out.push(await tourMatrix.nth(i).inputValue());
+      return out;
+    };
+
+    const gameName = `TourReopenGame${Date.now()}`;
+    await tourPage.getByRole('button', { name: /save preset/i }).click();
+    await tourPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await tourPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+    await tourPage.getByRole('button', { name: /^save game profile$/i }).click();
+    await tourPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
+      null, { timeout: 5000 }).catch(() => {});
+    await tourPage.waitForTimeout(300);
+    record('my saved game is showing my own matrix values, not a preset\'s',
+      JSON.stringify(await readMatrix()) === JSON.stringify(myValues), JSON.stringify(await readMatrix()));
+
+    // Force the NEXT PATCH to /api/games/:id to 401, regardless of the real
+    // (valid) token the client sends — models a dead token without needing
+    // to wait out a real TTL or know the server's per-process AUTH_SECRET.
+    await tourPage.route('**/api/games/*', async (route) => {
+      if (route.request().method() === 'PATCH') {
+        await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) });
+      } else {
+        await route.continue();
+      }
+    });
+    await tourPage.getByRole('button', { name: `Edit ${gameName}` }).click();
+    await tourPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    const patchDone401 = tourPage.waitForResponse(
+      (r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
+    await tourPage.getByRole('button', { name: /^save changes$/i }).click();
+    await patchDone401.catch(() => null);
+    await tourPage.waitForFunction(() =>
+      !!document.querySelector('[role="dialog"][aria-label="Edit saved game"] button')
+      && Array.from(document.querySelectorAll('[role="dialog"][aria-label="Edit saved game"] button')).some((b) => /sign in.*sign up/i.test(b.textContent || '')),
+      null, { timeout: 5000 }).catch(() => {});
+    record('the 401 shows the Sign-In card inside the Edit dialog (#101\'s own fix, still working)',
+      await tourPage.locator('[role="dialog"][aria-label="Edit saved game"]').getByRole('button', { name: /sign in.*sign up/i }).isVisible().catch(() => false));
+
+    // Past the tour effect's 700ms timer.
+    await tourPage.waitForTimeout(1500);
+    record('RED-APP-8/001 fix: the guided tour did NOT reopen after the 401',
+      !(await tourPage.locator('[role="dialog"][aria-label="Guided tour"]').isVisible({ timeout: 500 }).catch(() => false)));
+    record('RED-APP-8/001 fix: my saved game\'s matrix is unchanged (not swapped for a preset)',
+      JSON.stringify(await readMatrix()) === JSON.stringify(myValues), JSON.stringify(await readMatrix()));
+    await tourPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page
