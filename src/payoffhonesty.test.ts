@@ -653,6 +653,47 @@ function testValidateReportAcceptsCompliantContinuumClaims() {
     'the pre-fix fixture text must not accidentally already carry the fix (fixture sanity check)');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 8. CodeRabbit finding on this PR (nashValidator.ts:2572) — the per-claim
+//    continuum-membership check must use the SAME rounding tolerance the
+//    regret oracle already uses (COORD_TOL), not gameEngine.ts's internal
+//    1e-9 epsilon meant for exact corner points. A claim within a game's own
+//    regret tolerance (a legitimate 3dp-rounded echo of a continuum point)
+//    must never be rejected by a stricter downstream geometric check.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testClaimOnContinuumUsesCoordTolerance() {
+  const F2: GamePayoffs = { a11: -6, a12: 9, a21: 4, a22: -7, b11: -9, b12: -7, b21: 9, b22: 9 };
+  // True continuum boundary is y=0.615384615... — these are all rounded
+  // DOWN below it, but within the game's own regret tolerance (tolA=0.052
+  // for this game's payoff swing) so the regret oracle already accepts them.
+  for (const y of [0.615, 0.6153, 0.61538]) {
+    const result = validateReport({
+      claimedEquilibria: [{ x: 0, y, type: 'continuum' }, { x: 1, y: 0, type: 'pure' }],
+      prose: '',
+    } as any, F2);
+    ok(result.ok, `CodeRabbit fix: a rounded near-boundary claim (y=${y}) within the regret tolerance must validate ok — got ${JSON.stringify(result)}`);
+  }
+  // Negative control: a point genuinely far outside the continuum (not a
+  // rounding artifact) must still fail via the regret oracle, unaffected by
+  // the widened tolerance.
+  for (const y of [0.5, 0.4, 0.6]) {
+    const result = validateReport({
+      claimedEquilibria: [{ x: 0, y, type: 'continuum' }, { x: 1, y: 0, type: 'pure' }],
+      prose: '',
+    } as any, F2);
+    ok(!result.ok, `control: a genuinely-outside-continuum claim (y=${y}) must still fail — got ok=true`);
+    ok(result.mismatches.some((m) => m.kind === 'nonzero-regret'),
+      `control: the rejection must come from the regret oracle, not the continuum check — got ${JSON.stringify(result.mismatches.map((m) => m.kind))}`);
+  }
+  console.log('✓ claimOnContinuum uses COORD_TOL, matching the regret oracle\'s own rounding tolerance (3 near-boundary accepts, 3 genuinely-false rejects)');
+
+  // MUTATION / NEGATIVE FIXTURE — the pre-fix shape, verbatim.
+  const preFixCode = 'const onContinuum = continuumComps.some((r) => pointInRect(r, claim.x, claim.y));';
+  ok(!/claimOnContinuum/.test(preFixCode),
+    'the pre-fix fixture text must not accidentally already carry the fix (fixture sanity check)');
+}
+
 testPayloadAgreesWithPanel();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
@@ -660,4 +701,5 @@ testContinuumRenderingsAgree();
 testPlottingDrawsContinuumMarker();
 testStrayPointsNotOfferedAsContinuumRepresentatives();
 testValidateReportAcceptsCompliantContinuumClaims();
+testClaimOnContinuumUsesCoordTolerance();
 console.log(`✓ payoffhonesty.test.ts: ${checks} assertions passed`);

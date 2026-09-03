@@ -38,7 +38,7 @@ import type {
   SuggestedScenario,
   ValidationResult,
 } from '../types';
-import { computeAllNE, computeIndifference, regretA, regretB, equilibriumSet, hasEquilibriumContinuum, continuumComponents, pointInRect, normalizeProseMinus, EA, EB} from './gameEngine';
+import { computeAllNE, computeIndifference, regretA, regretB, equilibriumSet, hasEquilibriumContinuum, continuumComponents, pointInRect, normalizeProseMinus, EA, EB, type Rect } from './gameEngine';
 // Pure like gameEngine — types in, numbers out, no I/O. Importing it keeps this
 // module dependency-free in the sense the header means.
 import { describeGeometry } from './geometry';
@@ -65,6 +65,32 @@ function regretTol(swing: number): number {
 
 function coordsMatch(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
   return Math.abs(a.x - b.x) <= COORD_TOL && Math.abs(a.y - b.y) <= COORD_TOL;
+}
+
+/**
+ * CodeRabbit finding on this PR (nashValidator.ts:2572): `pointInRect`
+ * (gameEngine.ts) uses `NE_EPS = 1e-9` — correct for the EXACT, internally-
+ * computed corner points it was built for (`splitEquilibriaByContinuum`'s
+ * own onContinuum/stray split), but far too tight for a MODEL-SUPPLIED
+ * claim coordinate, which is only ever a 3dp-rounded echo of the true value
+ * (same reasoning `regretTol` above already documents for the regret
+ * check). Director-reproduced: on the RED-MATH-8/001 fixture's continuum
+ * (y in [0.615384..., 1]), a claim at y=0.6153 has regret 0.0022 — well
+ * inside that game's own `tolA` (0.052) and so already ACCEPTED by the
+ * regret oracle above as a genuine equilibrium — but `pointInRect`'s 1e-9
+ * tolerance judged it "not on the continuum" (0.6153 < 0.615384...) and
+ * fell through to corner-only matching, which then rejected the exact same
+ * claim the regret check had just accepted, as `not-in-solver` +
+ * `omitted`. Widened to COORD_TOL, matching `coordsMatch`'s own tolerance
+ * for a claimed coordinate anywhere else in this file — a rounding
+ * discrepancy this small is legitimate; a REAL falsehood is off by far
+ * more than COORD_TOL and is still caught by the regret check that runs
+ * first, unaffected by this widening.
+ */
+function claimOnContinuum(rects: Rect[], x: number, y: number): boolean {
+  return rects.some((r) =>
+    x >= r.x0 - COORD_TOL && x <= r.x1 + COORD_TOL
+    && y >= r.y0 - COORD_TOL && y <= r.y1 + COORD_TOL);
 }
 
 function inUnitSquare(c: ClaimedEquilibrium): boolean {
@@ -2569,7 +2595,7 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
     // claim. A non-degenerate game has `continuumComps.length === 0`, so
     // this always falls through to the corner-matching logic below,
     // unchanged from before.
-    const onContinuum = continuumComps.some((r) => pointInRect(r, claim.x, claim.y));
+    const onContinuum = claimOnContinuum(continuumComps, claim.x, claim.y);
     if (onContinuum) {
       if (claim.type !== 'continuum') {
         mismatches.push({
@@ -2903,11 +2929,17 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // report.ts's payload) — check the claimed probability against every
       // continuum component's range on this player's axis, not just the
       // all-or-nothing indifference flags.
+      // Same CodeRabbit-flagged class as `claimOnContinuum` above: `p` here
+      // is a FRACTION/PERCENTAGE parsed from prose ("three-fifths", "62%"),
+      // never an exact float — a 1e-9 tolerance would reject a legitimate
+      // near-boundary probability. Matched to the sibling `truthW` check's
+      // own 0.02 tolerance two lines below, for the same coarse-precision
+      // reason.
       const compsW = continuumComponents(g);
       if (compsW.some((r) => {
         const [lo, hi] = lab.player === 'A' ? [r.x0, r.x1] : [r.y0, r.y1];
         const pl = lab.option === 1 ? p : 1 - p;
-        return pl >= lo - 1e-9 && pl <= hi + 1e-9;
+        return pl >= lo - 0.02 && pl <= hi + 0.02;
       })) continue;
       const ok = truthW.some((t) => { const p1 = lab.player === 'A' ? t.x : t.y; const pl = lab.option === 1 ? p1 : 1 - p1; return Math.abs(pl - p) < 0.02; });
       if (!ok && truthW.length) issues.push(`prose puts ${lab.player}'s option ${lab.option} at probability ${p.toFixed(3)}, but no equilibrium does`);
