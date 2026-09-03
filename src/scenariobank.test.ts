@@ -431,17 +431,52 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
    * the artifact is frozen at build time, the predicate is not, and a row
    * that passed when it was merged must still pass today.
    */
-  let nounBad = 0; let nounRows = 0; let firstNounBad = '';
-  for (const e of allBankRows()) {
-    if (!e.s?.actorA && !e.s?.actorB) continue;
-    nounRows++;
-    if (!actorNounsOk(e.s)) {
-      nounBad++;
-      if (!firstNounBad) firstNounBad = `"${e.s.name}" actorA=${JSON.stringify(e.s.actorA)} actorB=${JSON.stringify(e.s.actorB)}`;
+  /**
+   * A REUSABLE function, not an inline loop, so the SAME skip logic that
+   * screens the shipped artifact can also be run against a small planted
+   * array below — the same "the probe set must be able to fail" reasoning
+   * as the rivalry-rule fixture two blocks up, applied to this loop's own
+   * skip condition specifically (CodeRabbit, phase 3 review: `== null`, not
+   * a bare falsy check — `''`/0/false must reach `actorNounsOk` and be
+   * REJECTED, not silently skipped as an honest "nothing declared" row).
+   */
+  function screenNounRows(rows: readonly BankEntry[]): { bad: number; scanned: number; firstBad: string } {
+    let bad = 0; let scanned = 0; let firstBad = '';
+    for (const e of rows) {
+      if (e.s?.actorA == null && e.s?.actorB == null) continue;
+      scanned++;
+      if (!actorNounsOk(e.s)) {
+        bad++;
+        if (!firstBad) firstBad = `"${e.s.name}" actorA=${JSON.stringify(e.s.actorA)} actorB=${JSON.stringify(e.s.actorB)}`;
+      }
     }
+    return { bad, scanned, firstBad };
   }
-  check('every shipped row carrying actorA/actorB still passes actorNounsOk', nounBad === 0,
-    `${nounBad} of ${nounRows} noun-bearing rows fail actorNounsOk — the artifact is stale, re-run _gen/bank_actor_nouns_merge.ts. First: ${firstNounBad}`);
+
+  const shipped = screenNounRows(allBankRows());
+  check('every shipped row carrying actorA/actorB still passes actorNounsOk', shipped.bad === 0,
+    `${shipped.bad} of ${shipped.scanned} noun-bearing rows fail actorNounsOk — the artifact is stale, re-run _gen/bank_actor_nouns_merge.ts. First: ${shipped.firstBad}`);
+
+  /**
+   * KNOWN-POSITIVE for the skip condition itself: a malformed `actorA: ''`
+   * is FALSY, so the pre-fix `!e.s?.actorA && !e.s?.actorB` skip would have
+   * `continue`d past it without ever calling `actorNounsOk` — a malformed
+   * row shipping silently uncaught. Run through the real `screenNounRows`
+   * (not a hand-derived assertion), so reverting the `== null` fix makes
+   * THIS check fail, not merely a description of what the fix does.
+   */
+  {
+    const planted: BankEntry[] = [{
+      d: 'test', b: 0,
+      s: { name: 'Malformed Actor Row', row1: 'Firm Bid', row2: 'Lean Bid', col1: 'Priority Bid', col2: 'Flexible Bid',
+        description: 'A regional freight broker chooses a Firm Bid or a Lean Bid, and a dockside contractor chooses a Priority Bid or a Flexible Bid.',
+        actorA: '' as never, actorB: null },
+    }];
+    const r = screenNounRows(planted);
+    check('a malformed actorA of "" is scanned (not skipped) and rejected by actorNounsOk',
+      r.scanned === 1 && r.bad === 1,
+      `scanned=${r.scanned} bad=${r.bad} — a falsy-but-present actorA must reach actorNounsOk, not be treated as "nothing declared"`);
+  }
 
   /**
    * KNOWN-POSITIVE, same reason as the rivalry-rule fixture two blocks up: a
@@ -502,6 +537,17 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     check('actorNounsOk: the SAME collective noun is accepted when the description is not symmetric ("each"/"both" absent) — the rule keys on the framing, not the noun alone',
       actorNounsOk({ ...compoundBase, actorA: ['ferry operators'], actorB: null,
         description: 'The ferry operators run a lightly used crossing. The operator chooses Keep Slot or Shift Slot, while the harbour scheduler chooses Early Slot or Late Slot.' }));
+    // CodeRabbit (phase 3 review): both regex checks above must run on the
+    // NORMALIZED text — a zero-width character breaks the contiguous letters
+    // a raw regex needs to match "and"/"each", the same bypass class the
+    // verbatim/length check was already fixed against a review round ago.
+    check('actorNounsOk: a zero-width character inside "and" still triggers the COMPOUND rejection',
+      !actorNounsOk({ ...compoundBase, actorB: null,
+        description: 'The north and south ferry operators share a lightly used crossing, choosing Keep Slot or Shift Slot for their combined schedule against a harbour scheduler picking Early Slot or Late Slot.',
+        actorA: ['the north a​nd south ferry operators'] }));
+    check('actorNounsOk: a zero-width character inside "each" still triggers the symmetric-framing rejection',
+      !actorNounsOk({ ...compoundBase, actorA: ['ferry operators'], actorB: null,
+        description: 'Two small ferry operators share a lightly used crossing. Ea​ch chooses either Keep Slot or Shift Slot for its own service, while the other chooses Early Slot or Late Slot.' }));
     check('actorNounsOk: a real, clean pair is accepted (positive control)',
       actorNounsOk({ ...base, actorA: ['a regional freight broker'], actorB: ['a dockside contractor'] }));
     check('actorNounsOk: no declaration at all is accepted (silence is safe)',

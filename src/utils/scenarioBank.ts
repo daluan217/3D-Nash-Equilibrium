@@ -303,8 +303,13 @@ export function actorNounsOk(sc: {
   // explicit "two"/"the two"), never a legitimate single-entity name that
   // happens to contain the word "and" — so this is precise on the corpus
   // measured, not merely plausible.
+  // Tested against norm(t), not the raw string: a zero-width character
+  // inside "and" ("a​nd") breaks the contiguous match the regex needs, so
+  // testing the raw text would let a compound noun through undetected
+  // (CodeRabbit, phase 3 review) — the SAME class of bypass the verbatim
+  // check above was already fixed against, just unfixed here too.
   const COMPOUND = /\btwo\b|\band\b/i;
-  if (all.some((t) => COMPOUND.test(t))) return false;
+  if (all.some((t) => COMPOUND.test(norm(t)))) return false;
   // SAME DEFECT, SUBTLER SHAPE: a PLAIN PLURAL collective noun ("ferry
   // operators", "dairy farmers", "kelp farmers") assigned to exactly one
   // player while the description names both SYMMETRICALLY ("Two neighboring
@@ -323,7 +328,9 @@ export function actorNounsOk(sc: {
   // `scenariobank.test.ts`'s re-screen of the SHIPPED artifact, which calls
   // only this function; reverting the build-script filter would then ship
   // the defect again with every check still green.
+  // Same fix as COMPOUND above: tested against descNorm (already computed),
+  // not the raw description, for the same zero-width-bypass reason.
   const onlyOneSide = (a.length > 0) !== (b.length > 0);
-  if (onlyOneSide && /\b(each|both)\b/i.test(sc.description ?? '')) return false;
+  if (onlyOneSide && /\b(each|both)\b/i.test(descNorm)) return false;
   return true;
 }
