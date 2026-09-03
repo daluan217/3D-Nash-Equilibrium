@@ -986,6 +986,301 @@ try {
     await trapPage.close();
   }
 
+  // ══ 21. THE LIVE REGION ANNOUNCES "SETTLED, NOT AN EQUILIBRIUM" AS ITS OWN
+  //      PHASE (RED-APP-6/001) — a run that goes STATIONARY at a point that
+  //      is NOT a Nash equilibrium (regret exceeds tolerance) is a real,
+  //      distinct terminal state — the visible pill says "Settled (not an
+  //      NE)", not "Converged" — but the aria-live phase model fell through
+  //      to the generic 'paused' phase and its "Simulation paused." text,
+  //      BYTE-IDENTICAL to a literal manual Pause click. A screen-reader
+  //      user got no indication the run had finished at all.
+  //
+  //      Fixture from src/test.ts's own testRedTeamFindings4():
+  //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 — settles at
+  //      (0,1) with regret ~18 for A under the app's own defaults
+  //      (firstMover A, shrink mode, step 0.1, x0=y0=0.217).
+  {
+    const settledPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await settledPage.goto(BASE, { waitUntil: 'networkidle' });
+    const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
+    if (await settledExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await settledExitTour.click();
+    await settledPage.waitForTimeout(300);
+
+    const setCell = async (label, value) => {
+      const input = settledPage.getByLabel(label, { exact: true });
+      await input.click();
+      await input.fill(String(value));
+      // Blur via keyboard, not .blur() — editing the first cell flips every
+      // cell's aria-label from the preset's scenario nouns to generic
+      // "Row N, Col N", so a locator captured before the edit can go stale.
+      await settledPage.keyboard.press('Tab');
+    };
+    const labels = await settledPage.evaluate(() =>
+      Array.from(document.querySelectorAll('input[aria-label*="Player A payoff"]')).map((i) => i.getAttribute('aria-label')));
+    const [r1, c1] = labels[0].split(',').map((s) => s.trim());
+    await setCell(`${r1}, ${c1}, Player A payoff`, 9);
+    await setCell('Row 1, Col 1, Player B payoff', -4);
+    await setCell('Row 1, Col 2, Player A payoff', -1);
+    await setCell('Row 1, Col 2, Player B payoff', -7);
+    await setCell('Row 2, Col 1, Player A payoff', -9);
+    await setCell('Row 2, Col 1, Player B payoff', -2);
+    await setCell('Row 2, Col 2, Player A payoff', 9);
+    await setCell('Row 2, Col 2, Player B payoff', -2);
+
+    await settledPage.getByRole('button', { name: /^run$/i }).first().click();
+    // Poll for the pill instead of a fixed sleep — the run converges/settles
+    // in well under a second normally, but CI's SwiftShader path can be slow.
+    let pillText = null;
+    for (let i = 0; i < 40 && !pillText; i++) {
+      await settledPage.waitForTimeout(200);
+      pillText = await settledPage.evaluate(() => {
+        const spans = Array.from(document.querySelectorAll('span'));
+        const pill = spans.find((s) => /Converged|Settled \(not an NE\)/.test(s.textContent || ''));
+        return pill ? pill.textContent.trim() : null;
+      });
+    }
+    const finalLive = await settledPage.evaluate(() =>
+      document.querySelector('[aria-live="polite"][role="status"]')?.textContent ?? null);
+    record('visible pill reads "Settled (not an NE)" for the RED-APP-6/001 fixture',
+      pillText === 'Settled (not an NE)', `pillText=${JSON.stringify(pillText)}`);
+    record('live region announces the settled-not-NE state distinctly, not "Simulation paused."',
+      finalLive === 'Simulation settled — not a Nash equilibrium.', `finalLive=${JSON.stringify(finalLive)}`);
+
+    await settledPage.close();
+  }
+
+  // ══ 22. ESCAPE CLOSES ONLY THE TOPMOST LAYER — A DIALOG OVER THE TOUR
+  //      DOES NOT ALSO DISMISS THE TOUR (RED-APP-6/002). Walkthrough.tsx has
+  //      its own independent window-level Escape listener; App.tsx's dialog
+  //      Escape handlers now stopPropagation when they actually close
+  //      something, so the same keypress can never also reach the tour's
+  //      listener and reset its step to 0.
+  {
+    const escPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await escPage.goto(BASE, { waitUntil: 'networkidle' });
+    // Tour auto-opens on a fresh anonymous load — do NOT exit it here.
+    const tourOpen = async () => escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Guided tour"]'));
+    record('tour is open on a fresh anonymous load (precondition)', await tourOpen());
+
+    const nextBtn = escPage.getByRole('button', { name: /^next$/i });
+    for (let i = 0; i < 3; i++) {
+      await nextBtn.click().catch(() => {});
+      await escPage.waitForTimeout(150);
+    }
+    const tourTitleBefore = await escPage.evaluate(() =>
+      document.querySelector('[role="dialog"][aria-label="Guided tour"] h3, [role="dialog"][aria-label="Guided tour"] [class*="font-bold"]')?.textContent ?? null);
+
+    await escPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    await escPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 10000 }).catch(() => {});
+    const authOpenBefore = await escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Account"]'));
+    record('Auth dialog opened over the still-open tour (precondition)', authOpenBefore && (await tourOpen()));
+
+    await escPage.keyboard.press('Escape');
+    await escPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 10000 }).catch(() => {});
+    await escPage.waitForTimeout(200);
+
+    const authOpenAfter = await escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Account"]'));
+    const tourOpenAfter = await tourOpen();
+    const tourTitleAfter = tourOpenAfter
+      ? await escPage.evaluate(() =>
+        document.querySelector('[role="dialog"][aria-label="Guided tour"] h3, [role="dialog"][aria-label="Guided tour"] [class*="font-bold"]')?.textContent ?? null)
+      : null;
+    record('one Escape closes the Auth dialog', !authOpenAfter, `authOpenAfter=${authOpenAfter}`);
+    record('the SAME Escape press does not also close the tour (RED-APP-6/002)',
+      tourOpenAfter, `tourOpenAfter=${tourOpenAfter}`);
+    record('the tour is still at the same step, not reset (RED-APP-6/002)',
+      tourOpenAfter && tourTitleAfter === tourTitleBefore,
+      `before=${JSON.stringify(tourTitleBefore)} after=${JSON.stringify(tourTitleAfter)}`);
+
+    await escPage.close();
+  }
+
+  // ══ 23. A STALLED /api/report REQUEST RECOVERS ON ITS OWN, WITH HONEST
+  //      WORDING (RED-APP-6/003). Before this fix, `fetchLlmExplanation` had
+  //      no AbortController anywhere — a request that neither resolves nor
+  //      rejects (a stalled connection, not a closed one) left the button
+  //      stuck on "Analyzing…", disabled, forever. Waits past
+  //      REPORT_FETCH_TIMEOUT_MS (22s, App.tsx) — real wall-clock time, since
+  //      the defect class is specifically "nothing ever forces recovery".
+  {
+    const hangPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let intercepted = false;
+    await hangPage.route('**/api/report', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      intercepted = true;
+      // Deliberately never fulfill/abort/continue — a genuinely hung request.
+    });
+    await hangPage.goto(BASE, { waitUntil: 'networkidle' });
+    const hangExitTour = hangPage.getByRole('button', { name: /exit tour/i });
+    if (await hangExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await hangExitTour.click();
+    await hangPage.waitForTimeout(300);
+
+    const explainBtn = hangPage.getByRole('button', { name: /explain this game/i });
+    await explainBtn.click();
+    await hangPage.waitForTimeout(1000);
+    record('the report request was actually intercepted (precondition)', intercepted);
+    const stuckState = await hangPage.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
+      return btn ? { text: btn.textContent, disabled: btn.disabled } : null;
+    });
+    record('the button enters the loading state immediately', !!stuckState?.disabled, JSON.stringify(stuckState));
+
+    await hangPage.waitForTimeout(23000); // past REPORT_FETCH_TIMEOUT_MS
+    const recovered = await hangPage.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
+      const wording = document.body.innerText.match(/timeout|timed out|taking longer|try again|unavailable/i);
+      return { button: btn ? { text: btn.textContent, disabled: btn.disabled } : null, wording: wording ? wording[0] : null };
+    });
+    record('the button un-sticks (re-enabled, no longer "Analyzing…") after the timeout',
+      recovered.button?.disabled === false && recovered.button?.text !== 'Analyzing…', JSON.stringify(recovered));
+    record('the page shows honest timeout wording, not silence',
+      !!recovered.wording, JSON.stringify(recovered));
+    const runStillUsable = await hangPage.getByRole('button', { name: /^run$/i }).first().isEnabled().catch(() => false);
+    record('the rest of the app (Run) stays usable while the report request was stuck', runStillUsable);
+
+    await hangPage.close();
+  }
+
+  // ══ 24. THE 40-CHAR NO-SPACE LABEL DOES NOT OVERFLOW 320px (RED-APP-6/004,
+  //      WCAG 1.4.10 reflow) — the matrix's outer grid had two bare `1fr`
+  //      column tracks (== minmax(auto, 1fr)); a label with no break
+  //      opportunity (a straight 40-char run, the label field's own
+  //      maxLength) could not shrink below its unbroken min-content width,
+  //      forcing the grid — and the page — past the viewport instead of
+  //      wrapping or shrinking. Fixed with minmax(0, 1fr) on both tracks,
+  //      matching what the per-cell payoff-pair grid already did correctly.
+  {
+    const overflowPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
+    const oExitTour = overflowPage.getByRole('button', { name: /exit tour/i });
+    if (await oExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await oExitTour.click();
+    await overflowPage.waitForTimeout(300);
+
+    const uniq = Date.now();
+    await overflowPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    await overflowPage.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+    await overflowPage.getByText(/sign up/i).last().click().catch(async () => {
+      await overflowPage.getByRole('button', { name: /create.*account|register/i }).first().click();
+    });
+    await overflowPage.waitForTimeout(300);
+    await overflowPage.getByPlaceholder('game_theorist').fill(`e2e6reflow${uniq}`);
+    await overflowPage.getByPlaceholder('john@example.com').fill(`e2e6reflow${uniq}@example.com`);
+    const pwFields = overflowPage.getByPlaceholder('••••••••');
+    await pwFields.nth(0).fill('TestPass123');
+    await pwFields.nth(1).fill('TestPass123');
+    await overflowPage.getByRole('button', { name: /register account/i }).click();
+    await overflowPage.waitForTimeout(800);
+    await overflowPage.getByPlaceholder(/example\.com or username/i).fill(`e2e6reflow${uniq}@example.com`);
+    await overflowPage.getByPlaceholder('••••••••').first().fill('TestPass123');
+    await overflowPage.getByRole('button', { name: /^login$/i }).click();
+    await overflowPage.waitForTimeout(800);
+
+    const LONG = 'A'.repeat(40); // the label field's own maxLength, no spaces
+    await overflowPage.getByRole('button', { name: /save preset/i }).click();
+    await overflowPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await overflowPage.getByPlaceholder('e.g. Battle of the Sexes 2.0').fill(`Reflow ${uniq}`);
+    const labelInputs = overflowPage.locator(
+      '[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Undercut"], '
+      + '[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Hold price"], '
+      + '[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Match"], '
+      + '[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Ignore"]');
+    const labelCount = await labelInputs.count();
+    for (let i = 0; i < labelCount; i++) await labelInputs.nth(i).fill(LONG);
+    await overflowPage.getByRole('button', { name: /^save game profile$/i }).click();
+    await overflowPage.waitForTimeout(800);
+
+    const storageState = await overflowPage.context().storageState();
+    await overflowPage.close();
+
+    const narrow320 = await browser.newContext({ viewport: { width: 320, height: 700 }, storageState });
+    const p320 = await narrow320.newPage();
+    await p320.goto(BASE, { waitUntil: 'networkidle' });
+    await p320.waitForTimeout(1000);
+    const p320ExitTour = p320.getByRole('button', { name: /exit tour/i });
+    if (await p320ExitTour.isVisible({ timeout: 2000 }).catch(() => false)) await p320ExitTour.click();
+    await p320.waitForTimeout(300);
+
+    const overflowing = async () => p320.evaluate(() => {
+      const html = document.documentElement;
+      return html.scrollWidth > html.clientWidth + 1;
+    });
+    record('320px is clean before loading the long-label game (precondition)', !(await overflowing()));
+
+    const gameCard = p320.getByText(`Reflow ${uniq}`, { exact: false });
+    const cardFound = await gameCard.first().isVisible({ timeout: 5000 }).catch(() => false);
+    record('the long-label saved game is reachable at 320px (precondition)', cardFound);
+    if (cardFound) {
+      await gameCard.first().click();
+      await p320.waitForTimeout(500);
+      record('the 40-char no-space label does not overflow 320px (RED-APP-6/004)', !(await overflowing()));
+    }
+    await narrow320.close();
+  }
+
+  // ══ 25. THE SAVE DIALOG'S NAME FIELD CLAMPS TO 40 CHARS EVEN WHEN
+  //      PREFILLED PROGRAMMATICALLY FROM AN AI-SUGGESTED NAME (RED-APP-6/005)
+  //      — the field's own `maxLength={40}` only bounds what a user TYPES;
+  //      `setSaveName(sc.name ?? '')` set it via React state with no clamp
+  //      at all, unlike its sibling `setEditName(...)` branch for the
+  //      identical data. Bypasses the need for real model credentials: the
+  //      `/api/report` response is fully replaced with a synthetic but
+  //      `envelopeIsTrustworthy()`-satisfying ('template' source) envelope
+  //      carrying a crafted 72-character name.
+  {
+    const clampPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await clampPage.route('**/api/report', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      const body = {
+        source: 'template',
+        report: {
+          claimedEquilibria: [],
+          prose: 'A synthetic report used only to exercise the Save dialog Name-field clamp.',
+          proseClaims: null,
+          geometryClaims: null,
+          suggestedScenario: {
+            name: 'A'.repeat(72),
+            row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect',
+            description: 'A synthetic scenario used only to exercise the client-side name clamp.',
+            actorA: ['player'], actorB: ['player'],
+          },
+        },
+        validation: null,
+        groundTruth: [],
+      };
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    });
+    await clampPage.goto(BASE, { waitUntil: 'networkidle' });
+    const clampExitTour = clampPage.getByRole('button', { name: /exit tour/i });
+    if (await clampExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await clampExitTour.click();
+    await clampPage.waitForTimeout(300);
+
+    await clampPage.getByRole('button', { name: /new ai scenario/i }).click();
+    // Poll rather than a single isVisible() call — the card only exists in
+    // the DOM once the mocked fetch resolves and React renders it, which is
+    // an actual state transition to wait FOR, not a snapshot check.
+    const cardLocator = clampPage.getByText('Scenario written for this game', { exact: false });
+    let cardVisible = false;
+    for (let i = 0; i < 20 && !cardVisible; i++) {
+      await clampPage.waitForTimeout(500);
+      cardVisible = await cardLocator.isVisible({ timeout: 500 }).catch(() => false);
+    }
+    record('the synthetic suggested-scenario card renders (precondition)', cardVisible);
+    if (cardVisible) {
+      await clampPage.getByRole('button', { name: /save this scenario with the game/i }).click();
+      await clampPage.waitForTimeout(600);
+      const nameValue = await clampPage.evaluate(() => {
+        const inp = document.querySelector('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]')
+          || document.querySelector('[role="dialog"][aria-label="Edit saved game"] input');
+        return inp ? inp.value : null;
+      });
+      record('the Save dialog Name field clamps a 72-char suggested name to 40 (RED-APP-6/005)',
+        nameValue !== null && nameValue.length <= 40, `length=${nameValue ? nameValue.length : null}`);
+    }
+    await clampPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page

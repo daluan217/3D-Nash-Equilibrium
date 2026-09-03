@@ -76,7 +76,11 @@ const fetchLlmBody = src.slice(fetchLlmStart, fetchFreshStart);
 // catch's call alone satisfies "the string appears somewhere in this
 // function". Isolate the section BEFORE the catch block and require the
 // ENVELOPE-DERIVED assignment specifically, not just any call to the setter.
-const fetchLlmCatchStart = fetchLlmBody.indexOf('} catch {');
+// RED-APP-6/003: the catch now binds the error (`} catch (err) {`) to tell a
+// client-side timeout abort apart from any other failure -- match either
+// form, bare or bound, rather than the literal bare-catch string.
+const fetchLlmCatchMatch = /\}\s*catch\s*(?:\([a-zA-Z_$][\w$]*\))?\s*\{/.exec(fetchLlmBody);
+const fetchLlmCatchStart = fetchLlmCatchMatch ? fetchLlmCatchMatch.index : -1;
 ok(fetchLlmCatchStart !== -1, 'fetchLlmExplanation must have a catch block');
 const fetchLlmSuccessSection = fetchLlmBody.slice(0, fetchLlmCatchStart);
 ok(/setProseScenario\(envelope\.report\?\.suggestedScenario \?\? null\)/.test(fetchLlmSuccessSection),

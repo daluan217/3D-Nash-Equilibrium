@@ -276,6 +276,28 @@ function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElemen
   }, [open, containerRef]);
 }
 
+/**
+ * RED-APP-6/003: `fetch(getApiUrl('/api/report'), ...)` had no `signal`
+ * anywhere in this file (a whole-file grep for `AbortController`/`signal:`
+ * returned zero matches). A CLOSED connection (killed server, refusing
+ * proxy) already rejects promptly and the existing `catch` handles it fine;
+ * a STALLED one — a captive portal, a hung reverse proxy, a flaky link that
+ * drops packets without a RST — neither resolves nor rejects, ever, and
+ * nothing forced it to. 22s comfortably exceeds this app's own measured
+ * report latency (low single-digit seconds; session history) while slightly
+ * exceeding the server's own scenario-draw deadline (`SCENARIO_DEADLINE_MS`,
+ * 20s default, server.ts) per the finding's own guidance ("match or slightly
+ * exceed" the server side), and still bounds a genuinely stuck request. The abort surfaces as a
+ * `DOMException` named `AbortError` in the caller's `catch`, distinguishable
+ * from an ordinary network failure so the UI can say which happened.
+ */
+const REPORT_FETCH_TIMEOUT_MS = 22_000;
+
+function fetchWithTimeout(url: string, init: RequestInit, controller: AbortController): Promise<Response> {
+  const timer = setTimeout(() => controller.abort(), REPORT_FETCH_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 export default function App() {
   const isElectron = typeof window !== 'undefined' && window.navigator?.userAgent?.toLowerCase().includes('electron');
   const isElectronMac = isElectron && window.navigator?.userAgent?.toLowerCase().includes('mac');
@@ -584,6 +606,16 @@ export default function App() {
   // payoffsEqual as a second, independent line of defense against the
   // cross-game case finding 001 already covers.
   const requestGenerationRef = useRef(0);
+  // RED-APP-6/003: fetchLlmExplanation/fetchFreshScenario had no
+  // AbortController anywhere -- a request that neither resolves nor rejects
+  // (a stalled connection, not a closed one -- a captive portal or a hung
+  // reverse proxy, as opposed to a killed server, which `fetch` already
+  // rejects promptly) left `llmLoading`/`scenarioLoading` stuck `true`
+  // forever, with no timer anywhere to force it back. Every in-flight
+  // report-family controller is tracked here so the payoffs-change effect
+  // below (and unmount) can abort whatever is still outstanding, instead of
+  // only relying on the generation check to make a late response inert.
+  const inFlightReportControllersRef = useRef<Set<AbortController>>(new Set());
 
   const [rawPayoffs, setRawPayoffs] = useState<Record<keyof GamePayoffs, string>>({
     a11: '2', b11: '1', a12: '0', b12: '0',
@@ -804,7 +836,12 @@ export default function App() {
   useEffect(() => {
     if (!logExpanded) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setLogExpanded(false); return; }
+      // RED-APP-6/002: stop the keydown from also reaching Walkthrough.tsx's
+      // own independent `window`-level Escape listener — without this, one
+      // Escape press while this dialog is open over the tour closes BOTH
+      // this dialog AND the tour (resetting its step to 0). `document` fires
+      // before `window` in the bubble phase, so stopping it here is enough.
+      if (e.key === 'Escape') { setLogExpanded(false); e.stopPropagation(); return; }
       if (e.key !== 'Tab') return;
       const container = logDialogRef.current;
       if (!container) return;
@@ -975,6 +1012,10 @@ export default function App() {
   // renders identically to "never asked", so the user cannot tell a dead
   // request from an untouched panel.
   const [llmError, setLlmError] = useState(false);
+  // Distinguishes "the request timed out" from "the request failed fast" --
+  // RED-APP-6/003 asks for honest, specific wording rather than a single
+  // generic failure message covering both.
+  const [llmTimedOut, setLlmTimedOut] = useState(false);
   // "New AI scenario" while a validated explanation is on screen uses the
   // slim scenario-only endpoint (about half the tokens and latency of a full
   // report) and swaps just the suggestion card — its own loading flag keeps
@@ -1002,7 +1043,22 @@ export default function App() {
   useEffect(() => {
     requestGenerationRef.current += 1;
     setLlmEnvelope(null); setLlmError(false); setProseScenario(null);
-    setLlmLoading(false); setScenarioLoading(false);
+    setLlmLoading(false); setScenarioLoading(false); setLlmTimedOut(false);
+  }, [payoffs]);
+
+  // RED-APP-6/003: abort whatever report-family request was in flight for the
+  // PREVIOUS game -- a SEPARATE effect (not folded into the one above) so its
+  // cleanup fires on the same [payoffs] schedule (right before the next
+  // change, and on unmount) without disturbing the state-clearing effect's
+  // own shape. The generation check in fetchLlmExplanation/fetchFreshScenario
+  // already makes a late response inert; this additionally stops the network
+  // work itself and frees the abort timer early instead of leaving it to fire
+  // on its own.
+  useEffect(() => {
+    return () => {
+      inFlightReportControllersRef.current.forEach((c) => c.abort());
+      inFlightReportControllersRef.current.clear();
+    };
   }, [payoffs]);
 
   /**
@@ -1069,8 +1125,13 @@ export default function App() {
     // Preset or unsaved matrix: there is nothing to patch, so route through the
     // existing save-as-new flow with the story prefilled. Clamped to the
     // textarea/server limit: prefilling PAST maxLength locks the field (a
-    // controlled textarea over its cap rejects every keystroke).
-    setSaveName(sc.name ?? '');
+    // controlled textarea over its cap rejects every keystroke). The Name
+    // field needs the SAME clamp its sibling branch above already has
+    // (RED-APP-6/005): `maxLength` on the `<input>` only bounds what a user
+    // TYPES, not a value set programmatically, so an AI-invented name over 40
+    // characters would otherwise land in the field verbatim — visibly past
+    // the limit the field claims (and correctly enforces for typing) to cap.
+    setSaveName((sc.name ?? '').slice(0, 40));
     setSaveDesc(description.slice(0, 800));
     setSaveLabels({
       row1: sc.row1 ?? '', row2: sc.row2 ?? '',
@@ -1117,11 +1178,16 @@ export default function App() {
     const myGeneration = (requestGenerationRef.current += 1);
     setLlmLoading(true);
     setLlmError(false);
+    setLlmTimedOut(false);
+    // RED-APP-6/003: tracked so a payoffs change (or unmount) can abort this
+    // specific request; removed in `finally` below regardless of outcome.
+    const controller = new AbortController();
+    inFlightReportControllersRef.current.add(controller);
     try {
       // bypassCache: an explicit re-request (Regenerate, or any fresh
       // invention) must roll a new report; a FIRST explain is the cache's
       // customer — identical preset matrices serve instantly.
-      const res = await fetch(getApiUrl('/api/report'), {
+      const res = await fetchWithTimeout(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -1129,7 +1195,7 @@ export default function App() {
             ? { payoffs: requestPayoffs, bypassCache: true }
             : { payoffs: requestPayoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
         ),
-      });
+      }, controller);
       if (!res.ok) throw new Error(String(res.status));
       const envelope = (await res.json()) as ReportEnvelope;
       // RED-APP-3 finding 001: the user may have switched to a DIFFERENT
@@ -1150,19 +1216,22 @@ export default function App() {
       // prose, so this always tracks it; only fetchFreshScenario (which
       // writes no new prose) must skip this line.
       setProseScenario(envelope.report?.suggestedScenario ?? null);
-    } catch {
-      // Offline, unreachable server, or a non-2xx. The deterministic report
-      // above still stands; we just say so instead of failing silently —
-      // but only for the game this request was actually about. A request
-      // for an ABANDONED game failing after the user switched away must not
-      // paint "No verified explanation available" over whatever game is on
-      // screen now, when nothing was ever asked about IT — same staleness
-      // guard as the success path above, same reason.
+    } catch (err) {
+      // Offline, unreachable server, a non-2xx, or (RED-APP-6/003) a client-
+      // side timeout abort. The deterministic report above still stands; we
+      // just say so instead of failing silently — but only for the game
+      // this request was actually about. A request for an ABANDONED game
+      // failing after the user switched away must not paint "No verified
+      // explanation available" over whatever game is on screen now, when
+      // nothing was ever asked about IT — same staleness guard as the
+      // success path above, same reason.
       if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       setLlmEnvelope(null);
       setProseScenario(null);
       setLlmError(true);
+      setLlmTimedOut(err instanceof DOMException && err.name === 'AbortError');
     } finally {
+      inFlightReportControllersRef.current.delete(controller);
       // Only the request that is still CURRENT clears the loading flag --
       // a superseded request's finally must not clobber a newer request's
       // still-in-flight spinner (the payoffs-change effect above already
@@ -1198,12 +1267,15 @@ export default function App() {
     const requestPayoffs = payoffs;
     const myGeneration = (requestGenerationRef.current += 1);
     setScenarioLoading(true);
+    // RED-APP-6/003: same no-timeout defect as fetchLlmExplanation, same fix.
+    const controller = new AbortController();
+    inFlightReportControllersRef.current.add(controller);
     try {
-      const res = await fetch(getApiUrl('/api/report'), {
+      const res = await fetchWithTimeout(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ payoffs: requestPayoffs, scenarioOnly: true }),
-      });
+      }, controller);
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as { scenario: SuggestedScenario | null };
       if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) {
@@ -1219,10 +1291,14 @@ export default function App() {
       } else {
         setLogEntries((prev) => [...prev, "✗ Couldn't invent a verified scenario just now — try again."]);
       }
-    } catch {
+    } catch (err) {
       if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
-      setLogEntries((prev) => [...prev, "✗ Couldn't reach the server for a new scenario."]);
+      const timedOut = err instanceof DOMException && err.name === 'AbortError';
+      setLogEntries((prev) => [...prev, timedOut
+        ? "✗ Inventing a new scenario is taking longer than expected — try again."
+        : "✗ Couldn't reach the server for a new scenario."]);
     } finally {
+      inFlightReportControllersRef.current.delete(controller);
       // Same reasoning as fetchLlmExplanation's finally: only the request
       // that is still current may clear the loading flag.
       if (myGeneration === requestGenerationRef.current) setScenarioLoading(false);
@@ -1912,15 +1988,23 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (isFeedbackOpen) closeFeedback();
-      else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); }
-      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; }
+      // RED-APP-6/002: Walkthrough.tsx has its own independent `window`-level
+      // Escape listener that unconditionally closes the tour AND resets its
+      // step to 0. `document` (this listener) fires before `window` in the
+      // bubble phase, so stopping propagation HERE, but only when a modal in
+      // this chain actually closed, means one Escape closes only the
+      // topmost layer: the dialog first, the tour only on a second press
+      // with nothing else open. Do not stopPropagation when nothing here was
+      // open — that Escape press must still reach the tour.
+      if (isFeedbackOpen) { closeFeedback(); e.stopPropagation(); }
+      else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); e.stopPropagation(); }
+      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; e.stopPropagation(); }
       // RED-APP-5 001, round 5: the Edit-saved-game dialog was missing from
       // both this chain and the deps array below, so Escape did nothing while
       // it was open — every other modal in the app (and #90's expand-log
       // dialog) closes on Escape; Edit was simply never added to the list.
       // Same close side-effects as its own "✕" button and its backdrop click.
-      else if (isEditModalOpen) { setIsEditModalOpen(false); setEditError(''); }
+      else if (isEditModalOpen) { setIsEditModalOpen(false); setEditError(''); e.stopPropagation(); }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
@@ -1950,20 +2034,32 @@ export default function App() {
    * whether convergence happened.
    */
   const [liveStatus, setLiveStatus] = useState('');
-  const prevSimPhaseRef = useRef<'idle' | 'running' | 'paused' | 'converged'>('idle');
+  const prevSimPhaseRef = useRef<'idle' | 'running' | 'paused' | 'converged' | 'settled'>('idle');
   useEffect(() => {
     const isConverged = simState.converged && simState.convergedIsNE !== false && !runStale && !!nearestNE;
+    // A run can go STATIONARY at a point that is NOT a Nash equilibrium
+    // (`convergedIsNE === false` — regret exceeds tolerance for some player),
+    // which the visible "Settled (not an NE)" pill announces unconditionally
+    // on `simState.converged` alone (RED-APP-6/001) — gated the same way here,
+    // so the live region can never fall through to the generic 'paused' phase
+    // (and its "Simulation paused." text, identical to a manual Pause click)
+    // for a run that in fact finished, just not at an equilibrium.
+    const isSettledNotNE = simState.converged && simState.convergedIsNE === false;
     const phase: typeof prevSimPhaseRef.current = isConverged
       ? 'converged'
-      : simState.running
-        ? 'running'
-        : simState.stepCount > 0 ? 'paused' : 'idle';
+      : isSettledNotNE
+        ? 'settled'
+        : simState.running
+          ? 'running'
+          : simState.stepCount > 0 ? 'paused' : 'idle';
     if (phase === prevSimPhaseRef.current) return;
     prevSimPhaseRef.current = phase;
     if (phase === 'running') setLiveStatus('Simulation running.');
     else if (phase === 'paused') setLiveStatus('Simulation paused.');
     else if (phase === 'converged') {
       setLiveStatus(`${realisedConcept === 'mixed' ? 'Mixed' : 'Pure'} strategy Nash equilibrium reached.`);
+    } else if (phase === 'settled') {
+      setLiveStatus('Simulation settled — not a Nash equilibrium.');
     } else setLiveStatus('');
   }, [simState.running, simState.converged, simState.convergedIsNE, simState.stepCount,
       runStale, nearestNE, realisedConcept]);
@@ -3601,8 +3697,15 @@ export default function App() {
                 on the label divs below) instead of shrinking the inputs. 72px was
                 chosen empirically: re-verified against BOTH the longest label this
                 branch introduced ("Stay at Home", Cops & Robbers) and the shortest
-                real preset labels, on all three mobile.mjs device profiles. */}
-            <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_1fr_1fr] gap-3 text-center items-center">
+                real preset labels, on all three mobile.mjs device profiles.
+                The other two tracks were bare `1fr` (== `minmax(auto, 1fr)`),
+                so a label with no break opportunity (a 40-char run with no
+                spaces — the label field's own maxLength, RED-APP-6/004) could
+                not shrink below its unbroken min-content width, forcing the
+                whole grid — and the page — 235px past a 320px viewport
+                (WCAG 1.4.10). `minmax(0, 1fr)` matches what the per-cell
+                payoff-pair grid below already does correctly. */}
+            <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_minmax(0,1fr)_minmax(0,1fr)] gap-3 text-center items-center">
               <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col2}>B: {activeLabels.col2}</div>
@@ -4553,8 +4656,13 @@ export default function App() {
 
                 {!llmLoading && !llmEnvelope && llmError && (
                   <p className="text-amber-700 dark:text-amber-400">
-                    Couldn't reach the explanation service. The computed report above is unaffected —
-                    try again in a moment.
+                    {/* RED-APP-6/003: distinct, honest wording for a client-side
+                        timeout (a stalled connection, aborted after
+                        REPORT_FETCH_TIMEOUT_MS) vs. an ordinary fast failure —
+                        both re-enable the button either way, via llmLoading. */}
+                    {llmTimedOut
+                      ? "This is taking longer than expected. The computed report above is unaffected — try again?"
+                      : "Couldn't reach the explanation service. The computed report above is unaffected — try again in a moment."}
                   </p>
                 )}
 

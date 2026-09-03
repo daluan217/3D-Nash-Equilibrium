@@ -43,10 +43,13 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const [errorKind, setErrorKind] = useState<'not-built' | 'unavailable' | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
-  // Close on Escape
+  // Close on Escape. stopPropagation so the SAME keypress cannot also reach
+  // Walkthrough.tsx's independent window-level Escape listener and close the
+  // guided tour too (RED-APP-6/002) — document fires before window in the
+  // bubble phase.
   React.useEffect(() => {
     if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') { onClose(); e.stopPropagation(); } };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [isOpen, onClose]);

@@ -154,7 +154,11 @@ const css = readFileSync('src/index.css', 'utf8');
   ok(block.includes('onKeyDown') && block.includes("e.key !== 'Escape'"),
     'the slice under test must actually be the Escape-close effect');
 
-  ok(/else if \(isEditModalOpen\)\s*\{\s*setIsEditModalOpen\(false\);\s*setEditError\(''\);\s*\}/.test(block),
+  // RED-APP-6/002: this branch now also calls `e.stopPropagation()` (so the
+  // same Escape press cannot also reach Walkthrough.tsx's tour listener) --
+  // allow that optional trailing call before the closing brace, same as the
+  // OTHER close side-effects this assertion already tolerates.
+  ok(/else if \(isEditModalOpen\)\s*\{\s*setIsEditModalOpen\(false\);\s*setEditError\(''\);\s*(?:e\.stopPropagation\(\);\s*)?\}/.test(block),
     `THE FIX: isEditModalOpen must be in the condition chain with the SAME close side-effects `
     + `its own "✕" button and backdrop use, got: ${JSON.stringify(block)}`);
 

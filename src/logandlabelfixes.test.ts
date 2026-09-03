@@ -100,12 +100,21 @@ function openingTagAt(src: string, refIdx: number): string {
     ok(tag.includes('break-words'), `the label cell at ${site} must keep break-words as the fallback`);
   }
 
-  // The fix must never touch the payoff-input grid's own column widths —
-  // the ORIGINAL 72px cap (re-verified against three mobile.mjs profiles)
-  // stays exactly as it was.
-  ok(app.includes('grid-cols-[minmax(0,72px)_1fr_1fr]'),
-    'the outer matrix grid column template must be untouched by this fix');
-  ok(!/grid-cols-\[minmax\(0,72px\)_1fr_1fr\]\s+max-\[/.test(app),
+  // THIS fix (RED-APP-4/004) must never touch the payoff-input grid's own
+  // LABEL column — the ORIGINAL 72px cap (re-verified against three
+  // mobile.mjs profiles) stays exactly as it was; only the label column's
+  // own font size (checked above) carries this fix.
+  //
+  // RED-APP-6/004 (a later, separate fix) DID legitimately change the other
+  // two tracks — bare `1fr` (== `minmax(auto, 1fr)`) let an unbreakable
+  // 40-char label force the whole grid past a 320px viewport (WCAG 1.4.10);
+  // both non-label tracks are now `minmax(0, 1fr)`, matching what the
+  // per-cell payoff-pair grid already did. So this check now anchors on the
+  // one thing THIS finding actually protects — the 72px label-column cap —
+  // rather than the whole template staying byte-identical forever.
+  ok(app.includes('grid-cols-[minmax(0,72px)_'),
+    'the outer matrix grid\'s label column must keep its minmax(0,72px) cap');
+  ok(!/grid-cols-\[minmax\(0,72px\)_[^\]]*\]\s+max-\[/.test(app),
     'the outer matrix grid must not carry a narrow-viewport column-width override (measured to have no effect; do not reintroduce it)');
 }
 
