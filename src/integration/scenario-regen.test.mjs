@@ -267,6 +267,12 @@ try {
         row1Label: longLabel,
         colorTermsA: ['harbor operator', 'x'],
         colorTermsB: ['tug company'],
+        // Deliberately hostile: a DIFFERENT matrix from PAYOFFS, so "ignored"
+        // is PROVEN rather than assumed (CodeRabbit: a body with no payoffs
+        // key at all can never fail this assertion, whatever the route
+        // does). The client's real Keep flow never sends this key; a direct
+        // caller can, and the route must still drop it.
+        payoffs: { a11: -9, a12: -9, a21: -9, a22: -9, b11: -9, b12: -9, b21: -9, b22: -9 },
       },
     });
     const pg = patched.json?.game;

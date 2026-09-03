@@ -1404,10 +1404,23 @@ try {
   //      the ACTUAL running server, not a stand-in for one.
   {
     const offPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    // CodeRabbit finding: a FIXED sleep before asserting "absent" can pass
+    // for the wrong reason on a stalled CI runner (the button is absent
+    // because the probe hasn't resolved yet, not because it reported the
+    // capability off) — a regression that flips scenarioRegen on would still
+    // slip through. Wait for the actual /api/health response the capability
+    // probe fires on mount, and assert its OWN payload positively, before
+    // ever checking the button.
+    const healthSettled = offPage.waitForResponse(
+      (r) => r.url().includes('/api/health') && r.request().method() === 'GET',
+      { timeout: 15000 },
+    );
     await registerAndLogin(offPage, 'e2e6regenoff');
+    const health = await healthSettled.then((r) => r.json()).catch(() => null);
+    record('capability-off precondition: the real, unmocked server reports scenarioRegen false',
+      health?.capabilities?.scenarioRegen !== true, JSON.stringify(health?.capabilities));
     await offPage.getByRole('button', { name: /save preset/i }).click();
     await offPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
-    await offPage.waitForTimeout(500); // let the capability probe's fetch settle either way
     const regenVisibleOff = await offPage.getByRole('button', { name: 'Regenerate scenario' }).isVisible({ timeout: 1000 }).catch(() => false);
     record('Regenerate scenario is NOT shown when the server capability is off (default)', !regenVisibleOff);
     await offPage.close();
