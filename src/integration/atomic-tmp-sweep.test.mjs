@@ -56,6 +56,18 @@ const dbFile = path.join(userData, 'db.json');
   closeSync(fd);
 }
 
+// CodeRabbit (this PR): the production sweep threshold (5000ms) left the
+// YOUNG fixture's survival dependent on how long the bundled server takes to
+// reach `sweepStaleAtomicTmpFiles` after this file is written — plausibly
+// close on a slow/loaded machine, which would sweep it and false-fail the
+// "left alone" assertion for a reason unrelated to the sweep's own logic.
+// `NASH_TMP_SWEEP_MAX_AGE_MS` (server.ts, test-only override) raises the
+// threshold for THIS test run only; the OLD fixture is backdated well past
+// even this raised threshold, and the YOUNG one is written immediately
+// before spawn, so real startup latency has to exceed whole seconds before
+// this could flake — while the production default (5000ms) is untouched.
+const TEST_SWEEP_MAX_AGE_MS = 30_000;
+
 // An OLD orphan — a fake pid that cannot possibly be this process, mtime
 // backdated well past the sweep's threshold. Must be removed.
 const oldOrphan = path.join(userData, 'db.json.tmp-999999-1700000000000');
@@ -63,7 +75,7 @@ const oldOrphan = path.join(userData, 'db.json.tmp-999999-1700000000000');
   const fd = openSync(oldOrphan, 'w', 0o600);
   writeSync(fd, '{"partial": tr'); // deliberately not even valid JSON — a real interrupted write
   closeSync(fd);
-  const old = new Date(Date.now() - 60_000);
+  const old = new Date(Date.now() - (TEST_SWEEP_MAX_AGE_MS + 60_000));
   utimesSync(oldOrphan, old, old);
 }
 
@@ -90,6 +102,21 @@ async function waitReady() {
   return false;
 }
 
+// CodeRabbit (this PR): the sweep runs and logs BEFORE `app.listen`, so in
+// practice the log line lands in `log` long before `/api/health` can even
+// respond — but that ordering is not a guarantee the code makes, only an
+// observed consequence of where the call sits. Poll for the pattern with its
+// own bounded timeout instead of asserting on whatever `log` happens to hold
+// the instant `waitReady()` resolves.
+async function waitForLog(pattern, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pattern.test(log)) return true;
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  return pattern.test(log);
+}
+
 try {
   server = spawn('node', [BUNDLE], {
     cwd: userData,
@@ -100,6 +127,7 @@ try {
       PORT,
       IS_ELECTRON: 'true',
       ELECTRON_USER_DATA_PATH: userData,
+      NASH_TMP_SWEEP_MAX_AGE_MS: String(TEST_SWEEP_MAX_AGE_MS),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -111,9 +139,8 @@ try {
 
   record('the OLD orphan (past the sweep threshold) is gone after startup',
     !existsSync(oldOrphan), `still present at ${oldOrphan}`);
-  record('the removal was LOGGED, not silent',
-    /Removed a stale atomic-write scratch file[^\n]*db\.json\.tmp-999999-1700000000000/.test(log),
-    log.slice(0, 2000));
+  const logged = await waitForLog(/Removed a stale atomic-write scratch file[^\n]*db\.json\.tmp-999999-1700000000000/, 5000);
+  record('the removal was LOGGED, not silent', logged, log.slice(0, 2000));
 
   record('the YOUNG file (under the age threshold) is left alone — the sweep is age-gated, not a blind prefix delete',
     existsSync(youngOrphan), `expected ${youngOrphan} to still exist`);

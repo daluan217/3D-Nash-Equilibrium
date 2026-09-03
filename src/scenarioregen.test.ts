@@ -244,6 +244,20 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('RED-REGEN/001: a supplied actor noun is ADDED alongside the user\'s existing chip, not instead of it',
     withNewActor.terms.a.includes('the vendor') && withNewActor.terms.a.includes('the operator'),
     `got terms.a=${JSON.stringify(withNewActor.terms.a)}`);
+
+  // CodeRabbit (this PR): "never destroys" has to mean "never REASSIGNS"
+  // too. The user placed "wolf" on player B; a draw's actorA also offers
+  // "wolf". The naive fix (concatenate existing+actor, then clean) let A
+  // claim it and silently dropped the user's own B assignment. The real fix
+  // cleans the EXISTING pair first — the user's ownership is fixed before
+  // any actor noun is even considered — so a colliding actor noun is simply
+  // discarded, never reassigned.
+  const collision = keepFill(
+    { ...realDrawShape, actorA: ['wolf'] }, false, { a: [], b: ['wolf'] },
+  );
+  check('RED-REGEN/001 (CodeRabbit): an actor noun colliding with the user\'s EXISTING opposite-side chip must not reassign it',
+    collision.terms.b.includes('wolf') && !collision.terms.a.includes('wolf'),
+    `got terms=${JSON.stringify(collision.terms)}`);
 }
 
 /* ───────────────────────────────────────────── H-name-rule: shouldReplaceName */

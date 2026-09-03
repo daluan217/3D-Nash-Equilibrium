@@ -221,6 +221,20 @@ export function mergeDescriptionTerms(
  * its `terms` field; the regen preview card calls it too (via
  * `regenPreviewColorTerms` below) so the preview shows exactly what Keep will
  * produce, never a different composition.
+ *
+ * CodeRabbit (this PR) caught a real gap in the first version: concatenating
+ * `[...existingA, ...actorA]` BEFORE cleaning let an incoming actor noun
+ * silently REASSIGN a phrase the user had explicitly placed on the OTHER
+ * side. If `existingB` holds "wolf" (the user marked it player B's) and a
+ * draw's `actorA` also offers "wolf", cleaning the concatenated A list first
+ * makes A "own" wolf, and the B-side clean then drops it as a now-claimed
+ * duplicate — the user's OWN assignment silently overwritten by a generated
+ * one. "Never destroys user-authored data" has to mean never REASSIGNS it
+ * either. Fixed by cleaning the EXISTING pair FIRST (establishing the user's
+ * ownership as fixed) and only adding an actor noun when it does not collide
+ * with the OTHER side's existing, user-placed term; a colliding actor noun is
+ * simply dropped rather than added anywhere, exactly like any other duplicate
+ * `cleanUserColorTermPair` already resolves.
  */
 export function regenKeptColorTerms(
   actorA: readonly string[],
@@ -228,7 +242,14 @@ export function regenKeptColorTerms(
   existingA: readonly string[],
   existingB: readonly string[],
 ): { a: string[]; b: string[] } {
-  return cleanUserColorTermPair([...existingA, ...actorA], [...existingB, ...actorB]);
+  const existing = cleanUserColorTermPair(existingA, existingB);
+  const ownedA = new Set(existing.a.map((t) => t.toLowerCase()));
+  const ownedB = new Set(existing.b.map((t) => t.toLowerCase()));
+  // A generated actor noun may add a NEW highlight, but may never claim a
+  // phrase the user already placed on the other side.
+  const newA = cleanUserColorTerms(actorA).filter((t) => !ownedB.has(t.toLowerCase()));
+  const newB = cleanUserColorTerms(actorB).filter((t) => !ownedA.has(t.toLowerCase()));
+  return cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
 }
 
 /**

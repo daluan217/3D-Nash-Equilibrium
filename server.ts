@@ -664,10 +664,21 @@ function writeFileAtomicSync(file: string, data: string): void {
     // no log line), so an operator had no way to learn the file even exists.
     // Log loudly here; `sweepStaleAtomicTmpFiles` (called once at startup)
     // removes anything this cleanup could not, on the next boot.
+    //
+    // CodeRabbit (this PR): call `unlinkSync` directly rather than gating it
+    // on `fs.existsSync(tmp)` first — `existsSync` swallows EVERY error
+    // (including an access error on the directory, exactly the failure this
+    // whole function exists to survive) and just returns `false`, which used
+    // to skip the delete AND the log silently: the tmp file could genuinely
+    // still be sitting there, inaccessible, and nothing would ever say so.
+    // `ENOENT` is the one code worth staying quiet about (the tmp file
+    // legitimately never got created — the failure was in `openSync` itself).
     try {
-      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-    } catch (cleanupErr) {
-      console.error(`writeFileAtomicSync: could not remove scratch file ${tmp} after a write error (it may be orphaned until the next startup sweep):`, cleanupErr);
+      fs.unlinkSync(tmp);
+    } catch (cleanupErr: any) {
+      if (cleanupErr?.code !== "ENOENT") {
+        console.error(`writeFileAtomicSync: could not remove scratch file ${tmp} after a write error (it may be orphaned until the next startup sweep):`, cleanupErr);
+      }
     }
     throw err;
   }
@@ -694,10 +705,17 @@ function sweepStaleAtomicTmpFiles(file: string, maxAgeMs = 5000): void {
   let entries: string[];
   try {
     entries = fs.readdirSync(dir);
-  } catch {
-    // The directory not existing/being unreadable is not this function's
-    // problem to solve — loadDBFromFile already handles both, and will have
-    // already logged or refused as appropriate by the time this runs.
+  } catch (err: any) {
+    // CodeRabbit (this PR): this runs BEFORE `initDB`/`loadDBFromFile`, so a
+    // silently-swallowed permission/IO error here would be the FIRST place a
+    // real problem with the data directory could have been reported, and
+    // wasn't. `ENOENT` is the one benign case (nothing to sweep, and
+    // `loadDBFromFile` will create the directory momentarily); anything else
+    // — EACCES, a busy volume, ... — is worth a log line even though this
+    // function still cannot do anything about it itself.
+    if (err?.code !== "ENOENT") {
+      console.error(`Could not scan ${dir} for a stale atomic-write sweep at startup:`, err);
+    }
     return;
   }
   for (const name of entries) {
@@ -706,8 +724,14 @@ function sweepStaleAtomicTmpFiles(file: string, maxAgeMs = 5000): void {
     let age: number;
     try {
       age = Date.now() - fs.statSync(full).mtimeMs;
-    } catch {
-      continue; // vanished between readdir and stat — nothing left to sweep
+    } catch (err: any) {
+      // ENOENT here is the ordinary "vanished between readdir and stat" race
+      // (nothing left to sweep); anything else is a real, worth-logging
+      // problem reading this specific entry.
+      if (err?.code !== "ENOENT") {
+        console.error(`Could not check the age of ${full} during the startup atomic-write sweep:`, err);
+      }
+      continue;
     }
     if (age < maxAgeMs) continue;
     try {
@@ -2533,7 +2557,15 @@ async function startServer() {
   // here — the lock above already guarantees no other process can be
   // writing this directory right now, and this runs before this process's
   // own first save.
-  sweepStaleAtomicTmpFiles(DB_FILE);
+  //
+  // The age threshold is overridable ONLY for tests (CodeRabbit, this PR):
+  // a "young, not-yet-stale" fixture is written just before this process is
+  // spawned, and on a slow/loaded machine the gap between that write and
+  // THIS line running could plausibly approach the 5s production default,
+  // making the test flaky through no fault of the sweep itself. The
+  // production default (5000ms) is unchanged when the var is unset.
+  const sweepMaxAgeMs = Number(process.env.NASH_TMP_SWEEP_MAX_AGE_MS);
+  sweepStaleAtomicTmpFiles(DB_FILE, Number.isFinite(sweepMaxAgeMs) && sweepMaxAgeMs > 0 ? sweepMaxAgeMs : undefined);
 
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);

@@ -1487,18 +1487,19 @@ try {
   }
 
   // ══ 28. FEATURE-REGEN — Edit dialog: an UNTOUCHED (not re-typed this
-  //      session) name IS replaced on Keep, description/labels replace, and
-  //      the eventual PATCH carries the new text with no payoffs. This game
-  //      was saved with no colour chips of its own and the mocked draw
-  //      supplies no actor nouns (RED-REGEN/001: no real draw ever can), so
-  //      the honest expectation is colorTermsA/B stay EMPTY — never wiped
-  //      because there was nothing to wipe, and never populated with
-  //      fabricated actor nouns a real schema-constrained draw cannot send.
-  //      src/scenarioregen.test.ts and src/unit.test.ts cover the actual
-  //      preserve/add behaviour as pure-function fixtures (existing chips
-  //      untouched; a supplied actor noun ADDED, never substituted), and
-  //      src/integration/scenario-regen.test.mjs section 10 covers it
-  //      end-to-end through the real REST API with real pre-existing chips.
+  //      session) name IS replaced on Keep, description/labels replace, the
+  //      eventual PATCH carries the new text with no payoffs, and — the
+  //      user-reached case, not just an empty-to-empty vacuous pass
+  //      (CodeRabbit, this PR) — REAL, pre-existing colour chips placed
+  //      through the actual chip-picker UI survive Regenerate -> Keep ->
+  //      Save Changes. The mocked draw supplies no actorA/actorB (RED-REGEN/
+  //      001: no real draw ever can), so the chips reaching the PATCH body
+  //      must be EXACTLY what was placed before Regenerate — neither wiped
+  //      nor altered.
+  //      src/scenarioregen.test.ts and src/unit.test.ts cover the same
+  //      preserve/add/never-reassign behaviour as pure-function fixtures,
+  //      and src/integration/scenario-regen.test.mjs section 10 covers it
+  //      end-to-end through the real REST API.
   {
     const editPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(editPage, async (route) => {
@@ -1509,6 +1510,31 @@ try {
     await editPage.getByRole('button', { name: /save preset/i }).click();
     await editPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
     await editPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+
+    // Place two REAL colour chips through the actual DescriptionEditor
+    // chip-picker (select text in the textarea, click Player A/B) — not a
+    // fixture that starts empty, which the pre-fix keepFill would also pass
+    // trivially (empty stays empty either way).
+    const saveDescText = 'A vendor and a buyer negotiate delivery windows.';
+    const saveDescField = editPage.locator('[role="dialog"][aria-label="Save custom game"] textarea');
+    await saveDescField.fill(saveDescText);
+    const selectWord = async (word) => {
+      await editPage.evaluate(({ w, sel }) => {
+        const ta = document.querySelector(sel);
+        const idx = ta.value.indexOf(w);
+        ta.focus();
+        ta.setSelectionRange(idx, idx + w.length);
+      }, { w: word, sel: '[role="dialog"][aria-label="Save custom game"] textarea' });
+    };
+    const saveDialog = editPage.getByRole('dialog', { name: 'Save custom game' });
+    await selectWord('vendor');
+    await saveDialog.getByRole('button', { name: 'Player A' }).click();
+    await selectWord('buyer');
+    await saveDialog.getByRole('button', { name: 'Player B' }).click();
+    record('chip precondition: two real chips are placed before saving',
+      await saveDialog.locator('button:has-text("vendor")').isVisible().catch(() => false)
+      && await saveDialog.locator('button:has-text("buyer")').isVisible().catch(() => false));
+
     await editPage.getByRole('button', { name: /^save game profile$/i }).click();
     await editPage.waitForTimeout(600);
 
@@ -1547,13 +1573,20 @@ try {
     await patchDone.catch(() => null);
     record('the PATCH body never carries payoffs (the route the plan forbids)', !!patchBody && !('payoffs' in patchBody));
     record('the PATCH body carries the regenerated description', !!patchBody && patchBody.description === REGEN_STORY_B.description);
-    // RED-REGEN/001: the mocked draw supplies no actorA/actorB (the real
-    // schema cannot) and this game never had a colour chip of its own — Keep
-    // must neither wipe (nothing to wipe) nor fabricate a colour term out of
-    // thin air.
-    record('RED-REGEN/001: with no existing chips and no supplied actor nouns, colorTermsA/B stay empty (never fabricated)',
-      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.length === 0
-        && Array.isArray(patchBody.colorTermsB) && patchBody.colorTermsB.length === 0,
+    // RED-REGEN/001 (CodeRabbit: exercise the REAL, user-reached case — this
+    // game was saved with the "vendor"/"buyer" chips placed above through
+    // the actual UI, and the mocked draw supplies no actorA/actorB, exactly
+    // the real schema's shape). Keep must leave those chips exactly as they
+    // were — this is the fixture that FAILS against the pre-fix keepFill
+    // (which unconditionally sent colorTermsA/B: []).
+    record('RED-REGEN/001: a real, pre-existing chip on player A survives Regenerate -> Keep -> Save Changes',
+      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('vendor'),
+      JSON.stringify(patchBody?.colorTermsA));
+    record('RED-REGEN/001: same for the pre-existing chip on player B',
+      !!patchBody && Array.isArray(patchBody.colorTermsB) && patchBody.colorTermsB.includes('buyer'),
+      JSON.stringify(patchBody?.colorTermsB));
+    record('RED-REGEN/001: nothing extra was fabricated alongside the real chips',
+      !!patchBody && patchBody.colorTermsA.length === 1 && patchBody.colorTermsB.length === 1,
       JSON.stringify({ colorTermsA: patchBody?.colorTermsA, colorTermsB: patchBody?.colorTermsB }));
     await editPage.close();
   }

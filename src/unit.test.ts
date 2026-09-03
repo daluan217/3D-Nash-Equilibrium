@@ -1645,6 +1645,26 @@ function testRegenColorTerms() {
   assert(dup.terms.a.filter((t) => t.toLowerCase() === 'the vendor').length === 1,
     'a re-offered actor noun already in the user\'s chips must not duplicate');
 
+  // CodeRabbit (this PR): "never destroys" must also mean "never REASSIGNS".
+  // The user placed "wolf" on player B; a draw's actorA also offers "wolf".
+  // Concatenating existing+actor BEFORE cleaning let A claim it and silently
+  // dropped the user's own B assignment as a "duplicate" — the exact
+  // opposite of the director's decision. `regenKeptColorTerms` now cleans
+  // the EXISTING pair first, so the user's ownership is fixed before any
+  // actor noun is considered, and a colliding actor noun is simply dropped.
+  const reassignAttempt = keepFill(
+    { ...bankRow, actorA: ['wolf'] }, false, { a: [], b: ['wolf'] },
+  );
+  assert(reassignAttempt.terms.b.includes('wolf') && !reassignAttempt.terms.a.includes('wolf'),
+    `an actor noun colliding with the user's EXISTING opposite-side chip must not reassign it — `
+    + `got terms=${JSON.stringify(reassignAttempt.terms)}`);
+  // Symmetric direction: existingA vs actorB.
+  const reassignAttempt2 = keepFill(
+    { ...bankRow, actorB: ['fox'] }, false, { a: ['fox'], b: [] },
+  );
+  assert(reassignAttempt2.terms.a.includes('fox') && !reassignAttempt2.terms.b.includes('fox'),
+    `same in the other direction — got terms=${JSON.stringify(reassignAttempt2.terms)}`);
+
   // ── RED-REGEN/002: the preview card and the post-Keep saved render must
   // agree on a colliding actor-noun/label pair — they used to diverge
   // because the preview ran `colorTermsFor` (dropAmbiguous over structural +
