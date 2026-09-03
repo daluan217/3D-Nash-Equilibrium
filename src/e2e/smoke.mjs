@@ -870,6 +870,122 @@ try {
     await focusPage.close();
   }
 
+  // ══ 20. THE OTHER FOUR MODALS ALSO TRAP TAB (RED-APP-5 finding 002,
+  //      round 5) — #90 (section 19 above) only fixed the expand-log
+  //      dialog; Feedback/Auth/Save/Edit had NO trap at all, so Tab walked
+  //      focus onto the page behind the backdrop. Checked via TWO dialogs,
+  //      both no-auth-needed so this stays fast, with the shared
+  //      `useModalTabTrap` hook wired the same way to Save/Edit too (see
+  //      src/a11yfixes.test.ts for the static wiring check on all four):
+  //
+  //      - Feedback: its own Tab-trap-stays-inside check. RED-APP-5's own
+  //        probe (`probe_tab_trap.mjs`) found Feedback's pre-fix leak lands
+  //        on <body> (it is near the end of the DOM, nothing focusable
+  //        after it) — a dead end, not a second-dialog collision. So this
+  //        dialog only tests confinement, not the collision.
+  //
+  //      - Auth: the SAME confinement check, PLUS the collision RED
+  //        actually found — Auth's pre-fix leak lands specifically on the
+  //        still-visible "Feedback" launcher BUTTON (Feedback renders
+  //        earlier in the DOM), and pressing Enter there opened a SECOND
+  //        `aria-modal="true"` dialog on top of the still-open Auth one.
+  //        (CodeRabbit CLI review on this branch caught an earlier version
+  //        of this check that pressed no Enter at all, so
+  //        `secondDialogCount === 1` held in both the fixed and the
+  //        defective build — and a first attempt at fixing that ran the
+  //        Enter press against Feedback, whose own leak point is <body>, so
+  //        it STILL could not discriminate. Mutation-verified against
+  //        BOTH dialogs before shipping — see the finding's blue-note.)
+  {
+    const trapPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    await trapPage.goto(BASE, { waitUntil: 'networkidle' });
+    const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
+    if (await trapExitTour.count() > 0) {
+      await trapExitTour.click();
+      await trapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).catch(() => {});
+    }
+
+    const isInsideDialog = (label) => trapPage.evaluate((l) => {
+      const dlg = document.querySelector(`[role="dialog"][aria-label="${l}"]`);
+      return !!dlg && dlg.contains(document.activeElement);
+    }, label);
+    // More presses than either dialog's own focusable-element count, so a
+    // trap failure shows up within the loop rather than needing an exact
+    // wrap-around step guessed correctly.
+    const sweepTab = async (label) => {
+      let stayedInside = true;
+      for (let i = 0; i < 15; i++) {
+        await trapPage.keyboard.press('Tab');
+        if (!(await isInsideDialog(label))) { stayedInside = false; break; }
+      }
+      return stayedInside;
+    };
+
+    const feedbackBtn = trapPage.locator('button[title="Send feedback"]');
+    await feedbackBtn.waitFor({ state: 'visible', timeout: 15000 });
+    await feedbackBtn.click();
+    await trapPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Send feedback"]'),
+      null, { timeout: 10000 }).catch(() => {});
+    await trapPage.locator('[role="dialog"][aria-label="Send feedback"] textarea, [role="dialog"][aria-label="Send feedback"] input').first().focus();
+    record('Tab is trapped inside the Feedback dialog (15 presses, focus never left it)',
+      await sweepTab('Send feedback'));
+    await trapPage.keyboard.press('Escape');
+    // Poll for the dialog's actual disappearance rather than a fixed sleep
+    // (CodeRabbit review on PR #91: a 150ms sleep can race React's state
+    // update + unmount on a slow/2-core CI runner).
+    await trapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Send feedback"]'),
+      null, { timeout: 10000 }).catch(() => {});
+
+    await trapPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    await trapPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 10000 }).catch(() => {});
+    // FOCUS MOVES INTO THE DIALOG ON OPEN (CodeRabbit review on PR #91,
+    // same round as the Tab-trap fix above): Auth has no `autoFocus` field
+    // of its own (unlike Feedback's textarea), so this dialog is the real
+    // proof — before the fix, `document.activeElement` stayed on the
+    // "Sign In / Sign Up" launcher button until the user's FIRST Tab press.
+    // Checked BEFORE the manual `.focus()` call below, which would
+    // otherwise overwrite the natural target and hide a regression here.
+    // POLLED, not read once immediately (CodeRabbit review, same PR):
+    // `useModalTabTrap`'s mount-focus branch runs from a PASSIVE effect
+    // AFTER mount + paint, so reading `document.activeElement` in the same
+    // tick the dialog appears can false-fail on a slow render. Only a
+    // timeout counts as a real failure.
+    let authFocusedInsideOnOpen = false;
+    try {
+      await trapPage.waitForFunction(() => {
+        const dlg = document.querySelector('[role="dialog"][aria-label="Account"]');
+        return !!dlg && dlg.contains(document.activeElement);
+      }, null, { timeout: 5000 });
+      authFocusedInsideOnOpen = true;
+    } catch { /* timed out — focus never landed inside; recorded as failure below */ }
+    record('opening the Auth dialog moves focus into it without a Tab press',
+      authFocusedInsideOnOpen);
+    await trapPage.locator('[role="dialog"][aria-label="Account"] input').first().focus();
+    record('Tab is trapped inside the Auth dialog (15 presses, focus never left it)',
+      await sweepTab('Account'));
+
+    // THE COLLISION ITSELF. Tab alone never opens a dialog — the pre-fix
+    // defect needs a leaked-to control AND an Enter press on it — so the
+    // Enter press is what makes this discriminating (see the section
+    // comment above for the CodeRabbit finding that caught the first two
+    // attempts at this check).
+    await trapPage.keyboard.press('Enter');
+    // This is a NEGATIVE assertion (no second dialog stacks) — there is
+    // nothing to wait FOR, so poll two animation frames instead of a fixed
+    // sleep (CodeRabbit review on PR #91): lets React's state update and
+    // paint land at whatever cadence the runner is actually running at,
+    // without waiting any longer than necessary on a fast one.
+    await trapPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const secondDialogCount = await trapPage.evaluate(() =>
+      document.querySelectorAll('[role="dialog"][aria-modal="true"]').length);
+    record('Enter after the Auth-dialog Tab sweep cannot stack a second aria-modal dialog',
+      secondDialogCount === 1, `found ${secondDialogCount}`);
+
+    await trapPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page

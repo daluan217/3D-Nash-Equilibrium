@@ -125,18 +125,56 @@ function preset(key: string): GamePayoffs {
   const ordinary = indifferenceLine('Row 1', 'Row 2', 2 / 3, 2 / 3);
   ok(ordinary.pRel === '=' && ordinary.pStr === '0.667', `an ordinary value must still read "= 0.667", got ${JSON.stringify(ordinary)}`);
 
-  // THE MIDPOINT-SHARING TRAP: p and q straddling zero with a gap under 5e-4
-  // average to exactly 0 — sharing that midpoint would print "= 0" on BOTH
-  // sides for a quantity that is not zero on EITHER side. Caught by CodeRabbit
-  // CLI's self-review of this very fix.
+  // THE MIDPOINT-SHARING TRAP, REVISED TWICE (RED-MATH-5 finding 001, round
+  // 5; CodeRabbit review on PR #91, same round).
+  //
+  // This fixture used to require p and q straddling zero to KEEP their own
+  // independently-rounded directional strings ("< 0.001" / "> -0.001"),
+  // reasoning that sharing the midpoint (exactly 0 here) would print "= 0"
+  // for a quantity that is not zero on either side. That was itself a
+  // defect: gating the collapse on `pRel === '=' && qRel === '='` left the
+  // sub-resolution band rendering TWO INDEPENDENTLY-ROUNDED strings, and at
+  // a genuine mixed-NE indifference point (whose TRUE value is exactly 0 by
+  // definition) ~1e-16 float noise routinely lands the two independent
+  // expressions on OPPOSITE sides of zero — producing exactly what Option B
+  // exists to forbid: "≈" between two DIFFERENT printed numbers ("-0.001"
+  // vs "0.001"). See `_gen/redmath5_minimal_repro.ts` for the real-game
+  // repro (A=[[-3,2],[6,-4]], B=[[5,1],[-7,1]]) and section 9 below.
+  //
+  // RED-MATH-5's fix shared ONE rendering unconditionally whenever
+  // `indifferent` is true, and used `threeRel(shared)` for it — which made
+  // this exact fixture (a REAL, non-noise ~4e-4 gap whose average happens to
+  // be the literal double 0) ALSO collapse to "= 0". CodeRabbit's review on
+  // PR #91 caught that this is ITSELF a false statement: p=0.0002 and
+  // q=-0.0002 are not zero, so asserting "= 0" — an EXACT equality — on
+  // either side is wrong, however display-honest the single shared string
+  // is. The fix keeps single-string sharing (still required below — the two
+  // sides can never again print different digits under `≈`) but no longer
+  // trusts a literal-zero `shared` unless p AND q are themselves within
+  // float-noise distance of zero (~1e-9; real noise here measures ~1e-16).
+  // Failing that, the honest single string is "≈ 0" — `\approx` on each
+  // side, not `=` — since no directional `<`/`>` claim would be true for
+  // BOTH a positive and a negative input.
   const straddle = indifferenceLine('Row 1', 'Row 2', 0.0002, -0.0002);
-  ok(!/=\s*0\b/.test(straddle.tex), `THE DEFECT: neither side may render "= 0" here, got tex="${straddle.tex}"`);
-  ok(straddle.pRel === '<' && straddle.pStr === '0.001' && straddle.qRel === '>' && straddle.qStr === '-0.001',
-    `each side must keep its own honest threshold wording, got ${JSON.stringify(straddle)}`);
+  ok(straddle.pStr === straddle.qStr && straddle.pRel === straddle.qRel,
+    `THE FIX: both sides of an indifferent line must always print identically, got tex="${straddle.tex}"`);
+  ok(straddle.pRel === '\\approx' && straddle.pStr === '0',
+    `neither payoff is 0, so the shared "0" here must be approximate, not an equality, got ${JSON.stringify(straddle)}`);
+  ok(!straddle.tex.includes('= 0'),
+    `THE CODERABBIT DEFECT: a straddling nonzero pair must never render "= 0" on either side, got tex="${straddle.tex}"`);
   // The ulp-noise case that midpoint-sharing exists FOR must still collapse.
   const ulp = indifferenceLine('Row 1', 'Row 2', 2 * (1 / 3), 1 - (1 / 3));
   ok(ulp.pRel === '=' && ulp.pStr === '0.667' && ulp.qRel === '=' && ulp.qStr === '0.667',
     `a genuine float-dust pair must still share the midpoint, got ${JSON.stringify(ulp)}`);
+
+  // THE CASE THAT USED TO SPLIT: opposite-sign float noise around an exact
+  // zero, with NO anchor supplied (the isolated-call path). Without an
+  // anchor the shared value is the plain midpoint, which for near-zero noise
+  // still lands near zero and renders identically on both sides — the
+  // defect (pStr !== qStr) is what must be gone, not any specific string.
+  const noise = indifferenceLine('Row 1', 'Row 2', -2.220446049250313e-16, 4.440892098500626e-16);
+  ok(noise.pStr === noise.qStr && noise.pRel === noise.qRel,
+    `THE DEFECT ITSELF (RED-MATH-5 001): float noise around an exact 0 must not split, got tex="${noise.tex}"`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -455,10 +493,15 @@ for (const SCALE of [10, 100]) {
 // The claim: `indifferenceLine`'s ≈-vs-strict choice depends ONLY on
 // `Math.abs(p - q)` against the fixed 5e-4 display-resolution threshold —
 // never on the MAGNITUDE of p/q, i.e. never on payoff scale. And whenever it
-// asserts ≈ AND neither side needed sub-resolution `<`/`>` wording (the
-// ordinary case — see the MIDPOINT-SHARING TRAP fixture above for the one
-// documented exception, near zero), the two printed strings are IDENTICAL —
-// never merely close.
+// asserts ≈, the two printed strings are IDENTICAL — never merely close —
+// WHETHER OR NOT either side needed sub-resolution `<`/`>` wording.
+//
+// [RED-MATH-5 finding 001, round 5] This property used to be checked ONLY in
+// the ordinary-magnitude branch (`pRel === '=' && qRel === '='`); the
+// near-zero branch below incremented `sawNearZero` and asserted NOTHING about
+// `pStr`/`qStr` — so this exact sweep ran, "passed", and never noticed that
+// the near-zero branch could print two different numbers. Both branches now
+// assert the same thing.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   function mkProp(seed: number) {
@@ -491,13 +534,13 @@ for (const SCALE of [10, 100]) {
         + `gap=${Math.abs(p - q)} at p=${p} q=${q}`);
       if (L.indifferent) {
         sawIndifferent++;
-        if (L.pRel === '=' && L.qRel === '=') {
-          ok(L.pStr === L.qStr,
-            `scale ${scale}: an ordinary-magnitude ≈ line must print IDENTICAL digits, got `
-            + `${L.pStr} / ${L.qStr} (p=${p} q=${q})`);
-        } else {
-          sawNearZero++;
-        }
+        // THE FIX: identical digits AND identical relation wording, in EVERY
+        // ≈ line — sub-resolution or ordinary. This is the assertion that was
+        // previously skipped for the near-zero branch (see the comment above).
+        ok(L.pStr === L.qStr && L.pRel === L.qRel,
+          `scale ${scale}: an ≈ line must print IDENTICALLY on both sides, got `
+          + `"${L.pRel} ${L.pStr}" / "${L.qRel} ${L.qStr}" (p=${p} q=${q})`);
+        if (!(L.pRel === '=' && L.qRel === '=')) sawNearZero++;
       } else {
         sawStrict++;
         ok(L.pStr !== L.qStr,
@@ -552,6 +595,96 @@ for (const SCALE of [10, 100]) {
     `"can differ" must be a real warning: only ${differ}/${mixed} mixed NEs differ under substitution`);
   ok(differ < mixed,
     `"can differ" must not be "always differs": ${differ}/${mixed} — if this ever hits 100% the wording is too weak`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. RED-MATH-5 FINDING 001 (round 5) — "≈" between two DIFFERENT numbers at
+//    an EXACT-ZERO mixed-NE indifference point, through the real production
+//    call chain (`App.tsx` -> `resolveProfile` -> `indifferenceLines`).
+//
+// Option B's own claim ("THE MISPRINT CLASS IS NOW STRUCTURALLY IMPOSSIBLE",
+// section 7 above) was FALSE for this case: `shareMidpoint` only fired when
+// NEITHER side needed sub-resolution `<`/`>` wording, so a genuine mixed-NE
+// indifference whose TRUE value is exactly 0 — where `eRow1`/`eRow2` are two
+// DIFFERENT floating-point expressions for that same zero — could have
+// ~1e-16 rounding noise land them on opposite sides of zero, each picking up
+// its own directional wording independently: "-0.001" on one side, "0.001"
+// on the other, joined by "\approx". This section is the real-game repro plus
+// a seeded-corpus reach count, so this class cannot silently come back.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  // Minimal hand-verified repro (`_gen/redmath5_minimal_repro.ts`): small
+  // single-digit integers, directly enterable in the UI.
+  const g = { a11: -3, a12: 2, a21: 6, a22: -4, b11: 5, b12: 1, b21: -7, b22: 1 } as GamePayoffs;
+  const nes = computeAllNE(g) as NashEquilibrium[];
+  const mixed = nes.find((n) => n.x > 0 && n.x < 1 && n.y > 0 && n.y < 1)!;
+  ok(mixed !== undefined
+    && Math.abs(mixed.x - 2 / 3) < 1e-9 && Math.abs(mixed.y - 0.4) < 1e-9,
+    `finding 001's repro game must still have its mixed NE at (2/3, 0.4), got ${JSON.stringify(mixed)}`);
+  const resolved = resolveProfile(g, { exactX: mixed.x, exactY: mixed.y } as unknown as SimState);
+  const L = indifferenceLines(g, resolved.x, resolved.y);
+
+  // The mechanism, stated: both row payoffs are exactly 0 in real arithmetic
+  // (that is what makes y*=0.4 the indifference root) but land on opposite
+  // sides of zero in floating point.
+  const eRow1 = mixed.y * g.a11 + (1 - mixed.y) * g.a12;
+  const eRow2 = mixed.y * g.a21 + (1 - mixed.y) * g.a22;
+  ok(eRow1 < 0 && eRow2 > 0 && Math.abs(eRow1) < 1e-12 && Math.abs(eRow2) < 1e-12,
+    `the repro must still exercise opposite-sign float noise around exact 0, got eRow1=${eRow1} eRow2=${eRow2}`);
+
+  ok(L.a.indifferent, 'A must still be indifferent at this equilibrium');
+  ok(L.a.pStr === L.a.qStr && L.a.pRel === L.a.qRel,
+    `THE DEFECT ITSELF: both sides of the A line must print identically, got tex="${L.a.tex}"`);
+  ok(!/-0\.001.*0\.001|0\.001.*-0\.001/.test(L.a.tex),
+    `the exact shipped defect string must not appear, got tex="${L.a.tex}"`);
+
+  // And the line must now match the headline it sits three lines under — the
+  // "worse:" half of the finding (E[A] = 0 while the line said otherwise).
+  ok(payoffTexRhs(EA(resolved.x, resolved.y, g)) === `${L.a.pRel} ${L.a.pStr}`,
+    `the row line must render the SAME statement as the headline E[A], got `
+    + `"${payoffTexRhs(EA(resolved.x, resolved.y, g))}" vs "${L.a.pRel} ${L.a.pStr}"`);
+  ok(L.a.tex === '\\mathbb{E}[\\text{Row 1}] = 0 \\approx \\mathbb{E}[\\text{Row 2}] = 0',
+    `exact rendering must be the honest shared zero, got tex="${L.a.tex}"`);
+
+  // MUTATION FIXTURE: reverting to independent per-side rendering (the
+  // pre-fix mechanism) must reproduce the shipped defect string on this exact
+  // game, or this fixture has stopped testing anything.
+  const naiveP = payoffTexRhs(eRow1), naiveQ = payoffTexRhs(eRow2);
+  ok(naiveP !== naiveQ,
+    `the naive independent render must still split on this fixture (got "${naiveP}" / "${naiveQ}"), `
+    + 'or the repro has gone stale and no longer proves the fix does anything');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9b. CORPUS REACH — "≈ between different printed numbers" must be 0 over
+// the same seeded corpus RED-MATH-5 used to find it (`_gen/redmath5_vertex_
+// reach.ts` pattern: `computeAllNE` roots through `resolveProfile`, the real
+// NE-list / converged-run call chain). RED measured 262/607,874 before this
+// fix (concentrated on int[-9,9] small-integer games). Reduced scale here to
+// stay fast in `npm test`; the full corpus lives in the `_gen/` script for
+// re-verification.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const rnd = mk(90210);
+  let neEntries = 0, mismatched = 0, identicalNoRel = 0;
+  for (let i = 0; i < 6000; i++) {
+    const v = () => Math.round((rnd() * 2 - 1) * 9);
+    const g = { a11: v(), a12: v(), a21: v(), a22: v(), b11: v(), b12: v(), b21: v(), b22: v() } as GamePayoffs;
+    for (const ne of computeAllNE(g) as NashEquilibrium[]) {
+      if (ne.x <= 0 || ne.x >= 1 || ne.y <= 0 || ne.y >= 1) continue;
+      neEntries++;
+      const L = indifferenceLines(g, ne.x, ne.y);
+      for (const side of ['a', 'b'] as const) {
+        if (L[side].indifferent && L[side].pStr !== L[side].qStr) mismatched++;
+        if (L[side].indifferent && L[side].pStr === L[side].qStr && L[side].pRel !== L[side].qRel) identicalNoRel++;
+      }
+    }
+  }
+  ok(neEntries > 300, `the corpus must produce enough mixed NE entries to mean something, got ${neEntries}`);
+  ok(mismatched === 0,
+    `${mismatched}/${neEntries} mixed-NE indifference lines print "≈" between two different numbers`);
+  ok(identicalNoRel === 0,
+    `${identicalNoRel}/${neEntries} lines print identical digits but different relation wording (also a misprint)`);
 }
 
 console.log(`equilibriumpanel.test.ts: ${checks} checks passed`);
