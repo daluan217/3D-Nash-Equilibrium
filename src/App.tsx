@@ -290,12 +290,32 @@ function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElemen
  * exceed" the server side), and still bounds a genuinely stuck request. The abort surfaces as a
  * `DOMException` named `AbortError` in the caller's `catch`, distinguishable
  * from an ordinary network failure so the UI can say which happened.
+ *
+ * CodeRabbit finding (this branch): `fetch()`'s own promise resolves once
+ * RESPONSE HEADERS arrive, not once the body is fully read — a first draft
+ * cleared the abort timer in a `.finally()` chained directly onto the
+ * `fetch()` call, which fires the instant headers land, BEFORE the caller
+ * ever calls `res.json()`. A connection that answers promptly with headers
+ * and then stalls mid-body (the exact "flaky link" case this fix exists
+ * for) would leave `res.json()` pending with no timer left to abort it.
+ * The timer must stay armed until the CALLER finishes reading the body, so
+ * `clear()` is returned separately and called from the caller's own
+ * `finally` block, alongside its other per-request cleanup.
  */
 const REPORT_FETCH_TIMEOUT_MS = 22_000;
 
-function fetchWithTimeout(url: string, init: RequestInit, controller: AbortController): Promise<Response> {
-  const timer = setTimeout(() => controller.abort(), REPORT_FETCH_TIMEOUT_MS);
-  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+// `timeoutMs` defaults to REPORT_FETCH_TIMEOUT_MS; exported and parameterized
+// only so src/fetchtimeout.test.ts can exercise the real logic with a short
+// timeout against a real (stalled-body) HTTP server, instead of waiting out
+// the full 22s or re-deriving the logic in a second, drifting copy.
+export function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  controller: AbortController,
+  timeoutMs: number = REPORT_FETCH_TIMEOUT_MS,
+): { promise: Promise<Response>; clear: () => void } {
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return { promise: fetch(url, { ...init, signal: controller.signal }), clear: () => clearTimeout(timer) };
 }
 
 export default function App() {
@@ -1183,19 +1203,23 @@ export default function App() {
     // specific request; removed in `finally` below regardless of outcome.
     const controller = new AbortController();
     inFlightReportControllersRef.current.add(controller);
+    // See fetchWithTimeout's docstring: `clear()` must not run until the
+    // BODY is also read, so it is called from this function's own `finally`
+    // below, not chained onto the fetch promise itself.
+    const { promise: fetchPromise, clear: clearReportTimeout } = fetchWithTimeout(getApiUrl('/api/report'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        freshScenario
+          ? { payoffs: requestPayoffs, bypassCache: true }
+          : { payoffs: requestPayoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
+      ),
+    }, controller);
     try {
       // bypassCache: an explicit re-request (Regenerate, or any fresh
       // invention) must roll a new report; a FIRST explain is the cache's
       // customer — identical preset matrices serve instantly.
-      const res = await fetchWithTimeout(getApiUrl('/api/report'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          freshScenario
-            ? { payoffs: requestPayoffs, bypassCache: true }
-            : { payoffs: requestPayoffs, scenario: scenarioOverride ?? scenarioForReport, ...(llmEnvelope ? { bypassCache: true } : {}) },
-        ),
-      }, controller);
+      const res = await fetchPromise;
       if (!res.ok) throw new Error(String(res.status));
       const envelope = (await res.json()) as ReportEnvelope;
       // RED-APP-3 finding 001: the user may have switched to a DIFFERENT
@@ -1231,6 +1255,7 @@ export default function App() {
       setLlmError(true);
       setLlmTimedOut(err instanceof DOMException && err.name === 'AbortError');
     } finally {
+      clearReportTimeout();
       inFlightReportControllersRef.current.delete(controller);
       // Only the request that is still CURRENT clears the loading flag --
       // a superseded request's finally must not clobber a newer request's
@@ -1270,12 +1295,15 @@ export default function App() {
     // RED-APP-6/003: same no-timeout defect as fetchLlmExplanation, same fix.
     const controller = new AbortController();
     inFlightReportControllersRef.current.add(controller);
+    // See fetchWithTimeout's docstring: `clear()` runs from this function's
+    // own `finally` below, after the body is read, not chained onto fetch.
+    const { promise: fetchPromise, clear: clearReportTimeout } = fetchWithTimeout(getApiUrl('/api/report'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payoffs: requestPayoffs, scenarioOnly: true }),
+    }, controller);
     try {
-      const res = await fetchWithTimeout(getApiUrl('/api/report'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payoffs: requestPayoffs, scenarioOnly: true }),
-      }, controller);
+      const res = await fetchPromise;
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as { scenario: SuggestedScenario | null };
       if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) {
@@ -1298,6 +1326,7 @@ export default function App() {
         ? "✗ Inventing a new scenario is taking longer than expected — try again."
         : "✗ Couldn't reach the server for a new scenario."]);
     } finally {
+      clearReportTimeout();
       inFlightReportControllersRef.current.delete(controller);
       // Same reasoning as fetchLlmExplanation's finally: only the request
       // that is still current may clear the loading flag.

@@ -1130,12 +1130,18 @@ try {
     await hangPage.waitForTimeout(23000); // past REPORT_FETCH_TIMEOUT_MS
     const recovered = await hangPage.evaluate(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
-      const wording = document.body.innerText.match(/timeout|timed out|taking longer|try again|unavailable/i);
+      // CodeRabbit finding (this branch): a broad `timeout|...|try again|
+      // unavailable` regex also matches the ORDINARY failure copy
+      // ("Couldn't reach the explanation service... try again in a
+      // moment.") -- so this check could pass even if `llmTimedOut`
+      // regressed to always-false and the timeout-specific branch never
+      // rendered. Match the phrase that ONLY the timeout wording contains.
+      const wording = document.body.innerText.match(/taking longer than expected/i);
       return { button: btn ? { text: btn.textContent, disabled: btn.disabled } : null, wording: wording ? wording[0] : null };
     });
     record('the button un-sticks (re-enabled, no longer "Analyzing…") after the timeout',
       recovered.button?.disabled === false && recovered.button?.text !== 'Analyzing…', JSON.stringify(recovered));
-    record('the page shows honest timeout wording, not silence',
+    record('the page shows the timeout-specific wording, not the generic failure message',
       !!recovered.wording, JSON.stringify(recovered));
     const runStillUsable = await hangPage.getByRole('button', { name: /^run$/i }).first().isEnabled().catch(() => false);
     record('the rest of the app (Run) stays usable while the report request was stuck', runStillUsable);
@@ -1275,8 +1281,12 @@ try {
           || document.querySelector('[role="dialog"][aria-label="Edit saved game"] input');
         return inp ? inp.value : null;
       });
-      record('the Save dialog Name field clamps a 72-char suggested name to 40 (RED-APP-6/005)',
-        nameValue !== null && nameValue.length <= 40, `length=${nameValue ? nameValue.length : null}`);
+      // CodeRabbit finding (this branch): `length <= 40` alone would also
+      // pass if some UNRELATED bug truncated the name to a shorter, WRONG
+      // string (e.g. an accidental `.slice(0, 10)`) -- assert the EXACT
+      // expected value, the first 40 'A's of the crafted 72-char name.
+      record('the Save dialog Name field clamps a 72-char suggested name to exactly 40 (RED-APP-6/005)',
+        nameValue === 'A'.repeat(40), `length=${nameValue ? nameValue.length : null} value=${JSON.stringify(nameValue)}`);
     }
     await clampPage.close();
   }
