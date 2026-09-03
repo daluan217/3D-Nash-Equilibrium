@@ -665,28 +665,44 @@ function acquireDesktopLock(): boolean {
           statErr = e;
         }
         if (statErr) {
-          if (statErr.code === "ENOENT") {
-            // Positively confirmed absent. This directory is otherwise
-            // reachable (we already passed the mkdir/existsSync stage above,
-            // which now fails closed on its own if the directory itself is
-            // not usable), so any EXISTING games remain readable by
-            // `loadDBFromFile`; this failure is specifically about creating
-            // a NEW file (a read-only mount, a full disk, a permission that
-            // blocks *creates* specifically, ...) and carries no positive
-            // evidence of a live second writer. Per round4/#88's
-            // `saveDBOrFail`, an actual write attempt under the same
-            // condition will fail LOUDLY and honestly at save time, not
+          // CodeRabbit (this round): ENOENT on the LOCK FILE alone is not
+          // enough — the mkdir/existsSync check above only proved the
+          // directory was there AT THAT POINT IN TIME. If `userDataPath`
+          // itself was removed in the window between that check and here
+          // (another process/tool deleting it, or a race), `openSync`/
+          // `statSync` on a path INSIDE a now-missing directory ALSO report
+          // ENOENT — indistinguishable from "directory fine, lock file
+          // legitimately never existed" by this code alone. Failing open on
+          // that would walk into exactly the case the mkdir branch above was
+          // fixed to avoid: `loadDBFromFile` finds DB_FILE missing too and
+          // silently returns a fresh EMPTY database. Re-check the directory
+          // itself, fresh, before trusting the ENOENT.
+          const directoryStillThere = fs.existsSync(userDataPath);
+          if (statErr.code === "ENOENT" && directoryStillThere) {
+            // Positively confirmed: the directory is there RIGHT NOW, and
+            // the lock file specifically is not. Any EXISTING games remain
+            // readable by `loadDBFromFile`; this failure is specifically
+            // about creating a NEW file (a read-only mount, a full disk, a
+            // permission that blocks *creates* specifically, ...) and
+            // carries no positive evidence of a live second writer. Per
+            // round4/#88's `saveDBOrFail`, an actual write attempt under the
+            // same condition will fail LOUDLY and honestly at save time, not
             // silently diverge, so this cannot reproduce 001's split-brain
             // scenario. Failing CLOSED here instead would deny the user read
             // access to their existing data for a write-only problem with no
             // real data-loss risk. Fail OPEN — but only for this,
-            // positively-confirmed-absent case.
+            // positively-confirmed-absent-with-directory-intact case.
             console.error("Error writing desktop lock file:", err);
             return true;
           }
-          // Cannot determine either way (EACCES/EPERM/... on the stat
-          // itself — the directory blocks even looking). Unlike the ENOENT
-          // case above, this is genuinely ambiguous: a live lock could be
+          // Cannot determine either way. Two shapes land here: (a)
+          // EACCES/EPERM/... on the stat itself (the directory blocks even
+          // looking), or (b) ENOENT on the lock file WHILE `userDataPath`
+          // itself is ALSO gone right now (`directoryStillThere` false) —
+          // the directory that passed the mkdir/existsSync check above did
+          // not survive to this point, so the earlier check's "the
+          // directory is fine" no longer holds. Both are genuinely
+          // ambiguous: a live lock (or real, now-unreachable data) could be
           // sitting right there, invisible to us. Same principle as 001's
           // read-side fix — "cannot resolve" must mean refuse, not proceed
           // unprotected.
@@ -695,9 +711,10 @@ function acquireDesktopLock(): boolean {
             `Refusing to start: could not create the desktop data-directory lock at ${lockFile} `
             + `(${err && err.code ? err.code : "unknown error"}), and could not determine whether one `
             + `already exists either (${statErr && statErr.code ? statErr.code : "unknown error"}). This `
-            + `usually means a permissions problem on ${userDataPath} itself. Starting anyway could `
-            + `silently overwrite another process's saved games if one is currently running. Fix the `
-            + `directory's permissions and try again.`,
+            + `usually means a permissions problem on ${userDataPath}, or that it stopped being `
+            + `accessible partway through startup. Starting anyway could silently overwrite another `
+            + `process's saved games if one is currently running, or show an empty library instead of `
+            + `a clear error. Fix its permissions/availability and try again.`,
             lockFile,
           );
         }

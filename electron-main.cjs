@@ -1,5 +1,6 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
 // Override the package.json "name" so the macOS app menu (About/Hide/Quit)
 // reads the product name instead of the template default ("react-example").
@@ -165,10 +166,36 @@ if (!gotTheLock) {
   // `lockFile` is named for its original, and still most common, case (the
   // `.server.lock` file itself) but is NOT always a file: RED-DESKTOP-5b
   // added a second, directory-creation failure site that also routes
-  // through this same hook and passes the DIRECTORY path instead (there is
-  // no lock file yet when the data directory itself cannot even be
-  // created/accessed). `shell.showItemInFolder` and the generic "Show
-  // Location" wording below both work correctly for either.
+  // through this same hook and passes the DIRECTORY path instead — and in
+  // THAT case the path may not exist at all (that is exactly why it
+  // failed). `shell.showItemInFolder`'s behavior on a nonexistent path is
+  // undefined (CodeRabbit, this round), so `revealLockLocation` below picks
+  // between it and `shell.openPath` on the nearest existing ancestor,
+  // rather than assuming the target is a real, existing file.
+  // `target` is normally the `.server.lock` file (exists — reveal it
+  // directly, selected, so the user can inspect/delete it). For the
+  // directory-creation failure site, `target` is the user-data directory
+  // itself, which may legitimately NOT exist (that IS the failure). Walk up
+  // to the nearest existing ancestor and open THAT instead — `path.dirname`
+  // on a root path is a fixed point, so this always terminates.
+  function revealLockLocation(target) {
+    try {
+      if (fs.existsSync(target)) {
+        shell.showItemInFolder(target);
+        return;
+      }
+      let dir = path.dirname(target);
+      while (!fs.existsSync(dir)) {
+        const parent = path.dirname(dir);
+        if (parent === dir) break; // reached the filesystem root; stop rather than loop forever
+        dir = parent;
+      }
+      shell.openPath(dir);
+    } catch (err) {
+      console.error('Failed to reveal the lock/data-directory location:', err);
+    }
+  }
+
   global.onDesktopLockFailure = ({ message, lockFile }) => {
     lockFailurePending = true;
     // Cancel the slow-boot fallback outright — a cancelled timer cannot fire
@@ -192,7 +219,7 @@ if (!gotTheLock) {
         + 'so you can inspect/delete it yourself, then relaunch.',
     }).then((result) => {
       if (result.response === 1) {
-        shell.showItemInFolder(lockFile);
+        revealLockLocation(lockFile);
         // Leave the (now-informed, still-blocked) app running rather than
         // quitting out from under a user who is mid-cleanup in Finder.
         return;

@@ -224,14 +224,20 @@ try {
     });
     const hit = findLoneSurrogate(r.json);
     const prose = r.json?.report?.prose ?? '';
-    // A single, lone Regional Indicator (half a flag) must never appear —
-    // count RI codepoints and require the count to be EVEN (every RI has
-    // its pair).
-    const riMatches = prose.match(/[\u{1F1E6}-\u{1F1FF}]/gu) || [];
+    // CodeRabbit (this round): a bare EVEN-count check over the WHOLE prose
+    // is fooled by the prose repeating the label — one truly-half flag can
+    // appear an even number of TOTAL repeats (e.g. two separate mentions,
+    // each individually missing its second Regional Indicator) and still
+    // pass. Extract ONE label the same way the family-sequence check above
+    // does, and require it to equal 'Y' + some whole number of flag copies
+    // — the label itself must be well-formed, not just the aggregate count.
+    const oneLabel = extractFirstLabel(prose, 'A prefers ', / \(/);
+    const validFlagLabels = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((k) => 'Y' + flag.repeat(k));
     record('flag (Regional Indicator pair) sequence: no lone surrogate anywhere in the response',
       r.status === 200 && !hit, `status=${r.status} ${hit ? JSON.stringify(hit) : ''}`);
-    record('flag sequence: Regional Indicator codepoints always come in pairs (no half-flag)',
-      riMatches.length % 2 === 0, `RI codepoint count in prose: ${riMatches.length}`);
+    record('flag sequence: the label contains only WHOLE flag pairs (no half-flag)',
+      oneLabel !== null && validFlagLabels.includes(oneLabel),
+      `extracted label: ${JSON.stringify(oneLabel)}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════

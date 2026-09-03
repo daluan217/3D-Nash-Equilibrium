@@ -156,12 +156,13 @@ if (process.env.EXPECTED_INDEX) {
     const r = await fetch(`${BASE}${path}`, headers ? { headers } : undefined);
     const status = r.status;
     const contentLength = r.headers.get('content-length');
+    const contentRange = r.headers.get('content-range');
     // Cancel the body stream instead of reading it — this is what makes the
     // request "status-only": the fetch already resolved once headers arrived,
     // and cancelling here means we never pull the (potentially 137 MB) body
     // off the wire.
     try { await r.body?.cancel(); } catch { /* best-effort; status is already captured */ }
-    return { status, contentLength };
+    return { status, contentLength, contentRange };
   }
 
   const full = await statusOnlyGet('/api/download/dmg');
@@ -169,8 +170,13 @@ if (process.env.EXPECTED_INDEX) {
     full.status === 200, `status=${full.status} content-length=${full.contentLength ?? '(unset — expected once the file is >= the Cloud Run cap)'}`);
 
   const range = await statusOnlyGet('/api/download/dmg', { Range: 'bytes=0-0' });
-  record('live DMG 1-byte Range GET is 206 (resumable downloads still work)',
-    range.status === 206, `status=${range.status} content-length=${range.contentLength ?? '(unset)'}`);
+  // CodeRabbit (this round): a bare status===206 check could pass on a
+  // malformed or wrong partial response (some server/proxy shapes return
+  // 206 without honoring the requested range) while resume downloads stay
+  // broken. Assert Content-Range echoes the exact 1-byte span requested.
+  record('live DMG 1-byte Range GET is 206 with a matching Content-Range (resumable downloads still work)',
+    range.status === 206 && /^bytes 0-0\/\d+$/.test(range.contentRange || ''),
+    `status=${range.status} content-range=${range.contentRange ?? '(unset)'}`);
 }
 
 // ══ 8. DEPLOY CONFIG, verified by behaviour rather than by reading env vars
