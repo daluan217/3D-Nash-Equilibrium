@@ -19,12 +19,21 @@
  * check would never be reached at all. The bad-shape db.json itself is
  * written by the caller before invoking this runner.
  *
- * Usage: node db-shape-hook-runner.cjs <bundlePath> <userDataDir> <withHook 0|1>
+ * Usage: node db-shape-hook-runner.cjs <bundlePath> <userDataDir> <withHook 0|1> [fireUnrelated 0|1]
  * Prints one line `RUNNER_RESULT <json>` and exits 0 if the process survived
  * to report (i.e. was not exited by the db-shape refusal). If the process
  * WAS exited, no RUNNER_RESULT line appears and the exit code is whatever
  * `reportDesktopLockFailure` chose (1 in the current code, the standalone —
  * no hook — branch).
+ *
+ * `fireUnrelated` (CodeRabbit, 2026-09-03): when '1' and the hook is
+ * registered, fires a totally UNRELATED unhandled promise rejection ~50ms
+ * after the refusal was reported to the hook — simulating the async window
+ * between hand-off and the native dialog actually being shown/dismissed,
+ * where a stray unrelated error must NOT kill the whole in-process Electron
+ * main process (that would take the dialog down with it). If the fix is
+ * absent/reverted, the RUNNER_RESULT line below never prints — the process
+ * exits on the unrelated rejection before reaching it.
  */
 const net = require('net');
 const path = require('path');
@@ -32,6 +41,7 @@ const path = require('path');
 const bundlePath = process.argv[2];
 const userDataDir = process.argv[3];
 const withHook = process.argv[4] === '1';
+const fireUnrelated = process.argv[5] === '1';
 
 if (!bundlePath || !userDataDir) {
   console.error('usage: db-shape-hook-runner.cjs <bundlePath> <userDataDir> <withHook 0|1>');
@@ -69,9 +79,22 @@ net.Server.prototype.listen = function patchedListen(...args) {
 
 require(path.resolve(bundlePath));
 
+if (withHook && fireUnrelated) {
+  // Deliberately NOT caught anywhere — an unhandled rejection, exactly the
+  // shape `handleFatalAsync` exists to catch, with nothing to do with the
+  // db-shape refusal itself (a stray analytics call, an IPC handler throw,
+  // ...). Scheduled after the synchronous `require()` above (so the refusal
+  // and hook call have already happened) but before the final report below.
+  setTimeout(() => {
+    Promise.reject(new Error('totally unrelated async failure, not the db-shape refusal'));
+  }, 50);
+}
+
 // If the db-shape refusal took the process.exit(1) path (no hook), execution
 // never reaches here at all — there is no line left to print and the
-// process's own exit code (1) is the signal the test reads.
+// process's own exit code (1) is the signal the test reads. Same if
+// `fireUnrelated` triggered `handleFatalAsync`'s startup-failure exit before
+// this fires (the pre-fix behavior this scenario exists to catch).
 setTimeout(() => {
   console.log(`RUNNER_RESULT ${JSON.stringify({
     hookCalled: hookPayload !== null,

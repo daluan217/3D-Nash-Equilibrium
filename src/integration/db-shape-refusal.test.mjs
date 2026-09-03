@@ -33,6 +33,19 @@
  * STATE.md, "known open items"): the refusal path was verified by hand that
  * session but shipped with no automated coverage. Closing it here.
  *
+ * SECTION 6 (below) GUARDS A SECOND DEFECT, found by CodeRabbit on THIS
+ * file's own PR (2026-09-03): `loadDBFromFile` is not desktop-only — `initDB`
+ * also calls it on the HOSTED path (no ELECTRON_USER_DATA_PATH configured at
+ * all, or as the fallback when a GCS load throws), where `isDesktop()` is
+ * false and the hard refusal above used to fire there too via a bare
+ * `process.exit(1)` — crashing a Cloud Run instance over what is, on that
+ * path, ephemeral scratch state a transient GCS failure fell back to, with a
+ * refusal message written for a desktop user ("quit, inspect/repair or
+ * delete it, then relaunch"). Fixed by gating the hard refusal to
+ * `isDesktop()`; the hosted path now gets the SAME treatment as an
+ * unparseable file (preserve the bytes aside, log loudly, start with a fresh
+ * empty DB) instead of exiting.
+ *
  *   node src/integration/db-shape-refusal.test.mjs
  */
 import { spawn, spawnSync } from 'node:child_process';
@@ -61,6 +74,25 @@ function spawnServer(userData, thePort) {
       PORT: String(thePort),
       IS_ELECTRON: 'true',
       ELECTRON_USER_DATA_PATH: userData,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+// Deliberately NOT IS_ELECTRON/ELECTRON_USER_DATA_PATH/GCS_BUCKET_NAME — the
+// hosted-service shape (initDB's no-GCS-configured branch), where
+// `loadDBFromFile`'s DB_FILE falls back to `process.cwd()/db.json`. `env` is
+// passed as a whole replacement object (never inherits the real process.env),
+// so this can never accidentally pick up real GCS credentials from the
+// machine running the test.
+function spawnHostedServer(userData, thePort) {
+  return spawn('node', [BUNDLE], {
+    cwd: userData,
+    env: {
+      PATH: process.env.PATH,
+      HOME: userData,
+      NODE_ENV: 'production',
+      PORT: String(thePort),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -214,8 +246,8 @@ async function stop(child) {
 //    process.exit the whole Electron main process), the hook must fire
 //    naming db.json, and the server must never have bound a port.
 // ═════════════════════════════════════════════════════════════════════════
-function runHook(userData, withHook) {
-  const r = spawnSync('node', [RUNNER, BUNDLE, userData, withHook ? '1' : '0'], {
+function runHook(userData, withHook, fireUnrelated = false) {
+  const r = spawnSync('node', [RUNNER, BUNDLE, userData, withHook ? '1' : '0', fireUnrelated ? '1' : '0'], {
     encoding: 'utf8',
     timeout: 15_000,
   });
@@ -245,6 +277,32 @@ function runHook(userData, withHook) {
   rmSync(userData, { recursive: true, force: true });
 }
 
+// ── 4b. THE DIALOG WINDOW MUST NOT BE KILLABLE BY AN UNRELATED ERROR ───────
+// CodeRabbit, 2026-09-03: between the hook firing (above) and the async
+// native dialog actually being shown/dismissed, `startServer` has already
+// returned WITHOUT ever setting `serverListening`. Before this fix, ANY
+// totally unrelated unhandledRejection/uncaughtException landing in that
+// window hit `handleFatalAsync`'s `!serverListening` branch and called
+// `process.exit(1)` — since server.ts runs IN-PROCESS inside
+// electron-main.cjs, that silently kills the WHOLE Electron main process,
+// dialog included, reintroducing the exact "vanish with no dialog" class
+// #88/#93 exists to prevent, through a different door.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-unrelated-'));
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ users: 42, games: [] }));
+
+  const r = runHook(userData, true, true);
+  const m = (r.stdout || '').match(/RUNNER_RESULT (\{.*\})/);
+  const parsed = m ? JSON.parse(m[1]) : null;
+
+  record('an UNRELATED unhandled rejection during the post-refusal dialog window does not kill the process',
+    r.status === 0, `status=${r.status} stderr=${(r.stderr || '').slice(0, 300)}`);
+  record('the refusal was still reported to the hook before the unrelated error fired',
+    !!parsed?.hookCalled, `stdout=${(r.stdout || '').slice(0, 300)}`);
+
+  rmSync(userData, { recursive: true, force: true });
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // 5. PACKAGED APP, WITHOUT the hook (a standalone `node dist/server.cjs`
 //    required in-process by this runner, mirroring the lock-dialog-hook
@@ -263,6 +321,42 @@ function runHook(userData, withHook) {
     !(r.stdout || '').includes('RUNNER_RESULT'), `stdout=${(r.stdout || '').slice(0, 200)}`);
 
   rmSync(userData, { recursive: true, force: true });
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 6. THE HOSTED PATH (CodeRabbit, 2026-09-03): the SAME wrong-type db.json
+//    that must hard-refuse on desktop must NOT crash a hosted instance. No
+//    IS_ELECTRON/ELECTRON_USER_DATA_PATH/GCS_BUCKET_NAME — `DB_FILE` falls
+//    back to `process.cwd()/db.json`, exactly `initDB`'s no-GCS-configured
+//    branch (and the shape a GCS-load-throws fallback lands on too).
+// ═════════════════════════════════════════════════════════════════════════
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-hosted-'));
+  const original = JSON.stringify({ users: 'not-an-array', games: [] });
+  writeFileSync(path.join(userData, 'db.json'), original);
+
+  const child = spawnHostedServer(userData, port);
+  try {
+    const { log } = await waitReady(child, port);
+    record('HOSTED: a wrong-type db.json does NOT crash the process (boots and serves)', true);
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`);
+    record('HOSTED: /api/health responds 200 despite the malformed file', health.ok, `status ${health.status}`);
+    record('HOSTED: the malformed file is still logged loudly, naming db.json',
+      /db\.json/.test(log()) && /"users" is present but is a string, not an array/.test(log()),
+      log().slice(0, 400));
+    record('HOSTED: the log does NOT use desktop-specific "quit...relaunch" wording',
+      !/quit, inspect\/repair or delete it, then relaunch/.test(log()), log().slice(0, 300));
+  } catch (err) {
+    record('HOSTED: a wrong-type db.json does NOT crash the process (boots and serves)', false, String(err));
+  }
+
+  const entries = readdirSync(userData);
+  record('HOSTED: the unreadable file is preserved aside, same as the desktop case',
+    entries.some((f) => f.startsWith('db.json.corrupt-')), `entries=${JSON.stringify(entries)}`);
+
+  await stop(child);
+  rmSync(userData, { recursive: true, force: true });
+  port += 1;
 }
 
 const fails = results.filter((r) => !r.pass);

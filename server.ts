@@ -383,6 +383,23 @@ function asyncHandler(
 // up" apart from "already serving requests" and choose accordingly.
 let serverListening = false;
 
+// Set to true the moment a desktop startup refusal has been HANDED OFF to
+// the packaged app's dialog hook (`reportDesktopLockFailure`, when
+// `globalThis.onDesktopLockFailure` is registered) — separate from
+// `serverListening`, which never becomes true on this path at all (the
+// refusal means `startServer` returns before ever calling `initDB`/`listen`).
+// CodeRabbit, 2026-09-03: without this, the window between that hand-off and
+// the user actually seeing/dismissing the async native dialog was still
+// treated as "starting up" by `handleFatalAsync` below — so ANY unrelated
+// unhandled rejection or uncaught exception during that window (a stray
+// analytics call, an IPC handler throw, nothing to do with the refusal
+// itself) hit the `!serverListening` branch and called `process.exit(1)`,
+// which — because `server.ts` runs IN-PROCESS inside electron-main.cjs —
+// kills the ENTIRE Electron main process, dialog included, before or while
+// the user is looking at it. Exactly the "silent vanish" class #88/#93's
+// dialog hook exists to prevent, reintroduced through a different door.
+let startupOutcomeReported = false;
+
 // Last-resort safety net, for anything that reaches neither `asyncHandler`
 // nor Express's synchronous error handling — a rejected promise in
 // fire-and-forget code (e.g. an un-awaited background save), a throw inside
@@ -392,10 +409,15 @@ let serverListening = false;
 // keep serving once the server is up (never exit on a request-path error);
 // still exit loudly on a startup-time failure, matching today's behavior for
 // that case exactly (Node's own default), just with an intentional, findable
-// log line instead of a bare default stack dump.
+// log line instead of a bare default stack dump. A desktop startup refusal
+// that has already been handed to the dialog hook (`startupOutcomeReported`)
+// is treated the same as "already serving" here — not because the server IS
+// serving, but because the outcome is already settled and reported, and a
+// bare `process.exit(1)` at this point would only cut off the dialog the
+// user is meant to see instead of adding any new information.
 function handleFatalAsync(kind: "unhandledRejection" | "uncaughtException", err: unknown): void {
   const cause = err instanceof Error ? (err.stack || err.message) : String(err);
-  if (!serverListening) {
+  if (!serverListening && !startupOutcomeReported) {
     console.error(`FATAL (${kind}) during startup — exiting: ${cause}`);
     process.exit(1);
   }
@@ -717,12 +739,9 @@ function loadDBFromFile(): DB | null {
     db = normalizeDbShape(parsed, DB_FILE);
   } catch (shapeErr) {
     // Present, but the WRONG TYPE — not a recognised old shape. Same
-    // preserve-the-bytes treatment as an unparseable file, but this is NOT
-    // "survivable on its own" the way a fresh empty DB is for a corrupt-JSON
-    // file: silently starting with an empty library here could just as
-    // easily be masking real, unknown-shaped data. Refuse LOUDLY at startup
-    // instead — the same dialog/exit machinery `acquireDesktopLock` already
-    // uses (#88/#93) for "we cannot trust this data directory, don't start."
+    // preserve-the-bytes treatment as an unparseable file either way: move
+    // the bad file aside so the bytes still exist to be recovered from and
+    // the next save lands on a clean path.
     const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let preserved = false;
     try {
@@ -732,6 +751,39 @@ function loadDBFromFile(): DB | null {
       console.error(`Could not move the malformed db.json aside to ${aside}:`, renameErr);
     }
     const cause = shapeErr instanceof Error ? shapeErr.message : String(shapeErr);
+
+    // DESKTOP ONLY past this point (CodeRabbit, 2026-09-03 — a real gap: this
+    // function is ALSO reached on the HOSTED path, both from initDB's
+    // no-GCS-configured branch and from its GCS-load-threw catch, neither of
+    // which sets IS_ELECTRON). On the hosted service this is NOT
+    // "survivable on its own" would be the wrong read to invert into a hard
+    // failure: unlike the desktop case (one user's own data, a dialog they
+    // can act on), a malformed local db.json in a Cloud Run container is
+    // ephemeral scratch state a transient GCS failure fell back to — exiting
+    // here would crash the instance in a request-unrelated startup path
+    // (worse than the old silent-empty-DB fallback this whole function
+    // exists to improve on), Cloud Run would just restart it into the same
+    // failure, and the refusal's own message ("quit, inspect/repair or
+    // delete it, then relaunch") is desktop-specific text no operator would
+    // see. Same treatment as an unparseable file there: log loudly, keep the
+    // bytes preserved aside, start with a fresh empty DB rather than exit.
+    if (!isDesktop()) {
+      console.error(
+        `${DB_FILE} could not be read as a valid database (${cause}). Resetting to a fresh database `
+        + (preserved
+          ? `; the unreadable file has been preserved at ${aside} for recovery.`
+          : `; the unreadable file could NOT be moved aside — it has been left in place, unread.`)
+      );
+      return { users: [], games: [] };
+    }
+
+    // Present, but the WRONG TYPE — not a recognised old shape. This is NOT
+    // "survivable on its own" the way a fresh empty DB is for a corrupt-JSON
+    // file: silently starting with an empty library here could just as
+    // easily be masking real, unknown-shaped data belonging to the one user
+    // of this desktop install. Refuse LOUDLY at startup instead — the same
+    // dialog/exit machinery `acquireDesktopLock` already uses (#88/#93) for
+    // "we cannot trust this data directory, don't start."
     reportDesktopLockFailure(
       `Refusing to start: ${DB_FILE} could not be read as a valid database (${cause}). Starting `
       + `anyway would risk silently showing an empty games library instead of the real cause. `
@@ -825,6 +877,14 @@ function reportDesktopLockFailure(message: string, lockFile: string): boolean {
     // `lockFile` is passed structurally (not parsed back out of the message)
     // so the dialog's own "delete it and retry" action never has to guess a
     // path out of prose.
+    //
+    // Marked settled BEFORE calling the hook, not after: `onFailure` itself
+    // may synchronously trigger further code (electron-main.cjs's own hook
+    // body) before this function returns, and `handleFatalAsync` must treat
+    // that whole window — hand-off through the async dialog actually being
+    // shown and dismissed — as reported, not still "starting up" (see
+    // `startupOutcomeReported`'s own comment).
+    startupOutcomeReported = true;
     onFailure({ message, lockFile });
     return false;
   }
