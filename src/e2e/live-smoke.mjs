@@ -263,8 +263,14 @@ if (process.env.EXPECTED_INDEX) {
   // delivered is exactly that one byte, not 0 bytes or more.
   const rangeMatch = /^bytes 0-0\/(\d+)$/.exec(range.contentRange || '');
   const rangeTotal = rangeMatch ? Number(rangeMatch[1]) : null;
+  // CodeRabbit (this round): a decimal digit string long enough (e.g. 310
+  // nines) makes Number(...) overflow to Infinity, and `Infinity >=
+  // DMG_MIN_SANE_TOTAL_BYTES` is true — a malformed Content-Range with an
+  // absurd total would have passed. Number.isSafeInteger rejects Infinity
+  // (and NaN, and anything beyond 2^53-1) before the size comparison.
+  const hasSaneRangeTotal = Number.isSafeInteger(rangeTotal) && rangeTotal >= DMG_MIN_SANE_TOTAL_BYTES;
   record('live DMG 1-byte Range GET is 206 with a matching Content-Range, a sane total file size, and exactly 1 body byte (resumable downloads still work)',
-    range.status === 206 && rangeTotal !== null && rangeTotal >= DMG_MIN_SANE_TOTAL_BYTES && range.bodyByteLength === 1,
+    range.status === 206 && hasSaneRangeTotal && range.bodyByteLength === 1,
     `status=${range.status} content-range=${range.contentRange ?? '(unset)'} total=${rangeTotal ?? '(no match)'} bodyByteLength=${range.bodyByteLength}`);
 }
 

@@ -333,41 +333,28 @@ try {
 
     if (flagGameId) await call('DELETE', `/api/games/${flagGameId}`, { token });
 
-    // CodeRabbit (this round): every fixture above is under 60 UTF-16
-    // units, so `cleanLabels`'s FIRST clamp — `cutAtWordBoundary(cleanText(
-    // body?.[key], LABEL_MAX + 20), LABEL_MAX)`, where `cleanText` itself
-    // clamps to LABEL_MAX+20=60 units before the final 40-unit cut
-    // (server.ts ~1464-1467) — never actually needs to cut anything; a
-    // regression that broke JUST that 60-unit pre-clamp (e.g. a bare
-    // `.slice(0, 60)` instead of the grapheme-safe `clampGraphemeSafe`)
-    // could pass every check above untouched. Use an input long enough to
-    // force BOTH clamp stages to actually cut: 'A' + 30 emoji = 61 units
-    // (over the 60-unit first stage, which itself is over the 40-unit
-    // second stage). Verified empirically against the current build
-    // (fresh POST + GET, not assumed): the two-stage clamp lands on 'A' +
-    // 19 whole emoji (39 units) — the SAME final count as the single-stage
-    // 41-unit fixture in part 1 above, which is the point: if the first
-    // (60-unit) stage were broken, feeding its BROKEN intermediate output
-    // into the second stage would very likely NOT reproduce this exact,
-    // independently-verified value.
-    const wideRow1Label = 'A' + '\u{1F389}'.repeat(30); // 61 units — exercises the 60-unit pre-clamp
-    const expectedWideSaveLabel = 'A' + '\u{1F389}'.repeat(19);
-    const savedWide = await call('POST', '/api/games', {
-      token,
-      body: { name: 'surrogate clamp save-path 60-unit pre-clamp test', payoffs: nonTiePayoffs, row1Label: wideRow1Label },
-    });
-    const wideGameId = savedWide.json?.game?.id;
-    const hitOnWideWrite = findLoneSurrogate(savedWide.json);
-    record('SAVE path, 60-unit pre-clamp coverage: POST /api/games has no lone surrogate in the write response',
-      savedWide.status === 200 && !hitOnWideWrite, `status=${savedWide.status} ${hitOnWideWrite ? JSON.stringify(hitOnWideWrite) : ''}`);
-
-    const readBackWide = await call('GET', '/api/games', { token });
-    const storedWide = (readBackWide.json || []).find((g) => g.id === wideGameId);
-    record('SAVE path, 60-unit pre-clamp coverage: the STORED row1Label (fresh GET) is exactly A + 19 whole emoji',
-      storedWide?.row1Label === expectedWideSaveLabel,
-      `stored=${JSON.stringify(storedWide?.row1Label)}, expected=${JSON.stringify(expectedWideSaveLabel)}`);
-
-    if (wideGameId) await call('DELETE', `/api/games/${wideGameId}`, { token });
+    // A fixture exercising the 60-unit `cleanText` pre-clamp inside
+    // `cleanLabels` (server.ts ~1464-1467, LABEL_MAX+20 before the final
+    // 40-unit cut) was tried and REMOVED here, not skipped for lack of
+    // effort: mutation-testing it (breaking ONLY the 60-unit stage to a
+    // bare, non-grapheme-safe slice, leaving the 40-unit stage correct)
+    // found ZERO observable divergence — not for that fixture, not for a
+    // 40-emoji-wide ZWJ cluster swept across the 40..60 boundary, not
+    // across 20,000 randomly fuzzed strings 61-90 units long. The 40-unit
+    // second stage always independently re-segments and only ever needs
+    // content from BEFORE its own ~40-unit cutoff, which neither
+    // implementation of the first (60-unit) stage ever touches (a broken
+    // first stage can only corrupt content at/after unit 60, always past
+    // where the second stage already stopped) — so this specific two-stage
+    // composition makes a first-stage-only regression structurally
+    // unobservable through any end-to-end assertion. A fixture claiming to
+    // "cover" that stage while being unable to fail for that reason is
+    // exactly the shape this repo's own discipline warns against (a check
+    // that cannot fail for the reason it claims), so it was removed rather
+    // than kept for a false sense of coverage. If the 60-unit stage's own
+    // correctness ever needs to be pinned independently, it would need a
+    // direct unit test against a helper it exports on its own — not an
+    // end-to-end fixture through this two-stage composition.
   }
 
 } finally {
