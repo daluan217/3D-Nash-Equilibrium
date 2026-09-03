@@ -3709,7 +3709,7 @@ export default function App() {
                 <Sliders className="w-4 h-4 text-player-b-500" />
                 <span>
                   Payoff Matrix — (
-                  <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold font-mono">A</span>,{' '}
+                  <span className="text-player-a-500 font-semibold font-mono">A</span>,{' '}
                   <span className="text-player-b-600 dark:text-player-b-400 font-semibold font-mono">B</span>)
                 </span>
               </div>
@@ -3740,7 +3740,7 @@ export default function App() {
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col2}>B: {activeLabels.col2}</div>
 
               {/* Row 1 inputs */}
-              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -3750,7 +3750,7 @@ export default function App() {
                   onChange={(e) => updatePayoffField('a11', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a11')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3773,7 +3773,7 @@ export default function App() {
                   onChange={(e) => updatePayoffField('a12', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a12')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3789,7 +3789,7 @@ export default function App() {
               </div>
 
               {/* Row 2 inputs */}
-              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-ink dark:text-player-a-ink-dark text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
+              <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
@@ -3799,7 +3799,7 @@ export default function App() {
                   onChange={(e) => updatePayoffField('a21', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a21')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3822,7 +3822,7 @@ export default function App() {
                   onChange={(e) => updatePayoffField('a22', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onBlur={() => handlePayoffBlur('a22')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-ink dark:text-player-a-ink-dark bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
                 <input
@@ -3868,7 +3868,7 @@ export default function App() {
             {/* Starting coordinate fields */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-player-a-ink dark:text-player-a-ink-dark font-semibold mb-1">Row Start Point (x₀)</label>
+                <label className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
                 <div className="relative">
                   <input
                     type="number"
@@ -3959,7 +3959,7 @@ export default function App() {
                       onClick={() => changeFirstMover(player)}
                       className={`py-2 px-3 text-xs font-semibold rounded-xl border transition-all ${active
                           ? player === 'A'
-                            ? 'bg-player-a-600 text-white border-player-a-600'
+                            ? 'bg-player-a-500 text-white border-player-a-500'
                             : 'bg-player-b-600 text-white border-player-b-600'
                           : 'bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                         }`}
@@ -3983,7 +3983,7 @@ export default function App() {
                       onClick={() => setTrackingMode(m)}
                       className={`py-2 px-1 text-xs font-semibold rounded-xl border transition-all text-center ${active
                           ? m === 'A'
-                            ? 'bg-player-a-600 text-white border-player-a-600'
+                            ? 'bg-player-a-500 text-white border-player-a-500'
                             : m === 'B'
                               ? 'bg-player-b-600 text-white border-player-b-600'
                               : 'bg-ne-mixed-600 text-white border-ne-mixed-600'
@@ -4074,7 +4074,7 @@ export default function App() {
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-xs text-slate-500 justify-center lg:justify-start">
             <span className="flex items-center gap-1 text-player-a-600 dark:text-player-a-400"><LegendSwatch shape="surface" /> E[A] Surface</span>
             <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400"><LegendSwatch shape="surface" /> E[B] Surface</span>
-            <span className="flex items-center gap-1 text-player-a-ink dark:text-player-a-ink-dark font-medium"><LegendSwatch shape="line" /> A Moves</span>
+            <span className="flex items-center gap-1 text-player-a-500 dark:text-player-a-400 font-medium"><LegendSwatch shape="line" /> A Moves</span>
             <span className="flex items-center gap-1 text-player-b-600 dark:text-player-b-400 font-medium"><LegendSwatch shape="line" /> B Moves</span>
             <span className="flex items-center gap-1 font-semibold text-ne-pure dark:text-ne-pure"><LegendSwatch shape="diamond" /> Pure NE</span>
             <span className="flex items-center gap-1 text-ne-mixed-600 dark:text-ne-mixed-400 font-bold"><LegendSwatch shape="diamond" /> Mixed NE</span>
@@ -4259,7 +4259,7 @@ export default function App() {
             {/* Realtime coordinates outputs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className="text-xs text-player-a-ink dark:text-player-a-ink-dark font-bold uppercase block tracking-wider">
+                <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
@@ -4278,7 +4278,7 @@ export default function App() {
                 <span className="text-xs text-slate-500 dark:text-slate-400 block tracking-wider">
                   Expected Payoff E[A]
                 </span>
-                <span className="text-sm font-bold text-player-a-ink dark:text-player-a-ink-dark font-mono">
+                <span className="text-sm font-bold text-player-a-500 font-mono">
                   {fmtPayoff(EA(simState.cx, simState.cy, payoffs))}
                 </span>
               </div>
@@ -4562,7 +4562,7 @@ export default function App() {
                 </div>
 
                 {llmLoading && (
-                  <p className="italic text-muted dark:text-muted-dark">
+                  <p className="italic text-prose-muted dark:text-prose-muted-dark">
                     Writing an explanation and checking it against the solver…
                   </p>
                 )}
@@ -4573,7 +4573,7 @@ export default function App() {
                       // Say plainly who wrote what: on a tie game the sentences
                       // are generated from the solver, and only the scenario
                       // came from the model.
-                      <p className="text-[11px] uppercase tracking-wide text-muted dark:text-muted-dark">
+                      <p className="text-[11px] uppercase tracking-wide text-prose-muted dark:text-prose-muted-dark">
                         {/* This said "this game has a payoff tie" unconditionally.
                             True while only the tie path produced `template`, but
                             NASH_PAYOFF_TEMPLATE=1 routes EVERY game here, so a
@@ -4676,7 +4676,7 @@ export default function App() {
                 )}
 
                 {!llmLoading && llmEnvelope && !llmVerified && (
-                  <p className="text-muted dark:text-muted-dark italic">
+                  <p className="text-prose-muted dark:text-prose-muted-dark italic">
                     No verified explanation available
                     {llmEnvelope.fallbackReason ? ` (${llmEnvelope.fallbackReason})` : ''} — the computed
                     report above is authoritative.
@@ -4696,7 +4696,7 @@ export default function App() {
                 )}
 
                 {!llmLoading && !llmEnvelope && !llmError && (
-                  <p className="text-muted dark:text-muted-dark">
+                  <p className="text-prose-muted dark:text-prose-muted-dark">
                     Get a written walkthrough of what each player is trading off. The equilibria are
                     always computed exactly; the explanation is checked against them before it appears.
                   </p>
@@ -5115,7 +5115,7 @@ export default function App() {
                     ['col2', "B's Col 2", 'e.g. Ignore'],
                   ] as const).map(([key, label, placeholder]) => (
                     <div key={key}>
-                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-ink dark:text-player-a-ink-dark' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
                         {label}
                       </span>
                       <input
@@ -5329,7 +5329,7 @@ export default function App() {
                     ['col2', "B's Col 2", 'e.g. Ignore'],
                   ] as const).map(([key, label, placeholder]) => (
                     <div key={key}>
-                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-ink dark:text-player-a-ink-dark' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
                         {label}
                       </span>
                       <input

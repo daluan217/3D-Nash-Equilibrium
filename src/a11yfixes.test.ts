@@ -23,6 +23,41 @@ function ok(cond: boolean, msg: string) {
 const app = readFileSync('src/App.tsx', 'utf8');
 const css = readFileSync('src/index.css', 'utf8');
 
+/**
+ * The full text of the `<div>` block that OPENS at `startMarker`, found by
+ * counting div depth (not a fixed character window) so a comment or JSX
+ * expression added later inside the block cannot silently walk the slice
+ * off the end. Self-closing `<div ... />` tags do not change depth.
+ */
+function extractDivBlock(src: string, startMarker: string): string {
+  const start = src.indexOf(startMarker);
+  assert(start > 0, `start marker not found: ${JSON.stringify(startMarker)}`);
+  const openTagEnd = src.indexOf('>', start) + 1;
+  assert(openTagEnd > 0, `no closing '>' found for the opening tag at ${JSON.stringify(startMarker)}`);
+  // A self-closing `<div ... />` (e.g. a dangerouslySetInnerHTML card with no
+  // JSX children) IS the whole block: there is no `</div>` of its own to
+  // match, so returning here keeps the scan below from consuming the next
+  // unrelated `</div>` further down the file instead.
+  if (src.slice(start, openTagEnd).trimEnd().endsWith('/>')) {
+    return src.slice(start, openTagEnd);
+  }
+  const tagRe = /<div\b[^>]*>|<\/div>/g;
+  tagRe.lastIndex = openTagEnd;
+  let depth = 1;
+  let m: RegExpExecArray | null;
+  let endIdx = -1;
+  while ((m = tagRe.exec(src)) !== null) {
+    if (m[0] === '</div>') {
+      depth--;
+      if (depth === 0) { endIdx = m.index + m[0].length; break; }
+    } else if (!m[0].endsWith('/>')) {
+      depth++;
+    }
+  }
+  assert(endIdx > 0, `did not find the matching close for ${JSON.stringify(startMarker)}`);
+  return src.slice(start, endIdx);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FINDING 005 (axe CRITICAL "label" rule, 13 nodes): the 8 payoff-matrix
 // inputs, x0/y0, the step-size box + slider, and the Loop Speed slider had no
@@ -69,45 +104,160 @@ const css = readFileSync('src/index.css', 'utf8');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FINDING 006 (axe SERIOUS "color-contrast" rule): the app-wide muted-text
-// idiom (2.51:1 light / 3.74-4.23:1 dark) and several `text-player-a-500`
-// running-text call sites (3.63-3.8:1) were all under the 4.5:1 AA floor;
-// the active "Player A" toggle button (white on bg-player-a-500) was 3.8:1.
+// FINDING 006, REVERSED (round 6, BLUE-COLOUR-REVERT, 2026-09-02).
+//
+// Daniel's call, verbatim: "not a fan of those darker colors, I preferred the
+// old ones. The darker matte colors are only meant for stuff like
+// Game-Theoretic Report and the explanations for the preset/saved games in
+// the top left." So the app-wide muted-text idiom and the player-a-500
+// running-text idiom that finding 006 (round 4, axe-core color-contrast
+// SERIOUS) had moved to slate-600/slate-400 and -600 respectively are
+// RESTORED everywhere EXCEPT two named regions: the Game-Theoretic Report
+// panel (`reportPanelRef`) and the preset/saved-game explanation cards in the
+// top-left workspace. Those two keep the darker, AA-clearing pair via a new
+// SCOPED token, `--color-prose-muted` / `--color-prose-muted-dark`.
+//
+// This means the 2.51:1 light / 3.74-4.23:1 dark contrast axe flagged as
+// SERIOUS is, outside those two regions, BY DESIGN as of 2026-09-02 — see
+// round6/README.md and the closed-angle note in
+// .claude/skills/red-blue-teams/SKILL.md. A red should not re-file plain
+// muted-text or player-a-500 running-text contrast findings outside the
+// report panel / drawer narrative cards; a genuinely NEW contrast defect
+// inside those two regions, or anywhere the checks below don't cover, is
+// still fair game.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  // The new tokens exist and are DEFINED FROM the measured-safe slate steps
-  // (slate-600 on slate-50/white = 7.25:1/7.58:1; slate-400 on slate-900/950
-  // = 6.78:1/7.66:1 — real margin above 4.5:1, not a knife-edge value).
-  ok(/--color-muted:\s*var\(--color-slate-600\)/.test(css), 'the --color-muted token must resolve to slate-600');
-  ok(/--color-muted-dark:\s*var\(--color-slate-400\)/.test(css), 'the --color-muted-dark token must resolve to slate-400');
+  // ── Global palette parity: --color-muted is back to the pre-#87 pair ──
+  ok(/--color-muted:\s*var\(--color-slate-400\)/.test(css),
+    'the --color-muted token must resolve back to slate-400 (pre-#87)');
+  ok(/--color-muted-dark:\s*var\(--color-slate-500\)/.test(css),
+    'the --color-muted-dark token must resolve back to slate-500 (pre-#87)');
 
-  // The exact failing idiom must be GONE from every file it appeared in —
-  // not just App.tsx, since it was the SAME design-system idiom in each.
+  // ── The scoped prose token exists, at the SAME values #87 had chosen for
+  // the (now reverted) global token — the darker pair is not gone, only
+  // confined. Measured (WCAG relative-luminance formula, same one axe
+  // uses): slate-600 on slate-50/white = 7.25:1/7.58:1; slate-400 on
+  // slate-900/950 = 6.78:1/7.66:1 — real margin above 4.5:1.
+  ok(/--color-prose-muted:\s*var\(--color-slate-600\)/.test(css),
+    'the --color-prose-muted token must resolve to slate-600');
+  ok(/--color-prose-muted-dark:\s*var\(--color-slate-400\)/.test(css),
+    'the --color-prose-muted-dark token must resolve to slate-400');
+
+  // The exact pre-#87 FAILING literal idiom must never be reintroduced —
+  // this repo always uses the `text-muted`/`text-prose-muted` TOKENS (whose
+  // resolved color is asserted above), never the raw Tailwind slate steps,
+  // so a future edit that hard-codes the literal class can't silently
+  // reopen the 2.51:1 contrast finding by a different path.
   for (const path of [
     'src/App.tsx', 'src/components/AdminDashboard.tsx', 'src/components/MenuDrawer.tsx',
     'src/components/DescriptionEditor.tsx', 'src/components/DownloadModal.tsx',
   ]) {
     const src = readFileSync(path, 'utf8');
     ok(!src.includes('text-slate-400 dark:text-slate-500'),
-      `${path} must no longer use the failing text-slate-400 dark:text-slate-500 pairing`);
+      `${path} must not reintroduce the literal text-slate-400 dark:text-slate-500 pairing (use the text-muted/text-prose-muted tokens)`);
   }
 
-  // The running-text player-a-500 instances (row/col headers, payoff-A input
-  // text, coordinate/legend labels) must be gone; only the two documented
-  // HOVER-state exceptions (text-slate-400 hover:text-player-a-500 — passes
-  // at REST, only changes color on interaction, which axe's static snapshot
-  // does not evaluate as failing) may remain.
-  const staticPlayerA500 = [...app.matchAll(/(?<!hover:)text-player-a-500(?!['"]?\s*:)/g)]
-    .filter((m) => !app.slice(Math.max(0, m.index! - 20), m.index!).includes('hover:'));
-  ok(staticPlayerA500.length === 0,
-    `no STATIC text-player-a-500 running-text call site may remain, found ${staticPlayerA500.length}`);
+  // ── The Game-Theoretic Report panel: every muted caption inside it must
+  // use the SCOPED prose token, not the (now light-again) global one. ──
+  const reportPanel = extractDivBlock(app, 'ref={reportPanelRef}');
+  const reportProseMutedCount = (reportPanel.match(/text-prose-muted dark:text-prose-muted-dark/g) || []).length;
+  ok(reportProseMutedCount === 4,
+    `the report panel must carry exactly 4 text-prose-muted captions (the loading/tie-note/unverified/empty-state lines), found ${reportProseMutedCount}`);
+  ok(!/(?<!prose-)\btext-muted dark:text-muted-dark\b/.test(reportPanel),
+    'no caption inside the report panel may use the plain (reverted, lighter) text-muted token — it must use text-prose-muted');
 
-  // The active "Player A" toggle buttons must use the SAME -600 step already
-  // established for Player B's identical button (bg-player-b-600), not -500.
-  ok(!app.includes("'bg-player-a-500 text-white border-player-a-500'"),
-    'the Player A active-toggle button must no longer use the failing bg-player-a-500/white pairing');
-  const activeButtonCount = [...app.matchAll(/'bg-player-a-600 text-white border-player-a-600'/g)].length;
-  ok(activeButtonCount === 2, `both Player A active-toggle buttons must use bg-player-a-600, found ${activeButtonCount}`);
+  // ── The second region — the preset/saved-game explanation cards in the
+  // top-left workspace (App.tsx's own "Selected Preset Narrative Card" and
+  // MenuDrawer's saved/default-game description cards) — keep their darker
+  // matte text through a DIFFERENT, pre-existing mechanism this revert did
+  // not touch: ColorCoded's player-a-ink/player-b-ink tokens (defined and
+  // used there since before #87 — ColorCoded.tsx is not part of #87's diff
+  // at all) plus a constant `text-slate-600 dark:text-slate-300` body color,
+  // never `--color-muted`. So neither card currently has anything to move
+  // onto the new prose token — verified here so this stays true, and so a
+  // caption ADDED to either card later is forced onto text-prose-muted
+  // rather than silently reintroducing the lighter global token. Both
+  // narrative-card blocks are extracted (div-depth, like the report panel)
+  // so they can be EXCLUDED from the "no leak outside" check below — using
+  // text-prose-muted inside them is the documented, intended fallback, not
+  // a leak. */
+  const menuDrawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const narrativeCardMarkers = [...app.matchAll(/data-testid="preset-narrative"/g)];
+  ok(narrativeCardMarkers.length === 2,
+    `expected exactly 2 preset-narrative card definitions (custom + standard), found ${narrativeCardMarkers.length}`);
+  const narrativeCardBlocks = narrativeCardMarkers.map((m) => extractDivBlock(app, app.slice(m.index!, m.index! + 32)));
+  for (const [i, block] of narrativeCardBlocks.entries()) {
+    ok(!/\btext-muted dark:text-muted-dark\b/.test(block),
+      `the preset-narrative card #${i} must not use the plain text-muted token — it should use text-prose-muted if it ever needs muted text, got: ${JSON.stringify(block.slice(0, 200))}`);
+  }
+  const savedGameDescIdx = menuDrawer.indexOf("<ColorCoded text={game.desc}");
+  ok(savedGameDescIdx > 0, 'the MenuDrawer saved-game description ColorCoded call must be found');
+  const savedGameDescNearby = menuDrawer.slice(Math.max(0, savedGameDescIdx - 200), savedGameDescIdx);
+  ok(!/\btext-muted dark:text-muted-dark\b/.test(savedGameDescNearby),
+    'the MenuDrawer saved-game description card must not use the plain text-muted token');
+  ok(savedGameDescNearby.includes('text-slate-500 dark:text-slate-400'),
+    'the MenuDrawer saved-game description card must still render its own matte body text (unaffected by this revert)');
+
+  // ── No element OUTSIDE the report panel AND the two narrative-card blocks
+  // uses the scoped prose token — the other half of "confined to two
+  // regions": a leak here would mean some unrelated caption picked up the
+  // darker pair by accident. CodeRabbit finding (this branch): the first
+  // draft of this check forbade text-prose-muted anywhere outside the
+  // report panel, which would fail the moment the narrative cards' own
+  // documented fallback (above) is ever exercised — so the narrative
+  // blocks must be carved out here too, not just the report panel. ──
+  let appOutsideScopedRegions = app.slice(0, app.indexOf(reportPanel)) + app.slice(app.indexOf(reportPanel) + reportPanel.length);
+  for (const block of narrativeCardBlocks) {
+    ok(appOutsideScopedRegions.includes(block), 'a narrative-card block must still be present in the report-panel-excised text before it can be excised itself');
+    appOutsideScopedRegions = appOutsideScopedRegions.replace(block, '');
+  }
+  ok(!appOutsideScopedRegions.includes('text-prose-muted'),
+    'text-prose-muted must not appear in App.tsx outside the report panel and the two preset-narrative cards');
+  for (const path of [
+    'src/components/AdminDashboard.tsx', 'src/components/DescriptionEditor.tsx', 'src/components/DownloadModal.tsx',
+  ]) {
+    const src = readFileSync(path, 'utf8');
+    ok(!src.includes('text-prose-muted'), `${path} must not use text-prose-muted (not one of the two named regions)`);
+  }
+  // MenuDrawer.tsx is a named region too (the saved/default-game
+  // description cards), so it is deliberately NOT in the "must not use"
+  // loop above — but nothing in it uses text-prose-muted today either
+  // (verified above: the description card's own body text is a literal
+  // slate-500/400 pair, never the token), so this stays a live check.
+  ok(!menuDrawer.includes('text-prose-muted'),
+    'MenuDrawer.tsx must not use text-prose-muted today (neither saved/default-game description card has anything to move onto it yet)');
+
+  // ── The running-text player-a-500 instances (row/col headers, payoff-A
+  // input text, coordinate/legend labels, option-name labels) are BACK,
+  // except: (a) inside the report panel, where the one pre-existing
+  // (pre-#87, untouched) player-a-ink use in the "Scenario written for this
+  // game" card stays as-is, and (b) the two documented HOVER-state
+  // exceptions (text-slate-400 hover:text-player-a-500 — passes at REST,
+  // only changes color on interaction, which axe's static snapshot does not
+  // evaluate as failing). ──
+  const staticPlayerA500 = [...appOutsideScopedRegions.matchAll(/(?<!hover:)text-player-a-500\b/g)]
+    .filter((m) => !appOutsideScopedRegions.slice(Math.max(0, m.index! - 20), m.index!).includes('hover:'));
+  ok(staticPlayerA500.length === 13,
+    `expected 13 restored STATIC text-player-a-500 running-text call sites outside the report panel (12 bare + the "A Moves" legend with its own dark:text-player-a-400), found ${staticPlayerA500.length}`);
+  ok(reportPanel.includes('text-player-a-ink dark:text-player-a-ink-dark') && !reportPanel.includes('text-player-a-500'),
+    'the pre-existing (pre-#87) text-player-a-ink use inside the report panel\'s "Scenario written for this game" card must be left untouched, not reverted');
+
+  // ── The active "Player A" toggle buttons are back to the SAME -500 step
+  // Player B's button always used at rest (bg-player-b-500 was never
+  // touched by #87 for the inactive/other-branch case; only Player A's
+  // ACTIVE state was bumped to -600 and is now reverted). ──
+  ok(!app.includes("'bg-player-a-600 text-white border-player-a-600'"),
+    'the Player A active-toggle button must no longer use the (reverted) bg-player-a-600/white pairing');
+  const activeButtonCount = [...app.matchAll(/'bg-player-a-500 text-white border-player-a-500'/g)].length;
+  ok(activeButtonCount === 2, `both Player A active-toggle buttons must be back to bg-player-a-500, found ${activeButtonCount}`);
+
+  // ── MUTATION FIXTURES — the checks above must be able to tell the #87
+  // shape apart from the reverted shape in both directions. ──
+  ok(!/--color-muted:\s*var\(--color-slate-400\)/.test('  --color-muted: var(--color-slate-600);\n  --color-muted-dark: var(--color-slate-400);'),
+    'fixture sanity: the #87 CSS shape must not accidentally match the reverted-value regex');
+  ok(!extractDivBlock('<div ref={reportPanelRef} className="x"><p className="text-muted dark:text-muted-dark">y</p></div>', 'ref={reportPanelRef}')
+    .match(/text-prose-muted dark:text-prose-muted-dark/g),
+    'fixture sanity: a report-panel block using the plain (unfixed) token must not accidentally satisfy the count===4 check');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
