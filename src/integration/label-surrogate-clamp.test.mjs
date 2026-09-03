@@ -137,8 +137,13 @@ async function waitReady() {
 
 try {
   if (!(await waitReady())) {
-    console.error(`FAIL server never became ready\n${serverLog}`);
-    process.exit(2);
+    // CodeRabbit (this round): process.exit() here bypassed the `finally`
+    // below entirely — the spawned server process and the temp userData
+    // directory would both leak on this failure path. Throwing instead
+    // lets `finally` run first (JS guarantees it before an uncaught throw
+    // propagates); the throw then still exits the process non-zero, same
+    // as before, just after cleanup.
+    throw new Error(`server never became ready\n${serverLog}`);
   }
 
   const nonTiePayoffs = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 2, b12: 0, b21: 0, b22: 3 };

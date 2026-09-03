@@ -178,7 +178,7 @@ if (!gotTheLock) {
   // itself, which may legitimately NOT exist (that IS the failure). Walk up
   // to the nearest existing ancestor and open THAT instead — `path.dirname`
   // on a root path is a fixed point, so this always terminates.
-  function revealLockLocation(target) {
+  async function revealLockLocation(target) {
     try {
       if (fs.existsSync(target)) {
         shell.showItemInFolder(target);
@@ -190,7 +190,12 @@ if (!gotTheLock) {
         if (parent === dir) break; // reached the filesystem root; stop rather than loop forever
         dir = parent;
       }
-      shell.openPath(dir);
+      // CodeRabbit (this round): shell.openPath resolves with a NON-EMPTY
+      // error string on failure rather than rejecting — an un-awaited call
+      // silently swallows that, leaving the blocked user with no feedback
+      // at all after clicking "Show Location".
+      const openErr = await shell.openPath(dir);
+      if (openErr) console.error(`Failed to open ${dir} in the file manager:`, openErr);
     } catch (err) {
       console.error('Failed to reveal the lock/data-directory location:', err);
     }

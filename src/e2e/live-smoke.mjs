@@ -157,18 +157,26 @@ if (process.env.EXPECTED_INDEX) {
     const status = r.status;
     const contentLength = r.headers.get('content-length');
     const contentRange = r.headers.get('content-range');
-    // Cancel the body stream instead of reading it — this is what makes the
-    // request "status-only": the fetch already resolved once headers arrived,
-    // and cancelling here means we never pull the (potentially 137 MB) body
-    // off the wire. ONLY used for the full, unranged request below — the
-    // 1-byte range request has its own reader (bodyByteLength) because a
-    // 1-byte body costs nothing to actually read and cancelling it would
-    // let a server/proxy that returns 206 + a correct-LOOKING Content-Range
-    // but the WRONG body (0 bytes, or the whole 137 MB) pass unnoticed
-    // (CodeRabbit, this round — a check that never reads the body cannot
-    // fail for the reason it claims to guard).
-    try { await r.body?.cancel(); } catch { /* best-effort; status is already captured */ }
-    return { status, contentLength, contentRange };
+    // "Status-only" for the full, unranged request means never pulling the
+    // (potentially 137 MB) body off the wire — but CodeRabbit (this round)
+    // is right that cancelling WITHOUT reading anything first means a 200
+    // status alone doesn't prove data actually flowed: Express/Cloud Run can
+    // send response headers before the GCS upstream stream produces its
+    // first chunk, and if that upstream then fails or ends immediately, this
+    // check would never see it. Read exactly the FIRST chunk the stream
+    // hands back (whatever size the platform buffers — typically well under
+    // 1 MB, nowhere near the 137 MB file), then cancel the rest. This proves
+    // real bytes flowed without downloading anything close to the full file.
+    let firstChunkBytes = 0;
+    if (r.body) {
+      const reader = r.body.getReader();
+      try {
+        const { value } = await reader.read();
+        if (value) firstChunkBytes = value.byteLength;
+      } catch { /* best-effort; status is already captured */ }
+      try { await reader.cancel(); } catch { /* best-effort */ }
+    }
+    return { status, contentLength, contentRange, firstChunkBytes };
   }
 
   /** Like statusOnlyGet, but actually reads the (bounded, small) body and
@@ -183,8 +191,9 @@ if (process.env.EXPECTED_INDEX) {
   }
 
   const full = await statusOnlyGet('/api/download/dmg');
-  record('live DMG plain GET (no Range) is 200, not a bare Cloud Run 500',
-    full.status === 200, `status=${full.status} content-length=${full.contentLength ?? '(unset — expected once the file is >= the Cloud Run cap)'}`);
+  record('live DMG plain GET (no Range) is 200 with real data actually flowing, not a bare Cloud Run 500 or a stalled stream',
+    full.status === 200 && full.firstChunkBytes > 0,
+    `status=${full.status} firstChunkBytes=${full.firstChunkBytes} content-length=${full.contentLength ?? '(unset — expected once the file is >= the Cloud Run cap)'}`);
 
   const range = await boundedRangeGet('/api/download/dmg', { Range: 'bytes=0-0' });
   // CodeRabbit (this round, twice): a bare status===206 check could pass on
