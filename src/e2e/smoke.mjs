@@ -1952,11 +1952,20 @@ try {
 
     await shortPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     await shortPage.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
-    const accountLogin = shortPage.locator('[role="dialog"][aria-label="Account"]').getByRole('button', { name: /^login$/i });
+    // MUTATION-TEST FINDING: the "Login" submit button's own vertical
+    // position in the (short, login-mode) form happens to land inside a
+    // 256px viewport even on the UNFIXED tree (the dialog centers itself,
+    // so the overflow above/below is roughly symmetric and this particular
+    // button's offset from the dialog's own top isn't large enough to push
+    // it below y=256) -- so it does not reliably discriminate fixed from
+    // unfixed here. The dialog's OWN close button, right at its top edge
+    // (the dialog's top sits at y=-109 on the unfixed tree, confirmed by
+    // direct measurement), does: it is reliably off-screen pre-fix and
+    // reliably reachable post-fix, regardless of which form mode is open.
+    const accountClose = shortPage.locator('[role="dialog"][aria-label="Account"]').getByRole('button', { name: 'Close dialog' });
     let accountReachable = true;
-    try { await accountLogin.click({ timeout: 5000 }); } catch { accountReachable = false; }
-    record('RED-APP-8/005 fix: the Account dialog\'s Login button is reachable at 320x256', accountReachable);
-    await shortPage.keyboard.press('Escape').catch(() => {});
+    try { await accountClose.click({ timeout: 5000 }); } catch { accountReachable = false; }
+    record('RED-APP-8/005 fix: the Account dialog\'s own close button is reachable at 320x256', accountReachable);
     await shortPage.waitForTimeout(300);
 
     // Stub the feedback POST — untested-controls.json's own policy for this
