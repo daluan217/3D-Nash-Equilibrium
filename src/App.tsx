@@ -39,6 +39,7 @@ import {
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe } from './utils/textSafety';
+import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -373,16 +374,21 @@ export default function App() {
 
   // ── Theme State ────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('nash_sim_theme') === 'dark';
+    return safeGetItem('nash_sim_theme') === 'dark';
   });
 
   useEffect(() => {
+    // RED-APP-8/004: this effect fires unconditionally on first mount, so an
+    // unguarded setItem throwing here (a real QuotaExceededError, e.g. old
+    // Safari private mode) used to blank the ENTIRE app with no error
+    // boundary to catch it. The in-memory darkMode state and the classList
+    // toggle below still do the visible work; persistence is best-effort.
     if (darkMode) {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('nash_sim_theme', 'dark');
+      safeSetItem('nash_sim_theme', 'dark');
     } else {
       document.documentElement.classList.remove('dark');
-      localStorage.setItem('nash_sim_theme', 'light');
+      safeSetItem('nash_sim_theme', 'light');
     }
     // Desktop app: keep the NATIVE window background in step with the theme.
     // It is what shows through when a drag-resize outpaces the repaint, so a
@@ -394,12 +400,12 @@ export default function App() {
 
   // ── Authentication & Saved Games States ────────────────────────────────────
   const [dbMode, setDbMode] = useState<'local' | 'cloud'>(() => {
-    return (localStorage.getItem('nash_sim_db_mode') as 'local' | 'cloud') || 'local';
+    return (safeGetItem('nash_sim_db_mode') as 'local' | 'cloud') || 'local';
   });
   const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => {
-    const cached = localStorage.getItem('nash_sim_api_base');
+    const cached = safeGetItem('nash_sim_api_base');
     if (cached && (cached.includes('ais-pre-') || cached.includes('243079162760') || cached.includes('988056159702') || cached.includes('194708291738'))) {
-      localStorage.setItem('nash_sim_api_base', 'https://nash-equilibrium-simulator.com');
+      safeSetItem('nash_sim_api_base', 'https://nash-equilibrium-simulator.com');
       return 'https://nash-equilibrium-simulator.com';
     }
     return cached || 'https://nash-equilibrium-simulator.com';
@@ -414,26 +420,26 @@ export default function App() {
   };
 
   const [authToken, setAuthToken] = useState<string | null>(() => {
-    const key = (localStorage.getItem('nash_sim_db_mode') || 'local') === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
-    return localStorage.getItem(key) || localStorage.getItem('nash_sim_token');
+    const key = (safeGetItem('nash_sim_db_mode') || 'local') === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
+    return safeGetItem(key) || safeGetItem('nash_sim_token');
   });
 
   const updateAuthToken = (token: string | null) => {
     setAuthToken(token);
     const key = dbMode === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
     if (token) {
-      localStorage.setItem(key, token);
+      safeSetItem(key, token);
     } else {
-      localStorage.removeItem(key);
-      localStorage.removeItem('nash_sim_token'); // clear legacy as well
+      safeRemoveItem(key);
+      safeRemoveItem('nash_sim_token'); // clear legacy as well
     }
   };
 
   const handleSwitchDbMode = (mode: 'local' | 'cloud') => {
     setDbMode(mode);
-    localStorage.setItem('nash_sim_db_mode', mode);
+    safeSetItem('nash_sim_db_mode', mode);
     const key = mode === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
-    const savedToken = localStorage.getItem(key);
+    const savedToken = safeGetItem(key);
     setAuthToken(savedToken);
 
     // Reset basic session users or load correct data
@@ -5924,7 +5930,7 @@ export default function App() {
         onSwitchDbMode={handleSwitchDbMode}
         onUpdateApiBaseUrl={(url) => {
           setApiBaseUrl(url);
-          localStorage.setItem('nash_sim_api_base', url);
+          safeSetItem('nash_sim_api_base', url);
         }}
       />
 

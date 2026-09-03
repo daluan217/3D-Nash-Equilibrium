@@ -1823,6 +1823,49 @@ try {
     await tourPage.close();
   }
 
+  // ══ 34. RED-APP-8/004 — a real QuotaExceededError thrown from
+  //      localStorage.setItem('nash_sim_theme', ...) must not blank the
+  //      page. That effect fires unconditionally on first mount (before
+  //      anything else has painted), and with no error boundary anywhere in
+  //      the app, an uncaught throw there took down the whole React tree —
+  //      zero visible content, no way for a visitor to recover. Installed
+  //      via addInitScript so the throwing storage is in place BEFORE the
+  //      app's own JS ever runs, modeling "the browser already has no quota
+  //      left" rather than something the app itself did — same technique
+  //      the director's own repro used.
+  {
+    const quotaPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await quotaPage.addInitScript(() => {
+      const real = window.localStorage.setItem.bind(window.localStorage);
+      Object.defineProperty(window.localStorage, 'setItem', {
+        value: (key, value) => {
+          if (key === 'nash_sim_theme') {
+            throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+          }
+          return real(key, value);
+        },
+        configurable: true,
+      });
+    });
+    const quotaErrors = [];
+    quotaPage.on('pageerror', (e) => quotaErrors.push(e.message));
+    await quotaPage.goto(BASE, { waitUntil: 'networkidle' });
+    await quotaPage.waitForTimeout(500);
+    const bodyText = await quotaPage.evaluate(() => document.body.innerText || '');
+    record('RED-APP-8/004 fix: the page still renders content when nash_sim_theme\'s setItem throws QuotaExceededError',
+      bodyText.length > 0, `bodyText.length=${bodyText.length}`);
+    // The safeStorage wrappers swallow the exception at its own call site —
+    // it should never even reach an uncaught pageerror, let alone the error
+    // boundary's fallback UI.
+    record('RED-APP-8/004 fix: no uncaught page error from the quota-exceeded write',
+      quotaErrors.length === 0, JSON.stringify(quotaErrors));
+    const themeButtonWorks = await quotaPage.getByRole('button', { name: 'Toggle dark mode' }).first()
+      .isVisible({ timeout: 2000 }).catch(() => false);
+    record('RED-APP-8/004 fix: the app is otherwise interactive (the theme toggle renders) after the quota failure',
+      themeButtonWorks);
+    await quotaPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page
