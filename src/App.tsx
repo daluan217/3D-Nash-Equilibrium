@@ -215,23 +215,41 @@ export function payoffsEqual(a: GamePayoffs, b: GamePayoffs): boolean {
  * effect (see `isFeedbackOpen`/`isSaveModalOpen`/`isAuthModalOpen`/
  * `isEditModalOpen` there); duplicating Escape handling here would race that
  * effect's `document`-level listener against this hook's own, in an
- * unspecified DOM order, for no gain. Also does not move initial focus into
- * the dialog on open or restore it on close (each of the four already sets
- * initial focus on its OWN first field via `autoFocus`, unaffected by this
- * hook) — kept intentionally narrow to exactly the mechanism the finding
- * measured broken (Tab confinement), so this fix cannot silently change
- * other, unmeasured, already-working behavior.
+ * unspecified DOM order, for no gain.
+ *
+ * DOES move initial focus into the dialog on open (CodeRabbit review on PR
+ * #91, after the RED-APP-5/002 fix above shipped): only Feedback sets its
+ * own `autoFocus` field; Auth, Save and Edit have none, so on those three
+ * focus was left stranded on the background opener until the user's FIRST
+ * Tab press — no signal at all that a modal had opened, for a screen reader
+ * or for someone tabbing who has not yet reached the dialog. Fixed by
+ * focusing the first enabled control ONLY when focus is not ALREADY inside
+ * the dialog: React commits an element's `autoFocus` during the SAME commit
+ * phase as this effect's dependency change, strictly before this PASSIVE
+ * effect runs, so by the time this checks `document.activeElement`,
+ * Feedback's textarea is already focused and this is a no-op for it — the
+ * existing in-dialog autofocus behavior is unchanged, exactly what
+ * CodeRabbit asked for. Does not restore focus on close (unmeasured,
+ * narrower than this finding).
  */
+function getModalFocusables(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'),
+  ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+}
+
 function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElement | null>) {
   useEffect(() => {
     if (!open) return;
+    const container = containerRef.current;
+    if (container && !container.contains(document.activeElement)) {
+      getModalFocusables(container)[0]?.focus();
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
       const container = containerRef.current;
       if (!container) return;
-      const focusables = Array.from(
-        container.querySelectorAll<HTMLElement>('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'),
-      ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+      const focusables = getModalFocusables(container);
       if (focusables.length === 0) return;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];

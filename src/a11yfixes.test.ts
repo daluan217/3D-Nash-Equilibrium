@@ -259,6 +259,48 @@ const css = readFileSync('src/index.css', 'utf8');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CodeRabbit review on PR #91, App.tsx:223 (Major, after RED-APP-5/002
+// shipped above): `useModalTabTrap` deliberately did not set initial focus,
+// and only Feedback has its own `autoFocus` field — Auth, Save and Edit left
+// focus stranded on the background opener until the user's first Tab press.
+// Fixed by moving focus to the first enabled control inside the hook itself,
+// gated on `!container.contains(document.activeElement)` so a dialog with
+// its OWN autoFocus (Feedback) is unaffected. This is the decidable half —
+// the real behavioral proof is `src/e2e/smoke.mjs` section 20 (checks the
+// Auth dialog, which has no autoFocus field of its own, so it is the one
+// case that actually exercises this).
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const hookIdx = app.indexOf('function useModalTabTrap(');
+  ok(hookIdx > 0, 'useModalTabTrap must exist (checked above; re-anchoring here)');
+  const hookBody = app.slice(hookIdx, app.indexOf('\n}', app.indexOf('window.addEventListener', hookIdx)));
+  ok(hookBody.includes('getModalFocusables'),
+    'useModalTabTrap must use a shared focusables helper (not re-derive its own query for the mount-focus branch)');
+  ok(/if\s*\(container\s*&&\s*!container\.contains\(document\.activeElement\)\)/.test(hookBody),
+    `useModalTabTrap must only move focus when it is not ALREADY inside the dialog — `
+    + `otherwise Feedback's own autoFocus would be fought over, got: ${JSON.stringify(hookBody.slice(0, 400))}`);
+  ok(/getModalFocusables\(container\)\[0\]\?\.focus\(\)/.test(hookBody),
+    'useModalTabTrap must focus the FIRST focusable element, not e.g. the last or the container itself');
+  // The mount-focus branch must run BEFORE the Tab keydown listener is
+  // registered — placed after it would only take effect on the dialog's
+  // SECOND open (React effect ordering), silently missing the first.
+  const mountFocusIdx = hookBody.search(/if\s*\(container\s*&&\s*!container\.contains/);
+  const listenerIdx = hookBody.indexOf('window.addEventListener');
+  ok(mountFocusIdx > 0 && listenerIdx > mountFocusIdx,
+    'the mount-focus check must run before the Tab-trap listener is attached');
+
+  // MUTATION FIXTURE: the pre-fix hook body, verbatim (Tab-trap only, no
+  // mount-focus branch). Proves the checks above can tell the fixed hook
+  // apart from the defect.
+  const preFixHookBody = `function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {`;
+  ok(!preFixHookBody.includes('getModalFocusables'),
+    'the pre-fix fixture text must not accidentally already carry the mount-focus branch (fixture sanity check)');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RED-APP-5 finding 003 (round 5): the guided tour (z-[60]) painted ABOVE
 // every dialog (z-50), so a deliberately-opened modal (e.g. Sign In, which
 // stays clickable throughout the tour) could be visually and functionally

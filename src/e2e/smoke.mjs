@@ -931,11 +931,24 @@ try {
     record('Tab is trapped inside the Feedback dialog (15 presses, focus never left it)',
       await sweepTab('Send feedback'));
     await trapPage.keyboard.press('Escape');
-    await trapPage.waitForTimeout(150);
+    // Poll for the dialog's actual disappearance rather than a fixed sleep
+    // (CodeRabbit review on PR #91: a 150ms sleep can race React's state
+    // update + unmount on a slow/2-core CI runner).
+    await trapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Send feedback"]'),
+      null, { timeout: 10000 }).catch(() => {});
 
     await trapPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     await trapPage.waitForFunction(() => !!document.querySelector('[role="dialog"][aria-label="Account"]'),
       null, { timeout: 10000 }).catch(() => {});
+    // FOCUS MOVES INTO THE DIALOG ON OPEN (CodeRabbit review on PR #91,
+    // same round as the Tab-trap fix above): Auth has no `autoFocus` field
+    // of its own (unlike Feedback's textarea), so this dialog is the real
+    // proof — before the fix, `document.activeElement` stayed on the
+    // "Sign In / Sign Up" launcher button until the user's FIRST Tab press.
+    // Checked BEFORE the manual `.focus()` call below, which would
+    // otherwise overwrite the natural target and hide a regression here.
+    record('opening the Auth dialog moves focus into it without a Tab press',
+      await isInsideDialog('Account'));
     await trapPage.locator('[role="dialog"][aria-label="Account"] input').first().focus();
     record('Tab is trapped inside the Auth dialog (15 presses, focus never left it)',
       await sweepTab('Account'));
@@ -946,7 +959,12 @@ try {
     // comment above for the CodeRabbit finding that caught the first two
     // attempts at this check).
     await trapPage.keyboard.press('Enter');
-    await trapPage.waitForTimeout(150);
+    // This is a NEGATIVE assertion (no second dialog stacks) — there is
+    // nothing to wait FOR, so poll two animation frames instead of a fixed
+    // sleep (CodeRabbit review on PR #91): lets React's state update and
+    // paint land at whatever cadence the runner is actually running at,
+    // without waiting any longer than necessary on a fast one.
+    await trapPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const secondDialogCount = await trapPage.evaluate(() =>
       document.querySelectorAll('[role="dialog"][aria-modal="true"]').length);
     record('Enter after the Auth-dialog Tab sweep cannot stack a second aria-modal dialog',
