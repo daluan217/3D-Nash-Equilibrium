@@ -1915,6 +1915,115 @@ try {
     await shortPage.close();
   }
 
+  // ══ 36. RED-APP-8/002 — the label inputs' grapheme-safe clamp (#101, RED-
+  //      APP-7/004) must never fight an open IME composition. A native
+  //      `input` event fires on EVERY keystroke of an open composition, not
+  //      just on commit, so clamping unconditionally in `onChange` used to
+  //      desync the DOM value from the IME's own growing composing buffer
+  //      the moment it crossed 40 units. Dispatches a REAL composition
+  //      sequence — native value setter + InputEvent(insertCompositionText,
+  //      isComposing:true) per keystroke, matching how
+  //      @testing-library/user-event drives React's own composition
+  //      detection (which reads exactly `e.nativeEvent.isComposing`).
+  {
+    const imePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(imePage, 'e2e8ime');
+    await imePage.getByRole('button', { name: /save preset/i }).click();
+    await imePage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const row1Input = imePage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Undercut"]');
+    await row1Input.click();
+
+    // 45 CJK characters, one UTF-16 unit each — 5 past the 40-unit budget,
+    // never committed (compositionend) until the very last step.
+    const composedChars = ('国际关系与地区安全合作机制建设的历史沿革与展望研究' + '究究究究究究究究究究究究究究究究究究究究').split('');
+    const info = await imePage.evaluate(async (chars) => {
+      const input = document.activeElement;
+      if (!input || input.tagName !== 'INPUT') return { error: 'no focused input' };
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+      let composing = '';
+      const snapshots = [];
+      for (let i = 0; i < chars.length; i++) {
+        composing += chars[i];
+        nativeSetter.call(input, composing);
+        input.dispatchEvent(new InputEvent('input', {
+          bubbles: true, cancelable: false, composed: true,
+          inputType: 'insertCompositionText', data: composing, isComposing: true,
+        }));
+        snapshots.push({ i, composingLenIntended: composing.length, domValueLen: input.value.length });
+      }
+      input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: composing }));
+      nativeSetter.call(input, composing);
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true, cancelable: false, composed: true,
+        inputType: 'insertCompositionText', data: composing, isComposing: false,
+      }));
+      await new Promise((r) => setTimeout(r, 50));
+      return { snapshots, domValueFinal: input.value, domValueFinalLen: input.value.length, fullComposedLen: composing.length };
+    }, composedChars);
+
+    if (info.error) {
+      record('RED-APP-8/002: an input was focused for the composition test', false, info.error);
+    } else {
+      const midCompositionClamped = info.snapshots.some((s) => s.composingLenIntended > 40 && s.domValueLen < s.composingLenIntended);
+      record('RED-APP-8/002 fix: the DOM value is NEVER clamped while still composing (isComposing=true)',
+        !midCompositionClamped,
+        midCompositionClamped ? JSON.stringify(info.snapshots.filter((s) => s.domValueLen < s.composingLenIntended).slice(0, 3)) : 'no clamp seen during composition');
+      record('RED-APP-8/002 fix: the final COMMITTED value (post-compositionend) is clamped to <=40 UTF-16 units',
+        info.domValueFinalLen <= 40, `len=${info.domValueFinalLen}`);
+      record('RED-APP-8/002 fix: the final committed value is NOT the full 45-character composition (the clamp really ran on commit)',
+        info.domValueFinal !== '国际关系与地区安全合作机制建设的历史沿革与展望研究究究究究究究究究究究究究究究究究究究究究');
+    }
+    await imePage.close();
+  }
+
+  // ══ 37. RED-APP-8/003 — the FIRST time the label-input clamp actually
+  //      narrows a value, native Undo (Cmd/Ctrl+Z) must not go permanently
+  //      inert for that field. Types real keystrokes (not synthetic DOM
+  //      events) past the 40-unit budget, then presses Undo repeatedly and
+  //      confirms the value actually changes at least once (the pre-fix
+  //      behaviour: 50 presses, zero change, ever).
+  {
+    const undoPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(undoPage, 'e2e8undo');
+    await undoPage.getByRole('button', { name: /save preset/i }).click();
+    await undoPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const row1Input = undoPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Undercut"]');
+    await row1Input.click();
+    await row1Input.fill('');
+    await undoPage.keyboard.type('AAAAAAAAAA', { delay: 20 }); // 10 chars, well under 40
+    for (let i = 0; i < 35; i++) {
+      await undoPage.keyboard.type('B', { delay: 25 }); // one keystroke at a time, crossing the 40-unit budget
+    }
+    const afterOverflow = await row1Input.inputValue();
+    record('RED-APP-8/003 fixture sanity: typed value is clamped to 40 units', afterOverflow.length === 40, `len=${afterOverflow.length}`);
+
+    const isMac = process.platform === 'darwin';
+    const history = [];
+    for (let i = 0; i < 40; i++) {
+      await undoPage.keyboard.press(isMac ? 'Meta+z' : 'Control+z');
+      await undoPage.waitForTimeout(40);
+      history.push(await row1Input.inputValue());
+    }
+    const everChanged = new Set(history).size > 1;
+    record('RED-APP-8/003 fix: native Undo actually changes the value at least once after a clamp fired (was PERMANENTLY inert pre-fix)',
+      everChanged, everChanged ? `${new Set(history).size} distinct values over 40 presses` : `stuck at "${history[0]}"`);
+
+    // Control: a field the clamp never touched (the Name field, well under
+    // 40 chars) undoes normally — proves undo is not broken everywhere, only
+    // isolating this to the moment the clamp actually narrowed a value.
+    const nameField = undoPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]');
+    await nameField.click();
+    await nameField.fill('');
+    await undoPage.keyboard.type('short', { delay: 20 });
+    await undoPage.keyboard.press(isMac ? 'Meta+z' : 'Control+z');
+    await undoPage.waitForTimeout(80);
+    const controlAfterUndo = await nameField.inputValue();
+    record('control: an unclamped field\'s undo works normally', controlAfterUndo !== 'short' && controlAfterUndo.length < 5,
+      `"${controlAfterUndo}"`);
+    await undoPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page

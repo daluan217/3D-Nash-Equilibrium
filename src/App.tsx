@@ -118,6 +118,55 @@ import katex from 'katex';
  */
 const clampLabelInput = (v: string) => clampGraphemeSafe(v, 40);
 
+/**
+ * RED-APP-8/002 + RED-APP-8/003: the `onChange`-based clamp above (#101's
+ * fix for RED-APP-7/004) introduced two NEW regressions relative to the
+ * native `maxLength` it replaced — both from the same root cause, an
+ * unconditional post-hoc React state rewrite of a value the browser itself
+ * already produced:
+ *
+ *  - 002: a native `input` event fires on EVERY keystroke of an open IME
+ *    composition (CJK/JP/KR), not just on commit. Clamping mid-composition
+ *    fights the IME — the DOM value stops growing while the composition's
+ *    own internal buffer keeps growing, desyncing the two.
+ *  - 003: the FIRST time the clamp actually narrows a value, the browser's
+ *    native Undo (Cmd/Ctrl+Z) goes permanently inert for that field —
+ *    writing a DIFFERENT string back into a controlled input breaks the
+ *    correspondence between the undo stack and the displayed value.
+ *
+ * Both are closed by moving enforcement from `onChange` (after the browser
+ * has already committed the edit) to `onBeforeInput` (before it has):
+ * `preventDefault()` here stops the browser from performing an insertion
+ * that would push the value over the grapheme-safe budget, so the browser's
+ * OWN undo-stack-tracked edit either happens (value stays ≤40 units, exactly
+ * what a real edit produced) or never happens at all (no `input` event, no
+ * `onChange`, nothing for undo to have to reconcile).
+ *
+ * `insertCompositionText` — every keystroke of an OPEN composition — is
+ * defined by the spec as NOT cancelable, so `preventDefault()` here is a
+ * silent no-op for it: composition passes through completely untouched,
+ * matching native `maxLength`'s own deferred-enforcement behavior. The
+ * eventual COMMITTED string (compositionend) still needs a clamp, since
+ * `onBeforeInput` never saw it coming — `onChange`'s clamp stays, but now
+ * skips while `e.nativeEvent.isComposing` is true (only the OLD unconditional
+ * form was the bug) so it never touches a value mid-composition, only the
+ * final committed one.
+ */
+function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
+  const ne = e.nativeEvent as InputEvent;
+  if (ne.isComposing) return; // not cancelable anyway — let composition through untouched
+  const data = ne.data;
+  if (!data) return; // deletions and other non-inserting edits have nothing to bound
+  const target = e.target as HTMLInputElement;
+  const current = target.value;
+  const selStart = target.selectionStart ?? current.length;
+  const selEnd = target.selectionEnd ?? current.length;
+  const prospective = current.slice(0, selStart) + data + current.slice(selEnd);
+  if (clampGraphemeSafe(prospective, 40) !== prospective) {
+    e.preventDefault();
+  }
+}
+
 // Typeset LaTeX inline via KaTeX (self-hosted, works offline)
 function MathTex({ tex, className }: { tex: string; className?: string }) {
   const html = useMemo(
@@ -5492,7 +5541,15 @@ export default function App() {
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
                         value={editLabels[key]}
-                        onChange={(e) => setEditLabels((prev) => ({ ...prev, [key]: clampLabelInput(e.target.value) }))}
+                        onBeforeInput={clampLabelBeforeInput}
+                        onChange={(e) => setEditLabels((prev) => ({
+                          ...prev,
+                          // RED-APP-8/002: never clamp WHILE an IME composition is
+                          // open (the DOM value is correct as-is; onBeforeInput
+                          // cannot block insertCompositionText, so this is where
+                          // the eventual committed string still gets bounded).
+                          [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
+                        }))}
                       />
                     </div>
                   ))}
@@ -5883,7 +5940,13 @@ export default function App() {
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
                         value={saveLabels[key]}
-                        onChange={(e) => setSaveLabels((prev) => ({ ...prev, [key]: clampLabelInput(e.target.value) }))}
+                        onBeforeInput={clampLabelBeforeInput}
+                        onChange={(e) => setSaveLabels((prev) => ({
+                          ...prev,
+                          // RED-APP-8/002: see the identical comment on the Edit
+                          // dialog's label inputs above.
+                          [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
+                        }))}
                       />
                     </div>
                   ))}
