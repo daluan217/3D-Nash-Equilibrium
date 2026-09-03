@@ -466,6 +466,12 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
       !actorNounsOk({ ...base, actorA: 'a regional freight broker' as never, actorB: null }));
     check('actorNounsOk: a single-character noun is rejected',
       !actorNounsOk({ ...base, actorA: ['a'], actorB: null }));
+    // CodeRabbit (phase 3 review): the length floor must apply to the
+    // NORMALIZED string, not the raw one — a zero-width space survives
+    // `.trim()` (not whitespace) but is stripped by `norm`, so "​a" is 2
+    // raw characters and 1 real one.
+    check('actorNounsOk: a zero-width-prefixed single-character noun is rejected',
+      !actorNounsOk({ ...base, actorA: ['​a'], actorB: null }));
     // Bank phase-3 real defect (2026-09-03 backfill hand-read, 5 shipped
     // rows): a noun naming BOTH parties at once ("the upstream and
     // downstream lock-keepers", "Two neighboring orchard operators")

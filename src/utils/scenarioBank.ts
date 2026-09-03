@@ -277,7 +277,12 @@ export function actorNounsOk(sc: {
   // Same floor `cleanUserColorTerms` (colorTerms.ts) uses for a user-typed
   // term: a single character is indistinguishable from an article ("a") and
   // would highlight (or here, verbatim-match) almost any description.
-  if (all.some((t) => t.trim().length < 2 || !descNorm.includes(norm(t)))) return false;
+  // Length checked AFTER normalization, not on the raw string: a zero-width
+  // character (e.g. U+200B) survives `.trim()` (it is not whitespace) but is
+  // stripped by `norm`, so "​a" reads as 2 raw characters and 1 real
+  // one — checking the raw length would let a single-character noun through
+  // the same floor `cleanUserColorTerms` enforces (CodeRabbit, phase 3 review).
+  if (all.some((t) => { const n = norm(t); return n.length < 2 || !descNorm.includes(n); })) return false;
   const aSet = new Set((a as string[]).map(norm));
   const bSet = new Set((b as string[]).map(norm));
   if ([...aSet].some((t) => bSet.has(t))) return false;
