@@ -1586,6 +1586,137 @@ try {
     await dblPage.close();
   }
 
+  // ══ 30. FEATURE-REGEN — a stalled regenerate request recovers on its own
+  //      with honest timeout wording. Real wall-clock wait past
+  //      REPORT_FETCH_TIMEOUT_MS (22s, App.tsx — handleRegenerateScenario
+  //      uses the SAME fetchWithTimeout default as /api/report, see §23's
+  //      sibling check), because the defect class this guards is "nothing
+  //      ever forces recovery".
+  {
+    const toPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let toIntercepted = false;
+    await mockRegenOn(toPage, async (route) => {
+      toIntercepted = true;
+      // Deliberately never fulfill — a genuinely hung request.
+    });
+    await registerAndLogin(toPage, 'e2e6regento');
+    await toPage.getByRole('button', { name: /save preset/i }).click();
+    await toPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const toRegenBtn = toPage.getByRole('button', { name: 'Regenerate scenario' });
+    await toRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await toRegenBtn.click();
+    await toPage.waitForFunction(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Regenerate scenario');
+      return btn?.getAttribute('aria-disabled') === 'true';
+    }, null, { timeout: 5000 }).catch(() => {});
+    record('the regenerate request was actually intercepted (precondition)', toIntercepted);
+
+    // Poll for recovery rather than a flat sleep — this IS the 22s wait, not
+    // a workaround for one: a real regression (no recovery at all) must time
+    // this loop out rather than pass on a stale snapshot.
+    let recovered = null;
+    for (let i = 0; i < 30 && !recovered; i++) {
+      const state = await toPage.evaluate(() => {
+        const btn = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Regenerate scenario');
+        const note = Array.from(document.querySelectorAll('[role="status"][aria-live="polite"]')).map((n) => n.textContent || '').join(' | ');
+        return btn ? { text: btn.textContent, ariaDisabled: btn.getAttribute('aria-disabled'), note } : null;
+      });
+      if (state && state.ariaDisabled !== 'true') recovered = state;
+      else await toPage.waitForTimeout(1000);
+    }
+    record('the regenerate button un-sticks (re-enabled) after the ~22s timeout',
+      !!recovered, JSON.stringify(recovered));
+    record('the dialog shows the timeout-specific wording, not a generic failure message',
+      /taking longer than expected/i.test(recovered?.note || ''), JSON.stringify(recovered));
+    await toPage.close();
+  }
+
+  // ══ 31. FEATURE-REGEN — a 429 from the shared rate-limit bucket shows the
+  //      server's own wording, and the button recovers immediately (no stuck
+  //      "Regenerating…").
+  {
+    const rlPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(rlPage, async (route) => {
+      await route.fulfill({
+        status: 429, contentType: 'application/json',
+        body: JSON.stringify({ error: 'Too many attempts. Please wait a minute and try again.' }),
+      });
+    });
+    await registerAndLogin(rlPage, 'e2e6regenrl');
+    await rlPage.getByRole('button', { name: /save preset/i }).click();
+    await rlPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const rlRegenBtn = rlPage.getByRole('button', { name: 'Regenerate scenario' });
+    await rlRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await rlRegenBtn.click();
+
+    let rlNote = '';
+    for (let i = 0; i < 20 && !/ai limit reached/i.test(rlNote); i++) {
+      rlNote = await rlPage.evaluate(() =>
+        Array.from(document.querySelectorAll('[role="status"][aria-live="polite"]')).map((n) => n.textContent || '').join(' | '));
+      if (!/ai limit reached/i.test(rlNote)) await rlPage.waitForTimeout(150);
+    }
+    record('a 429 shows the "AI limit reached" wording with the server\'s own message',
+      /ai limit reached/i.test(rlNote) && /too many attempts/i.test(rlNote), rlNote);
+    const rlDisabled = await rlPage.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Regenerate scenario');
+      return btn?.getAttribute('aria-disabled');
+    });
+    record('the button is re-enabled (not stuck loading) after a 429', rlDisabled !== 'true', `aria-disabled=${rlDisabled}`);
+    await rlPage.close();
+  }
+
+  // ══ 32. FEATURE-REGEN — cross-dialog staleness: Edit A's slow response
+  //      must never land on Edit B.
+  {
+    const stalePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(stalePage, async (route) => {
+      await new Promise((r) => setTimeout(r, 3000));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_A }) });
+    });
+    await registerAndLogin(stalePage, 'e2e6regenstale');
+    // Save two distinct games to edit. The Save dialog's Name field is
+    // located by its distinctive placeholder (it carries no htmlFor/id
+    // label association — the existing convention in this suite, e.g. §24).
+    for (const label of ['Stale Game A', 'Stale Game B']) {
+      await stalePage.getByRole('button', { name: /save preset/i }).click();
+      await stalePage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      await stalePage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(label);
+      await stalePage.getByRole('button', { name: /^save game profile$/i }).click();
+      await stalePage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
+        null, { timeout: 5000 }).catch(() => {});
+    }
+    const editButtonFor = (name) => stalePage.getByRole('button', { name: new RegExp(`^Edit ${name}$`) });
+    // The Edit dialog's Name field ALSO carries no label association, and
+    // shares maxlength=40 with the four option-label inputs below it — it is
+    // the FIRST such input in DOM order (Name, then Description, then the
+    // four Option Names), so `.first()` is a stable, real selector here.
+    const editNameField = () => stalePage.locator('[role="dialog"][aria-label="Edit saved game"] input[maxlength="40"]').first();
+    await editButtonFor('Stale Game A').click();
+    await stalePage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    const staleRegenBtn = stalePage.getByRole('button', { name: 'Regenerate scenario' });
+    await staleRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await staleRegenBtn.click();
+    await stalePage.waitForFunction(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Regenerate scenario');
+      return btn?.getAttribute('aria-disabled') === 'true';
+    }, null, { timeout: 5000 }).catch(() => {});
+    // Close A (Escape) before its 3s response lands, open B.
+    await stalePage.keyboard.press('Escape');
+    await stalePage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Edit saved game"]'),
+      null, { timeout: 5000 }).catch(() => {});
+    await editButtonFor('Stale Game B').click();
+    await stalePage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    const bNameBefore = await editNameField().inputValue();
+    // Wait past the 3s mocked delay.
+    await stalePage.waitForTimeout(3500);
+    const bNameAfter = await editNameField().inputValue();
+    const bHasPreview = await stalePage.getByText('New scenario (preview)', { exact: false }).isVisible().catch(() => false);
+    record('cross-dialog staleness: B\'s name field is untouched after A\'s late response would have landed',
+      bNameBefore === bNameAfter && bNameAfter === 'Stale Game B', `before=${bNameBefore} after=${bNameAfter}`);
+    record('cross-dialog staleness: A\'s late preview never rendered inside B', !bHasPreview);
+    await stalePage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page
