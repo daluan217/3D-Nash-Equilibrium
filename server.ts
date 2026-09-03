@@ -287,6 +287,70 @@ import { bankAvailable, bankScenario } from "./src/utils/bankSource";
 // Load environment variables from .env file
 dotenv.config();
 
+// ── Async error boundary (RED-DESKTOP-6/001) ────────────────────────────────
+//
+// There was NO async error boundary anywhere in this file: every `async (req,
+// res) => {...}` route handler is registered with no `express-async-errors`
+// and no wrapper, so a synchronous throw inside one (e.g. `db.users.find` on
+// a `db.users` that turns out not to be an array — exactly what an
+// unvalidated old/malformed db.json shape produces, see `loadDBFromFile`
+// below) does not propagate to Express's error handling at all. It silently
+// rejects the handler's own returned Promise, which nothing awaits or
+// catches. Node 22's default `unhandledRejection` mode ("throw") then turns
+// that into an uncaught exception with no handler — CRASHING THE WHOLE
+// PROCESS in the standalone `dist/server.cjs` case (confirmed: the PID
+// vanishes, every in-flight and future request gets a connection reset). In
+// the packaged app (server.ts required IN-PROCESS by electron-main.cjs) the
+// process itself survives, but `inMemoryDb` is never reloaded, so the SAME
+// failure recurs identically on every future request touching the DB — the
+// UI just says "Network error" forever, with nothing naming the cause.
+//
+// `asyncHandler` closes the gap at its source: any async route handler
+// wrapped with it has its rejection routed to `next(err)`, which Express's
+// OWN routing then hands to the global error-handling middleware below —
+// same one clean, logged 500 response either way, not a hung connection.
+function asyncHandler(
+  fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void | express.Response>
+): (req: express.Request, res: express.Response, next: express.NextFunction) => void {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
+// Set to true only once `app.listen`'s own callback fires (see
+// `startListening` near the bottom of `startServer`). Everything that can go
+// wrong BEFORE that point — a bad db.json shape, a filesystem permission
+// error, a port bind failure — is a STARTUP failure: the existing behavior
+// (an uncaught exception/rejection crashes the process loudly) is exactly
+// right there, so this flag is what lets the handlers below tell "starting
+// up" apart from "already serving requests" and choose accordingly.
+let serverListening = false;
+
+// Last-resort safety net, for anything that reaches neither `asyncHandler`
+// nor Express's synchronous error handling — a rejected promise in
+// fire-and-forget code (e.g. an un-awaited background save), a throw inside
+// a timer/event callback, or simply the next unvalidated assumption someone
+// adds next to one of the many `db.users`/`db.games` call sites this class of
+// bug came from. Per RED-DESKTOP-6/001's own ask: log loudly WITH the cause,
+// keep serving once the server is up (never exit on a request-path error);
+// still exit loudly on a startup-time failure, matching today's behavior for
+// that case exactly (Node's own default), just with an intentional, findable
+// log line instead of a bare default stack dump.
+function handleFatalAsync(kind: "unhandledRejection" | "uncaughtException", err: unknown): void {
+  const cause = err instanceof Error ? (err.stack || err.message) : String(err);
+  if (!serverListening) {
+    console.error(`FATAL (${kind}) during startup — exiting: ${cause}`);
+    process.exit(1);
+  }
+  console.error(
+    `Unhandled ${kind} after the server was already listening — logging and continuing to serve `
+    + `(this indicates a bug: some code path threw/rejected outside every async-error boundary). `
+    + `Cause: ${cause}`
+  );
+}
+process.on("unhandledRejection", (err) => handleFatalAsync("unhandledRejection", err));
+process.on("uncaughtException", (err) => handleFatalAsync("uncaughtException", err));
+
 interface GamePayoffs {
   a11: number; a12: number; a21: number; a22: number;
   b11: number; b12: number; b21: number; b22: number;
@@ -467,7 +531,84 @@ function writeFileAtomicSync(file: string, data: string): void {
 
 let inMemoryDb: DB | null = null;
 
-function loadDBFromFile(): DB {
+/**
+ * Shape-validate a JSON.parse'd db.json before anything trusts it
+ * (RED-DESKTOP-6/001). `loadDBFromFile` used to `return JSON.parse(data)`
+ * typed as `DB` with NO check that `users`/`games` were even present, let
+ * alone arrays — a db.json that is valid JSON but the wrong shape (a
+ * genuinely old file predating 2026-06-18's multi-user/`users` array, or a
+ * partial/hand-edited write) loaded unmodified and crashed the FIRST request
+ * that touched `db.users`/`db.games` (`ensureLocalOwner`'s `db.users.find`,
+ * `POST /api/games`'s `[...db.games, newGame]`, etc.) — in the standalone
+ * process that crash takes the whole server down; in the packaged app it
+ * poisons `inMemoryDb` for the rest of that run, silently and permanently,
+ * with nothing ever naming db.json as the cause.
+ *
+ * A missing or `null` "users"/"games" field is a KNOWN old shape — normalise
+ * it to `[]` and say so loudly (a warning, not silence) rather than crash on
+ * first use. A field that is PRESENT but the WRONG TYPE (a string, a number,
+ * an object — not a recognised old shape, not something we can guess the
+ * intent of) is not safe to default to empty without telling anyone: that
+ * case throws, and the caller below treats it exactly like a JSON.parse
+ * failure — preserve the bytes, refuse to boot rather than serve a DB that
+ * silently discarded who knows what.
+ */
+function normalizeDbShape(parsed: unknown, filePath: string): DB {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `${filePath} does not contain a JSON object at its top level (got `
+      + `${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed}).`
+    );
+  }
+  const obj = parsed as { users?: unknown; games?: unknown };
+
+  const normalizeCollection = (name: "users" | "games", value: unknown): unknown[] => {
+    if (value === undefined || value === null) {
+      console.warn(
+        `${filePath}: "${name}" was ${value === undefined ? "missing" : "null"} — treating it as an `
+        + `empty array. This is expected for a database saved before accounts existed (pre-2026-06-18) `
+        + `or after a partial write; existing data in the other collection is untouched.`
+      );
+      return [];
+    }
+    if (!Array.isArray(value)) {
+      throw new Error(`${filePath}: "${name}" is present but is a ${typeof value}, not an array — refusing to guess its contents.`);
+    }
+    return value;
+  };
+
+  return {
+    users: normalizeCollection("users", obj.users) as User[],
+    games: normalizeCollection("games", obj.games) as SavedGame[],
+  };
+}
+
+/**
+ * Pre-ownership games (no `userId` — the field was added 2026-06-18 with
+ * multi-user support) load fine under `normalizeDbShape` above but are then
+ * invisible forever: every read filters strictly by `userId`
+ * (`g.userId === user.id`), `undefined` never matches any real id, and
+ * nothing ever back-fills the field — `GET /api/games` returns `200 []`
+ * on every future request while the exact same games sit byte-intact in
+ * db.json (RED-DESKTOP-6/002). Desktop-only (the brief's own scoping): a
+ * hosted db.json missing `userId` on some rows is a DIFFERENT, ambiguous
+ * situation (which of potentially many accounts should adopt them?) with no
+ * safe single answer, so it is left alone there, just logged.
+ */
+function migrateOwnerlessGames(db: DB, filePath: string): boolean {
+  if (!isDesktop()) return false;
+  const orphaned = db.games.filter((g) => !g.userId);
+  if (orphaned.length === 0) return false;
+  for (const g of orphaned) g.userId = LOCAL_OWNER_ID;
+  console.warn(
+    `${filePath}: migrated ${orphaned.length} pre-account game(s) with no "userId" to the desktop `
+    + `local owner ("${LOCAL_OWNER_ID}") so they remain visible. This is a one-time migration, `
+    + `written back to disk.`
+  );
+  return true;
+}
+
+function loadDBFromFile(): DB | null {
   try {
     const dbDir = path.dirname(DB_FILE);
     if (!fs.existsSync(dbDir)) {
@@ -485,9 +626,18 @@ function loadDBFromFile(): DB {
     }
     return fresh;
   }
+
+  let data: string;
   try {
-    const data = fs.readFileSync(DB_FILE, "utf-8");
-    return JSON.parse(data);
+    data = fs.readFileSync(DB_FILE, "utf-8");
+  } catch (err) {
+    console.error(`Error reading db.json at ${DB_FILE}, treating as empty:`, err);
+    return { users: [], games: [] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
   } catch (err) {
     // A database we cannot parse is not a database we may DELETE. Returning the
     // empty DB here is survivable on its own; what made it destructive is what
@@ -504,6 +654,51 @@ function loadDBFromFile(): DB {
     }
     return { users: [], games: [] };
   }
+
+  let db: DB;
+  try {
+    db = normalizeDbShape(parsed, DB_FILE);
+  } catch (shapeErr) {
+    // Present, but the WRONG TYPE — not a recognised old shape. Same
+    // preserve-the-bytes treatment as an unparseable file, but this is NOT
+    // "survivable on its own" the way a fresh empty DB is for a corrupt-JSON
+    // file: silently starting with an empty library here could just as
+    // easily be masking real, unknown-shaped data. Refuse LOUDLY at startup
+    // instead — the same dialog/exit machinery `acquireDesktopLock` already
+    // uses (#88/#93) for "we cannot trust this data directory, don't start."
+    const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    let preserved = false;
+    try {
+      fs.renameSync(DB_FILE, aside);
+      preserved = true;
+    } catch (renameErr) {
+      console.error(`Could not move the malformed db.json aside to ${aside}:`, renameErr);
+    }
+    const cause = shapeErr instanceof Error ? shapeErr.message : String(shapeErr);
+    reportDesktopLockFailure(
+      `Refusing to start: ${DB_FILE} could not be read as a valid database (${cause}). Starting `
+      + `anyway would risk silently showing an empty games library instead of the real cause. `
+      + (preserved
+        ? `The unreadable file has been preserved at ${aside} — quit, inspect/repair or delete it, then relaunch.`
+        : `The unreadable file could not be moved aside; please back it up, then remove or repair ${DB_FILE} and relaunch.`),
+      preserved ? aside : DB_FILE,
+    );
+    return null;
+  }
+
+  if (migrateOwnerlessGames(db, DB_FILE)) {
+    try {
+      writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+    } catch (err) {
+      // Best-effort durability: the in-memory DB is correct either way (every
+      // future read/write this run sees the migrated userId), so a write
+      // failure here just means the SAME migration note logs again on the
+      // next boot rather than being lost.
+      console.error(`Could not persist the ownerless-game migration to ${DB_FILE} (will retry on next boot):`, err);
+    }
+  }
+
+  return db;
 }
 
 // GCS concurrency state. See `scheduleGcsSave`/`uploadDbToGcs` below (near
@@ -858,10 +1053,17 @@ function acquireDesktopLock(): boolean {
   return true;
 }
 
-// Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
-async function initDB(): Promise<void> {
+// Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
+// Returns `false` when `loadDBFromFile` refused to load an unrecoverable
+// db.json shape (RED-DESKTOP-6/001) — the failure has already been reported
+// (standalone: `process.exit(1)`; packaged: the startup-blocked dialog via
+// `reportDesktopLockFailure`), so the caller (`startServer`) must stop before
+// ever calling `app.listen`, exactly like `acquireDesktopLock`'s own contract.
+async function initDB(): Promise<boolean> {
   if (process.env.ELECTRON_USER_DATA_PATH) {
-    inMemoryDb = loadDBFromFile();
+    const db = loadDBFromFile();
+    if (db === null) return false;
+    inMemoryDb = db;
   } else if (GCS_BUCKET) {
     try {
       const { Storage } = await import('@google-cloud/storage');
@@ -899,11 +1101,16 @@ async function initDB(): Promise<void> {
       console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb!.users.length} users, ${inMemoryDb!.games.length} games`);
     } catch (err) {
       console.error('Error loading DB from GCS, falling back to local file:', err);
-      inMemoryDb = loadDBFromFile();
+      const db = loadDBFromFile();
+      if (db === null) return false;
+      inMemoryDb = db;
     }
   } else {
-    inMemoryDb = loadDBFromFile();
+    const db = loadDBFromFile();
+    if (db === null) return false;
+    inMemoryDb = db;
   }
+  return true;
 }
 
 // Returns the in-memory DB (always synchronous after initDB resolves)
@@ -2153,7 +2360,7 @@ async function startServer() {
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
   // The installed Electron app polls this to decide whether to prompt for an update.
-  app.get("/api/version", rateLimit("version", 60, 60_000, 'hosted-only'), async (req, res) => {
+  app.get("/api/version", rateLimit("version", 60, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     try {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
@@ -2170,14 +2377,14 @@ async function startServer() {
       console.error("Error reading app version:", error);
       return res.status(500).json({ error: "Internal Server Error" });
     }
-  });
+  }));
 
   // ── Report API ─────────────────────────────────────────────────────────────
   // Grounded LLM analysis with deterministic fallback. The client renders model
   // prose only when validation passes; a refusal, truncation, or hallucination
   // degrades to the existing deterministic panel rather than showing something
   // wrong. That makes the fallback path exercised in normal operation.
-  app.post("/api/report", rateLimit("report", 20, 60_000, 'hosted-only'), async (req, res) => {
+  app.post("/api/report", rateLimit("report", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
     const scenario = cleanScenario(req.body?.scenario);
     if (!payoffs) {
@@ -2613,10 +2820,10 @@ async function startServer() {
       reportCache.set(cacheKey, envelope);
     }
     return res.json(envelope);
-  });
+  }));
 
   // ── Feedback API ───────────────────────────────────────────────────────────
-  app.post("/api/feedback", rateLimit("feedback", 10, 60_000), async (req, res) => {
+  app.post("/api/feedback", rateLimit("feedback", 10, 60_000), asyncHandler(async (req, res) => {
     const { message, email, rating } = req.body;
 
     const trimmedMessage = typeof message === "string" ? message.trim() : "";
@@ -2656,14 +2863,14 @@ async function startServer() {
       console.error("Failed to send feedback:", err);
       return res.status(500).json({ error: "Could not send feedback. Please try again later." });
     }
-  });
+  }));
 
   // Serve compiled DMG file. Content-Length above the sized-response cap is
   // handled by setContentLengthIfUnderCloudRunLimit (module scope, above) —
   // reconciled from two independent fixes (this branch's own root-cause
   // finding, RED-DESKTOP-4/003, and PR #89's live hotfix) into ONE
   // implementation per the director's call; see that function's own comment.
-  app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), async (req, res) => {
+  app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), asyncHandler(async (req, res) => {
     try {
       // In Cloud Run, stream from GCS
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
@@ -2771,10 +2978,10 @@ async function startServer() {
       console.error("Error serving DMG:", error);
       res.status(500).json({ error: "Internal Server Error" });
     }
-  });
+  }));
 
   // Register Endpoint
-  app.post("/api/auth/register", rateLimit("register", 8, 60_000), async (req, res) => {
+  app.post("/api/auth/register", rateLimit("register", 8, 60_000), asyncHandler(async (req, res) => {
     const { username, email, password } = req.body;
 
     if (!username || !email || !password) {
@@ -2917,7 +3124,7 @@ async function startServer() {
       via: emailResult?.via || "smtp",
       previewUrl: emailResult?.previewUrl || null
     });
-  });
+  }));
 
   // Verify Endpoint
   app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), (req, res) => {
@@ -3032,7 +3239,7 @@ async function startServer() {
   });
 
   // Forgot Password — send recovery code to email
-  app.post("/api/auth/forgot-password", rateLimit("forgot", 6, 60_000), async (req, res) => {
+  app.post("/api/auth/forgot-password", rateLimit("forgot", 6, 60_000), asyncHandler(async (req, res) => {
     const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: "Email address is required." });
@@ -3078,7 +3285,7 @@ async function startServer() {
         : "A 6-digit recovery code has been sent to your email address.",
       ...(isElectron ? { recoveryCode } : {})
     });
-  });
+  }));
 
   // Reset Password — verify code and set new password
   app.post("/api/auth/reset-password", rateLimit("reset", 8, 60_000), (req, res) => {
@@ -3130,7 +3337,7 @@ async function startServer() {
   });
 
   // Request account deletion code
-  app.post("/api/auth/delete-request", rateLimit("delete-request", 6, 60_000), async (req, res) => {
+  app.post("/api/auth/delete-request", rateLimit("delete-request", 6, 60_000), asyncHandler(async (req, res) => {
     const db = loadDB();
     const user = getAuthUser(req);
 
@@ -3164,7 +3371,7 @@ async function startServer() {
         : "A 6-digit confirmation security code has been sent to your email address.",
       ...(isElectron ? { deleteCode } : {})
     });
-  });
+  }));
 
   // Verify deletion code and delete account
   app.post("/api/auth/delete-confirm", rateLimit("delete-confirm", 8, 60_000), (req, res) => {
@@ -3250,7 +3457,7 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
+  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -3297,7 +3504,7 @@ async function startServer() {
         game: newGame
       });
     });
-  });
+  }));
 
   // Update a Custom Game's story (name / description / option labels).
   //
@@ -3309,7 +3516,7 @@ async function startServer() {
   // Payoffs are deliberately NOT updatable here: changing them would silently
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
-  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -3364,10 +3571,10 @@ async function startServer() {
 
       res.json({ success: true, message: "Game updated.", game: updatedGame });
     });
-  });
+  }));
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), async (req, res) => {
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
@@ -3402,7 +3609,7 @@ async function startServer() {
         message: "Game deleted successfully."
       });
     });
-  });
+  }));
 
 
   // ── Vite / Frontend static file host ───────────────────────────────────────
@@ -3436,6 +3643,25 @@ async function startServer() {
     }
   }
 
+  // Global Express error-handling middleware (RED-DESKTOP-6/001). Registered
+  // LAST, after every route and the static/404 fallback above, which is where
+  // Express requires a 4-arg handler to live to be recognised as an error
+  // handler at all. Every `asyncHandler`-wrapped route funnels its rejections
+  // here via `next(err)`; a plain synchronous handler that throws lands here
+  // through Express's own built-in behavior. One logged, generic 500 instead
+  // of a hung/reset connection and a crashed or silently poisoned process.
+  app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const cause = err instanceof Error ? (err.stack || err.message) : String(err);
+    console.error(`Unhandled error on ${req.method} ${req.path}:`, cause);
+    if (res.headersSent) {
+      // A response already started streaming; Express's own guidance is to
+      // delegate to the default handler rather than try to send a second one.
+      next(err);
+      return;
+    }
+    res.status(500).json({ error: "Internal server error." });
+  });
+
   // Legacy accounts store passwords as reversible base64 (pre-pbkdf2). They're
   // upgraded on next successful login, but dormant rows stay plaintext-equivalent
   // if db.json/GCS leaks. Surface the count so operators can force a reset.
@@ -3465,6 +3691,9 @@ async function startServer() {
     const host = process.env.IS_ELECTRON === 'true' ? '127.0.0.1' : '0.0.0.0';
     const serverInstance = app.listen(port, host, () => {
       console.log(`Express server running on http://${host}:${port}`);
+      // From here on, a request-path failure should be logged and survived,
+      // not treated as a startup failure. See `handleFatalAsync` above.
+      serverListening = true;
       if (process.env.IS_ELECTRON === 'true') {
         (global as any).expressPort = port;
         if ((global as any).onExpressListening) {
@@ -3489,7 +3718,10 @@ async function startServer() {
   };
 
   const initialPort = parseInt(process.env.PORT || "3000", 10);
-  await initDB();
+  // A `false` return means `initDB`/`loadDBFromFile` already reported the
+  // failure (see their own comments) — stop here: never call `app.listen`
+  // on a DB we refused to trust.
+  if (!(await initDB())) return;
   startListening(initialPort);
 }
 
