@@ -527,8 +527,16 @@ if (process.platform === 'win32' || (typeof process.getuid === 'function' && pro
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'newbie', email: 'newbie@x.com', password: 'CorrectHorse9!' }),
     });
+    // The HTTP response can land before this process has drained the child's
+    // stderr, so poll (bounded) for the refusal line instead of reading log()
+    // once (CodeRabbit, PR #96 round 4).
+    const refusalRe = /Refusing to write .*db\.json: local-file persistence is blocked/;
+    const refusalDeadline = Date.now() + 5000;
+    while (!refusalRe.test(log()) && Date.now() < refusalDeadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     record('HOSTED, preservation failed: a write attempt after the operator fix is refused in the log',
-      /Refusing to write .*db\.json: local-file persistence is blocked/.test(log()),
+      refusalRe.test(log()),
       `register status ${reg.status}; log tail: ${log().slice(-500)}`);
   } catch (err) {
     record('HOSTED, preservation failed: still boots (degrades, no exit)', false, String(err));
