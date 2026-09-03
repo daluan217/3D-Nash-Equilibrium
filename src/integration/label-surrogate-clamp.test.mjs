@@ -206,15 +206,21 @@ try {
     const hit = findLoneSurrogate(r.json);
     const prose = r.json?.report?.prose ?? '';
     const oneLabel = extractFirstLabel(prose, 'A prefers ', / \(/);
-    // The label must be 'X' followed by exactly K WHOLE copies of the
-    // 4-codepoint family sequence, for some K in 0..4 — never a dangling ZWJ
-    // or a lone family member sitting right after the last complete copy.
-    const validFamilyLabels = [0, 1, 2, 3, 4].map((k) => 'X' + family.repeat(k));
+    // CodeRabbit (this round): `row1` here is a DETERMINISTIC fixture — 'X'
+    // (1 unit) + 4 copies of the 11-unit family sequence = 45 units, against
+    // LABEL_MAX=40 — so the grapheme-safe clamp has exactly ONE correct
+    // output: 'X' + 3 WHOLE copies (34 units; a 4th partial copy would push
+    // past 40). Accepting "any K in 0..4" let a regression that stripped
+    // EVERY copy (or kept only 1 or 2) pass this check just as well as the
+    // correct clamp — verified empirically against the current build before
+    // narrowing this (see the round's notes): the real output is always
+    // exactly K=3. Require that exact value, not a range.
+    const expectedFamilyLabel = 'X' + family.repeat(3);
     record('ZWJ family emoji sequence: no lone surrogate anywhere in the response',
       r.status === 200 && !hit, `status=${r.status} ${hit ? JSON.stringify(hit) : ''}`);
-    record('ZWJ family emoji sequence: the label is X + only WHOLE family copies (no orphaned ZWJ/member)',
-      oneLabel !== null && validFamilyLabels.includes(oneLabel),
-      `extracted label: ${JSON.stringify(oneLabel)}`);
+    record('ZWJ family emoji sequence: the label is exactly X + 3 whole family copies (the one correct clamp of this 45-unit input)',
+      oneLabel === expectedFamilyLabel,
+      `extracted label: ${JSON.stringify(oneLabel)}, expected: ${JSON.stringify(expectedFamilyLabel)}`);
   }
   {
     const flag = '\u{1F1FA}\u{1F1F8}'; // US flag: 2 Regional Indicators
@@ -232,12 +238,19 @@ try {
     // does, and require it to equal 'Y' + some whole number of flag copies
     // — the label itself must be well-formed, not just the aggregate count.
     const oneLabel = extractFirstLabel(prose, 'A prefers ', / \(/);
-    const validFlagLabels = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((k) => 'Y' + flag.repeat(k));
+    // CodeRabbit (this round): same tightening as the family case above —
+    // this 41-unit input ('Y' + 10 copies of the 4-unit flag) against
+    // LABEL_MAX=40 has exactly ONE correct clamp: 'Y' + 9 whole copies (37
+    // units; a 10th partial copy would push past 40). "Any K in 0..10"
+    // would let a regression that stripped every flag (or kept only a few)
+    // pass. Verified empirically against the current build: real output is
+    // always exactly K=9. Require that exact value.
+    const expectedFlagLabel = 'Y' + flag.repeat(9);
     record('flag (Regional Indicator pair) sequence: no lone surrogate anywhere in the response',
       r.status === 200 && !hit, `status=${r.status} ${hit ? JSON.stringify(hit) : ''}`);
-    record('flag sequence: the label contains only WHOLE flag pairs (no half-flag)',
-      oneLabel !== null && validFlagLabels.includes(oneLabel),
-      `extracted label: ${JSON.stringify(oneLabel)}`);
+    record('flag sequence: the label is exactly Y + 9 whole flag pairs (the one correct clamp of this 41-unit input)',
+      oneLabel === expectedFlagLabel,
+      `extracted label: ${JSON.stringify(oneLabel)}, expected: ${JSON.stringify(expectedFlagLabel)}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -277,6 +290,36 @@ try {
       typeof stored?.row1Label === 'string' && stored.row1Label.length <= 40, `len=${stored?.row1Label?.length}`);
 
     if (gameId) await call('DELETE', `/api/games/${gameId}`, { token });
+
+    // CodeRabbit (this round): the fixture above only exercises a
+    // SINGLE-codepoint emoji (no ZWJ join, no Regional Indicator pair) —
+    // a regression that made the SAVE path (cleanLabels) codepoint-safe
+    // but not grapheme-safe (e.g. a different call site than the report
+    // path's cutAtWordBoundary, or one that lost the Intl.Segmenter step)
+    // would still pass every check above while splitting a ZWJ family or
+    // flag on save. `cleanLabels` calls the SAME `cutAtWordBoundary` with
+    // the SAME LABEL_MAX as the report path (server.ts ~1467 vs ~1518), so
+    // the SAME deterministic 41-unit flag input must clamp to the SAME
+    // exact value here too — verified empirically before writing this.
+    const saveFlag = '\u{1F1FA}\u{1F1F8}'; // US flag: 2 Regional Indicators — same fixture as PART 3 above, redeclared: that `flag` const is scoped to PART 3's own block
+    const flagRow1Label = 'Y' + saveFlag.repeat(10); // 41 units
+    const expectedFlagSaveLabel = 'Y' + saveFlag.repeat(9);
+    const savedFlag = await call('POST', '/api/games', {
+      token,
+      body: { name: 'surrogate clamp save-path multi-codepoint test', payoffs: nonTiePayoffs, row1Label: flagRow1Label },
+    });
+    const flagGameId = savedFlag.json?.game?.id;
+    const hitOnFlagWrite = findLoneSurrogate(savedFlag.json);
+    record('SAVE path, multi-codepoint (flag) label: POST /api/games has no lone surrogate in the write response',
+      savedFlag.status === 200 && !hitOnFlagWrite, `status=${savedFlag.status} ${hitOnFlagWrite ? JSON.stringify(hitOnFlagWrite) : ''}`);
+
+    const readBackFlag = await call('GET', '/api/games', { token });
+    const storedFlag = (readBackFlag.json || []).find((g) => g.id === flagGameId);
+    record('SAVE path, multi-codepoint (flag) label: the STORED row1Label (fresh GET) is exactly Y + 9 whole flag pairs',
+      storedFlag?.row1Label === expectedFlagSaveLabel,
+      `stored=${JSON.stringify(storedFlag?.row1Label)}, expected=${JSON.stringify(expectedFlagSaveLabel)}`);
+
+    if (flagGameId) await call('DELETE', `/api/games/${flagGameId}`, { token });
   }
 
 } finally {
