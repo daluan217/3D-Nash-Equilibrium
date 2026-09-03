@@ -1571,6 +1571,24 @@ function adoptLocalGames(userId: string): number {
  * `stripUnsafeText` already uses, see its comment) is the fallback if
  * `Intl.Segmenter` is ever unavailable -- it still closes the exact
  * surrogate-pair defect above, just without the family/flag guarantee.
+ *
+ * RED-CLOUD-6/001: a grapheme cluster has NO upper size bound -- a base
+ * character followed by an unbounded run of combining marks (U+0300-class
+ * diacritics; "zalgo"/"cursed" text, a well-known copy-paste meme) is, by
+ * the same UAX #29 rules `Intl.Segmenter` implements, still ONE cluster.
+ * The loop above refuses to split a cluster, which is correct -- but when
+ * the FIRST cluster already exceeds the entire budget it used to just
+ * `break` with `out` still `""`, silently wiping the WHOLE string (every
+ * later, perfectly ordinary character included) instead of truncating it.
+ * `cleanScenario`'s `label()` then read that as a missing label and
+ * discarded the user's ENTIRE scenario -- including its three other,
+ * perfectly normal labels -- and substituted an unrelated invented story,
+ * with no error returned to the client. Falling back to a codepoint-safe
+ * (not grapheme-safe) cut of JUST the oversized cluster fixes this: still
+ * never splits a surrogate pair (so no mojibake, the defect the grapheme
+ * switch itself fixed), just no longer guarantees the combining marks kept
+ * stay attached to their base character within a tight budget -- which is
+ * unavoidable once a single cluster does not fit at all.
  */
 function clampGraphemeSafe(s: string, maxLength: number): string {
   if (s.length <= maxLength) return s;
@@ -1579,11 +1597,38 @@ function clampGraphemeSafe(s: string, maxLength: number): string {
     const segmenter = new SegmenterCtor(undefined, { granularity: "grapheme" });
     let out = "";
     for (const { segment } of segmenter.segment(s)) {
-      if (out.length + segment.length > maxLength) break;
+      if (out.length + segment.length > maxLength) {
+        if (out.length === 0) out = codepointSafeSlice(segment, maxLength);
+        break;
+      }
       out += segment;
     }
     return out;
   }
+  let out = "";
+  for (const ch of s) {
+    if (out.length + ch.length > maxLength) {
+      if (out.length === 0) out = codepointSafeSlice(ch, maxLength);
+      break;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Cut `s` to at most `maxLength` UTF-16 units without ever splitting a
+ * surrogate pair -- a plain codepoint-by-codepoint walk, weaker than a full
+ * grapheme-cluster boundary (it can separate a base character from its own
+ * combining marks), but that is exactly and only what happens when a SINGLE
+ * cluster does not fit the budget at all: there is no boundary-safe cut that
+ * keeps it whole, and returning nothing (the RED-CLOUD-6/001 bug) is worse
+ * than a partial cluster. At `maxLength` too small to fit even one codepoint
+ * (astral characters are 2 UTF-16 units), this can still return `""` --
+ * inherent to any codepoint-safe scheme, and never hit by any real caller in
+ * this file (every clamp width here is 40+).
+ */
+function codepointSafeSlice(s: string, maxLength: number): string {
   let out = "";
   for (const ch of s) {
     if (out.length + ch.length > maxLength) break;
