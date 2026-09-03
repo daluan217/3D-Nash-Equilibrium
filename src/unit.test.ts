@@ -30,7 +30,8 @@ import {
 } from './utils/providers';
 import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
-import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms } from './utils/colorTerms';
+import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, regenKeptColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { keepFill } from './utils/scenarioRegen';
 import { readFileSync as readFileForContract, readdirSync as readDirForContract } from 'node:fs';
 import ReactForRender from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -1604,6 +1605,89 @@ function testDescriptionPreviewMatchesSave() {
     + 'label shapes, and a wrong base is still detectable');
 }
 
+function testRegenColorTerms() {
+  // RED-REGEN/001: Keep must never wipe the user's existing colour-term
+  // chips — SCENARIO_SCHEMA is strict, so a real draw never carries
+  // actorA/actorB, and the old `keepFill` replaced the chips with
+  // cleanUserColorTermPair(preview.actorA ?? [], preview.actorB ?? []),
+  // i.e. always {a:[],b:[]} in practice.
+  const bankRow = { description: 'd', row1: 'r1', row2: 'r2', col1: 'c1', col2: 'c2' }; // no actorA/actorB, like a real draw
+
+  const existing = { a: ['the vendor'], b: ['the buyer'] };
+  const kept = keepFill(bankRow, false, existing);
+  assert(kept.terms.a.includes('the vendor') && kept.terms.b.includes('the buyer'),
+    `a Keep with no actor nouns must leave the user's existing chips untouched — got ${JSON.stringify(kept.terms)}`);
+
+  // The historical (pre-fix) default — no existingTerms argument at all —
+  // must not silently wipe either; it is a genuinely EMPTY starting point,
+  // not evidence that Keep destroys anything.
+  const bare = keepFill(bankRow, false);
+  assert(bare.terms.a.length === 0 && bare.terms.b.length === 0,
+    'with no existing chips to preserve, a Keep with no actor nouns yields no chips (not a defect — nothing existed to keep)');
+
+  // If a draw DOES supply actor nouns (never happens today, but the function
+  // must be correct if the schema is ever extended), they are ADDED to the
+  // existing chips, never substituted for them.
+  const withActors = keepFill(
+    { ...bankRow, actorA: ['the miller'], actorB: ['the trader'] },
+    false,
+    existing,
+  );
+  assert(withActors.terms.a.includes('the vendor') && withActors.terms.a.includes('the miller'),
+    `actor nouns must be ADDED to the existing chip, not replace it — got ${JSON.stringify(withActors.terms.a)}`);
+  assert(withActors.terms.b.includes('the buyer') && withActors.terms.b.includes('the trader'),
+    `same for player B — got ${JSON.stringify(withActors.terms.b)}`);
+
+  // A duplicate actor noun (already one of the user's chips) does not
+  // double up — cleanUserColorTermPair's own de-duplication still applies
+  // to the UNION.
+  const dup = keepFill({ ...bankRow, actorA: ['the vendor'] }, false, existing);
+  assert(dup.terms.a.filter((t) => t.toLowerCase() === 'the vendor').length === 1,
+    'a re-offered actor noun already in the user\'s chips must not duplicate');
+
+  // ── RED-REGEN/002: the preview card and the post-Keep saved render must
+  // agree on a colliding actor-noun/label pair — they used to diverge
+  // because the preview ran `colorTermsFor` (dropAmbiguous over structural +
+  // label + actor terms together) while the eventual saved render ran
+  // `mergeDescriptionTerms` on top of `dialogBaseColorTerms` (no ambiguity
+  // check against the label side at all).
+  const colliding = {
+    row1: 'Wolf', row2: 'Stay Home', col1: 'Hunt', col2: 'Retreat',
+    description: 'd', actorA: [] as string[], actorB: ['Wolf'],
+  };
+  const noExisting = { a: [] as string[], b: [] as string[] };
+
+  // What the regen preview card renders (App.tsx's regenPreviewTerms).
+  const previewTerms = regenPreviewColorTerms(
+    colliding, colliding.actorA, colliding.actorB, noExisting.a, noExisting.b,
+  );
+  // What Keep actually stores, then what DescriptionEditor renders for it —
+  // the SAME composition (dialogBaseColorTerms + mergeDescriptionTerms) every
+  // other saved/custom game's preview and save use, per
+  // testDescriptionPreviewMatchesSave above.
+  const savedKept = keepFill(colliding, false, noExisting);
+  const savedTerms = mergeDescriptionTerms(dialogBaseColorTerms(savedKept.labels), savedKept.terms.a, savedKept.terms.b);
+  assert(JSON.stringify(previewTerms) === JSON.stringify(savedTerms),
+    `regen preview and the post-Keep saved render disagree on a colliding actor-noun/label pair: `
+    + `preview=${JSON.stringify(previewTerms)} saved=${JSON.stringify(savedTerms)}`);
+
+  // NEGATIVE CONTROL: the comparison above is only worth something if it can
+  // actually fail. Feeding the two paths genuinely DIFFERENT existing chips
+  // must produce genuinely different results.
+  const previewOther = regenPreviewColorTerms(colliding, colliding.actorA, colliding.actorB, ['the depot'], []);
+  assert(JSON.stringify(previewOther) !== JSON.stringify(previewTerms),
+    'the preview/saved comparison is tautological — different existing chips must change the result');
+
+  // regenKeptColorTerms alone: ownership stays exclusive (A wins a tie), same
+  // rule cleanUserColorTermPair applies everywhere else.
+  const tie = regenKeptColorTerms(['shared'], ['shared'], [], []);
+  assert(tie.a.includes('shared') && !tie.b.includes('shared'),
+    'a term offered to both players resolves to A only, same tie-break as cleanUserColorTermPair');
+
+  console.log('✓ regen colour terms: Keep never destroys existing chips, actor nouns only ADD, and the '
+    + 'preview card renders exactly what Keep will produce');
+}
+
 function testDescriptionsAreNeverHtml() {
   // The property is the BRANCH, not a sanitiser: `cleanText` on the server does
   // NOT strip tags, so a saved description keeps its markup byte-for-byte in
@@ -1860,6 +1944,7 @@ function runUnitTests() {
   testColorTermSingleSource();
   testSavedGameColorTermsBehaviour();
   testDescriptionPreviewMatchesSave();
+  testRegenColorTerms();
   testDescriptionsAreNeverHtml();
   testUserColorTerms();
   testCameraRelayoutPredicate();

@@ -200,7 +200,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('actor nouns land on the right side', withActors.terms.b.includes('distributor'));
 
   const noActors = keepFill({ description: 'd', row1: '', row2: '', col1: '', col2: '' }, false);
-  check('a bank row with no actor nouns yields empty term chips on both sides',
+  check('a bank row with no actor nouns and no existing chips yields empty term chips on both sides',
     noActors.terms.a.length === 0 && noActors.terms.b.length === 0);
 
   const overlap = keepFill({ description: 'd', row1: '', row2: '', col1: '', col2: '', actorA: ['courier'], actorB: ['courier'] }, false);
@@ -210,6 +210,40 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const many = Array.from({ length: 20 }, (_, i) => `term${i}word`);
   const capped = keepFill({ description: 'd', row1: '', row2: '', col1: '', col2: '', actorA: many }, false);
   check('actor terms are capped (USER_TERMS_MAX via cleanUserColorTermPair)', capped.terms.a.length <= 12);
+}
+
+/* ────────────────────────────────── H-RED-REGEN-001: Keep never wipes chips */
+{
+  // The real shape of every draw this route can ever serve today: no
+  // actorA/actorB at all (SCENARIO_SCHEMA is strict; see
+  // scratchpad/round7/findings/RED-REGEN/001). The OLD keepFill (no
+  // existingTerms argument, always
+  // `cleanUserColorTermPair(preview.actorA ?? [], preview.actorB ?? [])`)
+  // returned {a:[],b:[]} here every time, and App.tsx's keepRegen
+  // UNCONDITIONALLY wrote that into editTerms/saveTerms, then the eventual
+  // Save PATCH sent it with allowClear:true — permanently deleting whatever
+  // the user had marked. This is the exact reproduction from
+  // RED-REGEN/001's real-HTTP run (colorTermsA=['the vendor'] before,
+  // colorTermsA=[] after), replayed here as a pure-function fixture so it
+  // runs on every `npm test`, not just a live server.
+  const realDrawShape = { description: 'A small quarry manager and a hauler negotiate.', row1: 'Early Window', row2: 'Late Window', col1: 'Morning Haul', col2: 'Afternoon Haul' };
+  const usersChips = { a: ['the vendor'], b: ['the buyer'] };
+  const kept = keepFill(realDrawShape, false, usersChips);
+  check('RED-REGEN/001: a real (no-actor-noun) draw leaves the user\'s existing chips on player A untouched',
+    kept.terms.a.includes('the vendor'), `got terms.a=${JSON.stringify(kept.terms.a)}`);
+  check('RED-REGEN/001: same for player B',
+    kept.terms.b.includes('the buyer'), `got terms.b=${JSON.stringify(kept.terms.b)}`);
+  check('RED-REGEN/001: nothing is ADDED that the user did not have or the draw did not supply',
+    kept.terms.a.length === 1 && kept.terms.b.length === 1,
+    `got terms=${JSON.stringify(kept.terms)}`);
+
+  // If the schema is ever extended to carry actor nouns (out of scope for
+  // this fix — see the PR description), they must ADD to the user's chips,
+  // never replace them.
+  const withNewActor = keepFill({ ...realDrawShape, actorA: ['the operator'] }, false, usersChips);
+  check('RED-REGEN/001: a supplied actor noun is ADDED alongside the user\'s existing chip, not instead of it',
+    withNewActor.terms.a.includes('the vendor') && withNewActor.terms.a.includes('the operator'),
+    `got terms.a=${JSON.stringify(withNewActor.terms.a)}`);
 }
 
 /* ───────────────────────────────────────────── H-name-rule: shouldReplaceName */

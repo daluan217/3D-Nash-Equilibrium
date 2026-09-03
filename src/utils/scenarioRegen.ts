@@ -23,7 +23,7 @@
  * assertion in `src/scenarioregen.test.ts` with no mount required.
  */
 import { cleanText } from './textSafety';
-import { cleanUserColorTermPair } from './colorTerms';
+import { regenKeptColorTerms } from './colorTerms';
 import type { GamePayoffs } from '../types';
 
 // ── field limits, matching the existing save/edit dialogs and server clamps ──
@@ -195,14 +195,22 @@ export function shouldReplaceName(nameTypedThisSession: boolean): boolean {
  * a value that has already been through `keepFill` cannot be rejected or
  * silently truncated a second, DIFFERENT way by the eventual submit.
  *
- * Colour terms: always `cleanUserColorTermPair(preview.actorA, preview.actorB)`
- * — the new text's OWN labelling, REPLACING whatever chips the user had
- * marked on the old text (director's decision 3: a bank row with no actor
- * nouns yields `{a:[],b:[]}`, and the four structural/option labels alone
- * colour it from then on, exactly like every other custom game without
- * actor nouns today).
+ * DIRECTOR'S DECISION (2026-09-03, REVISING round-6 decision 3 — RED-REGEN/001):
+ * an AI action never destroys user-authored data. `SCENARIO_SCHEMA` is strict
+ * (`additionalProperties:false`), so no cloud draw can ever carry
+ * `actorA`/`actorB`, and bank rows have none either — every real Keep was
+ * therefore sending `colorTermsA/B: []` with `allowClear:true` and PERMANENTLY
+ * WIPING the user's existing highlights. Colour terms on Keep are now:
+ * `existingTerms` untouched, plus any actor nouns the draw DOES supply, ADDED
+ * (never replacing) via `regenKeptColorTerms` — the same function the regen
+ * preview card renders with, so the preview never promises a different
+ * outcome than Keep delivers (RED-REGEN/002).
  */
-export function keepFill(preview: RegenPreview, replaceName: boolean): KeptFill {
+export function keepFill(
+  preview: RegenPreview,
+  replaceName: boolean,
+  existingTerms: { a: readonly string[]; b: readonly string[] } = { a: [], b: [] },
+): KeptFill {
   const out: KeptFill = {
     desc: codepointSafeSlice(cleanText(preview.description ?? ''), REGEN_DESCRIPTION_MAX),
     labels: {
@@ -211,7 +219,7 @@ export function keepFill(preview: RegenPreview, replaceName: boolean): KeptFill 
       col1: codepointSafeSlice(cleanText(preview.col1 ?? ''), REGEN_LABEL_MAX),
       col2: codepointSafeSlice(cleanText(preview.col2 ?? ''), REGEN_LABEL_MAX),
     },
-    terms: cleanUserColorTermPair(preview.actorA ?? [], preview.actorB ?? []),
+    terms: regenKeptColorTerms(preview.actorA ?? [], preview.actorB ?? [], existingTerms.a, existingTerms.b),
   };
   if (replaceName) out.name = codepointSafeSlice(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
   return out;

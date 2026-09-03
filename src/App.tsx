@@ -84,7 +84,7 @@ import {
 
 import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms } from './utils/colorTerms';
+import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import {
   regenKeyEquals,
@@ -2262,7 +2262,11 @@ export default function App() {
     const baselineRef = key.kind === 'edit' ? editNameBaselineRef : saveNameBaselineRef;
     const liveName = key.kind === 'edit' ? editName : saveName;
     const replaceName = shouldReplaceName(liveName !== baselineRef.current);
-    const kept = keepFill(regen.preview, replaceName);
+    // The user's EXISTING chips for whichever dialog Keep is running in — Keep
+    // never destroys them (RED-REGEN/001); `keepFill` only ADDS any actor
+    // nouns the draw itself supplies.
+    const existingTerms = key.kind === 'edit' ? editTerms : saveTerms;
+    const kept = keepFill(regen.preview, replaceName, existingTerms);
     if (key.kind === 'edit') {
       if (kept.name !== undefined) { setEditName(kept.name); editNameBaselineRef.current = kept.name; }
       setEditDesc(kept.desc);
@@ -2755,13 +2759,20 @@ export default function App() {
    */
   const saveBaseTerms = useMemo(() => dialogBaseColorTerms(saveLabels), [saveLabels]);
   const editBaseTerms = useMemo(() => dialogBaseColorTerms(editLabels), [editLabels]);
-  // Same terms Keep will store (colorTermsFor is the one definition, as the
-  // report suggestion card's own comment notes) — computed once and shared
-  // by whichever dialog's preview card is on screen.
-  const regenPreviewTerms = useMemo(
-    () => (regen.preview ? colorTermsFor(regen.preview, regen.preview.actorA ?? [], regen.preview.actorB ?? []) : { a: [], b: [] }),
-    [regen.preview],
-  );
+  // Exactly what Keep will store and DescriptionEditor will then render —
+  // `regenPreviewColorTerms` is the ONE function both this preview card and
+  // the post-Keep saved render compose through (RED-REGEN/002), fed the
+  // CURRENT dialog's existing chips so the preview also reflects RED-REGEN/001:
+  // Keep never wipes them, it only adds any actor nouns the draw supplies.
+  // Only one dialog is ever open at a time, so `isEditModalOpen` alone picks
+  // the right existing-chip source.
+  const regenPreviewTerms = useMemo(() => {
+    if (!regen.preview) return { a: [], b: [] };
+    const existing = isEditModalOpen ? editTerms : saveTerms;
+    return regenPreviewColorTerms(
+      regen.preview, regen.preview.actorA ?? [], regen.preview.actorB ?? [], existing.a, existing.b,
+    );
+  }, [regen.preview, isEditModalOpen, editTerms, saveTerms]);
 
 
   // Clamp a whole matrix through the one cell parser, and derive its editable
@@ -5543,7 +5554,7 @@ export default function App() {
                         </button>
                       </div>
                       <p className="mt-1.5 text-[10px] text-slate-500 dark:text-slate-400">
-                        Keep replaces the description, option names and highlights below with this text. Payoffs are never changed.
+                        Keep replaces the description and option names below with this text — your highlights are kept. Payoffs are never changed.
                       </p>
                     </div>
                   )}

@@ -201,17 +201,21 @@ async function mockRegenOn(p, regenerateHandler) {
   if (regenerateHandler) await p.route('**/api/scenario/regenerate', regenerateHandler);
 }
 
+// RED-REGEN/001 ("fix the tests that lied"): these used to carry
+// actorA/actorB, which SCENARIO_SCHEMA (additionalProperties:false, the SAME
+// object REPORT_SCHEMA.properties.suggestedScenario uses) cannot produce on
+// any real path. A mock returning a shape the real, schema-constrained
+// provider structurally cannot return was exercising a code path that is
+// unreachable in production.
 const REGEN_STORY_A = {
   name: 'Cider Press Bookings',
   row1: 'Early Slot', row2: 'Late Slot', col1: 'Reserve', col2: 'Walk-in',
   description: 'Two orchards are booking time on the shared cider press before the fruit turns.',
-  actorA: ['orchard'], actorB: ['press operator'],
 };
 const REGEN_STORY_B = {
   name: 'Kiln Firing Schedule',
   row1: 'Morning Fire', row2: 'Evening Fire', col1: 'Glaze Batch', col2: 'Bisque Batch',
   description: 'A potter and a kiln co-op are scheduling a shared firing slot.',
-  actorA: ['potter'], actorB: ['co-op'],
 };
 
 try {
@@ -1347,10 +1351,12 @@ try {
           proseClaims: null,
           geometryClaims: null,
           suggestedScenario: {
+            // No actorA/actorB — SCENARIO_SCHEMA (the same object this
+            // report path's own suggestedScenario uses) forbids them; see
+            // RED-REGEN/001.
             name: 'A'.repeat(72),
             row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect',
             description: 'A synthetic scenario used only to exercise the client-side name clamp.',
-            actorA: ['player'], actorB: ['player'],
           },
         },
         validation: null,
@@ -1482,8 +1488,17 @@ try {
 
   // ══ 28. FEATURE-REGEN — Edit dialog: an UNTOUCHED (not re-typed this
   //      session) name IS replaced on Keep, description/labels replace, and
-  //      the eventual PATCH carries the new text with no payoffs and the
-  //      mocked scenario's actor nouns as colorTermsA/B.
+  //      the eventual PATCH carries the new text with no payoffs. This game
+  //      was saved with no colour chips of its own and the mocked draw
+  //      supplies no actor nouns (RED-REGEN/001: no real draw ever can), so
+  //      the honest expectation is colorTermsA/B stay EMPTY — never wiped
+  //      because there was nothing to wipe, and never populated with
+  //      fabricated actor nouns a real schema-constrained draw cannot send.
+  //      src/scenarioregen.test.ts and src/unit.test.ts cover the actual
+  //      preserve/add behaviour as pure-function fixtures (existing chips
+  //      untouched; a supplied actor noun ADDED, never substituted), and
+  //      src/integration/scenario-regen.test.mjs section 10 covers it
+  //      end-to-end through the real REST API with real pre-existing chips.
   {
     const editPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(editPage, async (route) => {
@@ -1532,9 +1547,14 @@ try {
     await patchDone.catch(() => null);
     record('the PATCH body never carries payoffs (the route the plan forbids)', !!patchBody && !('payoffs' in patchBody));
     record('the PATCH body carries the regenerated description', !!patchBody && patchBody.description === REGEN_STORY_B.description);
-    record('the PATCH body carries the regenerated scenario\'s actor noun as a colour term',
-      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('potter'),
-      JSON.stringify(patchBody?.colorTermsA));
+    // RED-REGEN/001: the mocked draw supplies no actorA/actorB (the real
+    // schema cannot) and this game never had a colour chip of its own — Keep
+    // must neither wipe (nothing to wipe) nor fabricate a colour term out of
+    // thin air.
+    record('RED-REGEN/001: with no existing chips and no supplied actor nouns, colorTermsA/B stay empty (never fabricated)',
+      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.length === 0
+        && Array.isArray(patchBody.colorTermsB) && patchBody.colorTermsB.length === 0,
+      JSON.stringify({ colorTermsA: patchBody?.colorTermsA, colorTermsB: patchBody?.colorTermsB }));
     await editPage.close();
   }
 
