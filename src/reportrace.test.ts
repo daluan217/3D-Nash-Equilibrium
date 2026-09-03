@@ -37,6 +37,14 @@ import { payoffsEqual } from './App';
 import type { GamePayoffs } from './types';
 
 let checks = 0;
+// RED-APP-6/003: both catches now bind the error (`} catch (err) {`) to tell
+// a client-side timeout abort apart from any other failure -- match either
+// form, bare or bound, rather than the literal bare-catch string.
+function findCatch(section: string): number {
+  const m = /\}\s*catch\s*(?:\([a-zA-Z_$][\w$]*\))?\s*\{/.exec(section);
+  return m ? m.index : -1;
+}
+
 function ok(cond: boolean, msg: string) {
   checks++;
   assert(cond, msg);
@@ -95,7 +103,7 @@ ok(/payoffsRef\.current = payoffs;/.test(src),
 // FAILED request still ran setLlmEnvelope(null) unguarded for whatever
 // game is on screen now. Isolate the try-block's success section and the
 // catch block SEPARATELY and check each in its own right.
-const catchStart = body.indexOf('} catch {');
+const catchStart = findCatch(body);
 const finallyStart = body.indexOf('} finally {');
 ok(catchStart !== -1 && finallyStart !== -1 && catchStart < finallyStart,
   'fetchLlmExplanation must have a catch block followed by a finally block');
@@ -180,7 +188,7 @@ ok(freshGuardCount >= 2,
 // the fetched scenario -- checking staleness after already merging it in
 // would be too late. Isolated before fetchFreshScenario's own catch, same
 // pattern as section 2 above.
-const freshCatchStart = freshBody.indexOf('} catch {');
+const freshCatchStart = findCatch(freshBody);
 ok(freshCatchStart !== -1, 'fetchFreshScenario must have a catch block');
 const freshSuccessSection = freshBody.slice(0, freshCatchStart);
 const freshGuardIdx = freshSuccessSection.search(/myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/);

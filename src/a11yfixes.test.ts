@@ -304,9 +304,16 @@ function extractDivBlock(src: string, startMarker: string): string {
   ok(block.includes('onKeyDown') && block.includes("e.key !== 'Escape'"),
     'the slice under test must actually be the Escape-close effect');
 
-  ok(/else if \(isEditModalOpen\)\s*\{\s*setIsEditModalOpen\(false\);\s*setEditError\(''\);\s*\}/.test(block),
+  // RED-APP-6/002: this branch now also calls `e.stopPropagation()` (so the
+  // same Escape press cannot also reach Walkthrough.tsx's tour listener).
+  // CodeRabbit finding (this branch): the `?` made that call OPTIONAL, so
+  // this assertion would still pass if a future edit dropped
+  // stopPropagation() again and reopened the tour-cascade defect -- require
+  // it, not merely tolerate it.
+  ok(/else if \(isEditModalOpen\)\s*\{\s*setIsEditModalOpen\(false\);\s*setEditError\(''\);\s*(?:e\.stopPropagation\(\);\s*)\}/.test(block),
     `THE FIX: isEditModalOpen must be in the condition chain with the SAME close side-effects `
-    + `its own "✕" button and backdrop use, got: ${JSON.stringify(block)}`);
+    + `its own "✕" button and backdrop use, AND call e.stopPropagation() (RED-APP-6/002), `
+    + `got: ${JSON.stringify(block)}`);
 
   // The dependency array (the second `}, [...]);` after the comment) must
   // list isEditModalOpen too, or React would keep calling a stale closure
