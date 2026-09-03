@@ -220,8 +220,18 @@ if (!gotTheLock) {
       cancelId: 0,
       title: 'Nash Equilibrium Simulator — Startup Blocked',
       message: 'Nash Equilibrium Simulator could not start.',
+      // CodeRabbit (this round): this app's own single-instance lock
+      // (app.requestSingleInstanceLock, above) means clicking the Dock icon
+      // or double-clicking the app again WITHOUT quitting this blocked
+      // process first does nothing visible — 'second-instance' only
+      // focuses `mainWindow`, which was deliberately never created on this
+      // path (RED-DESKTOP-5/002), so the new launch attempt silently exits
+      // with no window, no error, nothing to notice. The old wording ("...
+      // then relaunch") told the user to do exactly the thing that fails
+      // silently. Now says explicitly to quit THIS app first.
       detail: `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
-        + 'so you can inspect/delete it yourself, then relaunch.',
+        + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
+        + 'start normally while blocked), then relaunch it.',
     }).then((result) => {
       if (result.response === 1) {
         revealLockLocation(lockFile);

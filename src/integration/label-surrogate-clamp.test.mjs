@@ -170,9 +170,16 @@ try {
     const prose = r.json?.report?.prose ?? '';
     const oneLabel = extractFirstLabel(prose, 'A prefers ', / \(/);
     const emojiCount = oneLabel ? [...oneLabel.matchAll(/\u{1F389}/gu)].length : 0;
-    record('the label keeps only WHOLE emoji (one occurrence has a complete count, never a partial character)',
-      oneLabel !== null && emojiCount >= 1 && emojiCount <= 20 && oneLabel === 'A' + '\u{1F389}'.repeat(emojiCount),
-      `extracted label: ${JSON.stringify(oneLabel)} (emoji count ${emojiCount})`);
+    // CodeRabbit (this round): same tightening as the family/flag checks
+    // below — this 41-unit input ('A' + 20 copies of the 2-unit emoji)
+    // against LABEL_MAX=40 has exactly ONE correct clamp: 'A' + 19 whole
+    // emoji (39 units; a 20th would push to 41). "1..20" accepted a
+    // regression that kept only a few emoji (or dropped most of them) just
+    // as readily as the correct clamp. Require the exact maximal count.
+    const expectedEmojiCount = 19;
+    record('the label keeps EXACTLY the maximal 19 whole emoji (the one correct clamp of this 41-unit input, never a partial character or a truncated-short count)',
+      oneLabel === 'A' + '\u{1F389}'.repeat(expectedEmojiCount),
+      `extracted label: ${JSON.stringify(oneLabel)} (emoji count ${emojiCount}, expected ${expectedEmojiCount})`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -325,6 +332,42 @@ try {
       `stored=${JSON.stringify(storedFlag?.row1Label)}, expected=${JSON.stringify(expectedFlagSaveLabel)}`);
 
     if (flagGameId) await call('DELETE', `/api/games/${flagGameId}`, { token });
+
+    // CodeRabbit (this round): every fixture above is under 60 UTF-16
+    // units, so `cleanLabels`'s FIRST clamp — `cutAtWordBoundary(cleanText(
+    // body?.[key], LABEL_MAX + 20), LABEL_MAX)`, where `cleanText` itself
+    // clamps to LABEL_MAX+20=60 units before the final 40-unit cut
+    // (server.ts ~1464-1467) — never actually needs to cut anything; a
+    // regression that broke JUST that 60-unit pre-clamp (e.g. a bare
+    // `.slice(0, 60)` instead of the grapheme-safe `clampGraphemeSafe`)
+    // could pass every check above untouched. Use an input long enough to
+    // force BOTH clamp stages to actually cut: 'A' + 30 emoji = 61 units
+    // (over the 60-unit first stage, which itself is over the 40-unit
+    // second stage). Verified empirically against the current build
+    // (fresh POST + GET, not assumed): the two-stage clamp lands on 'A' +
+    // 19 whole emoji (39 units) — the SAME final count as the single-stage
+    // 41-unit fixture in part 1 above, which is the point: if the first
+    // (60-unit) stage were broken, feeding its BROKEN intermediate output
+    // into the second stage would very likely NOT reproduce this exact,
+    // independently-verified value.
+    const wideRow1Label = 'A' + '\u{1F389}'.repeat(30); // 61 units — exercises the 60-unit pre-clamp
+    const expectedWideSaveLabel = 'A' + '\u{1F389}'.repeat(19);
+    const savedWide = await call('POST', '/api/games', {
+      token,
+      body: { name: 'surrogate clamp save-path 60-unit pre-clamp test', payoffs: nonTiePayoffs, row1Label: wideRow1Label },
+    });
+    const wideGameId = savedWide.json?.game?.id;
+    const hitOnWideWrite = findLoneSurrogate(savedWide.json);
+    record('SAVE path, 60-unit pre-clamp coverage: POST /api/games has no lone surrogate in the write response',
+      savedWide.status === 200 && !hitOnWideWrite, `status=${savedWide.status} ${hitOnWideWrite ? JSON.stringify(hitOnWideWrite) : ''}`);
+
+    const readBackWide = await call('GET', '/api/games', { token });
+    const storedWide = (readBackWide.json || []).find((g) => g.id === wideGameId);
+    record('SAVE path, 60-unit pre-clamp coverage: the STORED row1Label (fresh GET) is exactly A + 19 whole emoji',
+      storedWide?.row1Label === expectedWideSaveLabel,
+      `stored=${JSON.stringify(storedWide?.row1Label)}, expected=${JSON.stringify(expectedWideSaveLabel)}`);
+
+    if (wideGameId) await call('DELETE', `/api/games/${wideGameId}`, { token });
   }
 
 } finally {
