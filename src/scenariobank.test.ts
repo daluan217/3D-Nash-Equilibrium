@@ -9,9 +9,11 @@
  * silently returns nothing, repeats itself, or reaches into the wrong stakes
  * band, the product regresses in a way no existing test would notice.
  */
-import { bankAvailable, bankSize, allBankRows } from './utils/bankSource';
+import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, __resetBankSeen } from './utils/bankSource';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
 import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, type BankEntry } from './utils/scenarioBank';
+import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
+import { readFileSync } from 'node:fs';
 import type { GamePayoffs } from './types';
 
 let failures = 0;
@@ -203,6 +205,121 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   check('pick()=1 stays in range', pickFromBank(bank, G(20), 'rail', new Set(), () => 0.999999) !== null);
 }
 
+
+/* ============================================================================
+ * RED-CLOUD-7/001 — the hosted fallback caller's `seen` must be scoped PER
+ * REQUEST, not accumulate across unrelated users on one warm process.
+ *
+ * `bankScenario`/`bankScenarioAvoiding`'s module-global `seen` (bankSource.ts)
+ * is correctly scoped to ONE DESKTOP LAUNCH for the original caller
+ * (`inventScenario`, IS_ELECTRON-gated) — a fresh Electron process resets it
+ * naturally. `server.ts`'s `inventScreenedScenario` later added a SECOND
+ * caller (its last-resort bank fallback), reachable on the HOSTED path too
+ * (no IS_ELECTRON gate). Cloud Run runs the service at `--max-instances=1`
+ * with no `--min-instances`, so in practice ONE warm process can serve many
+ * unrelated users' requests over its lifetime — left unscoped, their fallback
+ * draws accumulate in the SAME `seen` Set, eventually exhausting the exact
+ * stakes-band pool for a cell and drifting later requests onto a story 2+
+ * bands away from their own game's numbers (far-band 24-41% in 200-draw
+ * windows after ~400 accumulated draws, vs 0/500 on a properly cold/scoped
+ * process — RED-CLOUD-7/001's own measurement).
+ *
+ * FIX (src/utils/bankSource.ts, server.ts's `inventScreenedScenario`): both
+ * bank-picking functions now take an optional `seenOverride` Set; the hosted
+ * fallback call site passes a FRESH one every request (server.ts, gated on
+ * `IS_ELECTRON !== 'true'`), while the desktop caller passes nothing and
+ * keeps using the per-launch singleton, unchanged.
+ * ========================================================================= */
+{
+  // The finding's own reproduction game: true stakes band 1 ("modest").
+  const FALLBACK_GAME: GamePayoffs = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 2, b12: 0, b21: 0, b22: 3 };
+  const trueBand = stakesBand(FALLBACK_GAME);
+  check('fixture sanity: FALLBACK_GAME true stakes band is 1', trueBand === 1, `${trueBand}`);
+
+  // Matched by OBJECT REFERENCE, not by name: names repeat across (domain,
+  // band) cells by design (that is the whole reason `pickFromBank`'s ladder
+  // tracks `seenNames` separately from `seen` entries), so a name-only
+  // lookup can silently resolve to the WRONG row's band — `sc` returned by
+  // `bankScenario` IS the exact `.s` object of whichever row was picked
+  // (`pickFromBank`'s `take()` returns `pool[i].s` verbatim), so reference
+  // equality is the only correct way to recover which row served it.
+  const bandOfPick = (sc: { name?: string } | null | undefined): number | null => {
+    if (!sc) return null;
+    const hit = allBankRows().find((e) => e.s === sc);
+    return hit ? hit.b : null;
+  };
+  const classify = (band: number | null): 'exact' | 'near' | 'far' | 'miss' => {
+    if (band === null) return 'miss';
+    const diff = Math.abs(band - trueBand);
+    return diff === 0 ? 'exact' : diff === 1 ? 'near' : 'far';
+  };
+
+  // PER-REQUEST SCOPING — what the hosted fallback call site now does: a
+  // FRESH Set every single draw, exactly matching server.ts's
+  // `hostedFallbackSeen = process.env.IS_ELECTRON === 'true' ? undefined :
+  // new Set<string>()` on every request. 2,000 draws (the finding's own
+  // sample size) — far-band must be EXACTLY 0 throughout, not just on
+  // average, because a properly scoped draw can never see another request's
+  // `seen` state at all.
+  {
+    let exact = 0, near = 0, far = 0, miss = 0;
+    for (let i = 0; i < 2000; i++) {
+      const domain = pickScenarioDomainExcluding(undefined);
+      const sc = bankScenario(FALLBACK_GAME, domain, new Set<string>());
+      const c = classify(bandOfPick(sc));
+      if (c === 'exact') exact++; else if (c === 'near') near++; else if (c === 'far') far++; else miss++;
+    }
+    check('per-request-scoped hosted fallback: far-band is 0 across 2,000 sequential draws', far === 0,
+      `exact=${exact} near=${near} far=${far} miss=${miss} — any far-band draw means a per-request Set somehow saw a prior request's state`);
+    check('per-request-scoped hosted fallback: nearly every draw lands in-band (exact or the designed soft neighbour)',
+      exact + near >= 1900, `exact=${exact} near=${near} far=${far} miss=${miss}`);
+  }
+
+  // CROSS-REQUEST ACCUMULATION — the pre-fix shape, reproduced directly: the
+  // SAME game, but `seen` never reset across 2,000 draws (no seenOverride at
+  // all, so every draw shares the one module-global `seen` — exactly what
+  // server.ts did before this fix). This is the KNOWN POSITIVE: it proves
+  // the two checks above are not vacuously trivial (a picker that always
+  // returned null, or a broken classify(), would also show 0 far draws).
+  {
+    __resetBankSeen();
+    let far = 0;
+    const farByWindow: number[] = [];
+    let windowFar = 0;
+    for (let i = 0; i < 2000; i++) {
+      const domain = pickScenarioDomainExcluding(undefined);
+      const sc = bankScenario(FALLBACK_GAME, domain); // no override => module-global `seen`, unscoped
+      const c = classify(bandOfPick(sc));
+      if (c === 'far') { far++; windowFar++; }
+      if ((i + 1) % 200 === 0) { farByWindow.push(windowFar); windowFar = 0; }
+    }
+    __resetBankSeen(); // leave the module-global seen clean for any test that runs after this one
+    check('UNSCOPED (pre-fix shape) accumulation DOES eventually produce far-band draws — proves the scoped checks above are not vacuous',
+      far > 0, `far=${far} across 2000 unscoped draws, per-200-window far counts=${JSON.stringify(farByWindow)}`);
+  }
+
+  // STRUCTURAL GUARD on server.ts's own call site: the two unit checks above
+  // prove `bankScenario`/`bankScenarioAvoiding` are CAPABLE of per-request
+  // scoping, not that the hosted caller actually exercises that capability —
+  // that wiring lives in server.ts, outside this browser-safe file's import
+  // graph (server.ts is Node/SDK-bound). Pin the exact shape: a FRESH `Set`
+  // passed on every non-desktop request, `undefined` (module-global
+  // singleton, unchanged) on desktop.
+  {
+    const src = readFileSync('server.ts', 'utf8');
+    const idx = src.indexOf('const hostedFallbackSeen');
+    check('server.ts must define hostedFallbackSeen at its bank-fallback call site', idx > 0);
+    const line = src.slice(idx, src.indexOf('\n', idx));
+    check('hostedFallbackSeen must gate on IS_ELECTRON and hand HOSTED requests a FRESH Set',
+      /process\.env\.IS_ELECTRON === "true"\s*\?\s*undefined\s*:\s*new Set<string>\(\)/.test(line),
+      `got: ${JSON.stringify(line)}`);
+    const callSiteBlock = src.slice(idx, idx + 400);
+    check('server.ts must actually PASS hostedFallbackSeen into both bank calls at the fallback call site, not just define it',
+      /bankScenarioAvoiding\(payoffs, fallbackDomain, avoid\.name, hostedFallbackSeen\)/.test(callSiteBlock)
+      && /bankScenario\(payoffs, fallbackDomain, hostedFallbackSeen\)/.test(callSiteBlock),
+      callSiteBlock);
+  }
+}
 
 /* ============================================================================
  * THE SHIPPED ARTIFACT

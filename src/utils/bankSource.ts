@@ -58,15 +58,31 @@ export function bankAvailable(): boolean {
  * A scenario for this game, or null to fall through to the model path.
  * `domain` comes from the same rotation the cloud path uses, so setting variety
  * is driven identically on both surfaces.
+ *
+ * `seenOverride` (RED-CLOUD-7/001): the module-global `seen` above is correctly
+ * scoped to ONE DESKTOP LAUNCH for the original caller (`inventScenario`,
+ * IS_ELECTRON-gated) — a fresh Electron process naturally resets it. `server.ts`'s
+ * `inventScreenedScenario` later added a SECOND caller, reachable on the HOSTED
+ * path too (no IS_ELECTRON gate), where one warm Cloud Run process serves many
+ * unrelated users' requests: left unscoped, `seen` accumulated across ALL of
+ * them, eventually exhausting the exact-band pool and drifting later requests
+ * onto a story 2+ stakes bands away from their own game (far-band 24-41% in
+ * 200-draw windows after ~400 accumulated fallback draws — 0/500 on a properly
+ * scoped cold process). Passing an explicit `Set` here (the hosted caller passes
+ * a FRESH one per request; the desktop caller passes nothing, so it keeps using
+ * the per-launch singleton, unchanged) is what closes that gap without touching
+ * `pickFromBank`'s picker logic at all — a request's own reroll ladder can still
+ * avoid its own repeats, since the set it's given starts empty either way.
  */
-export function bankScenario(g: GamePayoffs, domain: string): SuggestedScenario | null {
+export function bankScenario(g: GamePayoffs, domain: string, seenOverride?: Set<string>): SuggestedScenario | null {
   if (!bank.length) return null;
-  const sc = pickFromBank(bank, g, domain, seen);
+  const activeSeen = seenOverride ?? seen;
+  const sc = pickFromBank(bank, g, domain, activeSeen);
   if (!sc) return null;
   // Record BEFORE returning: the caller may reject this row at the gate, and a
   // rejected row should not come back on the retry.
   const hit = bank.find((e) => e.s === sc);
-  if (hit) seen.add(bankKey(hit));
+  if (hit) activeSeen.add(bankKey(hit));
   return sc;
 }
 
@@ -99,20 +115,29 @@ export function bankDomainFor(sc: { name?: string; description?: string } | null
  * (domain, band) cell still degrades the same way it already does when
  * `seen` covers everything (widen, then repeat honestly rather than fail).
  */
+/** `seenOverride`: same RED-CLOUD-7/001 reasoning as `bankScenario` above —
+ *  omitted (desktop) keeps the per-launch singleton; the hosted fallback
+ *  caller passes its own fresh, per-request `Set`. */
 export function bankScenarioAvoiding(
   g: GamePayoffs,
   domain: string,
   avoidName?: string,
+  seenOverride?: Set<string>,
 ): SuggestedScenario | null {
   if (!bank.length) return null;
+  const baseSeen = seenOverride ?? seen;
   const avoidKeys = avoidName
     ? bank.filter((e) => isSameStory(e.s, { name: avoidName })).map(bankKey)
     : [];
-  const unionSeen = avoidKeys.length ? new Set([...seen, ...avoidKeys]) : seen;
+  const unionSeen = avoidKeys.length ? new Set([...baseSeen, ...avoidKeys]) : baseSeen;
   const sc = pickFromBank(bank, g, domain, unionSeen);
   if (!sc) return null;
   const hit = bank.find((e) => e.s === sc);
-  if (hit) seen.add(bankKey(hit));
+  // Record into the SAME set the picker was scoped to, matching bankScenario:
+  // baseSeen (not unionSeen, which may be a throwaway union copy when
+  // avoidKeys is non-empty) — writing into unionSeen there would silently
+  // drop the record on the floor for that call shape.
+  if (hit) baseSeen.add(bankKey(hit));
   return sc;
 }
 

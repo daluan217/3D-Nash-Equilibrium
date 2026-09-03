@@ -24,7 +24,9 @@
  */
 
 import type { GamePayoffs, LlmReport, SuggestedScenario } from '../types';
-import { computeAllNE, computeIndifference, fmtProb, fmtPayoff, EA, EB } from './gameEngine';
+import {
+  computeAllNE, equilibriumSet, kindOf, describeContinua, fmtProb, fmtPayoff, EA, EB,
+} from './gameEngine';
 import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
 import { stakesHint } from './scenarioStakes';
@@ -598,13 +600,20 @@ function bestReplyTable(g: GamePayoffs): string[] {
 
 export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): string {
   const equilibria = computeAllNE(g);
-  const indifference = computeIndifference(g);
-  // A flat-payoff player is indifferent between their own actions, so a whole
-  // line (or the entire square) is in equilibrium and computeAllNE's corner
-  // enumeration is only a partial picture. Trigger on indifference itself:
-  // computeAllNE is non-empty for these games (it lists the corners), so gating
-  // on an empty list would never fire. Mirrors the trigger in nashValidator.
-  const degenerate = indifference.any;
+  // RED-MATH-7/001: `computeIndifference` is TRUE only when a player is
+  // indifferent EVERYWHERE (both of their own cross-row/column payoff pairs
+  // tied) -- it says nothing about a PARTIAL tie, where only part of the
+  // opponent's mixing range admits the continuum. On 14% of small-integer
+  // ([-9,9]) games this let `degenerate` come out false while a genuine
+  // continuum existed (e.g. a=[[10,5],[0,5]], b=[[0,5],[0,5]]: the whole
+  // y=0 edge is in equilibrium), and the branch below then handed the model
+  // the literal, unconditional falsehood "the solver output above is
+  // complete." `equilibriumSet`/`kindOf` are the ground-truth test already
+  // used for this exact question by App.tsx's `hasEquilibriumContinuum` (the
+  // on-screen panel) and nashValidator.ts's action-claim check -- this is
+  // the third caller, not a new predicate, so the payload can never again
+  // disagree with what the app itself shows the user for the same game.
+  const hasContinuum = equilibriumSet(g).some((r) => kindOf(r) !== 'point');
 
   const matrix = [
     'Payoff matrix (Player A first, Player B second in each cell):',
@@ -614,10 +623,15 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
     `  Row 2 / Col 2: A=${g.a22}, B=${g.b22}`,
   ];
 
-  if (degenerate) {
-    const region = indifference.both
-      ? 'both players are indifferent between their own actions, so EVERY point in the unit square is an equilibrium'
-      : `player ${indifference.aIndifferent ? 'A' : 'B'} is indifferent between their own actions, so a whole line of points is in equilibrium`;
+  if (hasContinuum) {
+    // The SAME sentences the on-screen "Calculated Nash Equilibria" panel
+    // lists (App.tsx's `continua`) and tieProse.ts's deterministic prose
+    // draw from -- describeContinua is precise about WHICH player is fixed
+    // and WHICH mixes freely, per component, rather than the old single
+    // generic sentence (which could not even be phrased correctly for a
+    // partial tie: neither `indifference.both` nor `indifference.aIndifferent`
+    // is true for that case).
+    const continuaLines = describeContinua(g);
     // Hand the model the enumerated corners as guaranteed-valid representative
     // points, so it can pick one rather than derive a point on the continuum.
     const validPoints = equilibria.length
@@ -632,9 +646,9 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
       '',
       geometryBriefing(g),
       '',
-      `This game is DEGENERATE: ${region}.`,
-      'There is a continuum of equilibria, not a finite list. Report it as a SINGLE',
-      'claim of type "continuum", using any one representative point that is in',
+      'This game has a CONTINUUM of equilibria (not a finite list):',
+      ...continuaLines.map((l) => `  ${l}`),
+      'Report it as a SINGLE claim of type "continuum", using any one representative point that is in',
       `equilibrium. These enumerated points are all valid choices: ${validPoints}.`,
       'Do NOT list the corners as separate pure equilibria — collapse them into one',
       '"continuum" claim.',

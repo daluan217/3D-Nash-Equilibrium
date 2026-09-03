@@ -25,7 +25,7 @@ import { tieProse, tieProseFull } from "./src/utils/tieProse";
 import { validateReport, validateScenario, validateProseClaims, validateProseDirections, scenarioIsClaimFree } from "./src/utils/nashValidator";
 import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
-import { stripUnsafeText } from "./src/utils/textSafety";
+import { stripUnsafeText, clampGraphemeSafe } from "./src/utils/textSafety";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
 // since the materialized best-reply table landed: the 2026-08-27 follow-up
@@ -271,9 +271,24 @@ async function inventScreenedScenario(
   // see this function's own comment for why the bank is reachable and safe
   // to use here, even on the hosted path.
   const fallbackDomain = pickScenarioDomainExcluding(avoid?.domain);
+  // RED-CLOUD-7/001: this fallback call is reachable on the HOSTED path
+  // (no IS_ELECTRON gate — see this function's own doc comment above), where
+  // Cloud Run's single warm process (`--max-instances=1`, no `--min-instances`)
+  // can serve many unrelated users' requests over the life of one process.
+  // `bankSource.ts`'s `seen` Set is a module-global correctly scoped to ONE
+  // DESKTOP LAUNCH for the pre-existing primary bank draw — left unscoped
+  // here too, it would accumulate every unrelated user's fallback draw and
+  // eventually drift LATER requests onto a story 2+ stakes bands away from
+  // their own game (measured: far-band 24-41% after ~400 accumulated draws
+  // on one warm process, vs 0/500 properly scoped). A fresh, empty `Set`
+  // every hosted request closes that — this request's own ladder can still
+  // avoid ITS OWN repeats, since the set starts empty either way. On
+  // desktop, pass nothing so `bankScenario`/`bankScenarioAvoiding` keep
+  // using the per-launch singleton, exactly as before this fix.
+  const hostedFallbackSeen = process.env.IS_ELECTRON === "true" ? undefined : new Set<string>();
   const fallback = avoid
-    ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name)
-    : bankScenario(payoffs, fallbackDomain);
+    ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
+    : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
   if (fallback && (!gateOn || storyOk(fallback))) {
     return { scenario: fallback, scenarioSource: 'bank-fallback' };
   }
@@ -1792,95 +1807,18 @@ function adoptLocalGames(userId: string): number {
 }
 
 /**
- * Clamp a string to at most `maxLength` UTF-16 code units WITHOUT ever
- * cutting inside a surrogate pair or a multi-codepoint grapheme cluster
- * (emoji skin-tone modifiers, ZWJ family/profession sequences, flag
- * sequences -- all built from 2+ codepoints, several also astral so each
- * codepoint is itself a 2-unit surrogate pair).
- *
- * RED-CLOUD-5/001: a bare `.slice(0, maxLength)` operates on raw UTF-16
- * units. When an astral character (U+10000+, almost all emoji) straddles
- * the cut, the slice keeps only its high surrogate, producing an
- * ILL-FORMED string that then renders verbatim (a visible mojibake glyph,
- * repeated) in report prose -- this was live-reproduced against
- * origin/main HEAD `eed34f8`: `"A" + "\u{1F389}".repeat(20)` clamped to 40
- * left an unpaired high surrogate (U+D83C) at string index 105 of the
- * rendered prose. `maxLength` stays in UTF-16 units (unchanged meaning for
- * the existing LABEL_MAX/60/80/1200 constants and every plain-ASCII/BMP
- * caller) -- only the CUT POINT moves to the nearest grapheme boundary at
- * or below it, so a caller never gets back MORE than `maxLength` units.
- *
- * `Intl.Segmenter` (available in the Node 22 runtime this app targets, and
- * every evergreen browser) gives true grapheme-cluster boundaries; a
- * codepoint-safe `for...of` walk (same technique textSafety.ts's own
- * `stripUnsafeText` already uses, see its comment) is the fallback if
- * `Intl.Segmenter` is ever unavailable -- it still closes the exact
- * surrogate-pair defect above, just without the family/flag guarantee.
- *
- * RED-CLOUD-6/001: a grapheme cluster has NO upper size bound -- a base
- * character followed by an unbounded run of combining marks (U+0300-class
- * diacritics; "zalgo"/"cursed" text, a well-known copy-paste meme) is, by
- * the same UAX #29 rules `Intl.Segmenter` implements, still ONE cluster.
- * The loop above refuses to split a cluster, which is correct -- but when
- * the FIRST cluster already exceeds the entire budget it used to just
- * `break` with `out` still `""`, silently wiping the WHOLE string (every
- * later, perfectly ordinary character included) instead of truncating it.
- * `cleanScenario`'s `label()` then read that as a missing label and
- * discarded the user's ENTIRE scenario -- including its three other,
- * perfectly normal labels -- and substituted an unrelated invented story,
- * with no error returned to the client. Falling back to a codepoint-safe
- * (not grapheme-safe) cut of JUST the oversized cluster fixes this: still
- * never splits a surrogate pair (so no mojibake, the defect the grapheme
- * switch itself fixed), just no longer guarantees the combining marks kept
- * stay attached to their base character within a tight budget -- which is
- * unavoidable once a single cluster does not fit at all.
+ * `clampGraphemeSafe` (never splits a surrogate pair or a wider grapheme
+ * cluster -- RED-CLOUD-5/001, RED-CLOUD-6/001) now lives in
+ * `src/utils/textSafety.ts`, imported above, rather than being defined here:
+ * RED-APP-7/004 found the BROWSER needed the identical boundary logic (the
+ * label inputs' native `maxLength` attribute was cutting a typed/pasted ZWJ
+ * emoji sequence mid-grapheme, client-side, before this server-side clamp
+ * ever saw the original string), and a second hand-copied implementation is
+ * exactly the kind of drift this codebase has been burned by before (see
+ * `cutAtWordBoundary`'s own docstring below, RED-APP-4). One function, two
+ * callers, both isomorphic (`Intl.Segmenter` is available in the Node 22
+ * runtime this app targets and in every evergreen browser).
  */
-function clampGraphemeSafe(s: string, maxLength: number): string {
-  if (s.length <= maxLength) return s;
-  const SegmenterCtor: typeof Intl.Segmenter | undefined = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
-  if (typeof SegmenterCtor === "function") {
-    const segmenter = new SegmenterCtor(undefined, { granularity: "grapheme" });
-    let out = "";
-    for (const { segment } of segmenter.segment(s)) {
-      if (out.length + segment.length > maxLength) {
-        if (out.length === 0) out = codepointSafeSlice(segment, maxLength);
-        break;
-      }
-      out += segment;
-    }
-    return out;
-  }
-  let out = "";
-  for (const ch of s) {
-    if (out.length + ch.length > maxLength) {
-      if (out.length === 0) out = codepointSafeSlice(ch, maxLength);
-      break;
-    }
-    out += ch;
-  }
-  return out;
-}
-
-/**
- * Cut `s` to at most `maxLength` UTF-16 units without ever splitting a
- * surrogate pair -- a plain codepoint-by-codepoint walk, weaker than a full
- * grapheme-cluster boundary (it can separate a base character from its own
- * combining marks), but that is exactly and only what happens when a SINGLE
- * cluster does not fit the budget at all: there is no boundary-safe cut that
- * keeps it whole, and returning nothing (the RED-CLOUD-6/001 bug) is worse
- * than a partial cluster. At `maxLength` too small to fit even one codepoint
- * (astral characters are 2 UTF-16 units), this can still return `""` --
- * inherent to any codepoint-safe scheme, and never hit by any real caller in
- * this file (every clamp width here is 40+).
- */
-function codepointSafeSlice(s: string, maxLength: number): string {
-  let out = "";
-  for (const ch of s) {
-    if (out.length + ch.length > maxLength) break;
-    out += ch;
-  }
-  return out;
-}
 
 /**
  * The one place every user-supplied string passes through before it is

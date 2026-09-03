@@ -38,7 +38,7 @@ import {
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
-import { cleanText } from './utils/textSafety';
+import { cleanText, clampGraphemeSafe } from './utils/textSafety';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -104,6 +104,19 @@ import { DownloadModal } from './components/DownloadModal';
 import { OtherAccountsNotice } from './components/OtherAccountsNotice';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
+
+/**
+ * RED-APP-7/004: the four option-label inputs' native `maxLength={40}`
+ * enforced the same 40-unit budget as the server, but by raw UTF-16 code
+ * unit count with NO grapheme awareness — a typed/pasted ZWJ emoji sequence
+ * (or anything astral) straddling the 40th unit got cut mid-grapheme
+ * client-side, before the server's already-grapheme-safe `cleanLabels`
+ * clamp ever saw the original, un-truncated string. Enforced here instead,
+ * in `onChange`, with the exact same boundary logic the server uses
+ * (`clampGraphemeSafe`, shared via `src/utils/textSafety.ts` so the two
+ * can never drift apart again).
+ */
+const clampLabelInput = (v: string) => clampGraphemeSafe(v, 40);
 
 // Typeset LaTeX inline via KaTeX (self-hosted, works offline)
 function MathTex({ tex, className }: { tex: string; className?: string }) {
@@ -478,6 +491,17 @@ export default function App() {
    * Cleared whenever the auth modal is dismissed without signing in.
    */
   const resumeSaveAfterAuthRef = useRef(false);
+  /**
+   * RED-APP-7/001: the Edit dialog's own analogue of `resumeSaveAfterAuthRef`
+   * — set when a mid-session token expiry (or any other 401) sends the user
+   * from the Edit dialog to Sign In. Same reason for existing: the Edit and
+   * Auth dialogs sit at the same z-index (z-[65]), so Edit has to CLOSE for
+   * the jump, and this is what reopens it — editName/editDesc/editLabels/
+   * editTerms are untouched by the close (they live in their own state, not
+   * reset on close), so the user's typed text is exactly as they left it.
+   * Cleared whenever the auth modal is dismissed without signing in.
+   */
+  const resumeEditAfterAuthRef = useRef(false);
   // Set when "Save this scenario with the game" routes through the save modal
   // (preset or unsaved matrix): the scenario only becomes real when that save
   // completes, so the explanation regenerates there — from the fields as
@@ -491,6 +515,11 @@ export default function App() {
       resumeSaveAfterAuthRef.current = false;
       setSaveError('');
       setIsSaveModalOpen(true);
+    }
+    if (authToken && resumeEditAfterAuthRef.current) {
+      resumeEditAfterAuthRef.current = false;
+      setEditError('');
+      setIsEditModalOpen(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authToken]);
@@ -710,6 +739,21 @@ export default function App() {
   // payoffsEqual as a second, independent line of defense against the
   // cross-game case finding 001 already covers.
   const requestGenerationRef = useRef(0);
+  // RED-APP-7/002: fetchFreshScenario used to share requestGenerationRef with
+  // fetchLlmExplanation. The two buttons are not disabled by the same
+  // condition ("New AI scenario" checks `llmLoading || scenarioLoading`;
+  // "Regenerate" checked `llmLoading` only), so a real user could click
+  // Regenerate while a scenario invention was in flight -- that click bumped
+  // the SHARED counter, and the stale scenario request's own `finally`
+  // (`myGeneration === requestGenerationRef.current`) then never matched
+  // again, so `scenarioLoading` stuck `true` forever, even after the
+  // request it was guarding had long since settled. Same fix shape as
+  // `regenGenerationRef` above (a save-triggered regeneration must not
+  // permanently stick "Explain this game"'s own spinner): a SEPARATE
+  // counter, so bumping one request kind's generation can never defeat the
+  // other kind's own `finally`. Both counters are still bumped together by
+  // the payoffs-change effect below, so a game switch invalidates BOTH.
+  const scenarioGenerationRef = useRef(0);
   // RED-APP-6/003: fetchLlmExplanation/fetchFreshScenario had no
   // AbortController anywhere -- a request that neither resolves nor rejects
   // (a stalled connection, not a closed one -- a captive portal or a hung
@@ -940,11 +984,17 @@ export default function App() {
   useEffect(() => {
     if (!logExpanded) return;
     const onKey = (e: KeyboardEvent) => {
-      // RED-APP-6/002: stop the keydown from also reaching Walkthrough.tsx's
-      // own independent `window`-level Escape listener — without this, one
-      // Escape press while this dialog is open over the tour closes BOTH
-      // this dialog AND the tour (resetting its step to 0). `document` fires
-      // before `window` in the bubble phase, so stopping it here is enough.
+      // RED-APP-6/002 (re-broken, RED-APP-7/003): stop the keydown from also
+      // reaching Walkthrough.tsx's own independent `window`-level Escape
+      // listener — without this, one Escape press while this dialog is open
+      // over the tour closes BOTH this dialog AND the tour (resetting its
+      // step to 0). `document` fires before `window` in the bubble phase, so
+      // stopping it here is enough — but ONLY if this listener is actually
+      // registered on `document`. It was registered on `window` (the same
+      // target as Walkthrough's own listener), which makes
+      // `stopPropagation()` a no-op against a sibling listener on the same
+      // target (that needs `stopImmediatePropagation`, not used here) — the
+      // comment above described the fix this code never implemented.
       if (e.key === 'Escape') { setLogExpanded(false); e.stopPropagation(); return; }
       if (e.key !== 'Tab') return;
       const container = logDialogRef.current;
@@ -963,8 +1013,8 @@ export default function App() {
         first.focus();
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
   }, [logExpanded]);
 
   // ── Simulation-log placement ───────────────────────────────────────────────
@@ -1146,6 +1196,7 @@ export default function App() {
   // going to clear them.
   useEffect(() => {
     requestGenerationRef.current += 1;
+    scenarioGenerationRef.current += 1;
     setLlmEnvelope(null); setLlmError(false); setProseScenario(null);
     setLlmLoading(false); setScenarioLoading(false); setLlmTimedOut(false);
   }, [payoffs]);
@@ -1381,7 +1432,11 @@ export default function App() {
     // the identity this request was fired for, and require it to still
     // match before touching state.
     const requestPayoffs = payoffs;
-    const myGeneration = (requestGenerationRef.current += 1);
+    // RED-APP-7/002: this request's OWN generation counter (see
+    // scenarioGenerationRef's declaration) -- a concurrent Regenerate click
+    // (fetchLlmExplanation) bumps requestGenerationRef, not this one, so it
+    // can no longer defeat this function's own `finally` below.
+    const myGeneration = (scenarioGenerationRef.current += 1);
     setScenarioLoading(true);
     // RED-APP-6/003: same no-timeout defect as fetchLlmExplanation, same fix.
     const controller = new AbortController();
@@ -1397,7 +1452,7 @@ export default function App() {
       const res = await fetchPromise;
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as { scenario: SuggestedScenario | null };
-      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) {
+      if (myGeneration !== scenarioGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) {
         // Stale: the user has since switched games. Neither the scenario
         // NOR a "couldn't invent" log line belongs on whatever is on
         // screen now -- both would be about a game that is no longer
@@ -1411,7 +1466,7 @@ export default function App() {
         setLogEntries((prev) => [...prev, "✗ Couldn't invent a verified scenario just now — try again."]);
       }
     } catch (err) {
-      if (myGeneration !== requestGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
+      if (myGeneration !== scenarioGenerationRef.current || !payoffsEqual(requestPayoffs, payoffsRef.current)) return;
       const timedOut = err instanceof DOMException && err.name === 'AbortError';
       setLogEntries((prev) => [...prev, timedOut
         ? "✗ Inventing a new scenario is taking longer than expected — try again."
@@ -1420,8 +1475,10 @@ export default function App() {
       clearReportTimeout();
       inFlightReportControllersRef.current.delete(controller);
       // Same reasoning as fetchLlmExplanation's finally: only the request
-      // that is still current may clear the loading flag.
-      if (myGeneration === requestGenerationRef.current) setScenarioLoading(false);
+      // that is still current may clear the loading flag. RED-APP-7/002:
+      // "current" is now judged against THIS function's own counter, not the
+      // one Regenerate/Explain bumps.
+      if (myGeneration === scenarioGenerationRef.current) setScenarioLoading(false);
     }
   };
 
@@ -1853,6 +1910,14 @@ export default function App() {
           setLlmEnvelope(null);
         }
       } else {
+        // RED-APP-7/001: a validly-signed but EXPIRED token dies mid-session
+        // (the tab stayed open past AUTH_TOKEN_TTL_MS) without React ever
+        // being told — `authToken` state kept the dead token, so the header
+        // still read "Log out" and this dialog had no re-auth affordance at
+        // all. Clearing it here on any 401 makes the app's own state agree
+        // with the server's; the header flips to "Sign in" and the
+        // `!authToken` branch on the error render above fires naturally.
+        if (res.status === 401) updateAuthToken(null);
         setEditError(data.error || 'Failed to update game.');
       }
     } catch {
@@ -1876,6 +1941,10 @@ export default function App() {
         }
         setLogEntries(prev => [...prev, `🗑 Deleted custom game.`]);
       } else {
+        // RED-APP-7/001: same dead-token cleanup as Save/Edit — an expired
+        // token must not keep asserting "signed in" (header, Save/Edit's own
+        // re-auth affordances) after the server has stopped honoring it.
+        if (res.status === 401) updateAuthToken(null);
         const data = await res.json();
         alert(data.error || 'Failed to delete game.');
       }
@@ -1891,10 +1960,11 @@ export default function App() {
     // Both dialogs closed without saving: a later unrelated save or edit must
     // not fire the kept-scenario regeneration. The sign-in detour is the
     // exception — the save modal closes for auth and comes back to finish the
-    // same save, so the flag rides along with resumeSaveAfterAuthRef. (A
-    // successful submit consumes the flag itself before closing, so this only
-    // ever cancels.)
-    else if (!isEditModalOpen && !resumeSaveAfterAuthRef.current) {
+    // same save, so the flag rides along with resumeSaveAfterAuthRef (and,
+    // RED-APP-7/001, the same for the Edit dialog's own detour and
+    // resumeEditAfterAuthRef). (A successful submit consumes the flag itself
+    // before closing, so this only ever cancels.)
+    else if (!isEditModalOpen && !resumeSaveAfterAuthRef.current && !resumeEditAfterAuthRef.current) {
       regenExplanationAfterSaveRef.current = false;
     }
   }, [isSaveModalOpen, isEditModalOpen]);
@@ -1908,7 +1978,7 @@ export default function App() {
   // regardless, so this is redundant-but-cheap insurance for the gap between
   // close and reopen).
   useEffect(() => {
-    if (!isSaveModalOpen && !isEditModalOpen && !resumeSaveAfterAuthRef.current) {
+    if (!isSaveModalOpen && !isEditModalOpen && !resumeSaveAfterAuthRef.current && !resumeEditAfterAuthRef.current) {
       regenGenerationRef.current += 1;
       regenControllerRef.current?.abort();
       regenInFlightRef.current = false;
@@ -2083,6 +2153,13 @@ export default function App() {
         saveNameBaselineRef.current = '';
         setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
       } else {
+        // RED-APP-7/001: same dead-token cleanup as Edit/Delete — see that
+        // comment. `authToken` was truthy but dead, so this branch's own
+        // `saveError` text ("Invalid or expired session.") used to always
+        // take the bare-rose-error render below rather than the friendly
+        // `!authToken` one, even though its own wording is exactly the case
+        // that branch exists for.
+        if (res.status === 401) updateAuthToken(null);
         setSaveError(data.error || 'Failed to save game.');
       }
     } catch (err) {
@@ -2273,7 +2350,7 @@ export default function App() {
       // open — that Escape press must still reach the tour.
       if (isFeedbackOpen) { closeFeedback(); e.stopPropagation(); }
       else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); e.stopPropagation(); }
-      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; e.stopPropagation(); }
+      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; e.stopPropagation(); }
       // RED-APP-5 001, round 5: the Edit-saved-game dialog was missing from
       // both this chain and the deps array below, so Escape did nothing while
       // it was open — every other modal in the app (and #90's expand-log
@@ -4806,7 +4883,14 @@ export default function App() {
                     )}
                     <button
                       onClick={() => fetchLlmExplanation()}
-                      disabled={llmLoading}
+                      // RED-APP-7/002 belt-and-braces: also disabled while a
+                      // scenario invention is in flight, mirroring "New AI
+                      // scenario"'s own `llmLoading || scenarioLoading`. The
+                      // separate generation counters above already stop the
+                      // race from leaving anything stuck; this additionally
+                      // closes the REACHABILITY precondition so a real click
+                      // can never fire the two request kinds concurrently.
+                      disabled={llmLoading || scenarioLoading}
                       className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       {llmLoading ? 'Analyzing…' : llmEnvelope ? 'Regenerate' : 'Explain this game'}
@@ -4995,7 +5079,7 @@ export default function App() {
           // is untouched: still non-modal, still click-through, still
           // visible around a foreground dialog's backdrop.
           className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
-          onClick={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; }}
+          onClick={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; }}
         >
           <div
             ref={authDialogRef}
@@ -5019,6 +5103,7 @@ export default function App() {
                   setAuthError('');
                   setAuthSuccess('');
                   resumeSaveAfterAuthRef.current = false;
+                  resumeEditAfterAuthRef.current = false;
                 }}
                 aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
@@ -5376,8 +5461,7 @@ export default function App() {
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
                         value={editLabels[key]}
-                        onChange={(e) => setEditLabels((prev) => ({ ...prev, [key]: e.target.value }))}
-                        maxLength={40}
+                        onChange={(e) => setEditLabels((prev) => ({ ...prev, [key]: clampLabelInput(e.target.value) }))}
                       />
                     </div>
                   ))}
@@ -5466,7 +5550,34 @@ export default function App() {
                 </div>
               )}
 
-              {editError && <p className="text-xs text-danger-500 font-semibold">{editError}</p>}
+              {editError && (
+                // RED-APP-7/001: mirrors the Save dialog's own !authToken
+                // branch below — a mid-session 401 (token expired while the
+                // tab stayed open) now clears authToken (see
+                // handleEditGameSubmit), so this fires instead of leaving
+                // the user with the bare server string and no way forward.
+                !authToken ? (
+                  <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                    <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
+                    <div className="flex flex-col items-start gap-2">
+                      <span>{editError} Your changes will stay right here.</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resumeEditAfterAuthRef.current = true;
+                          setIsEditModalOpen(false);
+                          setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
+                        }}
+                        className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                      >
+                        Sign In / Sign Up
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-danger-500 font-semibold">{editError}</p>
+                )
+              )}
 
               <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
                 <button
@@ -5741,8 +5852,7 @@ export default function App() {
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
                         value={saveLabels[key]}
-                        onChange={(e) => setSaveLabels((prev) => ({ ...prev, [key]: e.target.value }))}
-                        maxLength={40}
+                        onChange={(e) => setSaveLabels((prev) => ({ ...prev, [key]: clampLabelInput(e.target.value) }))}
                       />
                     </div>
                   ))}

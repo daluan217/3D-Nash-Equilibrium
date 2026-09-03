@@ -48,9 +48,11 @@ import {
 } from './types';
 import {
   doStep, PRESETS, computeAllNE, computeIndifference, computeMixedNE, fmtPayoff, EA, EB, r3,
+  equilibriumSet, kindOf, describeContinua,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { neValues } from './components/equilibriumPanel';
+import { makeTraces, buildSurfaces } from './utils/plotting';
 
 let checks = 0;
 function ok(cond: unknown, msg: string): asserts cond {
@@ -121,7 +123,14 @@ function testPayloadAgreesWithPanel() {
     }
   }
   for (const g of corpus) {
-    if (computeIndifference(g).any) continue; // buildGroundingPayload takes the continuum branch — no payoffs A=/B= line
+    // RED-MATH-7/001: buildGroundingPayload's continuum branch is now gated
+    // on the TRUE ground-truth test (equilibriumSet has a non-point
+    // component), not the narrower computeIndifference (full-indifference-
+    // only) it used before this fix — skip here on the SAME predicate, or
+    // this sweep would wrongly expect "(payoffs A=..., B=...)" lines on a
+    // game where buildGroundingPayload now (correctly) takes the continuum
+    // branch instead.
+    if (equilibriumSet(g).some((r) => kindOf(r) !== 'point')) continue;
     const nes = computeAllNE(g);
     if (nes.length === 0) continue;
     const payload = buildGroundingPayload(g);
@@ -279,9 +288,167 @@ function testMenuDrawerSourceUsesFmtPayoff() {
   const fmtPayoffSites = [...src.matchAll(/fmtPayoff\(EA\(eq\.x, eq\.y, (preset|game)\.payoffs\)\)/g)];
   ok(fmtPayoffSites.length === 2,
     `expected 2 sites recomputing via fmtPayoff(EA(eq.x, eq.y, ...)) (standard presets + saved games), found ${fmtPayoffSites.length}`);
+
+  // RED-MATH-7/001: MenuDrawer.tsx used to read ONLY computeAllNE's finite
+  // corner list — silently under-reporting an equilibrium continuum, the
+  // same class the checks below close in report.ts and plotting.ts. Two
+  // call sites (standard presets + saved games), same as the fmtPayoff
+  // check above.
+  const describeContinuaSites = [...src.matchAll(/describeContinua\((preset|game)\.payoffs\)/g)];
+  ok(describeContinuaSites.length === 2,
+    `expected 2 sites calling describeContinua(...payoffs) (standard presets + saved games), found ${describeContinuaSites.length}`);
+  // The rendered list must actually include those lines, not just compute
+  // them — the {continua.map(...)} JSX and the emptiness guard must both be
+  // present AT BOTH SITES (a bare .test() only proves at least one exists,
+  // which a mutation that reverts just ONE of the two sites back to the old
+  // shape would still pass — counted, exactly like the fmtPayoff/
+  // describeContinua site checks above).
+  const continuaMapSites = [...src.matchAll(/\{continua\.map\(/g)];
+  ok(continuaMapSites.length === 2,
+    `expected 2 sites rendering {continua.map(...)} (standard presets + saved games), found ${continuaMapSites.length}`);
+  const fixedEmptyGuardSites = [...src.matchAll(/eqList\.length === 0 && continua\.length === 0/g)];
+  ok(fixedEmptyGuardSites.length === 2,
+    `expected 2 "No classic NE" guards requiring BOTH eqList and continua empty (standard presets + saved games), found ${fixedEmptyGuardSites.length} — `
+    + 'otherwise a continuum-only game (0 corners) would wrongly show "No classic NE" at whichever site still has the old single-condition guard');
+
+  // MUTATION / NEGATIVE FIXTURE — the pre-fix source shape, verbatim (no
+  // describeContinua import or call, and the old single-condition
+  // emptiness guard). Proves the checks above can tell the fixed source
+  // apart from the defect.
+  const preFixEmptyGuard = 'eqList.length === 0 && (';
+  ok(!/eqList\.length === 0 && continua\.length === 0/.test(preFixEmptyGuard),
+    'the pre-fix fixture text must not accidentally already carry the fixed guard (fixture sanity check)');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 4. RED-MATH-7/001 — continuum renderings agree across FOUR consumers: the
+//    on-screen panel / MenuDrawer.tsx (both driven by `describeContinua`,
+//    checked above and below), the LLM grounding payload (`report.ts`, this
+//    fix), and the templated/`tieProse.ts` rendering path (already correct —
+//    server.ts's own simple tie flag, reproduced literally below, is what
+//    routes a game there; this proves that path is reached whenever the
+//    payload declares a continuum, not bypassed).
+// ════════════════════════════════════════════════════════════════════════════
+
+function hasContinuum(g: GamePayoffs): boolean {
+  return equilibriumSet(g).some((r) => kindOf(r) !== 'point');
+}
+
+/**
+ * `server.ts`'s "Tie-game policy" gate (~line 2709), reproduced verbatim as a
+ * literal (not imported — server.ts is the Node/SDK-bound entry point, not a
+ * module this browser-safe test tree pulls in). This lets the sweep below
+ * independently confirm a mathematical fact: whenever `equilibriumSet` finds
+ * a non-point component, AT LEAST ONE of the four raw cross-pair equalities
+ * this flag checks is also true — a continuum-carrying segment always forms
+ * at the boundary where the FREE player is exactly indifferent at the OTHER
+ * player's PINNED pure value, which reduces to exactly one such equality (the
+ * full-square case needs all four). So the already-correct templated/
+ * tieProse.ts path (NASH_LLM_TIES=template) is never bypassed for a game the
+ * payload now declares a continuum on.
+ */
+function serverTieFlag(g: GamePayoffs): boolean {
+  return g.a11 === g.a21 || g.a12 === g.a22 || g.b11 === g.b12 || g.b21 === g.b22;
+}
+
+function testContinuumRenderingsAgree() {
+  // Known positive: the finding's exact repro (RED-MATH-7/001). NE set is
+  // the whole y=0 edge — computeIndifference is FALSE (the narrow predicate
+  // the bug used) precisely because this is a PARTIAL tie, not a full one.
+  const FIXTURE: GamePayoffs = { a11: 10, a12: 5, a21: 0, a22: 5, b11: 0, b12: 5, b21: 0, b22: 5 };
+  ok(computeIndifference(FIXTURE).any === false,
+    'fixture sanity: computeIndifference must be FALSE (the narrow predicate the bug used) so this exercises the actual gap');
+  ok(hasContinuum(FIXTURE), 'fixture sanity: equilibriumSet must show a genuine continuum');
+  {
+    const payload = buildGroundingPayload(FIXTURE);
+    ok(!payload.includes('This game is not degenerate; the solver output above is complete.'),
+      `fixture: payload must never claim completeness on a continuum game — payload="${payload}"`);
+    ok(payload.includes('CONTINUUM'), `fixture: payload must declare a continuum — payload="${payload}"`);
+    const panelLines = describeContinua(FIXTURE);
+    ok(panelLines.length > 0, 'fixture: describeContinua must return at least one line');
+    for (const line of panelLines) {
+      ok(payload.includes(line),
+        `fixture: payload must include the SAME line the on-screen panel/MenuDrawer show ("${line}") — payload="${payload}"`);
+    }
+    ok(serverTieFlag(FIXTURE),
+      "fixture: server.ts's own tie flag must ALSO be true here, proving the templated/tieProse rendering path (already correct) is reached for this exact game, not bypassed");
+  }
+
+  // Corpus sweep — the red's own reach class: 300,000 random int[-9,9] games
+  // (the app's own generateRandomGame range, and the class the finding's own
+  // reach table measured at 14.13%).
+  const N = 300000;
+  const rnd = mk(0xc0021771);
+  const cell = () => Math.floor(rnd() * 19) - 9; // integers in [-9, 9]
+  let checkedContinuum = 0;
+  let regressionClassCount = 0; // hasContinuum true, computeIndifference.any false -- the exact undetected-before-this-fix class
+  let bothClassCount = 0;       // hasContinuum true AND computeIndifference.any true -- already correctly handled before this fix
+  for (let i = 0; i < N; i++) {
+    const g: GamePayoffs = {
+      a11: cell(), a12: cell(), a21: cell(), a22: cell(),
+      b11: cell(), b12: cell(), b21: cell(), b22: cell(),
+    };
+    if (!hasContinuum(g)) continue;
+    checkedContinuum++;
+    if (computeIndifference(g).any) bothClassCount++; else regressionClassCount++;
+
+    const payload = buildGroundingPayload(g);
+    ok(!payload.includes('This game is not degenerate; the solver output above is complete.'),
+      `game=${JSON.stringify(g)}: payload must never claim completeness on a continuum game — payload="${payload}"`);
+    const panelLines = describeContinua(g);
+    ok(panelLines.length > 0, `game=${JSON.stringify(g)}: describeContinua must return at least one line for a continuum game`);
+    for (const line of panelLines) {
+      ok(payload.includes(line),
+        `game=${JSON.stringify(g)}: payload must include panel/MenuDrawer line "${line}" verbatim — payload="${payload}"`);
+    }
+    ok(serverTieFlag(g),
+      `game=${JSON.stringify(g)}: server.ts's tie flag must be true whenever a continuum exists (proves the templated/tieProse path is reached), but was false`);
+  }
+  ok(checkedContinuum > 20000, `corpus too small / predicate too narrow: only ${checkedContinuum} continuum games found out of ${N}`);
+  ok(regressionClassCount > 15000,
+    `the exact regression class (hasContinuum true, computeIndifference.any false — the class this fix closes) was barely exercised: ${regressionClassCount}`);
+  console.log(`✓ continuum renderings agree: ${N} games swept, ${checkedContinuum} (${(checkedContinuum / N * 100).toFixed(2)}%) `
+    + `had a genuine continuum — ${regressionClassCount} (${(regressionClassCount / N * 100).toFixed(2)}%) in the class this fix `
+    + `closes (undetected by computeIndifference before), ${bothClassCount} already caught by computeIndifference. `
+    + `0 false "complete" claims; every payload line matched the panel/MenuDrawer line verbatim; server.ts's tie flag agreed on all ${checkedContinuum}.`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5. plotting.ts — the 3D plot's NE diamonds are driven by the CALLER's
+//    `computeAllNE` list (App.tsx), so they inherit the same corner-only
+//    blind spot. Checked here against the same ground-truth test
+//    (`equilibriumSet`/`kindOf`) the other three renderings above use.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testPlottingDrawsContinuumMarker() {
+  const FIXTURE: GamePayoffs = { a11: 10, a12: 5, a21: 0, a22: 5, b11: 0, b12: 5, b21: 0, b22: 5 };
+  ok(hasContinuum(FIXTURE), 'fixture sanity: FIXTURE must have a genuine continuum');
+  const st = createInitialState(0.5, 0.5, FIXTURE);
+  const surf = buildSurfaces(FIXTURE);
+  const traces = makeTraces(surf, FIXTURE, st, 'both', computeAllNE(FIXTURE), false, 'shrink');
+  const continuumTraces = traces.filter((t: any) => t.legendgroup === 'continuumNE');
+  ok(continuumTraces.length > 0,
+    `plotting.ts must draw at least one continuumNE trace for a game whose equilibriumSet has a non-point component; legendgroups=${JSON.stringify(traces.map((t: any) => t.legendgroup))}`);
+  ok(continuumTraces.filter((t: any) => t.showlegend === true).length === 1,
+    `exactly one continuumNE trace must carry the legend entry, found ${continuumTraces.filter((t: any) => t.showlegend === true).length}`);
+
+  // Negative control: a plain non-degenerate game (classic Prisoner's
+  // Dilemma shape, a unique pure NE, NO payoff tie at all in any of the four
+  // raw cross-pairs) must draw ZERO continuumNE traces.
+  const CONTROL: GamePayoffs = { a11: -1, a12: -3, a21: 0, a22: -2, b11: -1, b12: 0, b21: -3, b22: -2 };
+  ok(!hasContinuum(CONTROL), 'control fixture sanity: CONTROL must not have a continuum');
+  const stC = createInitialState(0.5, 0.5, CONTROL);
+  const surfC = buildSurfaces(CONTROL);
+  const tracesC = makeTraces(surfC, CONTROL, stC, 'both', computeAllNE(CONTROL), false, 'shrink');
+  const continuumTracesC = tracesC.filter((t: any) => t.legendgroup === 'continuumNE');
+  ok(continuumTracesC.length === 0, `CONTROL (no continuum) must draw ZERO continuumNE traces, found ${continuumTracesC.length}`);
+
+  console.log('✓ plotting.ts draws an equilibrium-continuum marker exactly when equilibriumSet says one exists (fixture + negative control)');
 }
 
 testPayloadAgreesWithPanel();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
+testContinuumRenderingsAgree();
+testPlottingDrawsContinuumMarker();
 console.log(`✓ payoffhonesty.test.ts: ${checks} assertions passed`);

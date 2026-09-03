@@ -4,7 +4,7 @@
  */
 
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
-import { EA, EB, r3 } from './gameEngine';
+import { EA, EB, r3, equilibriumSet, kindOf } from './gameEngine';
 
 export interface SurfaceData {
   xs: number[];
@@ -695,6 +695,43 @@ export function makeTraces(
       }
       mixedShown = true;
     }
+  });
+
+  // ── Equilibrium CONTINUUM markers ──────────────────────────────────────────
+  // RED-MATH-7/001: `allNE` (the caller's `computeAllNE(g)`) enumerates only
+  // the finitely many corners/interior point computeAllNE's model can find —
+  // on a payoff tie the true equilibrium set can be a whole edge, and the
+  // corner-only diamonds above then draw a strict subset of the truth with
+  // no visual hint that more exists (the same class App.tsx's on-screen
+  // panel, MenuDrawer.tsx's lists, and report.ts's grounding payload were
+  // all separately hardened against — see those files' own comments). One
+  // small hollow diamond at the MIDPOINT of each non-point component, in the
+  // same colour as a Mixed NE marker but a distinct open symbol so it never
+  // reads as an extra discrete equilibrium the solver found: it marks
+  // "a continuum lives here," not a specific point.
+  const continuumRects = equilibriumSet(g).filter((r) => kindOf(r) !== 'point');
+  let continuumShown = false;
+  continuumRects.forEach((r) => {
+    const mx = (r.x0 + r.x1) / 2;
+    const my = (r.y0 + r.y1) / 2;
+    const zAc = EA(mx, my, g);
+    const zBc = EB(mx, my, g);
+    const zVal = trackingMode === 'B' ? zBc : zAc;
+    traces.push({
+      type: 'scatter3d',
+      mode: 'markers',
+      name: continuumShown ? '_' : 'Equilibrium continuum',
+      showlegend: !continuumShown,
+      legendgroup: 'continuumNE',
+      x: trackingMode === 'both' ? [mx, mx] : [mx],
+      y: trackingMode === 'both' ? [my, my] : [my],
+      z: trackingMode === 'both' ? [zAc, zBc] : [zVal],
+      marker: {
+        size: diamondSize * 0.85, color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
+        line: { color: '#8E44AD', width: 2 },
+      },
+    });
+    continuumShown = true;
   });
 
   // ── Tracking spheres (the large display balls) ────────────────────────────

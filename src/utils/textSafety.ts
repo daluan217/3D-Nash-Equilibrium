@@ -96,3 +96,72 @@ export function stripUnsafeText(s: string): string {
 export function cleanText(s: string): string {
   return stripUnsafeText(s).trim();
 }
+
+/**
+ * Cut `s` to at most `maxLength` UTF-16 units without ever splitting a
+ * surrogate pair -- a plain codepoint-by-codepoint walk, weaker than a full
+ * grapheme-cluster boundary (it can separate a base character from its own
+ * combining marks), but that is exactly and only what happens when a SINGLE
+ * cluster does not fit the budget at all: there is no boundary-safe cut that
+ * keeps it whole, and returning nothing is worse than a partial cluster.
+ */
+function codepointSafeSlice(s: string, maxLength: number): string {
+  let out = '';
+  for (const ch of s) {
+    if (out.length + ch.length > maxLength) break;
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Clamp a string to at most `maxLength` UTF-16 code units WITHOUT ever
+ * cutting inside a surrogate pair or a multi-codepoint grapheme cluster
+ * (emoji skin-tone modifiers, ZWJ family/profession sequences, flag
+ * sequences -- all built from 2+ codepoints, several also astral so each
+ * codepoint is itself a 2-unit surrogate pair).
+ *
+ * Originally server.ts-only (RED-CLOUD-5/001: a bare `.slice(0, maxLength)`
+ * split an astral character's surrogate pair, producing an unpaired high
+ * surrogate that rendered as mojibake). Moved here (RED-APP-7/004) so the
+ * BROWSER can share the exact same boundary logic — the label inputs' own
+ * native `maxLength={40}` attribute enforces the same 40-unit budget by raw
+ * UTF-16 code unit count with NO grapheme awareness, so it was cutting a
+ * typed/pasted ZWJ emoji sequence mid-grapheme client-side, before this
+ * (correct) server-side clamp ever got a chance to run on the original
+ * string — there was nothing left for it to protect. `Intl.Segmenter` is
+ * available in every evergreen browser and in the Node 22 runtime this app
+ * targets; a codepoint-safe fallback covers the (theoretical, here) absence.
+ *
+ * A grapheme cluster has no upper size bound (a base character followed by
+ * an unbounded run of combining marks, i.e. "zalgo" text, is still ONE
+ * cluster under the same UAX #29 rules `Intl.Segmenter` implements) — when
+ * the FIRST cluster already exceeds the whole budget, fall back to a
+ * codepoint-safe (not grapheme-safe) cut of just that oversized cluster
+ * rather than returning "" and silently discarding the whole string.
+ */
+export function clampGraphemeSafe(s: string, maxLength: number): string {
+  if (s.length <= maxLength) return s;
+  const SegmenterCtor: typeof Intl.Segmenter | undefined = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (typeof SegmenterCtor === 'function') {
+    const segmenter = new SegmenterCtor(undefined, { granularity: 'grapheme' });
+    let out = '';
+    for (const { segment } of segmenter.segment(s)) {
+      if (out.length + segment.length > maxLength) {
+        if (out.length === 0) out = codepointSafeSlice(segment, maxLength);
+        break;
+      }
+      out += segment;
+    }
+    return out;
+  }
+  let out = '';
+  for (const ch of s) {
+    if (out.length + ch.length > maxLength) {
+      if (out.length === 0) out = codepointSafeSlice(ch, maxLength);
+      break;
+    }
+    out += ch;
+  }
+  return out;
+}

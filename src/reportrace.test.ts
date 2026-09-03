@@ -176,10 +176,13 @@ const freshBody = src.slice(fetchFreshStart, fetchFreshEnd2 ? fetchFreshStart + 
 
 ok(/const requestPayoffs = payoffs;/.test(freshBody),
   'REGRESSION GUARD: fetchFreshScenario must snapshot the payoffs it was called for, same as fetchLlmExplanation');
-ok(/const myGeneration = \(requestGenerationRef\.current \+= 1\);/.test(freshBody),
-  'REGRESSION GUARD: fetchFreshScenario must bump-then-capture its own generation number');
+ok(/const myGeneration = \(scenarioGenerationRef\.current \+= 1\);/.test(freshBody),
+  'REGRESSION GUARD: fetchFreshScenario must bump-then-capture its own generation number '
+  + '(RED-APP-7/002: its OWN counter, scenarioGenerationRef, not the shared requestGenerationRef '
+  + 'fetchLlmExplanation/Regenerate bumps -- sharing it let a concurrent Regenerate click defeat '
+  + "fetchFreshScenario's own finally, sticking its loading flag forever)");
 
-const freshGuardCount = (freshBody.match(/myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/g) || []).length;
+const freshGuardCount = (freshBody.match(/myGeneration !== scenarioGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/g) || []).length;
 ok(freshGuardCount >= 2,
   `REGRESSION GUARD: the staleness check must appear at least twice in fetchFreshScenario `
   + `(once before touching state on the success path, once in the catch) -- found ${freshGuardCount}`);
@@ -191,7 +194,7 @@ ok(freshGuardCount >= 2,
 const freshCatchStart = findCatch(freshBody);
 ok(freshCatchStart !== -1, 'fetchFreshScenario must have a catch block');
 const freshSuccessSection = freshBody.slice(0, freshCatchStart);
-const freshGuardIdx = freshSuccessSection.search(/myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/);
+const freshGuardIdx = freshSuccessSection.search(/myGeneration !== scenarioGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/);
 const freshSetEnvelopeIdx = freshSuccessSection.indexOf('setLlmEnvelope((prev)');
 ok(freshGuardIdx !== -1 && freshSetEnvelopeIdx !== -1 && freshGuardIdx < freshSetEnvelopeIdx,
   'the staleness check must run BEFORE fetchFreshScenario merges the new scenario into the envelope, not after');
@@ -207,7 +210,7 @@ ok(freshGuardIdx !== -1 && freshSetEnvelopeIdx !== -1 && freshGuardIdx < freshSe
 const freshFinallyIdxForCatch = freshBody.indexOf('} finally {');
 ok(freshFinallyIdxForCatch !== -1, 'fetchFreshScenario must have a finally block');
 const freshCatchSection = freshBody.slice(freshCatchStart, freshFinallyIdxForCatch);
-const freshCatchGuardIdx = freshCatchSection.search(/myGeneration !== requestGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/);
+const freshCatchGuardIdx = freshCatchSection.search(/myGeneration !== scenarioGenerationRef\.current \|\| !payoffsEqual\(requestPayoffs, payoffsRef\.current\)/);
 const freshCatchSetLogIdx = freshCatchSection.indexOf('setLogEntries(');
 ok(freshCatchGuardIdx !== -1 && freshCatchSetLogIdx !== -1 && freshCatchGuardIdx < freshCatchSetLogIdx,
   'REGRESSION GUARD: the staleness check must run BEFORE setLogEntries in fetchFreshScenario\'s catch '
@@ -218,7 +221,39 @@ ok(freshCatchGuardIdx !== -1 && freshCatchSetLogIdx !== -1 && freshCatchGuardIdx
 // that is still current, same reasoning as fetchLlmExplanation's finally.
 const freshFinallyIdx = freshBody.indexOf('} finally {');
 const freshFinallySection = freshFinallyIdx !== -1 ? freshBody.slice(freshFinallyIdx) : '';
-ok(/if \(myGeneration === requestGenerationRef\.current\) setScenarioLoading\(false\);/.test(freshFinallySection),
-  'fetchFreshScenario\'s finally block must gate setScenarioLoading(false) on the request still being current');
+ok(/if \(myGeneration === scenarioGenerationRef\.current\) setScenarioLoading\(false\);/.test(freshFinallySection),
+  'fetchFreshScenario\'s finally block must gate setScenarioLoading(false) on the request still being current '
+  + '(RED-APP-7/002: against its OWN counter now, not the shared one)');
+
+// ── 5. RED-APP-7/002: "New AI scenario" got permanently stuck on
+//      "Inventing…" when a real user clicked "Regenerate" while a scenario
+//      invention was in flight. Root cause: fetchFreshScenario shared
+//      requestGenerationRef with fetchLlmExplanation, so Regenerate's bump
+//      defeated fetchFreshScenario's own `finally` even after the request it
+//      guarded had long since settled. Section 4 above already re-verifies
+//      the counter SPLIT is wired correctly end to end; this section checks
+//      the two additional, independent parts of the fix: the split ref is
+//      declared and bumped alongside requestGenerationRef wherever a game
+//      switch must invalidate BOTH, and the belt-and-braces button
+//      disablement that closes the reachability precondition entirely.
+ok(/const scenarioGenerationRef = useRef\(0\);/.test(src),
+  'REGRESSION GUARD: scenarioGenerationRef must be declared as its own useRef(0), separate from requestGenerationRef');
+ok(!!payoffsEffectMatch && /scenarioGenerationRef\.current \+= 1;/.test(payoffsEffectMatch[0]),
+  'REGRESSION GUARD: the payoffs-change effect must ALSO bump scenarioGenerationRef (not just requestGenerationRef) '
+  + '-- otherwise a game switch would invalidate an in-flight "Explain this game" request but leave an '
+  + 'in-flight "New AI scenario" request thinking it is still current for the abandoned game');
+
+// The "Regenerate"/"Explain this game" button's own `disabled` prop, isolated
+// from any other `disabled={llmLoading` occurrence in the file (e.g. "New AI
+// scenario"'s own, which already correctly includes scenarioLoading) by
+// anchoring on the button's label text just after it.
+const regenerateButtonIdx = src.indexOf("{llmLoading ? 'Analyzing…' : llmEnvelope ? 'Regenerate' : 'Explain this game'}");
+ok(regenerateButtonIdx > 0, 'the Regenerate/Explain this game button label must be found');
+const regenerateButtonBlock = src.slice(Math.max(0, regenerateButtonIdx - 500), regenerateButtonIdx);
+ok(/disabled=\{llmLoading \|\| scenarioLoading\}/.test(regenerateButtonBlock),
+  'REGRESSION GUARD (belt-and-braces): the Regenerate/Explain this game button must be disabled while '
+  + 'EITHER llmLoading OR scenarioLoading is true -- otherwise a real click can still fire '
+  + 'fetchLlmExplanation while a "New AI scenario" invention is in flight, which is the reachability '
+  + 'precondition RED-APP-7/002 exploited');
 
 console.log(`reportrace.test.ts: ${checks} checks passed`);
