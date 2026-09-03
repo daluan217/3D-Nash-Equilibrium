@@ -5564,12 +5564,15 @@ export default function App() {
             </div>
 
             {/* "Regenerate scenario" (FEATURE-REGEN, flag NASH_SCENARIO_REGEN,
-                default OFF). A SEPARATE block from "…or generate a new game"
-                below — that one rolls a brand-new MATRIX; this one rewrites
-                only the story for the payoffs shown above, which never move.
-                Hidden while a Generate call is changing that matrix out from
-                under it (handleGenerateGame already clears any preview the
-                instant it starts). */}
+                default OFF). A SEPARATE block from the generate-a-new-game
+                affordance below — that one rolls a brand-new MATRIX; this one
+                rewrites only the story for the payoffs shown above, which
+                never move. Hidden while a Generate call is changing that
+                matrix out from under it (handleGenerateGame already clears
+                any preview the instant it starts). NOTE: never quote that
+                other block's exact heading text verbatim in this comment —
+                generatefill.test.ts locates it with a plain indexOf, and an
+                earlier verbatim match up here breaks the locator. */}
             {capabilities.scenarioRegen && !generateLoading && (
               <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regen.status === 'loading'}>
                 <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">

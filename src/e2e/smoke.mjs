@@ -1533,8 +1533,29 @@ try {
     const dblRegenBtn = dblPage.getByRole('button', { name: 'Regenerate scenario' });
     await dblRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
 
-    // aria-live: must read "Regenerating" promptly after the click.
-    await Promise.all([dblRegenBtn.click(), dblRegenBtn.click({ force: true }).catch(() => {})]);
+    // A REAL double-click / Enter-repeat is two clicks in the SAME JS tick,
+    // both landing before the in-flight ref is set. Playwright's locator
+    // `.click()` waits for the element to be "stable" (re-checks its
+    // bounding box across frames) and RETRIES while the button's own text
+    // flips to "Regenerating…" mid-click — so two `.click()` calls raced via
+    // `Promise.all` do NOT land together: the plain click can be delayed
+    // ~900ms by that retry loop, well past a short mock delay, so it lands
+    // AFTER the first request already resolved and cleared the in-flight
+    // ref — a false failure that was fixed by discovering this exact gap
+    // (director-reproduced: a 400ms mock delay resolves before the retried
+    // click fires at ~900ms, so the "second" click is really a legitimate
+    // second request after the first one's preview is already showing).
+    // Dispatch the native DOM `.click()` twice inside ONE `page.evaluate`
+    // call instead: both calls run synchronously in the same JS task, so
+    // React's synthetic click handler for the first click runs to
+    // completion (setting the ref) before the second dispatch's handler
+    // begins — the actual same-tick race the code guards against.
+    await dblPage.evaluate(() => {
+      const btn = document.querySelector('button[aria-label="Regenerate scenario"]');
+      if (!btn) throw new Error('Regenerate scenario button not found');
+      btn.click();
+      btn.click();
+    });
     const liveRegionText = async () => dblPage.evaluate(() => {
       const nodes = [...document.querySelectorAll('[role="status"][aria-live="polite"]')];
       return nodes.map((n) => n.textContent || '').join(' | ');
