@@ -3154,10 +3154,19 @@ async function startServer() {
   // shares that one honest 20/min hosted budget rather than opening a second,
   // uncounted door to the same provider. Lifted on desktop like every
   // `hosted-only` limit. No auth: nothing is read from or written to the DB.
-  app.post("/api/scenario/regenerate", rateLimit("report", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    if (!scenarioRegenEnabled()) {
-      return res.status(404).json({ error: "Not enabled." });
-    }
+  // CodeRabbit finding: the flag gate used to live INSIDE the handler, after
+  // `rateLimit(...)` had already run — so with the flag off, a burst of 21+
+  // requests to this disabled route still consumed that client's shared
+  // "report" bucket (429 on the 21st, before the handler ever got to return
+  // the real 404), quietly starving their `/api/report` budget for a route
+  // that does not even exist yet. This tiny middleware runs BEFORE
+  // rateLimit, so a disabled route always answers 404 and never touches the
+  // shared bucket at all.
+  const requireScenarioRegen: express.RequestHandler = (req, res, next) => {
+    if (!scenarioRegenEnabled()) return res.status(404).json({ error: "Not enabled." });
+    next();
+  };
+  app.post("/api/scenario/regenerate", requireScenarioRegen, rateLimit("report", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
     if (!payoffs) {
       return res.status(400).json({ error: "Invalid payoff matrix." });

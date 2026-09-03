@@ -1520,8 +1520,16 @@ try {
     record('Keep replaces the Edit dialog name (untouched this session -> replaced)', await editNameField.inputValue() === REGEN_STORY_B.name,
       await editNameField.inputValue());
 
+    // CodeRabbit finding: a fixed 600ms sleep before reading `patchBody` can
+    // report FAIL on a stalled runner for a scheduling reason (the PATCH
+    // simply hadn't been issued yet), not a real defect. Wait for the PATCH
+    // response itself instead.
+    const patchDone = editPage.waitForResponse(
+      (r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH',
+      { timeout: 15000 },
+    );
     await editPage.getByRole('button', { name: /^save changes$/i }).click();
-    await editPage.waitForTimeout(600);
+    await patchDone.catch(() => null);
     record('the PATCH body never carries payoffs (the route the plan forbids)', !!patchBody && !('payoffs' in patchBody));
     record('the PATCH body carries the regenerated description', !!patchBody && patchBody.description === REGEN_STORY_B.description);
     record('the PATCH body carries the regenerated scenario\'s actor noun as a colour term',
@@ -1708,6 +1716,14 @@ try {
     await stalePage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
     const staleRegenBtn = stalePage.getByRole('button', { name: 'Regenerate scenario' });
     await staleRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    // CodeRabbit finding: register the wait for A's (mocked, 3s-delayed)
+    // regenerate RESPONSE before clicking — awaiting it explicitly after B
+    // opens (instead of a flat sleep) proves the check exercises the actual
+    // race (A's late response really did land) rather than passing merely
+    // because a timer happened to be long enough.
+    const staleRegenSettled = stalePage.waitForResponse(
+      (r) => r.url().includes('/api/scenario/regenerate'), { timeout: 15000 },
+    );
     await staleRegenBtn.click();
     await stalePage.waitForFunction(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Regenerate scenario');
@@ -1720,8 +1736,14 @@ try {
     await editButtonFor('Stale Game B').click();
     await stalePage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
     const bNameBefore = await editNameField().inputValue();
-    // Wait past the 3s mocked delay.
-    await stalePage.waitForTimeout(3500);
+    // Await A's response actually arriving (rather than a flat sleep) — the
+    // race this check exists to prove is real only if A's late response has
+    // genuinely landed by the time we look at B.
+    await staleRegenSettled.catch(() => null);
+    // The response event alone doesn't guarantee the resulting state update
+    // (or lack thereof) has been applied/painted yet — a short settle window
+    // after the awaited network event, not a substitute for it.
+    await stalePage.waitForTimeout(300);
     const bNameAfter = await editNameField().inputValue();
     const bHasPreview = await stalePage.getByText('New scenario (preview)', { exact: false }).isVisible().catch(() => false);
     record('cross-dialog staleness: B\'s name field is untouched after A\'s late response would have landed',

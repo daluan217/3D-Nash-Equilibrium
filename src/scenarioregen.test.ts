@@ -172,10 +172,16 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
 /* ───────────────────────────────────────────────── H-bidi: cleanPreview */
 {
   const RLO = String.fromCodePoint(0x202e);
-  const dirty = { name: `Invoice${RLO}txt.exe`, description: `A vendor  negotiates.`, row1: 'a', row2: 'b', col1: 'c', col2: 'd' };
+  // CodeRabbit finding (this branch): a literal NUL byte was pasted
+  // directly into this source file (twice — once in the fixture, once
+  // in the assertion). Same Trojan-Source reasoning as textSafety.ts and
+  // api.test.mjs's own RLO/SOH pattern elsewhere in this repo: numeric
+  // code points only, never a literal control character in source.
+  const NUL = String.fromCodePoint(0x0000);
+  const dirty = { name: `Invoice${RLO}txt.exe`, description: `A vendor${NUL} negotiates.`, row1: 'a', row2: 'b', col1: 'c', col2: 'd' };
   const cleaned = cleanPreview(dirty);
   check('cleanPreview strips a bidi override from the name', !cleaned?.name?.includes(RLO), JSON.stringify(cleaned?.name));
-  check('cleanPreview strips a NUL control from the description', !cleaned?.description?.includes(' '));
+  check('cleanPreview strips a NUL control from the description', !cleaned?.description?.includes(NUL));
   const arabic = 'مرحبا بالعالم';
   const realRTL = cleanPreview({ description: arabic });
   check('real right-to-left script text survives cleanPreview untouched', realRTL?.description === arabic);

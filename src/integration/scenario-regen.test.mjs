@@ -163,6 +163,22 @@ try {
     const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
     record('flag OFF: POST /api/scenario/regenerate is 404', r.status === 404, `status=${r.status} body=${JSON.stringify(r.json)}`);
     record('flag OFF: the mock provider was never called', calls === 0, `calls=${calls}`);
+
+    // CodeRabbit finding: the flag gate must run BEFORE the shared "report"
+    // rate limiter, or a burst of requests to this DISABLED route quietly
+    // spends that client's /api/report budget. 25 calls to the disabled
+    // route (well past the 20/min cap) must every one still be a plain 404,
+    // and /api/report must still be fully available afterward — proving the
+    // disabled route never touched the bucket at all.
+    let allStill404 = true;
+    for (let i = 0; i < 25; i++) {
+      const rr = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+      if (rr.status !== 404) allStill404 = false;
+    }
+    record('flag OFF: 25 calls to the disabled route are ALL still 404 (never 429)', allStill404);
+    const reportAfter = await call('POST', '/api/report', { body: { payoffs: PAYOFFS } });
+    record('flag OFF: /api/report is still fully available afterward — the disabled route never spent its shared rate-limit budget',
+      reportAfter.status !== 429, `status=${reportAfter.status}`);
     await stop();
   }
 
