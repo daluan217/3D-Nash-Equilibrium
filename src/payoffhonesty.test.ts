@@ -694,6 +694,45 @@ function testClaimOnContinuumUsesCoordTolerance() {
     'the pre-fix fixture text must not accidentally already carry the fix (fixture sanity check)');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 9. CodeRabbit finding on this PR (nashValidator.ts:2537, MAJOR) —
+//    checkProse's coordinate check used to take a bare `degenerate` BOOLEAN
+//    and skip ALL x/y prose-coordinate validation whenever it was true.
+//    Correct back when `degenerate` meant "full indifference, every point
+//    valid" — but RED-MATH-8/002 widened `degenerate` to also cover PARTIAL
+//    continua, where only a RANGE on one axis is actually valid. A report
+//    could claim a genuine continuum point in claimedEquilibria while its
+//    PROSE asserted a coordinate outside that continuum's own range, and
+//    the old boolean skip let it straight through.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testCheckProseValidatesPartialContinuumCoordinates() {
+  const F2: GamePayoffs = { a11: -6, a12: 9, a21: 4, a22: -7, b11: -9, b12: -7, b21: 9, b22: 9 };
+  // Continuum is x=0, y in [0.615384..., 1] (same fixture as sections 6-8).
+  const claims = [{ x: 0, y: 0.9, type: 'continuum' as const }, { x: 1, y: 0, type: 'pure' as const }];
+
+  const bad = validateReport({
+    claimedEquilibria: claims,
+    prose: 'At the continuum equilibrium, B mixes with y=0.2 while A plays Row 2.',
+  } as any, F2);
+  ok(!bad.ok, 'CodeRabbit fix: prose citing y=0.2 (genuinely outside the [0.615,1] continuum range) must fail');
+  ok(bad.mismatches.some((m) => m.kind === 'prose-bad-coordinate' && m.detail?.includes('y=0.2')),
+    `the rejection must be a prose-bad-coordinate mismatch naming y=0.2 — got ${JSON.stringify(bad.mismatches)}`);
+
+  const good = validateReport({
+    claimedEquilibria: claims,
+    prose: 'At the continuum equilibrium, B mixes with y=0.9 while A plays Row 2.',
+  } as any, F2);
+  ok(good.ok, `CodeRabbit fix: prose citing y=0.9 (genuinely inside the continuum range) must pass — got ${JSON.stringify(good.mismatches)}`);
+
+  console.log('✓ checkProse validates prose coordinates against the ACTUAL continuum range, not a blanket degenerate-game skip');
+
+  // MUTATION / NEGATIVE FIXTURE — the pre-fix shape, verbatim.
+  const preFixCode = 'if (!degenerate) {';
+  ok(!/inContinuumRange/.test(preFixCode),
+    'the pre-fix fixture text must not accidentally already carry the fix (fixture sanity check)');
+}
+
 testPayloadAgreesWithPanel();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
@@ -702,4 +741,5 @@ testPlottingDrawsContinuumMarker();
 testStrayPointsNotOfferedAsContinuumRepresentatives();
 testValidateReportAcceptsCompliantContinuumClaims();
 testClaimOnContinuumUsesCoordTolerance();
+testCheckProseValidatesPartialContinuumCoordinates();
 console.log(`✓ payoffhonesty.test.ts: ${checks} assertions passed`);

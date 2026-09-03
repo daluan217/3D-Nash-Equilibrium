@@ -119,14 +119,24 @@ function fmt(p: { x: number; y: number }): string {
  *    plus every equilibrium payoff — so only genuinely invented numbers flag.
  *    Legitimate counterfactuals ("switching drops A to 0") cite real cells.
  *  - Coordinates 0 and 1 are always allowed (they name pure strategies), and
- *    the check is skipped entirely on degenerate games, where every point in
- *    the region really is an equilibrium.
+ *    a citation on either axis that falls inside a continuum component's OWN
+ *    range on that axis is allowed too — CodeRabbit's finding on this PR: the
+ *    check used to take a bare `degenerate` BOOLEAN and skip ALL coordinate
+ *    checking whenever it was true, which was correct back when `degenerate`
+ *    meant "every point in [0,1]x[0,1] is an equilibrium" (full
+ *    indifference) but became too broad the moment RED-MATH-8/002 widened
+ *    `degenerate` to also cover PARTIAL continua — a segment like "A plays
+ *    Row 2 while B mixes with y in [0.615, 1]" restricts y to that interval,
+ *    so a prose citation of y=0.2 for that same game is a genuine falsehood
+ *    the old boolean-skip let straight through. Takes the continuum
+ *    components themselves now, and checks each citation against the
+ *    ACTUAL range on its axis, never a blanket "anything goes".
  */
 function checkProse(
   prose: string,
   g: GamePayoffs,
   truth: NashEquilibrium[],
-  degenerate: boolean,
+  continuumComps: Rect[],
 ): Mismatch[] {
   const out: Mismatch[] = [];
   if (!prose) return out;
@@ -164,7 +174,7 @@ function checkProse(
     });
   }
 
-  if (!degenerate) {
+  {
     // Indifference values are legitimate citations even when they are not
     // equilibrium coordinates: the grounding briefing itself tells the model
     // "A's surface goes level when B plays y = 0.5" (C7 draw 15 withheld a
@@ -174,6 +184,19 @@ function checkProse(
     const xInd = dB !== 0 ? (g.b22 - g.b21) / dB : NaN;   // A's mix that levels B
     const allowedX = [0, 1, ...truth.map((t) => t.x), ...(xInd >= 0 && xInd <= 1 ? [xInd] : [])];
     const allowedY = [0, 1, ...truth.map((t) => t.y), ...(yInd >= 0 && yInd <= 1 ? [yInd] : [])];
+    // CodeRabbit finding on this PR: a citation on either axis that falls
+    // inside a continuum component's OWN range on that axis is a legitimate
+    // description of the continuum itself — checked per-COMPONENT, per-AXIS,
+    // never as a blanket "any degenerate game allows anything" (the old
+    // `degenerate` boolean skip, correct only for the full-square case,
+    // where the one component covers [0,1] on both axes and this reduces to
+    // exactly that). A partial continuum (e.g. y in [0.615, 1] with x
+    // pinned) now only tolerates a y-citation actually inside that range.
+    const inContinuumRange = (axis: 'x' | 'y', v: number): boolean =>
+      continuumComps.some((r) => {
+        const [lo, hi] = axis === 'x' ? [r.x0, r.x1] : [r.y0, r.y1];
+        return v >= lo - 0.01 && v <= hi + 0.01;
+      });
     // The lookbehind skips complement notation: "1−x=0.833" is a TRUE
     // statement about Row 2's share, but the bare regex saw "x=0.833" inside
     // it and demoted correct prose (caught live on Spy vs. Analyst — a
@@ -182,7 +205,7 @@ function checkProse(
     // coordinate allowlist must not judge; a bare wrong "x=0.833" still
     // flags exactly as before.
     for (const m of prose.matchAll(/(?<![−-]\s?)\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
-      const axis = m[1].toLowerCase();
+      const axis = m[1].toLowerCase() as 'x' | 'y';
       const value = Number(m[3]);
       if (!Number.isFinite(value)) continue;
       // "x=0.333 on Row 2" / "y=0.667 for Col 2": the letter is being used for
@@ -190,7 +213,8 @@ function checkProse(
       const tail = prose.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 16);
       const onSecond = /^\s*(?:on|for|to|at)\s+(?:Row|Col|Column)\s*2\b/i.test(tail);
       const allowed = axis === 'x' ? allowedX : allowedY;
-      if (near(onSecond ? 1 - value : value, allowed, m[2] !== '=')) continue;
+      const v = onSecond ? 1 - value : value;
+      if (near(v, allowed, m[2] !== '=') || inContinuumRange(axis, v)) continue;
       out.push({
         kind: 'prose-bad-coordinate',
         claimed: null,
@@ -2677,7 +2701,7 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
   // silently changes the number it reports is indistinguishable from a model
   // regression, which is the failure this harness exists to avoid.
   if (process.env.NASH_PROSE_CHECKS !== '0') {
-    const proseIssues = checkProse(report.prose, g, truth, degenerate);
+    const proseIssues = checkProse(report.prose, g, truth, continuumComps);
     for (const issue of proseIssues) {
       mismatches.push(issue);
       checks.push(`FAIL prose: ${issue.detail}`);

@@ -1832,13 +1832,18 @@ try {
 
     const tourMatrix = tourPage.locator('input[inputmode="decimal"][class*="text-center"]');
     const myValues = ['9', '8', '7', '6', '5', '4', '3', '2']; // distinct from every preset, esp. PD's [3,3,0,5,5,0,1,1]
-    for (let i = 0; i < 8; i++) { await tourMatrix.nth(i).fill(myValues[i]); await tourMatrix.nth(i).blur(); }
-    await tourPage.waitForTimeout(200);
     const readMatrix = async () => {
       const out = [];
       for (let i = 0; i < 8; i++) out.push(await tourMatrix.nth(i).inputValue());
       return out;
     };
+    for (let i = 0; i < 8; i++) { await tourMatrix.nth(i).fill(myValues[i]); await tourMatrix.nth(i).blur(); }
+    // CodeRabbit: poll for the DOM to actually reflect the typed values
+    // rather than a blind settle delay.
+    await tourPage.waitForFunction((expected) => {
+      const els = [...document.querySelectorAll('input[inputmode="decimal"].text-center, input[inputmode="decimal"][class*="text-center"]')];
+      return els.length === expected.length && els.every((el, i) => el.value === expected[i]);
+    }, myValues, { timeout: 5000 }).catch(() => {});
 
     const gameName = `TourReopenGame${Date.now()}`;
     await tourPage.getByRole('button', { name: /save preset/i }).click();
@@ -1847,7 +1852,13 @@ try {
     await tourPage.getByRole('button', { name: /^save game profile$/i }).click();
     await tourPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
       null, { timeout: 5000 }).catch(() => {});
-    await tourPage.waitForTimeout(300);
+    // CodeRabbit: poll for the matrix to settle back to the saved values
+    // (the dialog closing doesn't guarantee the surrounding re-render has
+    // landed yet) rather than a blind settle delay.
+    await tourPage.waitForFunction((expected) => {
+      const els = [...document.querySelectorAll('input[inputmode="decimal"]')];
+      return els.length === expected.length && els.every((el, i) => el.value === expected[i]);
+    }, myValues, { timeout: 5000 }).catch(() => {});
     record('my saved game is showing my own matrix values, not a preset\'s',
       JSON.stringify(await readMatrix()) === JSON.stringify(myValues), JSON.stringify(await readMatrix()));
 
@@ -1919,9 +1930,22 @@ try {
     // boundary's fallback UI.
     record('RED-APP-8/004 fix: no uncaught page error from the quota-exceeded write',
       quotaErrors.length === 0, JSON.stringify(quotaErrors));
-    const themeButtonWorks = await quotaPage.getByRole('button', { name: 'Toggle dark mode' }).first()
-      .isVisible({ timeout: 2000 }).catch(() => false);
-    record('RED-APP-8/004 fix: the app is otherwise interactive (the theme toggle renders) after the quota failure',
+    // CodeRabbit: visibility alone proves nothing about the click HANDLER —
+    // click the control and poll for the actual theme state (the `dark`
+    // class on <html>, same signal section 12's own theme round-trip check
+    // uses) to change from its baseline, so a broken handler (or a theme
+    // state stuck by the same quota failure) still fails this check.
+    const themeToggle = quotaPage.getByRole('button', { name: 'Toggle dark mode' }).first();
+    const themeButtonVisible = await themeToggle.isVisible({ timeout: 2000 }).catch(() => false);
+    let themeButtonWorks = false;
+    if (themeButtonVisible) {
+      const before = await quotaPage.evaluate(() => document.documentElement.classList.contains('dark'));
+      await themeToggle.click();
+      themeButtonWorks = await quotaPage.waitForFunction((wasDark) =>
+        document.documentElement.classList.contains('dark') !== wasDark, before, { timeout: 3000 })
+        .then(() => true).catch(() => false);
+    }
+    record('RED-APP-8/004 fix: the app is otherwise interactive (theme toggle click actually changes the theme state) after the quota failure',
       themeButtonWorks);
     await quotaPage.close();
   }
@@ -1947,8 +1971,13 @@ try {
     // sections have left other pages/contexts open.
     await shortPage.goto(BASE, { waitUntil: 'networkidle' });
     const exitTourShort = shortPage.getByRole('button', { name: /exit tour/i });
-    if (await exitTourShort.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourShort.click();
-    await shortPage.waitForTimeout(300);
+    if (await exitTourShort.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await exitTourShort.click();
+      // CodeRabbit: poll for the tour dialog to actually close, not a
+      // blind settle delay.
+      await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 5000 }).catch(() => {});
+    }
 
     await shortPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     await shortPage.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
@@ -1966,7 +1995,10 @@ try {
     let accountReachable = true;
     try { await accountClose.click({ timeout: 5000 }); } catch { accountReachable = false; }
     record('RED-APP-8/005 fix: the Account dialog\'s own close button is reachable at 320x256', accountReachable);
-    await shortPage.waitForTimeout(300);
+    // CodeRabbit: poll for the Account dialog to actually close, not a
+    // blind settle delay.
+    await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 5000 }).catch(() => {});
 
     // Stub the feedback POST — untested-controls.json's own policy for this
     // control is "never actually send real email through SMTP"; this test is
