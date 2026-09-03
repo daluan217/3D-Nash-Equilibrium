@@ -154,10 +154,54 @@ const SCENARIO_REROLL_LIMIT = (() => {
   return Math.min(raw, MAX);
 })();
 
+/**
+ * RED-CLOUD-6/002: the reroll ladder above is correctly implemented (every
+ * drop across 185 real production-settings draws was a genuine, documented
+ * gate rejection, not a bug) but the CURRENT model's real gate-drop rate
+ * (~15.2% empirically, roughly double the 7.33% this ladder's own sizing
+ * comment cites) means full exhaustion — a report shipped with literally NO
+ * scenario at all — happened 3/185 times (1.6%), well above the ~0.04-0.2%
+ * bars the reroll bump was built and documented against.
+ *
+ * LAST RESORT, not a fourth reroll: when every model attempt is exhausted
+ * (gate-dropped three times running, or the provider itself was unreachable
+ * across the one lost-draw retry), fall back to a single pre-screened bank
+ * row before giving up. `NASH_SCENARIO_REROLLS` governs the MODEL budget
+ * unchanged — this is a separate, cheap, ALWAYS-AVAILABLE final attempt
+ * layered after it, not an extra model call.
+ *
+ * WHY THE BANK IS SAFE TO USE HERE, ON THE HOSTED PATH TOO — it is not
+ * gated on `IS_ELECTRON` the way `inventScenario`'s PRIMARY bank draw is: the
+ * artifact is a plain static import (`bankSource.ts`'s own comment: "~745 KB
+ * inlined into the server bundle"), so it is already present and loaded in
+ * the exact same Cloud Run bundle that serves production. The bank row is
+ * re-screened through the SAME `storyOk` gate as model output before it is
+ * ever returned — `bankSource.ts`'s own module comment is explicit that
+ * "already verified" at build time must never read as "need not be checked"
+ * again at request time, since the gates keep moving after the artifact is
+ * frozen.
+ *
+ * WHY THIS DOES NOT REOPEN "a bank predetermined by payoff scale" (Daniel,
+ * 2026-09-02 — he does not want the story fully determined by the numbers on
+ * screen): it does not change how the bank is INDEXED or PICKED at all. This
+ * calls the exact same `bankScenario`/`pickFromBank` every other bank draw in
+ * this app already uses (the desktop's own primary invention path, and the
+ * "New AI scenario" button when offline) — including `softenBand`'s existing
+ * 30%-neighbor-band blend, which is ITSELF the already-shipped answer to that
+ * exact concern (scenarioBank.ts's own comment cites it). This is a new
+ * CALLER of an unchanged, already-soft picker, only reached on the residual
+ * few-percent tail where the model produced nothing usable at all — not a new
+ * selection rule.
+ *
+ * `scenarioSource: 'bank-fallback'` on the returned object (undefined on
+ * every ordinary model-drawn scenario) is what makes this measurable, per the
+ * finding's own ask — callers thread it into the response so the rate can be
+ * tracked in production rather than only inferred.
+ */
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
-): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+): Promise<{ scenario: SuggestedScenario | null; failure?: string; scenarioSource?: 'bank-fallback' }> {
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
   const storyOk = (sc: SuggestedScenario): boolean => {
@@ -170,13 +214,14 @@ async function inventScreenedScenario(
 
   let usedTimeoutRetry = false;
   let gateRerollsUsed = 0;
+  let exhaustionFailure = "validation-failed";
   for (;;) {
     const draw = await drawWithDeadline(payoffs);
     if (!draw.scenario) {
       // LOST: the draw never produced a scenario at all (timeout, provider
       // error, unparseable output). Exactly one retry, same as before this
       // setting existed — never governed by NASH_SCENARIO_REROLLS.
-      if (usedTimeoutRetry) return { scenario: null, failure: draw.failure ?? "unparseable" };
+      if (usedTimeoutRetry) { exhaustionFailure = draw.failure ?? "unparseable"; break; }
       usedTimeoutRetry = true;
       continue;
     }
@@ -186,10 +231,22 @@ async function inventScreenedScenario(
     // GATE-DROPPED: a real draw came back and the screen rejected it. This
     // is the only case the bounded reroll setting governs.
     if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
-      return { scenario: null, failure: "validation-failed" };
+      exhaustionFailure = "validation-failed";
+      break;
     }
     gateRerollsUsed++;
   }
+
+  // The model side is exhausted (either failure shape above). One more,
+  // free, always-available attempt before this request goes without a story:
+  // see this function's own comment for why the bank is reachable and safe
+  // to use here, even on the hosted path.
+  const fallbackDomain = pickScenarioDomain();
+  const fallback = bankScenario(payoffs, fallbackDomain);
+  if (fallback && (!gateOn || storyOk(fallback))) {
+    return { scenario: fallback, scenarioSource: 'bank-fallback' };
+  }
+  return { scenario: null, failure: exhaustionFailure };
 }
 
 /**
@@ -286,6 +343,92 @@ import { bankAvailable, bankScenario } from "./src/utils/bankSource";
 
 // Load environment variables from .env file
 dotenv.config();
+
+// ── Async error boundary (RED-DESKTOP-6/001) ────────────────────────────────
+//
+// There was NO async error boundary anywhere in this file: every `async (req,
+// res) => {...}` route handler is registered with no `express-async-errors`
+// and no wrapper, so a synchronous throw inside one (e.g. `db.users.find` on
+// a `db.users` that turns out not to be an array — exactly what an
+// unvalidated old/malformed db.json shape produces, see `loadDBFromFile`
+// below) does not propagate to Express's error handling at all. It silently
+// rejects the handler's own returned Promise, which nothing awaits or
+// catches. Node 22's default `unhandledRejection` mode ("throw") then turns
+// that into an uncaught exception with no handler — CRASHING THE WHOLE
+// PROCESS in the standalone `dist/server.cjs` case (confirmed: the PID
+// vanishes, every in-flight and future request gets a connection reset). In
+// the packaged app (server.ts required IN-PROCESS by electron-main.cjs) the
+// process itself survives, but `inMemoryDb` is never reloaded, so the SAME
+// failure recurs identically on every future request touching the DB — the
+// UI just says "Network error" forever, with nothing naming the cause.
+//
+// `asyncHandler` closes the gap at its source: any async route handler
+// wrapped with it has its rejection routed to `next(err)`, which Express's
+// OWN routing then hands to the global error-handling middleware below —
+// same one clean, logged 500 response either way, not a hung connection.
+function asyncHandler(
+  fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void | express.Response>
+): (req: express.Request, res: express.Response, next: express.NextFunction) => void {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
+// Set to true only once `app.listen`'s own callback fires (see
+// `startListening` near the bottom of `startServer`). Everything that can go
+// wrong BEFORE that point — a bad db.json shape, a filesystem permission
+// error, a port bind failure — is a STARTUP failure: the existing behavior
+// (an uncaught exception/rejection crashes the process loudly) is exactly
+// right there, so this flag is what lets the handlers below tell "starting
+// up" apart from "already serving requests" and choose accordingly.
+let serverListening = false;
+
+// Set to true the moment a desktop startup refusal has been HANDED OFF to
+// the packaged app's dialog hook (`reportDesktopLockFailure`, when
+// `globalThis.onDesktopLockFailure` is registered) — separate from
+// `serverListening`, which never becomes true on this path at all (the
+// refusal means `startServer` returns before ever calling `initDB`/`listen`).
+// CodeRabbit, 2026-09-03: without this, the window between that hand-off and
+// the user actually seeing/dismissing the async native dialog was still
+// treated as "starting up" by `handleFatalAsync` below — so ANY unrelated
+// unhandled rejection or uncaught exception during that window (a stray
+// analytics call, an IPC handler throw, nothing to do with the refusal
+// itself) hit the `!serverListening` branch and called `process.exit(1)`,
+// which — because `server.ts` runs IN-PROCESS inside electron-main.cjs —
+// kills the ENTIRE Electron main process, dialog included, before or while
+// the user is looking at it. Exactly the "silent vanish" class #88/#93's
+// dialog hook exists to prevent, reintroduced through a different door.
+let startupOutcomeReported = false;
+
+// Last-resort safety net, for anything that reaches neither `asyncHandler`
+// nor Express's synchronous error handling — a rejected promise in
+// fire-and-forget code (e.g. an un-awaited background save), a throw inside
+// a timer/event callback, or simply the next unvalidated assumption someone
+// adds next to one of the many `db.users`/`db.games` call sites this class of
+// bug came from. Per RED-DESKTOP-6/001's own ask: log loudly WITH the cause,
+// keep serving once the server is up (never exit on a request-path error);
+// still exit loudly on a startup-time failure, matching today's behavior for
+// that case exactly (Node's own default), just with an intentional, findable
+// log line instead of a bare default stack dump. A desktop startup refusal
+// that has already been handed to the dialog hook (`startupOutcomeReported`)
+// is treated the same as "already serving" here — not because the server IS
+// serving, but because the outcome is already settled and reported, and a
+// bare `process.exit(1)` at this point would only cut off the dialog the
+// user is meant to see instead of adding any new information.
+function handleFatalAsync(kind: "unhandledRejection" | "uncaughtException", err: unknown): void {
+  const cause = err instanceof Error ? (err.stack || err.message) : String(err);
+  if (!serverListening && !startupOutcomeReported) {
+    console.error(`FATAL (${kind}) during startup — exiting: ${cause}`);
+    process.exit(1);
+  }
+  console.error(
+    `Unhandled ${kind} after the server was already listening — logging and continuing to serve `
+    + `(this indicates a bug: some code path threw/rejected outside every async-error boundary). `
+    + `Cause: ${cause}`
+  );
+}
+process.on("unhandledRejection", (err) => handleFatalAsync("unhandledRejection", err));
+process.on("uncaughtException", (err) => handleFatalAsync("uncaughtException", err));
 
 interface GamePayoffs {
   a11: number; a12: number; a21: number; a22: number;
@@ -467,7 +610,114 @@ function writeFileAtomicSync(file: string, data: string): void {
 
 let inMemoryDb: DB | null = null;
 
-function loadDBFromFile(): DB {
+/**
+ * Shape-validate a JSON.parse'd db.json before anything trusts it
+ * (RED-DESKTOP-6/001). `loadDBFromFile` used to `return JSON.parse(data)`
+ * typed as `DB` with NO check that `users`/`games` were even present, let
+ * alone arrays — a db.json that is valid JSON but the wrong shape (a
+ * genuinely old file predating 2026-06-18's multi-user/`users` array, or a
+ * partial/hand-edited write) loaded unmodified and crashed the FIRST request
+ * that touched `db.users`/`db.games` (`ensureLocalOwner`'s `db.users.find`,
+ * `POST /api/games`'s `[...db.games, newGame]`, etc.) — in the standalone
+ * process that crash takes the whole server down; in the packaged app it
+ * poisons `inMemoryDb` for the rest of that run, silently and permanently,
+ * with nothing ever naming db.json as the cause.
+ *
+ * A missing or `null` "users"/"games" field is a KNOWN old shape — normalise
+ * it to `[]` and say so loudly (a warning, not silence) rather than crash on
+ * first use. A field that is PRESENT but the WRONG TYPE (a string, a number,
+ * an object — not a recognised old shape, not something we can guess the
+ * intent of) is not safe to default to empty without telling anyone: that
+ * case throws, and the caller below treats it exactly like a JSON.parse
+ * failure — preserve the bytes, refuse to boot rather than serve a DB that
+ * silently discarded who knows what.
+ */
+function normalizeDbShape(parsed: unknown, filePath: string): DB {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `${filePath} does not contain a JSON object at its top level (got `
+      + `${parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed}).`
+    );
+  }
+  const obj = parsed as { users?: unknown; games?: unknown };
+
+  const normalizeCollection = (name: "users" | "games", value: unknown): unknown[] => {
+    if (value === undefined || value === null) {
+      console.warn(
+        `${filePath}: "${name}" was ${value === undefined ? "missing" : "null"} — treating it as an `
+        + `empty array. This is expected for a database saved before accounts existed (pre-2026-06-18) `
+        + `or after a partial write; existing data in the other collection is untouched.`
+      );
+      return [];
+    }
+    if (!Array.isArray(value)) {
+      throw new Error(`${filePath}: "${name}" is present but is a ${typeof value}, not an array — refusing to guess its contents.`);
+    }
+    return value;
+  };
+
+  return {
+    users: normalizeCollection("users", obj.users) as User[],
+    games: normalizeCollection("games", obj.games) as SavedGame[],
+  };
+}
+
+/**
+ * Pre-ownership games (no `userId` — the field was added 2026-06-18 with
+ * multi-user support) load fine under `normalizeDbShape` above but are then
+ * invisible forever: every read filters strictly by `userId`
+ * (`g.userId === user.id`), `undefined` never matches any real id, and
+ * nothing ever back-fills the field — `GET /api/games` returns `200 []`
+ * on every future request while the exact same games sit byte-intact in
+ * db.json (RED-DESKTOP-6/002). Desktop-only (the brief's own scoping): a
+ * hosted db.json missing `userId` on some rows is a DIFFERENT, ambiguous
+ * situation (which of potentially many accounts should adopt them?) with no
+ * safe single answer, so it is left alone there, just logged.
+ */
+function migrateOwnerlessGames(db: DB, filePath: string): boolean {
+  if (!isDesktop()) return false;
+  const orphaned = db.games.filter((g) => !g.userId);
+  if (orphaned.length === 0) return false;
+  for (const g of orphaned) g.userId = LOCAL_OWNER_ID;
+  console.warn(
+    `${filePath}: migrated ${orphaned.length} pre-account game(s) with no "userId" to the desktop `
+    + `local owner ("${LOCAL_OWNER_ID}") so they remain visible. This is a one-time migration, `
+    + `written back to disk.`
+  );
+  return true;
+}
+
+/**
+ * Set when a startup recovery path found an unreadable, unparseable or
+ * malformed `DB_FILE` and could NOT move it aside (`fs.renameSync` failed —
+ * typically the containing directory is not writable). The original bytes
+ * are then still sitting at `DB_FILE`, and the process is running on a fresh
+ * empty database: the very next local-file `saveDB`/`saveDBAwaited` would
+ * write that empty object straight over the real data — silently, and most
+ * likely AFTER an operator has fixed the directory permissions to "make
+ * saving work again". (CodeRabbit, 2026-09-03, PR #96: "block local-file
+ * writes after failed preservation".) While set, every local-file save is
+ * refused with `false` — which the desktop routes already turn into an
+ * honest 500 (RED-DESKTOP-4/002) — until the operator resolves the file and
+ * restarts. The GCS branch is unaffected: there the local file is scratch
+ * and the bucket is the store.
+ */
+let localPersistenceBlocked: string | null = null;
+function blockLocalPersistence(reason: string): void {
+  localPersistenceBlocked = reason;
+  console.error(
+    `Local-file persistence is now BLOCKED for this process: ${reason}. Every save to ${DB_FILE} `
+    + `will be refused until the file is repaired, moved or deleted and the server is restarted.`
+  );
+}
+function localFileSaveBlocked(): boolean {
+  if (!localPersistenceBlocked) return false;
+  if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) return false; // GCS is the store; the local file is scratch
+  console.error(`Refusing to write ${DB_FILE}: local-file persistence is blocked (${localPersistenceBlocked}).`);
+  return true;
+}
+
+function loadDBFromFile(): DB | null {
   try {
     const dbDir = path.dirname(DB_FILE);
     if (!fs.existsSync(dbDir)) {
@@ -485,9 +735,77 @@ function loadDBFromFile(): DB {
     }
     return fresh;
   }
+
+  let data: string;
   try {
-    const data = fs.readFileSync(DB_FILE, "utf-8");
-    return JSON.parse(data);
+    data = fs.readFileSync(DB_FILE, "utf-8");
+  } catch (err: any) {
+    if (err && err.code === "ENOENT") {
+      // TOCTOU: the `fs.existsSync(DB_FILE)` check just above was true a
+      // moment ago, and the file is now gone (deleted between the check and
+      // this read). Nothing to lose — same as the "no file yet" branch
+      // above.
+      console.error(`db.json at ${DB_FILE} vanished between the existence check and the read; starting fresh:`, err);
+      return { users: [], games: [] };
+    }
+    // CodeRabbit, 2026-09-03 (Major — real data loss, reproduced): the file
+    // EXISTS (confirmed above) but could not be READ — EACCES, EISDIR, EIO,
+    // a transient permissions/disk problem, not "no database yet." Blindly
+    // returning an empty DB here used to be exactly as dangerous as the
+    // JSON-parse/shape-mismatch branches below already guard against: the
+    // very next `saveDB` calls `writeFileAtomicSync` and overwrites the file
+    // WHOLESALE with that empty object, permanently erasing real data that
+    // was never actually corrupted — only unreadable BY THIS PROCESS AT THIS
+    // MOMENT. Reproduced against the shipping bundle: `chmod 000` on an
+    // existing db.json holding a real user and a real saved game — the
+    // server boots, /api/health is 200, and the very next write (a plain
+    // registration) replaces the whole file with just the new user; the
+    // original user and game are gone, not recoverable.
+    //
+    // `fs.renameSync` needs only WRITE permission on the containing
+    // directory, not read/write permission on the file's own bits, so this
+    // still succeeds when the `open()` above failed on EACCES — preserving
+    // the original, unmodified bytes for recovery once the underlying
+    // problem (permissions, a busy volume, ...) is fixed.
+    const aside = `${DB_FILE}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    let preserved = false;
+    try {
+      fs.renameSync(DB_FILE, aside);
+      preserved = true;
+    } catch (renameErr) {
+      console.error(`Could not move the unreadable db.json aside to ${aside}:`, renameErr);
+    }
+    const cause = err instanceof Error ? err.message : String(err);
+
+    // Same desktop/hosted split as the shape-mismatch branch below, for the
+    // identical reason: a hosted instance must never exit(1) over local
+    // scratch state that a transient GCS failure fell back to (see that
+    // branch's own comment for the full argument).
+    if (!isDesktop()) {
+      console.error(
+        `${DB_FILE} exists but could not be read (${cause}). Resetting to a fresh database`
+        + (preserved
+          ? ` — the unreadable file has been preserved at ${aside} for recovery.`
+          : `; the unreadable file could NOT be moved aside — it has been left in place, unread.`)
+      );
+      if (!preserved) blockLocalPersistence(`${DB_FILE} could not be read (${cause}) and could not be moved aside`);
+      return { users: [], games: [] };
+    }
+
+    reportDesktopLockFailure(
+      `Refusing to start: ${DB_FILE} exists but could not be read (${cause}). Starting anyway `
+      + `would risk silently replacing real data with an empty games library on the next save. `
+      + (preserved
+        ? `The unreadable file has been preserved at ${aside} — quit, fix its permissions (or restore it from a backup), then relaunch.`
+        : `The unreadable file could not be moved aside; please back it up, then fix its permissions and relaunch.`),
+      preserved ? aside : DB_FILE,
+    );
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
   } catch (err) {
     // A database we cannot parse is not a database we may DELETE. Returning the
     // empty DB here is survivable on its own; what made it destructive is what
@@ -501,9 +819,86 @@ function loadDBFromFile(): DB {
       console.error(`Error reading db.json, resetting database. The unreadable file has been kept at ${aside}:`, err);
     } catch (renameErr) {
       console.error("Error reading db.json, resetting database (and the unreadable file could NOT be preserved):", err, renameErr);
+      blockLocalPersistence(`${DB_FILE} is not valid JSON and could not be moved aside`);
     }
     return { users: [], games: [] };
   }
+
+  let db: DB;
+  try {
+    db = normalizeDbShape(parsed, DB_FILE);
+  } catch (shapeErr) {
+    // Present, but the WRONG TYPE — not a recognised old shape. Same
+    // preserve-the-bytes treatment as an unparseable file either way: move
+    // the bad file aside so the bytes still exist to be recovered from and
+    // the next save lands on a clean path.
+    const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    let preserved = false;
+    try {
+      fs.renameSync(DB_FILE, aside);
+      preserved = true;
+    } catch (renameErr) {
+      console.error(`Could not move the malformed db.json aside to ${aside}:`, renameErr);
+    }
+    const cause = shapeErr instanceof Error ? shapeErr.message : String(shapeErr);
+
+    // DESKTOP ONLY past this point (CodeRabbit, 2026-09-03 — a real gap: this
+    // function is ALSO reached on the HOSTED path, both from initDB's
+    // no-GCS-configured branch and from its GCS-load-threw catch, neither of
+    // which sets IS_ELECTRON). On the hosted service this is NOT
+    // "survivable on its own" would be the wrong read to invert into a hard
+    // failure: unlike the desktop case (one user's own data, a dialog they
+    // can act on), a malformed local db.json in a Cloud Run container is
+    // ephemeral scratch state a transient GCS failure fell back to — exiting
+    // here would crash the instance in a request-unrelated startup path
+    // (worse than the old silent-empty-DB fallback this whole function
+    // exists to improve on), Cloud Run would just restart it into the same
+    // failure, and the refusal's own message ("quit, inspect/repair or
+    // delete it, then relaunch") is desktop-specific text no operator would
+    // see. Same treatment as an unparseable file there: log loudly, keep the
+    // bytes preserved aside, start with a fresh empty DB rather than exit.
+    if (!isDesktop()) {
+      console.error(
+        `${DB_FILE} could not be read as a valid database (${cause}). Resetting to a fresh database `
+        + (preserved
+          ? `; the unreadable file has been preserved at ${aside} for recovery.`
+          : `; the unreadable file could NOT be moved aside — it has been left in place, unread.`)
+      );
+      if (!preserved) blockLocalPersistence(`${DB_FILE} is not a valid database (${cause}) and could not be moved aside`);
+      return { users: [], games: [] };
+    }
+
+    // Present, but the WRONG TYPE — not a recognised old shape. This is NOT
+    // "survivable on its own" the way a fresh empty DB is for a corrupt-JSON
+    // file: silently starting with an empty library here could just as
+    // easily be masking real, unknown-shaped data belonging to the one user
+    // of this desktop install. Refuse LOUDLY at startup instead — the same
+    // dialog/exit machinery `acquireDesktopLock` already uses (#88/#93) for
+    // "we cannot trust this data directory, don't start."
+    reportDesktopLockFailure(
+      `Refusing to start: ${DB_FILE} could not be read as a valid database (${cause}). Starting `
+      + `anyway would risk silently showing an empty games library instead of the real cause. `
+      + (preserved
+        ? `The unreadable file has been preserved at ${aside} — quit, inspect/repair or delete it, then relaunch.`
+        : `The unreadable file could not be moved aside; please back it up, then remove or repair ${DB_FILE} and relaunch.`),
+      preserved ? aside : DB_FILE,
+    );
+    return null;
+  }
+
+  if (migrateOwnerlessGames(db, DB_FILE)) {
+    try {
+      writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+    } catch (err) {
+      // Best-effort durability: the in-memory DB is correct either way (every
+      // future read/write this run sees the migrated userId), so a write
+      // failure here just means the SAME migration note logs again on the
+      // next boot rather than being lost.
+      console.error(`Could not persist the ownerless-game migration to ${DB_FILE} (will retry on next boot):`, err);
+    }
+  }
+
+  return db;
 }
 
 // GCS concurrency state. See `scheduleGcsSave`/`uploadDbToGcs` below (near
@@ -573,6 +968,14 @@ function reportDesktopLockFailure(message: string, lockFile: string): boolean {
     // `lockFile` is passed structurally (not parsed back out of the message)
     // so the dialog's own "delete it and retry" action never has to guess a
     // path out of prose.
+    //
+    // Marked settled BEFORE calling the hook, not after: `onFailure` itself
+    // may synchronously trigger further code (electron-main.cjs's own hook
+    // body) before this function returns, and `handleFatalAsync` must treat
+    // that whole window — hand-off through the async dialog actually being
+    // shown and dismissed — as reported, not still "starting up" (see
+    // `startupOutcomeReported`'s own comment).
+    startupOutcomeReported = true;
     onFailure({ message, lockFile });
     return false;
   }
@@ -858,10 +1261,17 @@ function acquireDesktopLock(): boolean {
   return true;
 }
 
-// Load DB once at startup: GCS in Cloud Run, local file in Electron/dev
-async function initDB(): Promise<void> {
+// Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
+// Returns `false` when `loadDBFromFile` refused to load an unrecoverable
+// db.json shape (RED-DESKTOP-6/001) — the failure has already been reported
+// (standalone: `process.exit(1)`; packaged: the startup-blocked dialog via
+// `reportDesktopLockFailure`), so the caller (`startServer`) must stop before
+// ever calling `app.listen`, exactly like `acquireDesktopLock`'s own contract.
+async function initDB(): Promise<boolean> {
   if (process.env.ELECTRON_USER_DATA_PATH) {
-    inMemoryDb = loadDBFromFile();
+    const db = loadDBFromFile();
+    if (db === null) return false;
+    inMemoryDb = db;
   } else if (GCS_BUCKET) {
     try {
       const { Storage } = await import('@google-cloud/storage');
@@ -899,11 +1309,16 @@ async function initDB(): Promise<void> {
       console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb!.users.length} users, ${inMemoryDb!.games.length} games`);
     } catch (err) {
       console.error('Error loading DB from GCS, falling back to local file:', err);
-      inMemoryDb = loadDBFromFile();
+      const db = loadDBFromFile();
+      if (db === null) return false;
+      inMemoryDb = db;
     }
   } else {
-    inMemoryDb = loadDBFromFile();
+    const db = loadDBFromFile();
+    if (db === null) return false;
+    inMemoryDb = db;
   }
+  return true;
 }
 
 // Returns the in-memory DB (always synchronous after initDB resolves)
@@ -1364,6 +1779,24 @@ function adoptLocalGames(userId: string): number {
  * `stripUnsafeText` already uses, see its comment) is the fallback if
  * `Intl.Segmenter` is ever unavailable -- it still closes the exact
  * surrogate-pair defect above, just without the family/flag guarantee.
+ *
+ * RED-CLOUD-6/001: a grapheme cluster has NO upper size bound -- a base
+ * character followed by an unbounded run of combining marks (U+0300-class
+ * diacritics; "zalgo"/"cursed" text, a well-known copy-paste meme) is, by
+ * the same UAX #29 rules `Intl.Segmenter` implements, still ONE cluster.
+ * The loop above refuses to split a cluster, which is correct -- but when
+ * the FIRST cluster already exceeds the entire budget it used to just
+ * `break` with `out` still `""`, silently wiping the WHOLE string (every
+ * later, perfectly ordinary character included) instead of truncating it.
+ * `cleanScenario`'s `label()` then read that as a missing label and
+ * discarded the user's ENTIRE scenario -- including its three other,
+ * perfectly normal labels -- and substituted an unrelated invented story,
+ * with no error returned to the client. Falling back to a codepoint-safe
+ * (not grapheme-safe) cut of JUST the oversized cluster fixes this: still
+ * never splits a surrogate pair (so no mojibake, the defect the grapheme
+ * switch itself fixed), just no longer guarantees the combining marks kept
+ * stay attached to their base character within a tight budget -- which is
+ * unavoidable once a single cluster does not fit at all.
  */
 function clampGraphemeSafe(s: string, maxLength: number): string {
   if (s.length <= maxLength) return s;
@@ -1372,11 +1805,38 @@ function clampGraphemeSafe(s: string, maxLength: number): string {
     const segmenter = new SegmenterCtor(undefined, { granularity: "grapheme" });
     let out = "";
     for (const { segment } of segmenter.segment(s)) {
-      if (out.length + segment.length > maxLength) break;
+      if (out.length + segment.length > maxLength) {
+        if (out.length === 0) out = codepointSafeSlice(segment, maxLength);
+        break;
+      }
       out += segment;
     }
     return out;
   }
+  let out = "";
+  for (const ch of s) {
+    if (out.length + ch.length > maxLength) {
+      if (out.length === 0) out = codepointSafeSlice(ch, maxLength);
+      break;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Cut `s` to at most `maxLength` UTF-16 units without ever splitting a
+ * surrogate pair -- a plain codepoint-by-codepoint walk, weaker than a full
+ * grapheme-cluster boundary (it can separate a base character from its own
+ * combining marks), but that is exactly and only what happens when a SINGLE
+ * cluster does not fit the budget at all: there is no boundary-safe cut that
+ * keeps it whole, and returning nothing (the RED-CLOUD-6/001 bug) is worse
+ * than a partial cluster. At `maxLength` too small to fit even one codepoint
+ * (astral characters are 2 UTF-16 units), this can still return `""` --
+ * inherent to any codepoint-safe scheme, and never hit by any real caller in
+ * this file (every clamp width here is 40+).
+ */
+function codepointSafeSlice(s: string, maxLength: number): string {
   let out = "";
   for (const ch of s) {
     if (out.length + ch.length > maxLength) break;
@@ -1655,6 +2115,7 @@ function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength:
  * separate, hosted-side question — not claimed as fixed here.)
  */
 function saveDB(db: DB): boolean {
+  if (localFileSaveBlocked()) return false;
   inMemoryDb = db;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
     scheduleGcsSave(); // #85's coalescing pump; the GCS write is async, so the caller's boolean cannot reflect it
@@ -1749,6 +2210,7 @@ async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
     scheduleGcsSave(); // #85's coalescing pump — see this function's own comment for why this branch cannot also await a per-request result
     return true;
   }
+  if (localFileSaveBlocked()) return false;
   try {
     const dbDir = path.dirname(DB_FILE);
     if (!fs.existsSync(dbDir)) {
@@ -2153,7 +2615,7 @@ async function startServer() {
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
   // The installed Electron app polls this to decide whether to prompt for an update.
-  app.get("/api/version", rateLimit("version", 60, 60_000, 'hosted-only'), async (req, res) => {
+  app.get("/api/version", rateLimit("version", 60, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     try {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
@@ -2170,14 +2632,14 @@ async function startServer() {
       console.error("Error reading app version:", error);
       return res.status(500).json({ error: "Internal Server Error" });
     }
-  });
+  }));
 
   // ── Report API ─────────────────────────────────────────────────────────────
   // Grounded LLM analysis with deterministic fallback. The client renders model
   // prose only when validation passes; a refusal, truncation, or hallucination
   // degrades to the existing deterministic panel rather than showing something
   // wrong. That makes the fallback path exercised in normal operation.
-  app.post("/api/report", rateLimit("report", 20, 60_000, 'hosted-only'), async (req, res) => {
+  app.post("/api/report", rateLimit("report", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
     const scenario = cleanScenario(req.body?.scenario);
     if (!payoffs) {
@@ -2217,6 +2679,10 @@ async function startServer() {
         // and gets a story. The fix must therefore test USABILITY, not
         // presence.
         const supplied = scenarioIsUsable(scenario);
+        // RED-CLOUD-6/002: undefined unless the model ladder was fully
+        // exhausted and `inventScreenedScenario`'s own last-resort bank draw
+        // is what actually supplied `invented` — see that function's comment.
+        let inventedSource: 'bank-fallback' | undefined;
         if (!supplied && canInvent()) {
           try {
             // Screened AND rerolled, exactly like the other two paths. Under
@@ -2224,10 +2690,12 @@ async function startServer() {
             // the mathematics, so a description that asserts anything decidable
             // is both unnecessary and the only remaining defect surface (T1
             // measured it at 11.4%).
-            invented = (await inventScreenedScenario(
+            const drawn2 = await inventScreenedScenario(
               payoffs,
               (reason) => console.warn(`[report] rung-3 scenario dropped: ${reason}`),
-            )).scenario;
+            );
+            invented = drawn2.scenario;
+            inventedSource = drawn2.scenarioSource;
           } catch { invented = null; }
         }
         // Labels follow USABILITY too. A name-only scenario is truthy, so
@@ -2251,6 +2719,10 @@ async function startServer() {
             // DETERMINISTIC surface less verifiable than the model's.
             proseClaims: rendered2.claims,
             suggestedScenario: supplied ? undefined : invented ?? undefined,
+            // Undefined on every ordinary model-drawn or user-supplied
+            // scenario; 'bank-fallback' only on the residual reroll-ladder
+            // exhaustion RED-CLOUD-6/002 measured (~1.6% of invention draws).
+            scenarioSource: supplied ? undefined : inventedSource,
           },
           groundTruth: truth2,
           validation: null,
@@ -2285,6 +2757,8 @@ async function startServer() {
           // perfect paragraph about options that were not in their game.)
           let invented: SuggestedScenario | null = null;
           let inventFailure: string | undefined;
+          // RED-CLOUD-6/002: see the non-tie branch's own comment.
+          let inventedSourceTie: 'bank-fallback' | undefined;
           // Usability, not presence — the same predicate the non-tie branch and
           // every other site now use.
           const suppliedTie = scenarioIsUsable(scenario);
@@ -2318,6 +2792,7 @@ async function startServer() {
               );
               invented = drawn.scenario;
               inventFailure = drawn.failure;
+              inventedSourceTie = drawn.scenarioSource;
             } catch { invented = null; }
           }
           // Labels for the rendered sentences: the user's own scenario when it
@@ -2332,7 +2807,7 @@ async function startServer() {
             // whatever it receives, but it is the envelope's contract and an
             // eval reading it would be misled.
             return res.json(invented
-              ? { scenario: invented }
+              ? { scenario: invented, scenarioSource: inventedSourceTie }
               : {
                   scenario: null,
                   failure: suppliedTie ? 'scenario-supplied'
@@ -2351,6 +2826,7 @@ async function startServer() {
               proseClaims: rendered.claims,
               // Never offer a replacement the user did not ask for.
               suggestedScenario: suppliedTie ? undefined : invented ?? undefined,
+              scenarioSource: suppliedTie ? undefined : inventedSourceTie,
             },
             groundTruth: truth,
             validation: null,
@@ -2407,11 +2883,11 @@ async function startServer() {
       // all (`max-tokens`) used to get no second chance, at 7.5% of calls once
       // the stakes hint lengthened the prompt (9 of 120 vs 0 of 120 without it,
       // p=0.0033). Roughly one click in thirteen.
-      const { scenario: invented, failure } = await inventScreenedScenario(
+      const { scenario: invented, failure, scenarioSource } = await inventScreenedScenario(
         payoffs,
         (reason) => console.warn(`[report] scenarioOnly scenario dropped: ${reason}`),
       );
-      return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
+      return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error"), scenarioSource });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2613,10 +3089,10 @@ async function startServer() {
       reportCache.set(cacheKey, envelope);
     }
     return res.json(envelope);
-  });
+  }));
 
   // ── Feedback API ───────────────────────────────────────────────────────────
-  app.post("/api/feedback", rateLimit("feedback", 10, 60_000), async (req, res) => {
+  app.post("/api/feedback", rateLimit("feedback", 10, 60_000), asyncHandler(async (req, res) => {
     const { message, email, rating } = req.body;
 
     const trimmedMessage = typeof message === "string" ? message.trim() : "";
@@ -2656,14 +3132,14 @@ async function startServer() {
       console.error("Failed to send feedback:", err);
       return res.status(500).json({ error: "Could not send feedback. Please try again later." });
     }
-  });
+  }));
 
   // Serve compiled DMG file. Content-Length above the sized-response cap is
   // handled by setContentLengthIfUnderCloudRunLimit (module scope, above) —
   // reconciled from two independent fixes (this branch's own root-cause
   // finding, RED-DESKTOP-4/003, and PR #89's live hotfix) into ONE
   // implementation per the director's call; see that function's own comment.
-  app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), async (req, res) => {
+  app.get("/api/download/dmg", rateLimit("dmg", 10, 60_000), asyncHandler(async (req, res) => {
     try {
       // In Cloud Run, stream from GCS
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
@@ -2771,10 +3247,10 @@ async function startServer() {
       console.error("Error serving DMG:", error);
       res.status(500).json({ error: "Internal Server Error" });
     }
-  });
+  }));
 
   // Register Endpoint
-  app.post("/api/auth/register", rateLimit("register", 8, 60_000), async (req, res) => {
+  app.post("/api/auth/register", rateLimit("register", 8, 60_000), asyncHandler(async (req, res) => {
     const { username, email, password } = req.body;
 
     if (!username || !email || !password) {
@@ -2917,7 +3393,7 @@ async function startServer() {
       via: emailResult?.via || "smtp",
       previewUrl: emailResult?.previewUrl || null
     });
-  });
+  }));
 
   // Verify Endpoint
   app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), (req, res) => {
@@ -3032,7 +3508,7 @@ async function startServer() {
   });
 
   // Forgot Password — send recovery code to email
-  app.post("/api/auth/forgot-password", rateLimit("forgot", 6, 60_000), async (req, res) => {
+  app.post("/api/auth/forgot-password", rateLimit("forgot", 6, 60_000), asyncHandler(async (req, res) => {
     const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: "Email address is required." });
@@ -3078,7 +3554,7 @@ async function startServer() {
         : "A 6-digit recovery code has been sent to your email address.",
       ...(isElectron ? { recoveryCode } : {})
     });
-  });
+  }));
 
   // Reset Password — verify code and set new password
   app.post("/api/auth/reset-password", rateLimit("reset", 8, 60_000), (req, res) => {
@@ -3130,7 +3606,7 @@ async function startServer() {
   });
 
   // Request account deletion code
-  app.post("/api/auth/delete-request", rateLimit("delete-request", 6, 60_000), async (req, res) => {
+  app.post("/api/auth/delete-request", rateLimit("delete-request", 6, 60_000), asyncHandler(async (req, res) => {
     const db = loadDB();
     const user = getAuthUser(req);
 
@@ -3164,7 +3640,7 @@ async function startServer() {
         : "A 6-digit confirmation security code has been sent to your email address.",
       ...(isElectron ? { deleteCode } : {})
     });
-  });
+  }));
 
   // Verify deletion code and delete account
   app.post("/api/auth/delete-confirm", rateLimit("delete-confirm", 8, 60_000), (req, res) => {
@@ -3250,7 +3726,7 @@ async function startServer() {
   });
 
   // Create/Save a Custom Game
-  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
+  app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -3297,7 +3773,7 @@ async function startServer() {
         game: newGame
       });
     });
-  });
+  }));
 
   // Update a Custom Game's story (name / description / option labels).
   //
@@ -3309,7 +3785,7 @@ async function startServer() {
   // Payoffs are deliberately NOT updatable here: changing them would silently
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
-  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), async (req, res) => {
+  app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
@@ -3364,10 +3840,10 @@ async function startServer() {
 
       res.json({ success: true, message: "Game updated.", game: updatedGame });
     });
-  });
+  }));
 
   // Delete a Custom Game
-  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), async (req, res) => {
+  app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
@@ -3402,7 +3878,7 @@ async function startServer() {
         message: "Game deleted successfully."
       });
     });
-  });
+  }));
 
 
   // ── Vite / Frontend static file host ───────────────────────────────────────
@@ -3436,6 +3912,43 @@ async function startServer() {
     }
   }
 
+  // Global Express error-handling middleware (RED-DESKTOP-6/001). Registered
+  // LAST, after every route and the static/404 fallback above, which is where
+  // Express requires a 4-arg handler to live to be recognised as an error
+  // handler at all. Every `asyncHandler`-wrapped route funnels its rejections
+  // here via `next(err)`; a plain synchronous handler that throws lands here
+  // through Express's own built-in behavior. One logged, generic 500 instead
+  // of a hung/reset connection and a crashed or silently poisoned process.
+  app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const cause = err instanceof Error ? (err.stack || err.message) : String(err);
+    console.error(`Unhandled error on ${req.method} ${req.path}:`, cause);
+    if (res.headersSent) {
+      // A response already started streaming; Express's own guidance is to
+      // delegate to the default handler rather than try to send a second one.
+      next(err);
+      return;
+    }
+    // body-parser (express.json's own middleware, ahead of every route) rejects
+    // a malformed or oversized request body with a genuine client-facing HTTP
+    // status attached as `err.status`/`err.statusCode` — 413 for a body over the
+    // configured limit ("entity.too.large"), 400 for unparseable JSON
+    // ("entity.parse.failed"). Before this catch-all existed, Express's own
+    // built-in error handler read that status straight through. A bare
+    // `res.status(500)` here would silently turn every one of those into a
+    // generic server error — caught by api.test.mjs's own regression check
+    // ("a 200kb request body -> 413"), which went 500 the first time this
+    // handler shipped without this carve-out. Only trust a 4xx (never a
+    // spoofed/mistaken 5xx or something out of range) from upstream
+    // middleware; anything else still collapses to a logged, generic 500.
+    const upstreamStatus = (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.status
+      ?? (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.statusCode;
+    if (typeof upstreamStatus === "number" && upstreamStatus >= 400 && upstreamStatus < 500) {
+      res.status(upstreamStatus).json({ error: "Invalid request." });
+      return;
+    }
+    res.status(500).json({ error: "Internal server error." });
+  });
+
   // Legacy accounts store passwords as reversible base64 (pre-pbkdf2). They're
   // upgraded on next successful login, but dormant rows stay plaintext-equivalent
   // if db.json/GCS leaks. Surface the count so operators can force a reset.
@@ -3465,6 +3978,9 @@ async function startServer() {
     const host = process.env.IS_ELECTRON === 'true' ? '127.0.0.1' : '0.0.0.0';
     const serverInstance = app.listen(port, host, () => {
       console.log(`Express server running on http://${host}:${port}`);
+      // From here on, a request-path failure should be logged and survived,
+      // not treated as a startup failure. See `handleFatalAsync` above.
+      serverListening = true;
       if (process.env.IS_ELECTRON === 'true') {
         (global as any).expressPort = port;
         if ((global as any).onExpressListening) {
@@ -3489,7 +4005,10 @@ async function startServer() {
   };
 
   const initialPort = parseInt(process.env.PORT || "3000", 10);
-  await initDB();
+  // A `false` return means `initDB`/`loadDBFromFile` already reported the
+  // failure (see their own comments) — stop here: never call `app.listen`
+  // on a DB we refused to trust.
+  if (!(await initDB())) return;
   startListening(initialPort);
 }
 
