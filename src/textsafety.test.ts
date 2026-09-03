@@ -208,6 +208,21 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
   ok(clampSites.length === 2,
     `expected 2 label-input onChange sites calling clampLabelInput, skipped while composing (Edit + Save dialogs), found ${clampSites.length}`);
 
+  // RED-APP-8/002 second-round fix: the composition-commit `input` event
+  // often carries the SAME string the last mid-composition `input` event
+  // already wrote to the DOM (compositionend just finalizes what was
+  // already shown) — React's own value tracker sees no change and
+  // suppresses onChange entirely for that event, so relying on onChange
+  // alone left an over-budget composed string permanently unclamped after
+  // a real composition commit (director-verified: domValueFinalLen 45,
+  // full 45-char composition preserved, with only the onChange-based fix).
+  // onCompositionEnd fires unconditionally (it is not subject to the
+  // value-tracker dedup), so it is the one place guaranteed to see and
+  // clamp the committed value.
+  const compositionEndSites = [...appSrc.matchAll(/onCompositionEnd=\{\(e\) => \{[\s\S]{0,1200}?set(Edit|Save)Labels\(\(prev\) => \(\{ \.\.\.prev, \[key\]: clamped \}\)\)/g)];
+  ok(compositionEndSites.length === 2,
+    `expected 2 label-input onCompositionEnd sites that clamp the committed value (Edit + Save dialogs), found ${compositionEndSites.length}`);
+
   // No bare native maxLength on either of the (now clamp-only) label input
   // blocks — anchor on the same onChange sites and look for a nearby
   // `maxLength={40}` that would mean the native attribute is STILL there.

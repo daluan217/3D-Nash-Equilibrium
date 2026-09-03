@@ -1,8 +1,7 @@
 {
   "_README": "Controls no e2e suite presses, each with the reason. This list is a RATCHET: it is seeded with what was untested when the audit was added, so it does not demand retroactive coverage \u2014 but a control added later has no entry, so CI fails until someone tests it or writes down why not. Deleting an entry and adding coverage is always the better move. src/controlcoverage.test.ts also fails on a STALE entry, so a renamed control cannot keep a reason that no longer protects anything.",
   "Cancel": "Dismisses a dialog without side effects; failure is visible immediately and harms nothing.",
-  "Close Dialog": "Same. NOTE: this and 'Close dialog' both exist \u2014 the app spells the same aria-label two ways, which is worth unifying.",
-  "Close dialog": "Duplicate spelling; see 'Close Dialog'.",
+  "Close Dialog": "Same. NOTE: this and 'Close dialog' both exist \u2014 the app spells the same aria-label two ways, which is worth unifying. The lowercase spelling (the Account dialog's own close button) is now exercised by RED-APP-8/005's e2e fixture (its geometry reliably discriminates the max-h fix, unlike the Login submit button); this capital-D spelling is elsewhere and still untested.",
   "Close menu": "Menu chrome, no state beyond visibility.",
   "Close tour": "The tour's own X. Every suite dismisses the tour via the viewport-anchored 'Exit tour' instead, because this one follows the spotlight and step 1's smooth-scroll can leave it off-screen \u2014 that is a known e2e flake root cause, not an oversight.",
   "Done": "Dialog chrome: dismisses without side effects, and failure is visible immediately.",

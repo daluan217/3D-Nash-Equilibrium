@@ -5557,10 +5557,23 @@ export default function App() {
                           ...prev,
                           // RED-APP-8/002: never clamp WHILE an IME composition is
                           // open (the DOM value is correct as-is; onBeforeInput
-                          // cannot block insertCompositionText, so this is where
-                          // the eventual committed string still gets bounded).
+                          // cannot block insertCompositionText).
                           [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
                         }))}
+                        onCompositionEnd={(e) => {
+                          // The commit's own trailing `input` event often carries
+                          // the SAME string the last mid-composition `input` event
+                          // already wrote to the DOM — React's value tracker sees
+                          // no change from what it last recorded and suppresses
+                          // onChange entirely for that event, so relying on
+                          // onChange alone left an over-budget composed string
+                          // unclamped forever. onCompositionEnd fires unconditionally
+                          // (it does not go through the value-tracker dedup), so it
+                          // is the one place guaranteed to see the committed value.
+                          const v = e.currentTarget.value;
+                          const clamped = clampLabelInput(v);
+                          if (clamped !== v) setEditLabels((prev) => ({ ...prev, [key]: clamped }));
+                        }}
                       />
                     </div>
                   ))}
@@ -5958,6 +5971,14 @@ export default function App() {
                           // dialog's label inputs above.
                           [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
                         }))}
+                        onCompositionEnd={(e) => {
+                          // See the identical comment on the Edit dialog's label
+                          // inputs above — React's value tracker can suppress
+                          // onChange for the composition-commit event.
+                          const v = e.currentTarget.value;
+                          const clamped = clampLabelInput(v);
+                          if (clamped !== v) setSaveLabels((prev) => ({ ...prev, [key]: clamped }));
+                        }}
                       />
                     </div>
                   ))}
