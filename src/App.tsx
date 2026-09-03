@@ -5110,7 +5110,13 @@ export default function App() {
             aria-modal="true"
             aria-label="Account"
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
+            // RED-APP-8/005: matches the Save/Edit dialogs' own height cap —
+            // without it, at a short viewport (e.g. 320x200, what 400% zoom
+            // on an ordinary screen produces) this fixed-position dialog can
+            // render taller than the viewport with no scroll path (page
+            // scroll has zero effect on a `position:fixed` element), making
+            // Login/Sign Up permanently unreachable.
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
@@ -5977,7 +5983,10 @@ export default function App() {
             aria-modal="true"
             aria-label="Send feedback"
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
+            // RED-APP-8/005: same height cap as the Account dialog above,
+            // for the same reason — this dialog was the other one of the
+            // app's four full-size dialogs missing it.
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">

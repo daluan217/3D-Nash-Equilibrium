@@ -13,7 +13,6 @@
   "Decrease x\u2080": "See 'Increase x\u2080'.",
   "Increase y\u2080": "See 'Increase x\u2080'.",
   "Decrease y\u2080": "See 'Increase x\u2080'.",
-  "Send feedback": "Deliberately never clicked: it sends real email through SMTP. Exercising it would either need a live mail path in CI or a stub of the one thing the control exists to do.",
   "Prefer the terminal?": "Informational link-style control; navigates, holds no state.",
   "Refresh": "Re-fetches the saved-game list; the list endpoint itself is covered by the integration suite.",
   "Open workspace menu": "Reveals the saved-game library. UNTESTED AND WORTH TESTING \u2014 this is the surface that renders user-saved descriptions, which is exactly where a colour-coding or escaping defect would show.",

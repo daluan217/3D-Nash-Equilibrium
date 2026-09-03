@@ -1866,6 +1866,55 @@ try {
     await quotaPage.close();
   }
 
+  // ══ 35. RED-APP-8/005 — the Account and Feedback dialogs must be reachable
+  //      at a short (400%-zoom-equivalent) viewport. Save/Edit already had
+  //      `max-h-[90vh] overflow-y-auto`; Account/Feedback didn't, so at
+  //      320x256 (WCAG 1.4.10 Reflow's own floor) part of the dialog rendered
+  //      above y=0 and part below the window, and being `position:fixed`, a
+  //      real page scroll has ZERO effect on it — there was no path to the
+  //      submit button at all. `.click()` here exercises the real thing a
+  //      user needs: an actionable click, which Playwright only succeeds at
+  //      by scrolling a genuine scrollable ANCESTOR into view (the dialog
+  //      itself, post-fix) — there is no such ancestor pre-fix, so the click
+  //      times out instead of silently "succeeding" through some shortcut.
+  {
+    const shortPage = await browser.newPage({ viewport: { width: 320, height: 256 } });
+    // NOTE: no page-wide setDefaultTimeout override here — the two
+    // reachability clicks below already pass their own explicit
+    // {timeout: 5000}, which is what needs to fail fast on the unfixed
+    // tree; a global override also throttled THIS page's own navigation,
+    // which can legitimately take longer than 6s once ~30 prior e2e
+    // sections have left other pages/contexts open.
+    await shortPage.goto(BASE, { waitUntil: 'networkidle' });
+    const exitTourShort = shortPage.getByRole('button', { name: /exit tour/i });
+    if (await exitTourShort.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourShort.click();
+    await shortPage.waitForTimeout(300);
+
+    await shortPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    await shortPage.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+    const accountLogin = shortPage.locator('[role="dialog"][aria-label="Account"]').getByRole('button', { name: /^login$/i });
+    let accountReachable = true;
+    try { await accountLogin.click({ timeout: 5000 }); } catch { accountReachable = false; }
+    record('RED-APP-8/005 fix: the Account dialog\'s Login button is reachable at 320x256', accountReachable);
+    await shortPage.keyboard.press('Escape').catch(() => {});
+    await shortPage.waitForTimeout(300);
+
+    // Stub the feedback POST — untested-controls.json's own policy for this
+    // control is "never actually send real email through SMTP"; this test is
+    // about the submit BUTTON's reachability (the RED-APP-8/005 defect), not
+    // the feedback route, so the real network call is intercepted rather
+    // than reaching the server.
+    await shortPage.route('**/api/feedback', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }));
+    await shortPage.getByRole('button', { name: /send feedback/i }).first().click();
+    await shortPage.waitForSelector('[role="dialog"][aria-label="Send feedback"]', { timeout: 5000 });
+    const feedbackSubmit = shortPage.locator('[role="dialog"][aria-label="Send feedback"]').getByRole('button', { name: /send feedback/i });
+    let feedbackReachable = true;
+    try { await feedbackSubmit.click({ timeout: 5000 }); } catch { feedbackReachable = false; }
+    record('RED-APP-8/005 fix: the Feedback dialog\'s submit button is reachable at 320x256', feedbackReachable);
+    await shortPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page
