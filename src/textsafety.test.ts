@@ -12,7 +12,8 @@
  *   npx tsx src/textsafety.test.ts
  */
 import assert from 'node:assert';
-import { stripUnsafeText, cleanText } from './utils/textSafety';
+import { readFileSync } from 'node:fs';
+import { stripUnsafeText, cleanText, clampGraphemeSafe } from './utils/textSafety';
 
 let checks = 0;
 function ok(cond: boolean, msg: string) {
@@ -97,5 +98,122 @@ ok(stripUnsafeText('שלום עולם') === 'שלום עולם', 'honest Hebrew 
 
 // ── 8. empty / falsy input is a no-op, not a crash ──────────────────────────
 ok(stripUnsafeText('') === '', 'empty string must return empty string');
+
+// ── 9. RED-APP-7/004 — clampGraphemeSafe, moved here from server.ts so the
+//      BROWSER can share the exact same grapheme-boundary logic the label
+//      inputs' native `maxLength` used to bypass (it cuts by raw UTF-16 unit
+//      count with no grapheme awareness, splitting a typed/pasted ZWJ emoji
+//      sequence before this function ever saw the original string).
+{
+  // Plain ASCII: identical to a bare slice at the boundary — no behavior
+  // change for the overwhelmingly common case.
+  ok(clampGraphemeSafe('hello world', 5) === 'hello', 'plain ASCII must clamp like a bare slice');
+  ok(clampGraphemeSafe('short', 40) === 'short', 'a string under the budget must be returned unchanged');
+  ok(clampGraphemeSafe('', 40) === '', 'empty string must return empty string');
+
+  // A lone (unpaired) UTF-16 surrogate anywhere in the string — the general
+  // signature of a cut that split a codepoint in half. (Trailing ZWJ with
+  // nothing joined after it is the OTHER shape the same class of bug takes,
+  // checked separately below with a fixed offset chosen to land there.)
+  const hasLoneSurrogate = (s: string): boolean => {
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c >= 0xD800 && c <= 0xDBFF) {
+        const next = s.charCodeAt(i + 1);
+        if (!(next >= 0xDC00 && next <= 0xDFFF)) return true;
+        i++; // consumed a VALID pair -- skip the low surrogate, it is not lone
+      } else if (c >= 0xDC00 && c <= 0xDFFF) {
+        return true; // a low surrogate with nothing valid before it
+      }
+    }
+    return false;
+  };
+
+  // The exact defect: a 5x family-emoji ZWJ sequence (55 UTF-16 units, 5
+  // grapheme clusters, 11 units each) clamped to a 40-unit budget. A bare
+  // `.slice(0, 40)` (what the native `maxLength` attribute effectively does)
+  // cuts mid-codepoint here — RED-APP-7/004's own reproduction, byte-for-byte
+  // (the finding's own fixture, `"A" + emoji.repeat(20)` clamped to 40, hit
+  // the identical mechanism: a lone high surrogate at the cut point).
+  const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // man ZWJ woman ZWJ girl ZWJ boy
+  const fiveFamilies = family.repeat(5);
+  ok(fiveFamilies.length === 55, `fixture sanity: 5 family emoji must be 55 UTF-16 units, got ${fiveFamilies.length}`);
+  ok(family.length === 11, `fixture sanity: one family-emoji cluster must be 11 UTF-16 units, got ${family.length}`);
+  const bareSlice = fiveFamilies.slice(0, 40);
+  ok(bareSlice.length === 40 && hasLoneSurrogate(bareSlice),
+    `fixture sanity: a BARE slice at 40 must reproduce the defect (a lone/unpaired surrogate) — got ${JSON.stringify(bareSlice)}`);
+  const clamped = clampGraphemeSafe(fiveFamilies, 40);
+  ok(clamped.length <= 40, `clampGraphemeSafe must respect the budget, got length ${clamped.length}`);
+  ok(!hasLoneSurrogate(clamped), `clampGraphemeSafe must never leave a lone/unpaired surrogate, got ${JSON.stringify(clamped)}`);
+  // Whole graphemes only: re-segmenting the clamped output must reconstruct
+  // it byte-for-byte from complete family-emoji clusters, never a partial one.
+  ok(clamped === family.repeat(Math.floor(clamped.length / family.length)) && clamped.length % family.length === 0,
+    `clampGraphemeSafe's output must be an exact whole number of complete family-emoji clusters, got ${JSON.stringify(clamped)} (length ${clamped.length})`);
+  ok(clamped.length === 33, `with an 11-unit cluster and a 40-unit budget, exactly 3 whole clusters (33 units) fit — got ${clamped.length}`);
+
+  // Same fixture at a width chosen to fall exactly after a ZWJ (33 + 2 + 1 =
+  // 36: three whole families, then man ZWJ, cutting before woman) — the
+  // OTHER shape this class of bug takes: a dangling joiner with nothing
+  // joined after it, not merely a split surrogate pair.
+  const clamped36 = clampGraphemeSafe(fiveFamilies, 36);
+  ok(!clamped36.endsWith('‍'), `clampGraphemeSafe must never leave a dangling ZWJ either, got ${JSON.stringify(clamped36)}`);
+  ok(clamped36.length === 33, `budget 36 with an 11-unit cluster must still yield exactly 3 whole clusters, got ${clamped36.length}`);
+
+  // A single grapheme cluster that alone exceeds the whole budget (an
+  // unbounded "zalgo" combining-mark run) must fall back to a codepoint-safe
+  // cut of just that cluster rather than silently returning "" and wiping
+  // the string RED-CLOUD-6/001 already found for the server-side twin.
+  const zalgoBase = 'a';
+  const combining = '̀'.repeat(60); // 60 combining grave accents, one grapheme cluster with 'a'
+  const zalgo = zalgoBase + combining;
+  const clampedZalgo = clampGraphemeSafe(zalgo, 10);
+  ok(clampedZalgo.length > 0 && clampedZalgo.length <= 10,
+    `an oversized single cluster must fall back to a codepoint-safe partial cut, not "" — got length ${clampedZalgo.length}`);
+
+  // Never returns MORE than the budget, across a spread of astral/ZWJ/plain
+  // mixes and boundary widths.
+  for (const width of [1, 2, 3, 39, 40, 41, 54, 55, 56]) {
+    const out = clampGraphemeSafe(fiveFamilies, width);
+    ok(out.length <= width, `clampGraphemeSafe(fiveFamilies, ${width}) must never exceed the budget, got length ${out.length}`);
+  }
+}
+
+// ── 10. RED-APP-7/004 — structural guard: App.tsx's 4 label inputs (both
+//      dialogs) must clamp via clampGraphemeSafe in onChange, and must NOT
+//      carry the native `maxLength={40}` attribute any more (that attribute
+//      is what silently mangled a typed/pasted ZWJ sequence BEFORE React
+//      ever saw the value, so removing the clamp from onChange alone is not
+//      the fix — the native attribute has to be gone too, or it wins the
+//      race on every real keystroke).
+{
+  const appSrc = readFileSync('src/App.tsx', 'utf8');
+  ok(/const clampLabelInput = \(v: string\) => clampGraphemeSafe\(v, 40\);/.test(appSrc),
+    'App.tsx must define clampLabelInput = clampGraphemeSafe(v, 40)');
+
+  const clampSites = [...appSrc.matchAll(/onChange=\{\(e\) => set(Edit|Save)Labels\(\(prev\) => \(\{ \.\.\.prev, \[key\]: clampLabelInput\(e\.target\.value\) \}\)\)\}/g)];
+  ok(clampSites.length === 2,
+    `expected 2 label-input onChange sites calling clampLabelInput (Edit + Save dialogs), found ${clampSites.length}`);
+
+  // No bare native maxLength on either of the (now clamp-only) label input
+  // blocks — anchor on the same onChange sites and look for a nearby
+  // `maxLength={40}` that would mean the native attribute is STILL there.
+  for (const m of clampSites) {
+    const around = appSrc.slice(m.index!, m.index! + 200);
+    ok(!/maxLength=\{40\}/.test(around),
+      `REGRESSION GUARD: a label input's onChange still has a nearby maxLength={40} — the native attribute must be `
+      + `removed, not merely supplemented, or it silently truncates a typed/pasted ZWJ sequence before onChange ever `
+      + `runs. Context: ${JSON.stringify(around)}`);
+  }
+
+  // MUTATION / NEGATIVE FIXTURE — the pre-fix shape, verbatim (bare native
+  // maxLength, raw e.target.value with no clamp). Proves the checks above
+  // can tell the fixed wiring apart from the defect.
+  const preFixInput = `value={saveLabels[key]}
+                        onChange={(e) => setSaveLabels((prev) => ({ ...prev, [key]: e.target.value }))}
+                        maxLength={40}
+                      />`;
+  ok(!/clampLabelInput/.test(preFixInput),
+    'the pre-fix fixture text must not accidentally already carry the clamp call (fixture sanity check)');
+}
 
 console.log(`textsafety.test.ts: ${checks} checks passed`);

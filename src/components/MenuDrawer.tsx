@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { GamePayoffs, PresetGame } from '../types';
-import { PRESETS, computeAllNE, fmtPayoff, EA, EB } from '../utils/gameEngine';
+import { PRESETS, computeAllNE, describeContinua, fmtPayoff, EA, EB } from '../utils/gameEngine';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { savedGameColorTerms } from '../utils/colorTerms';
@@ -595,6 +595,15 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 <div className="grid grid-cols-1 gap-4">
                   {defaultPresets.map((preset) => {
                     const eqList = computeAllNE(preset.payoffs);
+                    // RED-MATH-7/001: computeAllNE enumerates only the finite
+                    // corners, which silently under-reports an equilibrium
+                    // CONTINUUM (a whole edge/area a payoff tie admits) —
+                    // the same source App.tsx's on-screen panel and
+                    // report.ts's grounding payload now both use, so this
+                    // list can never again show "N equilibria" while the
+                    // panel and the model's prompt both know about a
+                    // continuum this list left out.
+                    const continua = describeContinua(preset.payoffs);
                     const isSelected = activePreset === preset.key;
 
                     return (
@@ -647,7 +656,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                     val (<ColorCoded text={`E[A]=${fmtPayoff(EA(eq.x, eq.y, preset.payoffs))}, E[B]=${fmtPayoff(EB(eq.x, eq.y, preset.payoffs))}`} />)
                                   </li>
                                 ))}
-                                {eqList.length === 0 && (
+                                {continua.map((line, i) => (
+                                  <li key={`cont-${i}`} className="text-ne-mixed-600 dark:text-ne-mixed-400">
+                                    <ColorCoded text={line} />
+                                  </li>
+                                ))}
+                                {eqList.length === 0 && continua.length === 0 && (
                                   <li className="text-red-500">No classic NE in real plane</li>
                                 )}
                               </ul>
@@ -692,6 +706,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   <div className="grid grid-cols-1 gap-4">
                     {formattedCustomGames.map((game) => {
                       const eqList = computeAllNE(game.payoffs);
+                      // RED-MATH-7/001: same continuum-awareness as the
+                      // standard-presets list above.
+                      const continua = describeContinua(game.payoffs);
                       const isSelected = activePreset === game.id;
 
                       return (
@@ -749,7 +766,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                       val (<ColorCoded text={`E[A]=${fmtPayoff(EA(eq.x, eq.y, game.payoffs))}, E[B]=${fmtPayoff(EB(eq.x, eq.y, game.payoffs))}`} />)
                                     </li>
                                   ))}
-                                  {eqList.length === 0 && (
+                                  {continua.map((line, i) => (
+                                    <li key={`cont-${i}`} className="text-ne-mixed-600 dark:text-ne-mixed-400">
+                                      <ColorCoded text={line} />
+                                    </li>
+                                  ))}
+                                  {eqList.length === 0 && continua.length === 0 && (
                                     <li className="text-red-500">No classic NE in real plane</li>
                                   )}
                                 </ul>
