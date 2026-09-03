@@ -334,6 +334,98 @@ const SCENARIO_SCHEMA: Record<string, unknown> = {
   },
 };
 
+/**
+ * SCENARIO_SCHEMA plus actorA/actorB — the two-arm measurement's NEW arm
+ * (BLUE-NOUNS-8 phase 1, 2026-09-03).
+ *
+ * WHY A SEPARATE OBJECT rather than editing SCENARIO_SCHEMA (or its shared
+ * suggestedScenario source) in place. The full report's SYSTEM_PROMPT already
+ * asks for actorA/actorB (line ~484) and has for as long as this file's git
+ * history goes back, but REPORT_SCHEMA.properties.suggestedScenario has never
+ * declared them — nashValidator.ts:1724-1771 documents this at length as the
+ * reason its role-noun misattribution check could never fire. Widening the
+ * SHARED object would silently change the full report path (report.ts's
+ * REPORT_SCHEMA) at the same time as the scenario-only path this brief is
+ * measuring, conflating two different call sites' yield in one A/B. Building
+ * a derived object here keeps the blast radius to exactly the arm under test:
+ * `generateScenario({ actorNouns: true })`, used only by the harness until
+ * phase 1's decision rule passes and phase 2 wires it into production.
+ *
+ * Strict structured output requires every declared property to be listed in
+ * `required`, with optionality expressed as a nullable type (see
+ * `withAdditionalPropertiesFalse`'s comment in providers.ts) — same pattern
+ * REPORT_SCHEMA already uses for storyClaims.
+ */
+const SCENARIO_SUGGESTION_WITH_ACTORS: Record<string, unknown> = (() => {
+  const base = (REPORT_SCHEMA.properties as Record<string, Record<string, unknown>>).suggestedScenario;
+  const baseRequired = base.required as string[];
+  const actorField = (who: string) => ({
+    type: ['array', 'null'],
+    items: { type: 'string' },
+    description:
+      `Role nouns naming player ${who}, exactly as the description refers to them (e.g. "the gatekeeper"), ` +
+      '1-3 short entries. Only when the description uses role nouns instead of A/B; null otherwise.',
+  });
+  return {
+    ...base,
+    required: [...baseRequired, 'actorA', 'actorB'],
+    properties: {
+      ...(base.properties as Record<string, unknown>),
+      actorA: actorField('A'),
+      actorB: actorField('B'),
+    },
+  };
+})();
+
+const SCENARIO_SCHEMA_WITH_ACTORS: Record<string, unknown> = {
+  type: 'object',
+  required: ['suggestedScenario'],
+  properties: {
+    suggestedScenario: SCENARIO_SUGGESTION_WITH_ACTORS,
+  },
+};
+
+/**
+ * First sentence reuses the full report prompt's exact wording (report.ts
+ * SYSTEM_PROMPT, ~line 484). The second sentence does NOT exist there and was
+ * added after the first pilot measured why it is needed: FIRST DRAFT, this
+ * rule alone was tried as the whole instruction, measured through the real
+ * `generateScenario` path (100 games, gpt-5.6-luna, no reasoning override —
+ * `_gen/nouns_ab.ts`, `_gen/results/nouns_ab-2026-09-03.json`), and it
+ * COLLAPSED yield from 67% to 11% (61/73 parsed draws gate-dropped, almost
+ * all on the pre-existing, unrelated META_PROMPT_CAST/META_BARE_LETTER rule
+ * in `scenarioIsClaimFree`). Hand-reading 8/8 drops showed why: telling the
+ * model about actorA/actorB pushed it to open with "Player A is a ..." AS THE
+ * CHARACTER'S OWN NAME far more than before — even in drafts that then also
+ * supplied a real role noun in actorA. The full report's SYSTEM_PROMPT has a
+ * separate rule disciplining exactly this ("USE A AND B... role nouns are
+ * fine for scene-setting, but a sentence stating a claim must say A or B");
+ * SCENARIO_SYSTEM_PROMPT had never needed it before this rule existed to
+ * provoke the collision. The second sentence below is that same discipline,
+ * reworded for this direction (annotate a role-noun description you were
+ * already writing; do not switch TO "Player A" because the annotation
+ * exists). Re-measured with it added, same 100 games, same everything else:
+ * yield recovered to 99/100 (vs the OLD arm's 93/100 on the SAME run —
+ * Fisher p=0.065, not a significant difference either way), noun presence
+ * 100/100. The THIRD sentence below (below the rule) fixed a second gap the
+ * 99%-yield draws still had — see its own comment. Final numbers for both
+ * fixes together: `_gen/results/nouns_ab-2026-09-03.json`. Predicates and
+ * prompts are both wrong on the first draft; the fix is the same either way —
+ * hand-read the failures before shipping the rate.
+ */
+const SCENARIO_ACTOR_NOUN_RULE = '- If your description refers to the players by role nouns ("the gatekeeper", "the analyst") rather than as A and B, you MUST list those nouns in actorA and actorB. Without them a sentence like "the gatekeeper chooses Ford River" cannot be checked against the matrix, and assigning one player\'s option to the other is the most common remaining error in this report.'
+  + ' Writing "Player A" or "Player B" in the description AS IF IT WERE THE CHARACTER\'S OWN NAME is a defect whether or not you declare actorA/actorB — this holds even for "Player A, a ferry operator, chooses...". Prefer a natural role phrase for scene-setting and reserve the letters A/B for sentences that state a claim, exactly as you already do; declaring actorA/actorB only annotates a role-noun description you were going to write anyway, never a reason to switch to naming a player "Player A".'
+  // SECOND-DRAFT FIX 2: the re-measured 99%-yield draws still had a systematic
+  // gap in a different check this feature will need — 63 of 202 declared
+  // nouns (31%) did not appear verbatim in the description, and hand-reading
+  // every single miss found ZERO fabrications: every one was the SAME noun
+  // with the wrong leading article ("a herbarium curator" in the text,
+  // declared as "the herbarium curator" — ordinary English discourse grammar,
+  // first mention indefinite, later reference definite, but the client's
+  // highlighter needs the literal phrase). Fixed at the source rather than by
+  // loosening the check: an explicit copy-verbatim instruction.
+  + ' Copy each noun exactly as your own description phrases it, including its article ("a ferry operator" vs "the ferry operator") — it will be searched for literally in the text you just wrote, so a paraphrase (even a trivial one, like changing "a" to "the") will not be found.';
+
 export const SCENARIO_SYSTEM_PROMPT = `RUNG-3 MODE (set when the caller renders the mathematics itself): if the request says the description must be claim-free, then write PURE SCENE-SETTING only — who the two players are and what each option means — with NO numbers and NO claims about preferences, responses, advantages or equilibria, and OMIT storyClaims entirely. The solver states all of that; a description asserting anything decidable is discarded.
 
 You are inventing a short, concrete scenario for a 2x2 normal-form game — who the two players are and what their two options mean. You will be given the payoff matrix, the solver's equilibria, and a best-reply table, all authoritative.
@@ -379,6 +471,17 @@ export async function generateScenario(
      * treatment.
      */
     extraRules?: string;
+    /**
+     * OPT-IN, not opt-out — same property `domain`/`stakes` have and
+     * `extraRules` needed to earn back after shipping the ON-by-default bug
+     * (see the comment on `stakes` a few lines down): omitted or false means
+     * byte-identical output to before this option existed. When true, asks
+     * for actorA/actorB role nouns (SCENARIO_SCHEMA_WITH_ACTORS +
+     * SCENARIO_ACTOR_NOUN_RULE) — the NEW arm of BLUE-NOUNS-8's phase 1
+     * measurement (`_gen/nouns_ab.ts`). Nothing in production sets this yet;
+     * flip only after that measurement's decision rule passes.
+     */
+    actorNouns?: boolean;
   } = {},
 ): Promise<GenerateScenarioResult> {
   // `domain` steers WHICH setting the invention uses, and nothing else.
@@ -417,6 +520,7 @@ export async function generateScenario(
       ? `SET THIS SCENARIO IN THIS DOMAIN: ${opts.domain}. Use that domain and no other. Everything else above still applies.`
       : '',
     stakes,
+    opts.actorNouns ? SCENARIO_ACTOR_NOUN_RULE : '',
     opts.extraRules ?? '',
   ].filter(Boolean).join('\n\n');
   const res = await callProvider({
@@ -426,7 +530,7 @@ export async function generateScenario(
     userPrompt: buildGroundingPayload(g),
     reasoning: opts.reasoning,
     extraBody: opts.extraBody,
-    schema: SCENARIO_SCHEMA,
+    schema: opts.actorNouns ? SCENARIO_SCHEMA_WITH_ACTORS : SCENARIO_SCHEMA,
     // 2048 was sized for a NON-reasoning call: the scenario body is ~200 tokens,
     // so it looked generous. Reasoning tokens bill against this same budget, and
     // once `reasoning` is on a call can spend the whole cap thinking and return
