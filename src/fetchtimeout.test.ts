@@ -55,6 +55,15 @@ async function withStalledBodyServer<T>(fn: (url: string) => Promise<T>): Promis
   try {
     return await fn(url);
   } finally {
+    // CodeRabbit finding (this branch): `server.close()` alone waits for
+    // every ACTIVE connection to end on its own before its callback fires --
+    // a stalled-body connection this harness exists to create never does,
+    // by design, so a caller that does not itself abort/consume the
+    // response (testClearBeforeBodyReadPreventsTheAbort deliberately does
+    // not -- that is what it is testing) would hang this cleanup, relying
+    // on the file's 10s watchdog to save it instead of actually finishing.
+    // `closeAllConnections()` force-closes whatever is still open first.
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
