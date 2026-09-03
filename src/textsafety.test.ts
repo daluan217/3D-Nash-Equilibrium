@@ -179,30 +179,71 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
 }
 
 // ── 10. RED-APP-7/004 — structural guard: App.tsx's 4 label inputs (both
-//      dialogs) must clamp via clampGraphemeSafe in onChange, and must NOT
-//      carry the native `maxLength={40}` attribute any more (that attribute
-//      is what silently mangled a typed/pasted ZWJ sequence BEFORE React
-//      ever saw the value, so removing the clamp from onChange alone is not
-//      the fix — the native attribute has to be gone too, or it wins the
-//      race on every real keystroke).
+//      dialogs) must clamp via clampGraphemeSafe, and must NOT carry the
+//      native `maxLength={40}` attribute any more (that attribute is what
+//      silently mangled a typed/pasted ZWJ sequence BEFORE React ever saw
+//      the value, so removing the clamp from onChange alone is not the fix
+//      — the native attribute has to be gone too, or it wins the race on
+//      every real keystroke).
+//
+//      RED-APP-8/002 + RED-APP-8/003 moved PRIMARY enforcement to
+//      `onBeforeInput={clampLabelBeforeInput}` (preventDefault before the
+//      browser commits an over-budget insertion, so undo never desyncs);
+//      `onChange`'s clampLabelInput call is now the SECONDARY guard for the
+//      one case onBeforeInput cannot intercept — an IME composition commit
+//      — so it must skip while `e.nativeEvent.isComposing` is true or it
+//      reintroduces the mid-composition IME fight RED-APP-8/002 found.
 {
   const appSrc = readFileSync('src/App.tsx', 'utf8');
   ok(/const clampLabelInput = \(v: string\) => clampGraphemeSafe\(v, 40\);/.test(appSrc),
     'App.tsx must define clampLabelInput = clampGraphemeSafe(v, 40)');
+  ok(/function clampLabelBeforeInput\(e: React\.FormEvent<HTMLInputElement>\): void \{/.test(appSrc),
+    'App.tsx must define clampLabelBeforeInput (RED-APP-8/002+003 fix)');
 
-  const clampSites = [...appSrc.matchAll(/onChange=\{\(e\) => set(Edit|Save)Labels\(\(prev\) => \(\{ \.\.\.prev, \[key\]: clampLabelInput\(e\.target\.value\) \}\)\)\}/g)];
-  ok(clampSites.length === 2,
-    `expected 2 label-input onChange sites calling clampLabelInput (Edit + Save dialogs), found ${clampSites.length}`);
+  // CodeRabbit finding on this PR: the ORIGINAL version of these checks
+  // counted `onBeforeInput`/`onChange`/`onCompositionEnd` sites GLOBALLY
+  // (matchAll over the whole file) and only asserted the total came to 2 —
+  // so a handler missing from the Edit block while a DIFFERENT one is
+  // duplicated in the Save block (or vice versa) would still read "2" and
+  // pass, silently letting one dialog regress. Scoped per-dialog now: each
+  // dialog's own label-input JSX block (anchored on its own
+  // `value={editLabels[key]}` / `value={saveLabels[key]}`, which is
+  // dialog-specific — nothing else in the file reads that exact
+  // expression) must independently carry all three handlers wired to ITS
+  // OWN setter.
+  const clampLabelInputCall = /clampLabelInput\(e\.target\.value\)/;
+  for (const [setter, anchorText] of [['setEditLabels', 'value={editLabels[key]}'], ['setSaveLabels', 'value={saveLabels[key]}']] as const) {
+    const anchorIdx = appSrc.indexOf(anchorText);
+    ok(anchorIdx !== -1, `App.tsx must contain the label-input value binding "${anchorText}"`);
+    const block = appSrc.slice(anchorIdx, anchorIdx + 1700);
 
-  // No bare native maxLength on either of the (now clamp-only) label input
-  // blocks — anchor on the same onChange sites and look for a nearby
-  // `maxLength={40}` that would mean the native attribute is STILL there.
-  for (const m of clampSites) {
-    const around = appSrc.slice(m.index!, m.index! + 200);
-    ok(!/maxLength=\{40\}/.test(around),
-      `REGRESSION GUARD: a label input's onChange still has a nearby maxLength={40} — the native attribute must be `
-      + `removed, not merely supplemented, or it silently truncates a typed/pasted ZWJ sequence before onChange ever `
-      + `runs. Context: ${JSON.stringify(around)}`);
+    ok(/onBeforeInput=\{clampLabelBeforeInput\}/.test(block),
+      `the ${anchorText} label-input block must carry onBeforeInput={clampLabelBeforeInput}`);
+
+    const onChangeMatch = block.match(new RegExp(
+      `onChange=\\{\\(e\\) => ${setter}\\(\\(prev\\) => \\(\\{\\s*\\.\\.\\.prev,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\[key\\]: \\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\}\\)\\)\\}`));
+    ok(!!onChangeMatch,
+      `the ${anchorText} label-input block must carry an onChange calling ${setter} with clampLabelInput, skipped while composing`);
+
+    // RED-APP-8/002 second-round fix: the composition-commit `input` event
+    // often carries the SAME string the last mid-composition `input` event
+    // already wrote to the DOM (compositionend just finalizes what was
+    // already shown) — React's own value tracker sees no change and
+    // suppresses onChange entirely for that event, so relying on onChange
+    // alone left an over-budget composed string permanently unclamped after
+    // a real composition commit (director-verified: domValueFinalLen 45,
+    // full 45-char composition preserved, with only the onChange-based fix).
+    // onCompositionEnd fires unconditionally (it is not subject to the
+    // value-tracker dedup), so it is the one place guaranteed to see and
+    // clamp the committed value.
+    ok(new RegExp(`onCompositionEnd=\\{\\(e\\) => \\{[\\s\\S]{0,1200}?${setter}\\(\\(prev\\) => \\(\\{ \\.\\.\\.prev, \\[key\\]: clamped \\}\\)\\)`).test(block),
+      `the ${anchorText} label-input block must carry an onCompositionEnd calling ${setter} to clamp the committed value`);
+
+    // No bare native maxLength on this (now clamp-only) label input block.
+    ok(!/maxLength=\{40\}/.test(block),
+      `REGRESSION GUARD: the ${anchorText} label-input block still has a nearby maxLength={40} — the native `
+      + `attribute must be removed, not merely supplemented, or it silently truncates a typed/pasted ZWJ `
+      + `sequence before onChange ever runs.`);
   }
 
   // MUTATION / NEGATIVE FIXTURE — the pre-fix shape, verbatim (bare native

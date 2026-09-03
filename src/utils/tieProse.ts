@@ -13,7 +13,7 @@
  * validated scenario; otherwise the generic Row/Col names are used.
  */
 import type { GamePayoffs, ProseActionClaims, ScenarioBestReply } from '../types';
-import { equilibriumSet, kindOf, EA, EB, fmtProb, fmtPayoffProse, type Rect } from './gameEngine';
+import { equilibriumSet, kindOf, hasEquilibriumContinuum, EA, EB, fmtProb, fmtPayoffProse, type Rect } from './gameEngine';
 
 export interface TieLabels { row1?: string; row2?: string; col1?: string; col2?: string }
 
@@ -193,7 +193,7 @@ export function tieProseFull(g: GamePayoffs, labelsIn?: TieLabels | null): { pro
   // produce one: round L7 draw 54 shipped that claim on a game whose entire
   // equilibrium set is the single point (0, 0). Correct-by-construction only
   // covers what is derived — an editorial generalisation has to be derived too.
-  const hasContinuum = equilibriumSet(g).some((r) => kindOf(r) !== 'point');
+  const hasContinuum = hasEquilibriumContinuum(g);
   if (ties.length) {
     // "that player" is singular; a game can tie for BOTH players (round T1).
     const tiedPlayers = new Set<string>();

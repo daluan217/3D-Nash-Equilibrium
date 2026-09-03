@@ -1812,6 +1812,319 @@ try {
     await stalePage.close();
   }
 
+  // ══ 33. RED-APP-8/001 — a write-action 401 that clears the auth token
+  //      (#101's own fix: updateAuthToken(null) so the app's state agrees
+  //      with the server's) must never reopen the guided tour mid-session or
+  //      touch the active game. The tour-open effect (App.tsx ~2936) used to
+  //      be keyed only on `authToken` truthiness with no memory of "was this
+  //      visitor ever signed in this session" — so the SAME transition #101
+  //      introduced re-armed it for a visitor who had already been signed
+  //      in, and the tour's first step swaps the board for the Prisoner's
+  //      Dilemma preset, discarding whatever the user was looking at. Models
+  //      the 401 with a route interception (byte-identical downstream code
+  //      path to a real TTL expiry — `res.status === 401` is all the client
+  //      reads) rather than waiting out AUTH_TOKEN_TTL_MS.
+  {
+    const tourPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(tourPage, 'e2e8tourreopen');
+    record('control: a signed-in load does not auto-open the tour',
+      !(await tourPage.locator('[role="dialog"][aria-label="Guided tour"]').isVisible({ timeout: 1500 }).catch(() => false)));
+
+    const tourMatrix = tourPage.locator('input[inputmode="decimal"][class*="text-center"]');
+    const myValues = ['9', '8', '7', '6', '5', '4', '3', '2']; // distinct from every preset, esp. PD's [3,3,0,5,5,0,1,1]
+    const readMatrix = async () => {
+      const out = [];
+      for (let i = 0; i < 8; i++) out.push(await tourMatrix.nth(i).inputValue());
+      return out;
+    };
+    for (let i = 0; i < 8; i++) { await tourMatrix.nth(i).fill(myValues[i]); await tourMatrix.nth(i).blur(); }
+    // CodeRabbit: poll for the DOM to actually reflect the typed values
+    // rather than a blind settle delay.
+    await tourPage.waitForFunction((expected) => {
+      const els = [...document.querySelectorAll('input[inputmode="decimal"].text-center, input[inputmode="decimal"][class*="text-center"]')];
+      return els.length === expected.length && els.every((el, i) => el.value === expected[i]);
+    }, myValues, { timeout: 5000 }).catch(() => {});
+
+    const gameName = `TourReopenGame${Date.now()}`;
+    await tourPage.getByRole('button', { name: /save preset/i }).click();
+    await tourPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await tourPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+    await tourPage.getByRole('button', { name: /^save game profile$/i }).click();
+    await tourPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
+      null, { timeout: 5000 }).catch(() => {});
+    // CodeRabbit: poll for the matrix to settle back to the saved values
+    // (the dialog closing doesn't guarantee the surrounding re-render has
+    // landed yet) rather than a blind settle delay.
+    await tourPage.waitForFunction((expected) => {
+      const els = [...document.querySelectorAll('input[inputmode="decimal"]')];
+      return els.length === expected.length && els.every((el, i) => el.value === expected[i]);
+    }, myValues, { timeout: 5000 }).catch(() => {});
+    record('my saved game is showing my own matrix values, not a preset\'s',
+      JSON.stringify(await readMatrix()) === JSON.stringify(myValues), JSON.stringify(await readMatrix()));
+
+    // Force the NEXT PATCH to /api/games/:id to 401, regardless of the real
+    // (valid) token the client sends — models a dead token without needing
+    // to wait out a real TTL or know the server's per-process AUTH_SECRET.
+    await tourPage.route('**/api/games/*', async (route) => {
+      if (route.request().method() === 'PATCH') {
+        await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) });
+      } else {
+        await route.continue();
+      }
+    });
+    await tourPage.getByRole('button', { name: `Edit ${gameName}` }).click();
+    await tourPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    const patchDone401 = tourPage.waitForResponse(
+      (r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
+    await tourPage.getByRole('button', { name: /^save changes$/i }).click();
+    await patchDone401.catch(() => null);
+    await tourPage.waitForFunction(() =>
+      !!document.querySelector('[role="dialog"][aria-label="Edit saved game"] button')
+      && Array.from(document.querySelectorAll('[role="dialog"][aria-label="Edit saved game"] button')).some((b) => /sign in.*sign up/i.test(b.textContent || '')),
+      null, { timeout: 5000 }).catch(() => {});
+    record('the 401 shows the Sign-In card inside the Edit dialog (#101\'s own fix, still working)',
+      await tourPage.locator('[role="dialog"][aria-label="Edit saved game"]').getByRole('button', { name: /sign in.*sign up/i }).isVisible().catch(() => false));
+
+    // Past the tour effect's 700ms timer.
+    await tourPage.waitForTimeout(1500);
+    record('RED-APP-8/001 fix: the guided tour did NOT reopen after the 401',
+      !(await tourPage.locator('[role="dialog"][aria-label="Guided tour"]').isVisible({ timeout: 500 }).catch(() => false)));
+    record('RED-APP-8/001 fix: my saved game\'s matrix is unchanged (not swapped for a preset)',
+      JSON.stringify(await readMatrix()) === JSON.stringify(myValues), JSON.stringify(await readMatrix()));
+    await tourPage.close();
+  }
+
+  // ══ 34. RED-APP-8/004 — a real QuotaExceededError thrown from
+  //      localStorage.setItem('nash_sim_theme', ...) must not blank the
+  //      page. That effect fires unconditionally on first mount (before
+  //      anything else has painted), and with no error boundary anywhere in
+  //      the app, an uncaught throw there took down the whole React tree —
+  //      zero visible content, no way for a visitor to recover. Installed
+  //      via addInitScript so the throwing storage is in place BEFORE the
+  //      app's own JS ever runs, modeling "the browser already has no quota
+  //      left" rather than something the app itself did — same technique
+  //      the director's own repro used.
+  {
+    const quotaPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await quotaPage.addInitScript(() => {
+      const real = window.localStorage.setItem.bind(window.localStorage);
+      Object.defineProperty(window.localStorage, 'setItem', {
+        value: (key, value) => {
+          if (key === 'nash_sim_theme') {
+            throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+          }
+          return real(key, value);
+        },
+        configurable: true,
+      });
+    });
+    const quotaErrors = [];
+    quotaPage.on('pageerror', (e) => quotaErrors.push(e.message));
+    await quotaPage.goto(BASE, { waitUntil: 'networkidle' });
+    await quotaPage.waitForTimeout(500);
+    const bodyText = await quotaPage.evaluate(() => document.body.innerText || '');
+    record('RED-APP-8/004 fix: the page still renders content when nash_sim_theme\'s setItem throws QuotaExceededError',
+      bodyText.length > 0, `bodyText.length=${bodyText.length}`);
+    // The safeStorage wrappers swallow the exception at its own call site —
+    // it should never even reach an uncaught pageerror, let alone the error
+    // boundary's fallback UI.
+    record('RED-APP-8/004 fix: no uncaught page error from the quota-exceeded write',
+      quotaErrors.length === 0, JSON.stringify(quotaErrors));
+    // CodeRabbit: visibility alone proves nothing about the click HANDLER —
+    // click the control and poll for the actual theme state (the `dark`
+    // class on <html>, same signal section 12's own theme round-trip check
+    // uses) to change from its baseline, so a broken handler (or a theme
+    // state stuck by the same quota failure) still fails this check.
+    const themeToggle = quotaPage.getByRole('button', { name: 'Toggle dark mode' }).first();
+    const themeButtonVisible = await themeToggle.isVisible({ timeout: 2000 }).catch(() => false);
+    let themeButtonWorks = false;
+    if (themeButtonVisible) {
+      const before = await quotaPage.evaluate(() => document.documentElement.classList.contains('dark'));
+      await themeToggle.click();
+      themeButtonWorks = await quotaPage.waitForFunction((wasDark) =>
+        document.documentElement.classList.contains('dark') !== wasDark, before, { timeout: 3000 })
+        .then(() => true).catch(() => false);
+    }
+    record('RED-APP-8/004 fix: the app is otherwise interactive (theme toggle click actually changes the theme state) after the quota failure',
+      themeButtonWorks);
+    await quotaPage.close();
+  }
+
+  // ══ 35. RED-APP-8/005 — the Account and Feedback dialogs must be reachable
+  //      at a short (400%-zoom-equivalent) viewport. Save/Edit already had
+  //      `max-h-[90vh] overflow-y-auto`; Account/Feedback didn't, so at
+  //      320x256 (WCAG 1.4.10 Reflow's own floor) part of the dialog rendered
+  //      above y=0 and part below the window, and being `position:fixed`, a
+  //      real page scroll has ZERO effect on it — there was no path to the
+  //      submit button at all. `.click()` here exercises the real thing a
+  //      user needs: an actionable click, which Playwright only succeeds at
+  //      by scrolling a genuine scrollable ANCESTOR into view (the dialog
+  //      itself, post-fix) — there is no such ancestor pre-fix, so the click
+  //      times out instead of silently "succeeding" through some shortcut.
+  {
+    const shortPage = await browser.newPage({ viewport: { width: 320, height: 256 } });
+    // NOTE: no page-wide setDefaultTimeout override here — the two
+    // reachability clicks below already pass their own explicit
+    // {timeout: 5000}, which is what needs to fail fast on the unfixed
+    // tree; a global override also throttled THIS page's own navigation,
+    // which can legitimately take longer than 6s once ~30 prior e2e
+    // sections have left other pages/contexts open.
+    await shortPage.goto(BASE, { waitUntil: 'networkidle' });
+    const exitTourShort = shortPage.getByRole('button', { name: /exit tour/i });
+    if (await exitTourShort.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await exitTourShort.click();
+      // CodeRabbit: poll for the tour dialog to actually close, not a
+      // blind settle delay.
+      await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 5000 }).catch(() => {});
+    }
+
+    await shortPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    await shortPage.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+    // MUTATION-TEST FINDING: the "Login" submit button's own vertical
+    // position in the (short, login-mode) form happens to land inside a
+    // 256px viewport even on the UNFIXED tree (the dialog centers itself,
+    // so the overflow above/below is roughly symmetric and this particular
+    // button's offset from the dialog's own top isn't large enough to push
+    // it below y=256) -- so it does not reliably discriminate fixed from
+    // unfixed here. The dialog's OWN close button, right at its top edge
+    // (the dialog's top sits at y=-109 on the unfixed tree, confirmed by
+    // direct measurement), does: it is reliably off-screen pre-fix and
+    // reliably reachable post-fix, regardless of which form mode is open.
+    const accountClose = shortPage.locator('[role="dialog"][aria-label="Account"]').getByRole('button', { name: 'Close dialog' });
+    let accountReachable = true;
+    try { await accountClose.click({ timeout: 5000 }); } catch { accountReachable = false; }
+    record('RED-APP-8/005 fix: the Account dialog\'s own close button is reachable at 320x256', accountReachable);
+    // CodeRabbit: poll for the Account dialog to actually close, not a
+    // blind settle delay.
+    await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 5000 }).catch(() => {});
+
+    // Stub the feedback POST — untested-controls.json's own policy for this
+    // control is "never actually send real email through SMTP"; this test is
+    // about the submit BUTTON's reachability (the RED-APP-8/005 defect), not
+    // the feedback route, so the real network call is intercepted rather
+    // than reaching the server.
+    await shortPage.route('**/api/feedback', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }));
+    await shortPage.getByRole('button', { name: /send feedback/i }).first().click();
+    await shortPage.waitForSelector('[role="dialog"][aria-label="Send feedback"]', { timeout: 5000 });
+    const feedbackSubmit = shortPage.locator('[role="dialog"][aria-label="Send feedback"]').getByRole('button', { name: /send feedback/i });
+    let feedbackReachable = true;
+    try { await feedbackSubmit.click({ timeout: 5000 }); } catch { feedbackReachable = false; }
+    record('RED-APP-8/005 fix: the Feedback dialog\'s submit button is reachable at 320x256', feedbackReachable);
+    await shortPage.close();
+  }
+
+  // ══ 36. RED-APP-8/002 — the label inputs' grapheme-safe clamp (#101, RED-
+  //      APP-7/004) must never fight an open IME composition. A native
+  //      `input` event fires on EVERY keystroke of an open composition, not
+  //      just on commit, so clamping unconditionally in `onChange` used to
+  //      desync the DOM value from the IME's own growing composing buffer
+  //      the moment it crossed 40 units. Dispatches a REAL composition
+  //      sequence — native value setter + InputEvent(insertCompositionText,
+  //      isComposing:true) per keystroke, matching how
+  //      @testing-library/user-event drives React's own composition
+  //      detection (which reads exactly `e.nativeEvent.isComposing`).
+  {
+    const imePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(imePage, 'e2e8ime');
+    await imePage.getByRole('button', { name: /save preset/i }).click();
+    await imePage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const row1Input = imePage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Undercut"]');
+    await row1Input.click();
+
+    // 45 CJK characters, one UTF-16 unit each — 5 past the 40-unit budget,
+    // never committed (compositionend) until the very last step.
+    const composedChars = ('国际关系与地区安全合作机制建设的历史沿革与展望研究' + '究究究究究究究究究究究究究究究究究究究究').split('');
+    const info = await imePage.evaluate(async (chars) => {
+      const input = document.activeElement;
+      if (!input || input.tagName !== 'INPUT') return { error: 'no focused input' };
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+      let composing = '';
+      const snapshots = [];
+      for (let i = 0; i < chars.length; i++) {
+        composing += chars[i];
+        nativeSetter.call(input, composing);
+        input.dispatchEvent(new InputEvent('input', {
+          bubbles: true, cancelable: false, composed: true,
+          inputType: 'insertCompositionText', data: composing, isComposing: true,
+        }));
+        snapshots.push({ i, composingLenIntended: composing.length, domValueLen: input.value.length });
+      }
+      input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: composing }));
+      nativeSetter.call(input, composing);
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true, cancelable: false, composed: true,
+        inputType: 'insertCompositionText', data: composing, isComposing: false,
+      }));
+      await new Promise((r) => setTimeout(r, 50));
+      return { snapshots, domValueFinal: input.value, domValueFinalLen: input.value.length, fullComposedLen: composing.length };
+    }, composedChars);
+
+    if (info.error) {
+      record('RED-APP-8/002: an input was focused for the composition test', false, info.error);
+    } else {
+      const midCompositionClamped = info.snapshots.some((s) => s.composingLenIntended > 40 && s.domValueLen < s.composingLenIntended);
+      record('RED-APP-8/002 fix: the DOM value is NEVER clamped while still composing (isComposing=true)',
+        !midCompositionClamped,
+        midCompositionClamped ? JSON.stringify(info.snapshots.filter((s) => s.domValueLen < s.composingLenIntended).slice(0, 3)) : 'no clamp seen during composition');
+      record('RED-APP-8/002 fix: the final COMMITTED value (post-compositionend) is clamped to <=40 UTF-16 units',
+        info.domValueFinalLen <= 40, `len=${info.domValueFinalLen}`);
+      record('RED-APP-8/002 fix: the final committed value is NOT the full 45-character composition (the clamp really ran on commit)',
+        info.domValueFinal !== '国际关系与地区安全合作机制建设的历史沿革与展望研究究究究究究究究究究究究究究究究究究究究究');
+    }
+    await imePage.close();
+  }
+
+  // ══ 37. RED-APP-8/003 — the FIRST time the label-input clamp actually
+  //      narrows a value, native Undo (Cmd/Ctrl+Z) must not go permanently
+  //      inert for that field. Types real keystrokes (not synthetic DOM
+  //      events) past the 40-unit budget, then presses Undo repeatedly and
+  //      confirms the value actually changes at least once (the pre-fix
+  //      behaviour: 50 presses, zero change, ever).
+  {
+    const undoPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(undoPage, 'e2e8undo');
+    await undoPage.getByRole('button', { name: /save preset/i }).click();
+    await undoPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const row1Input = undoPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Undercut"]');
+    await row1Input.click();
+    await row1Input.fill('');
+    await undoPage.keyboard.type('AAAAAAAAAA', { delay: 20 }); // 10 chars, well under 40
+    for (let i = 0; i < 35; i++) {
+      await undoPage.keyboard.type('B', { delay: 25 }); // one keystroke at a time, crossing the 40-unit budget
+    }
+    const afterOverflow = await row1Input.inputValue();
+    record('RED-APP-8/003 fixture sanity: typed value is clamped to 40 units', afterOverflow.length === 40, `len=${afterOverflow.length}`);
+
+    const isMac = process.platform === 'darwin';
+    const history = [];
+    for (let i = 0; i < 40; i++) {
+      await undoPage.keyboard.press(isMac ? 'Meta+z' : 'Control+z');
+      await undoPage.waitForTimeout(40);
+      history.push(await row1Input.inputValue());
+    }
+    const everChanged = new Set(history).size > 1;
+    record('RED-APP-8/003 fix: native Undo actually changes the value at least once after a clamp fired (was PERMANENTLY inert pre-fix)',
+      everChanged, everChanged ? `${new Set(history).size} distinct values over 40 presses` : `stuck at "${history[0]}"`);
+
+    // Control: a field the clamp never touched (the Name field, well under
+    // 40 chars) undoes normally — proves undo is not broken everywhere, only
+    // isolating this to the moment the clamp actually narrowed a value.
+    const nameField = undoPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]');
+    await nameField.click();
+    await nameField.fill('');
+    await undoPage.keyboard.type('short', { delay: 20 });
+    await undoPage.keyboard.press(isMac ? 'Meta+z' : 'Control+z');
+    await undoPage.waitForTimeout(80);
+    const controlAfterUndo = await nameField.inputValue();
+    record('control: an unclamped field\'s undo works normally', controlAfterUndo !== 'short' && controlAfterUndo.length < 5,
+      `"${controlAfterUndo}"`);
+    await undoPage.close();
+  }
+
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page

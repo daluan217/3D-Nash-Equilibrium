@@ -1,6 +1,7 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import {ErrorBoundary} from './components/ErrorBoundary.tsx';
 import './utils/plotlySetup';
 
 // Self-hosted fonts (bundled — no Google Fonts request, works offline)
@@ -18,6 +19,8 @@ import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );

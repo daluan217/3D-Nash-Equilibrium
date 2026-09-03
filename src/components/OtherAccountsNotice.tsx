@@ -4,6 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { safeGetItem, safeSetItem } from '../utils/safeStorage';
 
 const DISMISS_KEY = 'nash_sim_dismissed_desktop_hint';
 
@@ -57,7 +58,7 @@ export const OtherAccountsNotice: React.FC<OtherAccountsNoticeProps> = ({ dbMode
     // Re-evaluate eligibility on EVERY dependency change, not just at mount:
     // a mode switch away from 'local', or a fresh sign-in, must clear an
     // already-visible notice immediately rather than leave it stale.
-    if (dbMode !== 'local' || signedIn || localStorage.getItem(DISMISS_KEY) === '1') {
+    if (dbMode !== 'local' || signedIn || safeGetItem(DISMISS_KEY) === '1') {
       setVisible(false);
       return;
     }
@@ -71,7 +72,7 @@ export const OtherAccountsNotice: React.FC<OtherAccountsNoticeProps> = ({ dbMode
         // flight, and a stale response landing after that must not
         // resurrect a notice that is no longer appropriate.
         if (cancelled) return;
-        if (dbMode !== 'local' || signedIn || localStorage.getItem(DISMISS_KEY) === '1') return;
+        if (dbMode !== 'local' || signedIn || safeGetItem(DISMISS_KEY) === '1') return;
         if (data?.hasOtherAccounts) setVisible(true);
       })
       .catch(() => { /* offline or unreachable: say nothing, never disrupt */ });
@@ -81,7 +82,7 @@ export const OtherAccountsNotice: React.FC<OtherAccountsNoticeProps> = ({ dbMode
   if (!visible) return null;
 
   const dismiss = () => {
-    try { localStorage.setItem(DISMISS_KEY, '1'); } catch { /* best effort */ }
+    safeSetItem(DISMISS_KEY, '1');
     setVisible(false);
   };
 

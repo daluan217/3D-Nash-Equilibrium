@@ -20,7 +20,7 @@ import dotenv from "dotenv";
 // `npm run dev` uses tsx, NOT node --experimental-strip-types, whose native ESM
 // resolver requires explicit extensions and throws ERR_MODULE_NOT_FOUND on the
 // first src/ import. esbuild (production) and vite (client) both resolve these.
-import { computeAllNE, computeIndifference } from "./src/utils/gameEngine";
+import { computeAllNE, hasEquilibriumContinuum } from "./src/utils/gameEngine";
 import { tieProse, tieProseFull } from "./src/utils/tieProse";
 import { validateReport, validateScenario, validateProseClaims, validateProseDirections, scenarioIsClaimFree } from "./src/utils/nashValidator";
 import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
@@ -3055,7 +3055,14 @@ async function startServer() {
     // Per-gate opt-outs mirror NASH_PROSE_CHECKS so each gate's effect is
     // measurable in isolation. The eval sweep calls generateReport directly
     // and never crosses either gate.
-    const degenerate = computeIndifference(payoffs).any;
+    // RED-MATH-8/002: was `computeIndifference(payoffs).any` (full
+    // indifference only), while report.ts's grounding payload and
+    // nashValidator.ts's validateReport both already switched to
+    // `hasEquilibriumContinuum` for this exact question (RED-MATH-7/001,
+    // #101). All three now agree — see the note on `validateReport`'s own
+    // `degenerate` in nashValidator.ts for why a mismatch here is a
+    // structural gate bug, not a model-quality signal.
+    const degenerate = hasEquilibriumContinuum(payoffs);
     const scenarioGateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
     const proseGateOn = process.env.NASH_PROSE_ACTION_CHECKS !== '0';
     // Label-aware direction check (opt-in, NASH_DIRECTION_CHECKS=1): reads

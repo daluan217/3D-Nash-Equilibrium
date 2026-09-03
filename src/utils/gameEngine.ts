@@ -798,6 +798,60 @@ export function equilibriumSet(g: GamePayoffs): Rect[] {
 export const kindOf = (r: Rect): 'point' | 'segment' | 'area' =>
   r.x1 - r.x0 < NE_EPS && r.y1 - r.y0 < NE_EPS ? 'point' : (r.x1 - r.x0 > NE_EPS && r.y1 - r.y0 > NE_EPS ? 'area' : 'segment');
 
+/** Every `equilibriumSet()` component that is NOT a single point — a genuine
+ * continuum (segment or area), not a finite set of isolated equilibria. */
+export function continuumComponents(g: GamePayoffs): Rect[] {
+  return equilibriumSet(g).filter((r) => kindOf(r) !== 'point');
+}
+
+/**
+ * The ONE shared "does this game have a continuum of equilibria" test.
+ * RED-MATH-7/001 found `report.ts`'s old `computeIndifference(g).any` test
+ * too narrow (true only for FULL indifference, missing 14% of small-integer
+ * games with a PARTIAL tie continuum) and #101 fixed report.ts's own caller
+ * with this exact expression, inline. RED-MATH-8/002 found that
+ * `nashValidator.ts`'s `validateReport`/`validateProseClaims` were never
+ * updated to match — they kept `computeIndifference(g).any`, so the two
+ * files DISAGREED on every one of those games: report.ts told the model to
+ * emit a `'continuum'` claim, and validateReport rejected any claim typed
+ * that way, 100% of the time. Every caller of "is this game degenerate for
+ * equilibrium-reporting purposes" now goes through this one function so the
+ * question can never again be answered two different ways in this codebase.
+ */
+export function hasEquilibriumContinuum(g: GamePayoffs): boolean {
+  return continuumComponents(g).length > 0;
+}
+
+export const pointInRect = (r: Rect, x: number, y: number): boolean =>
+  x >= r.x0 - NE_EPS && x <= r.x1 + NE_EPS && y >= r.y0 - NE_EPS && y <= r.y1 + NE_EPS;
+
+/**
+ * RED-MATH-8/001: `computeAllNE`'s enumerated points can include equilibria
+ * that are genuinely DISJOINT from every continuum component the game also
+ * has — a game can have both a continuum (e.g. "A plays Row 2 while B mixes
+ * with y in [0.615, 1]") AND a separate, isolated pure equilibrium elsewhere
+ * (e.g. (x=1, y=0)) that is not part of it. `report.ts` used to offer EVERY
+ * `computeAllNE` point as an interchangeable "representative point" for the
+ * continuum claim, including strays that directly contradict the continuum's
+ * own described range. This splits the enumerated points into the ones that
+ * really do lie ON some continuum component (safe to offer as a
+ * representative) and the ones that don't (deserve their own separate
+ * pure/mixed claim, never folded into the continuum's "pick any of these"
+ * framing).
+ */
+export function splitEquilibriaByContinuum(g: GamePayoffs): { onContinuum: NashEquilibrium[]; stray: NashEquilibrium[] } {
+  const comps = continuumComponents(g);
+  const all = computeAllNE(g);
+  if (comps.length === 0) return { onContinuum: [], stray: all };
+  const onContinuum: NashEquilibrium[] = [];
+  const stray: NashEquilibrium[] = [];
+  for (const e of all) {
+    if (comps.some((r) => pointInRect(r, e.x, e.y))) onContinuum.push(e);
+    else stray.push(e);
+  }
+  return { onContinuum, stray };
+}
+
 /**
  * Plain-language description of the equilibrium COMPONENTS that the corner
  * model cannot express — the segments and areas returned by equilibriumSet.

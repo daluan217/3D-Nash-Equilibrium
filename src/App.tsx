@@ -16,8 +16,7 @@ import {
   doStep,
   buildPolyStr,
   generateRandomGame,
-  equilibriumSet,
-  kindOf,
+  hasEquilibriumContinuum as computeHasEquilibriumContinuum,
   resolveProfile,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
@@ -39,6 +38,7 @@ import {
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe } from './utils/textSafety';
+import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -117,6 +117,55 @@ import katex from 'katex';
  * can never drift apart again).
  */
 const clampLabelInput = (v: string) => clampGraphemeSafe(v, 40);
+
+/**
+ * RED-APP-8/002 + RED-APP-8/003: the `onChange`-based clamp above (#101's
+ * fix for RED-APP-7/004) introduced two NEW regressions relative to the
+ * native `maxLength` it replaced — both from the same root cause, an
+ * unconditional post-hoc React state rewrite of a value the browser itself
+ * already produced:
+ *
+ *  - 002: a native `input` event fires on EVERY keystroke of an open IME
+ *    composition (CJK/JP/KR), not just on commit. Clamping mid-composition
+ *    fights the IME — the DOM value stops growing while the composition's
+ *    own internal buffer keeps growing, desyncing the two.
+ *  - 003: the FIRST time the clamp actually narrows a value, the browser's
+ *    native Undo (Cmd/Ctrl+Z) goes permanently inert for that field —
+ *    writing a DIFFERENT string back into a controlled input breaks the
+ *    correspondence between the undo stack and the displayed value.
+ *
+ * Both are closed by moving enforcement from `onChange` (after the browser
+ * has already committed the edit) to `onBeforeInput` (before it has):
+ * `preventDefault()` here stops the browser from performing an insertion
+ * that would push the value over the grapheme-safe budget, so the browser's
+ * OWN undo-stack-tracked edit either happens (value stays ≤40 units, exactly
+ * what a real edit produced) or never happens at all (no `input` event, no
+ * `onChange`, nothing for undo to have to reconcile).
+ *
+ * `insertCompositionText` — every keystroke of an OPEN composition — is
+ * defined by the spec as NOT cancelable, so `preventDefault()` here is a
+ * silent no-op for it: composition passes through completely untouched,
+ * matching native `maxLength`'s own deferred-enforcement behavior. The
+ * eventual COMMITTED string (compositionend) still needs a clamp, since
+ * `onBeforeInput` never saw it coming — `onChange`'s clamp stays, but now
+ * skips while `e.nativeEvent.isComposing` is true (only the OLD unconditional
+ * form was the bug) so it never touches a value mid-composition, only the
+ * final committed one.
+ */
+function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
+  const ne = e.nativeEvent as InputEvent;
+  if (ne.isComposing) return; // not cancelable anyway — let composition through untouched
+  const data = ne.data;
+  if (!data) return; // deletions and other non-inserting edits have nothing to bound
+  const target = e.target as HTMLInputElement;
+  const current = target.value;
+  const selStart = target.selectionStart ?? current.length;
+  const selEnd = target.selectionEnd ?? current.length;
+  const prospective = current.slice(0, selStart) + data + current.slice(selEnd);
+  if (clampGraphemeSafe(prospective, 40) !== prospective) {
+    e.preventDefault();
+  }
+}
 
 // Typeset LaTeX inline via KaTeX (self-hosted, works offline)
 function MathTex({ tex, className }: { tex: string; className?: string }) {
@@ -373,16 +422,21 @@ export default function App() {
 
   // ── Theme State ────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('nash_sim_theme') === 'dark';
+    return safeGetItem('nash_sim_theme') === 'dark';
   });
 
   useEffect(() => {
+    // RED-APP-8/004: this effect fires unconditionally on first mount, so an
+    // unguarded setItem throwing here (a real QuotaExceededError, e.g. old
+    // Safari private mode) used to blank the ENTIRE app with no error
+    // boundary to catch it. The in-memory darkMode state and the classList
+    // toggle below still do the visible work; persistence is best-effort.
     if (darkMode) {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('nash_sim_theme', 'dark');
+      safeSetItem('nash_sim_theme', 'dark');
     } else {
       document.documentElement.classList.remove('dark');
-      localStorage.setItem('nash_sim_theme', 'light');
+      safeSetItem('nash_sim_theme', 'light');
     }
     // Desktop app: keep the NATIVE window background in step with the theme.
     // It is what shows through when a drag-resize outpaces the repaint, so a
@@ -394,12 +448,12 @@ export default function App() {
 
   // ── Authentication & Saved Games States ────────────────────────────────────
   const [dbMode, setDbMode] = useState<'local' | 'cloud'>(() => {
-    return (localStorage.getItem('nash_sim_db_mode') as 'local' | 'cloud') || 'local';
+    return (safeGetItem('nash_sim_db_mode') as 'local' | 'cloud') || 'local';
   });
   const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => {
-    const cached = localStorage.getItem('nash_sim_api_base');
+    const cached = safeGetItem('nash_sim_api_base');
     if (cached && (cached.includes('ais-pre-') || cached.includes('243079162760') || cached.includes('988056159702') || cached.includes('194708291738'))) {
-      localStorage.setItem('nash_sim_api_base', 'https://nash-equilibrium-simulator.com');
+      safeSetItem('nash_sim_api_base', 'https://nash-equilibrium-simulator.com');
       return 'https://nash-equilibrium-simulator.com';
     }
     return cached || 'https://nash-equilibrium-simulator.com';
@@ -414,26 +468,26 @@ export default function App() {
   };
 
   const [authToken, setAuthToken] = useState<string | null>(() => {
-    const key = (localStorage.getItem('nash_sim_db_mode') || 'local') === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
-    return localStorage.getItem(key) || localStorage.getItem('nash_sim_token');
+    const key = (safeGetItem('nash_sim_db_mode') || 'local') === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
+    return safeGetItem(key) || safeGetItem('nash_sim_token');
   });
 
   const updateAuthToken = (token: string | null) => {
     setAuthToken(token);
     const key = dbMode === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
     if (token) {
-      localStorage.setItem(key, token);
+      safeSetItem(key, token);
     } else {
-      localStorage.removeItem(key);
-      localStorage.removeItem('nash_sim_token'); // clear legacy as well
+      safeRemoveItem(key);
+      safeRemoveItem('nash_sim_token'); // clear legacy as well
     }
   };
 
   const handleSwitchDbMode = (mode: 'local' | 'cloud') => {
     setDbMode(mode);
-    localStorage.setItem('nash_sim_db_mode', mode);
+    safeSetItem('nash_sim_db_mode', mode);
     const key = mode === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
-    const savedToken = localStorage.getItem(key);
+    const savedToken = safeGetItem(key);
     setAuthToken(savedToken);
 
     // Reset basic session users or load correct data
@@ -1159,8 +1213,11 @@ export default function App() {
   // so a PARTIAL tie walked straight through: on a=[[-2,-2],[-2,-1]],
   // b=[[-2,-1],[-1,-2]] the set is x in [0, 0.5] at y=1 and (0.3, 1) has zero
   // regret for both players, so "always converge to the unique" is false while
-  // the continuum is listed three lines above. This is the test tieProse uses.
-  const hasEquilibriumContinuum = equilibriumSet(payoffs).some((r) => kindOf(r) !== 'point');
+  // the continuum is listed three lines above. This is the ONE shared test
+  // (gameEngine.ts's `hasEquilibriumContinuum`) tieProse.ts, report.ts's
+  // grounding payload, and nashValidator.ts's validateReport all now use —
+  // RED-MATH-8/002 found nashValidator.ts still on the old, narrower test.
+  const hasEquilibriumContinuum = computeHasEquilibriumContinuum(payoffs);
   const [llmLoading, setLlmLoading] = useState(false);
   // Tracked separately: without it a failed request clears the envelope and
   // renders identically to "never asked", so the user cannot tell a dead
@@ -2937,7 +2994,20 @@ export default function App() {
   const [tourSpinAllowed, setTourSpinAllowed] = useState(true);
 
   /**
-   * Runs on EVERY load, including a refresh — but not for a signed-in visitor.
+   * RED-APP-8/001: distinguishes "never signed in this session" from
+   * "was signed in and just got 401'd" (e.g. an expired token cleared by
+   * updateAuthToken(null) on a failed Save/Edit/Delete). Without this, the
+   * effect below — keyed on every `authToken` transition, not just mount —
+   * cannot tell the two apart and reopens the tour mid-session for a visitor
+   * who was never anonymous to begin with.
+   */
+  const everAuthedRef = useRef(!!authToken);
+
+  /**
+   * Runs on EVERY load, including a refresh — but not for a signed-in visitor,
+   * and not for a visitor whose token merely died mid-session (that visitor
+   * already saw the app once; auto-opening the tour on top of their own game
+   * would be uninvited, and the tour's first step replaces the active game).
    *
    * Gated on `authToken` rather than on `user`, because the token is read from
    * localStorage synchronously while `user` only arrives after /api/auth/me
@@ -2945,7 +3015,11 @@ export default function App() {
    * few hundred milliseconds on every page load.
    */
   useEffect(() => {
-    if (authToken) return;
+    if (authToken) {
+      everAuthedRef.current = true;
+      return;
+    }
+    if (everAuthedRef.current) return;
     const t = setTimeout(() => setTourOpen(true), 700);
     return () => clearTimeout(t);
   }, [authToken]);
@@ -5098,7 +5172,13 @@ export default function App() {
             aria-modal="true"
             aria-label="Account"
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
+            // RED-APP-8/005: matches the Save/Edit dialogs' own height cap —
+            // without it, at a short viewport (e.g. 320x200, what 400% zoom
+            // on an ordinary screen produces) this fixed-position dialog can
+            // render taller than the viewport with no scroll path (page
+            // scroll has zero effect on a `position:fixed` element), making
+            // Login/Sign Up permanently unreachable.
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
@@ -5472,7 +5552,28 @@ export default function App() {
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
                         value={editLabels[key]}
-                        onChange={(e) => setEditLabels((prev) => ({ ...prev, [key]: clampLabelInput(e.target.value) }))}
+                        onBeforeInput={clampLabelBeforeInput}
+                        onChange={(e) => setEditLabels((prev) => ({
+                          ...prev,
+                          // RED-APP-8/002: never clamp WHILE an IME composition is
+                          // open (the DOM value is correct as-is; onBeforeInput
+                          // cannot block insertCompositionText).
+                          [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
+                        }))}
+                        onCompositionEnd={(e) => {
+                          // The commit's own trailing `input` event often carries
+                          // the SAME string the last mid-composition `input` event
+                          // already wrote to the DOM — React's value tracker sees
+                          // no change from what it last recorded and suppresses
+                          // onChange entirely for that event, so relying on
+                          // onChange alone left an over-budget composed string
+                          // unclamped forever. onCompositionEnd fires unconditionally
+                          // (it does not go through the value-tracker dedup), so it
+                          // is the one place guaranteed to see the committed value.
+                          const v = e.currentTarget.value;
+                          const clamped = clampLabelInput(v);
+                          if (clamped !== v) setEditLabels((prev) => ({ ...prev, [key]: clamped }));
+                        }}
                       />
                     </div>
                   ))}
@@ -5863,7 +5964,21 @@ export default function App() {
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
                         value={saveLabels[key]}
-                        onChange={(e) => setSaveLabels((prev) => ({ ...prev, [key]: clampLabelInput(e.target.value) }))}
+                        onBeforeInput={clampLabelBeforeInput}
+                        onChange={(e) => setSaveLabels((prev) => ({
+                          ...prev,
+                          // RED-APP-8/002: see the identical comment on the Edit
+                          // dialog's label inputs above.
+                          [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
+                        }))}
+                        onCompositionEnd={(e) => {
+                          // See the identical comment on the Edit dialog's label
+                          // inputs above — React's value tracker can suppress
+                          // onChange for the composition-commit event.
+                          const v = e.currentTarget.value;
+                          const clamped = clampLabelInput(v);
+                          if (clamped !== v) setSaveLabels((prev) => ({ ...prev, [key]: clamped }));
+                        }}
                       />
                     </div>
                   ))}
@@ -5918,7 +6033,7 @@ export default function App() {
         onSwitchDbMode={handleSwitchDbMode}
         onUpdateApiBaseUrl={(url) => {
           setApiBaseUrl(url);
-          localStorage.setItem('nash_sim_api_base', url);
+          safeSetItem('nash_sim_api_base', url);
         }}
       />
 
@@ -5965,7 +6080,10 @@ export default function App() {
             aria-modal="true"
             aria-label="Send feedback"
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in">
+            // RED-APP-8/005: same height cap as the Account dialog above,
+            // for the same reason — this dialog was the other one of the
+            // app's four full-size dialogs missing it.
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">

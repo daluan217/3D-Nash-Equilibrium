@@ -25,7 +25,7 @@
 
 import type { GamePayoffs, LlmReport, SuggestedScenario } from '../types';
 import {
-  computeAllNE, equilibriumSet, kindOf, describeContinua, fmtProb, fmtPayoff, EA, EB,
+  computeAllNE, hasEquilibriumContinuum, splitEquilibriaByContinuum, describeContinua, fmtProb, fmtPayoff, EA, EB,
 } from './gameEngine';
 import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
@@ -712,12 +712,13 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
   // continuum existed (e.g. a=[[10,5],[0,5]], b=[[0,5],[0,5]]: the whole
   // y=0 edge is in equilibrium), and the branch below then handed the model
   // the literal, unconditional falsehood "the solver output above is
-  // complete." `equilibriumSet`/`kindOf` are the ground-truth test already
-  // used for this exact question by App.tsx's `hasEquilibriumContinuum` (the
-  // on-screen panel) and nashValidator.ts's action-claim check -- this is
-  // the third caller, not a new predicate, so the payload can never again
-  // disagree with what the app itself shows the user for the same game.
-  const hasContinuum = equilibriumSet(g).some((r) => kindOf(r) !== 'point');
+  // complete." `hasEquilibriumContinuum` is the ONE shared ground-truth test
+  // for this exact question -- App.tsx's own panel, tieProse.ts, and
+  // nashValidator.ts's `validateReport` (RED-MATH-8/002) all call the same
+  // function now, so the payload can never again disagree with what the app
+  // itself shows the user, or with what the validator accepts, for the same
+  // game.
+  const hasContinuum = hasEquilibriumContinuum(g);
 
   const matrix = [
     'Payoff matrix (Player A first, Player B second in each cell):',
@@ -736,11 +737,31 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
     // partial tie: neither `indifference.both` nor `indifference.aIndifferent`
     // is true for that case).
     const continuaLines = describeContinua(g);
-    // Hand the model the enumerated corners as guaranteed-valid representative
-    // points, so it can pick one rather than derive a point on the continuum.
-    const validPoints = equilibria.length
-      ? equilibria.map((e) => `(x=${e.x}, y=${e.y})`).join(', ')
+    // RED-MATH-8/001: `equilibria` (every computeAllNE point, unconditionally)
+    // used to be offered here as interchangeable "representative points" for
+    // the continuum -- but a game can have a continuum component AND a
+    // genuinely separate, DISJOINT isolated equilibrium at the same time
+    // (30.29% of continuum games in a 400k-game int[-9,9] sweep). Offering a
+    // stray point as a "valid choice" for the continuum directly contradicts
+    // the continuum's own described range a few lines above it in this same
+    // prompt. Only points actually ON a continuum component are safe to
+    // collapse into the single "continuum" claim; a stray gets its own
+    // separate claim instead of being folded in.
+    const { onContinuum, stray } = splitEquilibriaByContinuum(g);
+    const validPoints = onContinuum.length
+      ? onContinuum.map((e) => `(x=${e.x}, y=${e.y})`).join(', ')
       : 'any point where neither player can gain by deviating';
+    const strayLines = stray.length
+      ? [
+          '',
+          stray.length === 1
+            ? 'In ADDITION to the continuum, this game also has an isolated equilibrium point that is NOT part of it:'
+            : 'In ADDITION to the continuum, this game also has isolated equilibrium points that are NOT part of it:',
+          ...stray.map((e) => `  (x=${e.x}, y=${e.y}), type "${e.type}"`),
+          'Report each of these as its OWN separate claim (type "pure" or "mixed" as appropriate) —',
+          'never use one of these points to illustrate the continuum claim, and never omit them.',
+        ]
+      : [];
     const sc0 = scenarioBlock(scenario);
     return [
       ...matrix,
@@ -756,6 +777,7 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
       `equilibrium. These enumerated points are all valid choices: ${validPoints}.`,
       'Do NOT list the corners as separate pure equilibria — collapse them into one',
       '"continuum" claim.',
+      ...strayLines,
     ].join('\n');
   }
 

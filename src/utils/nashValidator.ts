@@ -38,7 +38,7 @@ import type {
   SuggestedScenario,
   ValidationResult,
 } from '../types';
-import { computeAllNE, computeIndifference, regretA, regretB, equilibriumSet, normalizeProseMinus, EA, EB} from './gameEngine';
+import { computeAllNE, computeIndifference, regretA, regretB, equilibriumSet, hasEquilibriumContinuum, continuumComponents, pointInRect, normalizeProseMinus, EA, EB, type Rect } from './gameEngine';
 // Pure like gameEngine — types in, numbers out, no I/O. Importing it keeps this
 // module dependency-free in the sense the header means.
 import { describeGeometry } from './geometry';
@@ -67,6 +67,32 @@ function coordsMatch(a: { x: number; y: number }, b: { x: number; y: number }): 
   return Math.abs(a.x - b.x) <= COORD_TOL && Math.abs(a.y - b.y) <= COORD_TOL;
 }
 
+/**
+ * CodeRabbit finding on this PR (nashValidator.ts:2572): `pointInRect`
+ * (gameEngine.ts) uses `NE_EPS = 1e-9` — correct for the EXACT, internally-
+ * computed corner points it was built for (`splitEquilibriaByContinuum`'s
+ * own onContinuum/stray split), but far too tight for a MODEL-SUPPLIED
+ * claim coordinate, which is only ever a 3dp-rounded echo of the true value
+ * (same reasoning `regretTol` above already documents for the regret
+ * check). Director-reproduced: on the RED-MATH-8/001 fixture's continuum
+ * (y in [0.615384..., 1]), a claim at y=0.6153 has regret 0.0022 — well
+ * inside that game's own `tolA` (0.052) and so already ACCEPTED by the
+ * regret oracle above as a genuine equilibrium — but `pointInRect`'s 1e-9
+ * tolerance judged it "not on the continuum" (0.6153 < 0.615384...) and
+ * fell through to corner-only matching, which then rejected the exact same
+ * claim the regret check had just accepted, as `not-in-solver` +
+ * `omitted`. Widened to COORD_TOL, matching `coordsMatch`'s own tolerance
+ * for a claimed coordinate anywhere else in this file — a rounding
+ * discrepancy this small is legitimate; a REAL falsehood is off by far
+ * more than COORD_TOL and is still caught by the regret check that runs
+ * first, unaffected by this widening.
+ */
+function claimOnContinuum(rects: Rect[], x: number, y: number): boolean {
+  return rects.some((r) =>
+    x >= r.x0 - COORD_TOL && x <= r.x1 + COORD_TOL
+    && y >= r.y0 - COORD_TOL && y <= r.y1 + COORD_TOL);
+}
+
 function inUnitSquare(c: ClaimedEquilibrium): boolean {
   return (
     Number.isFinite(c.x) && Number.isFinite(c.y) &&
@@ -93,14 +119,24 @@ function fmt(p: { x: number; y: number }): string {
  *    plus every equilibrium payoff — so only genuinely invented numbers flag.
  *    Legitimate counterfactuals ("switching drops A to 0") cite real cells.
  *  - Coordinates 0 and 1 are always allowed (they name pure strategies), and
- *    the check is skipped entirely on degenerate games, where every point in
- *    the region really is an equilibrium.
+ *    a citation on either axis that falls inside a continuum component's OWN
+ *    range on that axis is allowed too — CodeRabbit's finding on this PR: the
+ *    check used to take a bare `degenerate` BOOLEAN and skip ALL coordinate
+ *    checking whenever it was true, which was correct back when `degenerate`
+ *    meant "every point in [0,1]x[0,1] is an equilibrium" (full
+ *    indifference) but became too broad the moment RED-MATH-8/002 widened
+ *    `degenerate` to also cover PARTIAL continua — a segment like "A plays
+ *    Row 2 while B mixes with y in [0.615, 1]" restricts y to that interval,
+ *    so a prose citation of y=0.2 for that same game is a genuine falsehood
+ *    the old boolean-skip let straight through. Takes the continuum
+ *    components themselves now, and checks each citation against the
+ *    ACTUAL range on its axis, never a blanket "anything goes".
  */
 function checkProse(
   prose: string,
   g: GamePayoffs,
   truth: NashEquilibrium[],
-  degenerate: boolean,
+  continuumComps: Rect[],
 ): Mismatch[] {
   const out: Mismatch[] = [];
   if (!prose) return out;
@@ -138,7 +174,7 @@ function checkProse(
     });
   }
 
-  if (!degenerate) {
+  {
     // Indifference values are legitimate citations even when they are not
     // equilibrium coordinates: the grounding briefing itself tells the model
     // "A's surface goes level when B plays y = 0.5" (C7 draw 15 withheld a
@@ -148,6 +184,19 @@ function checkProse(
     const xInd = dB !== 0 ? (g.b22 - g.b21) / dB : NaN;   // A's mix that levels B
     const allowedX = [0, 1, ...truth.map((t) => t.x), ...(xInd >= 0 && xInd <= 1 ? [xInd] : [])];
     const allowedY = [0, 1, ...truth.map((t) => t.y), ...(yInd >= 0 && yInd <= 1 ? [yInd] : [])];
+    // CodeRabbit finding on this PR: a citation on either axis that falls
+    // inside a continuum component's OWN range on that axis is a legitimate
+    // description of the continuum itself — checked per-COMPONENT, per-AXIS,
+    // never as a blanket "any degenerate game allows anything" (the old
+    // `degenerate` boolean skip, correct only for the full-square case,
+    // where the one component covers [0,1] on both axes and this reduces to
+    // exactly that). A partial continuum (e.g. y in [0.615, 1] with x
+    // pinned) now only tolerates a y-citation actually inside that range.
+    const inContinuumRange = (axis: 'x' | 'y', v: number): boolean =>
+      continuumComps.some((r) => {
+        const [lo, hi] = axis === 'x' ? [r.x0, r.x1] : [r.y0, r.y1];
+        return v >= lo - 0.01 && v <= hi + 0.01;
+      });
     // The lookbehind skips complement notation: "1−x=0.833" is a TRUE
     // statement about Row 2's share, but the bare regex saw "x=0.833" inside
     // it and demoted correct prose (caught live on Spy vs. Analyst — a
@@ -156,7 +205,7 @@ function checkProse(
     // coordinate allowlist must not judge; a bare wrong "x=0.833" still
     // flags exactly as before.
     for (const m of prose.matchAll(/(?<![−-]\s?)\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
-      const axis = m[1].toLowerCase();
+      const axis = m[1].toLowerCase() as 'x' | 'y';
       const value = Number(m[3]);
       if (!Number.isFinite(value)) continue;
       // "x=0.333 on Row 2" / "y=0.667 for Col 2": the letter is being used for
@@ -164,7 +213,8 @@ function checkProse(
       const tail = prose.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 16);
       const onSecond = /^\s*(?:on|for|to|at)\s+(?:Row|Col|Column)\s*2\b/i.test(tail);
       const allowed = axis === 'x' ? allowedX : allowedY;
-      if (near(onSecond ? 1 - value : value, allowed, m[2] !== '=')) continue;
+      const v = onSecond ? 1 - value : value;
+      if (near(v, allowed, m[2] !== '=') || inContinuumRange(axis, v)) continue;
       out.push({
         kind: 'prose-bad-coordinate',
         claimed: null,
@@ -2495,7 +2545,28 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
   // a dead condition (verified over millions of games). computeAllNE is normally
   // non-empty for a degenerate game; its corners are simply subsumed by the
   // continuum and ignored below.
-  const degenerate = indifference.any;
+  //
+  // RED-MATH-8/002: this used to be `indifference.any` — TRUE only for FULL
+  // indifference — while report.ts's `buildGroundingPayload` (RED-MATH-7/001,
+  // #101) already used the wider `hasEquilibriumContinuum` test for the exact
+  // same question. On the 14.20% of small-integer games that are a PARTIAL
+  // tie (a continuum exists but neither player is indifferent everywhere),
+  // the two files disagreed: report.ts told the model to emit a single
+  // `'continuum'` claim, and this flag being false meant every such claim
+  // failed here as `wrong-type` (should have been the corner's own
+  // pure/mixed type, which no `'continuum'`-typed claim can ever match) PLUS
+  // every corner as `omitted` — a compliant report had no way to pass,
+  // 100% of 56,805 predicate hits in a 400k-game sweep. Both files now share
+  // one function.
+  const degenerate = hasEquilibriumContinuum(g);
+  // RED-MATH-8/001: a continuum and a DISJOINT isolated equilibrium can
+  // coexist on the same game — `continuumComps` is what the per-claim and
+  // completeness checks below use to tell "this exact coordinate is really
+  // on the continuum" from "this is a separate, isolated point that must be
+  // validated against the solver's corner list like any non-degenerate
+  // claim," per COORDINATE rather than per game.
+  const continuumComps = continuumComponents(g);
+  let claimedContinuum = false;
 
   // Per-game regret tolerances (see REGRET_COORD_SLACK above): each scales with
   // the payoff swing that turns a rounded coordinate into nonzero regret.
@@ -2538,9 +2609,18 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
     }
 
     // --- key 2: the solver lists it -------------------------------------
-    // Skipped for degenerate games: there the solver enumerates only the corners
-    // of a continuum, so the regret oracle above is the whole check.
-    if (degenerate) {
+    // RED-MATH-8/001 + RED-MATH-8/002: whether THIS coordinate is "on the
+    // continuum" is decided per CLAIM, not per game — a game can have a
+    // continuum component and a separate, disjoint isolated equilibrium at
+    // the same time, and report.ts now instructs the model to claim the
+    // isolated point separately (typed 'pure'/'mixed', validated against
+    // the solver's corner list exactly like a non-degenerate claim) rather
+    // than folding it into the continuum's single "pick any of these"
+    // claim. A non-degenerate game has `continuumComps.length === 0`, so
+    // this always falls through to the corner-matching logic below,
+    // unchanged from before.
+    const onContinuum = claimOnContinuum(continuumComps, claim.x, claim.y);
+    if (onContinuum) {
       if (claim.type !== 'continuum') {
         mismatches.push({
           kind: 'wrong-type',
@@ -2551,6 +2631,7 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
         checks.push(`FAIL ${fmt(claim)}: should be 'continuum'`);
       } else {
         checks.push(`ok ${fmt(claim)}: on the equilibrium continuum`);
+        claimedContinuum = true;
       }
       continue;
     }
@@ -2584,19 +2665,16 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
   // --- completeness -----------------------------------------------------
   // A report that silently drops an equilibrium is wrong in the way that
   // matters most for a teaching tool, so omissions fail the report.
-  if (!degenerate) {
-    truth.forEach((t, i) => {
-      if (!matchedTruth.has(i)) {
-        mismatches.push({
-          kind: 'omitted',
-          claimed: null,
-          expected: t,
-          detail: `solver found ${t.type} equilibrium ${fmt(t)}; the report omits it`,
-        });
-        checks.push(`FAIL: omitted ${fmt(t)}`);
-      }
-    });
-  } else if (report.claimedEquilibria.length === 0) {
+  //
+  // RED-MATH-8/001: this generalises the old degenerate/non-degenerate split
+  // into one rule that handles a continuum coexisting with disjoint isolated
+  // points — the continuum itself must be claimed (once, correctly), and
+  // every solver corner NOT covered by the continuum must be individually
+  // claimed and matched, exactly like a non-degenerate game. On a game with
+  // no continuum at all (`continuumComps` empty), no truth entry is ever
+  // "covered by the continuum", so this is byte-identical to the old
+  // `!degenerate` branch.
+  if (continuumComps.length > 0 && !claimedContinuum) {
     mismatches.push({
       kind: 'omitted',
       claimed: null,
@@ -2605,13 +2683,25 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
     });
     checks.push('FAIL: omitted the equilibrium continuum');
   }
+  truth.forEach((t, i) => {
+    if (continuumComps.some((r) => pointInRect(r, t.x, t.y))) return; // the continuum claim above covers this one
+    if (!matchedTruth.has(i)) {
+      mismatches.push({
+        kind: 'omitted',
+        claimed: null,
+        expected: t,
+        detail: `solver found ${t.type} equilibrium ${fmt(t)}; the report omits it`,
+      });
+      checks.push(`FAIL: omitted ${fmt(t)}`);
+    }
+  });
 
   // Prose checks run last and are opt-out (NASH_PROSE_CHECKS=0) so their effect
   // on the consistency metric can be measured in isolation — a new check that
   // silently changes the number it reports is indistinguishable from a model
   // regression, which is the failure this harness exists to avoid.
   if (process.env.NASH_PROSE_CHECKS !== '0') {
-    const proseIssues = checkProse(report.prose, g, truth, degenerate);
+    const proseIssues = checkProse(report.prose, g, truth, continuumComps);
     for (const issue of proseIssues) {
       mismatches.push(issue);
       checks.push(`FAIL prose: ${issue.detail}`);
@@ -2856,9 +2946,25 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // "Row 1 and Row 2 with two-thirds/one-third odds": a list of same-side labels before the fraction is ambiguous — skip.
       if (lab.index < at && allHitsW.some((h) => h !== lab && h.player === lab.player && h.index < lab.index && h.index >= lab.index - 40 && /^\s*(?:and|or|\/|,)\s*(?:the\s+)?$/i.test(text.slice(h.index + h.length, lab.index)))) continue;
       if (/\b(?:of\s+the\s+(?:payoff|score|gain|value)|payoff|less|more|higher|lower)\b/i.test(after.slice(0, 20)) || /\b(?:if|when|whenever|suppose|whether|should|were)\b/i.test(text.slice(Math.max(text.lastIndexOf('.', at), text.lastIndexOf(';', at)) + 1, at))) continue;
-      // A fully indifferent player sits on a continuum: any mix is an equilibrium for them.
-      const indW = computeIndifference(g);
-      if ((lab.player === 'A' && indW.aIndifferent) || (lab.player === 'B' && indW.bIndifferent)) continue;
+      // RED-MATH-8/002: a player on a CONTINUUM component covering this exact
+      // probability is a legitimate mix even when they are not FULLY
+      // indifferent (`computeIndifference` only catches full indifference,
+      // missing the same partial-tie class RED-MATH-7/001 found in
+      // report.ts's payload) — check the claimed probability against every
+      // continuum component's range on this player's axis, not just the
+      // all-or-nothing indifference flags.
+      // Same CodeRabbit-flagged class as `claimOnContinuum` above: `p` here
+      // is a FRACTION/PERCENTAGE parsed from prose ("three-fifths", "62%"),
+      // never an exact float — a 1e-9 tolerance would reject a legitimate
+      // near-boundary probability. Matched to the sibling `truthW` check's
+      // own 0.02 tolerance two lines below, for the same coarse-precision
+      // reason.
+      const compsW = continuumComponents(g);
+      if (compsW.some((r) => {
+        const [lo, hi] = lab.player === 'A' ? [r.x0, r.x1] : [r.y0, r.y1];
+        const pl = lab.option === 1 ? p : 1 - p;
+        return pl >= lo - 0.02 && pl <= hi + 0.02;
+      })) continue;
       const ok = truthW.some((t) => { const p1 = lab.player === 'A' ? t.x : t.y; const pl = lab.option === 1 ? p1 : 1 - p1; return Math.abs(pl - p) < 0.02; });
       if (!ok && truthW.length) issues.push(`prose puts ${lab.player}'s option ${lab.option} at probability ${p.toFixed(3)}, but no equilibrium does`);
     }
