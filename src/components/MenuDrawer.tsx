@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { GamePayoffs, PresetGame } from '../types';
-import { PRESETS, computeAllNE } from '../utils/gameEngine';
+import { PRESETS, computeAllNE, fmtPayoff, EA, EB } from '../utils/gameEngine';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { savedGameColorTerms } from '../utils/colorTerms';
@@ -191,10 +191,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     }
   };
 
-  // Close the drawer on Escape
+  // Close the drawer on Escape. stopPropagation so the SAME keypress cannot
+  // also reach Walkthrough.tsx's independent window-level Escape listener
+  // and close the guided tour too (RED-APP-6/002) — document fires before
+  // window in the bubble phase.
   React.useEffect(() => {
     if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') { onClose(); e.stopPropagation(); } };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [isOpen, onClose]);
@@ -637,7 +640,11 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                     <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
                                       <ColorCoded text={eq.label} />
                                     </strong>{' '}
-                                    val (<ColorCoded text={`E[A]=${eq.eA.toFixed(2)}, E[B]=${eq.eB.toFixed(2)}`} />)
+                                    {/* fmtPayoff on the exact eq.x/eq.y, not the equilibrium's own
+                                        pre-rounded fields read directly: those are computeAllNE's
+                                        r3-rounded values, which collapse a genuinely nonzero
+                                        sub-resolution payoff to a literal 0 — RED-MATH-6/001. */}
+                                    val (<ColorCoded text={`E[A]=${fmtPayoff(EA(eq.x, eq.y, preset.payoffs))}, E[B]=${fmtPayoff(EB(eq.x, eq.y, preset.payoffs))}`} />)
                                   </li>
                                 ))}
                                 {eqList.length === 0 && (
@@ -738,7 +745,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                       <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
                                         <ColorCoded text={eq.label} />
                                       </strong>{' '}
-                                      val (<ColorCoded text={`E[A]=${eq.eA.toFixed(2)}, E[B]=${eq.eB.toFixed(2)}`} />)
+                                      {/* fmtPayoff on the exact eq.x/eq.y — RED-MATH-6/001, same fix as the standard-presets list above. */}
+                                      val (<ColorCoded text={`E[A]=${fmtPayoff(EA(eq.x, eq.y, game.payoffs))}, E[B]=${fmtPayoff(EB(eq.x, eq.y, game.payoffs))}`} />)
                                     </li>
                                   ))}
                                   {eqList.length === 0 && (

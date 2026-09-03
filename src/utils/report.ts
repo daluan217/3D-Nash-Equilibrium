@@ -24,7 +24,7 @@
  */
 
 import type { GamePayoffs, LlmReport, SuggestedScenario } from '../types';
-import { computeAllNE, computeIndifference, fmtProb } from './gameEngine';
+import { computeAllNE, computeIndifference, fmtProb, fmtPayoff, EA, EB } from './gameEngine';
 import { geometryBriefing } from './geometry';
 import { callProvider, hasCredentials, type NormalizedUsage, type ProviderFailure, type ReasoningEffort } from './providers';
 import { stakesHint } from './scenarioStakes';
@@ -666,7 +666,17 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
           // pure profile which is provably not the equilibrium (the same
           // collapse tieProse's prob() exists to prevent). Pure equilibria ARE
           // exactly 0/1 and stay numeric.
-          const base = `  ${e.type} at x=${e.type === 'mixed' ? fmtProb(e.x) : e.x}, y=${e.type === 'mixed' ? fmtProb(e.y) : e.y} (payoffs A=${e.eA}, B=${e.eB})`;
+          //
+          // The payoffs get the SAME treatment (RED-MATH-6/001): `e.eA`/`e.eB`
+          // are computeAllNE's r3-pre-rounded fields, which collapse a genuinely
+          // nonzero sub-resolution payoff (e.g. -5.9e-5) to a literal 0 before
+          // this line ever runs — the model would then be handed "the payoff is
+          // 0" as authoritative fact about a value that is not zero. Recompute
+          // from the exact e.x/e.y through fmtPayoff, exactly as
+          // equilibriumPanel.ts's neValues already does for the on-screen panel,
+          // so the payload can never assert a falsehood the panel would refuse
+          // to print for the same quantity.
+          const base = `  ${e.type} at x=${e.type === 'mixed' ? fmtProb(e.x) : e.x}, y=${e.type === 'mixed' ? fmtProb(e.y) : e.y} (payoffs A=${fmtPayoff(EA(e.x, e.y, g))}, B=${fmtPayoff(EB(e.x, e.y, g))})`;
           if (e.type === 'pure') {
             return `${base} — that is: A plays Row ${e.x === 1 ? 1 : 2}, B plays Col ${e.y === 1 ? 1 : 2}`;
           }
