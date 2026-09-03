@@ -197,6 +197,95 @@ export function mergeDescriptionTerms(
   };
 }
 
+// ── Regenerate scenario: ONE resolution shared by the preview and the saved
+// render (RED-REGEN/001, RED-REGEN/002) ─────────────────────────────────────
+//
+// A saved/custom game has exactly one colour-term field pair
+// (`colorTermsA`/`colorTermsB`) — there is no separate "scenario actor nouns"
+// slot the way a built-in preset has. So when Regenerate's draw supplies actor
+// nouns (today: never — SCENARIO_SCHEMA is strict and cannot carry them; see
+// RED-REGEN/001), Keep must ADD them to whatever the user already marked,
+// never replace it. `regenKeptColorTerms` is that composition, and it is the
+// ONE place both the on-screen preview card and what Keep actually stores
+// compute it, so the two cannot compose differently the way `colorTermsFor`
+// (dropAmbiguous) and `mergeDescriptionTerms` (no ambiguity check) used to.
+
+/**
+ * The colour-term CHIPS a Keep will store: the user's existing highlights,
+ * untouched, with any actor nouns the draw itself supplies ADDED (deduped,
+ * ownership kept exclusive between the two players by `cleanUserColorTermPair`
+ * — the same rule the description editor's own chip-picker uses).
+ *
+ * Director's decision (2026-09-03, revising round-6 decision 3, RED-REGEN/001):
+ * an AI action never destroys user-authored data. `keepFill` calls this for
+ * its `terms` field; the regen preview card calls it too (via
+ * `regenPreviewColorTerms` below) so the preview shows exactly what Keep will
+ * produce, never a different composition.
+ *
+ * CodeRabbit (this PR) caught a real gap in the first version: concatenating
+ * `[...existingA, ...actorA]` BEFORE cleaning let an incoming actor noun
+ * silently REASSIGN a phrase the user had explicitly placed on the OTHER
+ * side. If `existingB` holds "wolf" (the user marked it player B's) and a
+ * draw's `actorA` also offers "wolf", cleaning the concatenated A list first
+ * makes A "own" wolf, and the B-side clean then drops it as a now-claimed
+ * duplicate — the user's OWN assignment silently overwritten by a generated
+ * one. "Never destroys user-authored data" has to mean never REASSIGNS it
+ * either. Fixed by cleaning the EXISTING pair FIRST (establishing the user's
+ * ownership as fixed) and only adding an actor noun when it does not collide
+ * with the OTHER side's existing, user-placed term; a colliding actor noun is
+ * simply dropped rather than added anywhere, exactly like any other duplicate
+ * `cleanUserColorTermPair` already resolves.
+ */
+export function regenKeptColorTerms(
+  actorA: readonly string[],
+  actorB: readonly string[],
+  existingA: readonly string[],
+  existingB: readonly string[],
+): { a: string[]; b: string[] } {
+  const existing = cleanUserColorTermPair(existingA, existingB);
+  const ownedA = new Set(existing.a.map((t) => t.toLowerCase()));
+  const ownedB = new Set(existing.b.map((t) => t.toLowerCase()));
+  // A generated actor noun may add a NEW highlight, but may never claim a
+  // phrase the user already placed on the other side.
+  const newA = cleanUserColorTerms(actorA).filter((t) => !ownedB.has(t.toLowerCase()));
+  const newB = cleanUserColorTerms(actorB).filter((t) => !ownedA.has(t.toLowerCase()));
+  return cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
+}
+
+/**
+ * The terms the regen PREVIEW CARD renders with. Must equal what the saved
+ * description renders with once Keep, then Save, land: the same
+ * `dialogBaseColorTerms` + `mergeDescriptionTerms` composition
+ * `DescriptionEditor` uses for every other saved/custom game (see
+ * `testDescriptionPreviewMatchesSave` in unit.test.ts), fed the SAME chip pair
+ * `regenKeptColorTerms` computes.
+ *
+ * RED-REGEN/002: before this, the preview called `colorTermsFor` (which runs
+ * `dropAmbiguous` over structural + label + actor terms in one pass) while the
+ * post-Keep saved render called `mergeDescriptionTerms` (no ambiguity check
+ * against the label side at all) — an actor noun colliding with the OTHER
+ * player's own option label was shown neutral in the preview and wrongly
+ * attributed after Keep. One function, one call order, used by both —
+ * a divergence is no longer expressible.
+ */
+export function regenPreviewColorTerms(
+  labels: ScenarioLabels,
+  actorA: readonly string[],
+  actorB: readonly string[],
+  existingA: readonly string[],
+  existingB: readonly string[],
+): { a: string[]; b: string[] } {
+  const kept = regenKeptColorTerms(actorA, actorB, existingA, existingB);
+  // dialogBaseColorTerms takes the dialogs' own (always-string) label shape;
+  // a regen preview's labels are optional until the draw arrives, same as
+  // colorTermsFor already tolerates via its own trim-and-check loop.
+  const dialogLabels = {
+    row1: labels.row1 ?? '', row2: labels.row2 ?? '',
+    col1: labels.col1 ?? '', col2: labels.col2 ?? '',
+  };
+  return mergeDescriptionTerms(dialogBaseColorTerms(dialogLabels), kept.a, kept.b);
+}
+
 /**
  * Terms for a saved game's OWN description: the structural/scenario terms plus
  * whatever the user marked. Separate from `colorTermsFor` so that using the

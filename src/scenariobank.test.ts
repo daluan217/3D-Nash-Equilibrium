@@ -11,7 +11,7 @@
  */
 import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, __resetBankSeen } from './utils/bankSource';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
-import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, type BankEntry } from './utils/scenarioBank';
+import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, type BankEntry } from './utils/scenarioBank';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
 import { readFileSync } from 'node:fs';
 import type { GamePayoffs } from './types';
@@ -422,6 +422,137 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   }
   check('every shipped bank row still passes the live gates', bad === 0,
     `${bad} of ${size} shipped rows fail today's gates — the artifact is stale, rebuild it with _gen/bank_build.ts. First: ${firstBad}`);
+
+  /**
+   * ACTOR-NOUN RE-SCREEN (BLUE-NOUNS-8 phase 3, 2026-09-03). `actorNounsOk`
+   * is the SAME predicate `_gen/bank_actor_nouns_merge.ts` applies before
+   * writing a noun into the artifact — this loop re-runs it here for the
+   * identical reason the story gates above are re-run rather than trusted:
+   * the artifact is frozen at build time, the predicate is not, and a row
+   * that passed when it was merged must still pass today.
+   */
+  /**
+   * A REUSABLE function, not an inline loop, so the SAME skip logic that
+   * screens the shipped artifact can also be run against a small planted
+   * array below — the same "the probe set must be able to fail" reasoning
+   * as the rivalry-rule fixture two blocks up, applied to this loop's own
+   * skip condition specifically (CodeRabbit, phase 3 review: `== null`, not
+   * a bare falsy check — `''`/0/false must reach `actorNounsOk` and be
+   * REJECTED, not silently skipped as an honest "nothing declared" row).
+   */
+  function screenNounRows(rows: readonly BankEntry[]): { bad: number; scanned: number; firstBad: string } {
+    let bad = 0; let scanned = 0; let firstBad = '';
+    for (const e of rows) {
+      if (e.s?.actorA == null && e.s?.actorB == null) continue;
+      scanned++;
+      if (!actorNounsOk(e.s)) {
+        bad++;
+        if (!firstBad) firstBad = `"${e.s.name}" actorA=${JSON.stringify(e.s.actorA)} actorB=${JSON.stringify(e.s.actorB)}`;
+      }
+    }
+    return { bad, scanned, firstBad };
+  }
+
+  const shipped = screenNounRows(allBankRows());
+  check('every shipped row carrying actorA/actorB still passes actorNounsOk', shipped.bad === 0,
+    `${shipped.bad} of ${shipped.scanned} noun-bearing rows fail actorNounsOk — the artifact is stale, re-run _gen/bank_actor_nouns_merge.ts. First: ${shipped.firstBad}`);
+
+  /**
+   * KNOWN-POSITIVE for the skip condition itself: a malformed `actorA: ''`
+   * is FALSY, so the pre-fix `!e.s?.actorA && !e.s?.actorB` skip would have
+   * `continue`d past it without ever calling `actorNounsOk` — a malformed
+   * row shipping silently uncaught. Run through the real `screenNounRows`
+   * (not a hand-derived assertion), so reverting the `== null` fix makes
+   * THIS check fail, not merely a description of what the fix does.
+   */
+  {
+    const planted: BankEntry[] = [{
+      d: 'test', b: 0,
+      s: { name: 'Malformed Actor Row', row1: 'Firm Bid', row2: 'Lean Bid', col1: 'Priority Bid', col2: 'Flexible Bid',
+        description: 'A regional freight broker chooses a Firm Bid or a Lean Bid, and a dockside contractor chooses a Priority Bid or a Flexible Bid.',
+        actorA: '' as never, actorB: null },
+    }];
+    const r = screenNounRows(planted);
+    check('a malformed actorA of "" is scanned (not skipped) and rejected by actorNounsOk',
+      r.scanned === 1 && r.bad === 1,
+      `scanned=${r.scanned} bad=${r.bad} — a falsy-but-present actorA must reach actorNounsOk, not be treated as "nothing declared"`);
+  }
+
+  /**
+   * KNOWN-POSITIVE, same reason as the rivalry-rule fixture two blocks up: a
+   * predicate this file trusts must be able to fail, checked with a planted
+   * violation of EACH bar `actorNounsOk` enforces, isolated one at a time (a
+   * fixture combining two violations could not tell a caller which rule
+   * broke, and could not detect one rule silently stopping — same "isolating
+   * fixtures" lesson as everywhere else in this project).
+   */
+  {
+    const base = { row1: 'Firm Bid', row2: 'Lean Bid', col1: 'Priority Bid', col2: 'Flexible Bid',
+      description: 'A regional freight broker, also called the broker or the freight agent, chooses a Firm Bid or a Lean Bid. A dockside contractor chooses a Priority Bid or a Flexible Bid.' };
+    check('actorNounsOk: a non-verbatim noun is rejected',
+      !actorNounsOk({ ...base, actorA: ['a shipping magnate'], actorB: null }));
+    check('actorNounsOk: a noun claimed by both players is rejected',
+      !actorNounsOk({ ...base, actorA: ['a regional freight broker'], actorB: ['a regional freight broker'] }));
+    check('actorNounsOk: a noun equal to an option label is rejected',
+      !actorNounsOk({ ...base, actorA: ['Firm Bid'], actorB: null }));
+    check('actorNounsOk: more than 3 nouns for one player is rejected',
+      !actorNounsOk({ ...base, actorA: ['a regional freight broker', 'the broker', 'the freight agent', 'A regional freight broker'], actorB: null }));
+    check('actorNounsOk: a malformed shape (bare string, not array) is rejected',
+      !actorNounsOk({ ...base, actorA: 'a regional freight broker' as never, actorB: null }));
+    check('actorNounsOk: a single-character noun is rejected',
+      !actorNounsOk({ ...base, actorA: ['a'], actorB: null }));
+    // CodeRabbit (phase 3 review): the length floor must apply to the
+    // NORMALIZED string, not the raw one — a zero-width space survives
+    // `.trim()` (not whitespace) but is stripped by `norm`, so "​a" is 2
+    // raw characters and 1 real one.
+    check('actorNounsOk: a zero-width-prefixed single-character noun is rejected',
+      !actorNounsOk({ ...base, actorA: ['​a'], actorB: null }));
+    // Bank phase-3 real defect (2026-09-03 backfill hand-read, 5 shipped
+    // rows): a noun naming BOTH parties at once ("the upstream and
+    // downstream lock-keepers", "Two neighboring orchard operators")
+    // assigned to only one player — colouring it as A's claims B's half too.
+    const compoundBase = { row1: 'Keep Slot', row2: 'Shift Slot', col1: 'Early Slot', col2: 'Late Slot' };
+    // ISOLATED from the symmetric-framing rule below on purpose — neither
+    // description here contains "each"/"both", so a mutant that deletes the
+    // COMPOUND check cannot hide behind the other rule also firing (the
+    // "isolating fixtures" lesson: a fixture carrying two defect signals
+    // cannot fail when only one rule is deleted).
+    check('actorNounsOk: a noun containing "and" (compound, both parties) is rejected',
+      !actorNounsOk({ ...compoundBase, actorB: null,
+        description: 'The north and south ferry operators share a lightly used crossing, choosing Keep Slot or Shift Slot for their combined schedule against a harbour scheduler picking Early Slot or Late Slot.',
+        actorA: ['the north and south ferry operators'] }));
+    check('actorNounsOk: a noun starting with "Two" is rejected',
+      !actorNounsOk({ ...compoundBase, actorB: null,
+        description: 'Two small ferry operators run a lightly used crossing, choosing Keep Slot or Shift Slot for their schedule against a harbour scheduler picking Early Slot or Late Slot.',
+        actorA: ['Two small ferry operators'] }));
+    // Same real defect, subtler shape (11 more shipped rows): a PLAIN plural
+    // collective noun with no "and"/"two" in it, assigned to one side of a
+    // description that names both players symmetrically via "each"/"both".
+    // ISOLATED from the COMPOUND rule above: "ferry operators" alone matches
+    // neither /\btwo\b/ nor /\band\b/, so only the symmetric-framing rule can
+    // be catching this one.
+    check('actorNounsOk: a plain collective noun on one side of a symmetric "each" description is rejected',
+      !actorNounsOk({ ...compoundBase, actorA: ['ferry operators'], actorB: null,
+        description: 'Two small ferry operators share a lightly used crossing. Each chooses either Keep Slot or Shift Slot for its own service, while the other chooses Early Slot or Late Slot.' }));
+    check('actorNounsOk: the SAME collective noun is accepted when the description is not symmetric ("each"/"both" absent) — the rule keys on the framing, not the noun alone',
+      actorNounsOk({ ...compoundBase, actorA: ['ferry operators'], actorB: null,
+        description: 'The ferry operators run a lightly used crossing. The operator chooses Keep Slot or Shift Slot, while the harbour scheduler chooses Early Slot or Late Slot.' }));
+    // CodeRabbit (phase 3 review): both regex checks above must run on the
+    // NORMALIZED text — a zero-width character breaks the contiguous letters
+    // a raw regex needs to match "and"/"each", the same bypass class the
+    // verbatim/length check was already fixed against a review round ago.
+    check('actorNounsOk: a zero-width character inside "and" still triggers the COMPOUND rejection',
+      !actorNounsOk({ ...compoundBase, actorB: null,
+        description: 'The north and south ferry operators share a lightly used crossing, choosing Keep Slot or Shift Slot for their combined schedule against a harbour scheduler picking Early Slot or Late Slot.',
+        actorA: ['the north a​nd south ferry operators'] }));
+    check('actorNounsOk: a zero-width character inside "each" still triggers the symmetric-framing rejection',
+      !actorNounsOk({ ...compoundBase, actorA: ['ferry operators'], actorB: null,
+        description: 'Two small ferry operators share a lightly used crossing. Ea​ch chooses either Keep Slot or Shift Slot for its own service, while the other chooses Early Slot or Late Slot.' }));
+    check('actorNounsOk: a real, clean pair is accepted (positive control)',
+      actorNounsOk({ ...base, actorA: ['a regional freight broker'], actorB: ['a dockside contractor'] }));
+    check('actorNounsOk: no declaration at all is accepted (silence is safe)',
+      actorNounsOk({ ...base, actorA: null, actorB: undefined }));
+  }
 }
 
 // The exit check must be the LAST thing in the file. It was above the shipped-artifact
