@@ -46,10 +46,31 @@
  * unparseable file (preserve the bytes aside, log loudly, start with a fresh
  * empty DB) instead of exiting.
  *
+ * SECTION 7 GUARDS A THIRD DEFECT (CodeRabbit, PR #96 GitHub review,
+ * 2026-09-03, Major — real data loss, reproduced): `loadDBFromFile`'s
+ * `fs.readFileSync(DB_FILE, ...)` catch, for an EXISTING file the earlier
+ * `fs.existsSync` check just confirmed is really there, used to log and
+ * return an empty `{users:[],games:[]}` unconditionally — the same
+ * dangerous shape the JSON-parse and shape-mismatch branches next to it
+ * already guard against: the very next `saveDB` overwrites the file
+ * WHOLESALE with that empty object, permanently erasing real, never-
+ * actually-corrupted data (a permissions problem, a busy volume, `EISDIR`,
+ * ... — not "no database yet"). Reproduced directly against the shipping
+ * bundle: `chmod 000` on an existing db.json holding a real user and a real
+ * saved game — the server boots, `/api/health` is 200, and the very next
+ * write (a plain registration) replaces the whole file with just the new
+ * user; the original data is gone. Fixed with the SAME desktop/hosted split
+ * as section 6's shape-mismatch fix (`fs.renameSync` preserves the original
+ * bytes aside — it needs only directory write permission, not permission on
+ * the file's own bits, so it still succeeds when the read itself failed on
+ * EACCES); a genuine ENOENT at this point (a TOCTOU race — the file vanished
+ * between the `existsSync` check and the read) is treated as the safe
+ * "nothing to lose" case, same as a first launch.
+ *
  *   node src/integration/db-shape-refusal.test.mjs
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -123,9 +144,19 @@ async function waitExit(child, timeoutMs = 8000) {
   child.stderr.on('data', (d) => { log += d; });
   let timer;
   try {
+    // CodeRabbit, 2026-09-03: `exit` fires as soon as the process has
+    // terminated, which can be BEFORE its stdio pipes finish flushing and
+    // closing — the caller reads `log` for its refusal-message assertions
+    // right after this resolves, so a genuinely fast exit could race a
+    // still-draining stderr write and read a truncated string. `close`
+    // fires only once the process has ended AND both piped streams have
+    // closed (Node's own documented ordering: `close` always follows
+    // `exit`), so by the time this resolves every byte the child ever wrote
+    // is already in `log`. `close`'s first argument is the same exit code
+    // `exit` carries.
     const code = await Promise.race([
-      new Promise((res) => child.once('exit', (c) => res(c))),
-      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timed out waiting for exit')), timeoutMs); }),
+      new Promise((res) => child.once('close', (c) => res(c))),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timed out waiting for close')), timeoutMs); }),
     ]);
     return { code, log };
   } finally {
@@ -357,6 +388,99 @@ function runHook(userData, withHook, fireUnrelated = false) {
   await stop(child);
   rmSync(userData, { recursive: true, force: true });
   port += 1;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 7. AN UNREADABLE *EXISTING* FILE — not malformed JSON, not the wrong
+//    shape, a genuine READ failure (chmod 000). Real data, briefly
+//    unreadable, must never be silently replaced with an empty database.
+//    WHY chmod, not a nonexistent path: an existing-but-unreadable file is
+//    what a real permissions/disk problem looks like, and `fs.existsSync`
+//    must see it as PRESENT for this to exercise the right branch (the
+//    `readFileSync` catch, not the "no file yet" branch above it). This
+//    reproduces false under root (root ignores file permission bits, same
+//    caveat desktop-unwritable-save.test.mjs's own chmod fixtures carry —
+//    GitHub Actions' ubuntu-latest runners are non-root by default).
+// ═════════════════════════════════════════════════════════════════════════
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-unreadable-'));
+  const original = JSON.stringify({
+    users: [{ id: 'u1', username: 'real-user', email: 'real@x.com', passwordHash: '', isVerified: true, verificationCode: '', verificationCodeExpires: 0, tokenVersion: 0 }],
+    games: [{ id: 'g1', userId: 'u1', name: 'Precious Real Game', payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 4, b12: 3, b21: 2, b22: 1 } }],
+  });
+  writeFileSync(path.join(userData, 'db.json'), original);
+  chmodSync(path.join(userData, 'db.json'), 0o000);
+
+  const child = spawnServer(userData, port);
+  const { code, log } = await waitExit(child);
+
+  record('DESKTOP, unreadable existing file: the process refuses to start (exits non-zero)',
+    code !== 0, `exit code ${code}`);
+  record('DESKTOP: the refusal names db.json and says it EXISTS but could not be read (not "no database yet")',
+    /Refusing to start/.test(log) && /exists but could not be read/.test(log) && /db\.json/.test(log),
+    log.slice(0, 400));
+
+  let bootedAnyway = false;
+  try {
+    const probe = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1000) });
+    bootedAnyway = probe.ok;
+  } catch { /* good: nothing listening */ }
+  record('DESKTOP: the refused process never bound the port', !bootedAnyway);
+
+  const entries = readdirSync(userData);
+  const aside = entries.find((f) => f.startsWith('db.json.unreadable-'));
+  record('DESKTOP: the file is preserved aside under its OWN name (not "corrupt" — it was never actually bad)',
+    !!aside, `entries=${JSON.stringify(entries)}`);
+  if (aside) chmodSync(path.join(userData, aside), 0o644);
+  record('DESKTOP: the preserved file has the ORIGINAL, unmodified bytes — the real user and game are NOT lost',
+    aside ? readFileSync(path.join(userData, aside), 'utf-8') === original : false,
+    aside ? readFileSync(path.join(userData, aside), 'utf-8') : '(no file)');
+
+  port += 1;
+  rmSync(userData, { recursive: true, force: true });
+}
+
+// Same fixture, no IS_ELECTRON: the hosted-service shape this whole session's
+// "scope the hard refusal to desktop" fix (section 6) exists for — a hosted
+// instance must degrade, not exit(1), on a startup DB problem. No write probe
+// here: an unauthenticated /api/auth/register on a hosted (non-IS_ELECTRON)
+// server needs real SMTP configuration this test environment does not (and
+// must not) have — the structural guarantee that matters (`saveDB` always
+// targets the fixed `DB_FILE` path, never the aside-renamed one) is already
+// proven by the preserved-aside file's bytes staying untouched below.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-unreadable-hosted-'));
+  const original = JSON.stringify({
+    users: [{ id: 'u1', username: 'real-user', email: 'real@x.com', passwordHash: '', isVerified: true, verificationCode: '', verificationCodeExpires: 0, tokenVersion: 0 }],
+    games: [{ id: 'g1', userId: 'u1', name: 'Precious Real Game', payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 4, b12: 3, b21: 2, b22: 1 } }],
+  });
+  writeFileSync(path.join(userData, 'db.json'), original);
+  chmodSync(path.join(userData, 'db.json'), 0o000);
+
+  const child = spawnHostedServer(userData, port);
+  try {
+    const { log } = await waitReady(child, port);
+    record('HOSTED, unreadable existing file: does NOT crash the process (boots and serves)', true);
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`);
+    record('HOSTED: /api/health responds 200', health.ok, `status ${health.status}`);
+    record('HOSTED: the log says the file EXISTS but could not be read, and resets rather than exits',
+      /exists but could not be read/.test(log()) && /Resetting to a fresh database/.test(log()),
+      log().slice(0, 400));
+  } catch (err) {
+    record('HOSTED, unreadable existing file: does NOT crash the process (boots and serves)', false, String(err));
+  }
+  await stop(child);
+
+  const entries = readdirSync(userData);
+  const aside = entries.find((f) => f.startsWith('db.json.unreadable-'));
+  record('HOSTED: the original file is preserved aside', !!aside, `entries=${JSON.stringify(entries)}`);
+  if (aside) chmodSync(path.join(userData, aside), 0o644);
+  record('HOSTED: the preserved-aside file has the ORIGINAL, unmodified bytes — the real user and game are NOT lost',
+    aside ? readFileSync(path.join(userData, aside), 'utf-8') === original : false,
+    aside ? readFileSync(path.join(userData, aside), 'utf-8') : '(no file)');
+
+  port += 1;
+  rmSync(userData, { recursive: true, force: true });
 }
 
 const fails = results.filter((r) => !r.pass);

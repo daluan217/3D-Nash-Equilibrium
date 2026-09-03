@@ -709,9 +709,67 @@ function loadDBFromFile(): DB | null {
   let data: string;
   try {
     data = fs.readFileSync(DB_FILE, "utf-8");
-  } catch (err) {
-    console.error(`Error reading db.json at ${DB_FILE}, treating as empty:`, err);
-    return { users: [], games: [] };
+  } catch (err: any) {
+    if (err && err.code === "ENOENT") {
+      // TOCTOU: the `fs.existsSync(DB_FILE)` check just above was true a
+      // moment ago, and the file is now gone (deleted between the check and
+      // this read). Nothing to lose — same as the "no file yet" branch
+      // above.
+      console.error(`db.json at ${DB_FILE} vanished between the existence check and the read; starting fresh:`, err);
+      return { users: [], games: [] };
+    }
+    // CodeRabbit, 2026-09-03 (Major — real data loss, reproduced): the file
+    // EXISTS (confirmed above) but could not be READ — EACCES, EISDIR, EIO,
+    // a transient permissions/disk problem, not "no database yet." Blindly
+    // returning an empty DB here used to be exactly as dangerous as the
+    // JSON-parse/shape-mismatch branches below already guard against: the
+    // very next `saveDB` calls `writeFileAtomicSync` and overwrites the file
+    // WHOLESALE with that empty object, permanently erasing real data that
+    // was never actually corrupted — only unreadable BY THIS PROCESS AT THIS
+    // MOMENT. Reproduced against the shipping bundle: `chmod 000` on an
+    // existing db.json holding a real user and a real saved game — the
+    // server boots, /api/health is 200, and the very next write (a plain
+    // registration) replaces the whole file with just the new user; the
+    // original user and game are gone, not recoverable.
+    //
+    // `fs.renameSync` needs only WRITE permission on the containing
+    // directory, not read/write permission on the file's own bits, so this
+    // still succeeds when the `open()` above failed on EACCES — preserving
+    // the original, unmodified bytes for recovery once the underlying
+    // problem (permissions, a busy volume, ...) is fixed.
+    const aside = `${DB_FILE}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    let preserved = false;
+    try {
+      fs.renameSync(DB_FILE, aside);
+      preserved = true;
+    } catch (renameErr) {
+      console.error(`Could not move the unreadable db.json aside to ${aside}:`, renameErr);
+    }
+    const cause = err instanceof Error ? err.message : String(err);
+
+    // Same desktop/hosted split as the shape-mismatch branch below, for the
+    // identical reason: a hosted instance must never exit(1) over local
+    // scratch state that a transient GCS failure fell back to (see that
+    // branch's own comment for the full argument).
+    if (!isDesktop()) {
+      console.error(
+        `${DB_FILE} exists but could not be read (${cause}). Resetting to a fresh database`
+        + (preserved
+          ? ` — the unreadable file has been preserved at ${aside} for recovery.`
+          : `; the unreadable file could NOT be moved aside — it has been left in place, unread.`)
+      );
+      return { users: [], games: [] };
+    }
+
+    reportDesktopLockFailure(
+      `Refusing to start: ${DB_FILE} exists but could not be read (${cause}). Starting anyway `
+      + `would risk silently replacing real data with an empty games library on the next save. `
+      + (preserved
+        ? `The unreadable file has been preserved at ${aside} — quit, fix its permissions (or restore it from a backup), then relaunch.`
+        : `The unreadable file could not be moved aside; please back it up, then fix its permissions and relaunch.`),
+      preserved ? aside : DB_FILE,
+    );
+    return null;
   }
 
   let parsed: unknown;
