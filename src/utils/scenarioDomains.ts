@@ -78,3 +78,30 @@ export function pickScenarioDomain(pick: () => number = Math.random): string {
   // scaling floors to length, and a pick() from a test may be sloppy.
   return SCENARIO_DOMAINS[Math.min(Math.max(i, 0), SCENARIO_DOMAINS.length - 1)];
 }
+
+/**
+ * Pick a setting, biased away from `exclude` — used by the "Regenerate
+ * scenario" feature (FEATURE-REGEN) so a regenerated desktop draw does not
+ * land back in the SAME setting the current story was written for, which
+ * would read to the user as "nothing happened".
+ *
+ * Bounded retries, not a filtered list: with 84 domains the excluded one is
+ * drawn ~1.2% of the time, so a tiny retry loop clears it almost always
+ * without building or allocating a second array on every call. If every
+ * retry still lands on `exclude` (astronomically unlikely, or `pick` itself
+ * is degenerate — e.g. a test stubbing it to always return the same value)
+ * this returns whatever the last draw was rather than looping forever or
+ * throwing: a repeated domain is a worse UX than an infinite loop, but
+ * neither is worse than an unhandled crash on the regenerate button.
+ */
+export function pickScenarioDomainExcluding(
+  exclude: string | undefined,
+  pick: () => number = Math.random,
+): string {
+  let domain = pickScenarioDomain(pick);
+  if (!exclude || SCENARIO_DOMAINS.length <= 1) return domain;
+  for (let i = 0; i < 8 && domain === exclude; i++) {
+    domain = pickScenarioDomain(pick);
+  }
+  return domain;
+}

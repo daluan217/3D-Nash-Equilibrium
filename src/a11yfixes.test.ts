@@ -555,4 +555,28 @@ function extractDivBlock(src: string, startMarker: string): string {
     'the pre-fix fixture text must not accidentally already carry a live region (fixture sanity check)');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FEATURE-REGEN (round 6, 2026-09-03): "Regenerate scenario" announces its own
+// loading/ready/error/kept/discarded state inside EACH dialog it appears in —
+// a SECOND, dialog-scoped `role="status" aria-live="polite"` region, distinct
+// from the app-wide phase announcer just above (which never mentions
+// regeneration at all). Scoped to each dialog block with `extractDivBlock`,
+// same pattern the tab-trap checks above use for these two dialogs.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const editDialog = extractDivBlock(app, 'aria-label="Edit saved game"');
+  const saveDialog = extractDivBlock(app, 'aria-label="Save custom game"');
+  for (const [label, block] of [['Edit', editDialog], ['Save', saveDialog]] as const) {
+    ok(/role="status"\s+aria-live="polite"/.test(block) || /aria-live="polite"\s+role="status"/.test(block),
+      `${label} dialog must carry its own role="status" aria-live="polite" region for regen announcements`);
+    ok(/regen\.note/.test(block), `${label} dialog's status region must render regen.note (found no reference)`);
+  }
+
+  // MUTATION / NEGATIVE FIXTURE — a dialog block missing the live region
+  // entirely must be caught, not silently pass because SOME dialog has one.
+  const noLiveRegion = '<div aria-label="Save custom game"><p className="text-xs">{regen.note}</p></div>';
+  ok(!/role="status"\s+aria-live="polite"/.test(noLiveRegion) && !/aria-live="polite"\s+role="status"/.test(noLiveRegion),
+    'fixture sanity: a status paragraph without role/aria-live must NOT satisfy the live-region check');
+}
+
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

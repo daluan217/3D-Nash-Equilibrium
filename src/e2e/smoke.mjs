@@ -156,6 +156,64 @@ async function dismissTour() {
   if (!dismissed) throw new Error('guided tour still open after Exit click + Escape');
 }
 
+/* Register a fresh account and log in, on the GIVEN page (so a section using
+ * a dedicated context/page for route mocking still gets an authenticated
+ * session). Returns the unique username fragment used, for building a saved
+ * game's name later. Same flow §24/§25 duplicate inline — factored out here
+ * because the regen sections below need it four more times. */
+async function registerAndLogin(p, tag) {
+  await p.goto(BASE, { waitUntil: 'networkidle' });
+  const exitTour = p.getByRole('button', { name: /exit tour/i });
+  if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+  await p.waitForTimeout(300);
+  const uniq = `${tag}${Date.now()}`;
+  await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+  await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+  await p.getByText(/sign up/i).last().click().catch(async () => {
+    await p.getByRole('button', { name: /create.*account|register/i }).first().click();
+  });
+  await p.waitForTimeout(300);
+  await p.getByPlaceholder('game_theorist').fill(uniq);
+  await p.getByPlaceholder('john@example.com').fill(`${uniq}@example.com`);
+  const pwFields = p.getByPlaceholder('••••••••');
+  await pwFields.nth(0).fill('TestPass123');
+  await pwFields.nth(1).fill('TestPass123');
+  await p.getByRole('button', { name: /register account/i }).click();
+  await p.waitForTimeout(800);
+  await p.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
+  await p.getByPlaceholder('••••••••').first().fill('TestPass123');
+  await p.getByRole('button', { name: /^login$/i }).click();
+  await p.waitForTimeout(800);
+  return uniq;
+}
+
+/* Mock `/api/health` to advertise the regen capability and `/api/scenario/
+ * regenerate` with a canned handler — used by every regen section below so
+ * none of them needs real credentials or the (not-yet-merged) server route. */
+async function mockRegenOn(p, regenerateHandler) {
+  await p.route('**/api/health', async (route) => {
+    const res = await route.fetch();
+    let body;
+    try { body = await res.json(); } catch { body = {}; }
+    body.capabilities = { ...(body.capabilities || {}), scenarioRegen: true };
+    await route.fulfill({ status: res.status(), contentType: 'application/json', body: JSON.stringify(body) });
+  });
+  if (regenerateHandler) await p.route('**/api/scenario/regenerate', regenerateHandler);
+}
+
+const REGEN_STORY_A = {
+  name: 'Cider Press Bookings',
+  row1: 'Early Slot', row2: 'Late Slot', col1: 'Reserve', col2: 'Walk-in',
+  description: 'Two orchards are booking time on the shared cider press before the fruit turns.',
+  actorA: ['orchard'], actorB: ['press operator'],
+};
+const REGEN_STORY_B = {
+  name: 'Kiln Firing Schedule',
+  row1: 'Morning Fire', row2: 'Evening Fire', col1: 'Glaze Batch', col2: 'Bisque Batch',
+  description: 'A potter and a kiln co-op are scheduling a shared firing slot.',
+  actorA: ['potter'], actorB: ['co-op'],
+};
+
 try {
   // ══ 1. cold load (guards: build integrity — a broken bundle was once the
   //      only failure mode CI could not see, because nothing built or ran it)
@@ -1337,6 +1395,174 @@ try {
         nameValue === 'A'.repeat(40), `length=${nameValue ? nameValue.length : null} value=${JSON.stringify(nameValue)}`);
     }
     await clampPage.close();
+  }
+
+  // ══ 26. FEATURE-REGEN — hidden when the server capability is off (the
+  //      default: NASH_SCENARIO_REGEN is unset on this build, so the real,
+  //      unmocked /api/health has no `capabilities.scenarioRegen` at all).
+  //      No route mock in this section on purpose — it must be true against
+  //      the ACTUAL running server, not a stand-in for one.
+  {
+    const offPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(offPage, 'e2e6regenoff');
+    await offPage.getByRole('button', { name: /save preset/i }).click();
+    await offPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await offPage.waitForTimeout(500); // let the capability probe's fetch settle either way
+    const regenVisibleOff = await offPage.getByRole('button', { name: 'Regenerate scenario' }).isVisible({ timeout: 1000 }).catch(() => false);
+    record('Regenerate scenario is NOT shown when the server capability is off (default)', !regenVisibleOff);
+    await offPage.close();
+  }
+
+  // ══ 27. FEATURE-REGEN — Save dialog: Discard preserves typed edits
+  //      (RED-APP-4 class), then Keep replaces desc/labels but leaves a
+  //      user-TYPED name untouched (director's amended name rule).
+  {
+    const savePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let regenCalls = 0;
+    await mockRegenOn(savePage, async (route) => {
+      regenCalls++;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_A }) });
+    });
+    await registerAndLogin(savePage, 'e2e6regensave');
+    await savePage.getByRole('button', { name: /save preset/i }).click();
+    await savePage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+
+    const nameField = savePage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]');
+    const descField = savePage.locator('[role="dialog"][aria-label="Save custom game"] textarea');
+    const row1Field = savePage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder^="e.g. Undercut"]');
+    await nameField.fill('My Own Typed Name');
+    await descField.fill('My own typed description, carefully written by hand.');
+    await row1Field.fill('My Row One');
+
+    const regenBtn = savePage.getByRole('button', { name: 'Regenerate scenario' });
+    await regenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await regenBtn.click();
+    const previewLocator = savePage.getByText('New scenario (preview)', { exact: false });
+    await previewLocator.waitFor({ state: 'visible', timeout: 5000 });
+    record('the regenerated preview shows the mocked scenario name', await savePage.getByText(REGEN_STORY_A.name, { exact: false }).isVisible().catch(() => false));
+
+    record('typed Name field is untouched while the preview is showing', await nameField.inputValue() === 'My Own Typed Name');
+    record('typed Description field is untouched while the preview is showing', await descField.inputValue() === 'My own typed description, carefully written by hand.');
+
+    // Discard: fields must be byte-identical afterward, and the route must
+    // not have been hit again.
+    await savePage.getByRole('button', { name: 'Discard' }).click();
+    await savePage.waitForTimeout(300);
+    record('after Discard, the Name field is untouched (RED-APP-4 class)', await nameField.inputValue() === 'My Own Typed Name');
+    record('after Discard, the Description field is untouched', await descField.inputValue() === 'My own typed description, carefully written by hand.');
+    record('after Discard, the Row 1 label is untouched', await row1Field.inputValue() === 'My Row One');
+    record('Discard leaves no preview card behind', !(await previewLocator.isVisible({ timeout: 1000 }).catch(() => false)));
+    record('Discard never called the regenerate route a second time (it only issues a GET-less client reset)', regenCalls === 1, `calls=${regenCalls}`);
+
+    // Regenerate again, then Keep: description/labels replace; the NAME the
+    // user typed by hand must survive (typed-this-session always wins).
+    await regenBtn.click();
+    await previewLocator.waitFor({ state: 'visible', timeout: 5000 });
+    await savePage.getByRole('button', { name: 'Keep' }).click();
+    await savePage.waitForTimeout(300);
+    record('Keep replaces the Description field with the mocked scenario', await descField.inputValue() === REGEN_STORY_A.description);
+    record('Keep replaces the Row 1 label with the mocked scenario', await row1Field.inputValue() === REGEN_STORY_A.row1);
+    record('Keep NEVER replaces a user-TYPED name (director\'s amended rule)', await nameField.inputValue() === 'My Own Typed Name',
+      await nameField.inputValue());
+    await savePage.close();
+  }
+
+  // ══ 28. FEATURE-REGEN — Edit dialog: an UNTOUCHED (not re-typed this
+  //      session) name IS replaced on Keep, description/labels replace, and
+  //      the eventual PATCH carries the new text with no payoffs and the
+  //      mocked scenario's actor nouns as colorTermsA/B.
+  {
+    const editPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(editPage, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_B }) });
+    });
+    const uniq = await registerAndLogin(editPage, 'e2e6regenedit');
+    const gameName = `EditFlowGame${uniq}`;
+    await editPage.getByRole('button', { name: /save preset/i }).click();
+    await editPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await editPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+    await editPage.getByRole('button', { name: /^save game profile$/i }).click();
+    await editPage.waitForTimeout(600);
+
+    await editPage.getByRole('button', { name: `Edit ${gameName}` }).click();
+    await editPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    const editNameField = editPage.locator('[role="dialog"][aria-label="Edit saved game"] input[type="text"]').first();
+    record('the Edit dialog opens prefilled with the saved name', await editNameField.inputValue() === gameName);
+
+    const editRegenBtn = editPage.getByRole('button', { name: 'Regenerate scenario' });
+    await editRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await editRegenBtn.click();
+    const editPreview = editPage.getByText('New scenario (preview)', { exact: false });
+    await editPreview.waitFor({ state: 'visible', timeout: 5000 });
+
+    let patchBody = null;
+    await editPage.route(`**/api/games/*`, async (route) => {
+      if (route.request().method() === 'PATCH') {
+        patchBody = JSON.parse(route.request().postData() || '{}');
+      }
+      await route.continue();
+    });
+    await editPage.getByRole('button', { name: 'Keep' }).click();
+    await editPage.waitForTimeout(300);
+    record('Keep replaces the Edit dialog name (untouched this session -> replaced)', await editNameField.inputValue() === REGEN_STORY_B.name,
+      await editNameField.inputValue());
+
+    await editPage.getByRole('button', { name: /^save changes$/i }).click();
+    await editPage.waitForTimeout(600);
+    record('the PATCH body never carries payoffs (the route the plan forbids)', !!patchBody && !('payoffs' in patchBody));
+    record('the PATCH body carries the regenerated description', !!patchBody && patchBody.description === REGEN_STORY_B.description);
+    record('the PATCH body carries the regenerated scenario\'s actor noun as a colour term',
+      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('potter'),
+      JSON.stringify(patchBody?.colorTermsA));
+    await editPage.close();
+  }
+
+  // ══ 29. FEATURE-REGEN — double-click issues exactly one request, and
+  //      focus/aria-live behave (a11y).
+  {
+    const dblPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let hits = 0;
+    await mockRegenOn(dblPage, async (route) => {
+      hits++;
+      await new Promise((r) => setTimeout(r, 400)); // slow enough for a second click to race it
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_A }) });
+    });
+    await registerAndLogin(dblPage, 'e2e6regendbl');
+    await dblPage.getByRole('button', { name: /save preset/i }).click();
+    await dblPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const dblRegenBtn = dblPage.getByRole('button', { name: 'Regenerate scenario' });
+    await dblRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
+
+    // aria-live: must read "Regenerating" promptly after the click.
+    await Promise.all([dblRegenBtn.click(), dblRegenBtn.click({ force: true }).catch(() => {})]);
+    const liveRegionText = async () => dblPage.evaluate(() => {
+      const nodes = [...document.querySelectorAll('[role="status"][aria-live="polite"]')];
+      return nodes.map((n) => n.textContent || '').join(' | ');
+    });
+    let sawLoading = false;
+    for (let i = 0; i < 10 && !sawLoading; i++) {
+      sawLoading = /Regenerating/.test(await liveRegionText());
+      if (!sawLoading) await dblPage.waitForTimeout(100);
+    }
+    record('the dialog\'s live region announces "Regenerating…" promptly', sawLoading);
+
+    const dblPreview = dblPage.getByText('New scenario (preview)', { exact: false });
+    await dblPreview.waitFor({ state: 'visible', timeout: 5000 });
+    record('a double-click issues exactly ONE regenerate request', hits === 1, `hits=${hits}`);
+
+    const focusInsideDialog = await dblPage.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Save custom game"]');
+      return !!dlg && dlg.contains(document.activeElement);
+    });
+    record('focus stays inside the dialog after clicking Regenerate', focusInsideDialog);
+
+    let sawReady = false;
+    for (let i = 0; i < 10 && !sawReady; i++) {
+      sawReady = /ready/i.test(await liveRegionText());
+      if (!sawReady) await dblPage.waitForTimeout(100);
+    }
+    record('the live region announces the scenario is ready', sawReady);
+    await dblPage.close();
   }
 
 } catch (e) {
