@@ -1,5 +1,6 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
 // Override the package.json "name" so the macOS app menu (About/Hide/Quit)
 // reads the product name instead of the template default ("react-example").
@@ -100,6 +101,25 @@ if (!gotTheLock) {
   let expressPort = 14321;
   let mainWindow = null;
   let updateCheckDone = false;
+  // RED-DESKTOP-5/002: `startServer()` returns before initDB()/listen() on
+  // the lock-failure path, so `serverStarted` never becomes true and
+  // `expressPort` never advances past its hard-coded initial value — but the
+  // 800ms "slow boot sequence" fallback below and `app.on('activate')` were
+  // both unconditional on that alone, so ~800ms after `app.on('ready')` (or
+  // on a dock-icon click while the blocking dialog is still up) they called
+  // `createWindow(14321)` anyway. Nothing is listening there (correctly —
+  // the server never bound a port), so a second, blank `BrowserWindow`
+  // opened showing Chromium's own chrome-error://chromewebdata/ page RIGHT
+  // ALONGSIDE the correct native "Startup Blocked" dialog — live-reproduced
+  // via CDP against the packaged .app. Fixed two ways, deliberately: the
+  // fallback timer is CANCELLED outright the moment a lock failure is known
+  // (so it can never fire at all, the primary fix — cancelling beats
+  // checking, since a cancelled timer cannot race anything), and
+  // `lockFailurePending` is kept as defense-in-depth for `app.on('activate')`,
+  // which has no timer to cancel (a dock-icon click can happen at any time
+  // while the dialog is still up).
+  let lockFailurePending = false;
+  let slowBootFallbackTimer = null;
 
   global.onExpressListening = (port) => {
     expressPort = port;
@@ -138,23 +158,83 @@ if (!gotTheLock) {
   // delete-and-relaunch would just as often start a REAL second writer
   // against the same db.json as it would recover from a false positive —
   // exactly the data-loss scenario this whole lock exists to prevent. The
-  // safer action a click can take is "Show Lock File", which reveals its
-  // location so a user who has actually checked (e.g. Activity Monitor —
-  // no OTHER copy of Nash Equilibrium Simulator running) can delete it
+  // safer action a click can take is "Show Location", which reveals it in
+  // Finder so a user who has actually checked (e.g. Activity Monitor — no
+  // OTHER copy of Nash Equilibrium Simulator running) can delete/repair it
   // themselves; the app never performs the destructive step on its own.
+  //
+  // `lockFile` is named for its original, and still most common, case (the
+  // `.server.lock` file itself) but is NOT always a file: RED-DESKTOP-5b
+  // added a second, directory-creation failure site that also routes
+  // through this same hook and passes the DIRECTORY path instead — and in
+  // THAT case the path may not exist at all (that is exactly why it
+  // failed). `shell.showItemInFolder`'s behavior on a nonexistent path is
+  // undefined (CodeRabbit, this round), so `revealLockLocation` below picks
+  // between it and `shell.openPath` on the nearest existing ancestor,
+  // rather than assuming the target is a real, existing file.
+  // `target` is normally the `.server.lock` file (exists — reveal it
+  // directly, selected, so the user can inspect/delete it). For the
+  // directory-creation failure site, `target` is the user-data directory
+  // itself, which may legitimately NOT exist (that IS the failure). Walk up
+  // to the nearest existing ancestor and open THAT instead — `path.dirname`
+  // on a root path is a fixed point, so this always terminates.
+  async function revealLockLocation(target) {
+    try {
+      if (fs.existsSync(target)) {
+        shell.showItemInFolder(target);
+        return;
+      }
+      let dir = path.dirname(target);
+      while (!fs.existsSync(dir)) {
+        const parent = path.dirname(dir);
+        if (parent === dir) break; // reached the filesystem root; stop rather than loop forever
+        dir = parent;
+      }
+      // CodeRabbit (this round): shell.openPath resolves with a NON-EMPTY
+      // error string on failure rather than rejecting — an un-awaited call
+      // silently swallows that, leaving the blocked user with no feedback
+      // at all after clicking "Show Location".
+      const openErr = await shell.openPath(dir);
+      if (openErr) console.error(`Failed to open ${dir} in the file manager:`, openErr);
+    } catch (err) {
+      console.error('Failed to reveal the lock/data-directory location:', err);
+    }
+  }
+
   global.onDesktopLockFailure = ({ message, lockFile }) => {
+    lockFailurePending = true;
+    // Cancel the slow-boot fallback outright — a cancelled timer cannot fire
+    // regardless of what races it against (see this block's own comment
+    // above). No-op if `app.on('ready')` has not scheduled it yet (the
+    // `require('./dist/server.cjs')` call below runs before `ready` in the
+    // normal Electron startup order, so this is typically the case) or if
+    // the `serverStarted` branch never scheduled one at all.
+    if (slowBootFallbackTimer !== null) {
+      clearTimeout(slowBootFallbackTimer);
+      slowBootFallbackTimer = null;
+    }
     dialog.showMessageBox({
       type: 'error',
-      buttons: ['Quit', 'Show Lock File'],
+      buttons: ['Quit', 'Show Location'],
       defaultId: 0,
       cancelId: 0,
       title: 'Nash Equilibrium Simulator — Startup Blocked',
       message: 'Nash Equilibrium Simulator could not start.',
-      detail: `${message}\n\nIf you're sure no other copy is running, "Show Lock File" reveals it `
-        + 'so you can delete it yourself, then relaunch.',
+      // CodeRabbit (this round): this app's own single-instance lock
+      // (app.requestSingleInstanceLock, above) means clicking the Dock icon
+      // or double-clicking the app again WITHOUT quitting this blocked
+      // process first does nothing visible — 'second-instance' only
+      // focuses `mainWindow`, which was deliberately never created on this
+      // path (RED-DESKTOP-5/002), so the new launch attempt silently exits
+      // with no window, no error, nothing to notice. The old wording ("...
+      // then relaunch") told the user to do exactly the thing that fails
+      // silently. Now says explicitly to quit THIS app first.
+      detail: `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
+        + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
+        + 'start normally while blocked), then relaunch it.',
     }).then((result) => {
       if (result.response === 1) {
-        shell.showItemInFolder(lockFile);
+        revealLockLocation(lockFile);
         // Leave the (now-informed, still-blocked) app running rather than
         // quitting out from under a user who is mid-cleanup in Finder.
         return;
@@ -255,9 +335,17 @@ if (!gotTheLock) {
     if (serverStarted) {
       createWindow(expressPort);
     } else {
-      // Fallback in case of slow boot sequence
-      setTimeout(() => {
-        if (!mainWindow) {
+      // Fallback in case of slow boot sequence. Must NOT fire while a lock
+      // failure is in progress (RED-DESKTOP-5/002) — that path deliberately
+      // never starts the server, so `serverStarted` staying false here is
+      // not "slow", it is "never coming", and creating a window would only
+      // ever load a dead port. `onDesktopLockFailure` cancels this timer
+      // outright the moment it knows that (see its own comment); the
+      // `!lockFailurePending` check is defense-in-depth for a lock failure
+      // detected in the narrow window before this line runs.
+      slowBootFallbackTimer = setTimeout(() => {
+        slowBootFallbackTimer = null;
+        if (!mainWindow && !lockFailurePending) {
           createWindow(expressPort);
         }
       }, 800);
@@ -271,7 +359,10 @@ if (!gotTheLock) {
   });
 
   app.on('activate', function () {
-    if (mainWindow === null) {
+    // Same guard as the ready-fallback above: a dock-icon click while the
+    // "Startup Blocked" dialog is still up (mainWindow is still null) must
+    // not open a second, blank, dead-port window behind/alongside it.
+    if (mainWindow === null && !lockFailurePending) {
       createWindow(expressPort);
     }
   });

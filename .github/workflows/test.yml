@@ -231,6 +231,22 @@ jobs:
       - name: Run the desktop lock dialog-hook suite (in-process require)
         run: node src/integration/desktop-lock-dialog-hook.test.mjs
 
+      # RED-DESKTOP-5/001 (an EXISTING-but-unreadable lock file, chmod'd
+      # after a real live holder started, must refuse loudly rather than
+      # fail open on the ambiguity — director's own reproduction) plus
+      # RED-DESKTOP-5b's follow-up: the two WRITE-side "unexpected
+      # filesystem error" branches in acquireDesktopLock are not symmetric —
+      # a blocked directory-creation now fails closed (nothing real could
+      # have been at risk there), and a blocked lock-file-creation fails
+      # open ONLY when fs.statSync positively proves no lock file exists
+      # (ENOENT), refusing otherwise, since err.code alone cannot be trusted
+      # to prove absence (chmod 000 on the directory yields the same errno
+      # whether or not a live lock is sitting there).
+      - name: Boot the production server and run the desktop lock write-side suite
+        run: node src/integration/desktop-lock-write-side.test.mjs
+        env:
+          LOCK_WS_PORT: '3150'
+
       # An unwritable ELECTRON_USER_DATA_PATH (read-only dir, full disk, ...)
       # used to accept a game save/update/delete, tell the user it worked,
       # and lose it permanently on the next restart with no signal anywhere.
@@ -252,6 +268,34 @@ jobs:
         run: node src/integration/desktop-recovery-hint.test.mjs
         env:
           RECOVERY_HINT_PORT: '3111'
+
+      # RED-CLOUD-5/001: server.ts's 40-char option-label clamp
+      # (`cutAtWordBoundary`, shared by the report path's `cleanScenario` and
+      # the save path's `cleanLabels`) used to be a bare UTF-16 `.slice()`,
+      # which cuts an astral emoji's surrogate pair in half — live-
+      # reproduced as an unpaired surrogate repeated three times in rendered
+      # report prose. Fixed with `clampGraphemeSafe` (Intl.Segmenter grapheme
+      # boundaries). Runs under NASH_PAYOFF_TEMPLATE=1 (a literal in
+      # cloudbuild.yaml on every deploy) so it reaches the exact rendering
+      # path the finding used.
+      - name: Boot the production server and run the label surrogate-clamp suite
+        run: node src/integration/label-surrogate-clamp.test.mjs
+        env:
+          LSC_TEST_PORT: '3140'
+
+      # RED-DESKTOP-5/002: electron-main.cjs's 800ms "slow boot sequence"
+      # fallback (and app.on('activate')) used to call createWindow()
+      # unconditionally, with no awareness that a desktop-lock failure
+      # (server.ts's acquireDesktopLock, via the #88 dialog hook) was in
+      # progress and had deliberately never bound a port — a stray blank
+      # chrome-error://chromewebdata/ window opened right alongside the
+      # correct native "Startup Blocked" dialog. Fixed by cancelling the
+      # fallback timer outright inside global.onDesktopLockFailure. No
+      # Electron runtime: `electron` is stubbed (in-process require, same
+      # style as src/desktop/require-probe.cjs), each scenario a fresh
+      # child process.
+      - name: Run the electron window-guard suite (stubbed electron, in-process require)
+        run: node src/integration/electron-window-guard.test.mjs
 
   e2e:
     runs-on: ubuntu-latest

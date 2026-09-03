@@ -130,7 +130,151 @@ if (process.env.EXPECTED_INDEX) {
     r.status === 200 && methods.includes('PATCH'), `status=${r.status} methods=${methods}`);
 }
 
-// ══ 7. DEPLOY CONFIG, verified by behaviour rather than by reading env vars
+// ══ 7. the DMG download path — status-only, NEVER downloads the ~137 MB
+//      file. Added 2026-09-02 after a real ~3.5-hour production outage that
+//      no existing check (here or in CI) could see: a Content-Length >=
+//      Cloud Run's documented 32 MiB HTTP/1 response cap made every PLAIN
+//      GET (and every well-formed Range spanning >=32 MiB) of the live DMG
+//      come back as a bare, header-less Google-Frontend HTTP 500 — while a
+//      HEAD probe (headers only, never a body) and a small Range probe both
+//      stayed comfortably under the cap and answered fine. So a check that
+//      only ever reads headers, or only ever asks for a few bytes, cannot
+//      reach this failure mode regardless of how many of them run — the bug
+//      lives specifically in the FULL, UNRANGED download path. This is why
+//      the fix (setContentLengthIfUnderCloudRunLimit in server.ts, ~line
+//      1441) is verified here by an actual full GET, aborted right after the
+//      response headers arrive so the check never pays for 137 MB of egress.
+//
+//      Deliberately asserted on STATUS ONLY: the fix's correct behaviour for
+//      a large file is to OMIT Content-Length entirely once size is >= the
+//      cap (falls back to chunked transfer, which Cloud Run's limit exempts)
+//      — so a check that required Content-Length to be present would fail
+//      against the FIXED server, not just the broken one. Content-Length is
+//      still logged for diagnostics, never asserted on.
+{
+  // CodeRabbit (this round): neither fetch() call here had any bound, so a
+  // connection that accepts and sends headers but then stalls (never sends
+  // a body chunk, never closes) would hang this whole script — and by
+  // extension the CI job's own timeout — rather than failing this ONE check
+  // quickly with a clear reason. Verified a single AbortSignal passed to
+  // fetch() itself also aborts a body read made AFTER fetch() already
+  // resolved (Node 22 / undici): a local server that sends 200 headers then
+  // never writes a body made `reader.read()` reject with TimeoutError at
+  // the signal's own deadline, not hang. 15s is generous — the real
+  // production endpoint answers in ~3s for this whole section.
+  const DMG_BODY_TIMEOUT_MS = 15000;
+  // The real DMG is ~137 MB (see this section's own header comment). A
+  // Content-Range total this small could only mean a corrupted/degenerate
+  // deploy (an empty or near-empty file uploaded by mistake) — CodeRabbit's
+  // own suggested fix only excluded exactly 1, which a 2-byte "DMG" would
+  // still pass; this floor is comfortably below the real size but far
+  // enough above any degenerate case to have a real sanity meaning.
+  const DMG_MIN_SANE_TOTAL_BYTES = 50_000_000;
+
+  async function statusOnlyGet(path, headers) {
+    let r;
+    try {
+      r = await fetch(`${BASE}${path}`, {
+        ...(headers ? { headers } : {}),
+        signal: AbortSignal.timeout(DMG_BODY_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // A connection that never even sends headers within the bound also
+      // hits this same signal — degrade to a clean, assertable "failed"
+      // result instead of an uncaught rejection crashing the whole script.
+      return { status: 0, contentLength: null, contentRange: null, firstChunkBytes: 0, error: String(err) };
+    }
+    const status = r.status;
+    const contentLength = r.headers.get('content-length');
+    const contentRange = r.headers.get('content-range');
+    // "Status-only" for the full, unranged request means never pulling the
+    // (potentially 137 MB) body off the wire — but CodeRabbit is right that
+    // cancelling WITHOUT reading anything first means a 200 status alone
+    // doesn't prove data actually flowed: Express/Cloud Run can send
+    // response headers before the GCS upstream stream produces its first
+    // chunk, and if that upstream then fails or ends immediately, this
+    // check would never see it. Read exactly the FIRST chunk the stream
+    // hands back (whatever size the platform buffers — typically well under
+    // 1 MB, nowhere near the 137 MB file), then cancel the rest. This proves
+    // real bytes flowed without downloading anything close to the full file.
+    let firstChunkBytes = 0;
+    if (r.body) {
+      const reader = r.body.getReader();
+      try {
+        const { value } = await reader.read();
+        if (value) firstChunkBytes = value.byteLength;
+      } catch { /* timeout/abort or any other read error; status is already captured */ }
+      try { await reader.cancel(); } catch { /* best-effort */ }
+    }
+    return { status, contentLength, contentRange, firstChunkBytes };
+  }
+
+  /** Like statusOnlyGet, but actually reads the (bounded, small) body and
+   * returns its total byte length instead of cancelling it immediately.
+   * CodeRabbit (this round): the earlier version called `r.arrayBuffer()`
+   * unconditionally — if a misbehaving server/proxy ignored the Range
+   * header and returned the FULL 137 MB body (status 206 or 200), this
+   * would buffer the entire file into memory before the assertion below
+   * ever got to fail, defeating this whole section's own "NEVER downloads
+   * the ~137 MB file" design goal. Reads incrementally instead and stops
+   * as soon as it has proof the body is bigger than the single byte we
+   * asked for (more than 1 byte accumulated) or the stream ends — whichever
+   * comes first — then cancels, so at most a little over 1 extra chunk is
+   * ever read regardless of how large the real body is. */
+  async function boundedRangeGet(path, headers) {
+    let r;
+    try {
+      r = await fetch(`${BASE}${path}`, {
+        ...(headers ? { headers } : {}),
+        signal: AbortSignal.timeout(DMG_BODY_TIMEOUT_MS),
+      });
+    } catch (err) {
+      return { status: 0, contentLength: null, contentRange: null, bodyByteLength: 0, error: String(err) };
+    }
+    const status = r.status;
+    const contentLength = r.headers.get('content-length');
+    const contentRange = r.headers.get('content-range');
+    let bodyByteLength = 0;
+    if (r.body) {
+      const reader = r.body.getReader();
+      try {
+        while (bodyByteLength <= 1) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) bodyByteLength += value.byteLength;
+        }
+      } catch { /* timeout/abort or any other read error; status is already captured */ }
+      try { await reader.cancel(); } catch { /* best-effort */ }
+    }
+    return { status, contentLength, contentRange, bodyByteLength };
+  }
+
+  const full = await statusOnlyGet('/api/download/dmg');
+  record('live DMG plain GET (no Range) is 200 with real data actually flowing, not a bare Cloud Run 500 or a stalled stream',
+    full.status === 200 && full.firstChunkBytes > 0,
+    `status=${full.status} firstChunkBytes=${full.firstChunkBytes} content-length=${full.contentLength ?? '(unset — expected once the file is >= the Cloud Run cap)'}`);
+
+  const range = await boundedRangeGet('/api/download/dmg', { Range: 'bytes=0-0' });
+  // CodeRabbit (this round, three times now): a bare status===206 check
+  // could pass on a malformed or wrong partial response (some server/proxy
+  // shapes return 206 without honoring the requested range) while resume
+  // downloads stay broken — assert Content-Range echoes the exact 1-byte
+  // span requested AND a sane total file size AND that the body actually
+  // delivered is exactly that one byte, not 0 bytes or more.
+  const rangeMatch = /^bytes 0-0\/(\d+)$/.exec(range.contentRange || '');
+  const rangeTotal = rangeMatch ? Number(rangeMatch[1]) : null;
+  // CodeRabbit (this round): a decimal digit string long enough (e.g. 310
+  // nines) makes Number(...) overflow to Infinity, and `Infinity >=
+  // DMG_MIN_SANE_TOTAL_BYTES` is true — a malformed Content-Range with an
+  // absurd total would have passed. Number.isSafeInteger rejects Infinity
+  // (and NaN, and anything beyond 2^53-1) before the size comparison.
+  const hasSaneRangeTotal = Number.isSafeInteger(rangeTotal) && rangeTotal >= DMG_MIN_SANE_TOTAL_BYTES;
+  record('live DMG 1-byte Range GET is 206 with a matching Content-Range, a sane total file size, and exactly 1 body byte (resumable downloads still work)',
+    range.status === 206 && hasSaneRangeTotal && range.bodyByteLength === 1,
+    `status=${range.status} content-range=${range.contentRange ?? '(unset)'} total=${rangeTotal ?? '(no match)'} bodyByteLength=${range.bodyByteLength}`);
+}
+
+// ══ 8. DEPLOY CONFIG, verified by behaviour rather than by reading env vars
 //      (LIVE_DEEP=1 — spends two small model calls, so the deploy-verify run
 //      sets it and the nightly monitor does not).
 //
