@@ -230,3 +230,107 @@ export const SERVE_PROBES: GamePayoffs[] = (() => {
   out.push({ a11: 0, a12: 0, a21: 0, a22: 0, b11: 0, b12: 0, b21: 0, b22: 0 });
   return out;
 })();
+
+/**
+ * Whether a scenario's actorA/actorB nouns are safe to ship for colour
+ * labelling (BLUE-NOUNS-8 phase 3, 2026-09-03: bank backfill via
+ * deepseek-v4-flash/OpenRouter, `_gen/bank_actor_nouns.ts`).
+ *
+ * Shared between the backfill harness (decides which extraction to keep) and
+ * `src/scenariobank.test.ts` (re-screens the SHIPPED artifact) so the two can
+ * never silently disagree about what counts as a safe noun — the same failure
+ * class this file's own header warns about for the story gates themselves.
+ *
+ * A row that declares NOTHING (both null/empty) always passes: silence is
+ * always safe, and the caller decides separately whether nouns are required.
+ * A row that declares something must clear every bar:
+ *   - each entry is a VERBATIM substring of the description (NFKC-normalized,
+ *     zero-width-stripped, case-insensitive — the same normalization
+ *     `colorTerms.ts`'s `dropAmbiguous` uses, so this and the eventual
+ *     highlighter agree on what "the same text" means);
+ *   - at most 3 entries per player;
+ *   - the two players' lists are DISJOINT (no phrase claimed by both);
+ *   - no entry equals any of the four option labels (a noun cannot also be
+ *     an option name — that is a `dropAmbiguous`-shaped collision, not a
+ *     valid actor noun).
+ * Any violation fails the WHOLE row, deliberately — this project does not
+ * partially repair model output; a row that fails gets NO nouns, not a
+ * best-effort trim (see CLAUDE.md's `no-rewriting-rung3-ceiling`).
+ */
+export function actorNounsOk(sc: {
+  actorA?: unknown; actorB?: unknown; description?: string | null;
+  row1?: string | null; row2?: string | null; col1?: string | null; col2?: string | null;
+}): boolean {
+  const a = Array.isArray(sc.actorA) ? sc.actorA : sc.actorA == null ? [] : null;
+  const b = Array.isArray(sc.actorB) ? sc.actorB : sc.actorB == null ? [] : null;
+  if (a === null || b === null) return false; // malformed shape, not merely empty
+  if (a.length === 0 && b.length === 0) return true;
+  if (a.length > 3 || b.length > 3) return false;
+  if (!a.every((t) => typeof t === 'string') || !b.every((t) => typeof t === 'string')) return false;
+  const norm = (t: string) => t
+    .normalize('NFKC')
+    .replace(/[​-‍﻿]/g, '')
+    .trim()
+    .toLowerCase();
+  const descNorm = norm(sc.description ?? '');
+  const all = [...(a as string[]), ...(b as string[])];
+  // Same floor `cleanUserColorTerms` (colorTerms.ts) uses for a user-typed
+  // term: a single character is indistinguishable from an article ("a") and
+  // would highlight (or here, verbatim-match) almost any description.
+  // Length checked AFTER normalization, not on the raw string: a zero-width
+  // character (e.g. U+200B) survives `.trim()` (it is not whitespace) but is
+  // stripped by `norm`, so "​a" reads as 2 raw characters and 1 real
+  // one — checking the raw length would let a single-character noun through
+  // the same floor `cleanUserColorTerms` enforces (CodeRabbit, phase 3 review).
+  if (all.some((t) => { const n = norm(t); return n.length < 2 || !descNorm.includes(n); })) return false;
+  const aSet = new Set((a as string[]).map(norm));
+  const bSet = new Set((b as string[]).map(norm));
+  if ([...aSet].some((t) => bSet.has(t))) return false;
+  const labels = [sc.row1, sc.row2, sc.col1, sc.col2]
+    .filter((t): t is string => typeof t === 'string' && t.length > 0)
+    .map(norm);
+  if (all.some((t) => labels.includes(norm(t)))) return false;
+  // A NOUN NAMES ONE ENTITY. Found hand-reading the phase-3 bank backfill
+  // (BLUE-NOUNS-8, 2026-09-03): 5 of the shipped rows' extractions grabbed a
+  // COMPOUND phrase naming both parties at once — "the upstream and
+  // downstream lock-keepers", "The North and South trail coordinators", "Two
+  // neighboring orchard operators" — and assigned the whole thing to ONE
+  // player, so `dropAmbiguous`'s own rule ("no sentence claims an option
+  // belongs to a player who does not own it") would be violated the moment
+  // this ships: colouring "the upstream and downstream lock-keepers" as
+  // Player A's colour claims Player B's half of that phrase too. Every
+  // instance in the corpus was structural (an "X and Y" conjunction, or an
+  // explicit "two"/"the two"), never a legitimate single-entity name that
+  // happens to contain the word "and" — so this is precise on the corpus
+  // measured, not merely plausible.
+  // Tested against norm(t), not the raw string: a zero-width character
+  // inside "and" ("a​nd") breaks the contiguous match the regex needs, so
+  // testing the raw text would let a compound noun through undetected
+  // (CodeRabbit, phase 3 review) — the SAME class of bypass the verbatim
+  // check above was already fixed against, just unfixed here too.
+  const COMPOUND = /\btwo\b|\band\b/i;
+  if (all.some((t) => COMPOUND.test(norm(t)))) return false;
+  // SAME DEFECT, SUBTLER SHAPE: a PLAIN PLURAL collective noun ("ferry
+  // operators", "dairy farmers", "kelp farmers") assigned to exactly one
+  // player while the description names both SYMMETRICALLY ("Two neighboring
+  // ferry operators share a crossing... Each chooses...") without ever
+  // individually distinguishing either one. The COMPOUND check above cannot
+  // see this — the noun contains no "and"/"two", is genuinely verbatim,
+  // disjoint (the other side is empty) and uncollided — only the
+  // description's OWN symmetric framing shows it belongs to neither player
+  // over the other. 11 more shipped rows, hand-confirmed 11/11 genuine
+  // (0 exceptions among rows this fires on, checked over the full backfill):
+  // every "each"/"both" description with exactly one side populated turned
+  // out to be this same collective-noun mistake, never a legitimate case
+  // where the OTHER player simply has no role noun for unrelated reasons.
+  // This MUST live here, not only in `_gen/bank_actor_nouns_merge.ts` — a
+  // rule that only the build script enforces is invisible to
+  // `scenariobank.test.ts`'s re-screen of the SHIPPED artifact, which calls
+  // only this function; reverting the build-script filter would then ship
+  // the defect again with every check still green.
+  // Same fix as COMPOUND above: tested against descNorm (already computed),
+  // not the raw description, for the same zero-width-bypass reason.
+  const onlyOneSide = (a.length > 0) !== (b.length > 0);
+  if (onlyOneSide && /\b(each|both)\b/i.test(descNorm)) return false;
+  return true;
+}
