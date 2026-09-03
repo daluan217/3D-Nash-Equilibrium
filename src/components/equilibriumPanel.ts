@@ -177,9 +177,11 @@ export function indifferenceLine(
   right: string,
   p: number,
   q: number,
+  anchor?: number,
 ): IndifferenceLine {
   // Under `≈`, a difference SMALLER than the display resolution is rendered from
-  // the midpoint so both sides print one number.
+  // a single SHARED value so both sides print one number — ALWAYS, not only
+  // when neither side individually needs `<`/`>` sub-resolution wording.
   //
   // Not cosmetic. The two values straddle a rounding boundary often enough to
   // matter: on a=[[-25,-32],[64,-55]], b=[[29,-97],[-76,4]] both row payoffs are
@@ -191,31 +193,78 @@ export function indifferenceLine(
   // not representable at 3dp at all, so there is nothing to lose by showing the
   // one number both values round to.
   //
+  // PREVIOUSLY (before RED-MATH-5's finding 001) this collapse was gated on
+  // `pBase.rel === '=' && qBase.rel === '='` — i.e. skipped whenever EITHER
+  // side itself rounded to a sub-resolution "< 0.001"/"> -0.001". The comment
+  // that gated it defended that as "a statement about `<`/`>` magnitude
+  // wording, not a misprint of a genuine number" — reasoning about a
+  // CONTRIVED case (p=0.0002, q=-0.0002, a real ~4e-4 gap). It does not hold
+  // for the case that actually shows up in real games: a genuine mixed-NE
+  // indifference point whose TRUE value is mathematically EXACTLY 0 (that is
+  // what "indifferent" means), where `eRow1`/`eRow2` are two *different*
+  // floating-point expressions for that same exact zero and ~1e-16 rounding
+  // noise alone can land them on OPPOSITE sides of zero — each independently
+  // picking up `payoffTexRhs`'s directional `<`/`>` wording and producing two
+  // genuinely different printed strings ("-0.001" and "0.001") joined by
+  // `\approx`. Repro: A=[[-3,2],[6,-4]], B=[[5,1],[-7,1]] at its mixed NE
+  // (x*=0.667, y*=0.4) — `_gen/redmath5_minimal_repro.ts`.
+  //
   // `indifferent` is this line's OWN decision now (see the docstring above),
   // not an input: identical printed digits, at display resolution, and
-  // nothing else.
+  // nothing else. And once it is true, the two sides ALWAYS share one
+  // rendering — never two independently-rounded strings, sub-resolution or
+  // not — which is what makes "≈ between two different printed numbers"
+  // actually impossible by construction, not merely absent from the one
+  // branch the previous fix covered.
   const indifferent = Math.abs(p - q) < 5e-4;
-  const mid = (p + q) / 2;
-  // Under `≈`, a value whose r3 rounds to zero without BEING zero renders with
-  // the same directional operator `payoffTexRhs` uses (`<`/`>` and the
-  // threshold magnitude) instead of a plain "=" next to a false "0.000" — the
-  // headline and this line are then one rendering of one quantity, never two.
-  // Under a strict relation `fmtPayoffPair` already tells the two sides apart,
-  // so both operators stay `=`.
+  // `anchor`, when supplied, is the SAME combined quantity the panel's own
+  // headline renders (`EA`/`EB` — see `indifferenceLines` below) rather than
+  // the plain average of this line's two independently-rounded inputs. Using
+  // it means the row/col line and the headline three lines above it are not
+  // merely close, they are the identical computation, so "the headline states
+  // the exact value" and "the line under it states the exact value" can never
+  // read as two different claims about one quantity. Callers that pass no
+  // anchor (isolated unit tests exercising `indifferenceLine` directly) fall
+  // back to the plain midpoint, unchanged from before this fix.
+  const shared = anchor !== undefined ? anchor : (p + q) / 2;
   const strict = indifferent ? null : fmtPayoffPair(p, q);
-  const pBase = indifferent ? threeRel(p) : { str: strict!.p, rel: '=' };
-  const qBase = indifferent ? threeRel(q) : { str: strict!.q, rel: '=' };
-  // Sharing the midpoint is only safe when NEITHER side is itself a
-  // sub-resolution threshold: p=0.0002, q=-0.0002 straddle zero with a gap
-  // under 5e-4, but mid is exactly 0 — sharing it would print "= 0" for a
-  // quantity that is not zero on either side. When either side already needed
-  // `<`/`>` wording, keep that side's own honest value instead of collapsing
-  // (each side then keeps its own honest threshold wording — the two strings
-  // can still differ in that one narrow band near zero, which is a statement
-  // about `<`/`>` magnitude wording, not a misprint of a genuine number).
-  const shareMidpoint = indifferent && pBase.rel === '=' && qBase.rel === '=';
-  const pf = shareMidpoint ? threeRel(mid) : pBase;
-  const qf = shareMidpoint ? threeRel(mid) : qBase;
+  // CodeRabbit, PR #91 review on `d173b58`: `shared` can be the LITERAL
+  // double `0` without the quantity it stands for being genuinely zero.
+  // p=0.0002, q=-0.0002 is the fixture — a REAL ~4e-4 gap, not noise — whose
+  // average is exactly 0.0 in double arithmetic; `threeRel(0)` then takes
+  // `payoffTexRhs`'s `v === 0` branch and both sides print "= 0", asserting
+  // an equality that is false on both sides (neither payoff is 0).
+  //
+  // The earlier version of this fix (RED-MATH-5/001) could not tell that
+  // case apart from the one it exists for — a genuine mixed-NE indifference
+  // point, whose TRUE value the panel already knows is exactly 0 (that is
+  // what "indifferent" means), landed at literal 0.0 by an anchor/average of
+  // ~1e-16 float dust (`_gen/redmath5_minimal_repro.ts`: p=-2.22e-16,
+  // q=4.44e-16, anchor=EA(x,y,g)=0 exactly). That case MUST keep "= 0" — it
+  // is the one place an unqualified equality is the honest statement.
+  //
+  // The two are distinguishable: float noise from a few arithmetic ops on
+  // payoffs bounded by ±100 is many orders of magnitude below 1e-9 (measured
+  // here at ~1e-16); nothing that started as a real, distinct input — the
+  // smallest the matrix accepts is 0.001 — collapses to under 1e-9 by
+  // accident. So `shared === 0` earns the `= 0` reading only when p and q
+  // are BOTH already within that float-noise band; otherwise the zero is an
+  // artifact of the average/anchor cancelling two values that are not the
+  // same number, and the honest single-string form is "approximately 0" —
+  // `≈` on EACH side, not `=` on either — never a signed `< 0.001` /
+  // `> -0.001` either, since the two sides can carry opposite signs (as here)
+  // and no single directional claim would be true for both.
+  const FLOAT_NOISE_EPS = 1e-9;
+  const sharedIsArtifactZero =
+    shared === 0 && !(Math.abs(p) < FLOAT_NOISE_EPS && Math.abs(q) < FLOAT_NOISE_EPS);
+  // ONE format call under `≈`, reused for both sides — the two rendered
+  // objects are the SAME object, not merely equal, so `pStr === qStr` and
+  // `pRel === qRel` cannot drift apart by future edits to either branch.
+  const sharedFmt = indifferent
+    ? (sharedIsArtifactZero ? { str: '0', rel: '\\approx' } : threeRel(shared))
+    : null;
+  const pf = indifferent ? sharedFmt! : { str: strict!.p, rel: '=' };
+  const qf = indifferent ? sharedFmt! : { str: strict!.q, rel: '=' };
   const relation = indifferent ? '\\approx' : (p > q ? '>' : '<');
   return {
     indifferent,
@@ -249,8 +298,16 @@ export function indifferenceLines(
   const eRow2 = y * g.a21 + (1 - y) * g.a22;
   const eCol1 = x * g.b11 + (1 - x) * g.b21;
   const eCol2 = x * g.b12 + (1 - x) * g.b22;
+  // `EA`/`EB` are the SAME (x, y) combined into the ONE weighted expression
+  // the panel's headline row renders (`payoffTexRhs(EA(resolved.x, resolved.y,
+  // payoffs))` in App.tsx). Passed as the anchor, an indifferent line's shared
+  // rendering is that identical computation rather than a fresh average of
+  // `eRow1`/`eRow2` — so a line that reads "≈" can never diverge from what the
+  // headline three lines above it already stated for the same quantity (see
+  // `indifferenceLine`'s docstring for why this also happens to be what closes
+  // RED-MATH-5 finding 001).
   return {
-    a: indifferenceLine('Row 1', 'Row 2', eRow1, eRow2),
-    b: indifferenceLine('Col 1', 'Col 2', eCol1, eCol2),
+    a: indifferenceLine('Row 1', 'Row 2', eRow1, eRow2, EA(x, y, g)),
+    b: indifferenceLine('Col 1', 'Col 2', eCol1, eCol2, EB(x, y, g)),
   };
 }
