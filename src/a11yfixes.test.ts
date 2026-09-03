@@ -34,6 +34,13 @@ function extractDivBlock(src: string, startMarker: string): string {
   assert(start > 0, `start marker not found: ${JSON.stringify(startMarker)}`);
   const openTagEnd = src.indexOf('>', start) + 1;
   assert(openTagEnd > 0, `no closing '>' found for the opening tag at ${JSON.stringify(startMarker)}`);
+  // A self-closing `<div ... />` (e.g. a dangerouslySetInnerHTML card with no
+  // JSX children) IS the whole block: there is no `</div>` of its own to
+  // match, so returning here keeps the scan below from consuming the next
+  // unrelated `</div>` further down the file instead.
+  if (src.slice(start, openTagEnd).trimEnd().endsWith('/>')) {
+    return src.slice(start, openTagEnd);
+  }
   const tagRe = /<div\b[^>]*>|<\/div>/g;
   tagRe.lastIndex = openTagEnd;
   let depth = 1;
