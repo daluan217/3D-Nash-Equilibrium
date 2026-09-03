@@ -654,9 +654,92 @@ function writeFileAtomicSync(file: string, data: string): void {
     } catch { /* not fsyncable on every platform; contents are already flushed */ }
   } catch (err) {
     if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
-    // Never leave the scratch file behind to be mistaken for data.
-    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best effort */ }
+    // Never leave the scratch file behind to be mistaken for data — best
+    // effort: this cleanup runs INSIDE the very failure it is trying to
+    // clean up after, so it is not guaranteed to succeed. RED-DESKTOP-7/001:
+    // when the directory itself turns unwritable mid-write (the `renameSync`
+    // above failing for exactly that reason), `fs.unlinkSync(tmp)` fails for
+    // the IDENTICAL reason — unlink needs directory-write permission too —
+    // and the scratch file is orphaned. That used to be silent (`catch { }`,
+    // no log line), so an operator had no way to learn the file even exists.
+    // Log loudly here; `sweepStaleAtomicTmpFiles` (called once at startup)
+    // removes anything this cleanup could not, on the next boot.
+    //
+    // CodeRabbit (this PR): call `unlinkSync` directly rather than gating it
+    // on `fs.existsSync(tmp)` first — `existsSync` swallows EVERY error
+    // (including an access error on the directory, exactly the failure this
+    // whole function exists to survive) and just returns `false`, which used
+    // to skip the delete AND the log silently: the tmp file could genuinely
+    // still be sitting there, inaccessible, and nothing would ever say so.
+    // `ENOENT` is the one code worth staying quiet about (the tmp file
+    // legitimately never got created — the failure was in `openSync` itself).
+    try {
+      fs.unlinkSync(tmp);
+    } catch (cleanupErr: any) {
+      if (cleanupErr?.code !== "ENOENT") {
+        console.error(`writeFileAtomicSync: could not remove scratch file ${tmp} after a write error (it may be orphaned until the next startup sweep):`, cleanupErr);
+      }
+    }
     throw err;
+  }
+}
+
+/**
+ * Remove stale `<file>.tmp-<pid>-<timestamp>` scratch files left behind by a
+ * `writeFileAtomicSync` whose own failure-cleanup could not run
+ * (RED-DESKTOP-7/001, see that function's comment) — most commonly a
+ * directory that turned read-only or ran out of permission specifically
+ * between the tmp file being closed and the rename over the real file.
+ *
+ * Runs once at startup, AFTER the desktop lock is held (`acquireDesktopLock`
+ * already guarantees no other process can be writing this same directory
+ * concurrently at that point), and only removes files older than `maxAgeMs` —
+ * so it can never race a write actually in flight: the CURRENT process's own
+ * first save has not happened yet when this runs, and any OTHER process's tmp
+ * file is either long-dead (the lock proves nothing else is live here now) or
+ * young enough to be left alone out of caution.
+ */
+function sweepStaleAtomicTmpFiles(file: string, maxAgeMs = 5000): void {
+  const dir = path.dirname(file);
+  const prefix = `${path.basename(file)}.tmp-`;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch (err: any) {
+    // CodeRabbit (this PR): this runs BEFORE `initDB`/`loadDBFromFile`, so a
+    // silently-swallowed permission/IO error here would be the FIRST place a
+    // real problem with the data directory could have been reported, and
+    // wasn't. `ENOENT` is the one benign case (nothing to sweep, and
+    // `loadDBFromFile` will create the directory momentarily); anything else
+    // — EACCES, a busy volume, ... — is worth a log line even though this
+    // function still cannot do anything about it itself.
+    if (err?.code !== "ENOENT") {
+      console.error(`Could not scan ${dir} for a stale atomic-write sweep at startup:`, err);
+    }
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix)) continue;
+    const full = path.join(dir, name);
+    let age: number;
+    try {
+      age = Date.now() - fs.statSync(full).mtimeMs;
+    } catch (err: any) {
+      // ENOENT here is the ordinary "vanished between readdir and stat" race
+      // (nothing left to sweep); anything else is a real, worth-logging
+      // problem reading this specific entry.
+      if (err?.code !== "ENOENT") {
+        console.error(`Could not check the age of ${full} during the startup atomic-write sweep:`, err);
+      }
+      continue;
+    }
+    if (age < maxAgeMs) continue;
+    try {
+      fs.unlinkSync(full);
+      console.warn(`Removed a stale atomic-write scratch file at startup: ${full} (orphaned by an earlier interrupted write; see writeFileAtomicSync).`);
+    } catch (err) {
+      console.error(`Found a stale atomic-write scratch file ${full} but could not remove it:`, err);
+    }
   }
 }
 
@@ -2469,6 +2552,20 @@ async function startServer() {
   // standalone run's process.exit(1), or the packaged app's dialog hook) —
   // either way this function must stop here: no initDB, no listen.
   if (!acquireDesktopLock()) return;
+  // RED-DESKTOP-7/001: clean up any db.json.tmp-* scratch file an earlier,
+  // interrupted writeFileAtomicSync could not remove itself. Safe exactly
+  // here — the lock above already guarantees no other process can be
+  // writing this directory right now, and this runs before this process's
+  // own first save.
+  //
+  // The age threshold is overridable ONLY for tests (CodeRabbit, this PR):
+  // a "young, not-yet-stale" fixture is written just before this process is
+  // spawned, and on a slow/loaded machine the gap between that write and
+  // THIS line running could plausibly approach the 5s production default,
+  // making the test flaky through no fault of the sweep itself. The
+  // production default (5000ms) is unchanged when the var is unset.
+  const sweepMaxAgeMs = Number(process.env.NASH_TMP_SWEEP_MAX_AGE_MS);
+  sweepStaleAtomicTmpFiles(DB_FILE, Number.isFinite(sweepMaxAgeMs) && sweepMaxAgeMs > 0 ? sweepMaxAgeMs : undefined);
 
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000", 10);

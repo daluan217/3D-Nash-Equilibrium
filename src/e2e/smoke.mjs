@@ -201,17 +201,21 @@ async function mockRegenOn(p, regenerateHandler) {
   if (regenerateHandler) await p.route('**/api/scenario/regenerate', regenerateHandler);
 }
 
+// RED-REGEN/001 ("fix the tests that lied"): these used to carry
+// actorA/actorB, which SCENARIO_SCHEMA (additionalProperties:false, the SAME
+// object REPORT_SCHEMA.properties.suggestedScenario uses) cannot produce on
+// any real path. A mock returning a shape the real, schema-constrained
+// provider structurally cannot return was exercising a code path that is
+// unreachable in production.
 const REGEN_STORY_A = {
   name: 'Cider Press Bookings',
   row1: 'Early Slot', row2: 'Late Slot', col1: 'Reserve', col2: 'Walk-in',
   description: 'Two orchards are booking time on the shared cider press before the fruit turns.',
-  actorA: ['orchard'], actorB: ['press operator'],
 };
 const REGEN_STORY_B = {
   name: 'Kiln Firing Schedule',
   row1: 'Morning Fire', row2: 'Evening Fire', col1: 'Glaze Batch', col2: 'Bisque Batch',
   description: 'A potter and a kiln co-op are scheduling a shared firing slot.',
-  actorA: ['potter'], actorB: ['co-op'],
 };
 
 try {
@@ -1310,8 +1314,15 @@ try {
     });
     record('320px is clean before loading the long-label game (precondition)', !(await overflowing()));
 
+    // `.isVisible({timeout})` does NOT actually wait/retry — Playwright's
+    // isVisible is an immediate, no-retry actability snapshot regardless of
+    // any timeout argument passed to it, so this was always a race against
+    // however long the post-login games list takes to fetch and render, not
+    // a real 5s allowance. Made it a genuine waiting check (found running
+    // this suite on a slower CI runner, where the race lost reliably).
     const gameCard = p320.getByText(`Reflow ${uniq}`, { exact: false });
-    const cardFound = await gameCard.first().isVisible({ timeout: 5000 }).catch(() => false);
+    const cardFound = await gameCard.first().waitFor({ state: 'visible', timeout: 15000 })
+      .then(() => true).catch(() => false);
     record('the long-label saved game is reachable at 320px (precondition)', cardFound);
     if (cardFound) {
       await gameCard.first().click();
@@ -1347,10 +1358,12 @@ try {
           proseClaims: null,
           geometryClaims: null,
           suggestedScenario: {
+            // No actorA/actorB — SCENARIO_SCHEMA (the same object this
+            // report path's own suggestedScenario uses) forbids them; see
+            // RED-REGEN/001.
             name: 'A'.repeat(72),
             row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect',
             description: 'A synthetic scenario used only to exercise the client-side name clamp.',
-            actorA: ['player'], actorB: ['player'],
           },
         },
         validation: null,
@@ -1481,9 +1494,19 @@ try {
   }
 
   // ══ 28. FEATURE-REGEN — Edit dialog: an UNTOUCHED (not re-typed this
-  //      session) name IS replaced on Keep, description/labels replace, and
-  //      the eventual PATCH carries the new text with no payoffs and the
-  //      mocked scenario's actor nouns as colorTermsA/B.
+  //      session) name IS replaced on Keep, description/labels replace, the
+  //      eventual PATCH carries the new text with no payoffs, and — the
+  //      user-reached case, not just an empty-to-empty vacuous pass
+  //      (CodeRabbit, this PR) — REAL, pre-existing colour chips placed
+  //      through the actual chip-picker UI survive Regenerate -> Keep ->
+  //      Save Changes. The mocked draw supplies no actorA/actorB (RED-REGEN/
+  //      001: no real draw ever can), so the chips reaching the PATCH body
+  //      must be EXACTLY what was placed before Regenerate — neither wiped
+  //      nor altered.
+  //      src/scenarioregen.test.ts and src/unit.test.ts cover the same
+  //      preserve/add/never-reassign behaviour as pure-function fixtures,
+  //      and src/integration/scenario-regen.test.mjs section 10 covers it
+  //      end-to-end through the real REST API.
   {
     const editPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(editPage, async (route) => {
@@ -1494,6 +1517,31 @@ try {
     await editPage.getByRole('button', { name: /save preset/i }).click();
     await editPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
     await editPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+
+    // Place two REAL colour chips through the actual DescriptionEditor
+    // chip-picker (select text in the textarea, click Player A/B) — not a
+    // fixture that starts empty, which the pre-fix keepFill would also pass
+    // trivially (empty stays empty either way).
+    const saveDescText = 'A vendor and a buyer negotiate delivery windows.';
+    const saveDescField = editPage.locator('[role="dialog"][aria-label="Save custom game"] textarea');
+    await saveDescField.fill(saveDescText);
+    const selectWord = async (word) => {
+      await editPage.evaluate(({ w, sel }) => {
+        const ta = document.querySelector(sel);
+        const idx = ta.value.indexOf(w);
+        ta.focus();
+        ta.setSelectionRange(idx, idx + w.length);
+      }, { w: word, sel: '[role="dialog"][aria-label="Save custom game"] textarea' });
+    };
+    const saveDialog = editPage.getByRole('dialog', { name: 'Save custom game' });
+    await selectWord('vendor');
+    await saveDialog.getByRole('button', { name: 'Player A' }).click();
+    await selectWord('buyer');
+    await saveDialog.getByRole('button', { name: 'Player B' }).click();
+    record('chip precondition: two real chips are placed before saving',
+      await saveDialog.locator('button:has-text("vendor")').isVisible().catch(() => false)
+      && await saveDialog.locator('button:has-text("buyer")').isVisible().catch(() => false));
+
     await editPage.getByRole('button', { name: /^save game profile$/i }).click();
     await editPage.waitForTimeout(600);
 
@@ -1532,9 +1580,21 @@ try {
     await patchDone.catch(() => null);
     record('the PATCH body never carries payoffs (the route the plan forbids)', !!patchBody && !('payoffs' in patchBody));
     record('the PATCH body carries the regenerated description', !!patchBody && patchBody.description === REGEN_STORY_B.description);
-    record('the PATCH body carries the regenerated scenario\'s actor noun as a colour term',
-      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('potter'),
+    // RED-REGEN/001 (CodeRabbit: exercise the REAL, user-reached case — this
+    // game was saved with the "vendor"/"buyer" chips placed above through
+    // the actual UI, and the mocked draw supplies no actorA/actorB, exactly
+    // the real schema's shape). Keep must leave those chips exactly as they
+    // were — this is the fixture that FAILS against the pre-fix keepFill
+    // (which unconditionally sent colorTermsA/B: []).
+    record('RED-REGEN/001: a real, pre-existing chip on player A survives Regenerate -> Keep -> Save Changes',
+      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('vendor'),
       JSON.stringify(patchBody?.colorTermsA));
+    record('RED-REGEN/001: same for the pre-existing chip on player B',
+      !!patchBody && Array.isArray(patchBody.colorTermsB) && patchBody.colorTermsB.includes('buyer'),
+      JSON.stringify(patchBody?.colorTermsB));
+    record('RED-REGEN/001: nothing extra was fabricated alongside the real chips',
+      !!patchBody && patchBody.colorTermsA.length === 1 && patchBody.colorTermsB.length === 1,
+      JSON.stringify({ colorTermsA: patchBody?.colorTermsA, colorTermsB: patchBody?.colorTermsB }));
     await editPage.close();
   }
 

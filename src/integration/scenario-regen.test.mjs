@@ -46,17 +46,22 @@ function record(name, pass, detail) {
 let calls = 0;
 let mode = 'story';
 let sequence = null; // per-call mode, consumed by index, clamped past the end
+// RED-REGEN/001 ("fix the tests that lied"): these used to carry
+// actorA/actorB, a shape SCENARIO_SCHEMA (src/utils/report.ts,
+// additionalProperties:false, reused verbatim from REPORT_SCHEMA) cannot
+// produce on any real path — cloud or bank. A mock that returns fields the
+// real, schema-constrained provider structurally cannot return was testing a
+// code path that is unreachable in production; every mock scenario here
+// mirrors exactly the schema's own fields, nothing more.
 const STORY = {
   name: 'Mock Harbor Run', row1: 'Load Now', row2: 'Load Later',
   col1: 'Send Tug', col2: 'Hold Tug',
   description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week.',
-  actorA: ['harbor operator'], actorB: ['tug company'],
 };
 const STORY2 = {
   name: 'Mock Kiln Slot', row1: 'Fire Early', row2: 'Fire Late',
   col1: 'Book Glaze', col2: 'Book Bisque',
   description: 'A potter and a kiln co-op are settling a shared firing slot for the week ahead.',
-  actorA: ['potter'], actorB: ['co-op'],
 };
 // Well-formed but repeats the SAME story every draw — the avoid gate's target.
 const SAME_AS_STORY = { ...STORY, description: STORY.description + ' Scheduling stays informal between them.' };
@@ -416,6 +421,106 @@ try {
     record('timeout: ladder exhaustion is rescued by the bank fallback (a scenario is still returned)',
       r.status === 200 && !!r.json?.scenario && r.json?.scenarioSource === 'bank-fallback',
       `status=${r.status} body=${JSON.stringify(r.json)}`);
+    await stop();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 10. RED-REGEN/001 — Keep never wipes a user's existing colour-term
+  //     chips: register → save WITH chips → regenerate → a Keep-shaped PATCH
+  //     built exactly as the FIXED client (App.tsx's keepRegen +
+  //     scenarioRegen.ts's keepFill) sends it — the mock draw supplies no
+  //     actorA/actorB (see above: no real draw ever can), so the fixed
+  //     client re-sends the SAME chips unchanged, with allowClear:true, the
+  //     same flag every real Save always carries — → GET: chips intact.
+  //     This is the real-HTTP reproduction from RED-REGEN/001's finding,
+  //     replayed here as a permanent regression: the ORIGINAL reproduction
+  //     (the client's OLD keepFill, which unconditionally sent
+  //     colorTermsA/B: []) is what this section's shape is built to refute.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    calls = 0; mode = 'story'; sequence = null;
+    await boot(HOSTED_ON_ENV);
+    const email = `regen-keep-${Date.now()}@example.test`;
+    const password = 'Sup3rSecret1';
+    await call('POST', '/api/auth/register', { body: { username: `regenkeep${Date.now()}`, email, password } });
+    const login = await call('POST', '/api/auth/login', { body: { email, password } });
+    const token = login.json?.token || '';
+    const created = await call('POST', '/api/games', {
+      token,
+      body: {
+        name: 'Chip preservation fixture', description: 'A vendor and a buyer negotiate delivery windows.',
+        payoffs: PAYOFFS, row1Label: 'Original Row 1',
+        colorTermsA: ['the vendor'], colorTermsB: ['the buyer'],
+      },
+    });
+    const gameId = created.json?.game?.id || '';
+    record('chip-preservation setup: the fixture game saved with colour chips',
+      created.status === 200 && !!gameId
+        && (created.json?.game?.colorTermsA || []).includes('the vendor')
+        && (created.json?.game?.colorTermsB || []).includes('the buyer'),
+      `status=${created.status} colorTermsA=${JSON.stringify(created.json?.game?.colorTermsA)}`);
+
+    const regen = await call('POST', '/api/scenario/regenerate', {
+      body: { payoffs: PAYOFFS, current: { name: 'Chip preservation fixture', description: 'A vendor and a buyer negotiate delivery windows.' } },
+    });
+    record('chip-preservation: regenerate returns 200 with a scenario carrying no actorA/actorB (the real schema shape)',
+      regen.status === 200 && !!regen.json?.scenario && !('actorA' in (regen.json.scenario ?? {})) && !('actorB' in (regen.json.scenario ?? {})),
+      `status=${regen.status} scenario=${JSON.stringify(regen.json?.scenario)}`);
+
+    // The Keep-shaped PATCH a FIXED client sends: new description/labels from
+    // the draw, colorTermsA/B re-sent UNCHANGED (no actor nouns were offered
+    // to add), allowClear:true — the same flag every real Save always sends,
+    // proving this is not passing merely because allowClear was omitted.
+    const patched = await call('PATCH', `/api/games/${gameId}`, {
+      token,
+      body: {
+        description: regen.json.scenario.description,
+        row1Label: regen.json.scenario.row1, row2Label: regen.json.scenario.row2,
+        col1Label: regen.json.scenario.col1, col2Label: regen.json.scenario.col2,
+        colorTermsA: ['the vendor'], colorTermsB: ['the buyer'],
+        allowClear: true,
+      },
+    });
+    record('chip-preservation: the Keep-shaped PATCH succeeds and the new description is stored',
+      patched.status === 200 && patched.json?.game?.description === regen.json.scenario.description,
+      `status=${patched.status}`);
+
+    const after = await call('GET', '/api/games', { token });
+    const stillThere = (after.json || []).find((g) => g.id === gameId);
+    record('RED-REGEN/001: colorTermsA still contains "the vendor" after Keep — the chip was never wiped',
+      Array.isArray(stillThere?.colorTermsA) && stillThere.colorTermsA.includes('the vendor'),
+      `colorTermsA=${JSON.stringify(stillThere?.colorTermsA)}`);
+    record('RED-REGEN/001: colorTermsB still contains "the buyer" after Keep',
+      Array.isArray(stillThere?.colorTermsB) && stillThere.colorTermsB.includes('the buyer'),
+      `colorTermsB=${JSON.stringify(stillThere?.colorTermsB)}`);
+    record('chip-preservation: the new labels from the draw are the ones actually stored',
+      stillThere?.row1Label === regen.json.scenario.row1 && stillThere?.col1Label === regen.json.scenario.col1,
+      `row1Label=${JSON.stringify(stillThere?.row1Label)} col1Label=${JSON.stringify(stillThere?.col1Label)}`);
+
+    // NEGATIVE CONTROL — the assertions above are only worth something if
+    // this comparison can fail. The historical (pre-fix) client shape —
+    // colorTermsA/B: [] with allowClear:true, exactly what the OLD keepFill
+    // produced for every real (no-actor-noun) draw — really does wipe the
+    // chips on this same server: proves the server was never the bug, and
+    // that GET actually reflects what PATCH sends rather than caching stale
+    // state that would make every assertion above vacuous.
+    const created2 = await call('POST', '/api/games', {
+      token,
+      body: {
+        name: 'Chip wipe control', description: 'x', payoffs: { ...PAYOFFS, a11: PAYOFFS.a11 + 1 },
+        colorTermsA: ['the vendor'], colorTermsB: ['the buyer'],
+      },
+    });
+    const gameId2 = created2.json?.game?.id || '';
+    await call('PATCH', `/api/games/${gameId2}`, {
+      token, body: { colorTermsA: [], colorTermsB: [], allowClear: true },
+    });
+    const after2 = await call('GET', '/api/games', { token });
+    const stillThere2 = (after2.json || []).find((g) => g.id === gameId2);
+    record('negative control: the OLD (pre-fix) client shape really does wipe chips on this server — the comparison above is not tautological',
+      Array.isArray(stillThere2?.colorTermsA) && stillThere2.colorTermsA.length === 0,
+      `colorTermsA=${JSON.stringify(stillThere2?.colorTermsA)}`);
+
     await stop();
   }
 
