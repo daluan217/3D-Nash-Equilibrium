@@ -687,6 +687,36 @@ function migrateOwnerlessGames(db: DB, filePath: string): boolean {
   return true;
 }
 
+/**
+ * Set when a startup recovery path found an unreadable, unparseable or
+ * malformed `DB_FILE` and could NOT move it aside (`fs.renameSync` failed —
+ * typically the containing directory is not writable). The original bytes
+ * are then still sitting at `DB_FILE`, and the process is running on a fresh
+ * empty database: the very next local-file `saveDB`/`saveDBAwaited` would
+ * write that empty object straight over the real data — silently, and most
+ * likely AFTER an operator has fixed the directory permissions to "make
+ * saving work again". (CodeRabbit, 2026-09-03, PR #96: "block local-file
+ * writes after failed preservation".) While set, every local-file save is
+ * refused with `false` — which the desktop routes already turn into an
+ * honest 500 (RED-DESKTOP-4/002) — until the operator resolves the file and
+ * restarts. The GCS branch is unaffected: there the local file is scratch
+ * and the bucket is the store.
+ */
+let localPersistenceBlocked: string | null = null;
+function blockLocalPersistence(reason: string): void {
+  localPersistenceBlocked = reason;
+  console.error(
+    `Local-file persistence is now BLOCKED for this process: ${reason}. Every save to ${DB_FILE} `
+    + `will be refused until the file is repaired, moved or deleted and the server is restarted.`
+  );
+}
+function localFileSaveBlocked(): boolean {
+  if (!localPersistenceBlocked) return false;
+  if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) return false; // GCS is the store; the local file is scratch
+  console.error(`Refusing to write ${DB_FILE}: local-file persistence is blocked (${localPersistenceBlocked}).`);
+  return true;
+}
+
 function loadDBFromFile(): DB | null {
   try {
     const dbDir = path.dirname(DB_FILE);
@@ -758,6 +788,7 @@ function loadDBFromFile(): DB | null {
           ? ` — the unreadable file has been preserved at ${aside} for recovery.`
           : `; the unreadable file could NOT be moved aside — it has been left in place, unread.`)
       );
+      if (!preserved) blockLocalPersistence(`${DB_FILE} could not be read (${cause}) and could not be moved aside`);
       return { users: [], games: [] };
     }
 
@@ -788,6 +819,7 @@ function loadDBFromFile(): DB | null {
       console.error(`Error reading db.json, resetting database. The unreadable file has been kept at ${aside}:`, err);
     } catch (renameErr) {
       console.error("Error reading db.json, resetting database (and the unreadable file could NOT be preserved):", err, renameErr);
+      blockLocalPersistence(`${DB_FILE} is not valid JSON and could not be moved aside`);
     }
     return { users: [], games: [] };
   }
@@ -832,6 +864,7 @@ function loadDBFromFile(): DB | null {
           ? `; the unreadable file has been preserved at ${aside} for recovery.`
           : `; the unreadable file could NOT be moved aside — it has been left in place, unread.`)
       );
+      if (!preserved) blockLocalPersistence(`${DB_FILE} is not a valid database (${cause}) and could not be moved aside`);
       return { users: [], games: [] };
     }
 
@@ -2082,6 +2115,7 @@ function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength:
  * separate, hosted-side question — not claimed as fixed here.)
  */
 function saveDB(db: DB): boolean {
+  if (localFileSaveBlocked()) return false;
   inMemoryDb = db;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
     scheduleGcsSave(); // #85's coalescing pump; the GCS write is async, so the caller's boolean cannot reflect it
@@ -2176,6 +2210,7 @@ async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
     scheduleGcsSave(); // #85's coalescing pump — see this function's own comment for why this branch cannot also await a per-request result
     return true;
   }
+  if (localFileSaveBlocked()) return false;
   try {
     const dbDir = path.dirname(DB_FILE);
     if (!fs.existsSync(dbDir)) {

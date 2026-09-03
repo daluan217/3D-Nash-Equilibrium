@@ -483,6 +483,70 @@ function runHook(userData, withHook, fireUnrelated = false) {
   rmSync(userData, { recursive: true, force: true });
 }
 
+// SECTION 8 (CodeRabbit, PR #96 GitHub review round 3, 2026-09-03, Major):
+// "Block local-file writes after failed preservation." When the recovery
+// path could NOT move the unreadable file aside (the directory itself is not
+// writable), the original bytes are still at db.json and the process runs on
+// a fresh empty DB. The dangerous sequence is: operator fixes the directory
+// permissions to "make saving work" -> the next local-file save writes the
+// empty DB straight over the real data. Reproduced here end to end on the
+// HOSTED shape: dir 0o500 + file 0o000 at boot (rename fails), then chmod the
+// dir back to 0o700 (the operator's fix), then a register attempt — on the
+// hosted no-SMTP server register calls saveDB() BEFORE the mail send (which
+// then fails 500), so it is a real local-file write trigger. Expected with
+// the fix: the write is REFUSED, the original bytes survive; without the
+// `localFileSaveBlocked()` guard in saveDB/saveDBAwaited the file is
+// overwritten (mutation-verified: removing the guard fails the last check).
+if (process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)) {
+  // Windows chmod does not enforce POSIX directory permissions (the rename
+  // would succeed), and root ignores them — the fixture cannot fail
+  // preservation there, so the section is skipped rather than asserted.
+  record('HOSTED, preservation failed: (skipped — Windows or root: chmod does not restrict)', true);
+} else {
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-blocked-hosted-'));
+  const original = JSON.stringify({
+    users: [{ id: 'u1', username: 'real-user', email: 'real@x.com', passwordHash: '', isVerified: true, verificationCode: '', verificationCodeExpires: 0, tokenVersion: 0 }],
+    games: [{ id: 'g1', userId: 'u1', name: 'Precious Real Game', payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 4, b12: 3, b21: 2, b22: 1 } }],
+  });
+  writeFileSync(path.join(userData, 'db.json'), original);
+  chmodSync(path.join(userData, 'db.json'), 0o000);
+  chmodSync(userData, 0o500); // directory NOT writable: renameSync(db.json -> aside) must fail
+
+  const child = spawnHostedServer(userData, port);
+  let booted = false;
+  try {
+    const { log } = await waitReady(child, port);
+    booted = true;
+    record('HOSTED, preservation failed: still boots (degrades, no exit)', true);
+    record('HOSTED, preservation failed: the log says the file could NOT be moved aside AND that local persistence is BLOCKED',
+      /could NOT be moved aside/.test(log()) && /Local-file persistence is now BLOCKED/.test(log()),
+      log().slice(0, 600));
+
+    chmodSync(userData, 0o700); // the operator "fixes" the directory — writes would now succeed
+    const reg = await fetch(`http://127.0.0.1:${port}/api/auth/register`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'newbie', email: 'newbie@x.com', password: 'CorrectHorse9!' }),
+    });
+    record('HOSTED, preservation failed: a write attempt after the operator fix is refused in the log',
+      /Refusing to write .*db\.json: local-file persistence is blocked/.test(log()),
+      `register status ${reg.status}; log tail: ${log().slice(-500)}`);
+  } catch (err) {
+    record('HOSTED, preservation failed: still boots (degrades, no exit)', false, String(err));
+  }
+  await stop(child);
+  chmodSync(userData, 0o700);
+  chmodSync(path.join(userData, 'db.json'), 0o644);
+  const after = readFileSync(path.join(userData, 'db.json'), 'utf-8');
+  record('HOSTED, preservation failed: the ORIGINAL db.json bytes are intact after the write attempt — the real user and game are NOT overwritten',
+    booted && after === original, after.slice(0, 300));
+  const entries = readdirSync(userData);
+  record('HOSTED, preservation failed: no aside copy was created (nothing to preserve to) and no stray temp file is left',
+    entries.length === 1 && entries[0] === 'db.json', JSON.stringify(entries));
+
+  port += 1;
+  rmSync(userData, { recursive: true, force: true });
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DB-SHAPE REFUSAL: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {
