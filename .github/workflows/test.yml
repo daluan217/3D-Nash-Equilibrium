@@ -283,6 +283,25 @@ jobs:
         env:
           LSC_TEST_PORT: '3140'
 
+      # RED-CLOUD-6/002: 3/185 real production-settings draws (1.6%) came back
+      # with NO scenario at all — the reroll ladder (NASH_SCENARIO_REROLLS)
+      # correctly rejected every attempt, but at the model's real gate-drop
+      # rate the ladder's own sizing does not deliver its stated ~0.04% design
+      # target. Fixed with a last-resort bank draw after the model ladder is
+      # exhausted, re-screened through the same live gate, marked measurably
+      # via `scenarioSource: 'bank-fallback'`. A local stub HTTP server stands
+      # in for the model and answers every draw with a scenario containing the
+      # literal "Player A" (the single most common real gate-drop reason in
+      # the finding's own log breakdown), forcing genuine exhaustion across
+      # all three call sites; a second, independent server pointed at a CLEAN
+      # stub is the control proving the fallback never fires on an ordinary
+      # draw.
+      - name: Boot the production server and run the scenario bank-fallback suite
+        run: node src/integration/scenario-bank-fallback.test.mjs
+        env:
+          SBF_TEST_PORT: '3150'
+          SBF_STUB_PORT: '3151'
+
       # RED-DESKTOP-5/002: electron-main.cjs's 800ms "slow boot sequence"
       # fallback (and app.on('activate')) used to call createWindow()
       # unconditionally, with no awareness that a desktop-lock failure

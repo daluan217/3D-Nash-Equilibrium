@@ -154,10 +154,54 @@ const SCENARIO_REROLL_LIMIT = (() => {
   return Math.min(raw, MAX);
 })();
 
+/**
+ * RED-CLOUD-6/002: the reroll ladder above is correctly implemented (every
+ * drop across 185 real production-settings draws was a genuine, documented
+ * gate rejection, not a bug) but the CURRENT model's real gate-drop rate
+ * (~15.2% empirically, roughly double the 7.33% this ladder's own sizing
+ * comment cites) means full exhaustion — a report shipped with literally NO
+ * scenario at all — happened 3/185 times (1.6%), well above the ~0.04-0.2%
+ * bars the reroll bump was built and documented against.
+ *
+ * LAST RESORT, not a fourth reroll: when every model attempt is exhausted
+ * (gate-dropped three times running, or the provider itself was unreachable
+ * across the one lost-draw retry), fall back to a single pre-screened bank
+ * row before giving up. `NASH_SCENARIO_REROLLS` governs the MODEL budget
+ * unchanged — this is a separate, cheap, ALWAYS-AVAILABLE final attempt
+ * layered after it, not an extra model call.
+ *
+ * WHY THE BANK IS SAFE TO USE HERE, ON THE HOSTED PATH TOO — it is not
+ * gated on `IS_ELECTRON` the way `inventScenario`'s PRIMARY bank draw is: the
+ * artifact is a plain static import (`bankSource.ts`'s own comment: "~745 KB
+ * inlined into the server bundle"), so it is already present and loaded in
+ * the exact same Cloud Run bundle that serves production. The bank row is
+ * re-screened through the SAME `storyOk` gate as model output before it is
+ * ever returned — `bankSource.ts`'s own module comment is explicit that
+ * "already verified" at build time must never read as "need not be checked"
+ * again at request time, since the gates keep moving after the artifact is
+ * frozen.
+ *
+ * WHY THIS DOES NOT REOPEN "a bank predetermined by payoff scale" (Daniel,
+ * 2026-09-02 — he does not want the story fully determined by the numbers on
+ * screen): it does not change how the bank is INDEXED or PICKED at all. This
+ * calls the exact same `bankScenario`/`pickFromBank` every other bank draw in
+ * this app already uses (the desktop's own primary invention path, and the
+ * "New AI scenario" button when offline) — including `softenBand`'s existing
+ * 30%-neighbor-band blend, which is ITSELF the already-shipped answer to that
+ * exact concern (scenarioBank.ts's own comment cites it). This is a new
+ * CALLER of an unchanged, already-soft picker, only reached on the residual
+ * few-percent tail where the model produced nothing usable at all — not a new
+ * selection rule.
+ *
+ * `scenarioSource: 'bank-fallback'` on the returned object (undefined on
+ * every ordinary model-drawn scenario) is what makes this measurable, per the
+ * finding's own ask — callers thread it into the response so the rate can be
+ * tracked in production rather than only inferred.
+ */
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
-): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+): Promise<{ scenario: SuggestedScenario | null; failure?: string; scenarioSource?: 'bank-fallback' }> {
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
   const storyOk = (sc: SuggestedScenario): boolean => {
@@ -170,13 +214,14 @@ async function inventScreenedScenario(
 
   let usedTimeoutRetry = false;
   let gateRerollsUsed = 0;
+  let exhaustionFailure = "validation-failed";
   for (;;) {
     const draw = await drawWithDeadline(payoffs);
     if (!draw.scenario) {
       // LOST: the draw never produced a scenario at all (timeout, provider
       // error, unparseable output). Exactly one retry, same as before this
       // setting existed — never governed by NASH_SCENARIO_REROLLS.
-      if (usedTimeoutRetry) return { scenario: null, failure: draw.failure ?? "unparseable" };
+      if (usedTimeoutRetry) { exhaustionFailure = draw.failure ?? "unparseable"; break; }
       usedTimeoutRetry = true;
       continue;
     }
@@ -186,10 +231,22 @@ async function inventScreenedScenario(
     // GATE-DROPPED: a real draw came back and the screen rejected it. This
     // is the only case the bounded reroll setting governs.
     if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
-      return { scenario: null, failure: "validation-failed" };
+      exhaustionFailure = "validation-failed";
+      break;
     }
     gateRerollsUsed++;
   }
+
+  // The model side is exhausted (either failure shape above). One more,
+  // free, always-available attempt before this request goes without a story:
+  // see this function's own comment for why the bank is reachable and safe
+  // to use here, even on the hosted path.
+  const fallbackDomain = pickScenarioDomain();
+  const fallback = bankScenario(payoffs, fallbackDomain);
+  if (fallback && (!gateOn || storyOk(fallback))) {
+    return { scenario: fallback, scenarioSource: 'bank-fallback' };
+  }
+  return { scenario: null, failure: exhaustionFailure };
 }
 
 /**
@@ -2469,6 +2526,10 @@ async function startServer() {
         // and gets a story. The fix must therefore test USABILITY, not
         // presence.
         const supplied = scenarioIsUsable(scenario);
+        // RED-CLOUD-6/002: undefined unless the model ladder was fully
+        // exhausted and `inventScreenedScenario`'s own last-resort bank draw
+        // is what actually supplied `invented` — see that function's comment.
+        let inventedSource: 'bank-fallback' | undefined;
         if (!supplied && canInvent()) {
           try {
             // Screened AND rerolled, exactly like the other two paths. Under
@@ -2476,10 +2537,12 @@ async function startServer() {
             // the mathematics, so a description that asserts anything decidable
             // is both unnecessary and the only remaining defect surface (T1
             // measured it at 11.4%).
-            invented = (await inventScreenedScenario(
+            const drawn2 = await inventScreenedScenario(
               payoffs,
               (reason) => console.warn(`[report] rung-3 scenario dropped: ${reason}`),
-            )).scenario;
+            );
+            invented = drawn2.scenario;
+            inventedSource = drawn2.scenarioSource;
           } catch { invented = null; }
         }
         // Labels follow USABILITY too. A name-only scenario is truthy, so
@@ -2503,6 +2566,10 @@ async function startServer() {
             // DETERMINISTIC surface less verifiable than the model's.
             proseClaims: rendered2.claims,
             suggestedScenario: supplied ? undefined : invented ?? undefined,
+            // Undefined on every ordinary model-drawn or user-supplied
+            // scenario; 'bank-fallback' only on the residual reroll-ladder
+            // exhaustion RED-CLOUD-6/002 measured (~1.6% of invention draws).
+            scenarioSource: supplied ? undefined : inventedSource,
           },
           groundTruth: truth2,
           validation: null,
@@ -2537,6 +2604,8 @@ async function startServer() {
           // perfect paragraph about options that were not in their game.)
           let invented: SuggestedScenario | null = null;
           let inventFailure: string | undefined;
+          // RED-CLOUD-6/002: see the non-tie branch's own comment.
+          let inventedSourceTie: 'bank-fallback' | undefined;
           // Usability, not presence — the same predicate the non-tie branch and
           // every other site now use.
           const suppliedTie = scenarioIsUsable(scenario);
@@ -2570,6 +2639,7 @@ async function startServer() {
               );
               invented = drawn.scenario;
               inventFailure = drawn.failure;
+              inventedSourceTie = drawn.scenarioSource;
             } catch { invented = null; }
           }
           // Labels for the rendered sentences: the user's own scenario when it
@@ -2584,7 +2654,7 @@ async function startServer() {
             // whatever it receives, but it is the envelope's contract and an
             // eval reading it would be misled.
             return res.json(invented
-              ? { scenario: invented }
+              ? { scenario: invented, scenarioSource: inventedSourceTie }
               : {
                   scenario: null,
                   failure: suppliedTie ? 'scenario-supplied'
@@ -2603,6 +2673,7 @@ async function startServer() {
               proseClaims: rendered.claims,
               // Never offer a replacement the user did not ask for.
               suggestedScenario: suppliedTie ? undefined : invented ?? undefined,
+              scenarioSource: suppliedTie ? undefined : inventedSourceTie,
             },
             groundTruth: truth,
             validation: null,
@@ -2659,11 +2730,11 @@ async function startServer() {
       // all (`max-tokens`) used to get no second chance, at 7.5% of calls once
       // the stakes hint lengthened the prompt (9 of 120 vs 0 of 120 without it,
       // p=0.0033). Roughly one click in thirteen.
-      const { scenario: invented, failure } = await inventScreenedScenario(
+      const { scenario: invented, failure, scenarioSource } = await inventScreenedScenario(
         payoffs,
         (reason) => console.warn(`[report] scenarioOnly scenario dropped: ${reason}`),
       );
-      return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error") });
+      return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error"), scenarioSource });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
