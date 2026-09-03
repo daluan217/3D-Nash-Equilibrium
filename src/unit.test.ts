@@ -19,7 +19,15 @@
 import { GamePayoffs } from './types';
 import { payoffTexRhs, fmtPayoffPair, indifferenceAt as indifferenceAtForDisplay } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
-import { isAgentRouterEndpoint, buildChatRequestBody } from './utils/providers';
+import {
+  isAgentRouterEndpoint,
+  buildChatRequestBody,
+  resolveProvider,
+  hasCredentials,
+  openrouterModelId,
+  openrouterVariants,
+  isRateLimit,
+} from './utils/providers';
 import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms } from './utils/colorTerms';
@@ -944,6 +952,232 @@ function testBuildChatRequestBody() {
   console.log('✓ buildChatRequestBody: extraBody cannot replace model, messages, the negotiated variant, or add the OTHER token-limit alias');
 }
 
+function testOpenRouterResolveProvider() {
+  // The `openrouter/` prefix is an explicit routing instruction and must win
+  // regardless of what the REST of the id looks like — including ids that
+  // would otherwise match the gemini-/claude- heuristics.
+  const mustRouteOpenRouter = [
+    'openrouter/deepseek-v4-flash',
+    'openrouter/glm-5.3',
+    'openrouter/deepseek/deepseek-chat',
+    'openrouter/gemini-pretender',
+    'openrouter/claude-pretender',
+  ];
+  for (const model of mustRouteOpenRouter) {
+    assert(resolveProvider(model) === 'openrouter', `resolveProvider(${model}) must be 'openrouter'`);
+  }
+
+  // No behaviour change for any existing (non-prefixed) model.
+  assert(resolveProvider('gemini-2.5-flash') === 'gemini', 'gemini- models must still route to gemini');
+  assert(resolveProvider('claude-haiku-4-5') === 'foundry-anthropic', 'claude- models must still route to foundry-anthropic');
+  assert(resolveProvider('gpt-5.4-mini') === 'foundry-openai', 'everything else must still default to foundry-openai');
+  // A bare "openrouter" (no slash) is not the prefix form and must not match.
+  assert(resolveProvider('openrouter') === 'foundry-openai', 'bare "openrouter" with no slash must not route to openrouter');
+  assert(resolveProvider('openrouterish-model') === 'foundry-openai', 'a model name merely STARTING WITH the word must not match without the slash');
+
+  // EVAL_PROVIDER_ override must accept 'openrouter' like the other three.
+  process.env['EVAL_PROVIDER_some-model'] = 'openrouter';
+  try {
+    assert(resolveProvider('some-model') === 'openrouter', 'EVAL_PROVIDER_ override must accept openrouter');
+  } finally {
+    delete process.env['EVAL_PROVIDER_some-model'];
+  }
+
+  console.log('✓ resolveProvider: openrouter/ prefix routes to openrouter ahead of every other heuristic; no change to existing models');
+}
+
+function testOpenRouterCredentialGating() {
+  const ENDPOINT = 'OPEN_ROUTER_ENDPOINT';
+  const KEY = 'OPEN_ROUTER_API_KEY';
+  const savedEndpoint = process.env[ENDPOINT];
+  const savedKey = process.env[KEY];
+  try {
+    delete process.env[ENDPOINT];
+    delete process.env[KEY];
+    assert(!hasCredentials('openrouter/glm-5.3'), 'hasCredentials must be false with neither env var set');
+
+    process.env[ENDPOINT] = 'https://example.invalid/v1';
+    delete process.env[KEY];
+    assert(!hasCredentials('openrouter/glm-5.3'), 'hasCredentials must be false with only the endpoint set');
+
+    delete process.env[ENDPOINT];
+    process.env[KEY] = 'sk-test';
+    assert(!hasCredentials('openrouter/glm-5.3'), 'hasCredentials must be false with only the key set');
+
+    process.env[ENDPOINT] = 'https://example.invalid/v1';
+    process.env[KEY] = 'sk-test';
+    assert(hasCredentials('openrouter/glm-5.3'), 'hasCredentials must be true with both env vars set');
+
+    // Gating is per-provider: an openrouter/ model must not be satisfied by
+    // Foundry credentials, and a Foundry model must not be satisfied by
+    // OpenRouter credentials. foundryCreds checks the PER-MODEL variable
+    // (`${MODEL}_AZURE_FOUNDRY_ENDPOINT`/`_API_KEY`) before the generic one,
+    // so both must be cleared or a per-model var left over in the environment
+    // would make this assertion fail for an unrelated reason.
+    const MODEL = 'gpt-5.4-mini';
+    const slug = MODEL.toUpperCase();
+    const FOUNDRY_KEYS = [
+      'AZURE_FOUNDRY_ENDPOINT', 'AZURE_FOUNDRY_API_KEY',
+      `${slug}_AZURE_FOUNDRY_ENDPOINT`, `${slug}_AZURE_FOUNDRY_API_KEY`,
+    ];
+    const savedFoundry = FOUNDRY_KEYS.map((k) => process.env[k]);
+    for (const k of FOUNDRY_KEYS) delete process.env[k];
+    try {
+      assert(!hasCredentials(MODEL), 'a foundry-openai model must not read OpenRouter credentials as its own');
+
+      // The other direction: Foundry credentials must not satisfy an
+      // openrouter/ model even though both adapters happen to be OpenAI-
+      // compatible under the hood.
+      delete process.env[ENDPOINT];
+      delete process.env[KEY];
+      process.env.AZURE_FOUNDRY_ENDPOINT = 'https://example.invalid/foundry';
+      process.env.AZURE_FOUNDRY_API_KEY = 'foundry-key';
+      assert(!hasCredentials('openrouter/glm-5.3'),
+        'an openrouter/ model must not be satisfied by Foundry credentials');
+    } finally {
+      FOUNDRY_KEYS.forEach((k, idx) => {
+        const v = savedFoundry[idx];
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      });
+    }
+  } finally {
+    if (savedEndpoint === undefined) delete process.env[ENDPOINT]; else process.env[ENDPOINT] = savedEndpoint;
+    if (savedKey === undefined) delete process.env[KEY]; else process.env[KEY] = savedKey;
+  }
+
+  console.log('✓ hasCredentials(openrouter/...): true only when BOTH OPEN_ROUTER_ENDPOINT and OPEN_ROUTER_API_KEY are set, and gating stays per-provider');
+}
+
+function testIsRateLimit() {
+  // Real transient infra failures must still be caught: numeric status
+  // codes/`code` fields, and ordinary-English rate-limit phrasing regardless
+  // of case, on the DEFAULT (non-Gemini) call path.
+  const mustBeRateLimit: Array<[unknown, string]> = [
+    [{ status: 429 }, 'HTTP 429'],
+    [{ status: 503 }, 'HTTP 503'],
+    [{ status: 500 }, 'HTTP 500'],
+    [{ code: 429 }, 'a `code` field instead of `status`'],
+    [{ message: 'Too Many Requests' }, 'the plain English phrase, mixed case'],
+    [{ message: 'the service is overloaded, try again' }, 'overloaded'],
+    [{ message: 'rate limit exceeded' }, 'rate limit with a space'],
+    [{ message: 'ratelimit exceeded' }, 'rate limit with no space'],
+    [{ message: '"code": 503' }, 'a JSON-embedded numeric code'],
+  ];
+  for (const [err, why] of mustBeRateLimit) {
+    assert(isRateLimit(err), `isRateLimit must return true for ${why}: ${JSON.stringify(err)}`);
+  }
+
+  // STRUCTURAL FIX (2026-09-02, CodeRabbit on PR #92): the first fix matched
+  // Gemini's tokens exactly instead of case-insensitively, which closed the
+  // ONE observed message but left the real discriminator as casing rather
+  // than the thing that actually separates an infra failure from a
+  // content-shape rejection — the HTTP status. Now: whenever a numeric
+  // status/code is present at all (true for every error this codebase's
+  // adapters throw — Gemini's `ApiError.status` IS the HTTP status, the
+  // OpenAI SDK always sets `.status`), it is the ONLY thing consulted. A 400
+  // can never be a rate limit no matter what its message says — casing
+  // included — so this closes CodeRabbit's own "KNOWN OPEN" follow-up
+  // (`RESPONSE_FORMAT UNAVAILABLE`, uppercase, still a 400) along with the
+  // original DeepSeek/OpenRouter regression, rather than tuning the regex a
+  // second time to cover one more shape.
+  const mustNotBeRateLimit: Array<[unknown, string]> = [
+    [{ status: 400, message: 'This response_format type is unavailable now' }, 'the exact DeepSeek/OpenRouter regression'],
+    [{ status: 400, message: 'this feature is currently unavailable' }, 'any other lowercase "unavailable" substring'],
+    [{ status: 400, message: 'RESPONSE_FORMAT UNAVAILABLE for this model' }, 'CodeRabbit\'s follow-up: an UPPERCASE UNAVAILABLE in a 400 — casing is no longer the discriminator, status is'],
+    [{ status: 400, message: 'content-blocked' }, 'a content-policy 400'],
+    [{ status: 401 }, 'an auth failure'],
+    [{ status: 404 }, 'a not-found'],
+    [{ message: 'invalid request' }, 'a generic client error with no matching phrase'],
+    [{}, 'no status or message at all'],
+    [undefined, 'a non-object error'],
+  ];
+  for (const [err, why] of mustNotBeRateLimit) {
+    assert(!isRateLimit(err), `isRateLimit must return false for ${why}: ${JSON.stringify(err)}`);
+  }
+
+  // The Gemini-token fallback exists only for error shapes with NO numeric
+  // status/code, and only fires when the CALLER identifies the call as
+  // Gemini's — never for an arbitrary provider's message that merely
+  // contains the same English word. Both directions pinned:
+  assert(isRateLimit({ message: 'RESOURCE_EXHAUSTED: quota exceeded' }, true),
+    "on the Gemini path, RESOURCE_EXHAUSTED with no status must still count");
+  assert(isRateLimit({ message: 'model is UNAVAILABLE right now' }, true),
+    "on the Gemini path, UNAVAILABLE with no status must still count");
+  assert(!isRateLimit({ message: 'RESOURCE_EXHAUSTED: quota exceeded' }, false),
+    "off the Gemini path (the default), the same token must NOT count — it is not this call's SDK");
+  assert(!isRateLimit({ message: 'model is UNAVAILABLE right now' }),
+    "isGeminiCall defaults to false, so a bare call must not honour Gemini's tokens either");
+  // And a numeric status still overrides the Gemini flag in either direction:
+  // a genuine Gemini 400 must not become a rate limit just because the
+  // caller happens to pass isGeminiCall: true.
+  assert(!isRateLimit({ status: 400, message: 'UNAVAILABLE for this request' }, true),
+    'a numeric non-{429,503,500} status wins even on the Gemini path');
+
+  console.log('✓ isRateLimit: a numeric status/code is the ONLY signal consulted when present (400 never a rate limit, regardless of message casing); the Gemini SCREAMING_CASE token fallback fires only with no numeric status AND only on the Gemini call path');
+}
+
+function testOpenRouterModelId() {
+  assert(openrouterModelId('openrouter/glm-5.3') === 'glm-5.3', 'the flat-catalog form must strip only the prefix');
+  assert(openrouterModelId('openrouter/deepseek/deepseek-chat') === 'deepseek/deepseek-chat',
+    'the vendor/model form must keep its internal slash — only the LEADING openrouter/ segment is stripped');
+  assert(openrouterModelId('glm-5.3') === 'glm-5.3', 'a model with no prefix at all must pass through unchanged');
+}
+
+function testOpenRouterRequestVariants() {
+  const schema = { type: 'json_schema', json_schema: { name: 'x' } };
+
+  // No reasoning requested: two variants (strict schema, then json_object),
+  // neither carrying a reasoning_effort field, and every variant must carry
+  // max_tokens — the exact knob CLAUDE.md records glm-5.3/deepseek-v4-flash
+  // need to avoid spending their whole budget thinking.
+  const noReasoning = openrouterVariants(4096, undefined, schema);
+  assert(noReasoning.length === 2, `no-reasoning must produce exactly 2 variants, got ${noReasoning.length}`);
+  for (const v of noReasoning) {
+    assert(v.max_tokens === 4096, `every variant must carry max_tokens, got ${JSON.stringify(v)}`);
+    assert(!('reasoning_effort' in v), `no-reasoning variants must not carry reasoning_effort, got ${JSON.stringify(v)}`);
+    assert(!('max_completion_tokens' in v), `OpenRouter variants must use max_tokens only, not the max_completion_tokens alias`);
+  }
+  assert(JSON.stringify(noReasoning[0].response_format) === JSON.stringify(schema),
+    'the first no-reasoning variant must try the strict json_schema shape');
+  assert((noReasoning[1].response_format as { type: string }).type === 'json_object',
+    'the second no-reasoning variant must fall back to json_object');
+
+  // Reasoning requested: the two reasoning_effort-carrying variants must come
+  // FIRST (so a model that accepts the field never falls through to a
+  // reasoning-free attempt it didn't need), followed by the same two
+  // reasoning-free fallbacks for models that reject the field outright
+  // (glm-5.3, per CLAUDE.md).
+  const withReasoning = openrouterVariants(4096, 'low', schema);
+  assert(withReasoning.length === 4, `reasoning must produce exactly 4 variants, got ${withReasoning.length}`);
+  assert(withReasoning[0].reasoning_effort === 'low' && withReasoning[1].reasoning_effort === 'low',
+    'the first two reasoning variants must carry reasoning_effort: low');
+  assert(!('reasoning_effort' in withReasoning[2]) && !('reasoning_effort' in withReasoning[3]),
+    'the fallback variants must NOT carry reasoning_effort, or a model rejecting it would fail every attempt');
+  for (const v of withReasoning) {
+    assert(v.max_tokens === 4096, `max_tokens must survive on every reasoning variant too, got ${JSON.stringify(v)}`);
+  }
+
+  // BOUNDARY (CodeRabbit on PR #92): 'none' is a MEMBER of ReasoningEffort
+  // and is truthy, so a bare `reasoning ? ... : shapes` check would wrongly
+  // take the reasoning branch and ship `reasoning_effort: 'none'` — not a
+  // value OpenAI-compatible APIs recognise, so a model that rejects
+  // unrecognised reasoning fields (glm-5.3) would fail its first two
+  // attempts for nothing. Fixed to gate on `thinkingRequested`, the same
+  // predicate callGemini/callFoundryAnthropic use, under which 'none' means
+  // "explicitly disable" and therefore takes the SAME reasoning-free
+  // variants as `undefined` — the real disable knob for a model that ignores
+  // reasoning_effort is extraBody's `{ thinking: { type: 'disabled' } }`.
+  const none = openrouterVariants(4096, 'none', schema);
+  assert(none.length === 2, `'none' must take the same 2 reasoning-free variants as undefined, got ${none.length}`);
+  for (const v of none) {
+    assert(!('reasoning_effort' in v), `'none' must not carry reasoning_effort, got ${JSON.stringify(v)}`);
+  }
+  assert(JSON.stringify(none) === JSON.stringify(noReasoning),
+    "'none' and undefined must produce byte-identical variants — both mean no reasoning_effort field");
+
+  console.log('✓ openrouterVariants: max_tokens on every variant, reasoning_effort passthrough tried first then dropped as a fallback, never the max_completion_tokens alias, and \'none\' (a truthy ReasoningEffort member meaning explicit disable) takes the same path as undefined rather than shipping an unrecognised reasoning_effort: \'none\'');
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // 16. COLOR-CODING TERM PARITY
 //
@@ -1631,6 +1865,11 @@ function runUnitTests() {
   testCameraRelayoutPredicate();
   testIsAgentRouterEndpoint();
   testBuildChatRequestBody();
+  testOpenRouterResolveProvider();
+  testOpenRouterCredentialGating();
+  testIsRateLimit();
+  testOpenRouterModelId();
+  testOpenRouterRequestVariants();
   testScenarioDomains();
   testFmtPayoffSubResolution();
   testFmtPayoffProseExhaustive();
