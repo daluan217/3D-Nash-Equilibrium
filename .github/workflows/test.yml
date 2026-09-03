@@ -283,6 +283,25 @@ jobs:
         env:
           LSC_TEST_PORT: '3140'
 
+      # RED-CLOUD-6/002: 3/185 real production-settings draws (1.6%) came back
+      # with NO scenario at all — the reroll ladder (NASH_SCENARIO_REROLLS)
+      # correctly rejected every attempt, but at the model's real gate-drop
+      # rate the ladder's own sizing does not deliver its stated ~0.04% design
+      # target. Fixed with a last-resort bank draw after the model ladder is
+      # exhausted, re-screened through the same live gate, marked measurably
+      # via `scenarioSource: 'bank-fallback'`. A local stub HTTP server stands
+      # in for the model and answers every draw with a scenario containing the
+      # literal "Player A" (the single most common real gate-drop reason in
+      # the finding's own log breakdown), forcing genuine exhaustion across
+      # all three call sites; a second, independent server pointed at a CLEAN
+      # stub is the control proving the fallback never fires on an ordinary
+      # draw.
+      - name: Boot the production server and run the scenario bank-fallback suite
+        run: node src/integration/scenario-bank-fallback.test.mjs
+        env:
+          SBF_TEST_PORT: '3150'
+          SBF_STUB_PORT: '3151'
+
       # RED-DESKTOP-5/002: electron-main.cjs's 800ms "slow boot sequence"
       # fallback (and app.on('activate')) used to call createWindow()
       # unconditionally, with no awareness that a desktop-lock failure
@@ -296,6 +315,24 @@ jobs:
       # child process.
       - name: Run the electron window-guard suite (stubbed electron, in-process require)
         run: node src/integration/electron-window-guard.test.mjs
+
+      # RED-DESKTOP-6/001: a db.json whose "users"/"games" field is PRESENT
+      # but the WRONG TYPE (not a recognised old shape — a hand-edit or a
+      # genuinely foreign schema) used to load with zero validation and only
+      # fail the first time some route touched the bad field: a crash for
+      # some shapes (TypeError at ensureLocalOwner), a silently-empty read
+      # for others. Fixed with normalizeDbShape: a missing/null field
+      # normalises to [] with a warning (the RECOVERABLE case, exercised as
+      # this suite's own control), a present-but-wrong-typed field refuses
+      # loudly via the SAME #88/#93 dialog/exit machinery acquireDesktopLock
+      # already uses, preserving the unreadable file aside rather than
+      # deleting or silently overwriting it. Standalone (HTTP, real exit
+      # code) and packaged-app (in-process require, dialog-hook survives —
+      # same shape as desktop-lock-dialog-hook.test.mjs) both covered.
+      - name: Boot the production server and run the db-shape refusal suite
+        run: node src/integration/db-shape-refusal.test.mjs
+        env:
+          DB_SHAPE_TEST_PORT: '3155'
 
   e2e:
     runs-on: ubuntu-latest

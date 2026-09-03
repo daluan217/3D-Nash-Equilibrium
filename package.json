@@ -1,7 +1,7 @@
 {
   "name": "nash-equilibrium-simulator",
   "private": true,
-  "version": "0.0.126",
+  "version": "0.0.127",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
@@ -12,7 +12,7 @@
     "clean": "rm -rf dist db.json",
     "lint": "tsc --noEmit",
     "test": "tsx src/unit.test.ts && tsx src/equilibriumpanel.test.ts && tsx src/electronenv.contract.test.ts && tsx src/envelope.test.ts && tsx src/controlcoverage.test.ts && tsx src/test.ts && tsx src/fuzz.test.ts && tsx src/cors.contract.test.ts && tsx src/cloudbuild.contract.test.ts && tsx src/deploychain.contract.test.ts && tsx src/scenariostakes.test.ts && tsx src/scenariobank.test.ts && tsx src/scenariopaths.contract.test.ts && tsx src/briefingclaims.test.ts && V_N=4000 tsx _gen/verify_tieprose.ts && tsx _gen/verify_screens.ts && tsx src/localowner.test.ts && tsx src/desktop.contract.test.ts && tsx src/downloadmodal.contract.test.ts && tsx src/desktopcopy.contract.test.ts && tsx src/otheraccountsnotice.contract.test.ts && tsx src/presetprose.test.ts && tsx src/textsafety.test.ts && tsx src/reportprose.test.ts && tsx src/reportrace.test.ts && tsx src/generatefill.test.ts && tsx src/a11yfixes.test.ts && tsx src/logandlabelfixes.test.ts && tsx src/payoffhonesty.test.ts && tsx src/fetchtimeout.test.ts",
-    "test:integration": "node src/integration/api.test.mjs && node src/integration/desktop-persistence.test.mjs && node src/integration/scenario-parity.test.mjs && node src/integration/dmg-download.test.mjs && node src/integration/desktop-concurrent-lock.test.mjs && node src/integration/desktop-recovery-hint.test.mjs && node src/integration/gcs-db-saves.test.mjs",
+    "test:integration": "node src/integration/api.test.mjs && node src/integration/desktop-persistence.test.mjs && node src/integration/scenario-parity.test.mjs && node src/integration/dmg-download.test.mjs && node src/integration/desktop-concurrent-lock.test.mjs && node src/integration/desktop-lock-dialog-hook.test.mjs && node src/integration/desktop-lock-write-side.test.mjs && node src/integration/desktop-unwritable-save.test.mjs && node src/integration/desktop-recovery-hint.test.mjs && node src/integration/gcs-db-saves.test.mjs && node src/integration/label-surrogate-clamp.test.mjs && node src/integration/scenario-bank-fallback.test.mjs && node src/integration/electron-window-guard.test.mjs && node src/integration/db-shape-refusal.test.mjs",
     "test:e2e": "node src/e2e/smoke.mjs",
     "test:live": "node src/e2e/live-smoke.mjs",
     "eval": "tsx src/evals/run.ts",

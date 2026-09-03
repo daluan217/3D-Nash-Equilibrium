@@ -174,6 +174,21 @@ try {
   // ~0.54% was still 2.7x the 0.2% ship bar) exists to reach. Exactly 3, not
   // "at least 3", is itself the proof the bound stops rerolling rather than
   // spinning forever on a provider that never produces a clean draw.
+  //
+  // UPDATED 2026-09-03 (BLUE-SERVER-DESKTOP-6b, full `npm run
+  // test:integration` run against blue6-server-desktop's merge of
+  // RED-CLOUD-6/002's bank-fallback fix, commit 85a6b73 — this suite
+  // pre-dates that fix and was never re-run against it before this
+  // session): the model ladder still exhausts after exactly 3 calls
+  // (unchanged), but `inventScreenedScenario` no longer returns nothing at
+  // that point — it makes one more, free, always-available draw from the
+  // scenario bank (the SAME `bankScenario`/`pickFromBank` every other bank
+  // draw already uses, re-screened through the same gate) rather than
+  // shipping the report with no story. This was a genuine reroll-ladder
+  // exhaustion rate above the design target (RED-CLOUD-6/002: 3/185 real
+  // production-settings draws, 1.6%), not a bug in this suite's own
+  // fixture — so the fixture's EXPECTATION moves to match the new,
+  // intentional contract instead of the fix being treated as a defect.
   mode = 'claimy'; // well formed, but the description cites a number
   for (const [label, body] of [
     ['rung-3 report path (non-tie)', { payoffs: NONTIE }],
@@ -183,9 +198,14 @@ try {
   ]) {
     const { calls: n, res } = await countCalls(body);
     const story = res.json?.report?.suggestedScenario ?? res.json?.scenario ?? null;
+    const scenarioSource = res.json?.report?.scenarioSource ?? res.json?.scenarioSource;
     record(`${label} draws exactly 3 times (1 + the default 2 gate-drop rerolls) when every draw fails the gate`,
       n === 3, `${n} provider call(s), expected 3`);
-    record(`${label} withholds the rejected story`, story === null || story === undefined, JSON.stringify(story)?.slice(0, 60));
+    record(`${label} ships a bank-fallback story instead of withholding one, marked scenarioSource`,
+      !!story && scenarioSource === 'bank-fallback',
+      `story=${JSON.stringify(story)?.slice(0, 60)} scenarioSource=${JSON.stringify(scenarioSource)}`);
+    record(`${label}: the bank-fallback story is NOT the rejected (claimy) draw leaking through`,
+      story?.name !== CLAIMY.name, `story.name=${JSON.stringify(story?.name)}`);
   }
 
   // ── 2b. THE BOUNDED REROLL REACHES A THIRD DRAW AND SHIPS IT ─────────────
@@ -292,7 +312,15 @@ try {
   //
   // The story is the OPTIONAL part: `suggestedScenario` may be absent on every
   // branch, and the templated report needs no model at all. So the right
-  // failure is a storyless report, promptly.
+  // failure is a storyless report, promptly — WAS true before RED-CLOUD-6/002's
+  // bank-fallback fix (commit 85a6b73): a full model-ladder exhaustion (a
+  // "LOST" draw twice, exactly this hang case) now also earns the same
+  // one free, always-available bank draw `inventScreenedScenario` makes after
+  // a gate-drop exhaustion (see that function's own code — the fallback sits
+  // AFTER the loop, reached from either exit). Updated 2026-09-03
+  // (BLUE-SERVER-DESKTOP-6b) alongside the gate-drop-exhaustion fixtures
+  // above, for the same reason: this suite pre-dates the fix and was never
+  // re-run against it before this session.
   PORT += 1;
   await boot({ NASH_SCENARIO_TIMEOUT_MS: '1500' });
   mode = 'hang';
@@ -303,10 +331,14 @@ try {
     // Two draws, each racing its own 1500ms deadline, so ~3s is the expected
     // shape. Anything near the SDK's own 600s budget means no deadline fired.
     record('a hung provider still returns a report, and quickly', res.status === 200 && ms < 12_000, `${ms}ms, status ${res.status}`);
-    record('that report is the full templated one, just without a story',
+    record('that report is the full templated one, WITH a bank-fallback story (not withheld)',
       res.json?.source === 'template' && typeof res.json?.report?.prose === 'string'
-      && res.json.report.prose.length > 40 && !res.json?.report?.suggestedScenario,
-      `source=${res.json?.source} prose=${(res.json?.report?.prose ?? '').length} chars`);
+      && res.json.report.prose.length > 40
+      && !!res.json?.report?.suggestedScenario
+      && res.json?.report?.scenarioSource === 'bank-fallback',
+      `source=${res.json?.source} prose=${(res.json?.report?.prose ?? '').length} chars `
+      + `story=${JSON.stringify(res.json?.report?.suggestedScenario)?.slice(0, 60)} `
+      + `scenarioSource=${JSON.stringify(res.json?.report?.scenarioSource)}`);
     record('the deadline waited its full budget rather than firing instantly', ms > 1400, `${ms}ms`);
   }
   await stop();

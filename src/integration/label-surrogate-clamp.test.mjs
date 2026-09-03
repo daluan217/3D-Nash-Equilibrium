@@ -357,6 +357,111 @@ try {
     // end-to-end fixture through this two-stage composition.
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 5. RED-CLOUD-6/001: `clampGraphemeSafe`'s OWN new edge case — a single
+  //    grapheme cluster (zalgo/"cursed" text: a base character followed by
+  //    an unbounded run of combining marks, all part of ONE cluster under
+  //    the same UAX #29 rules `Intl.Segmenter` implements) that by itself
+  //    exceeds the whole clamp budget. The pre-fix loop's `break` left `out`
+  //    at `""` — a TOTAL WIPE of the label, not a truncation. For
+  //    `cleanScenario`, that turned a missing ONE of four labels into
+  //    `scenarioIsUsable` failing and the user's entire supplied scenario
+  //    (row2/col1/col2 included, all perfectly normal) being silently
+  //    discarded and replaced by an invented story. Different failure SHAPE
+  //    from part 1 above (that one corrupted a visible character; this one
+  //    erases everything with nothing visibly wrong) at the exact same call
+  //    site the #93 fix just touched.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    // Boundary sweep straight from the finding: at cluster length == 40
+    // (LABEL_MAX) the pre-fix code already worked; one mark past it is where
+    // the wipe used to start. None of these three may now clamp to "".
+    for (const marks of [39, 40, 41]) {
+      const row1 = 'H' + '́'.repeat(marks) + 'elpTheUser more text after';
+      const r = await call('POST', '/api/report', {
+        body: { payoffs: nonTiePayoffs, scenario: { row1, row2: 'AltOption', col1: 'ChoiceOne', col2: 'ChoiceTwo' } },
+      });
+      record(`zalgo boundary sweep (${marks} combining marks, cluster length ${1 + marks}): the user's OWN scenario is kept, not replaced by invention`,
+        r.status === 200 && r.json?.report?.suggestedScenario === undefined,
+        `status=${r.status} suggestedScenario=${JSON.stringify(r.json?.report?.suggestedScenario)}`);
+      // The weaker check above (suggestedScenario undefined) cannot tell
+      // "row1 survived the clamp" apart from "row1 was wiped, invention was
+      // attempted but returned nothing (no credentials in this test
+      // environment), and the code fell back to rendering the SAME
+      // now-corrupted scenario object with an empty row1" — both leave
+      // suggestedScenario undefined. The prose itself is the only place
+      // that distinguishes them: it must name the user's real row2/col1/
+      // col2 labels (proving the scenario used is the SUPPLIED one, not a
+      // generic "Row 1"/"Col 1" fallback that a wiped, unusable scenario
+      // would render instead — see tieProseFull's own fallback naming).
+      const prose = r.json?.report?.prose ?? '';
+      record(`zalgo boundary sweep (${marks} marks): report prose names the user's OWN labels (AltOption/ChoiceOne/ChoiceTwo), not a generic Row/Col fallback`,
+        typeof prose === 'string' && prose.includes('AltOption') && prose.includes('ChoiceOne') && prose.includes('ChoiceTwo'),
+        `prose=${JSON.stringify(prose.slice(0, 120))}`);
+      // And row1 itself: the clamped label starts with the base character
+      // "H" and is never empty — the fixture at exactly this boundary is
+      // RED-CLOUD-6/001's own reproduction of the total wipe.
+      record(`zalgo boundary sweep (${marks} marks): the clamped row1 label (starting "H") appears in the prose, never wiped to nothing`,
+        typeof prose === 'string' && prose.includes('A prefers H'),
+        `prose=${JSON.stringify(prose.slice(0, 160))}`);
+    }
+  }
+
+  // The finding's own end-to-end repro: a much larger zalgo run (80 marks,
+  // 91-unit cluster) straddling every clamp stage in this file (the report
+  // path's 60-unit `noTags` pre-clamp AND the 40-unit `cutAtWordBoundary`
+  // final clamp), alongside three ordinary labels — before the fix this
+  // discarded ALL FOUR labels (not just the zalgo one) because `hasLabels`
+  // requires every field.
+  {
+    const zalgoRow1 = 'H' + '́'.repeat(80) + 'elpTheUser';
+    const r = await call('POST', '/api/report', {
+      body: {
+        payoffs: nonTiePayoffs,
+        scenario: { row1: zalgoRow1, row2: 'AltOption', col1: 'ChoiceOne', col2: 'ChoiceTwo' },
+      },
+    });
+    record('80-mark zalgo row1 + 3 normal labels: the scenario is kept (suggestedScenario is undefined — not an invented substitute)',
+      r.status === 200 && r.json?.report?.suggestedScenario === undefined,
+      `status=${r.status} suggestedScenario=${JSON.stringify(r.json?.report?.suggestedScenario)}`);
+    const hit = findLoneSurrogate(r.json);
+    record('80-mark zalgo row1: no lone surrogate anywhere in the response (the codepoint-safe fallback never splits a surrogate pair)',
+      !hit, hit ? JSON.stringify(hit) : '');
+    const prose = r.json?.report?.prose ?? '';
+    record('80-mark zalgo row1: the clamped label (starting "H") appears in the rendered prose, not silently dropped',
+      prose.includes('H́'), `prose=${JSON.stringify(prose.slice(0, 200))}`);
+  }
+
+  // Same clamp, the SAVE path (`cleanLabels` -> `cutAtWordBoundary` ->
+  // `clampGraphemeSafe`) — RED-CLOUD-6/001 flagged this as provably the same
+  // function but unverified end-to-end, same caveat part 4 above left.
+  {
+    const email = `lsc6-${Date.now()}@example.com`;
+    const password = 'StrongPass1';
+    await call('POST', '/api/auth/register', { body: { username: `lsc6${Date.now()}`, email, password } });
+    const login = await call('POST', '/api/auth/login', { body: { email, password } });
+    const token = login.json?.token;
+    record('zalgo save-path setup: registered + logged in', typeof token === 'string' && token.length > 0, `status=${login.status}`);
+
+    const row1Label = 'H' + '́'.repeat(80) + 'elpTheUser';
+    const saved = await call('POST', '/api/games', {
+      token,
+      body: { name: 'zalgo clamp save-path test', payoffs: nonTiePayoffs, row1Label },
+    });
+    const gameId = saved.json?.game?.id;
+    record('SAVE path, zalgo label: POST /api/games succeeds with a NON-EMPTY stored label',
+      saved.status === 200 && typeof saved.json?.game?.row1Label === 'string' && saved.json.game.row1Label.length > 0,
+      `status=${saved.status} row1Label=${JSON.stringify(saved.json?.game?.row1Label)}`);
+
+    const readBack = await call('GET', '/api/games', { token });
+    const stored = (readBack.json || []).find((g) => g.id === gameId);
+    record('SAVE path, zalgo label: the STORED row1Label (fresh GET) is non-empty and starts with the base character',
+      !!stored && typeof stored.row1Label === 'string' && stored.row1Label.length > 0 && stored.row1Label.startsWith('H'),
+      `stored=${JSON.stringify(stored?.row1Label)}`);
+
+    if (gameId) await call('DELETE', `/api/games/${gameId}`, { token });
+  }
+
 } finally {
   if (server.exitCode === null) {
     const ended = new Promise((resolve) => server.once('exit', resolve));
