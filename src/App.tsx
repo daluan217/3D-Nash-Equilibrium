@@ -16,8 +16,7 @@ import {
   doStep,
   buildPolyStr,
   generateRandomGame,
-  equilibriumSet,
-  kindOf,
+  hasEquilibriumContinuum as computeHasEquilibriumContinuum,
   resolveProfile,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
@@ -1165,8 +1164,11 @@ export default function App() {
   // so a PARTIAL tie walked straight through: on a=[[-2,-2],[-2,-1]],
   // b=[[-2,-1],[-1,-2]] the set is x in [0, 0.5] at y=1 and (0.3, 1) has zero
   // regret for both players, so "always converge to the unique" is false while
-  // the continuum is listed three lines above. This is the test tieProse uses.
-  const hasEquilibriumContinuum = equilibriumSet(payoffs).some((r) => kindOf(r) !== 'point');
+  // the continuum is listed three lines above. This is the ONE shared test
+  // (gameEngine.ts's `hasEquilibriumContinuum`) tieProse.ts, report.ts's
+  // grounding payload, and nashValidator.ts's validateReport all now use —
+  // RED-MATH-8/002 found nashValidator.ts still on the old, narrower test.
+  const hasEquilibriumContinuum = computeHasEquilibriumContinuum(payoffs);
   const [llmLoading, setLlmLoading] = useState(false);
   // Tracked separately: without it a failed request clears the envelope and
   // renders identically to "never asked", so the user cannot tell a dead

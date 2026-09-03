@@ -48,9 +48,10 @@ import {
 } from './types';
 import {
   doStep, PRESETS, computeAllNE, computeIndifference, computeMixedNE, fmtPayoff, EA, EB, r3,
-  equilibriumSet, kindOf, describeContinua,
+  equilibriumSet, kindOf, describeContinua, regretA, regretB,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
+import { validateReport } from './utils/nashValidator';
 import { neValues } from './components/equilibriumPanel';
 import { makeTraces, buildSurfaces } from './utils/plotting';
 
@@ -446,9 +447,217 @@ function testPlottingDrawsContinuumMarker() {
   console.log('✓ plotting.ts draws an equilibrium-continuum marker exactly when equilibriumSet says one exists (fixture + negative control)');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 6. RED-MATH-8/001 — buildGroundingPayload's continuum branch must never
+//    offer a DISJOINT, isolated equilibrium as a "valid choice" representative
+//    point for the continuum claim; every offered point must be an actual
+//    member of a continuum component (equilibriumSet's rectangles). A stray
+//    point must still be reported, just as its own separate claim.
+// ════════════════════════════════════════════════════════════════════════════
+
+function pointOnAnyContinuumComponent(g: GamePayoffs, x: number, y: number): boolean {
+  return equilibriumSet(g).filter((r) => kindOf(r) !== 'point')
+    .some((r) => x >= r.x0 - 1e-9 && x <= r.x1 + 1e-9 && y >= r.y0 - 1e-9 && y <= r.y1 + 1e-9);
+}
+
+function validChoicesLineOf(payload: string): string {
+  return payload.split('\n').find((l) => l.startsWith('equilibrium. These enumerated points are all valid choices:')) ?? '';
+}
+
+function testStrayPointsNotOfferedAsContinuumRepresentatives() {
+  // Known positive: the finding's exact repro. A Row-2 continuum coexists
+  // with a genuinely disjoint isolated NE at (1,0) — x=1 means A plays Row
+  // 1, nowhere near "A plays Row 2 while B mixes with y in [0.615, 1]".
+  const FIXTURE: GamePayoffs = { a11: -6, a12: 9, a21: 4, a22: -7, b11: -9, b12: -7, b21: 9, b22: 9 };
+  ok(hasContinuum(FIXTURE), 'fixture sanity: FIXTURE must have a genuine continuum');
+  const allNE = computeAllNE(FIXTURE);
+  const stray = allNE.filter((e) => !pointOnAnyContinuumComponent(FIXTURE, e.x, e.y));
+  ok(stray.length > 0, `fixture sanity: FIXTURE must have at least one point disjoint from every continuum component, got ${JSON.stringify(allNE)}`);
+  // Independent oracle — regretA/regretB, zero shared code with equilibriumSet
+  // — confirms the stray point really is a genuine zero-regret NE, not an
+  // artifact of the containment check itself.
+  for (const e of stray) {
+    ok(Math.abs(regretA(e.x, e.y, FIXTURE)) < 1e-6 && Math.abs(regretB(e.x, e.y, FIXTURE)) < 1e-6,
+      `fixture sanity: stray point (${e.x}, ${e.y}) must be a genuine zero-regret NE (independent oracle)`);
+  }
+
+  const payload = buildGroundingPayload(FIXTURE);
+  const validLine = validChoicesLineOf(payload);
+  ok(!!validLine, `payload must contain the "valid choices" line — payload="${payload}"`);
+  for (const e of stray) {
+    const strayText = `(x=${e.x}, y=${e.y})`;
+    ok(!validLine.includes(strayText),
+      `RED-MATH-8/001 fix: the stray point ${strayText} must NOT appear in the continuum's "valid choices" line — line="${validLine}"`);
+    // It must still be reported — as its own separate claim, never dropped.
+    ok(payload.includes(strayText),
+      `fix must not simply DROP the stray point — it must appear elsewhere in the payload (its own separate-claim instruction) — payload="${payload}"`);
+  }
+
+  // Corpus reach measurement — the red's own predicate: equilibriumSet has a
+  // non-point component AND at least one computeAllNE point lies outside
+  // every such component (the red's reach: 30.29% of continuum games, 4.46%
+  // of all games in a 400,000-game int[-9,9] sweep).
+  const N = 400000;
+  const rnd = mk(0x57a91de5);
+  const cell = () => Math.floor(rnd() * 19) - 9;
+  let continuumGames = 0;
+  let strayHits = 0;
+  let strayNeverInValidChoices = 0;
+  let strayStillReported = 0;
+  for (let i = 0; i < N; i++) {
+    const g: GamePayoffs = {
+      a11: cell(), a12: cell(), a21: cell(), a22: cell(),
+      b11: cell(), b12: cell(), b21: cell(), b22: cell(),
+    };
+    if (!hasContinuum(g)) continue;
+    continuumGames++;
+    const all = computeAllNE(g);
+    const strays = all.filter((e) => !pointOnAnyContinuumComponent(g, e.x, e.y));
+    if (strays.length === 0) continue;
+    strayHits++;
+    const p = buildGroundingPayload(g);
+    const vLine = validChoicesLineOf(p);
+    let allExcluded = true;
+    let allReported = true;
+    for (const e of strays) {
+      const t = `(x=${e.x}, y=${e.y})`;
+      if (vLine.includes(t)) allExcluded = false;
+      if (!p.includes(t)) allReported = false;
+    }
+    if (allExcluded) strayNeverInValidChoices++;
+    if (allReported) strayStillReported++;
+  }
+  ok(continuumGames > 20000, `corpus too small: only ${continuumGames} continuum games`);
+  ok(strayHits > 5000, `reach too small for the stray class: only ${strayHits} hits out of ${continuumGames} continuum games (${(strayHits / continuumGames * 100).toFixed(2)}%)`);
+  ok(strayNeverInValidChoices === strayHits,
+    `${strayHits - strayNeverInValidChoices} / ${strayHits} stray-carrying games still offered a stray point as a continuum "valid choice"`);
+  ok(strayStillReported === strayHits,
+    `${strayHits - strayStillReported} / ${strayHits} stray-carrying games silently dropped the stray point from the payload entirely`);
+  console.log(`✓ stray equilibria never offered as continuum representatives: ${N} games swept, `
+    + `${continuumGames} (${(continuumGames / N * 100).toFixed(2)}%) had a genuine continuum, `
+    + `${strayHits} (${(strayHits / continuumGames * 100).toFixed(2)}% of continuum games) also had a disjoint stray point — `
+    + `0/${strayHits} offered as a "valid choice", ${strayStillReported}/${strayHits} still reported (as a separate claim).`);
+
+  // MUTATION / NEGATIVE FIXTURE — the pre-fix shape, verbatim (every
+  // computeAllNE point offered unconditionally, no split).
+  const preFixCode = `const validPoints = equilibria.length
+      ? equilibria.map((e) => \`(x=\${e.x}, y=\${e.y})\`).join(', ')
+      : 'any point where neither player can gain by deviating';`;
+  ok(!/splitEquilibriaByContinuum/.test(preFixCode),
+    'the pre-fix fixture text must not accidentally already carry the fix (fixture sanity check)');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 7. RED-MATH-8/002 — nashValidator.ts's `validateReport` must accept a
+//    report that faithfully follows report.ts's (RED-MATH-8/001-fixed)
+//    continuum instructions: one 'continuum' claim using a point genuinely
+//    on the continuum, plus a separate pure/mixed claim for any disjoint
+//    stray point. Before the fix, `validateReport` used a NARROWER
+//    degeneracy test than report.ts's payload, so every compliant response
+//    on this class of game failed — 100% of 56,805 predicate hits in the
+//    red's 400,000-game sweep.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testValidateReportAcceptsCompliantContinuumClaims() {
+  // Known positive #1: the round-7 fixture (full y=0 edge, no stray point) —
+  // computeIndifference(g).any is FALSE (the narrow predicate the old
+  // `degenerate` flag used) precisely because this is a partial tie.
+  const F1: GamePayoffs = { a11: 10, a12: 5, a21: 0, a22: 5, b11: 0, b12: 5, b21: 0, b22: 5 };
+  ok(computeIndifference(F1).any === false, 'fixture sanity: F1 must NOT be fully indifferent (the narrow predicate the bug used)');
+  ok(hasContinuum(F1), 'fixture sanity: F1 must have a genuine continuum');
+  // Three different perfectly-compliant model responses, verbatim from the
+  // finding: the model may pick ANY point report.ts offers as valid, or any
+  // other genuine interior continuum point, and type it 'continuum'.
+  for (const claim of [{ x: 0, y: 0, type: 'continuum' as const },
+    { x: 1, y: 0, type: 'continuum' as const },
+    { x: 0.5, y: 0, type: 'continuum' as const }]) {
+    const result = validateReport({ claimedEquilibria: [claim], prose: '' } as any, F1);
+    ok(result.ok, `RED-MATH-8/002 fix: a compliant continuum claim ${JSON.stringify(claim)} must validate ok — got ${JSON.stringify(result)}`);
+  }
+
+  // Known positive #2: RED-MATH-8/001's own fixture — a continuum PLUS a
+  // disjoint stray point. The compliant response claims BOTH: the continuum
+  // as one 'continuum' claim, and the stray as its own 'pure' claim.
+  const F2: GamePayoffs = { a11: -6, a12: 9, a21: 4, a22: -7, b11: -9, b12: -7, b21: 9, b22: 9 };
+  ok(hasContinuum(F2), 'fixture sanity: F2 must have a genuine continuum');
+  const compliant = validateReport({
+    claimedEquilibria: [{ x: 0, y: 1, type: 'continuum' }, { x: 1, y: 0, type: 'pure' }],
+    prose: '',
+  } as any, F2);
+  ok(compliant.ok, `RED-MATH-8/002 fix: continuum + separately-claimed stray point must validate ok — got ${JSON.stringify(compliant)}`);
+
+  // Negative control #1: omitting the stray point must still fail (the
+  // completeness rule must not become toothless just because a continuum is
+  // also present).
+  const omitsStray = validateReport({ claimedEquilibria: [{ x: 0, y: 1, type: 'continuum' }], prose: '' } as any, F2);
+  ok(!omitsStray.ok, 'omitting the disjoint stray point must still fail validation (completeness must survive the fix)');
+  ok(omitsStray.mismatches.some((m) => m.kind === 'omitted' && JSON.stringify(m.expected).includes('"x":1')),
+    `the omission mismatch must name the missing stray point — got ${JSON.stringify(omitsStray.mismatches)}`);
+
+  // Negative control #2: a planted FALSE continuum claim (real regret, not
+  // an equilibrium) must still fail — the fix must not have widened
+  // acceptance to admit false claims.
+  const falseClaim = validateReport({ claimedEquilibria: [{ x: 0.5, y: 0.5, type: 'continuum' }], prose: '' } as any, F2);
+  ok(!falseClaim.ok, 'a planted false continuum claim (nonzero regret) must still fail validation');
+
+  // Reach measurement over the same predicate class as RED-MATH-7/001 /
+  // RED-MATH-8/001: for every continuum game in a 300,000-game int[-9,9]
+  // sweep, simulate a maximally-compliant model (claims the continuum via
+  // the FIRST point report.ts's own payload offers, typed 'continuum'; plus
+  // one separate claim per stray point, typed exactly as computeAllNE says)
+  // and confirm validateReport accepts it every time.
+  const N = 300000;
+  const rnd = mk(0x8f2c11a9);
+  const cell = () => Math.floor(rnd() * 19) - 9;
+  let continuumGames = 0;
+  let acceptedCompliant = 0;
+  let regressionClassCount = 0; // hasContinuum true, computeIndifference.any false — the class the old `degenerate` flag missed
+  for (let i = 0; i < N; i++) {
+    const g: GamePayoffs = {
+      a11: cell(), a12: cell(), a21: cell(), a22: cell(),
+      b11: cell(), b12: cell(), b21: cell(), b22: cell(),
+    };
+    if (!hasContinuum(g)) continue;
+    continuumGames++;
+    if (!computeIndifference(g).any) regressionClassCount++;
+    const all = computeAllNE(g);
+    const strays = all.filter((e) => !pointOnAnyContinuumComponent(g, e.x, e.y));
+    const onContinuumPoints = all.filter((e) => pointOnAnyContinuumComponent(g, e.x, e.y));
+    const claims: { x: number; y: number; type: 'pure' | 'mixed' | 'continuum' }[] = [];
+    if (onContinuumPoints.length) {
+      claims.push({ x: onContinuumPoints[0].x, y: onContinuumPoints[0].y, type: 'continuum' });
+    } else {
+      // No enumerated corner sits on the continuum component itself (e.g. an
+      // interior mixed continuum with no corner solution) — derive one point
+      // directly from the continuum component's own rectangle midpoint.
+      const comp = equilibriumSet(g).find((r) => kindOf(r) !== 'point')!;
+      claims.push({ x: (comp.x0 + comp.x1) / 2, y: (comp.y0 + comp.y1) / 2, type: 'continuum' });
+    }
+    for (const s of strays) claims.push({ x: s.x, y: s.y, type: s.type });
+    const result = validateReport({ claimedEquilibria: claims, prose: '' } as any, g);
+    if (result.ok) acceptedCompliant++;
+  }
+  ok(continuumGames > 15000, `corpus too small: only ${continuumGames} continuum games`);
+  ok(regressionClassCount > 15000,
+    `the exact regression class (hasContinuum true, computeIndifference.any false) was barely exercised: ${regressionClassCount}`);
+  ok(acceptedCompliant === continuumGames,
+    `${continuumGames - acceptedCompliant} / ${continuumGames} continuum games rejected a maximally-compliant report (should be 0 after the fix)`);
+  console.log(`✓ validateReport accepts compliant continuum reports: ${N} games swept, ${continuumGames} `
+    + `(${(continuumGames / N * 100).toFixed(2)}%) had a genuine continuum — ${regressionClassCount} `
+    + `(${(regressionClassCount / continuumGames * 100).toFixed(2)}%) in the class the old \`degenerate\` flag missed — `
+    + `${acceptedCompliant}/${continuumGames} compliant reports accepted.`);
+
+  // MUTATION / NEGATIVE FIXTURE — the pre-fix shape, verbatim.
+  const preFixCode = 'const degenerate = indifference.any;';
+  ok(!/hasEquilibriumContinuum/.test(preFixCode),
+    'the pre-fix fixture text must not accidentally already carry the fix (fixture sanity check)');
+}
+
 testPayloadAgreesWithPanel();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();
 testPlottingDrawsContinuumMarker();
+testStrayPointsNotOfferedAsContinuumRepresentatives();
+testValidateReportAcceptsCompliantContinuumClaims();
 console.log(`✓ payoffhonesty.test.ts: ${checks} assertions passed`);
