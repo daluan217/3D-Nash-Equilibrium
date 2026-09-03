@@ -159,19 +159,6 @@ function extractDivBlock(src: string, startMarker: string): string {
   ok(!/(?<!prose-)\btext-muted dark:text-muted-dark\b/.test(reportPanel),
     'no caption inside the report panel may use the plain (reverted, lighter) text-muted token — it must use text-prose-muted');
 
-  // ── No element OUTSIDE the report panel uses the scoped prose token — the
-  // other half of "confined to two regions": a leak here would mean some
-  // unrelated caption picked up the darker pair by accident. ──
-  const appOutsideReport = app.slice(0, app.indexOf(reportPanel)) + app.slice(app.indexOf(reportPanel) + reportPanel.length);
-  ok(!appOutsideReport.includes('text-prose-muted'),
-    'text-prose-muted must not appear anywhere in App.tsx outside the report panel block');
-  for (const path of [
-    'src/components/AdminDashboard.tsx', 'src/components/DescriptionEditor.tsx', 'src/components/DownloadModal.tsx',
-  ]) {
-    const src = readFileSync(path, 'utf8');
-    ok(!src.includes('text-prose-muted'), `${path} must not use text-prose-muted (not one of the two named regions)`);
-  }
-
   // ── The second region — the preset/saved-game explanation cards in the
   // top-left workspace (App.tsx's own "Selected Preset Narrative Card" and
   // MenuDrawer's saved/default-game description cards) — keep their darker
@@ -182,15 +169,19 @@ function extractDivBlock(src: string, startMarker: string): string {
   // never `--color-muted`. So neither card currently has anything to move
   // onto the new prose token — verified here so this stays true, and so a
   // caption ADDED to either card later is forced onto text-prose-muted
-  // rather than silently reintroducing the lighter global token. */
+  // rather than silently reintroducing the lighter global token. Both
+  // narrative-card blocks are extracted (div-depth, like the report panel)
+  // so they can be EXCLUDED from the "no leak outside" check below — using
+  // text-prose-muted inside them is the documented, intended fallback, not
+  // a leak. */
   const menuDrawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
   const narrativeCardMarkers = [...app.matchAll(/data-testid="preset-narrative"/g)];
   ok(narrativeCardMarkers.length === 2,
     `expected exactly 2 preset-narrative card definitions (custom + standard), found ${narrativeCardMarkers.length}`);
-  for (const m of narrativeCardMarkers) {
-    const nearby = app.slice(m.index!, Math.min(app.length, m.index! + 900));
-    ok(!/\btext-muted dark:text-muted-dark\b/.test(nearby),
-      `the preset-narrative card at offset ${m.index} must not use the plain text-muted token — it should use text-prose-muted if it ever needs muted text`);
+  const narrativeCardBlocks = narrativeCardMarkers.map((m) => extractDivBlock(app, app.slice(m.index!, m.index! + 32)));
+  for (const [i, block] of narrativeCardBlocks.entries()) {
+    ok(!/\btext-muted dark:text-muted-dark\b/.test(block),
+      `the preset-narrative card #${i} must not use the plain text-muted token — it should use text-prose-muted if it ever needs muted text, got: ${JSON.stringify(block.slice(0, 200))}`);
   }
   const savedGameDescIdx = menuDrawer.indexOf("<ColorCoded text={game.desc}");
   ok(savedGameDescIdx > 0, 'the MenuDrawer saved-game description ColorCoded call must be found');
@@ -200,6 +191,35 @@ function extractDivBlock(src: string, startMarker: string): string {
   ok(savedGameDescNearby.includes('text-slate-500 dark:text-slate-400'),
     'the MenuDrawer saved-game description card must still render its own matte body text (unaffected by this revert)');
 
+  // ── No element OUTSIDE the report panel AND the two narrative-card blocks
+  // uses the scoped prose token — the other half of "confined to two
+  // regions": a leak here would mean some unrelated caption picked up the
+  // darker pair by accident. CodeRabbit finding (this branch): the first
+  // draft of this check forbade text-prose-muted anywhere outside the
+  // report panel, which would fail the moment the narrative cards' own
+  // documented fallback (above) is ever exercised — so the narrative
+  // blocks must be carved out here too, not just the report panel. ──
+  let appOutsideScopedRegions = app.slice(0, app.indexOf(reportPanel)) + app.slice(app.indexOf(reportPanel) + reportPanel.length);
+  for (const block of narrativeCardBlocks) {
+    ok(appOutsideScopedRegions.includes(block), 'a narrative-card block must still be present in the report-panel-excised text before it can be excised itself');
+    appOutsideScopedRegions = appOutsideScopedRegions.replace(block, '');
+  }
+  ok(!appOutsideScopedRegions.includes('text-prose-muted'),
+    'text-prose-muted must not appear in App.tsx outside the report panel and the two preset-narrative cards');
+  for (const path of [
+    'src/components/AdminDashboard.tsx', 'src/components/DescriptionEditor.tsx', 'src/components/DownloadModal.tsx',
+  ]) {
+    const src = readFileSync(path, 'utf8');
+    ok(!src.includes('text-prose-muted'), `${path} must not use text-prose-muted (not one of the two named regions)`);
+  }
+  // MenuDrawer.tsx is a named region too (the saved/default-game
+  // description cards), so it is deliberately NOT in the "must not use"
+  // loop above — but nothing in it uses text-prose-muted today either
+  // (verified above: the description card's own body text is a literal
+  // slate-500/400 pair, never the token), so this stays a live check.
+  ok(!menuDrawer.includes('text-prose-muted'),
+    'MenuDrawer.tsx must not use text-prose-muted today (neither saved/default-game description card has anything to move onto it yet)');
+
   // ── The running-text player-a-500 instances (row/col headers, payoff-A
   // input text, coordinate/legend labels, option-name labels) are BACK,
   // except: (a) inside the report panel, where the one pre-existing
@@ -208,8 +228,8 @@ function extractDivBlock(src: string, startMarker: string): string {
   // exceptions (text-slate-400 hover:text-player-a-500 — passes at REST,
   // only changes color on interaction, which axe's static snapshot does not
   // evaluate as failing). ──
-  const staticPlayerA500 = [...appOutsideReport.matchAll(/(?<!hover:)text-player-a-500\b/g)]
-    .filter((m) => !appOutsideReport.slice(Math.max(0, m.index! - 20), m.index!).includes('hover:'));
+  const staticPlayerA500 = [...appOutsideScopedRegions.matchAll(/(?<!hover:)text-player-a-500\b/g)]
+    .filter((m) => !appOutsideScopedRegions.slice(Math.max(0, m.index! - 20), m.index!).includes('hover:'));
   ok(staticPlayerA500.length === 13,
     `expected 13 restored STATIC text-player-a-500 running-text call sites outside the report panel (12 bare + the "A Moves" legend with its own dark:text-player-a-400), found ${staticPlayerA500.length}`);
   ok(reportPanel.includes('text-player-a-ink dark:text-player-a-ink-dark') && !reportPanel.includes('text-player-a-500'),
