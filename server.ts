@@ -3775,6 +3775,24 @@ async function startServer() {
       next(err);
       return;
     }
+    // body-parser (express.json's own middleware, ahead of every route) rejects
+    // a malformed or oversized request body with a genuine client-facing HTTP
+    // status attached as `err.status`/`err.statusCode` — 413 for a body over the
+    // configured limit ("entity.too.large"), 400 for unparseable JSON
+    // ("entity.parse.failed"). Before this catch-all existed, Express's own
+    // built-in error handler read that status straight through. A bare
+    // `res.status(500)` here would silently turn every one of those into a
+    // generic server error — caught by api.test.mjs's own regression check
+    // ("a 200kb request body -> 413"), which went 500 the first time this
+    // handler shipped without this carve-out. Only trust a 4xx (never a
+    // spoofed/mistaken 5xx or something out of range) from upstream
+    // middleware; anything else still collapses to a logged, generic 500.
+    const upstreamStatus = (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.status
+      ?? (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.statusCode;
+    if (typeof upstreamStatus === "number" && upstreamStatus >= 400 && upstreamStatus < 500) {
+      res.status(upstreamStatus).json({ error: "Invalid request." });
+      return;
+    }
     res.status(500).json({ error: "Internal server error." });
   });
 
