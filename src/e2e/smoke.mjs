@@ -1314,8 +1314,15 @@ try {
     });
     record('320px is clean before loading the long-label game (precondition)', !(await overflowing()));
 
+    // `.isVisible({timeout})` does NOT actually wait/retry — Playwright's
+    // isVisible is an immediate, no-retry actability snapshot regardless of
+    // any timeout argument passed to it, so this was always a race against
+    // however long the post-login games list takes to fetch and render, not
+    // a real 5s allowance. Made it a genuine waiting check (found running
+    // this suite on a slower CI runner, where the race lost reliably).
     const gameCard = p320.getByText(`Reflow ${uniq}`, { exact: false });
-    const cardFound = await gameCard.first().isVisible({ timeout: 5000 }).catch(() => false);
+    const cardFound = await gameCard.first().waitFor({ state: 'visible', timeout: 15000 })
+      .then(() => true).catch(() => false);
     record('the long-label saved game is reachable at 320px (precondition)', cardFound);
     if (cardFound) {
       await gameCard.first().click();
