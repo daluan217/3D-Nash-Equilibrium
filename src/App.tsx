@@ -86,6 +86,19 @@ import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
 import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
+import {
+  regenKeyEquals,
+  regenResponseIsCurrent,
+  keepFill,
+  shouldReplaceName,
+  regenErrorFromResponse,
+  cleanPreview,
+  REGEN_ERROR_MESSAGES,
+  REGEN_ANNOUNCE,
+  type RegenKey,
+  type RegenPreview,
+  type RegenErrorKind,
+} from './utils/scenarioRegen';
 import { DescriptionEditor } from './components/DescriptionEditor';
 import { DownloadModal } from './components/DownloadModal';
 import { OtherAccountsNotice } from './components/OtherAccountsNotice';
@@ -515,6 +528,77 @@ export default function App() {
    * prior output as safe to replace, while text the user typed by hand is not.
    */
   const lastGeneratedFillRef = useRef<GeneratedFill | null>(null);
+
+  /**
+   * "Regenerate scenario" (FEATURE-REGEN, flag `NASH_SCENARIO_REGEN`): ask the
+   * model for a NEW description + option labels + colour labelling for the
+   * SAME payoff matrix, preview it in the dialog it was asked from, Keep or
+   * Discard. Payoffs are never touched by this feature — see
+   * `src/utils/scenarioRegen.ts` for the pure predicates this state machine
+   * is built from.
+   *
+   * `capabilities.scenarioRegen` gates VISIBILITY only (the server 404s the
+   * route independently when the flag is off) — probed once per API base so
+   * a desktop app pointed at a different server (dbMode/apiBaseUrl) re-checks.
+   */
+  const [capabilities, setCapabilities] = useState<{ scenarioRegen: boolean }>({ scenarioRegen: false });
+  useEffect(() => {
+    let cancelled = false;
+    fetch(getApiUrl('/api/health'))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (!cancelled) setCapabilities(j?.capabilities ?? { scenarioRegen: false }); })
+      .catch(() => { if (!cancelled) setCapabilities({ scenarioRegen: false }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dbMode, apiBaseUrl]);
+
+  const [regen, setRegen] = useState<{
+    status: 'idle' | 'loading' | 'ready' | 'error';
+    preview: RegenPreview | null;
+    error: RegenErrorKind | null;
+    note: string;
+  }>({ status: 'idle', preview: null, error: null, note: '' });
+  // SEPARATE from requestGenerationRef (see the doc comment on that ref
+  // above): bumping the shared counter from a dialog would leave an
+  // in-flight "Explain this game" spinner permanently stuck, because its own
+  // `finally` only clears loading when its generation is still current.
+  const regenGenerationRef = useRef(0);
+  // Same-tick double-click / Enter-repeat idempotence — a ref because it must
+  // be readable synchronously inside the handler's own first line, before any
+  // state update has committed.
+  const regenInFlightRef = useRef(false);
+  const regenControllerRef = useRef<AbortController | null>(null);
+  // Focus restore target after Keep/Discard unmounts the preview card. Only
+  // one dialog is ever open at a time, so one ref suffices.
+  const regenButtonRef = useRef<HTMLButtonElement>(null);
+  /**
+   * The game the dialog CURRENTLY showing is for, mirrored every render (same
+   * `useLayoutEffect`-before-paint trick as `payoffsRef`) so an async regen
+   * response can tell — synchronously, with no stale closure — whether it
+   * still describes what's on screen. `null` when neither dialog is open.
+   */
+  const regenCurrentKeyRef = useRef<RegenKey | null>(null);
+  useLayoutEffect(() => {
+    regenCurrentKeyRef.current = isEditModalOpen && editGameId
+      ? { kind: 'edit', gameId: editGameId }
+      : isSaveModalOpen
+      ? { kind: 'save', payoffs }
+      : null;
+  });
+  /**
+   * DIRECTOR'S DECISION (2026-09-03): Keep replaces the game NAME too, unless
+   * the user typed into the name field during this dialog session. "Typed"
+   * is decided the same way `generatedFillIsSafe` decides a field is safe to
+   * overwrite: each baseline ref below holds the last value that was NOT
+   * typed by the user (blank on a fresh dialog, the existing game's name on
+   * Edit, or whatever a prefill/Generate/Keep itself just wrote) — every site
+   * that programmatically sets a name field updates the matching baseline in
+   * the SAME statement, so the two can never drift. If the live field still
+   * equals its baseline, the user never touched it and Keep may replace it;
+   * the moment it differs, the user's own typing wins and Keep leaves it.
+   */
+  const saveNameBaselineRef = useRef('');
+  const editNameBaselineRef = useRef('');
 
   // Feedback Modal States
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
@@ -1129,8 +1213,13 @@ export default function App() {
     // and the explanation regenerates there from what was actually submitted.
     const existing = userCustomGames.find((g) => g.id === activePreset);
     if (existing && authToken) {
+      const prefillName = (sc.name ?? existing.name).slice(0, 40);
       setEditGameId(existing.id);
-      setEditName((sc.name ?? existing.name).slice(0, 40));
+      setEditName(prefillName);
+      // This IS an auto-prefill (the report's invention, not the user's own
+      // typing) — the name-replace baseline moves with it, same as any other
+      // programmatic name write. See the ref's own doc comment above.
+      editNameBaselineRef.current = prefillName;
       setEditDesc(description.slice(0, 800));
       setEditLabels({
         row1: sc.row1 ?? '', row2: sc.row2 ?? '',
@@ -1151,7 +1240,9 @@ export default function App() {
     // TYPES, not a value set programmatically, so an AI-invented name over 40
     // characters would otherwise land in the field verbatim — visibly past
     // the limit the field claims (and correctly enforces for typing) to cap.
-    setSaveName((sc.name ?? '').slice(0, 40));
+    const prefillName = (sc.name ?? '').slice(0, 40);
+    setSaveName(prefillName);
+    saveNameBaselineRef.current = prefillName;
     setSaveDesc(description.slice(0, 800));
     setSaveLabels({
       row1: sc.row1 ?? '', row2: sc.row2 ?? '',
@@ -1685,6 +1776,9 @@ export default function App() {
   const openEditGame = (game: any) => {
     setEditGameId(game.id);
     setEditName(game.name ?? '');
+    // The name on screen is the SAVED name, not user typing — Keep may
+    // replace it (director's decision) as long as the user leaves it alone.
+    editNameBaselineRef.current = game.name ?? '';
     setEditDesc(game.description ?? '');
     setEditTerms({ a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] });
     setEditLabels({
@@ -1692,6 +1786,11 @@ export default function App() {
       col1: game.col1Label ?? '', col2: game.col2Label ?? '',
     });
     setEditError('');
+    // A different game must never inherit another game's regen preview.
+    regenGenerationRef.current += 1;
+    regenControllerRef.current?.abort();
+    regenInFlightRef.current = false;
+    setRegen({ status: 'idle', preview: null, error: null, note: '' });
     setIsEditModalOpen(true);
   };
 
@@ -1800,6 +1899,23 @@ export default function App() {
     }
   }, [isSaveModalOpen, isEditModalOpen]);
 
+  // Regen preview reset: BOTH dialogs closed (not the sign-in detour, which
+  // must preserve an in-progress preview exactly like it preserves the typed
+  // fields) means any in-flight or ready regen belongs to a dialog that no
+  // longer exists. Bumping the generation here — not just on the next open —
+  // is what makes a slow response land nowhere even if the SAME game's Edit
+  // dialog is reopened before the response arrives (a fresh open bumps again
+  // regardless, so this is redundant-but-cheap insurance for the gap between
+  // close and reopen).
+  useEffect(() => {
+    if (!isSaveModalOpen && !isEditModalOpen && !resumeSaveAfterAuthRef.current) {
+      regenGenerationRef.current += 1;
+      regenControllerRef.current?.abort();
+      regenInFlightRef.current = false;
+      setRegen({ status: 'idle', preview: null, error: null, note: '' });
+    }
+  }, [isSaveModalOpen, isEditModalOpen]);
+
   /**
    * Roll a fresh random game with the chosen equilibrium structure, put it on
    * the board, then ask the AI to invent a scenario for it (the same
@@ -1825,6 +1941,15 @@ export default function App() {
     setGenerateLoading(true);
     setGenerateNote('');
     setSaveError('');
+    // Generate rolls a NEW MATRIX — any regen preview (or in-flight regen
+    // request) was for the OLD one and must not survive it, same as the
+    // dialog-close reset above. The button itself is also hidden while
+    // generateLoading (see the JSX), so this only ever clears a preview
+    // that was already sitting there from before this click.
+    regenGenerationRef.current += 1;
+    regenControllerRef.current?.abort();
+    regenInFlightRef.current = false;
+    setRegen({ status: 'idle', preview: null, error: null, note: '' });
     const g = generateRandomGame(generateKind);
     // Mirror handleLoadPreset: board payoffs, their editable string twins,
     // preset highlight off, sim rebuilt from the start point.
@@ -1862,6 +1987,7 @@ export default function App() {
         const safe = generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current);
         if (safe) {
           setSaveName(gen.name);
+          saveNameBaselineRef.current = gen.name;
           setSaveDesc(gen.desc);
           setSaveLabels({ row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 });
           lastGeneratedFillRef.current = gen;
@@ -1954,6 +2080,7 @@ export default function App() {
         // this, but clearing the ref too keeps it from describing content that
         // no longer exists.
         lastGeneratedFillRef.current = null;
+        saveNameBaselineRef.current = '';
         setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
       } else {
         setSaveError(data.error || 'Failed to save game.');
@@ -1963,6 +2090,125 @@ export default function App() {
     } finally {
       setSaveLoading(false);
     }
+  };
+
+  /**
+   * "Regenerate scenario" — ask the model for a NEW description + option
+   * labels + colour labelling for the SAME payoff matrix, from either dialog.
+   * Never persists anything; never touches the six form fields itself (only
+   * `keepRegen` does that, and only on Keep). See the `regen` state's own
+   * doc comment above for the staleness/idempotence machinery this leans on.
+   */
+  const handleRegenerateScenario = async (key: RegenKey) => {
+    // Idempotent double-click / Enter-repeat: same tick, so a ref (not state,
+    // which would not have committed yet) is the only thing that can gate it.
+    if (regenInFlightRef.current) return;
+    regenInFlightRef.current = true;
+    const myGen = (regenGenerationRef.current += 1);
+    setRegen({ status: 'loading', preview: null, error: null, note: REGEN_ANNOUNCE.loading });
+
+    const requestPayoffs = key.kind === 'edit'
+      ? userCustomGames.find((g) => g.id === key.gameId)?.payoffs
+      : key.payoffs;
+    if (!requestPayoffs) {
+      // The game vanished (deleted from another tab, say) between opening
+      // the dialog and clicking Regenerate — an honest network-style error
+      // rather than a silent no-op or a thrown exception.
+      if (myGen === regenGenerationRef.current) {
+        regenInFlightRef.current = false;
+        setRegen({ status: 'error', preview: null, error: 'network', note: REGEN_ERROR_MESSAGES.network() });
+      }
+      return;
+    }
+    // `current`: the DIALOG'S live fields (not the last-saved record), sent
+    // ONLY so the server can avoid repeating this exact story — never used
+    // to shape the prompt beyond that, and never persisted by this route.
+    const current = key.kind === 'edit'
+      ? { name: cleanText(editName), description: cleanText(editDesc) }
+      : { name: cleanText(saveName), description: cleanText(saveDesc) };
+
+    const controller = new AbortController();
+    regenControllerRef.current = controller;
+    const { promise, clear } = fetchWithTimeout(getApiUrl('/api/scenario/regenerate'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payoffs: requestPayoffs, current }),
+    }, controller);
+
+    let status: number | null = null;
+    let body: { scenario?: RegenPreview | null; error?: string } | null = null;
+    let caught: unknown = null;
+    try {
+      const res = await promise;
+      status = res.status;
+      body = await res.json().catch(() => null);
+    } catch (err) {
+      caught = err;
+    } finally {
+      clear();
+    }
+
+    // Staleness: a later click/open/close bumped the generation, OR the
+    // dialog now shows a different game than this request was for (Edit A
+    // -> Escape -> Edit B; or the Save dialog's matrix changed under it via
+    // Generate), OR — the fallback a bare generation check would miss —
+    // BOTH dialogs are now closed, so there is no current game at all.
+    // `regenCurrentKeyRef.current` is `null` in exactly that case, and
+    // `regenResponseIsCurrent` requires an actual `RegenKey` to compare
+    // against, so a `null` here must drop the response rather than default
+    // to "current" (defaulting to `key` itself would make every response
+    // trivially match its own request, defeating the check precisely when
+    // the dialog has closed). Drop entirely — no note, no state change.
+    const currentKey = regenCurrentKeyRef.current;
+    if (!currentKey || !regenResponseIsCurrent({
+      myGen, currentGen: regenGenerationRef.current, requestKey: key, currentKey,
+    })) {
+      if (myGen === regenGenerationRef.current) regenInFlightRef.current = false;
+      return;
+    }
+    regenInFlightRef.current = false;
+
+    if (status === 200 && body?.scenario) {
+      setRegen({ status: 'ready', preview: cleanPreview(body.scenario), error: null, note: REGEN_ANNOUNCE.ready });
+    } else {
+      const kind = regenErrorFromResponse(status, body ?? null, caught);
+      setRegen({ status: 'error', preview: null, error: kind, note: REGEN_ERROR_MESSAGES[kind](body?.error) });
+    }
+  };
+
+  /** Keep: fill the dialog's form fields from the preview. Persisting is
+   *  still the existing Save / Save Changes submit — nothing here writes to
+   *  the server, so every clamp/cleanText/cleanLabels/cleanColorTerms the
+   *  submit already runs still applies unchanged. */
+  const keepRegen = (key: RegenKey) => {
+    if (!regen.preview) return;
+    const baselineRef = key.kind === 'edit' ? editNameBaselineRef : saveNameBaselineRef;
+    const liveName = key.kind === 'edit' ? editName : saveName;
+    const replaceName = shouldReplaceName(liveName !== baselineRef.current);
+    const kept = keepFill(regen.preview, replaceName);
+    if (key.kind === 'edit') {
+      if (kept.name !== undefined) { setEditName(kept.name); editNameBaselineRef.current = kept.name; }
+      setEditDesc(kept.desc);
+      setEditLabels(kept.labels);
+      setEditTerms(kept.terms);
+    } else {
+      if (kept.name !== undefined) { setSaveName(kept.name); saveNameBaselineRef.current = kept.name; }
+      setSaveDesc(kept.desc);
+      setSaveLabels(kept.labels);
+      setSaveTerms(kept.terms);
+    }
+    setRegen({
+      status: 'idle', preview: null, error: null,
+      note: key.kind === 'edit' ? REGEN_ANNOUNCE.keptEdit : REGEN_ANNOUNCE.keptSave,
+    });
+    regenButtonRef.current?.focus();
+  };
+
+  /** Discard: clear the preview only. The six fields and the colour chips
+   *  were never written to, so there is nothing to undo. */
+  const discardRegen = () => {
+    setRegen({ status: 'idle', preview: null, error: null, note: REGEN_ANNOUNCE.discarded });
+    regenButtonRef.current?.focus();
   };
 
   const openFeedback = () => {
@@ -2432,6 +2678,13 @@ export default function App() {
    */
   const saveBaseTerms = useMemo(() => dialogBaseColorTerms(saveLabels), [saveLabels]);
   const editBaseTerms = useMemo(() => dialogBaseColorTerms(editLabels), [editLabels]);
+  // Same terms Keep will store (colorTermsFor is the one definition, as the
+  // report suggestion card's own comment notes) — computed once and shared
+  // by whichever dialog's preview card is on screen.
+  const regenPreviewTerms = useMemo(
+    () => (regen.preview ? colorTermsFor(regen.preview, regen.preview.actorA ?? [], regen.preview.actorB ?? []) : { a: [], b: [] }),
+    [regen.preview],
+  );
 
 
   // Clamp a whole matrix through the one cell parser, and derive its editable
@@ -5140,6 +5393,79 @@ export default function App() {
                 description here would no longer match.
               </p>
 
+              {/* "Regenerate scenario" (FEATURE-REGEN, flag NASH_SCENARIO_REGEN,
+                  default OFF — hidden until the server capability probe says
+                  it's on). Its own indigo block, separate from any other AI
+                  affordance, right under the immutability note above: this
+                  rewrites the STORY only, the numbers on the board never move. */}
+              {capabilities.scenarioRegen && (
+                <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regen.status === 'loading'}>
+                  <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                    Rewrite the story for these payoffs
+                  </span>
+                  <div>
+                    <button
+                      ref={regenButtonRef}
+                      type="button"
+                      aria-label="Regenerate scenario"
+                      aria-disabled={regen.status === 'loading'}
+                      title="Have the AI write a new description and option names for these exact payoffs. You preview it first; nothing changes until you Keep it."
+                      onClick={() => { if (regen.status !== 'loading' && editGameId) void handleRegenerateScenario({ kind: 'edit', gameId: editGameId }); }}
+                      className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors cursor-pointer"
+                    >
+                      {regen.status === 'loading' ? 'Regenerating…' : regen.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
+                    </button>
+                  </div>
+                  {regen.note && (
+                    <p role="status" aria-live="polite" className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
+                      {regen.note}
+                    </p>
+                  )}
+                  {regen.status === 'ready' && regen.preview && (
+                    <div className="mt-1 rounded-lg border border-indigo-200 bg-white/70 dark:border-indigo-900/60 dark:bg-slate-950/30 p-2.5">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                        New scenario (preview)
+                      </p>
+                      <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words text-xs">
+                        {regen.preview.name}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300 break-words">
+                        <ColorCoded text={regen.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
+                      </p>
+                      <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                        <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
+                          A: {regen.preview.row1} / {regen.preview.row2}
+                        </span>
+                        {'  ·  '}
+                        <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
+                          B: {regen.preview.col1} / {regen.preview.col2}
+                        </span>
+                      </p>
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => editGameId && keepRegen({ kind: 'edit', gameId: editGameId })}
+                          className="rounded-md bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                        >
+                          Keep
+                        </button>
+                        <button
+                          type="button"
+                          onClick={discardRegen}
+                          className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                        >
+                          Discard
+                        </button>
+                      </div>
+                      <p className="mt-1.5 text-[10px] text-slate-500 dark:text-slate-400">
+                        Keep replaces the description, option names and highlights below with this text. Payoffs are never changed.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {editError && <p className="text-xs text-danger-500 font-semibold">{editError}</p>}
 
               <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
@@ -5236,6 +5562,84 @@ export default function App() {
                 <div>(Row 2, Col 2) = ({payoffs.a22}, {payoffs.b22})</div>
               </div>
             </div>
+
+            {/* "Regenerate scenario" (FEATURE-REGEN, flag NASH_SCENARIO_REGEN,
+                default OFF). A SEPARATE block from the generate-a-new-game
+                affordance below — that one rolls a brand-new MATRIX; this one
+                rewrites only the story for the payoffs shown above, which
+                never move. Hidden while a Generate call is changing that
+                matrix out from under it (handleGenerateGame already clears
+                any preview the instant it starts). NOTE: never quote that
+                other block's exact heading text verbatim in this comment —
+                generatefill.test.ts locates it with a plain indexOf, and an
+                earlier verbatim match up here breaks the locator. */}
+            {capabilities.scenarioRegen && !generateLoading && (
+              <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regen.status === 'loading'}>
+                <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                  Rewrite the story for these payoffs
+                </span>
+                <div>
+                  <button
+                    ref={regenButtonRef}
+                    type="button"
+                    aria-label="Regenerate scenario"
+                    aria-disabled={regen.status === 'loading'}
+                    title="Have the AI write a new description and option names for these exact payoffs. You preview it first; nothing changes until you Keep it."
+                    onClick={() => { if (regen.status !== 'loading') void handleRegenerateScenario({ kind: 'save', payoffs }); }}
+                    className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  >
+                    {regen.status === 'loading' ? 'Regenerating…' : regen.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
+                  </button>
+                </div>
+                {regen.note && (
+                  <p role="status" aria-live="polite" className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
+                    {regen.note}
+                  </p>
+                )}
+                {regen.status === 'ready' && regen.preview && (
+                  <div className="mt-1 rounded-lg border border-indigo-200 bg-white/70 dark:border-indigo-900/60 dark:bg-slate-950/30 p-2.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                      New scenario (preview)
+                    </p>
+                    <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words text-xs">
+                      {regen.preview.name}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300 break-words">
+                      <ColorCoded text={regen.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
+                    </p>
+                    <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                      <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
+                        A: {regen.preview.row1} / {regen.preview.row2}
+                      </span>
+                      {'  ·  '}
+                      <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
+                        B: {regen.preview.col1} / {regen.preview.col2}
+                      </span>
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => keepRegen({ kind: 'save', payoffs })}
+                        className="rounded-md bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                      >
+                        Keep
+                      </button>
+                      <button
+                        type="button"
+                        onClick={discardRegen}
+                        className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-slate-500 dark:text-slate-400">
+                      Keep replaces the description, option names and highlights below with this text. Payoffs are never changed.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Generate-a-game-for-me. Rolls a solver-verified random matrix
                 with the chosen equilibrium structure onto the board (replacing

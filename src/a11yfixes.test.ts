@@ -555,4 +555,50 @@ function extractDivBlock(src: string, startMarker: string): string {
     'the pre-fix fixture text must not accidentally already carry a live region (fixture sanity check)');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FEATURE-REGEN (round 6, 2026-09-03): "Regenerate scenario" announces its own
+// loading/ready/error/kept/discarded state inside EACH dialog it appears in —
+// a SECOND, dialog-scoped `role="status" aria-live="polite"` region, distinct
+// from the app-wide phase announcer just above (which never mentions
+// regeneration at all). Scoped to each dialog block with `extractDivBlock`,
+// same pattern the tab-trap checks above use for these two dialogs.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const editDialog = extractDivBlock(app, 'aria-label="Edit saved game"');
+  const saveDialog = extractDivBlock(app, 'aria-label="Save custom game"');
+  // CodeRabbit finding (this branch): the two ok() calls below used to be
+  // INDEPENDENT — one asserting the live-region markup exists ANYWHERE in
+  // the dialog block, the other that the literal text "regen.note" appears
+  // ANYWHERE in it. A dialog with an unrelated, empty status region PLUS a
+  // `{regen.note}` reference sitting in some ordinary, non-live paragraph
+  // elsewhere would satisfy both checks despite announcing nothing. Match
+  // the actual status-region ELEMENT (its opening `role="status"
+  // aria-live="polite"` tag through the next `</p>`) and require
+  // `regen.note` to appear INSIDE that captured span specifically.
+  const statusRegionRe = /<p\s+role="status"\s+aria-live="polite"[^>]*>([\s\S]*?)<\/p>/;
+  for (const [label, block] of [['Edit', editDialog], ['Save', saveDialog]] as const) {
+    const m = block.match(statusRegionRe);
+    ok(!!m, `${label} dialog must carry its own <p role="status" aria-live="polite">...</p> region for regen announcements`);
+    ok(!!m && /regen\.note/.test(m[1]),
+      `${label} dialog's status-region ELEMENT (not just the surrounding block) must render regen.note`);
+  }
+
+  // MUTATION / NEGATIVE FIXTURE — a dialog block missing the live region
+  // entirely must be caught, not silently pass because SOME dialog has one.
+  const noLiveRegion = '<div aria-label="Save custom game"><p className="text-xs">{regen.note}</p></div>';
+  ok(!statusRegionRe.test(noLiveRegion),
+    'fixture sanity: a status paragraph without role/aria-live must NOT satisfy the live-region check');
+
+  // MUTATION / NEGATIVE FIXTURE — the exact defect CodeRabbit's finding
+  // describes: a real live region present, but EMPTY, plus a `regen.note`
+  // reference sitting in a completely unrelated, non-live paragraph. The
+  // OLD independent-regex check would have passed this; the fixed check
+  // must reject it because `regen.note` never appears inside the <p>...</p>
+  // the status-region regex actually captures.
+  const decoupledNote = '<div aria-label="Save custom game"><p role="status" aria-live="polite" className="sr-only">{someOtherStatus}</p><p className="text-xs">{regen.note}</p></div>';
+  const decoupledMatch = decoupledNote.match(statusRegionRe);
+  ok(!!decoupledMatch && !/regen\.note/.test(decoupledMatch[1]),
+    'fixture sanity: a live region that does NOT itself contain regen.note must fail the (fixed) check, even though regen.note appears elsewhere in the block');
+}
+
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

@@ -19,6 +19,7 @@
  * it is screened.
  */
 import { pickFromBank, bankKey, type BankEntry } from './scenarioBank';
+import { isSameStory } from './scenarioRegen';
 import type { GamePayoffs, SuggestedScenario } from '../types';
 
 /**
@@ -64,6 +65,52 @@ export function bankScenario(g: GamePayoffs, domain: string): SuggestedScenario 
   if (!sc) return null;
   // Record BEFORE returning: the caller may reject this row at the gate, and a
   // rejected row should not come back on the retry.
+  const hit = bank.find((e) => e.s === sc);
+  if (hit) seen.add(bankKey(hit));
+  return sc;
+}
+
+/**
+ * The setting a scenario CAME FROM the bank under, if it did — used by the
+ * "Regenerate scenario" feature to avoid re-drawing the same domain on a
+ * desktop regenerate. Matches by the same (domain, name, description-prefix)
+ * identity `bankKey` uses, so this only ever answers "yes" for a row that is
+ * genuinely still in the shipped bank; a user-typed or hand-edited story (no
+ * row shares its key) correctly returns `undefined`, and the caller then has
+ * no domain to avoid, which is the right, structural answer.
+ */
+export function bankDomainFor(sc: { name?: string; description?: string } | null | undefined): string | undefined {
+  if (!sc) return undefined;
+  const hit = bank.find((e) => isSameStory(e.s, sc));
+  return hit?.d;
+}
+
+/**
+ * A scenario for this game, deliberately NOT the same story (by name) as
+ * `avoidName`, and NOT the same setting `bankScenario` would otherwise repeat
+ * — used by the regenerate route so a desktop draw reads as a genuinely new
+ * attempt rather than the bank handing back the row already on screen.
+ *
+ * Reuses `pickFromBank` UNCHANGED: its own `seen: ReadonlySet<string>`
+ * parameter already exists for exactly this ("rows already shown this
+ * session"), so avoidance is just widening that set with every row that
+ * shares `avoidName` — the ladder/softenBand semantics `pickFromBank` already
+ * implements are untouched, and a bank with only one row for the game's
+ * (domain, band) cell still degrades the same way it already does when
+ * `seen` covers everything (widen, then repeat honestly rather than fail).
+ */
+export function bankScenarioAvoiding(
+  g: GamePayoffs,
+  domain: string,
+  avoidName?: string,
+): SuggestedScenario | null {
+  if (!bank.length) return null;
+  const avoidKeys = avoidName
+    ? bank.filter((e) => isSameStory(e.s, { name: avoidName })).map(bankKey)
+    : [];
+  const unionSeen = avoidKeys.length ? new Set([...seen, ...avoidKeys]) : seen;
+  const sc = pickFromBank(bank, g, domain, unionSeen);
+  if (!sc) return null;
   const hit = bank.find((e) => e.s === sc);
   if (hit) seen.add(bankKey(hit));
   return sc;

@@ -334,6 +334,24 @@ jobs:
         env:
           DB_SHAPE_TEST_PORT: '3155'
 
+      # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
+      # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
+      # route (404 off) and the /api/health capability bit; the avoid gate
+      # rerolls a same-story draw (counted against a mock provider, never
+      # trusting the response shape alone); ladder exhaustion falls back to
+      # the bank exactly like scenario-bank-fallback.test.mjs's own finding;
+      # nothing is persisted by this route while the real Keep-shaped PATCH
+      # still clamps/strips exactly as it always has; invalid input and a
+      # no-credentials process both get honest typed answers, never a 500;
+      # the route shares the "report" rate-limit bucket with /api/report in
+      # both directions; the desktop path never reaches the mock provider
+      # (bank first) and is never rate-limited; the per-draw deadline is
+      # honoured on this route like every other invention site.
+      - name: Boot the production server and run the scenario-regenerate suite
+        run: node src/integration/scenario-regen.test.mjs
+        env:
+          REGEN_TEST_PORT: '3160'
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 45

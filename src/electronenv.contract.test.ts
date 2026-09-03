@@ -150,7 +150,7 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const serverSrc = stripComments(readFileSync(join(repo, 'server.ts'), 'utf8'));
-  const flagNames = ['NASH_PAYOFF_TEMPLATE', 'NASH_LLM_TIES', 'NASH_DIRECTION_CHECKS'];
+  const flagNames = ['NASH_PAYOFF_TEMPLATE', 'NASH_LLM_TIES', 'NASH_DIRECTION_CHECKS', 'NASH_SCENARIO_REGEN'];
 
   for (const name of flagNames) {
     // server.ts must only ever COMPARE against process.env.<name>, never
