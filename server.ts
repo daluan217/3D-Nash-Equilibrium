@@ -76,6 +76,19 @@ function canInvent(): boolean {
 }
 
 /**
+ * FEATURE-REGEN's flag. Read at request time, like `canInvent`'s own
+ * credential check — never assigned to a module-level constant, so a test
+ * that flips the env var between requests (or the desktop's own 96-98
+ * startup block) is observed immediately rather than only at process boot.
+ * Default OFF: the route 404s and the client hides the action until this is
+ * explicitly `'1'` (a literal in cloudbuild.yaml, never request-toggled —
+ * see `src/electronenv.contract.test.ts`'s `flagNames` negative check).
+ */
+function scenarioRegenEnabled(): boolean {
+  return process.env.NASH_SCENARIO_REGEN === '1';
+}
+
+/**
  * THE ONE SCREENED, REROLLED SCENARIO DRAW. Every path that invents a scenario
  * goes through here, so none of them can drift from the others again.
  *
@@ -198,9 +211,24 @@ const SCENARIO_REROLL_LIMIT = (() => {
  * finding's own ask — callers thread it into the response so the rate can be
  * tracked in production rather than only inferred.
  */
+/**
+ * What a "Regenerate scenario" draw must not repeat (FEATURE-REGEN). `name`/
+ * `description` identify the CURRENT story so a fresh draw that lands on the
+ * exact same one counts as a gate drop, not a success — a same-story draw
+ * would read to the user as "nothing happened" despite spending a whole
+ * reroll. `domain` (desktop only, from `bankDomainFor`) additionally biases
+ * the bank picker away from the setting the current story came from, so a
+ * regenerate is more likely to read as genuinely new rather than only
+ * guaranteed non-identical. This is a REJECT-AND-REROLL input, never a
+ * rewrite: `isSameStory` only ever causes another draw, exactly like every
+ * other `storyOk` rejection this ladder already handles.
+ */
+type RegenAvoid = { name?: string; description?: string; domain?: string };
+
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
+  avoid?: RegenAvoid,
 ): Promise<{ scenario: SuggestedScenario | null; failure?: string; scenarioSource?: 'bank-fallback' }> {
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
@@ -208,6 +236,7 @@ async function inventScreenedScenario(
     if (!validateScenario(sc, payoffs).ok) return false;
     const claimFree = scenarioIsClaimFree(sc);
     if (!claimFree.ok) { onDrop?.(claimFree.reason); return false; }
+    if (avoid && isSameStory(sc, avoid)) { onDrop?.('regen-same-story'); return false; }
     return process.env.NASH_DIRECTION_CHECKS !== '1'
       || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0;
   };
@@ -216,7 +245,7 @@ async function inventScreenedScenario(
   let gateRerollsUsed = 0;
   let exhaustionFailure = "validation-failed";
   for (;;) {
-    const draw = await drawWithDeadline(payoffs);
+    const draw = await drawWithDeadline(payoffs, avoid);
     if (!draw.scenario) {
       // LOST: the draw never produced a scenario at all (timeout, provider
       // error, unparseable output). Exactly one retry, same as before this
@@ -241,8 +270,10 @@ async function inventScreenedScenario(
   // free, always-available attempt before this request goes without a story:
   // see this function's own comment for why the bank is reachable and safe
   // to use here, even on the hosted path.
-  const fallbackDomain = pickScenarioDomain();
-  const fallback = bankScenario(payoffs, fallbackDomain);
+  const fallbackDomain = pickScenarioDomainExcluding(avoid?.domain);
+  const fallback = avoid
+    ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name)
+    : bankScenario(payoffs, fallbackDomain);
   if (fallback && (!gateOn || storyOk(fallback))) {
     return { scenario: fallback, scenarioSource: 'bank-fallback' };
   }
@@ -289,7 +320,7 @@ const SCENARIO_DEADLINE_MS = (() => {
   return Number.isInteger(raw) && raw >= 1 && raw <= 2147483647 ? raw : 20_000;
 })();
 
-async function drawWithDeadline(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<{ scenario: null; failure: string }>((resolve) => {
     timer = setTimeout(() => resolve({ scenario: null, failure: "timeout" }), SCENARIO_DEADLINE_MS);
@@ -298,7 +329,7 @@ async function drawWithDeadline(payoffs: GamePayoffs): Promise<{ scenario: Sugge
   });
   try {
     return await Promise.race([
-      inventScenario(payoffs).catch((err) => {
+      inventScenario(payoffs, avoid).catch((err) => {
         console.warn(`[report] scenario draw failed: ${err?.message ?? err}`);
         return { scenario: null, failure: "error" as const };
       }),
@@ -309,10 +340,15 @@ async function drawWithDeadline(payoffs: GamePayoffs): Promise<{ scenario: Sugge
   }
 }
 
-async function inventScenario(payoffs: GamePayoffs): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
-  const domain = pickScenarioDomain();
+async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+  // On the desktop bank path only, bias the domain away from where the
+  // CURRENT story came from (regen's `avoid.domain`, from `bankDomainFor`) so
+  // a regenerate is not just non-identical but reads as a new setting too.
+  // The cloud path is unaffected — the prompt is never told about `avoid` at
+  // all (see `inventScreenedScenario`'s doc comment: reject-and-reroll only).
+  const domain = pickScenarioDomainExcluding(avoid?.domain);
   if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
-    const sc = bankScenario(payoffs, domain);
+    const sc = avoid ? bankScenarioAvoiding(payoffs, domain, avoid.name) : bankScenario(payoffs, domain);
     if (sc) return { scenario: sc };
   }
   if (!LOCAL_PROMPT) {
@@ -338,8 +374,9 @@ const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number;
     sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair } from "./src/utils/colorTerms";
-import { pickScenarioDomain } from "./src/utils/scenarioDomains";
-import { bankAvailable, bankScenario } from "./src/utils/bankSource";
+import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
+import { bankAvailable, bankScenario, bankDomainFor, bankScenarioAvoiding } from "./src/utils/bankSource";
+import { isSameStory } from "./src/utils/scenarioRegen";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -2610,7 +2647,14 @@ async function startServer() {
   app.get("/api/health", (req, res) => {
     // pid lets a test's boot() confirm it is talking to the child it spawned,
     // not a stray process another agent left listening on the same port.
-    res.json({ status: "ok", pid: process.pid });
+    // `capabilities` is how the CLIENT decides whether to show a
+    // flag-gated action at all — no auth, no DB read, no rate limit, read at
+    // request time (same style as the flag itself) so a flag flip is visible
+    // on the very next probe. `scenarioRegen` additionally requires
+    // `canInvent()`: showing the button when the process could never invent
+    // anything (no credentials, no bank) would only ever produce the
+    // 200-with-null-scenario `no-key` response.
+    res.json({ status: "ok", pid: process.pid, capabilities: { scenarioRegen: scenarioRegenEnabled() && canInvent() } });
   });
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
@@ -3089,6 +3133,56 @@ async function startServer() {
       reportCache.set(cacheKey, envelope);
     }
     return res.json(envelope);
+  }));
+
+  // ── Scenario regenerate API (FEATURE-REGEN, flag NASH_SCENARIO_REGEN,
+  //    default OFF) ───────────────────────────────────────────────────────────
+  //
+  // A saved/custom game's payoffs never move; this asks for a NEW description
+  // + option labels + colour labelling for the SAME matrix, through the
+  // identical `inventScreenedScenario` ladder every other invention site uses
+  // (cloud: model + bounded rerolls + bank fallback; desktop: bank first,
+  // never the cloud) — plus the ONE extra reject-and-reroll rule threaded in
+  // above: the draw must not be the same story as `current`. Nothing here is
+  // persisted; the client's existing POST /api/games / PATCH /api/games/:id
+  // still owns saving, with every clamp/strip/ownership check unchanged. Not
+  // a new screening site — `src/scenariopaths.contract.test.ts` polices that
+  // this route calls `inventScreenedScenario` and does not roll its own gate.
+  //
+  // Same rate-limit LABEL as `/api/report` (`"report"`) — deliberately: a
+  // regenerate is a model call exactly like Explain/New AI scenario, so it
+  // shares that one honest 20/min hosted budget rather than opening a second,
+  // uncounted door to the same provider. Lifted on desktop like every
+  // `hosted-only` limit. No auth: nothing is read from or written to the DB.
+  app.post("/api/scenario/regenerate", rateLimit("report", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
+    if (!scenarioRegenEnabled()) {
+      return res.status(404).json({ error: "Not enabled." });
+    }
+    const payoffs = cleanPayoffs(req.body?.payoffs);
+    if (!payoffs) {
+      return res.status(400).json({ error: "Invalid payoff matrix." });
+    }
+    if (!canInvent()) {
+      // Honest, not an error: the client's capability probe should already
+      // have hidden the button in this state, but a stale probe or a direct
+      // API call must still get a real, typed answer rather than a 500.
+      return res.json({ scenario: null, failure: "no-key" });
+    }
+    // `current`: the dialog's OWN live fields, clamped/stripped exactly like
+    // every other scenario input — used ONLY to avoid repeating this story
+    // (name/description equality, and on desktop the bank domain it came
+    // from). Never used to shape the prompt beyond that, never persisted.
+    const current = cleanScenario(req.body?.current);
+    const avoid = current
+      ? { name: current.name, description: current.description, domain: bankDomainFor(current) }
+      : undefined;
+    const { scenario, failure, scenarioSource } = await inventScreenedScenario(
+      payoffs,
+      (reason) => console.warn(`[regen] scenario dropped: ${reason}`),
+      avoid,
+    );
+    console.log(`[regen] served source=${scenarioSource ?? (scenario ? 'model' : 'none')} desktop=${process.env.IS_ELECTRON === 'true'}`);
+    return res.json({ scenario, failure: scenario ? null : (failure ?? "error"), scenarioSource });
   }));
 
   // ── Feedback API ───────────────────────────────────────────────────────────
