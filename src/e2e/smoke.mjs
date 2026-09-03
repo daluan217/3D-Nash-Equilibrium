@@ -1003,8 +1003,14 @@ try {
     const settledPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
     const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
-    if (await settledExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await settledExitTour.click();
-    await settledPage.waitForTimeout(300);
+    if (await settledExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await settledExitTour.click();
+      // CodeRabbit finding (this branch): poll for the tour dialog's actual
+      // detachment instead of a flat sleep, same pattern already used
+      // elsewhere in this file (React closes it asynchronously).
+      await settledPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).catch(() => {});
+    }
 
     const setCell = async (label, value) => {
       const input = settledPage.getByLabel(label, { exact: true });
@@ -1062,10 +1068,24 @@ try {
     const tourOpen = async () => escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Guided tour"]'));
     record('tour is open on a fresh anonymous load (precondition)', await tourOpen());
 
+    // CodeRabbit finding (this branch): poll for the tour's own step counter
+    // ("N / M") to actually change after each click, instead of a flat sleep
+    // that could read a stale step if a render is slow (CI's SwiftShader
+    // path especially).
+    const progressText = () => escPage.evaluate(() => {
+      const spans = Array.from(document.querySelectorAll('span'));
+      const el = spans.find((s) => /^\d+ \/ \d+$/.test((s.textContent || '').trim()));
+      return el ? el.textContent.trim() : null;
+    });
     const nextBtn = escPage.getByRole('button', { name: /^next$/i });
     for (let i = 0; i < 3; i++) {
+      const before = await progressText();
       await nextBtn.click().catch(() => {});
-      await escPage.waitForTimeout(150);
+      await escPage.waitForFunction((prev) => {
+        const spans = Array.from(document.querySelectorAll('span'));
+        const el = spans.find((s) => /^\d+ \/ \d+$/.test((s.textContent || '').trim()));
+        return !!el && el.textContent.trim() !== prev;
+      }, before, { timeout: 5000 }).catch(() => {});
     }
     const tourTitleBefore = await escPage.evaluate(() =>
       document.querySelector('[role="dialog"][aria-label="Guided tour"] h3, [role="dialog"][aria-label="Guided tour"] [class*="font-bold"]')?.textContent ?? null);
@@ -1114,12 +1134,22 @@ try {
     });
     await hangPage.goto(BASE, { waitUntil: 'networkidle' });
     const hangExitTour = hangPage.getByRole('button', { name: /exit tour/i });
-    if (await hangExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await hangExitTour.click();
-    await hangPage.waitForTimeout(300);
+    if (await hangExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await hangExitTour.click();
+      await hangPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).catch(() => {});
+    }
 
     const explainBtn = hangPage.getByRole('button', { name: /explain this game/i });
     await explainBtn.click();
-    await hangPage.waitForTimeout(1000);
+    // CodeRabbit finding (this branch): poll for the loading state itself
+    // instead of a flat 1s sleep -- a slow render (or a real regression that
+    // never enters the loading state at all) would otherwise read a stale
+    // snapshot rather than failing on its own terms.
+    await hangPage.waitForFunction(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
+      return !!btn?.disabled;
+    }, null, { timeout: 5000 }).catch(() => {});
     record('the report request was actually intercepted (precondition)', intercepted);
     const stuckState = await hangPage.evaluate(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
@@ -1127,7 +1157,15 @@ try {
     });
     record('the button enters the loading state immediately', !!stuckState?.disabled, JSON.stringify(stuckState));
 
-    await hangPage.waitForTimeout(23000); // past REPORT_FETCH_TIMEOUT_MS
+    // CodeRabbit finding (this branch): poll for RECOVERY (the button
+    // re-enabling) up to a bound comfortably past REPORT_FETCH_TIMEOUT_MS,
+    // instead of always sleeping the full 23s regardless of when the abort
+    // actually fires -- returns as soon as the state changes, and still
+    // gives the real client-side timeout its full window to fire.
+    await hangPage.waitForFunction(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
+      return !!btn && !btn.disabled;
+    }, null, { timeout: 30000 }).catch(() => {});
     const recovered = await hangPage.evaluate(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
       // CodeRabbit finding (this branch): a broad `timeout|...|try again|
@@ -1219,7 +1257,12 @@ try {
     record('the long-label saved game is reachable at 320px (precondition)', cardFound);
     if (cardFound) {
       await gameCard.first().click();
-      await p320.waitForTimeout(500);
+      // CodeRabbit finding (this branch): poll for the LOADED GAME's own
+      // labels to actually be on screen (the crafted 40-char run) instead
+      // of a flat sleep, so the overflow check below can't read a stale
+      // pre-load layout as if it were the post-load one.
+      await p320.waitForFunction(() => document.body.innerText.includes('A'.repeat(40)),
+        null, { timeout: 5000 }).catch(() => {});
       record('the 40-char no-space label does not overflow 320px (RED-APP-6/004)', !(await overflowing()));
     }
     await narrow320.close();
@@ -1275,7 +1318,12 @@ try {
     record('the synthetic suggested-scenario card renders (precondition)', cardVisible);
     if (cardVisible) {
       await clampPage.getByRole('button', { name: /save this scenario with the game/i }).click();
-      await clampPage.waitForTimeout(600);
+      // CodeRabbit finding (this branch): poll for the Save/Edit dialog to
+      // actually mount instead of a flat 600ms sleep, so a slow render
+      // cannot make the read below observe an empty/stale field.
+      await clampPage.waitForFunction(() =>
+        !!document.querySelector('[role="dialog"][aria-label="Save custom game"], [role="dialog"][aria-label="Edit saved game"]'),
+        null, { timeout: 5000 }).catch(() => {});
       const nameValue = await clampPage.evaluate(() => {
         const inp = document.querySelector('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]')
           || document.querySelector('[role="dialog"][aria-label="Edit saved game"] input');

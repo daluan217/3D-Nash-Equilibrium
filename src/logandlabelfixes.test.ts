@@ -112,10 +112,26 @@ function openingTagAt(src: string, refIdx: number): string {
   // per-cell payoff-pair grid already did. So this check now anchors on the
   // one thing THIS finding actually protects — the 72px label-column cap —
   // rather than the whole template staying byte-identical forever.
-  ok(app.includes('grid-cols-[minmax(0,72px)_'),
-    'the outer matrix grid\'s label column must keep its minmax(0,72px) cap');
-  ok(!/grid-cols-\[minmax\(0,72px\)_[^\]]*\]\s+max-\[/.test(app),
-    'the outer matrix grid must not carry a narrow-viewport column-width override (measured to have no effect; do not reintroduce it)');
+  // CodeRabbit finding (this branch): the old check searched the WHOLE
+  // file for `grid-cols-[minmax(0,72px)_...] max-[` in that order, so a
+  // narrow-viewport override placed BEFORE the base class in the same
+  // className (Tailwind applies classes by specificity, not by their
+  // position in the string, so `max-[380px]:grid-cols-... grid-cols-[...]`
+  // is exactly as live as the reverse) would satisfy it while still
+  // reintroducing the regression. Isolate the SPECIFIC element's own
+  // className (found via its `data-tour="matrix"` anchor, not a whole-file
+  // search) and check for the override ANYWHERE inside that one class list.
+  const matrixGridIdx = app.indexOf('data-tour="matrix"');
+  ok(matrixGridIdx > 0, 'the outer matrix grid element must be found by its data-tour anchor');
+  const matrixGridClassMatch = app.slice(matrixGridIdx, matrixGridIdx + 300).match(/className="([^"]*)"/);
+  ok(matrixGridClassMatch !== null, 'the outer matrix grid element must carry a className attribute');
+  const matrixGridClasses = matrixGridClassMatch![1];
+  ok(matrixGridClasses.includes('grid-cols-[minmax(0,72px)_'),
+    `the outer matrix grid's label column must keep its minmax(0,72px) cap, got: ${JSON.stringify(matrixGridClasses)}`);
+  ok(!/max-\[[^\]]*\]:grid-cols-/.test(matrixGridClasses),
+    `the outer matrix grid must not carry a narrow-viewport grid-cols override anywhere in its class list, `
+    + `regardless of position relative to the base class (measured to have no effect; do not reintroduce it) -- `
+    + `got: ${JSON.stringify(matrixGridClasses)}`);
 }
 
 console.log(`logandlabelfixes.test.ts: ${checks} checks passed`);
