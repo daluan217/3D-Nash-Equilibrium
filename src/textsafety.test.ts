@@ -179,20 +179,34 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
 }
 
 // ── 10. RED-APP-7/004 — structural guard: App.tsx's 4 label inputs (both
-//      dialogs) must clamp via clampGraphemeSafe in onChange, and must NOT
-//      carry the native `maxLength={40}` attribute any more (that attribute
-//      is what silently mangled a typed/pasted ZWJ sequence BEFORE React
-//      ever saw the value, so removing the clamp from onChange alone is not
-//      the fix — the native attribute has to be gone too, or it wins the
-//      race on every real keystroke).
+//      dialogs) must clamp via clampGraphemeSafe, and must NOT carry the
+//      native `maxLength={40}` attribute any more (that attribute is what
+//      silently mangled a typed/pasted ZWJ sequence BEFORE React ever saw
+//      the value, so removing the clamp from onChange alone is not the fix
+//      — the native attribute has to be gone too, or it wins the race on
+//      every real keystroke).
+//
+//      RED-APP-8/002 + RED-APP-8/003 moved PRIMARY enforcement to
+//      `onBeforeInput={clampLabelBeforeInput}` (preventDefault before the
+//      browser commits an over-budget insertion, so undo never desyncs);
+//      `onChange`'s clampLabelInput call is now the SECONDARY guard for the
+//      one case onBeforeInput cannot intercept — an IME composition commit
+//      — so it must skip while `e.nativeEvent.isComposing` is true or it
+//      reintroduces the mid-composition IME fight RED-APP-8/002 found.
 {
   const appSrc = readFileSync('src/App.tsx', 'utf8');
   ok(/const clampLabelInput = \(v: string\) => clampGraphemeSafe\(v, 40\);/.test(appSrc),
     'App.tsx must define clampLabelInput = clampGraphemeSafe(v, 40)');
+  ok(/function clampLabelBeforeInput\(e: React\.FormEvent<HTMLInputElement>\): void \{/.test(appSrc),
+    'App.tsx must define clampLabelBeforeInput (RED-APP-8/002+003 fix)');
 
-  const clampSites = [...appSrc.matchAll(/onChange=\{\(e\) => set(Edit|Save)Labels\(\(prev\) => \(\{ \.\.\.prev, \[key\]: clampLabelInput\(e\.target\.value\) \}\)\)\}/g)];
+  const beforeInputSites = [...appSrc.matchAll(/onBeforeInput=\{clampLabelBeforeInput\}/g)];
+  ok(beforeInputSites.length === 2,
+    `expected 2 label-input onBeforeInput={clampLabelBeforeInput} sites (Edit + Save dialogs), found ${beforeInputSites.length}`);
+
+  const clampSites = [...appSrc.matchAll(/onChange=\{\(e\) => set(Edit|Save)Labels\(\(prev\) => \(\{\s*\.\.\.prev,\s*(?:\/\/[^\n]*\n\s*)*\[key\]: \(e\.nativeEvent as InputEvent\)\.isComposing \? e\.target\.value : clampLabelInput\(e\.target\.value\),\s*\}\)\)\}/g)];
   ok(clampSites.length === 2,
-    `expected 2 label-input onChange sites calling clampLabelInput (Edit + Save dialogs), found ${clampSites.length}`);
+    `expected 2 label-input onChange sites calling clampLabelInput, skipped while composing (Edit + Save dialogs), found ${clampSites.length}`);
 
   // No bare native maxLength on either of the (now clamp-only) label input
   // blocks — anchor on the same onChange sites and look for a nearby
