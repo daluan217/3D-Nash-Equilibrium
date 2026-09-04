@@ -11,19 +11,49 @@
  *
  * Deploy verification: when EXPECTED_INDEX points at the index.html built by
  * the triggering Test run, the script polls the live site until it serves
- * THAT build's hashed asset (the deploy landed), then checks the live
- * surfaces. Without it (nightly monitor mode) the checks run immediately.
+ * BOTH that build's hashed asset AND (when EXPECTED_VERSION is supplied) the
+ * exact matching backend version (the deploy landed), then checks the live
+ * surfaces. Without EXPECTED_INDEX (nightly monitor mode) the checks run
+ * immediately.
+ *
+ * H5 follow-up (handbacks/2026-09-04-1620-HANDBACK.md): a backend/data-only
+ * release reuses the same frontend asset hash, so the asset check ALONE
+ * cannot tell "the new release landed" from "the old release is still
+ * serving" — it needs the version too. See src/e2e/liveSmokeGate.mjs for the
+ * gate logic and src/livesmokegate.test.ts for the deterministic proof (incl.
+ * that the wait can never exceed 5 minutes regardless of any override).
+ *
+ * The version compared here is `/api/health`'s `backendVersion` field, NOT
+ * `/api/version` (see server.ts's BACKEND_VERSION comment). CodeRabbit CLI
+ * flagged the first draft of this fix as a real deadlock: `/api/version`
+ * reads GCS `app-version.json`, written ONLY by the "Build & Publish macOS
+ * DMG" workflow, which itself triggers ONLY on a SUCCESSFUL "Live smoke" run
+ * for this exact commit — so at the moment THIS script would have asserted
+ * against it, that commit's desktop release has not run yet, and never can
+ * before this check does. Gating on it would have permanently starved the
+ * desktop release workflow. `backendVersion` instead reads the package.json
+ * baked into the SAME Docker image Cloud Run just started serving, so it
+ * updates the instant that revision receives traffic — no downstream
+ * workflow dependency, no deadlock. `/api/version` itself is still logged,
+ * essentially unchanged in section 4 below, purely as desktop-release-lag
+ * information — it is never used to gate anything.
  *
  *   LIVE_BASE=https://nash-equilibrium-simulator.com \
- *   EXPECTED_INDEX=dist/index.html node src/e2e/live-smoke.mjs
+ *   EXPECTED_INDEX=dist/index.html EXPECTED_VERSION=0.0.137 \
+ *   node src/e2e/live-smoke.mjs
  */
 
 import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { resolveWaitMs, waitForDeploy } from './liveSmokeGate.mjs';
 
 const BASE = (process.env.LIVE_BASE || 'https://nash-equilibrium-simulator.com').replace(/\/$/, '');
-// how long to wait for the deploy to land after the merge (minutes)
-const WAIT_MINUTES = Number(process.env.LIVE_WAIT_MINUTES || 15);
+// How long to wait for the deploy to land after the merge. Resolved through
+// resolveWaitMs so the wait can NEVER exceed 5 minutes in this script,
+// whatever LIVE_WAIT_MINUTES says (the workflow's own 5-minute override is
+// now redundant with this cap, not the only thing enforcing it).
+const WAIT_MS = resolveWaitMs(process.env.LIVE_WAIT_MINUTES);
+const EXPECTED_VERSION = process.env.EXPECTED_VERSION || null;
 
 const results = [];
 function record(name, pass, detail) {
@@ -38,24 +68,40 @@ async function getText(path, opts) {
 }
 
 // ── wait for the deploy: the live index.html must reference the SAME hashed
-//    asset as the build we are verifying (a stale deploy serves the old hash)
+//    asset as the build we are verifying AND (when we know the expected
+//    version) /api/health's backendVersion must match it exactly — a
+//    backend/data-only release reuses the old asset hash, so the asset alone
+//    cannot tell a fresh deploy from a stale one still serving. See the
+//    module comment above for why this is backendVersion (live, from this
+//    exact image) and NOT /api/version (desktop-release metadata that lags
+//    behind this very check by construction).
 let expectedAsset = null;
 if (process.env.EXPECTED_INDEX) {
   const built = readFileSync(process.env.EXPECTED_INDEX, 'utf8');
   expectedAsset = (built.match(/assets\/[\w.-]+\.js/) || [])[0] || null;
   if (!expectedAsset) throw new Error(`could not find an asset reference in ${process.env.EXPECTED_INDEX}`);
-  console.log(`waiting for the live site to serve this build's asset: ${expectedAsset}`);
-  const deadline = Date.now() + WAIT_MINUTES * 60_000;
-  let live = null;
-  while (Date.now() < deadline) {
-    live = await getText('/');
-    if (live.status === 200 && live.text.includes(expectedAsset)) break;
-    live = null;
-    await sleep(15_000);
-  }
-  record('the live site serves THIS commit\'s build (by asset hash)', !!live,
-    live ? expectedAsset : `still not serving ${expectedAsset} after ${WAIT_MINUTES}min`);
-  if (!live) {
+  console.log(`waiting for the live site to serve this build's asset: ${expectedAsset}`
+    + (EXPECTED_VERSION ? ` at backend version ${EXPECTED_VERSION}` : ' (no EXPECTED_VERSION supplied — asset-only)'));
+
+  const { deployed, last } = await waitForDeploy({
+    expectedAsset,
+    expectedVersion: EXPECTED_VERSION,
+    waitMs: WAIT_MS,
+    fetchState: async () => {
+      const [page, health] = await Promise.all([getText('/'), getText('/api/health')]);
+      let version = null;
+      try { version = JSON.parse(health.text).backendVersion; } catch { /* not json */ }
+      return { status: page.status, text: page.text, version };
+    },
+    sleep,
+    log: (msg) => console.log(msg),
+  });
+
+  record('the live site serves THIS commit\'s build (by asset hash AND exact version)', deployed,
+    deployed ? `${expectedAsset} @ ${last?.version}`
+      : `still not serving ${expectedAsset}${EXPECTED_VERSION ? ` @ ${EXPECTED_VERSION}` : ''} after ${Math.round(WAIT_MS / 60_000)}min`
+        + (last ? ` (last seen: asset ${last.text?.includes(expectedAsset) ? 'match' : 'stale'}, version=${last.version ?? 'unknown'})` : ''));
+  if (!deployed) {
     // nothing else is meaningful against a stale/not-yet-deployed site
     const fails = results.filter((r) => !r.pass);
     console.log(`\n══════ LIVE SMOKE: ${results.length - fails.length}/${results.length} checks passed ══════`);
@@ -85,7 +131,10 @@ if (process.env.EXPECTED_INDEX) {
   }
 }
 
-// ══ 3. API liveness behind the same domain
+// ══ 3. API liveness behind the same domain, PLUS (when an expected version
+//      is known) an EXACT assertion that the live backend is this exact
+//      release — not just "some backend is up". Uses backendVersion (see the
+//      module comment for why, and not /api/version).
 {
   const r = await getText('/api/health');
   record('live /api/health is 200', r.status === 200, `status=${r.status}`);
@@ -93,16 +142,30 @@ if (process.env.EXPECTED_INDEX) {
   const xfo = r.headers.get('x-frame-options');
   record('live security headers present', nosniff === 'nosniff' && xfo === 'DENY',
     `nosniff=${nosniff} xfo=${xfo}`);
+
+  let health = {};
+  try { health = JSON.parse(r.text); } catch { /* not json */ }
+  if (EXPECTED_VERSION) {
+    record('live backend is running this exact release (backendVersion)',
+      r.status === 200 && health.backendVersion === EXPECTED_VERSION,
+      `status=${r.status} backendVersion=${health.backendVersion ?? '(missing)'} expected=${EXPECTED_VERSION}`);
+  }
 }
 
-// ══ 4. build metadata (informational: the version source updates with the
-//      desktop release pipeline, which lags the web deploy — never a failure)
+// ══ 4. build metadata (informational only — never gates anything). H5
+//      follow-up (handbacks/2026-09-04-1620-HANDBACK.md): this field is
+//      desktop-release metadata, not backend-deploy metadata — see the
+//      module comment above and server.ts's BACKEND_VERSION for why it was
+//      NOT the right signal for the exactness fix, and section 3 above for
+//      the field that is. It legitimately lags the web deploy by one whole
+//      release cycle (the desktop release workflow runs strictly after this
+//      one), so it is never asserted against EXPECTED_VERSION here.
 {
   const r = await getText('/api/version');
   let version = null;
   try { version = JSON.parse(r.text).version; } catch { /* not json */ }
-  console.log(`INFO live /api/version → ${version} (repo: ${process.env.EXPECTED_VERSION || 'unknown'})`);
-  record('live /api/version answers 200 JSON', r.status === 200 && version !== undefined,
+  console.log(`INFO live /api/version (desktop release) → ${version} (repo: ${process.env.EXPECTED_VERSION || 'unknown'})`);
+  record('live /api/version answers 200 JSON', r.status === 200 && typeof version === 'string' && version.length > 0,
     `status=${r.status} version=${version}`);
 }
 
