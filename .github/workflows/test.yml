@@ -353,6 +353,17 @@ jobs:
         env:
           DB_SHAPE_TEST_PORT: '3155'
 
+      # RED-DESKTOP-8/001: an iCloud/Finder conflict can leave a valid
+      # `db.json 2` beside the primary `db.json`. The desktop must refuse
+      # before choosing either database, preserve both byte-for-byte, and
+      # hand Electron the backup-first data-conflict dialog rather than the
+      # lock-file recovery instructions. A `.corrupt-*` sidecar is the
+      # control proving ordinary established recovery artifacts still boot.
+      - name: Boot the production server and run the desktop DB-conflict suite
+        run: node src/integration/desktop-db-conflict.test.mjs
+        env:
+          DB_CONFLICT_TEST_PORT: '3175'
+
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
       # route (404 off) and the /api/health capability bit; the avoid gate
