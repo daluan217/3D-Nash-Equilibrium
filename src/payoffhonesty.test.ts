@@ -47,8 +47,9 @@ import {
   GamePayoffs, SimState, NashEquilibrium,
 } from './types';
 import {
-  doStep, PRESETS, computeAllNE, computeIndifference, computeMixedNE, fmtPayoff, EA, EB, r3,
+  doStep, PRESETS, computeAllNE, computeIndifference, computeMixedNE, fmtPayoff, fmtProb, EA, EB, r3,
   equilibriumSet, kindOf, describeContinua, regretA, regretB,
+  continuumComponents, continuumSettledDescription, formatConvergenceLogLine, pointInRect,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { validateReport } from './utils/nashValidator';
@@ -290,6 +291,14 @@ function testMenuDrawerSourceUsesFmtPayoff() {
   ok(fmtPayoffSites.length === 2,
     `expected 2 sites recomputing via fmtPayoff(EA(eq.x, eq.y, ...)) (standard presets + saved games), found ${fmtPayoffSites.length}`);
 
+  // RED-MATH-9/002: `eqList` must come from `.stray` — a point already
+  // covered by a continuum bullet gets no separate "Pure/Mixed NE" bullet of
+  // its own (same split App.tsx's own bullet list and report.ts's grounding
+  // payload use). Two sites, same as every other check in this function.
+  const splitStraySites = [...src.matchAll(/splitEquilibriaByContinuum\((preset|game)\.payoffs\)\.stray/g)];
+  ok(splitStraySites.length === 2,
+    `expected 2 sites deriving eqList from splitEquilibriaByContinuum(...payoffs).stray (standard presets + saved games), found ${splitStraySites.length}`);
+
   // RED-MATH-7/001: MenuDrawer.tsx used to read ONLY computeAllNE's finite
   // corner list — silently under-reporting an equilibrium continuum, the
   // same class the checks below close in report.ts and plotting.ts. Two
@@ -329,7 +338,53 @@ function testMenuDrawerSourceUsesFmtPayoff() {
 //    server.ts's own simple tie flag, reproduced literally below, is what
 //    routes a game there; this proves that path is reached whenever the
 //    payload declares a continuum, not bypassed).
+//    RED-MATH-9/001 adds a FIFTH: the simulation log's own convergence line
+//    (`formatConvergenceLogLine`, which App.tsx's aria-live announcement
+//    also calls through the same `continuumSettledDescription`) — checked at
+//    a REPRESENTATIVE point on each continuum component so it can be
+//    compared against `describeContinua`'s own per-component text.
 // ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * A point strictly inside continuum component `r` — its centroid. Used to
+ * exercise `formatConvergenceLogLine`/`continuumSettledDescription` at a
+ * point that is DEFINITELY on that one component, so the returned text can
+ * be checked against `describeContinua`'s corresponding entry (both derived
+ * from the same `equilibriumSet(g)` order, so index `i` always lines up).
+ */
+function componentMidpoint(r: { x0: number; x1: number; y0: number; y1: number }): { x: number; y: number } {
+  return { x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2 };
+}
+
+/**
+ * Checks the FIFTH rendering (the sim log / aria-live formatter) against the
+ * panel's own `describeContinua` text for every component of one game. Must
+ * be called on a game already confirmed to have a continuum.
+ */
+function checkLogRenderingAgrees(g: GamePayoffs) {
+  const comps = continuumComponents(g);
+  const panelLines = describeContinua(g);
+  ok(comps.length === panelLines.length,
+    `game=${JSON.stringify(g)}: continuumComponents and describeContinua must enumerate the SAME components in the SAME order (${comps.length} vs ${panelLines.length})`);
+  for (let i = 0; i < comps.length; i++) {
+    const { x, y } = componentMidpoint(comps[i]);
+    // continuumSettledDescription (used directly by App.tsx's aria-live
+    // effect) must return exactly the panel's own line for this component.
+    const desc = continuumSettledDescription(g, x, y);
+    ok(desc === panelLines[i],
+      `game=${JSON.stringify(g)}: continuumSettledDescription at representative point (${x},${y}) must equal describeContinua's line for the same component — got "${desc}", want "${panelLines[i]}"`);
+    // formatConvergenceLogLine (the sim log's convergence line) must quote
+    // that same text verbatim, and must NEVER claim a definite "Pure"/"Mixed
+    // NE" for a point that is one of infinitely many.
+    const logLine = formatConvergenceLogLine(g, x, y, true, EA(x, y, g), EB(x, y, g), 0);
+    ok(logLine.includes(panelLines[i]),
+      `game=${JSON.stringify(g)}: sim log's convergence line must include the SAME line the panel/MenuDrawer show ("${panelLines[i]}") — got "${logLine}"`);
+    ok(!/━━ (Pure|Mixed) NE:/.test(logLine),
+      `game=${JSON.stringify(g)}: sim log must NOT claim a definite Pure/Mixed NE for a point ON a continuum — got "${logLine}"`);
+    ok(logLine.includes('equilibrium continuum'),
+      `game=${JSON.stringify(g)}: sim log's continuum line must say "equilibrium continuum" — got "${logLine}"`);
+  }
+}
 
 function hasContinuum(g: GamePayoffs): boolean {
   return equilibriumSet(g).some((r) => kindOf(r) !== 'point');
@@ -373,6 +428,7 @@ function testContinuumRenderingsAgree() {
     }
     ok(serverTieFlag(FIXTURE),
       "fixture: server.ts's own tie flag must ALSO be true here, proving the templated/tieProse rendering path (already correct) is reached for this exact game, not bypassed");
+    checkLogRenderingAgrees(FIXTURE);
   }
 
   // Corpus sweep — the red's own reach class: 300,000 random int[-9,9] games
@@ -404,6 +460,7 @@ function testContinuumRenderingsAgree() {
     }
     ok(serverTieFlag(g),
       `game=${JSON.stringify(g)}: server.ts's tie flag must be true whenever a continuum exists (proves the templated/tieProse path is reached), but was false`);
+    checkLogRenderingAgrees(g);
   }
   ok(checkedContinuum > 20000, `corpus too small / predicate too narrow: only ${checkedContinuum} continuum games found out of ${N}`);
   ok(regressionClassCount > 15000,
@@ -411,7 +468,8 @@ function testContinuumRenderingsAgree() {
   console.log(`✓ continuum renderings agree: ${N} games swept, ${checkedContinuum} (${(checkedContinuum / N * 100).toFixed(2)}%) `
     + `had a genuine continuum — ${regressionClassCount} (${(regressionClassCount / N * 100).toFixed(2)}%) in the class this fix `
     + `closes (undetected by computeIndifference before), ${bothClassCount} already caught by computeIndifference. `
-    + `0 false "complete" claims; every payload line matched the panel/MenuDrawer line verbatim; server.ts's tie flag agreed on all ${checkedContinuum}.`);
+    + `0 false "complete" claims; every payload line matched the panel/MenuDrawer line verbatim; server.ts's tie flag agreed on all ${checkedContinuum}; `
+    + `the sim log's convergence line (RED-MATH-9/001, the fifth rendering) matched describeContinua's text on every component of every one of them.`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -445,6 +503,148 @@ function testPlottingDrawsContinuumMarker() {
   ok(continuumTracesC.length === 0, `CONTROL (no continuum) must draw ZERO continuumNE traces, found ${continuumTracesC.length}`);
 
   console.log('✓ plotting.ts draws an equilibrium-continuum marker exactly when equilibriumSet says one exists (fixture + negative control)');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5b. RED-MATH-9/002 — a `computeAllNE` point already covered by a continuum
+//     component must draw NO isolated "Pure/Mixed NE" diamond — only the
+//     continuum marker represents it. Before this fix, EVERY continuum game
+//     drew at least one such double-marked point (29,372/29,372 in the
+//     red's 200k int[-9,9] sweep, reproduced below at the same scale with
+//     the same seed, through the REAL `makeTraces`, not a reimplementation).
+// ════════════════════════════════════════════════════════════════════════════
+
+function testPlottingSkipsIsolatedDiamondsOnContinuum() {
+  // Known positive, hand-verified: the finding's sharpest case — both
+  // players' payoffs FLAT, so the entire [0,1]×[0,1] square is one 'area'
+  // continuum and all 4 corners are also listed by computeAllNE as separate
+  // "Pure NE" points.
+  const FIXTURE: GamePayoffs = { a11: 3, a12: 3, a21: 3, a22: 3, b11: 5, b12: 5, b21: 5, b22: 5 };
+  const allNE = computeAllNE(FIXTURE);
+  ok(allNE.length === 4 && allNE.every((n) => n.type === 'pure'),
+    `fixture sanity: computeAllNE must list exactly 4 pure corners, got ${JSON.stringify(allNE)}`);
+  const st = createInitialState(0.5, 0.5, FIXTURE);
+  const surf = buildSurfaces(FIXTURE);
+  const traces = makeTraces(surf, FIXTURE, st, 'both', allNE, false, 'shrink');
+  const isolated = traces.filter((t: any) => t.legendgroup === 'pureNE' || t.legendgroup === 'mixedNE');
+  const continuumTraces = traces.filter((t: any) => t.legendgroup === 'continuumNE');
+  ok(isolated.length === 0,
+    `fixture: a fully-flat game must draw ZERO isolated Pure/Mixed NE diamonds (all 4 corners are on the one continuum), found ${isolated.length}: ${JSON.stringify(isolated)}`);
+  ok(continuumTraces.length === 1,
+    `fixture: exactly one continuum marker must be drawn for the single 'area' component, found ${continuumTraces.length}`);
+
+  // Reach — the red's own 200,000-game int[-9,9] sweep (mulberry32 seed 99),
+  // through the REAL makeTraces, checking every isolated pure/mixed diamond
+  // trace's own (x,y) against continuumComponents(g). Must be ZERO
+  // double-marked instances (was 29,372/29,372 pre-fix).
+  function mulberry32(seed: number) {
+    let a = seed;
+    return () => {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rng = mulberry32(99);
+  const N = 200000;
+  let continuumGames = 0;
+  let doubleMarked = 0;
+  let isolatedDiamondCount = 0;
+  const st2 = createInitialState(0.5, 0.5, FIXTURE); // reused shape only; game passed per-iteration
+  for (let i = 0; i < N; i++) {
+    const cell = () => Math.floor(rng() * 19) - 9;
+    const g: GamePayoffs = {
+      a11: cell(), a12: cell(), a21: cell(), a22: cell(),
+      b11: cell(), b12: cell(), b21: cell(), b22: cell(),
+    };
+    if (!hasContinuum(g)) continue;
+    continuumGames++;
+    const comps = continuumComponents(g);
+    const all = computeAllNE(g);
+    const s = createInitialState(0.5, 0.5, g);
+    const surfG = buildSurfaces(g);
+    const tr = makeTraces(surfG, g, s, 'both', all, false, 'shrink');
+    const iso = tr.filter((t: any) => t.legendgroup === 'pureNE' || t.legendgroup === 'mixedNE');
+    let gameDoubleMarked = false;
+    for (const t of iso) {
+      isolatedDiamondCount++;
+      const xs: number[] = t.x; const ys: number[] = t.y;
+      for (let k = 0; k < xs.length; k++) {
+        if (comps.some((r) => pointInRect(r, xs[k], ys[k]))) gameDoubleMarked = true;
+      }
+    }
+    if (gameDoubleMarked) doubleMarked++;
+  }
+  ok(continuumGames > 25000, `corpus too small: only ${continuumGames} continuum games found out of ${N}`);
+  ok(doubleMarked === 0,
+    `${doubleMarked}/${continuumGames} continuum games still draw a double-marked isolated diamond (must be 0 after the fix)`);
+  console.log(`✓ plotting.ts draws no isolated Pure/Mixed NE diamond for a point already covered by a continuum marker: `
+    + `${N} games swept, ${continuumGames} had a genuine continuum, 0 double-marked (was 100% pre-fix per the finding), `
+    + `${isolatedDiamondCount} stray isolated diamonds still correctly drawn.`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5c. RED-MATH-9/001 — the SIMULATION LOG (real `doStep` runs, not just the
+//     pure formatter in isolation) must announce the continuum, not a
+//     definite "Pure/Mixed NE", when a run settles on one. The finding's
+//     exact repro: same game, same mover, four different start points, two
+//     of which land on the free axis's own vertex (0.5,0.5 rounds toward
+//     x=0) and two of which land strictly inside the continuum (x=0.2/0.1) —
+//     the pre-fix log named a coordinate absent from computeAllNE's own
+//     enumerated list on the latter two, dressed as a discovery.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testSimLogNamesContinuumOnRealRuns() {
+  const G: GamePayoffs = { a11: 0, a12: 2, a21: 0, a22: 3, b11: -6, b12: 9, b21: 6, b22: -3 };
+  ok(hasContinuum(G), 'fixture sanity: G must have a genuine continuum');
+  const comps = continuumComponents(G);
+  ok(comps.length === 1 && comps[0].x0 === 0 && Math.abs(comps[0].x1 - 0.375) < 1e-9 && comps[0].y0 === 1 && comps[0].y1 === 1,
+    `fixture sanity: expected the exact segment from the finding (x in [0, 0.375], y=1), got ${JSON.stringify(comps)}`);
+  const panelLine = describeContinua(G)[0];
+
+  const starts: [number, number][] = [[0.5, 0.5], [0.2, 0.8], [0.1, 0.9], [0.35, 0.6]];
+  for (const [sx, sy] of starts) {
+    const st = createInitialState(sx, sy, G);
+    const captured: string[] = [];
+    const addLog = (m: string) => captured.push(m);
+    const all = computeAllNE(G);
+    const pure = all.filter((n) => n.type === 'pure');
+    const committed = pure.length ? pure[0] : null;
+    for (let i = 0; i < 50 && !st.converged; i++) doStep(G, st, 'B', 0.1, all, committed, addLog, () => {}, () => {}, 'shrink');
+    ok(st.converged, `start (${sx},${sy}): fixture must converge within 50 steps`);
+    const headline = captured.filter((l) => l.startsWith('━━')).pop();
+    ok(!!headline, `start (${sx},${sy}): no convergence headline in log: ${JSON.stringify(captured)}`);
+    ok(!/━━ (Pure|Mixed) NE:/.test(headline!),
+      `start (${sx},${sy}): log must NOT claim a definite Pure/Mixed NE for this continuum game — got "${headline}"`);
+    ok(headline!.includes('equilibrium continuum'),
+      `start (${sx},${sy}): log must say "equilibrium continuum" — got "${headline}"`);
+    ok(headline!.includes(panelLine),
+      `start (${sx},${sy}): log must include the SAME text the panel shows ("${panelLine}") — got "${headline}"`);
+  }
+  console.log(`✓ real doStep runs on the finding's exact fixture (4 different starts) all announce the equilibrium `
+    + `continuum in the sim log, matching the panel's own text — none claims a definite Pure/Mixed NE`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5d. App.tsx structural guards (JSX, not directly unit-testable) — the
+//     aria-live announcement must go through the SAME `continuumSettledDescription`
+//     the sim log uses (RED-MATH-9/001), and the "Calculated Nash Equilibria"
+//     bullet list must render the STRAY subset, not the full computeAllNE list
+//     (RED-MATH-9/002), matching MenuDrawer.tsx's own split.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testAppTsxUsesContinuumAwareLogAndDisplay() {
+  const src = readFileSync('src/App.tsx', 'utf8');
+  ok(/continuumSettledDescription\(payoffs, resolved\.x, resolved\.y\)/.test(src),
+    'App.tsx\'s aria-live effect must call continuumSettledDescription(payoffs, resolved.x, resolved.y) — RED-MATH-9/001');
+  ok(/splitEquilibriaByContinuum\(payoffs\)\.stray/.test(src),
+    'App.tsx must derive its displayed equilibria list from splitEquilibriaByContinuum(payoffs).stray, not the raw computeAllNE list — RED-MATH-9/002');
+  ok(/\{strayNE\.map\(/.test(src),
+    'App.tsx\'s "Calculated Nash Equilibria" bullet list must render {strayNE.map(...)}, not {allNE.map(...)} — RED-MATH-9/002');
+  ok(/strayNE\.length === 0 && continua\.length === 0/.test(src),
+    'App.tsx\'s "No standard NE found" guard must require BOTH strayNE and continua empty — a continuum-only game must not show it');
+  console.log('✓ App.tsx source: aria-live uses continuumSettledDescription, and the bullet list renders strayNE not allNE');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -738,6 +938,9 @@ testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();
 testPlottingDrawsContinuumMarker();
+testPlottingSkipsIsolatedDiamondsOnContinuum();
+testSimLogNamesContinuumOnRealRuns();
+testAppTsxUsesContinuumAwareLogAndDisplay();
 testStrayPointsNotOfferedAsContinuumRepresentatives();
 testValidateReportAcceptsCompliantContinuumClaims();
 testClaimOnContinuumUsesCoordTolerance();

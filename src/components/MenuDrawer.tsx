@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { GamePayoffs, PresetGame } from '../types';
-import { PRESETS, computeAllNE, describeContinua, fmtPayoff, EA, EB } from '../utils/gameEngine';
+import { PRESETS, splitEquilibriaByContinuum, describeContinua, fmtPayoff, EA, EB } from '../utils/gameEngine';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { savedGameColorTerms } from '../utils/colorTerms';
@@ -594,7 +594,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                 <div className="grid grid-cols-1 gap-4">
                   {defaultPresets.map((preset) => {
-                    const eqList = computeAllNE(preset.payoffs);
                     // RED-MATH-7/001: computeAllNE enumerates only the finite
                     // corners, which silently under-reports an equilibrium
                     // CONTINUUM (a whole edge/area a payoff tie admits) —
@@ -603,6 +602,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     // list can never again show "N equilibria" while the
                     // panel and the model's prompt both know about a
                     // continuum this list left out.
+                    //
+                    // RED-MATH-9/002: `.stray` only, not the full
+                    // computeAllNE list — a corner already covered by a
+                    // continua bullet below gets no separate "Pure/Mixed NE"
+                    // bullet of its own (same split report.ts's grounding
+                    // payload and App.tsx's bullet list already use).
+                    const eqList = splitEquilibriaByContinuum(preset.payoffs).stray;
                     const continua = describeContinua(preset.payoffs);
                     const isSelected = activePreset === preset.key;
 
@@ -705,9 +711,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 {user && formattedCustomGames.length > 0 ? (
                   <div className="grid grid-cols-1 gap-4">
                     {formattedCustomGames.map((game) => {
-                      const eqList = computeAllNE(game.payoffs);
                       // RED-MATH-7/001: same continuum-awareness as the
-                      // standard-presets list above.
+                      // standard-presets list above. RED-MATH-9/002: `.stray`
+                      // only, same reasoning as the standard-presets list.
+                      const eqList = splitEquilibriaByContinuum(game.payoffs).stray;
                       const continua = describeContinua(game.payoffs);
                       const isSelected = activePreset === game.id;
 
