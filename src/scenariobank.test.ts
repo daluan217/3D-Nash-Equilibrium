@@ -645,6 +645,22 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
           description: 'Two prevendors negotiate the timing of a shipment while a mill buyer waits.',
           actorA: ['vendor'], actorB: ['a mill buyer'],
         }));
+      // CodeRabbit (re-review): the guard must use the RAW term, not a
+      // `.trim()`'d one -- ColorCoded.tsx builds its regex from the term
+      // exactly as stored, so a noun carrying a trailing space changes what
+      // the real word-boundary lookaround requires immediately after the
+      // match. A trimmed comparison would wrongly call this verbatim (the
+      // trimmed phrase is a plain substring of the description); the real
+      // highlighter's regex, with the trailing space literal, needs a
+      // non-word character right after that space -- but the description
+      // continues straight into "coordinates" (a word character), so the
+      // real regex never matches. Must be rejected here too.
+      check('actorNounsOk: a noun with a trailing space is rejected when the real highlighter regex (untrimmed) could never match at that boundary',
+        !actorNounsOk({
+          row1: 'Load Now', row2: 'Load Later', col1: 'Send Tug', col2: 'Hold Tug',
+          description: 'The harbor operator coordinates with the tug company at the berth.',
+          actorA: ['the harbor operator '], actorB: ['the tug company'],
+        }));
     }
   }
 }

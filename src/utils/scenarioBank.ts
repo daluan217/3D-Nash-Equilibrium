@@ -307,12 +307,18 @@ export function actorNounsOk(sc: {
   // inside "prevendors" (no word boundary there) even though the real regex
   // never matches it. Building the identical regex here makes this
   // predicate and the highlighter's decision provably the same by
-  // construction, not merely similar.
+  // construction, not merely similar — which is also why the term is used
+  // RAW, not `.trim()`'d (CodeRabbit, this review): `ColorCoded.tsx` builds
+  // its own regex from the entry's term exactly as stored, with no trim, so
+  // a noun carrying incidental leading/trailing whitespace would highlight
+  // (or fail to) based on that literal whitespace too — trimming here would
+  // accept a whitespace-padded noun this predicate is supposed to reject,
+  // because the real regex's word-boundary lookarounds see the space
+  // character as part of the match, not the caller's convenience trim.
   const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const highlightWouldMatch = (term: string, desc: string) => {
-    const t = term.trim();
-    if (!t) return false;
-    const re = new RegExp(`(?<![\\w])(?:${escapeForRegex(t)})(?![\\w])`, 'gi');
+    if (!term) return false;
+    const re = new RegExp(`(?<![\\w])(?:${escapeForRegex(term)})(?![\\w])`, 'gi');
     return re.test(desc);
   };
   const rawDesc = sc.description ?? '';
