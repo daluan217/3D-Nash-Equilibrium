@@ -91,24 +91,55 @@ if (!(await waitReady())) {
 // poll-based or generously bounded; the defect classes this suite guards
 // ("never responds", "never converges", "wrong text") fail ANY bound.
 const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
-const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+const consoleErrors = [];
+
+/**
+ * RED-REGEN-2/002 (director-confirmed 2026-09-04): the "no console/page
+ * errors across the whole suite" bar (this file's own header comment,
+ * line 12) is only as good as what feeds `consoleErrors`. Every dialog/
+ * viewport section that needs its own `browser.newPage()` (a different
+ * viewport, an isolated storage/session, a second concurrent tab) used to
+ * open one with NO listener attached at all — a real exception thrown on
+ * one of those ~20 secondary pages was completely invisible to the final
+ * check, even though every other assertion in that section could still
+ * pass. `newTrackedPage` is the ONE place a page is created from now on:
+ * every `browser.newPage()` call site in this file must go through it, so a
+ * real bug on ANY page this suite opens reaches the same `consoleErrors`
+ * array the final check reads. A self-test proving this actually gates
+ * (a planted thrown error on a secondary page fails the suite) lives in
+ * `_gen/smoke_tracked_page_selftest.mjs`.
+ *
+ * `trackPage` is the shared wiring; `newTrackedPage` is the common case
+ * (a fresh page straight off `browser`). One section (long-label overflow,
+ * §17) needs a page from its OWN `browser.newContext(...)` (to carry a
+ * saved `storageState` into a fresh 320px viewport) rather than from
+ * `browser` directly — that page must still go through `trackPage` so it is
+ * not a second, silent blind spot of exactly the kind this fix closes.
+ */
+function trackPage(p) {
+  p.on('console', (m) => {
+    if (m.type() === 'error') {
+      consoleErrors.push({
+        text: m.text().slice(0, 200),
+        sectionId: activeSection?.id ?? null,
+        attempt: activeAttempt,
+      });
+    }
+  });
+  p.on('pageerror', (e) => consoleErrors.push({
+    text: 'PAGEERROR: ' + e.message.slice(0, 200),
+    sectionId: activeSection?.id ?? null,
+    attempt: activeAttempt,
+  }));
+  return p;
+}
+async function newTrackedPage(opts) {
+  return trackPage(await browser.newPage(opts));
+}
+
+const page = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
 page.setDefaultTimeout(120000);
 page.setDefaultNavigationTimeout(120000);
-const consoleErrors = [];
-page.on('console', (m) => {
-  if (m.type() === 'error') {
-    consoleErrors.push({
-      text: m.text().slice(0, 200),
-      sectionId: activeSection?.id ?? null,
-      attempt: activeAttempt,
-    });
-  }
-});
-page.on('pageerror', (e) => consoleErrors.push({
-  text: 'PAGEERROR: ' + e.message.slice(0, 200),
-  sectionId: activeSection?.id ?? null,
-  attempt: activeAttempt,
-}));
 
 const evidenceTag = process.env.E2E_SHARD
   ? `shard-${process.env.E2E_SHARD.replace('/', '-of-')}`
@@ -869,7 +900,7 @@ try {
   //      A SEPARATE page at a fixed 320px viewport, since the shared page
   //      above never resizes this narrow.
   section('17', '320px label wrapping', 3, async () => {
-    const narrowPage = await browser.newPage({ viewport: { width: 320, height: 900 } });
+    const narrowPage = await newTrackedPage({ viewport: { width: 320, height: 900 } });
     await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
     const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
     if (await narrowExitTour.count() > 0) {
@@ -940,7 +971,7 @@ try {
   //      must be readable from the very first render, and setting it mid-way
   //      through this suite would contaminate every later check.
   section('18', 'reduced-motion idle spin', 2, async () => {
-    const rmPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    const rmPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     const eye = () => rmPage.evaluate(() => {
       const el = document.getElementById('plotly-3d-market-simulation');
       return el?._fullLayout?.scene?.camera?.eye ?? null;
@@ -1014,7 +1045,7 @@ try {
   //      dialog open/closed and moves focus around — state later checks in
   //      this suite do not expect.
   section('19', 'expanded log focus', 2, async () => {
-    const focusPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    const focusPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await focusPage.goto(BASE, { waitUntil: 'networkidle' });
     const focusExitTour = focusPage.getByRole('button', { name: /exit tour/i });
     if (await focusExitTour.count() > 0) {
@@ -1090,7 +1121,7 @@ try {
   //        it STILL could not discriminate. Mutation-verified against
   //        BOTH dialogs before shipping — see the finding's blue-note.)
   section('20', 'modal focus traps', 3, async () => {
-    const trapPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    const trapPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
     const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
     if (await trapExitTour.count() > 0) {
@@ -1193,7 +1224,7 @@ try {
   //      (0,1) with regret ~18 for A under the app's own defaults
   //      (firstMover A, shrink mode, step 0.1, x0=y0=0.217).
   section('21', 'settled live-region wording', 1, async () => {
-    const settledPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
     const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
     if (await settledExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -1255,7 +1286,7 @@ try {
   //      something, so the same keypress can never also reach the tour's
   //      listener and reset its step to 0.
   section('22', 'Escape closes topmost layer', 4, async () => {
-    const escPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const escPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await escPage.goto(BASE, { waitUntil: 'networkidle' });
     // Tour auto-opens on a fresh anonymous load — do NOT exit it here.
     const tourOpen = async () => escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Guided tour"]'));
@@ -1319,7 +1350,7 @@ try {
   //      artifact) — real wall-clock time, since the defect class is
   //      specifically "nothing ever forces recovery".
   section('23', 'stalled report timeout wording', 1, async () => {
-    const hangPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const hangPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let intercepted = false;
     await hangPage.route('**/api/report', async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -1390,7 +1421,7 @@ try {
   //      wrapping or shrinking. Fixed with minmax(0, 1fr) on both tracks,
   //      matching what the per-cell payoff-pair grid already did correctly.
   section('24', 'long-label 320px reflow', 2, async () => {
-    const overflowPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const overflowPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
     const oExitTour = overflowPage.getByRole('button', { name: /exit tour/i });
     if (await oExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await oExitTour.click();
@@ -1433,7 +1464,7 @@ try {
     await overflowPage.close();
 
     const narrow320 = await browser.newContext({ viewport: { width: 320, height: 700 }, storageState });
-    const p320 = await narrow320.newPage();
+    const p320 = trackPage(await narrow320.newPage());
     await p320.goto(BASE, { waitUntil: 'networkidle' });
     await p320.waitForTimeout(1000);
     const p320ExitTour = p320.getByRole('button', { name: /exit tour/i });
@@ -1479,7 +1510,7 @@ try {
   //      `envelopeIsTrustworthy()`-satisfying ('template' source) envelope
   //      carrying a crafted 72-character name.
   section('25', 'suggested-name clamp', 3, async () => {
-    const clampPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const clampPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await clampPage.route('**/api/report', async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const body = {
@@ -1548,7 +1579,7 @@ try {
   //      No route mock in this section on purpose — it must be true against
   //      the ACTUAL running server, not a stand-in for one.
   section('26', 'scenario regeneration hidden', 4, async () => {
-    const offPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const offPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     // CodeRabbit finding: a FIXED sleep before asserting "absent" can pass
     // for the wrong reason on a stalled CI runner (the button is absent
     // because the probe hasn't resolved yet, not because it reported the
@@ -1575,7 +1606,7 @@ try {
   //      (RED-APP-4 class), then Keep replaces desc/labels but leaves a
   //      user-TYPED name untouched (director's amended name rule).
   section('27', 'save-dialog regenerate semantics', 1, async () => {
-    const savePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const savePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let regenCalls = 0;
     await mockRegenOn(savePage, async (route) => {
       regenCalls++;
@@ -1654,7 +1685,7 @@ try {
   //      and src/integration/scenario-regen.test.mjs section 10 covers it
   //      end-to-end through the real REST API.
   section('28', 'edit-dialog regenerate semantics', 2, async () => {
-    const editPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const editPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(editPage, async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_B }) });
     });
@@ -1747,7 +1778,7 @@ try {
   // ══ 29. FEATURE-REGEN — double-click issues exactly one request, and
   //      focus/aria-live behave (a11y).
   section('29', 'regenerate double-click guard', 3, async () => {
-    const dblPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const dblPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let hits = 0;
     await mockRegenOn(dblPage, async (route) => {
       hits++;
@@ -1820,7 +1851,7 @@ try {
   //      /api/report, see §23's sibling check), because the defect class this
   //      guards is "nothing ever forces recovery".
   section('30', 'regenerate timeout wording', 3, async () => {
-    const toPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const toPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let toIntercepted = false;
     await mockRegenOn(toPage, async (route) => {
       toIntercepted = true;
@@ -1863,7 +1894,7 @@ try {
   //      server's own wording, and the button recovers immediately (no stuck
   //      "Regenerating…").
   section('31', 'regenerate 429 wording', 4, async () => {
-    const rlPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const rlPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(rlPage, async (route) => {
       await route.fulfill({
         status: 429, contentType: 'application/json',
@@ -1896,7 +1927,7 @@ try {
   // ══ 32. FEATURE-REGEN — cross-dialog staleness: Edit A's slow response
   //      must never land on Edit B.
   section('32', 'cross-dialog regeneration staleness', 4, async () => {
-    const stalePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const stalePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(stalePage, async (route) => {
       await new Promise((r) => setTimeout(r, 3000));
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_A }) });
@@ -1972,7 +2003,7 @@ try {
   //      path to a real TTL expiry — `res.status === 401` is all the client
   //      reads) rather than waiting out AUTH_TOKEN_TTL_MS.
   section('33', 'expired-auth tour guard', 1, async () => {
-    const tourPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const tourPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(tourPage, 'e2e8tourreopen');
     record('control: a signed-in load does not auto-open the tour',
       !(await tourPage.locator('[role="dialog"][aria-label="Guided tour"]').isVisible({ timeout: 1500 }).catch(() => false)));
@@ -2052,7 +2083,7 @@ try {
   //      left" rather than something the app itself did — same technique
   //      the director's own repro used.
   section('34', 'storage-quota error boundary', 2, async () => {
-    const quotaPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const quotaPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await quotaPage.addInitScript(() => {
       const real = window.localStorage.setItem.bind(window.localStorage);
       Object.defineProperty(window.localStorage, 'setItem', {
@@ -2109,7 +2140,7 @@ try {
   //      itself, post-fix) — there is no such ancestor pre-fix, so the click
   //      times out instead of silently "succeeding" through some shortcut.
   section('35', 'short-viewport dialogs', 3, async () => {
-    const shortPage = await browser.newPage({ viewport: { width: 320, height: 256 } });
+    const shortPage = await newTrackedPage({ viewport: { width: 320, height: 256 } });
     // NOTE: no page-wide setDefaultTimeout override here — the two
     // reachability clicks below already pass their own explicit
     // {timeout: 30000} (30 s, not 5: the 5 s budget flaked on the 2-core CI
@@ -2213,7 +2244,7 @@ try {
   //      @testing-library/user-event drives React's own composition
   //      detection (which reads exactly `e.nativeEvent.isComposing`).
   section('36', 'IME-safe label clamp', 4, async () => {
-    const imePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const imePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(imePage, 'e2e8ime');
     await imePage.getByRole('button', { name: /save preset/i }).click();
     await imePage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
@@ -2271,7 +2302,7 @@ try {
   //      confirms the value actually changes at least once (the pre-fix
   //      behaviour: 50 presses, zero change, ever).
   section('37', 'label-clamp undo', 4, async () => {
-    const undoPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const undoPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(undoPage, 'e2e8undo');
     await undoPage.getByRole('button', { name: /save preset/i }).click();
     await undoPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
@@ -2327,8 +2358,23 @@ await browser.close();
 
 // console errors: external analytics/resource failures are not the app's
 // signal here; everything else is a failure of the check that ran
+//
+// RED-REGEN-2/002 fix note: making `newTrackedPage` cover every secondary
+// page (§31's `rlPage`, §33's `tourPage`) surfaced a message this suite had
+// literally never seen before, because it was always on an untracked page:
+// Chromium itself logs "Failed to load resource: the server responded with
+// a status of <code>" to the console for ANY completed HTTP response with
+// an error status — including the 429/401 responses §31 and §33
+// DELIBERATELY mock via `route.fulfill` to test the app's own error-handling
+// UI. That is a network-layer diagnostic from the browser, not a JS defect
+// signal, exactly like the `net::`/analytics noise already excluded above —
+// and each section's own functional assertions ("shows the AI limit reached
+// wording", "shows the Sign-In card") already prove the mocked status was
+// actually handled correctly. Excluding it here, not by leaving those pages
+// untracked, keeps the fix real: a genuine `console.error`/`pageerror` on
+// either page (this file's own mutation self-test plants one) still fails.
 const relevantErrors = consoleErrors.filter(({ text }) =>
-  !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED/i.test(text))
+  !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED|failed to load resource: the server responded with a status of/i.test(text))
   .filter((error) => error.sectionId === null
     || error.attempt === finalAttemptBySection.get(error.sectionId));
 if (executedShard && relevantErrors.length === 0) {
