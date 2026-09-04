@@ -69,7 +69,7 @@ jobs:
           LIVE_BASE: https://nash-equilibrium-simulator.com
           EXPECTED_INDEX: dist/index.html
           EXPECTED_VERSION: ${{ env.REPO_VERSION }}
-          LIVE_WAIT_MINUTES: '15'
+          LIVE_WAIT_MINUTES: '5'
           # Deploy-verify only: a merge is exactly when a --set-env-vars
           # regression would land, so this run pays for the two model calls
           # that prove the rung-3 flags and provider creds survived it. The

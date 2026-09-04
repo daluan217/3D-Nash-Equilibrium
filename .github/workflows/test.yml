@@ -108,11 +108,6 @@ jobs:
 
       - name: Build production bundle
         run: npm run build
-        env:
-          # The ordinary browser timeout remains 22s. This artifact exists
-          # only for CI, where the stalled-request sections need to verify the
-          # same abort + wording path without spending 44 seconds waiting.
-          VITE_E2E_FETCH_TIMEOUT_MS: '5000'
 
       - name: Scan the bundle for secret-shaped strings
         run: |
@@ -131,10 +126,28 @@ jobs:
             exit 1
           fi
 
-      - name: Upload bundle for the e2e job
+      # Live smoke downloads this exact artifact and waits for production to
+      # serve its hashed asset. Keep it byte-equivalent to the ordinary Cloud
+      # Build output; test-only Vite substitutions belong in dist-e2e below.
+      - name: Upload production bundle
         uses: actions/upload-artifact@v4
         with:
           name: dist
+          path: dist/
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Build short-timeout e2e bundle
+        run: npm run build
+        env:
+          # Only browser E2E consumes this artifact. Production, integration,
+          # mobile, and live hash verification retain the ordinary 22s build.
+          VITE_E2E_FETCH_TIMEOUT_MS: '5000'
+
+      - name: Upload short-timeout e2e bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-e2e
           path: dist/
           retention-days: 3
           if-no-files-found: error
@@ -380,10 +393,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download the bundle built by the build job
+      - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
         with:
-          name: dist
+          name: dist-e2e
           path: dist
 
       - name: Install headless Chromium
@@ -441,10 +454,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download the bundle built by the build job
+      - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
         with:
-          name: dist
+          name: dist-e2e
           path: dist
 
       - name: Install headless Chromium

@@ -13,7 +13,18 @@ import {
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
+const liveWorkflow = readFileSync('.github/workflows/live-smoke.yml', 'utf8');
 const app = readFileSync('src/App.tsx', 'utf8');
+
+function workflowJob(name: string): string {
+  const header = `  ${name}:\n`;
+  const start = workflow.indexOf(header);
+  assert(start >= 0, `workflow job ${name} must remain present`);
+  const rest = workflow.slice(start + header.length);
+  const nextJobOffset = rest.search(/^  [a-z0-9_]+:\s*$/m);
+  const end = nextJobOffset >= 0 ? start + header.length + nextJobOffset : workflow.length;
+  return workflow.slice(start, end);
+}
 
 const definitions = [...smoke.matchAll(
   /section\('([^']+)',\s*'([^']+)',\s*([1-4]),\s*async\s*\(\)\s*=>/g,
@@ -80,6 +91,42 @@ assert.match(workflow, /e2e_smoke_failure_shard-\$\{\{ matrix\.shard \}\}-of-4_s
 
 assert.match(workflow, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'the throwaway CI artifact must use the short client timeout');
+const buildJob = workflow.match(/^  build:\s*$[\s\S]*?(?=^  integration:\s*$)/m)?.[0];
+assert(buildJob, 'the build job must remain present');
+const productionBuildStep = buildJob.match(
+  /      - name: Build production bundle\s*$[\s\S]*?(?=^      - name:)/m,
+)?.[0];
+assert(productionBuildStep, 'the ordinary production build step must remain present');
+assert.doesNotMatch(productionBuildStep, /VITE_E2E_FETCH_TIMEOUT_MS/,
+  'the production artifact must retain the shipping timeout so live hash verification matches Cloud Build');
+const e2eBuildStep = buildJob.match(
+  /      - name: Build short-timeout e2e bundle\s*$[\s\S]*?(?=^      - name:)/m,
+)?.[0];
+assert(e2eBuildStep, 'the separate short-timeout e2e build step must remain present');
+assert.match(e2eBuildStep, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
+  'only the dedicated e2e artifact should receive the short client timeout');
+assert.match(buildJob, /name:\s*dist\s*$[\s\S]*Build short-timeout e2e bundle[\s\S]*name:\s*dist-e2e\s*$/m,
+  'the production artifact must be uploaded before the test-only rebuild overwrites dist');
+assert.strictEqual((workflow.match(/name:\s*dist-e2e\s*$/gm) ?? []).length, 3,
+  'dist-e2e must have one upload and exactly two browser-e2e downloads');
+for (const job of [
+  workflowJob('e2e_smoke'),
+  workflowJob('e2e_ai_surface'),
+]) {
+  assert.match(job, /name:\s*dist-e2e\s*$/m,
+    'both browser E2E jobs must consume the short-timeout artifact');
+}
+for (const job of [
+  workflowJob('integration'),
+  workflowJob('mobile'),
+]) {
+  assert.match(job, /name:\s*dist\s*$/m,
+    'integration and mobile must consume the production-equivalent artifact');
+  assert.doesNotMatch(job, /name:\s*dist-e2e\s*$/m,
+    'the test-only timeout artifact must not leak into integration or mobile');
+}
+assert.match(liveWorkflow, /LIVE_WAIT_MINUTES:\s*'5'/,
+  'deploy verification must stop waiting for an asset after five minutes');
 const timeoutInitializer = app.match(
   /const REPORT_FETCH_TIMEOUT_MS = resolveReportFetchTimeoutMs\(\s*([\s\S]*?)\s*,?\s*\);/,
 )?.[1];
