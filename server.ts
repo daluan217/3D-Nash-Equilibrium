@@ -913,15 +913,23 @@ function reportDesktopDbConflict(conflictCopies: string[]): boolean {
   // (e.g. synced in from another device) before this machine ever created
   // its own primary db.json, and the refusal message must not claim a file
   // is present when it isn't — that would send the user hunting for "both
-  // files" when really only one exists.
+  // files" when really only one exists. The wording below follows the same
+  // rule: with exactly one candidate on disk, every "both"/"either" becomes
+  // singular ("it"/"the file"), never a hard-coded pair.
   const copies = conflictCopies.map((copy) => path.basename(copy));
   const candidates = fs.existsSync(DB_FILE) ? [path.basename(DB_FILE), ...copies] : copies;
+  const single = candidates.length === 1;
   return reportDesktopLockFailure(
     `Refusing to start: found multiple possible local databases in ${path.dirname(DB_FILE)}: ${candidates.join(", ")}. `
-    + `Sync software can create a conflict copy while the app is closed. To protect your saved games, the app will not choose, merge, rename, or delete either file. `
-    + `Select "Show Location" to back up and inspect both files, resolve the conflict, then relaunch.`,
+    + `Sync software can create a conflict copy while the app is closed. To protect your saved games, `
+    + (single
+      ? `the app will not choose, merge, rename, or delete it. `
+      + `Select "Show Location" to back up and inspect the file, resolve the conflict, then relaunch.`
+      : `the app will not choose, merge, rename, or delete either file. `
+      + `Select "Show Location" to back up and inspect both files, resolve the conflict, then relaunch.`),
     conflictCopies[0],
     "data-conflict",
+    candidates.length,
   );
 }
 
@@ -1174,6 +1182,7 @@ function reportDesktopLockFailure(
   message: string,
   lockFile: string,
   kind: "lock" | "data-conflict" = "lock",
+  candidateCount?: number,
 ): boolean {
   console.error(message);
   const onFailure = process.env.IS_ELECTRON === "true" ? (globalThis as any).onDesktopLockFailure : undefined;
@@ -1185,7 +1194,9 @@ function reportDesktopLockFailure(
     // `lockFile` is passed structurally (not parsed back out of the message)
     // so the dialog's own recovery action never has to guess a path out of
     // prose. `kind` keeps a database-conflict's backup-first recovery hint
-    // distinct from the lock-file instructions.
+    // distinct from the lock-file instructions. `candidateCount` (data-
+    // conflict only) lets the dialog pick singular/plural wording instead of
+    // hard-coding "both files" when a conflict copy exists with no primary.
     //
     // Marked settled BEFORE calling the hook, not after: `onFailure` itself
     // may synchronously trigger further code (electron-main.cjs's own hook
@@ -1194,7 +1205,7 @@ function reportDesktopLockFailure(
     // shown and dismissed — as reported, not still "starting up" (see
     // `startupOutcomeReported`'s own comment).
     startupOutcomeReported = true;
-    onFailure({ message, lockFile, kind });
+    onFailure({ message, lockFile, kind, candidateCount });
     return false;
   }
   process.exit(1);

@@ -28,9 +28,15 @@
  *                            then fire 'ready', wait past 800ms, then fire
  *                            'activate'. Expect ZERO windows ever created.
  *   mode = 'data-conflict' — same startup-blocked timing, but with the
- *                            explicit database-conflict kind. Captures the
- *                            native dialog options so the integration test
- *                            can assert its backup-first recovery hint.
+ *                            explicit database-conflict kind (2 candidates).
+ *                            Captures the native dialog options so the
+ *                            integration test can assert its backup-first
+ *                            recovery hint (plural wording).
+ *   mode = 'data-conflict-single' — same, but with candidateCount: 1 (a
+ *                            conflict copy with no primary db.json yet).
+ *                            Captures the dialog options so the test can
+ *                            assert the singular wording never claims a
+ *                            nonexistent second file.
  *   mode = 'slowboot-normal' — do NOT simulate a lock failure (genuine slow
  *                            boot: serverStarted stays false with no lock
  *                            issue). Fire 'ready', wait past 800ms. Expect
@@ -44,8 +50,9 @@ const path = require('path');
 
 const mainCjsPath = process.argv[2];
 const mode = process.argv[3];
-if (!mainCjsPath || !['lockfail', 'data-conflict', 'slowboot-normal'].includes(mode)) {
-  console.log('usage: electron-window-guard-runner.cjs <mainCjsPath> <lockfail|data-conflict|slowboot-normal>');
+const VALID_MODES = ['lockfail', 'data-conflict', 'data-conflict-single', 'slowboot-normal'];
+if (!mainCjsPath || !VALID_MODES.includes(mode)) {
+  console.log(`usage: electron-window-guard-runner.cjs <mainCjsPath> <${VALID_MODES.join('|')}>`);
   process.exit(2);
 }
 
@@ -128,15 +135,19 @@ Module._load = function (request, parent, isMain) {
 
 require(path.resolve(mainCjsPath));
 
-if (mode === 'lockfail' || mode === 'data-conflict') {
+if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-single') {
   // The real ordering: server.ts calls this synchronously during the
   // top-level require() above (which already ran), i.e. BEFORE Electron's
   // own 'ready' event ever fires.
-  globalThis.onDesktopLockFailure(
-    mode === 'data-conflict'
-      ? { message: 'test database conflict', lockFile: '/tmp/x/db.json 2', kind: 'data-conflict' }
-      : { message: 'test lock failure', lockFile: '/tmp/x/.server.lock' },
-  );
+  let payload;
+  if (mode === 'data-conflict') {
+    payload = { message: 'test database conflict', lockFile: '/tmp/x/db.json 2', kind: 'data-conflict', candidateCount: 2 };
+  } else if (mode === 'data-conflict-single') {
+    payload = { message: 'test database conflict (copy only)', lockFile: '/tmp/x/db.json 2', kind: 'data-conflict', candidateCount: 1 };
+  } else {
+    payload = { message: 'test lock failure', lockFile: '/tmp/x/.server.lock' };
+  }
+  globalThis.onDesktopLockFailure(payload);
   if (typeof onHandlers.ready === 'function') onHandlers.ready();
   setTimeout(() => {
     if (typeof onHandlers.activate === 'function') onHandlers.activate();

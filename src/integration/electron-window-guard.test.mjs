@@ -87,6 +87,24 @@ function run(mode) {
     /will not choose, merge, rename, or delete either copy/.test(detail), detail);
 }
 
+// ══ 4. DATA CONFLICT, SINGLE CANDIDATE: a conflict copy can exist with no
+//      primary db.json yet (it synced in before this machine created its
+//      own). The wording must never claim "both files" when only one is on
+//      disk — CodeRabbit finding on PR #113's first draft.
+{
+  const { raw, parsed } = run('data-conflict-single');
+  const detail = parsed?.dialogOptions?.detail || '';
+  record('data-conflict-single runner completed cleanly', raw.status === 0,
+    `status=${raw.status} stderr=${(raw.stderr || '').slice(0, 300)}`);
+  record('DATA CONFLICT SINGLE: the startup-blocked dialog is shown without creating a window',
+    parsed?.dialogShown === 1 && parsed?.windowCount === 0,
+    `dialogShown=${parsed?.dialogShown} windowCount=${parsed?.windowCount}`);
+  record('DATA CONFLICT SINGLE: the dialog never says "both" or "either" when only one file exists',
+    !/\bboth\b/i.test(detail) && !/\beither\b/i.test(detail), detail);
+  record('DATA CONFLICT SINGLE: the dialog still promises no automatic choice, merge, rename, or deletion',
+    /will not choose, merge, rename, or delete it/.test(detail), detail);
+}
+
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length > 0) {

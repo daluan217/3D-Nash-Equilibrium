@@ -217,6 +217,11 @@ async function healthIsDown(targetPort) {
     record('the refusal names the conflict copy but not a nonexistent primary db.json',
       /db\.json 2/.test(outcome.log) && !/: db\.json,/.test(outcome.log) && !/: db\.json and/.test(outcome.log),
       outcome.log.slice(0, 700));
+    record('the refusal wording is singular ("it"/"the file"), never "both"/"either", with one candidate',
+      /choose, merge, rename, or delete it\./.test(outcome.log)
+      && /back up and inspect the file/.test(outcome.log)
+      && !/\bboth\b/i.test(outcome.log) && !/\beither\b/i.test(outcome.log),
+      outcome.log.slice(0, 700));
   } catch (err) {
     record('conflict copy alone (no primary) still refuses (non-zero exit)', false, String(err));
   }

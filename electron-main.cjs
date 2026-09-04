@@ -201,7 +201,7 @@ if (!gotTheLock) {
     }
   }
 
-  global.onDesktopLockFailure = ({ message, lockFile, kind = 'lock' }) => {
+  global.onDesktopLockFailure = ({ message, lockFile, kind = 'lock', candidateCount }) => {
     lockFailurePending = true;
     // Cancel the slow-boot fallback outright — a cancelled timer cannot fire
     // regardless of what races it against (see this block's own comment
@@ -230,9 +230,17 @@ if (!gotTheLock) {
       // then relaunch") told the user to do exactly the thing that fails
       // silently. Now says explicitly to quit THIS app first.
       detail: kind === 'data-conflict'
-        ? `${message}\n\n"Show Location" reveals the detected conflict copy. Back up both database files before resolving the conflict. `
-          + 'This app will not choose, merge, rename, or delete either copy. When you\'re done, quit this app (it will not '
-          + 'start normally while blocked), then relaunch it.'
+        // `candidateCount` may be 1 when a conflict copy exists with no
+        // primary db.json yet (e.g. it synced in before this machine ever
+        // created its own) — the wording must not claim "both" files when
+        // only one is actually on disk.
+        ? candidateCount === 1
+          ? `${message}\n\n"Show Location" reveals the detected file. Back it up before resolving the conflict. `
+            + 'This app will not choose, merge, rename, or delete it. When you\'re done, quit this app (it will not '
+            + 'start normally while blocked), then relaunch it.'
+          : `${message}\n\n"Show Location" reveals the detected conflict copy. Back up both database files before resolving the conflict. `
+            + 'This app will not choose, merge, rename, or delete either copy. When you\'re done, quit this app (it will not '
+            + 'start normally while blocked), then relaunch it.'
         : `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
           + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
           + 'start normally while blocked), then relaunch it.',
