@@ -551,7 +551,13 @@ function testPlottingSkipsIsolatedDiamondsOnContinuum() {
   let continuumGames = 0;
   let doubleMarked = 0;
   let isolatedDiamondCount = 0;
-  const st2 = createInitialState(0.5, 0.5, FIXTURE); // reused shape only; game passed per-iteration
+  // CodeRabbit (round 9): `surf` (the 29x29 E[A]/E[B] grid) is read ONLY by
+  // the two `type: 'surface'` traces makeTraces pushes first — never by the
+  // NE/continuum marker logic these assertions actually inspect (those
+  // recompute EA/EB(x, y, g) fresh, from the real per-iteration `g`). One
+  // shared grid (built from any fixed game) gives byte-identical assertion
+  // results at a fraction of the cost across 200,000 iterations.
+  const sharedSurf = buildSurfaces(FIXTURE);
   for (let i = 0; i < N; i++) {
     const cell = () => Math.floor(rng() * 19) - 9;
     const g: GamePayoffs = {
@@ -563,8 +569,7 @@ function testPlottingSkipsIsolatedDiamondsOnContinuum() {
     const comps = continuumComponents(g);
     const all = computeAllNE(g);
     const s = createInitialState(0.5, 0.5, g);
-    const surfG = buildSurfaces(g);
-    const tr = makeTraces(surfG, g, s, 'both', all, false, 'shrink');
+    const tr = makeTraces(sharedSurf, g, s, 'both', all, false, 'shrink');
     const iso = tr.filter((t: any) => t.legendgroup === 'pureNE' || t.legendgroup === 'mixedNE');
     let gameDoubleMarked = false;
     for (const t of iso) {
