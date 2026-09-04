@@ -45,6 +45,19 @@ assert.match(smoke, /result\.attempt === finalAttemptBySection\.get\(result\.sec
   'the final verdict must use the retry attempt for sections that reran');
 assert.match(smoke, /section returned without calling record\(\)/,
   'a retry that accidentally records no checks must fail rather than vanish');
+assert.match(smoke, /consoleErrors\.push\(\{[\s\S]*sectionId: activeSection\?\.id \?\? null,[\s\S]*attempt: activeAttempt/,
+  'console errors must retain the section attempt that produced them');
+assert.match(smoke, /\.filter\(\(error\) => error\.sectionId === null[\s\S]*error\.attempt === finalAttemptBySection\.get\(error\.sectionId\)\)/,
+  'console errors from superseded failed attempts must not poison a successful retry');
+
+const resetSection = smoke.match(
+  /section\('13', 'reset clears run',[\s\S]*?\n  \}\);/,
+)?.[0];
+assert(resetSection, 'the Reset section must remain registered');
+assert.match(resetSection, /Reset fixture has a completed run to clear/,
+  'the Reset section must prove it has non-empty state to clear');
+assert.match(resetSection, /for \(let i = 0; i < 40 && !\(lines === 1 && pill === 0\); i\+\+\)/,
+  'the Reset section must poll the cleared state instead of relying on a fixed sleep');
 
 assert.match(workflow, /^\s{2}workflow_dispatch:\s*$/m,
   'Test must remain manually dispatchable');
@@ -62,13 +75,18 @@ assert.match(workflow, /^\s{2}e2e:\s*\n\s*name:\s*e2e\s*$/m,
   'the exact branch-protection context `e2e` must remain present');
 assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface\]/,
   'the required e2e context must aggregate both smoke and AI-surface jobs');
-assert.match(workflow, /e2e-failure-evidence-shard-\$\{\{ matrix\.shard \}\}/,
-  'failure evidence names must be unique per matrix child');
+assert.match(workflow, /e2e_smoke_failure_shard-\$\{\{ matrix\.shard \}\}-of-4_section-\*-attempt-\*\.png/,
+  'failure evidence must retain every section attempt and remain unique per matrix child');
 
 assert.match(workflow, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'the throwaway CI artifact must use the short client timeout');
-assert.match(app, /typeof import\.meta\.env === 'undefined'[\s\S]*import\.meta\.env\.VITE_E2E_FETCH_TIMEOUT_MS/,
-  'App.tsx must guard Node imports while retaining a literal Vite env access for build-time replacement');
+const timeoutInitializer = app.match(
+  /const REPORT_FETCH_TIMEOUT_MS = resolveReportFetchTimeoutMs\(\s*([\s\S]*?)\s*,?\s*\);/,
+)?.[1];
+assert(timeoutInitializer, 'App.tsx must define the report fetch timeout through the bounded resolver');
+assert.match(timeoutInitializer,
+  /^typeof import\.meta\.env === 'undefined'\s*\?\s*undefined\s*:\s*import\.meta\.env\.VITE_E2E_FETCH_TIMEOUT_MS$/,
+  'the literal Vite access must be the guarded expression passed to the resolver');
 assert.strictEqual(resolveReportFetchTimeoutMs('5000'), 5_000,
   'the CI build must be able to select its five-second timeout');
 for (const bad of [undefined, '', '0', '99', '22001', '5000ms', '1e3']) {

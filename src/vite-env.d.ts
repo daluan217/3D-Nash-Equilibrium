@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 interface ImportMetaEnv {
   readonly VITE_E2E_FETCH_TIMEOUT_MS?: string;
 }

@@ -419,8 +419,8 @@ jobs:
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-4.png
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-4.html
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-4_section-*-attempt-*.png
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-4_section-*-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log
           retention-days: 7
           if-no-files-found: ignore

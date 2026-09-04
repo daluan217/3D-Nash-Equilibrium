@@ -108,19 +108,31 @@ page.setDefaultTimeout(120000);
 page.setDefaultNavigationTimeout(120000);
 const consoleErrors = [];
 page.on('console', (m) => {
-  if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200));
+  if (m.type() === 'error') {
+    consoleErrors.push({
+      text: m.text().slice(0, 200),
+      sectionId: activeSection?.id ?? null,
+      attempt: activeAttempt,
+    });
+  }
 });
-page.on('pageerror', (e) => consoleErrors.push('PAGEERROR: ' + e.message.slice(0, 200)));
+page.on('pageerror', (e) => consoleErrors.push({
+  text: 'PAGEERROR: ' + e.message.slice(0, 200),
+  sectionId: activeSection?.id ?? null,
+  attempt: activeAttempt,
+}));
 
 const evidenceTag = process.env.E2E_SHARD
   ? `shard-${process.env.E2E_SHARD.replace('/', '-of-')}`
   : 'all';
-const failurePng = `/tmp/e2e_smoke_failure_${evidenceTag}.png`;
-const failureHtml = `/tmp/e2e_smoke_failure_${evidenceTag}.html`;
+const failureBase = `/tmp/e2e_smoke_failure_${evidenceTag}`;
 const endPng = `/tmp/e2e_smoke_end_${evidenceTag}.png`;
 const finalAttemptBySection = new Map();
 
 async function captureFailureEvidence() {
+  const suffix = `section-${activeSection?.id ?? 'suite'}-attempt-${activeAttempt}`;
+  const failurePng = `${failureBase}_${suffix}.png`;
+  const failureHtml = `${failureBase}_${suffix}.html`;
   await page.screenshot({ path: failurePng, fullPage: true }).catch(() => {});
   try {
     const fs = await import('node:fs');
@@ -649,9 +661,13 @@ try {
       `${linesBefore} log lines, Converged pill=${pillBefore}`);
 
     await $.reset.click();
-    await page.waitForTimeout(400);
-    const lines = await $.logLines.count();
-    const pill = await page.locator('text=Converged').count();
+    let lines = await $.logLines.count();
+    let pill = await page.locator('text=Converged').count();
+    for (let i = 0; i < 40 && !(lines === 1 && pill === 0); i++) {
+      await page.waitForTimeout(100);
+      lines = await $.logLines.count();
+      pill = await page.locator('text=Converged').count();
+    }
     record('Reset clears the log and the Converged pill', lines === 1 && pill === 0,
       `${lines} log lines, Converged pill=${pill}`);
   });
@@ -2310,15 +2326,17 @@ await browser.close();
 
 // console errors: external analytics/resource failures are not the app's
 // signal here; everything else is a failure of the check that ran
-const relevantErrors = consoleErrors.filter((t) =>
-  !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED/i.test(t));
+const relevantErrors = consoleErrors.filter(({ text }) =>
+  !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED/i.test(text))
+  .filter((error) => error.sectionId === null
+    || error.attempt === finalAttemptBySection.get(error.sectionId));
 if (executedShard && relevantErrors.length === 0) {
   // Enforce this guard independently in every shard, but do not inflate the
   // historical functional-check count from one global check to four.
   console.log('PASS no console/page errors across this shard');
 } else {
   record(`no console/page errors across ${executedShard ? 'this shard' : 'the whole suite'}`,
-    relevantErrors.length === 0, relevantErrors.slice(0, 3).join(' | '));
+    relevantErrors.length === 0, relevantErrors.slice(0, 3).map(({ text }) => text).join(' | '));
 }
 
 await killServer();
