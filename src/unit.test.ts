@@ -1383,6 +1383,20 @@ function testUserColorTerms() {
   });
   assert((clampedActors.actorA?.[0].length ?? 0) <= 60,
     'server actor sanitizer must cap each noun at 60 grapheme-safe UTF-16 units');
+  // 53 UTF-16 units plus this seven-unit emoji fills the budget exactly; the
+  // trailing z must be dropped as a whole following grapheme, never by cutting
+  // the emoji's surrogate/ZWJ sequence. The retained declaration must still
+  // be a verbatim span of the source description after the boundary clamp.
+  const graphemeActor = `${'a'.repeat(53)}👩🏽‍💻z`;
+  const graphemeActors = cleanScenarioActorNouns({ actorA: [graphemeActor], actorB: ['the tug company'] }, {
+    ...actorContext,
+    description: `${graphemeActor} coordinates with the tug company at the berth.`,
+  });
+  const graphemeTerm = graphemeActors.actorA?.[0] ?? '';
+  assert(graphemeTerm.length <= 60 && graphemeTerm.endsWith('👩🏽‍💻') && !graphemeTerm.endsWith('z'),
+    `server actor sanitizer must preserve a complete boundary emoji, got ${JSON.stringify(graphemeTerm)}`);
+  assert(`${graphemeActor} coordinates with the tug company at the berth.`.includes(graphemeTerm),
+    'the grapheme-safe clamped actor noun must remain verbatim in its description');
   assert(!('actorA' in cleanScenarioActorNouns({ actorA: ['the warehouse manager'], actorB: ['the tug company'] }, actorContext)),
     'a non-verbatim actor noun must drop the whole actor declaration rather than ship a coloured fabrication');
   const actorScenario = {
