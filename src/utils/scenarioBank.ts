@@ -348,10 +348,12 @@ export function actorNounsOk(sc: {
   // Positional words are evidence only when they are the grammatical subject
   // of a choice. Merely comparing "the first" and "the second" option (or
   // referring to "the other option") says nothing about how actors are named.
-  const oneOtherChoose = /\bone\s+chooses?\b/i.test(descNorm)
-    && /\bthe other\s+chooses?\b/i.test(descNorm);
-  const firstSecondChoose = /\bthe first\s+chooses?\b/i.test(descNorm)
-    && /\bthe second\s+chooses?\b/i.test(descNorm);
+  // Allow a short actor noun phrase ("the first orchard keeper chooses")
+  // without crossing punctuation into a later, unrelated choosing clause.
+  const oneOtherChoose = /\bone(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm)
+    && /\bthe other(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm);
+  const firstSecondChoose = /\bthe first(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm)
+    && /\bthe second(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm);
   const symmetricFraming = /\b(each|both)\b/i.test(descNorm)
     || oneOtherChoose
     || firstSecondChoose;

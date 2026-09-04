@@ -551,6 +551,12 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     check('actorNounsOk: a collective noun on one side of a "The first... the second" description is rejected',
       !actorNounsOk({ ...compoundBase, actorA: ['lock-keepers'], actorB: null,
         description: 'Two lock-keepers arrange their shifts. The first chooses Keep Slot or Shift Slot, while the second chooses Early Slot or Late Slot.' }));
+    check('actorNounsOk: one/other actor noun phrases still count as symmetric framing',
+      !actorNounsOk({ ...compoundBase, actorA: ['orchard keepers'], actorB: null,
+        description: 'Two orchard keepers coordinate a frost watch. One orchard keeper chooses Keep Slot or Shift Slot, while the other orchard keeper chooses Early Slot or Late Slot.' }));
+    check('actorNounsOk: first/second actor noun phrases still count as symmetric framing',
+      !actorNounsOk({ ...compoundBase, actorA: ['lock-keepers'], actorB: null,
+        description: 'Two lock-keepers arrange their shifts. The first canal lock-keeper chooses Keep Slot or Shift Slot, while the second canal lock-keeper chooses Early Slot or Late Slot.' }));
     // Positive control for the new markers specifically: "the other"/"first"+
     // "second" absent AND a genuine distinct pair — must stay accepted so the
     // new branch cannot silently reject legitimate two-sided rows.
