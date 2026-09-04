@@ -67,8 +67,8 @@ assert.match(workflow, /e2e-failure-evidence-shard-\$\{\{ matrix\.shard \}\}/,
 
 assert.match(workflow, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'the throwaway CI artifact must use the short client timeout');
-assert.match(app, /resolveReportFetchTimeoutMs\(\s*import\.meta\.env\.VITE_E2E_FETCH_TIMEOUT_MS\s*,?\s*\)/,
-  'App.tsx must use a literal Vite env access so the CI value is replaced at build time');
+assert.match(app, /typeof import\.meta\.env === 'undefined'[\s\S]*import\.meta\.env\.VITE_E2E_FETCH_TIMEOUT_MS/,
+  'App.tsx must guard Node imports while retaining a literal Vite env access for build-time replacement');
 assert.strictEqual(resolveReportFetchTimeoutMs('5000'), 5_000,
   'the CI build must be able to select its five-second timeout');
 for (const bad of [undefined, '', '0', '99', '22001', '5000ms', '1e3']) {

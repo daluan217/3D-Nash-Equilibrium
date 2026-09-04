@@ -385,7 +385,9 @@ function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElemen
 // Vite build-time variable: dist/ is static, so a server-process environment
 // variable cannot change code that is already running in the browser.
 const REPORT_FETCH_TIMEOUT_MS = resolveReportFetchTimeoutMs(
-  import.meta.env.VITE_E2E_FETCH_TIMEOUT_MS,
+  typeof import.meta.env === 'undefined'
+    ? undefined
+    : import.meta.env.VITE_E2E_FETCH_TIMEOUT_MS,
 );
 
 // `timeoutMs` defaults to REPORT_FETCH_TIMEOUT_MS; exported and parameterized
