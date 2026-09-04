@@ -32,6 +32,7 @@ import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, regenKeptColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { keepFill } from './utils/scenarioRegen';
+import { cleanScenarioActorNouns } from './utils/scenarioActorNouns';
 import { readFileSync as readFileForContract, readdirSync as readDirForContract } from 'node:fs';
 import ReactForRender from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -1357,6 +1358,77 @@ function testUserColorTerms() {
     + 'Any other field here reaches the model prompt.');
   assert(!/\.\.\./.test(m![1]),
     'cleanScenario must not spread the client object into the prompt scenario');
+  const cleanScenarioSource = serverSrc.slice(
+    serverSrc.indexOf('function cleanScenario('),
+    serverSrc.indexOf('function cleanPayoffs('),
+  );
+  assert(/options: \{ actorNouns\?: boolean \} = \{\}/.test(cleanScenarioSource),
+    'cleanScenario must default actor noun retention off for all callers');
+  assert(/if \(options\.actorNouns\) Object\.assign\(sc, cleanScenarioActorNouns\(value, sc\)\);/.test(cleanScenarioSource),
+    'actor noun retention must be an explicit cleanScenario opt-in');
+  const reportRouteSource = serverSrc.slice(
+    serverSrc.indexOf('app.post("/api/report"'),
+    serverSrc.indexOf('app.post("/api/scenario/regenerate"'),
+  );
+  assert(/const scenario = cleanScenario\(req\.body\?\.scenario\);/.test(reportRouteSource),
+    '/api/report must use cleanScenario without actor noun retention');
+  assert(!/actorNouns:\s*true/.test(reportRouteSource),
+    '/api/report must never carry client actor nouns into its prompt scenario');
+  const regenRouteSource = serverSrc.slice(serverSrc.indexOf('app.post("/api/scenario/regenerate"'));
+  assert(/const cleanedScenario = cleanScenario\(scenario, \{ actorNouns: true \}\);/.test(regenRouteSource),
+    'only the regenerate response boundary must opt in to actor noun retention');
+
+  // Actor nouns are the one deliberate extension to this boundary. The pure
+  // sanitizer owns their cap/dedup/collision policy and delegates the final
+  // verbatim/disjoint decision to scenarioBank.actorNounsOk; user colour chips
+  // remain outside cleanScenario and can never reach a model prompt.
+  const actorContext = {
+    description: 'The harbor operator coordinates with the tug company at the berth.',
+    row1: 'Load now', row2: 'Load later', col1: 'Send tug', col2: 'Hold tug',
+  };
+  const cleanActors = cleanScenarioActorNouns({
+    actorA: ['the harbor operator', 'the harbor operator', 'Load now'],
+    actorB: ['the tug company'],
+  }, actorContext);
+  assert(JSON.stringify(cleanActors) === JSON.stringify({ actorA: ['the harbor operator'], actorB: ['the tug company'] }),
+    `server actor sanitizer must dedup and remove label/cross-owner nouns, got ${JSON.stringify(cleanActors)}`);
+  const crossOwned = cleanScenarioActorNouns({ actorA: ['the harbor operator'], actorB: ['the harbor operator'] }, actorContext);
+  assert(!('actorA' in crossOwned) && !('actorB' in crossOwned),
+    'server actor sanitizer must drop a noun claimed by both players');
+  const overlongActor = `the ${'harbor '.repeat(12)}operator`;
+  const clampedActors = cleanScenarioActorNouns({ actorA: [overlongActor], actorB: ['the tug company'] }, {
+    ...actorContext,
+    description: `${overlongActor} coordinates with the tug company at the berth.`,
+  });
+  assert((clampedActors.actorA?.[0].length ?? 0) <= 60,
+    'server actor sanitizer must cap each noun at 60 grapheme-safe UTF-16 units');
+  // 53 UTF-16 units plus this seven-unit emoji fills the budget exactly; the
+  // trailing z must be dropped as a whole following grapheme, never by cutting
+  // the emoji's surrogate/ZWJ sequence. The retained declaration must still
+  // be a verbatim span of the source description after the boundary clamp.
+  const graphemeActor = `${'a'.repeat(53)}👩🏽‍💻z`;
+  const graphemeActors = cleanScenarioActorNouns({ actorA: [graphemeActor], actorB: ['the tug company'] }, {
+    ...actorContext,
+    description: `${graphemeActor} coordinates with the tug company at the berth.`,
+  });
+  const graphemeTerm = graphemeActors.actorA?.[0] ?? '';
+  assert(graphemeTerm.length <= 60 && graphemeTerm.endsWith('👩🏽‍💻') && !graphemeTerm.endsWith('z'),
+    `server actor sanitizer must preserve a complete boundary emoji, got ${JSON.stringify(graphemeTerm)}`);
+  assert(`${graphemeActor} coordinates with the tug company at the berth.`.includes(graphemeTerm),
+    'the grapheme-safe clamped actor noun must remain verbatim in its description');
+  assert(!('actorA' in cleanScenarioActorNouns({ actorA: ['the warehouse manager'], actorB: ['the tug company'] }, actorContext)),
+    'a non-verbatim actor noun must drop the whole actor declaration rather than ship a coloured fabrication');
+  const actorScenario = {
+    name: 'Harbor handover', ...actorContext,
+    actorA: ['the harbor operator'], actorB: ['the tug company'], storyClaims: null,
+  };
+  assert(validateScenario(actorScenario, MATCHING_PENNIES, { actorNouns: true }).ok,
+    'the regenerate-only actor gate accepts verbatim, disjoint declarations');
+  const nonVerbatimActor = { ...actorScenario, actorA: ['the warehouse manager'] };
+  assert(!validateScenario(nonVerbatimActor, MATCHING_PENNIES, { actorNouns: true }).ok,
+    'the regenerate-only actor gate rejects a non-verbatim declaration');
+  assert(validateScenario(nonVerbatimActor, MATCHING_PENNIES).ok,
+    'the full-report path remains unchanged when it does not opt into actor declarations');
 
   // ── ownership is exclusive ──
   // A phrase belongs to one player. The editor never produces both, but a

@@ -478,8 +478,8 @@ export async function generateScenario(
      * byte-identical output to before this option existed. When true, asks
      * for actorA/actorB role nouns (SCENARIO_SCHEMA_WITH_ACTORS +
      * SCENARIO_ACTOR_NOUN_RULE) — the NEW arm of BLUE-NOUNS-8's phase 1
-     * measurement (`_gen/nouns_ab.ts`). Nothing in production sets this yet;
-     * flip only after that measurement's decision rule passes.
+     * measurement (`_gen/nouns_ab.ts`). H1 enables it only for the flagged,
+     * scenario-regenerate route; full reports intentionally omit it.
      */
     actorNouns?: boolean;
   } = {},
