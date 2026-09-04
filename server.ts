@@ -45,6 +45,35 @@ const REPORT_REASONING: ReasoningEffort | undefined =
 // an invention-mode report instead of the separate scenario prompt.
 const LOCAL_PROMPT = process.env.REPORT_LOCAL_PROMPT === '1' ? LOCAL_SYSTEM_PROMPT : undefined;
 
+// The BACKEND's own build-time version — read once from package.json, which
+// the Dockerfile copies into every runtime image (`COPY package*.json ./`)
+// at the exact commit Cloud Build built. Deliberately independent of
+// /api/version's `app-version.json` (GCS): that file is written only by the
+// separate "Build & Publish macOS DMG" workflow, which itself runs only
+// AFTER "Live smoke" succeeds for this same commit — so it can never reflect
+// THIS deploy at the moment live-smoke checks it. This field updates the
+// instant Cloud Run cuts traffic to the new revision, with no such
+// dependency, which is what src/e2e/live-smoke.mjs's deploy-verify gate
+// needs to tell a backend/data-only release from a stale one (see
+// handbacks/2026-09-04-1620-HANDBACK.md, "Live deploy-gate defect").
+// process.cwd(), not __dirname: the Docker image's CMD runs `node
+// dist/server.cjs` from WORKDIR /app without cd'ing into dist/, and the
+// Dockerfile copies package.json to /app (not /app/dist) — matching the
+// existing db.json path convention at DB_FILE, below. __dirname would
+// resolve to dist/ once esbuild bundles this file, where no package.json
+// exists (a desktop/Electron package hits the same gap and simply gets
+// null here, which is fine: this field only matters for the hosted
+// deploy-verify check).
+const BACKEND_VERSION: string | null = (() => {
+  try {
+    const raw = fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8");
+    const v = JSON.parse(raw)?.version;
+    return typeof v === "string" && v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+})();
+
 /**
  * WHERE AN INVENTED SCENARIO COMES FROM — one function, three callers.
  *
@@ -226,6 +255,29 @@ const SCENARIO_REROLL_LIMIT = (() => {
  */
 type RegenAvoid = { name?: string; description?: string; domain?: string };
 
+/**
+ * A model-created scenario goes straight to a client preview on the
+ * scenario-regenerate path.  The save dialogs and `keepFill` both promise the
+ * same budgets (name 40, labels 40, description 800), but `validateScenario`
+ * quite intentionally checks meaning rather than UI field length.  Keep the
+ * two concerns separate: reject an over-budget model draw and let the shared
+ * reroll/bank ladder find another story; never truncate model prose into a
+ * different story before showing it to the user.
+ *
+ * Applied to EVERY exit of `inventScreenedScenario` — the primary model draw
+ * and the bank fallback, ordinary and actor-mode alike — so an overlong
+ * scenario can never reach a response regardless of which branch produced it.
+ */
+function scenarioOutputWithinDisplayLimits(sc: SuggestedScenario): boolean {
+  const within = (value: unknown, max: number) => value === undefined || (typeof value === 'string' && value.length <= max);
+  return within(sc.name, 40)
+    && within(sc.row1, 40)
+    && within(sc.row2, 40)
+    && within(sc.col1, 40)
+    && within(sc.col2, 40)
+    && within(sc.description, 800);
+}
+
 // Actor declarations are a regeneration-preview affordance, not part of the
 // long-standing report/new-scenario response shape.  Bank rows may carry them
 // as source metadata, so remove them at the shared screened-result boundary
@@ -268,6 +320,19 @@ async function inventScreenedScenario(
       usedTimeoutRetry = true;
       continue;
     }
+    // A length overflow is a real model-output failure, not a reason to
+    // rewrite the story after generation.  If this guard is removed, the
+    // client preview can show unbounded text and `keepFill` later cuts the
+    // description mid-sentence (RED-CLOUD-8/001).
+    if (!scenarioOutputWithinDisplayLimits(draw.scenario)) {
+      onDrop?.('scenario-output-exceeds-display-limit');
+      if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
+        exhaustionFailure = "validation-failed";
+        break;
+      }
+      gateRerollsUsed++;
+      continue;
+    }
     if (!gateOn || storyOk(draw.scenario)) {
       return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
     }
@@ -303,7 +368,7 @@ async function inventScreenedScenario(
   const fallback = avoid
     ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
     : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
-  if (fallback && (!gateOn || storyOk(fallback))) {
+  if (fallback && scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || storyOk(fallback))) {
     return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
   }
   return { scenario: null, failure: exhaustionFailure };
@@ -2063,11 +2128,18 @@ function cleanScenario(value: any, options: { actorNouns?: boolean } = {}): Scen
     col2: label(value.col2),
     description: noTags(value.description, 1200) || undefined,
   };
+  // A result carrying only actor nouns and no base scenario field (name,
+  // labels, description) is not a usable scenario. Checked BEFORE actor
+  // metadata is added, so `Object.assign` below can never smuggle an
+  // otherwise-empty draw past this guard (CodeRabbit, PR #111: with
+  // NASH_SCENARIO_CHECKS=0 letting an ungated draw reach here, actorA/actorB
+  // alone used to count as "non-empty").
+  if (!Object.values(sc).some(Boolean)) return undefined;
   // Regenerate is the only caller whose response can legitimately carry actor
   // nouns. Full-report inputs stay on the frozen schema even when a client
   // sends extra fields; opt in only at the regenerate response boundary.
   if (options.actorNouns) Object.assign(sc, cleanScenarioActorNouns(value, sc));
-  return Object.values(sc).some(Boolean) ? sc : undefined;
+  return sc;
 }
 
 function cleanPayoffs(value: any): GamePayoffs | null {
@@ -2714,7 +2786,12 @@ async function startServer() {
     // `canInvent()`: showing the button when the process could never invent
     // anything (no credentials, no bank) would only ever produce the
     // 200-with-null-scenario `no-key` response.
-    res.json({ status: "ok", pid: process.pid, capabilities: { scenarioRegen: scenarioRegenEnabled() && canInvent() } });
+    // backendVersion: this deploy's OWN package.json version (see
+    // BACKEND_VERSION above) — deliberately distinct from /api/version's
+    // desktop-release metadata, and the signal src/e2e/live-smoke.mjs's
+    // deploy-verify gate uses to tell a fresh backend deploy from a stale
+    // one when the frontend asset hash hasn't changed.
+    res.json({ status: "ok", pid: process.pid, backendVersion: BACKEND_VERSION, capabilities: { scenarioRegen: scenarioRegenEnabled() && canInvent() } });
   });
 
   // Latest desktop app version — written to GCS by the release CI alongside the DMG.
