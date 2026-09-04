@@ -738,20 +738,35 @@ export default function App() {
     }
   }, [authToken, dbMode, apiBaseUrl]);
 
+  /**
+   * RED-APP-9/001: a 404 from PATCH/DELETE /api/games/:id (another tab,
+   * profile, or device already deleted the row) is the server telling this
+   * client, authoritatively, that its local list is stale — before this fix
+   * neither failure path acted on that, so a deleted game's row stayed a
+   * permanent phantom until a full reload. Both 404 handlers below call this
+   * SAME re-fetch the initial-mount effect uses, so "the list has been
+   * refreshed" is never just a local filter guessing at the truth — it is
+   * grounded in a fresh server read every time.
+   */
+  const refetchUserGames = useCallback(async () => {
+    if (!authToken) { setUserCustomGames([]); return; }
+    try {
+      const res = await fetch(getApiUrl('/api/games'), {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      setUserCustomGames(res.ok ? await res.json() : []);
+    } catch (err) {
+      console.error('Error fetching custom games:', err);
+    }
+  }, [authToken, apiBaseUrl]);
+
   useEffect(() => {
     if (authToken && user) {
-      fetch(getApiUrl('/api/games'), {
-        headers: { 'Authorization': `Bearer ${authToken}` }
-      })
-        .then((res) => res.ok ? res.json() : [])
-        .then((data) => {
-          setUserCustomGames(data);
-        })
-        .catch((err) => console.error('Error fetching custom games:', err));
+      void refetchUserGames();
     } else {
       setUserCustomGames([]);
     }
-  }, [authToken, user, dbMode, apiBaseUrl]);
+  }, [authToken, user, dbMode, apiBaseUrl, refetchUserGames]);
 
   // ── Preset Selector State ──────────────────────────────────────────────────
   const [activePreset, setActivePreset] = useState<string>('bos');
@@ -1977,6 +1992,22 @@ export default function App() {
         } else {
           setLlmEnvelope(null);
         }
+      } else if (res.status === 404) {
+        // RED-APP-9/001: the game this dialog is editing was already deleted
+        // elsewhere (another tab/profile/device) — the server's 404 is
+        // authoritative, so prune the phantom row and re-fetch rather than
+        // just surfacing the error string and leaving the stale row in
+        // place. The dialog itself is left OPEN (same as any other failed
+        // submit) so the user can read the message and Cancel; by the time
+        // they do, the underlying list is already correct — no reload
+        // needed. If the deleted game was the one currently loaded on the
+        // board, fall back the same way the Delete button already does
+        // (handleLoadPreset('bos')) rather than leaving the matrix pointed
+        // at a saved-game id that no longer resolves to anything.
+        setUserCustomGames((prev) => prev.filter((g) => g.id !== editGameId));
+        if (activePreset === editGameId) handleLoadPreset('bos');
+        void refetchUserGames();
+        setEditError('This game was deleted elsewhere; the list has been refreshed.');
       } else {
         // RED-APP-7/001: a validly-signed but EXPIRED token dies mid-session
         // (the tab stayed open past AUTH_TOKEN_TTL_MS) without React ever
@@ -2008,6 +2039,19 @@ export default function App() {
           handleLoadPreset('bos');
         }
         setLogEntries(prev => [...prev, `🗑 Deleted custom game.`]);
+      } else if (res.status === 404) {
+        // RED-APP-9/001: clicking Delete on a game someone else already
+        // deleted used to re-alert "Game not found." forever — the row was
+        // never removed from `userCustomGames`, so the exact same phantom
+        // reappeared the instant the alert was dismissed. The server's 404
+        // is authoritative here: prune it and re-fetch, same fallback as a
+        // normal successful delete if it was the active game.
+        setUserCustomGames(prev => prev.filter(g => g.id !== gameId));
+        if (activePreset === gameId) {
+          handleLoadPreset('bos');
+        }
+        void refetchUserGames();
+        alert('This game was deleted elsewhere; the list has been refreshed.');
       } else {
         // RED-APP-7/001: same dead-token cleanup as Save/Edit — an expired
         // token must not keep asserting "signed in" (header, Save/Edit's own
