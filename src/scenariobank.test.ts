@@ -621,6 +621,30 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
           description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
           actorA: ['A farmer'], actorB: ['a rival grower'],
         }));
+      // CodeRabbit (this review): a hand-rolled `.toLowerCase().includes()`
+      // is NOT equivalent to the real highlighter's `gi`-flagged (no `u`)
+      // regex. `.toLowerCase()` folds U+212A KELVIN SIGN to ASCII "k", but
+      // `/k/i` (no `u` flag) does not fold it back the other way -- a noun
+      // spelled with the Kelvin sign can look like a literal match under
+      // `.includes()` while the real ColorCoded.tsx regex would never match
+      // it. Must be rejected by the SAME guard as the ZWSP/NFKC fixtures.
+      check('actorNounsOk: a noun using U+212A KELVIN SIGN in place of "K" is rejected even though .toLowerCase() would fold it to a match (RED-REGEN-2/001 CodeRabbit follow-up)',
+        !actorNounsOk({
+          row1: 'Raise Temp', row2: 'Hold Temp', col1: 'Log Reading', col2: 'Skip Reading',
+          description: 'A lab technician tracks the room’s Kelvin reading, while a facilities engineer decides whether to log it.',
+          actorA: ['Kelvin reading'], actorB: ['a facilities engineer'],
+        }));
+      // Same review: the highlighter's regex requires a WORD BOUNDARY on
+      // both sides (`(?<!\w)...(?!\w)`), so a noun that is merely a raw
+      // substring of a LONGER word in the description (no boundary) can
+      // never actually highlight either, even though `.includes()` would
+      // have called it verbatim.
+      check('actorNounsOk: a noun that is only a substring of a LONGER word in the description (no word boundary) is rejected',
+        !actorNounsOk({
+          row1: 'Ship Now', row2: 'Ship Later', col1: 'Buy Now', col2: 'Buy Later',
+          description: 'Two prevendors negotiate the timing of a shipment while a mill buyer waits.',
+          actorA: ['vendor'], actorB: ['a mill buyer'],
+        }));
     }
   }
 }

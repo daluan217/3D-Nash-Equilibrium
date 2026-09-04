@@ -289,16 +289,34 @@ export function actorNounsOk(sc: {
   // Latin "Ａ ｇｒａｉｎ ｔｒａｄｅｒ") is not a byte-for-byte substring of the
   // description. `ColorCoded.tsx` builds its highlight regex from the RAW,
   // unnormalized term against the RAW, unnormalized description text (only
-  // regex metacharacters escaped, `gi` flags, no `.normalize()` anywhere) —
-  // so a noun that passes only the normalized check above can never actually
-  // highlight, silently, even though the server calls it "verbatim" and lets
-  // it ship as a colour-term chip. Reject-and-reroll at the gate instead:
-  // require the raw, trimmed noun to ALSO be a literal, case-insensitive
-  // substring of the raw description — exactly what the highlighter's own
-  // regex needs to find a match. Checked on the RAW noun, not `norm(t)`: a
-  // normalized-only match is precisely the thing being rejected here.
-  const rawDescLower = (sc.description ?? '').toLowerCase();
-  if (all.some((t) => !rawDescLower.includes(t.trim().toLowerCase()))) return false;
+  // regex metacharacters escaped, word-boundary lookarounds, `gi` flags, no
+  // `.normalize()` anywhere) — so a noun that passes only the normalized
+  // check above can never actually highlight, silently, even though the
+  // server calls it "verbatim" and lets it ship as a colour-term chip.
+  //
+  // Reuse that EXACT predicate, not a hand-rolled `.toLowerCase().includes()`
+  // (CodeRabbit review): the two are not equivalent. `.toLowerCase()` folds
+  // U+212A KELVIN SIGN to ASCII "k" (`'K'.toLowerCase() === 'k'`), but a
+  // plain `gi`-flagged regex (no `u` flag, exactly what ColorCoded.tsx uses)
+  // does NOT fold it (`/k/i.test('K')` is false) — so a noun containing
+  // the Kelvin sign could pass an `.includes()`-based check against an
+  // ordinary "kelvin" in the description while still never matching the
+  // real highlighter's regex, reopening the exact defect this guard exists
+  // to close. A plain substring check also ignores the highlighter's
+  // word-boundary lookarounds, so it would accept "vendor" as verbatim
+  // inside "prevendors" (no word boundary there) even though the real regex
+  // never matches it. Building the identical regex here makes this
+  // predicate and the highlighter's decision provably the same by
+  // construction, not merely similar.
+  const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const highlightWouldMatch = (term: string, desc: string) => {
+    const t = term.trim();
+    if (!t) return false;
+    const re = new RegExp(`(?<![\\w])(?:${escapeForRegex(t)})(?![\\w])`, 'gi');
+    return re.test(desc);
+  };
+  const rawDesc = sc.description ?? '';
+  if (all.some((t) => !highlightWouldMatch(t, rawDesc))) return false;
   const aSet = new Set((a as string[]).map(norm));
   const bSet = new Set((b as string[]).map(norm));
   if ([...aSet].some((t) => bSet.has(t))) return false;

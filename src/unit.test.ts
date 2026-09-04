@@ -1426,16 +1426,24 @@ function testUserColorTerms() {
   assert((clampedActors.actorA?.[0].length ?? 0) <= 60,
     'server actor sanitizer must cap each noun at 60 grapheme-safe UTF-16 units');
   // 53 UTF-16 units plus this seven-unit emoji fills the budget exactly; the
-  // trailing z must be dropped as a whole following grapheme, never by cutting
-  // the emoji's surrogate/ZWJ sequence. The retained declaration must still
-  // be a verbatim span of the source description after the boundary clamp.
-  const graphemeActor = `${'a'.repeat(53)}👩🏽‍💻z`;
+  // trailing "!" must be dropped as a whole following grapheme, never by
+  // cutting the emoji's surrogate/ZWJ sequence. The retained declaration must
+  // still be a verbatim, WORD-BOUNDARY-respecting span of the source
+  // description after the boundary clamp (RED-REGEN-2/001 CodeRabbit
+  // follow-up: `actorNounsOk`'s verbatim check now matches ColorCoded.tsx's
+  // own `(?<!\w)...(?!\w)` regex exactly, so a trailing character must be
+  // non-word here — a plain letter like "z" would leave the clamped term
+  // ending mid-word in the description, which the real highlighter could
+  // never match either; that is not this fixture's concern, so it uses a
+  // trailing punctuation character instead, still proving the emoji/grapheme
+  // safety this section exists to test).
+  const graphemeActor = `${'a'.repeat(53)}👩🏽‍💻!`;
   const graphemeActors = cleanScenarioActorNouns({ actorA: [graphemeActor], actorB: ['the tug company'] }, {
     ...actorContext,
     description: `${graphemeActor} coordinates with the tug company at the berth.`,
   });
   const graphemeTerm = graphemeActors.actorA?.[0] ?? '';
-  assert(graphemeTerm.length <= 60 && graphemeTerm.endsWith('👩🏽‍💻') && !graphemeTerm.endsWith('z'),
+  assert(graphemeTerm.length <= 60 && graphemeTerm.endsWith('👩🏽‍💻') && !graphemeTerm.endsWith('!'),
     `server actor sanitizer must preserve a complete boundary emoji, got ${JSON.stringify(graphemeTerm)}`);
   assert(`${graphemeActor} coordinates with the tug company at the berth.`.includes(graphemeTerm),
     'the grapheme-safe clamped actor noun must remain verbatim in its description');

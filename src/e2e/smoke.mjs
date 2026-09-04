@@ -2370,13 +2370,40 @@ await browser.close();
 // signal, exactly like the `net::`/analytics noise already excluded above —
 // and each section's own functional assertions ("shows the AI limit reached
 // wording", "shows the Sign-In card") already prove the mocked status was
-// actually handled correctly. Excluding it here, not by leaving those pages
-// untracked, keeps the fix real: a genuine `console.error`/`pageerror` on
-// either page (this file's own mutation self-test plants one) still fails.
-const relevantErrors = consoleErrors.filter(({ text }) =>
-  !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED|failed to load resource: the server responded with a status of/i.test(text))
+// actually handled correctly.
+//
+// CodeRabbit (this review): a BLANKET exclusion of every such message is too
+// wide — it would also swallow a genuinely unexpected error status from a
+// REAL, unmocked call (a real bug), not only the two deliberately-mocked
+// ones. So this suppresses only the EXACT, declared diagnostics per section
+// (one budgeted entry per status code this section's own mock is known to
+// produce) and consumes each at most once; any OTHER status-noise message —
+// a different code, a different section, or a surplus repeat — still counts
+// as a failure. Excluding it this way, not by leaving those pages untracked,
+// keeps the fix real: a genuine `console.error`/`pageerror` on either page
+// (this file's own mutation self-test plants one) still fails, and so does
+// an unexpected status this table does not name.
+const EXPECTED_STATUS_NOISE = {
+  '31': [429], // §31 deliberately mocks a 429 to test the "AI limit reached" wording
+  '33': [401], // §33 deliberately mocks a 401 to test the Edit dialog's Sign-In card
+};
+const remainingStatusNoise = new Map(
+  Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),
+);
+const STATUS_NOISE_RE = /failed to load resource: the server responded with a status of (\d+)/i;
+const relevantErrors = consoleErrors
   .filter((error) => error.sectionId === null
-    || error.attempt === finalAttemptBySection.get(error.sectionId));
+    || error.attempt === finalAttemptBySection.get(error.sectionId))
+  .filter(({ text }) => !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED/i.test(text))
+  .filter((error) => {
+    const m = STATUS_NOISE_RE.exec(error.text);
+    if (!m) return true;
+    const budget = remainingStatusNoise.get(error.sectionId);
+    const idx = budget ? budget.indexOf(Number(m[1])) : -1;
+    if (idx === -1) return true; // not a declared/budgeted diagnostic for this section — a real signal
+    budget.splice(idx, 1); // consume exactly one; a surplus repeat is no longer expected
+    return false;
+  });
 if (executedShard && relevantErrors.length === 0) {
   // Enforce this guard independently in every shard, but do not inflate the
   // historical functional-check count from one global check to four.
