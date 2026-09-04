@@ -60,8 +60,12 @@ export function deploymentMatches({ status, text, expectedAsset, version, expect
  * @param {string|null} [opts.expectedVersion]
  * @param {number} opts.waitMs - already resolved via resolveWaitMs
  * @param {number} [opts.pollIntervalMs]
- * @param {() => Promise<{status:number, text:string, version:string|null}>} opts.fetchState
- *   - fetches the live page + version and returns the fields deploymentMatches needs
+ * @param {(ctx: {timeoutMs: number}) => Promise<{status:number, text:string, version:string|null}>} opts.fetchState
+ *   - fetches the live page + version and returns the fields deploymentMatches
+ *     needs. Receives the time remaining until the deadline (ms) so it can
+ *     bound its own network calls (e.g. AbortSignal.timeout(timeoutMs)) — a
+ *     stalled request must not itself be able to make this function run past
+ *     waitMs. See src/e2e/live-smoke.mjs for the real implementation.
  * @param {(ms:number) => Promise<void>} [opts.sleep]
  * @param {() => number} [opts.now] - defaults to Date.now
  * @param {(msg:string) => void} [opts.log]
@@ -81,12 +85,24 @@ export async function waitForDeploy({
   let last = null;
   while (now() < deadline) {
     polls += 1;
-    last = await fetchState();
+    // Bound this poll's own network calls by whatever's left of the
+    // deadline — CodeRabbit (this round): a stalled fetch inside fetchState
+    // had no deadline of its own, so this loop could never reach the
+    // `now() < deadline` re-check and could wait past waitMs entirely.
+    const timeoutMs = Math.max(1, deadline - now());
+    last = await fetchState({ timeoutMs });
     if (deploymentMatches({ ...last, expectedAsset, expectedVersion })) {
       return { deployed: true, polls, last };
     }
     log(`poll ${polls}: asset=${last?.text?.includes(expectedAsset) ? 'match' : 'stale'} version=${last?.version ?? 'unknown'} (want ${expectedVersion ?? 'any'})`);
-    await sleep(pollIntervalMs);
+    // Sleep only for whatever's left of the deadline, never the full
+    // interval past it — CodeRabbit (this round): sleeping the full
+    // interval after the LAST failed poll could overshoot waitMs by up to
+    // one whole pollIntervalMs (e.g. a 66s wait at a 15s interval returning
+    // after 75s instead of ~66s).
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(pollIntervalMs, remaining));
   }
   return { deployed: false, polls, last };
 }

@@ -132,7 +132,69 @@ async function runWaitForDeployTests() {
       calls === 3, `calls=${calls}`);
   }
 
-  // Case 3 (mutation probe): removing the version half of deploymentMatches
+  // Case 3: a wait that is NOT evenly divisible by pollIntervalMs must not
+  // overshoot the deadline. CodeRabbit (this round): the final sleep used to
+  // be the full interval regardless of how much time was actually left —
+  // a 66s wait at a 15s interval returned after 75s, not ~66s. Assert the
+  // total simulated elapsed time (sum of every sleep call) never exceeds
+  // waitMs, and that the LAST sleep is capped to the remainder, not the
+  // full interval.
+  {
+    let now = 0;
+    const sleeps: number[] = [];
+    const advance = (ms: number) => { sleeps.push(ms); now += ms; return Promise.resolve(); };
+    const result = await waitForDeploy({
+      expectedAsset: ASSET,
+      expectedVersion: '0.0.137',
+      waitMs: 66_000,
+      pollIntervalMs: 15_000,
+      fetchState: async () => ({ status: 200, text: `<script src="/${ASSET}">`, version: '0.0.136' }),
+      sleep: advance,
+      now: () => now,
+    });
+    const totalElapsed = sleeps.reduce((a, b) => a + b, 0);
+    check('waitForDeploy: never sleeps past the deadline (66s wait / 15s interval)',
+      totalElapsed <= 66_000, `sleeps=${JSON.stringify(sleeps)} total=${totalElapsed}`);
+    check('waitForDeploy: the final sleep is capped to the remainder (6s), not the full 15s interval',
+      sleeps[sleeps.length - 1] === 6_000, `sleeps=${JSON.stringify(sleeps)}`);
+    check('waitForDeploy: still correctly reports NOT deployed once the deadline is exhausted',
+      result.deployed === false);
+  }
+
+  // Case 4: a stalled/never-settling network call must not itself let this
+  // function run longer than waitMs — CodeRabbit (this round): fetchState
+  // was awaited with no deadline of its own. Simulate a fetchState that
+  // "hangs" past the deadline by advancing the fake clock PAST the deadline
+  // while it is pending (as a real AbortSignal.timeout(timeoutMs) would
+  // force a real hung fetch to reject once timeoutMs elapses) and confirm
+  // waitForDeploy receives a shrinking `timeoutMs` that reflects the true
+  // remaining budget, never the full pollIntervalMs once less time is left.
+  {
+    let now = 0;
+    const advance = (ms: number) => { now += ms; return Promise.resolve(); };
+    const seenTimeouts: number[] = [];
+    const result = await waitForDeploy({
+      expectedAsset: ASSET,
+      expectedVersion: '0.0.137',
+      waitMs: 20_000, // less than one full pollIntervalMs
+      pollIntervalMs: 15_000,
+      fetchState: async ({ timeoutMs }) => {
+        seenTimeouts.push(timeoutMs);
+        // simulate the abort actually firing at the deadline: the "hung"
+        // call resolves only once its own timeout budget elapses.
+        now += timeoutMs;
+        return { status: 0, text: '', version: null };
+      },
+      sleep: advance,
+      now: () => now,
+    });
+    check('waitForDeploy: fetchState receives a bounded timeoutMs reflecting the true remaining budget, not an unbounded/full wait',
+      seenTimeouts.length > 0 && seenTimeouts[0] <= 20_000, `seenTimeouts=${JSON.stringify(seenTimeouts)}`);
+    check('waitForDeploy: a permanently-stalled fetchState still ends as NOT deployed (never hangs past waitMs)',
+      result.deployed === false);
+  }
+
+  // Case 5 (mutation probe): removing the version half of deploymentMatches
   // must make case 1 above WRONGLY report "deployed". This is the literal
   // mutation test: revert deploymentMatches to asset-only, rerun the exact
   // H5 fixture, confirm it now (wrongly) passes, then confirm the real

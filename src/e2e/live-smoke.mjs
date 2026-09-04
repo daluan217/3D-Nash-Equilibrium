@@ -87,11 +87,26 @@ if (process.env.EXPECTED_INDEX) {
     expectedAsset,
     expectedVersion: EXPECTED_VERSION,
     waitMs: WAIT_MS,
-    fetchState: async () => {
-      const [page, health] = await Promise.all([getText('/'), getText('/api/health')]);
-      let version = null;
-      try { version = JSON.parse(health.text).backendVersion; } catch { /* not json */ }
-      return { status: page.status, text: page.text, version };
+    // timeoutMs is whatever's left of the overall deadline (see
+    // liveSmokeGate.mjs) — bounding these two fetches with it means a
+    // stalled connection can never itself push this loop past the 5-minute
+    // cap; it just makes this one poll fail cleanly instead of hanging.
+    fetchState: async ({ timeoutMs }) => {
+      const signal = AbortSignal.timeout(timeoutMs);
+      try {
+        const [page, health] = await Promise.all([
+          getText('/', { signal }),
+          getText('/api/health', { signal }),
+        ]);
+        let version = null;
+        try { version = JSON.parse(health.text).backendVersion; } catch { /* not json */ }
+        return { status: page.status, text: page.text, version };
+      } catch (err) {
+        // Aborted (deadline reached mid-request) or any other network
+        // failure — a failed poll, not a crash; the loop's own deadline
+        // check ends the wait on the next iteration.
+        return { status: 0, text: '', version: null, error: String(err) };
+      }
     },
     sleep,
     log: (msg) => console.log(msg),
