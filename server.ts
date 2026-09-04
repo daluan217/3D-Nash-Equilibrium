@@ -888,10 +888,15 @@ function desktopDbConflictCopies(): string[] {
 }
 
 function reportDesktopDbConflict(conflictCopies: string[]): boolean {
-  const primary = path.basename(DB_FILE);
-  const copies = conflictCopies.map((copy) => path.basename(copy)).join(", ");
+  // Name only the candidates that actually exist: a conflict copy can land
+  // (e.g. synced in from another device) before this machine ever created
+  // its own primary db.json, and the refusal message must not claim a file
+  // is present when it isn't — that would send the user hunting for "both
+  // files" when really only one exists.
+  const copies = conflictCopies.map((copy) => path.basename(copy));
+  const candidates = fs.existsSync(DB_FILE) ? [path.basename(DB_FILE), ...copies] : copies;
   return reportDesktopLockFailure(
-    `Refusing to start: found multiple possible local databases in ${path.dirname(DB_FILE)}: ${primary} and ${copies}. `
+    `Refusing to start: found multiple possible local databases in ${path.dirname(DB_FILE)}: ${candidates.join(", ")}. `
     + `Sync software can create a conflict copy while the app is closed. To protect your saved games, the app will not choose, merge, rename, or delete either file. `
     + `Select "Show Location" to back up and inspect both files, resolve the conflict, then relaunch.`,
     conflictCopies[0],

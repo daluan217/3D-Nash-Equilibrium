@@ -198,7 +198,37 @@ async function healthIsDown(targetPort) {
   rmSync(userData, { recursive: true, force: true });
 }
 
-// ══ 3. CONTROL: an established corrupt-file recovery artifact is not a
+// ══ 3. PRIMARY-MISSING: a conflict copy can land (e.g. synced in from
+//      another device) before this machine ever created its own primary
+//      db.json. The refusal message must name only the file that actually
+//      exists, never claim a "db.json and db.json 2" pair when db.json is
+//      not there.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-db-conflict-noprimary-'));
+  const conflictPath = path.join(userData, 'db.json 2');
+  const conflict = validDatabase('conflict-only-owner', 'Conflict-only saved game');
+  writeFileSync(conflictPath, conflict);
+
+  const child = spawnDesktop(userData, port);
+  let outcome = null;
+  try {
+    outcome = await waitForClose(child);
+    record('conflict copy alone (no primary) still refuses (non-zero exit)', outcome.code !== 0, `exit=${outcome.code}`);
+    record('the refusal names the conflict copy but not a nonexistent primary db.json',
+      /db\.json 2/.test(outcome.log) && !/: db\.json,/.test(outcome.log) && !/: db\.json and/.test(outcome.log),
+      outcome.log.slice(0, 700));
+  } catch (err) {
+    record('conflict copy alone (no primary) still refuses (non-zero exit)', false, String(err));
+  }
+  record('no primary db.json is created by the refusal', !existsSync(path.join(userData, 'db.json')));
+  record('the conflict-copy-only bytes remain exactly unchanged',
+    readFileSync(conflictPath, 'utf8') === conflict, readFileSync(conflictPath, 'utf8'));
+
+  rmSync(userData, { recursive: true, force: true });
+  port += 1;
+}
+
+// ══ 4. CONTROL: an established corrupt-file recovery artifact is not a
 //      second candidate. It must continue to boot normally, proving the
 //      narrow name check does not turn existing recovery semantics into a
 //      blanket refusal for every `db.json.*` sibling.
