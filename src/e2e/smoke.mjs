@@ -1965,19 +1965,37 @@ try {
     const shortPage = await browser.newPage({ viewport: { width: 320, height: 256 } });
     // NOTE: no page-wide setDefaultTimeout override here — the two
     // reachability clicks below already pass their own explicit
-    // {timeout: 5000}, which is what needs to fail fast on the unfixed
+    // {timeout: 30000} (30 s, not 5: the 5 s budget flaked on the 2-core CI
+    // runner — 102/103 on main's first attempt, 2026-09-03 — while the
+    // discriminator does not depend on the budget at all: on the unfixed
+    // tree there is NO scrollable ancestor, so the click can never become
+    // actionable at any timeout), which is what needs to fail on the unfixed
     // tree; a global override also throttled THIS page's own navigation,
     // which can legitimately take longer than 6s once ~30 prior e2e
     // sections have left other pages/contexts open.
     await shortPage.goto(BASE, { waitUntil: 'networkidle' });
-    const exitTourShort = shortPage.getByRole('button', { name: /exit tour/i });
-    if (await exitTourShort.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await exitTourShort.click();
-      // CodeRabbit: poll for the tour dialog to actually close, not a
-      // blind settle delay.
-      await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 5000 }).catch(() => {});
+    // The tour auto-opens ~700 ms after mount on every anonymous load, and on
+    // the 2-core CI runner that can be AFTER `networkidle` resolves. The old
+    // `isVisible({ timeout: 3000 })` check does NOT wait, so on a slow runner
+    // it read "no tour" too early; the tour then opened over this page in the
+    // middle of the checks below (it also unmounts the feedback launcher), and
+    // they failed 3 times in 4 CI attempts on 2026-09-03 while passing every
+    // time locally. Dismiss it the way gotoHome()/dismissTour() do: wait for
+    // the viewport-anchored Exit button, click it, and assert the tour is gone.
+    // A failed Exit click is NOT evidence that the tour is absent (CodeRabbit):
+    // the tour dialog itself decides. Escape is the fallback dismissTour() uses,
+    // and a tour that survives both is recorded as a failed precondition rather
+    // than silently left on top of the checks below.
+    const exitTourShort = shortPage.locator('[aria-label="Exit tour"]');
+    try { await exitTourShort.click({ timeout: 20000 }); } catch { /* decided by the dialog below */ }
+    let shortTourGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+      null, { timeout: 5000 }).then(() => true).catch(() => false);
+    if (!shortTourGone) {
+      await shortPage.keyboard.press('Escape');
+      shortTourGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).then(() => true).catch(() => false);
     }
+    record('320x256 precondition: the guided tour is dismissed (or never opened) before the reachability checks', shortTourGone);
 
     await shortPage.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     await shortPage.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
@@ -1993,12 +2011,27 @@ try {
     // reliably reachable post-fix, regardless of which form mode is open.
     const accountClose = shortPage.locator('[role="dialog"][aria-label="Account"]').getByRole('button', { name: 'Close dialog' });
     let accountReachable = true;
-    try { await accountClose.click({ timeout: 5000 }); } catch { accountReachable = false; }
-    record('RED-APP-8/005 fix: the Account dialog\'s own close button is reachable at 320x256', accountReachable);
-    // CodeRabbit: poll for the Account dialog to actually close, not a
-    // blind settle delay.
-    await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'),
-      null, { timeout: 5000 }).catch(() => {});
+    let accountErr = '';
+    // Keep the click's own reason: a FAIL that says "undefined" told nobody
+    // whether the runner timed out, the element vanished, or something sat on
+    // top of it (2026-09-03, four CI attempts).
+    try { await accountClose.click({ timeout: 30000 }); } catch (e) { accountReachable = false; accountErr = String(e?.message ?? e).split('\n')[0]; }
+    record('RED-APP-8/005 fix: the Account dialog\'s own close button is reachable at 320x256', accountReachable, accountReachable ? undefined : accountErr);
+    // Whatever the click did, leave no Account dialog behind: the Feedback
+    // check must stand on its own. On a tree where this check fails, the
+    // still-open modal used to swallow the feedback launcher click below as an
+    // unguarded 30 s script error and abort every later section.
+    if (await shortPage.locator('[role="dialog"][aria-label="Account"]').count()) {
+      await shortPage.keyboard.press('Escape');
+    }
+    // CodeRabbit: poll for the Account dialog to actually close (the count()
+    // above is only a snapshot and Escape has no completion signal), and
+    // RECORD a cleanup failure instead of swallowing it — a Feedback FAIL
+    // caused by a still-open Account modal must say so.
+    const accountGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 5000 }).then(() => true).catch(() => false);
+    record('320x256 cleanup: the Account dialog is closed before the Feedback check', accountGone,
+      accountGone ? undefined : 'Account dialog still open 5 s after the close click / Escape');
 
     // Stub the feedback POST — untested-controls.json's own policy for this
     // control is "never actually send real email through SMTP"; this test is
@@ -2007,12 +2040,18 @@ try {
     // than reaching the server.
     await shortPage.route('**/api/feedback', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }));
-    await shortPage.getByRole('button', { name: /send feedback/i }).first().click();
-    await shortPage.waitForSelector('[role="dialog"][aria-label="Send feedback"]', { timeout: 5000 });
     const feedbackSubmit = shortPage.locator('[role="dialog"][aria-label="Send feedback"]').getByRole('button', { name: /send feedback/i });
     let feedbackReachable = true;
-    try { await feedbackSubmit.click({ timeout: 5000 }); } catch { feedbackReachable = false; }
-    record('RED-APP-8/005 fix: the Feedback dialog\'s submit button is reachable at 320x256', feedbackReachable);
+    let feedbackErr = '';
+    try {
+      // The launcher is part of the check, with its own budget: it is hidden
+      // while the tour is open, so a script error here would have meant "the
+      // tour came back", which this check should REPORT, not abort on.
+      await shortPage.getByRole('button', { name: /send feedback/i }).first().click({ timeout: 10000 });
+      await shortPage.waitForSelector('[role="dialog"][aria-label="Send feedback"]', { timeout: 5000 });
+      await feedbackSubmit.click({ timeout: 30000 });
+    } catch (e) { feedbackReachable = false; feedbackErr = String(e?.message ?? e).split('\n')[0]; }
+    record('RED-APP-8/005 fix: the Feedback dialog\'s submit button is reachable at 320x256', feedbackReachable, feedbackReachable ? undefined : feedbackErr);
     await shortPage.close();
   }
 

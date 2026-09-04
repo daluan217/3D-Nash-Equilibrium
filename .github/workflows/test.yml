@@ -354,7 +354,11 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 75, not 45: the smoke suite is 103 checks and one attempt takes 17-26 min on
+    # the 2-core SwiftShader runner, and the step retries once. On 2026-09-03 run
+    # 33814822611 went 102/103 -> retry 103/103 -> AI-surface 8/8 and was then
+    # CANCELLED by the 45-min cap with every check green, which blocked the deploy.
+    timeout-minutes: 75
     needs: build
     steps:
       - uses: actions/checkout@v5
