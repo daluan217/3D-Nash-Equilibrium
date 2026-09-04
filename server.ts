@@ -225,6 +225,25 @@ const SCENARIO_REROLL_LIMIT = (() => {
  */
 type RegenAvoid = { name?: string; description?: string; domain?: string };
 
+/**
+ * A model-created scenario goes straight to a client preview on the
+ * scenario-regenerate path.  The save dialogs and `keepFill` both promise the
+ * same budgets (name 40, labels 40, description 800), but `validateScenario`
+ * quite intentionally checks meaning rather than UI field length.  Keep the
+ * two concerns separate: reject an over-budget model draw and let the shared
+ * reroll/bank ladder find another story; never truncate model prose into a
+ * different story before showing it to the user.
+ */
+function scenarioOutputWithinDisplayLimits(sc: SuggestedScenario): boolean {
+  const within = (value: unknown, max: number) => value === undefined || (typeof value === 'string' && value.length <= max);
+  return within(sc.name, 40)
+    && within(sc.row1, 40)
+    && within(sc.row2, 40)
+    && within(sc.col1, 40)
+    && within(sc.col2, 40)
+    && within(sc.description, 800);
+}
+
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
@@ -252,6 +271,19 @@ async function inventScreenedScenario(
       // setting existed — never governed by NASH_SCENARIO_REROLLS.
       if (usedTimeoutRetry) { exhaustionFailure = draw.failure ?? "unparseable"; break; }
       usedTimeoutRetry = true;
+      continue;
+    }
+    // A length overflow is a real model-output failure, not a reason to
+    // rewrite the story after generation.  If this guard is removed, the
+    // client preview can show unbounded text and `keepFill` later cuts the
+    // description mid-sentence (RED-CLOUD-8/001).
+    if (!scenarioOutputWithinDisplayLimits(draw.scenario)) {
+      onDrop?.('scenario-output-exceeds-display-limit');
+      if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
+        exhaustionFailure = "validation-failed";
+        break;
+      }
+      gateRerollsUsed++;
       continue;
     }
     if (!gateOn || storyOk(draw.scenario)) {
