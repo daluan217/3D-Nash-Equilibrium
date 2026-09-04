@@ -330,7 +330,33 @@ export function actorNounsOk(sc: {
   // the defect again with every check still green.
   // Same fix as COMPOUND above: tested against descNorm (already computed),
   // not the raw description, for the same zero-width-bypass reason.
+  //
+  // The looser H5 re-attempt pass (handoff 2026-09-04, over the 645 rows the
+  // strict phase-3 pass left noun-free) surfaced TWO more symmetric-framing
+  // markers the "each"/"both" test did not cover, both the SAME defect class:
+  // a plural collective noun ("orchard keepers", "lock-keepers") assigned to
+  // ONE side of a description that names the two parties collectively ("Two
+  // neighboring orchard keepers...") and then distinguishes them only
+  // POSITIONALLY — "One chooses... the other chooses", or "The first chooses...
+  // the second chooses" — rather than with "each"/"both". Found on idx 257 (a
+  // new H5 row) and idx 1965 (a PRE-EXISTING phase-3 row the narrower rule had
+  // missed). Keyed on the description's framing, not the noun's plurality —
+  // matching the phase-3 rule's own positive control (the same collective noun
+  // is accepted under a non-symmetric framing) — and, like that rule, scoped to
+  // one-sided rows so a legitimate pair of distinct nouns is never touched.
   const onlyOneSide = (a.length > 0) !== (b.length > 0);
-  if (onlyOneSide && /\b(each|both)\b/i.test(descNorm)) return false;
+  // Positional words are evidence only when they are the grammatical subject
+  // of a choice. Merely comparing "the first" and "the second" option (or
+  // referring to "the other option") says nothing about how actors are named.
+  // Allow a short actor noun phrase ("the first orchard keeper chooses")
+  // without crossing punctuation into a later, unrelated choosing clause.
+  const oneOtherChoose = /\bone(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm)
+    && /\bthe other(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm);
+  const firstSecondChoose = /\bthe first(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm)
+    && /\bthe second(?:\s+[a-z][a-z'’-]*){0,4}\s+chooses?\b/i.test(descNorm);
+  const symmetricFraming = /\b(each|both)\b/i.test(descNorm)
+    || oneOtherChoose
+    || firstSecondChoose;
+  if (onlyOneSide && symmetricFraming) return false;
   return true;
 }
