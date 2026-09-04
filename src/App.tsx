@@ -37,7 +37,7 @@ import {
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
-import { cleanText, clampGraphemeSafe } from './utils/textSafety';
+import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -156,14 +156,16 @@ const clampLabelInput = (v: string) => clampGraphemeSafe(v, 40);
 function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
   const ne = e.nativeEvent as InputEvent;
   if (ne.isComposing) return; // not cancelable anyway — let composition through untouched
-  const data = ne.data;
-  if (!data) return; // deletions and other non-inserting edits have nothing to bound
   const target = e.target as HTMLInputElement;
-  const current = target.value;
-  const selStart = target.selectionStart ?? current.length;
-  const selEnd = target.selectionEnd ?? current.length;
-  const prospective = current.slice(0, selStart) + data + current.slice(selEnd);
-  if (clampGraphemeSafe(prospective, 40) !== prospective) {
+  // RED-APP-9/003: the boundary math itself (read the prospective value,
+  // compare it to its own grapheme-safe clamp) now lives once in
+  // `wouldExceedGraphemeBudget` (src/utils/textSafety.ts), shared with the
+  // Game Name inputs (same 40-unit budget, reusing THIS function directly)
+  // and the Description textarea (DescriptionEditor.tsx's own
+  // onBeforeInput, at its own maxLength) — a second hand-copied
+  // implementation is exactly the kind of drift this codebase has been
+  // burned by before.
+  if (wouldExceedGraphemeBudget(target, ne.data, 40)) {
     e.preventDefault();
   }
 }
@@ -5592,8 +5594,13 @@ export default function App() {
                   type="text"
                   className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  maxLength={40}
+                  onBeforeInput={clampLabelBeforeInput}
+                  onChange={(e) => setEditName((e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value))}
+                  onCompositionEnd={(e) => {
+                    const v = e.currentTarget.value;
+                    const clamped = clampLabelInput(v);
+                    if (clamped !== v) setEditName(clamped);
+                  }}
                   required
                 />
               </div>
@@ -5997,8 +6004,13 @@ export default function App() {
                   className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   placeholder="e.g. Battle of the Sexes 2.0"
                   value={saveName}
-                  onChange={(e) => setSaveName(e.target.value)}
-                  maxLength={40}
+                  onBeforeInput={clampLabelBeforeInput}
+                  onChange={(e) => setSaveName((e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value))}
+                  onCompositionEnd={(e) => {
+                    const v = e.currentTarget.value;
+                    const clamped = clampLabelInput(v);
+                    if (clamped !== v) setSaveName(clamped);
+                  }}
                   required
                 />
               </div>

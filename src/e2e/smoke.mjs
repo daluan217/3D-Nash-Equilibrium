@@ -2466,6 +2466,115 @@ try {
     await flapPage.close();
   });
 
+  // ══ 40. RED-APP-9/003 — the Game Name and Description fields (both
+  //      dialogs) must clamp grapheme-safely, the same as the four
+  //      option-label inputs (#101/#105): reusing the exact
+  //      onBeforeInput/onChange/onCompositionEnd wiring (App.tsx's
+  //      clampLabelBeforeInput/clampLabelInput for Name; the equivalent in
+  //      DescriptionEditor.tsx for Description) means an insertion that
+  //      would push the field over budget is rejected WHOLESALE (never
+  //      truncated mid-cluster) — a real behavioral difference from the
+  //      native `maxLength` this replaces, which used to truncate AT the
+  //      boundary and could split a grapheme cluster in half. Two shapes per
+  //      field: a real clipboard paste of one whole grapheme cluster (a ZWJ
+  //      family emoji, 11 UTF-16 units — what an emoji picker inserts in one
+  //      shot, same as this app's own IME-composition-commit handling) that
+  //      lands EXACTLY at the budget must appear intact; one unit further
+  //      over budget must be rejected outright, leaving the pre-existing
+  //      text unchanged and never a dangling ZWJ/surrogate.
+  section('40', 'Name/Description grapheme-safe paste clamp', 3, async () => {
+    const familyEmoji = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 👨‍👩‍👧‍👦, 11 UTF-16 units
+    const endsUgly = (s) => /\u{200D}$/u.test(s) || /[\uD800-\uDBFF]$/.test(s);
+
+    async function pasteAtEnd(p, locator, text) {
+      await locator.click();
+      await p.evaluate(() => {
+        const el = document.activeElement;
+        if (el && 'selectionStart' in el) el.setSelectionRange(el.value.length, el.value.length);
+      });
+      await p.evaluate((t) => navigator.clipboard.writeText(t), text);
+      const isMac = process.platform === 'darwin';
+      await p.keyboard.press(isMac ? 'Meta+V' : 'Control+V');
+      await p.waitForTimeout(250);
+    }
+
+    // Fills with `fill()` (a direct value set through onChange, not
+    // onBeforeInput — matches how a real "type a bunch of plain characters"
+    // history would leave the field, without needing hundreds of individual
+    // keystrokes) then pastes the family-emoji cluster AT THE END, once at a
+    // width where the total lands exactly at budget (must appear intact)
+    // and once one unit further over (must be rejected wholesale).
+    async function checkClampedField(p, locator, filler, budget, label) {
+      await locator.fill(filler.repeat(budget - familyEmoji.length)); // total after paste == budget exactly
+      await pasteAtEnd(p, locator, familyEmoji);
+      const fits = await locator.inputValue();
+      record(`FIX: ${label} — a whole grapheme cluster landing exactly at the budget appears intact`,
+        fits.length === budget && fits.endsWith(familyEmoji), `len=${fits.length} tail=${JSON.stringify(fits.slice(-12))}`);
+      record(`${label} — never ends in a lone ZWJ/surrogate when it fits`, !endsUgly(fits), JSON.stringify(fits.slice(-8)));
+
+      await locator.fill(filler.repeat(budget - familyEmoji.length + 1)); // one unit further: total would be budget+1
+      const before = await locator.inputValue();
+      await pasteAtEnd(p, locator, familyEmoji);
+      const rejected = await locator.inputValue();
+      record(`FIX: ${label} — an insertion that would exceed the budget is rejected wholesale, not truncated mid-cluster`,
+        rejected === before, `before=${JSON.stringify(before.slice(-8))} after=${JSON.stringify(rejected.slice(-8))}`);
+      record(`${label} — never ends in a lone ZWJ/surrogate when the paste is rejected`, !endsUgly(rejected), JSON.stringify(rejected.slice(-8)));
+    }
+
+    const grContext = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
+    try {
+      const grPage = await grContext.newPage();
+      await registerAndLogin(grPage, 'e9gr');
+
+      // ── Save dialog ──
+      await grPage.getByRole('button', { name: /save preset/i }).click();
+      await grPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      const saveNameField = grPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]');
+      await checkClampedField(grPage, saveNameField, 'A', 40, 'Save dialog Name field');
+      const finalSaveName = 'A'.repeat(40 - familyEmoji.length) + familyEmoji;
+      await saveNameField.fill(finalSaveName); // leave it in the intact, saveable state for the submit below
+
+      const saveDescField = grPage.locator('[role="dialog"][aria-label="Save custom game"] textarea').first();
+      await checkClampedField(grPage, saveDescField, 'B', 800, 'Save dialog Description field');
+      const finalSaveDesc = 'B'.repeat(800 - familyEmoji.length) + familyEmoji;
+      await saveDescField.fill(finalSaveDesc);
+
+      await grPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+      await grPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 5000 });
+
+      const authToken = await grPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+      const list = await grPage.evaluate(async (t) => {
+        const r = await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } });
+        return r.json();
+      }, authToken);
+      const saved = list.find((g) => g.name === finalSaveName);
+      record('the server-stored name carries the intact grapheme cluster (not a client-mangled half-emoji)',
+        saved?.name === finalSaveName, `stored=${JSON.stringify(saved?.name?.slice(-12))}`);
+      record('the server-stored description carries the intact grapheme cluster',
+        saved?.description === finalSaveDesc, `stored tail=${JSON.stringify(saved?.description?.slice(-12))}`);
+
+      // ── Edit dialog (same saved game) ──
+      const savedId = saved?.id;
+      const rowBtn = grPage.getByRole('button', { name: finalSaveName, exact: true });
+      await grPage.locator('div.group', { has: rowBtn }).getByTitle(/^Edit /).click();
+      await grPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+      const editNameField = grPage.locator('[role="dialog"][aria-label="Edit saved game"] input').first();
+      await checkClampedField(grPage, editNameField, 'A', 40, 'Edit dialog Name field');
+
+      const editDescField = grPage.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first();
+      await checkClampedField(grPage, editDescField, 'B', 800, 'Edit dialog Description field');
+
+      await grPage.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /cancel/i }).click();
+      if (savedId) {
+        await grPage.evaluate(async ({ id, t }) => {
+          await fetch(`/api/games/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
+        }, { id: savedId, t: authToken });
+      }
+    } finally {
+      await grContext.close();
+    }
+  });
+
   await executeSections();
 
 } catch (e) {

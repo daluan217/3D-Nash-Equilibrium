@@ -12,6 +12,7 @@ import {
   USER_TERMS_MAX,
   USER_TERM_MAX_LEN,
 } from '../utils/colorTerms';
+import { clampGraphemeSafe, wouldExceedGraphemeBudget } from '../utils/textSafety';
 
 /**
  * The description textarea plus the controls for colour-coding it.
@@ -120,8 +121,30 @@ export function DescriptionEditor({
         className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
         placeholder={placeholder}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        maxLength={maxLength}
+        // RED-APP-9/003: the native `maxLength` attribute enforces this same
+        // budget by raw UTF-16 code unit count with NO grapheme awareness —
+        // exactly the RED-APP-7/004 defect, never fixed here. Same fix
+        // shape: primary enforcement in onBeforeInput (preventDefault before
+        // the browser commits an over-budget insertion, so undo never
+        // desyncs — RED-APP-8/002+003), onChange as the composition-safe
+        // secondary clamp, onCompositionEnd for the one case onBeforeInput
+        // cannot intercept (an IME composition commit). The boundary check
+        // itself is shared with App.tsx's label/name inputs via
+        // `wouldExceedGraphemeBudget` (src/utils/textSafety.ts) rather than
+        // reimplemented here.
+        onBeforeInput={(e) => {
+          const ne = e.nativeEvent as InputEvent;
+          if (ne.isComposing) return;
+          if (wouldExceedGraphemeBudget(e.currentTarget, ne.data, maxLength)) {
+            e.preventDefault();
+          }
+        }}
+        onChange={(e) => onChange((e.nativeEvent as InputEvent).isComposing ? e.target.value : clampGraphemeSafe(e.target.value, maxLength))}
+        onCompositionEnd={(e) => {
+          const v = e.currentTarget.value;
+          const clamped = clampGraphemeSafe(v, maxLength);
+          if (clamped !== v) onChange(clamped);
+        }}
       />
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">

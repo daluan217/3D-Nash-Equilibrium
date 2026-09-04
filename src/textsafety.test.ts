@@ -13,7 +13,7 @@
  */
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { stripUnsafeText, cleanText, clampGraphemeSafe } from './utils/textSafety';
+import { stripUnsafeText, cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
 
 let checks = 0;
 function ok(cond: boolean, msg: string) {
@@ -255,6 +255,128 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
                       />`;
   ok(!/clampLabelInput/.test(preFixInput),
     'the pre-fix fixture text must not accidentally already carry the clamp call (fixture sanity check)');
+}
+
+// ── 11. RED-APP-9/003 — `wouldExceedGraphemeBudget`, the shared boundary
+//      check factored out so the Name inputs (App.tsx, reusing
+//      clampLabelBeforeInput's 40-unit budget directly) and the Description
+//      textarea (DescriptionEditor.tsx, its own maxLength) never each
+//      reimplement the "read the prospective value, compare to its own
+//      clamp" logic that clampLabelBeforeInput used to inline.
+{
+  const target = (value: string, selectionStart: number | null = null, selectionEnd: number | null = null) =>
+    ({ value, selectionStart: selectionStart ?? value.length, selectionEnd: selectionEnd ?? value.length });
+
+  ok(wouldExceedGraphemeBudget(target(''), null, 40) === false,
+    'a deletion (null insertedData) never exceeds any budget');
+  ok(wouldExceedGraphemeBudget(target(''), undefined, 40) === false,
+    'undefined insertedData (same as null) never exceeds any budget');
+  ok(wouldExceedGraphemeBudget(target(''), '', 40) === false,
+    'an empty-string insertion never exceeds any budget');
+  ok(wouldExceedGraphemeBudget(target('short'), 'x', 40) === false,
+    'inserting one char well under budget does not exceed it');
+
+  const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 11 UTF-16 units, one grapheme cluster
+  // 37 'A's (37 units) + the family (11 units) = 48 units, over a 40 budget,
+  // AND the family cluster itself straddles the boundary — the exact
+  // RED-APP-9/003 repro shape (probe5_name_desc_grapheme_clamp.mjs).
+  ok(wouldExceedGraphemeBudget(target('A'.repeat(37)), family, 40) === true,
+    'inserting a family-emoji cluster that straddles the 40-unit budget must be flagged as exceeding it');
+  // Under the budget when inserted whole (37 + 11 = 48 > 40 was the flagged
+  // case above; here the field starts empty so 11 <= 40 fits cleanly).
+  ok(wouldExceedGraphemeBudget(target(''), family, 40) === false,
+    'inserting one whole family-emoji cluster that fits entirely within budget is NOT flagged');
+
+  // Insertion at a SELECTION (replacing existing text), not just at the end —
+  // wouldExceedGraphemeBudget must read selectionStart/selectionEnd, not
+  // assume append-only.
+  ok(wouldExceedGraphemeBudget(target('A'.repeat(40), 0, 40), 'x', 40) === false,
+    'replacing the ENTIRE over-length selection with one char must not itself be flagged (net length shrinks)');
+  ok(wouldExceedGraphemeBudget(target('A'.repeat(38), 38, 38), 'xxx', 40) === true,
+    'inserting 3 chars at the end of a 38-unit string against a 40 budget must be flagged (41 > 40)');
+}
+
+// ── 12. RED-APP-9/003 — the SAME pipeline server.ts's `cleanText(value,
+//      maxLength)` runs (stripUnsafeText -> trim -> clampGraphemeSafe), at
+//      the EXACT widths server.ts uses for Game Name (80) and Description
+//      (800), must never split a grapheme cluster — proving the SERVER side
+//      was already correct (server.ts's own `cleanText` has called
+//      `clampGraphemeSafe` since RED-CLOUD-5/001; RED-APP-9/003 only found
+//      the CLIENT had never been given the matching treatment for these two
+//      fields). `cleanText` itself is defined identically here and in
+//      server.ts (both call the exported `clampGraphemeSafe`), so exercising
+//      it at server.ts's own budgets is a direct check of server.ts's
+//      behavior without needing to import a private server.ts function.
+{
+  const hasLoneSurrogate = (s: string) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+  const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 11 units
+
+  for (const [fieldName, budget] of [['Game Name', 80], ['Description', 800]] as const) {
+    // Pad so the family cluster straddles exactly the budget boundary,
+    // matching the red's repro (a paste landing exactly at the code-unit
+    // cap with the last unit being the ZWJ immediately after the "man" half).
+    const padded = 'x'.repeat(budget - 6) + family; // budget-6 + 11 = budget+5, over budget
+    // server.ts's own cleanText(value, maxLength) is exactly this pipeline
+    // (strip -> trim -> clampGraphemeSafe(_, maxLength)); exercised here at
+    // its own budgets rather than re-imported, since it is not exported.
+    const serverClamped = clampGraphemeSafe(stripUnsafeText(padded).trim(), budget);
+    ok(serverClamped.length <= budget,
+      `server-shape clamp for ${fieldName} (budget ${budget}) must respect the budget, got length ${serverClamped.length}`);
+    ok(!hasLoneSurrogate(serverClamped),
+      `server-shape clamp for ${fieldName} must never leave a lone/unpaired surrogate, got ${JSON.stringify(serverClamped.slice(-10))}`);
+    ok(!serverClamped.endsWith('‍'),
+      `server-shape clamp for ${fieldName} must never leave a dangling ZWJ, got ${JSON.stringify(serverClamped.slice(-10))}`);
+
+    // A over-long name/description ending MID-CLUSTER (the exact wording of
+    // the brief's required fixture) is cut at a grapheme BOUNDARY: either
+    // the whole family cluster survives, or none of it does — never a
+    // partial cluster.
+    const clusterSurvivedWhole = serverClamped.endsWith(family);
+    const clusterAbsentEntirely = !serverClamped.includes('\u{1F468}');
+    ok(clusterSurvivedWhole || clusterAbsentEntirely,
+      `server-shape clamp for ${fieldName} must cut at a cluster boundary (whole cluster or none), got ${JSON.stringify(serverClamped.slice(-15))}`);
+  }
+}
+
+// ── 13. RED-APP-9/003 — structural guard: the Game Name inputs (both
+//      dialogs) must reuse clampLabelBeforeInput/clampLabelInput (the exact
+//      40-unit budget the option labels already use — Name shares the same
+//      budget) and must NOT carry a bare native maxLength={40} any more.
+{
+  const appSrc = readFileSync('src/App.tsx', 'utf8');
+  for (const [setter, anchorText] of [['setEditName', 'value={editName}'], ['setSaveName', 'value={saveName}']] as const) {
+    const anchorIdx = appSrc.indexOf(anchorText);
+    ok(anchorIdx !== -1, `App.tsx must contain the Name-input value binding "${anchorText}"`);
+    const block = appSrc.slice(anchorIdx, anchorIdx + 500);
+
+    ok(/onBeforeInput=\{clampLabelBeforeInput\}/.test(block),
+      `the ${anchorText} Name-input block must carry onBeforeInput={clampLabelBeforeInput}`);
+    ok(new RegExp(`onChange=\\{\\(e\\) => ${setter}\\(\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : clampLabelInput\\(e\\.target\\.value\\)\\)\\}`).test(block),
+      `the ${anchorText} Name-input block must carry an onChange calling ${setter} with clampLabelInput, skipped while composing`);
+    ok(new RegExp(`onCompositionEnd=\\{\\(e\\) => \\{[\\s\\S]{0,300}?${setter}\\(clamped\\)`).test(block),
+      `the ${anchorText} Name-input block must carry an onCompositionEnd calling ${setter} to clamp the committed value`);
+    ok(!/maxLength=\{40\}/.test(block),
+      `REGRESSION GUARD: the ${anchorText} Name-input block still has a nearby maxLength={40} — must be removed, `
+      + `not merely supplemented, or the native attribute wins the race on every real keystroke.`);
+  }
+}
+
+// ── 14. RED-APP-9/003 — structural guard: DescriptionEditor.tsx's shared
+//      textarea (both dialogs, since both use this one component) must
+//      clamp via onBeforeInput/onChange/onCompositionEnd using the shared
+//      wouldExceedGraphemeBudget/clampGraphemeSafe helpers, and must NOT
+//      carry a bare native maxLength={maxLength} any more.
+{
+  const editorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  ok(/onBeforeInput=\{\(e\) => \{[\s\S]{0,400}?wouldExceedGraphemeBudget\(e\.currentTarget, ne\.data, maxLength\)/.test(editorSrc),
+    'DescriptionEditor.tsx textarea must carry an onBeforeInput calling wouldExceedGraphemeBudget at its own maxLength');
+  ok(/onChange=\{\(e\) => onChange\(\(e\.nativeEvent as InputEvent\)\.isComposing \? e\.target\.value : clampGraphemeSafe\(e\.target\.value, maxLength\)\)\}/.test(editorSrc),
+    'DescriptionEditor.tsx textarea must carry an onChange clamping via clampGraphemeSafe, skipped while composing');
+  ok(/onCompositionEnd=\{\(e\) => \{[\s\S]{0,300}?onChange\(clamped\)/.test(editorSrc),
+    'DescriptionEditor.tsx textarea must carry an onCompositionEnd clamping the committed value');
+  ok(!/maxLength=\{maxLength\}/.test(editorSrc),
+    'REGRESSION GUARD: DescriptionEditor.tsx textarea still has a bare maxLength={maxLength} — must be removed, '
+    + 'not merely supplemented, or the native attribute wins the race on every real keystroke/paste.');
 }
 
 console.log(`textsafety.test.ts: ${checks} checks passed`);

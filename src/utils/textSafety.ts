@@ -140,6 +140,37 @@ function codepointSafeSlice(s: string, maxLength: number): string {
  * codepoint-safe (not grapheme-safe) cut of just that oversized cluster
  * rather than returning "" and silently discarding the whole string.
  */
+/**
+ * Would inserting `insertedData` at the given selection push the field over
+ * `maxLength` grapheme-safe units? Framework-agnostic (no DOM/React types)
+ * so both an `<input>`'s `onBeforeInput` (App.tsx's label/name fields,
+ * 40-unit budget) and a `<textarea>`'s (DescriptionEditor.tsx, 800-unit
+ * budget) can share the exact same boundary check rather than each
+ * reimplementing the "read the prospective value, compare it against its
+ * own grapheme-safe clamp" logic — RED-APP-9/003 found the Name and
+ * Description fields had never been given the RED-APP-7/004 treatment at
+ * all (still bare native `maxLength`, which cuts by UTF-16 code unit with
+ * no grapheme awareness), and a second hand-copied implementation is
+ * exactly the kind of drift this codebase has been burned by before (see
+ * `clampGraphemeSafe`'s own docstring above).
+ *
+ * `target` only needs the three properties every native text input/
+ * textarea element already has; passing the DOM node itself works
+ * unchanged.
+ */
+export function wouldExceedGraphemeBudget(
+  target: { value: string; selectionStart: number | null; selectionEnd: number | null },
+  insertedData: string | null | undefined,
+  maxLength: number,
+): boolean {
+  if (!insertedData) return false; // deletions and other non-inserting edits have nothing to bound
+  const current = target.value;
+  const selStart = target.selectionStart ?? current.length;
+  const selEnd = target.selectionEnd ?? current.length;
+  const prospective = current.slice(0, selStart) + insertedData + current.slice(selEnd);
+  return clampGraphemeSafe(prospective, maxLength) !== prospective;
+}
+
 export function clampGraphemeSafe(s: string, maxLength: number): string {
   if (s.length <= maxLength) return s;
   const SegmenterCtor: typeof Intl.Segmenter | undefined = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
