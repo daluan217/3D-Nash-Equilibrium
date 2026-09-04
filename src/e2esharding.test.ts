@@ -48,6 +48,10 @@ for (let shard = 1; shard <= 4; shard++) {
 
 assert.match(smoke, /if \(!raw\) return null;/,
   'an unset E2E_SHARD must continue to select the complete local suite');
+assert.match(smoke, /process\.env\.E2E_SECTION/,
+  'a local run may select an exact named smoke regression without changing the CI shard matrix');
+assert.match(smoke, /Set E2E_SHARD or E2E_SECTION, not both/,
+  'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
 assert.match(smoke, /pass-after-section-retry:/,
