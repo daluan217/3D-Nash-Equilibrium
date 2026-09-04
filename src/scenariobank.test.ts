@@ -537,6 +537,32 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     check('actorNounsOk: the SAME collective noun is accepted when the description is not symmetric ("each"/"both" absent) — the rule keys on the framing, not the noun alone',
       actorNounsOk({ ...compoundBase, actorA: ['ferry operators'], actorB: null,
         description: 'The ferry operators run a lightly used crossing. The operator chooses Keep Slot or Shift Slot, while the harbour scheduler chooses Early Slot or Late Slot.' }));
+    // H5 handoff (2026-09-04): the looser no-noun re-attempt pass surfaced two
+    // MORE symmetric-framing markers the "each"/"both" test missed, same defect
+    // class — a collective noun on one side while the two parties are
+    // distinguished only POSITIONALLY. Real rows: idx 257 ("orchard keepers",
+    // "One chooses... the other chooses") and idx 1965 ("lock-keepers", "The
+    // first chooses... the second chooses"). ISOLATED: neither description below
+    // contains "each"/"both", so a mutant that deletes ONLY the new markers (and
+    // keeps the each|both branch) still fails exactly these.
+    check('actorNounsOk: a collective noun on one side of a "One... the other" description is rejected',
+      !actorNounsOk({ ...compoundBase, actorA: ['orchard keepers'], actorB: null,
+        description: 'Two neighboring orchard keepers coordinate a frost watch. One chooses Keep Slot or Shift Slot, while the other chooses Early Slot or Late Slot.' }));
+    check('actorNounsOk: a collective noun on one side of a "The first... the second" description is rejected',
+      !actorNounsOk({ ...compoundBase, actorA: ['lock-keepers'], actorB: null,
+        description: 'Two lock-keepers arrange their shifts. The first chooses Keep Slot or Shift Slot, while the second chooses Early Slot or Late Slot.' }));
+    // Positive control for the new markers specifically: "the other"/"first"+
+    // "second" absent AND a genuine distinct pair — must stay accepted so the
+    // new branch cannot silently reject legitimate two-sided rows.
+    check('actorNounsOk: a distinct pair with no positional-framing markers is accepted (new-marker positive control)',
+      actorNounsOk({ ...compoundBase, actorA: ['the harbour scheduler'], actorB: ['the ferry operator'],
+        description: 'The harbour scheduler chooses Keep Slot or Shift Slot, while the ferry operator chooses Early Slot or Late Slot.' }));
+    // CodeRabbit (H5 review): positional words can describe OPTIONS rather than
+    // actors. The pre-fix broad phrase checks rejected this valid one-sided
+    // declaration even though none of first/second/other is a choosing subject.
+    check('actorNounsOk: first/second/other option wording is not mistaken for symmetric actor framing',
+      actorNounsOk({ ...compoundBase, actorA: ['The harbour scheduler'], actorB: null,
+        description: 'The harbour scheduler compares the first option with the second, then chooses Keep Slot rather than the other option; a ferry operator chooses Early Slot or Late Slot.' }));
     // CodeRabbit (phase 3 review): both regex checks above must run on the
     // NORMALIZED text — a zero-width character breaks the contiguous letters
     // a raw regex needs to match "and"/"each", the same bypass class the
