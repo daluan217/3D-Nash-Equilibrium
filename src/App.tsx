@@ -3913,8 +3913,16 @@ export default function App() {
       {/* Visually hidden — see `liveStatus`'s own comment above for why this
           announces run PHASE transitions only, never every log line. */}
       <div aria-live="polite" role="status" className="sr-only">{liveStatus}</div>
-      {/* ── Heading Banner ── */}
+      {/* ── Heading Banner ──
+          RED-APP-9/004: `sticky top-0` is exactly what Chromium's print
+          pagination bakes in as an opaque floating box wherever the page-
+          break algorithm lands it, rather than printing the header once in
+          flow at the top of page 1. `data-print="static"` is the print
+          stylesheet's hook (src/index.css) to reset this ONE element back
+          to `position: static` for print only — the on-screen sticky
+          behavior is untouched. */}
       <header
+        data-print="static"
         className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle${tourOpen ? ' [@media(max-height:560px)]:!static' : ''}`}
         style={isElectron ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
       >
@@ -3951,7 +3959,7 @@ export default function App() {
           </div>
           {isTouchDevice ? (
             /* ── TOUCH (phones + tablets): single compact row ── */
-            <div className="flex items-center justify-end gap-2 w-full flex-wrap">
+            <div data-print="hide" className="flex items-center justify-end gap-2 w-full flex-wrap">
               {!isElectron && (
                 <button
                   aria-label="Get the desktop app"
@@ -3990,7 +3998,7 @@ export default function App() {
             </div>
           ) : (
             /* ── NON-TOUCH (desktops/laptops): original flex row ── */
-            <div className="flex items-center flex-wrap gap-2.5">
+            <div data-print="hide" className="flex items-center flex-wrap gap-2.5">
               {!isElectron && (
                 <button
                   onClick={() => setIsDownloadModalOpen(true)}
@@ -4582,6 +4590,18 @@ export default function App() {
             <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="dashed" /> Search Corridor</span>
             <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="ring" /> Ghost positions</span>
           </div>
+
+          {/* RED-APP-9/004: printed/PDF output replaces the plot with this
+              same legend line (on-screen it stays exactly as it was) plus a
+              print-only note — the WebGL canvas below is hidden for print
+              ([data-tour="plot"] in src/index.css), since Chromium's print
+              path does not reliably rasterize it. `hidden print:block`
+              keeps this invisible on screen (Tailwind's built-in print
+              variant), so nothing changes for the interactive app. */}
+          <p className="hidden print:block text-xs text-slate-500">
+            The interactive 3D plot is not shown in print — WebGL canvases do not render in a printed page.
+            Open this game in the app to view it.
+          </p>
 
           {/* Plotly 3D visual component */}
           <PlotlyView
@@ -6153,6 +6173,7 @@ export default function App() {
           call-to-action inside a guided walkthrough reads as part of the tour. */}
       {!tourOpen && (
       <button
+        data-print="hide"
         onClick={openFeedback}
         title="Send feedback"
         className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-accent-600 hover:bg-accent-700 text-white text-xs font-semibold shadow-lg shadow-accent-600/20 transition-all cursor-pointer select-none"

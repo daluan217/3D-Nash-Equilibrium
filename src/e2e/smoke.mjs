@@ -2575,6 +2575,63 @@ try {
     }
   });
 
+  // ══ 41. RED-APP-9/004 — print stylesheet. Deterministic: under
+  //      `page.emulateMedia({ media: 'print' })`, NOTHING on the page may
+  //      compute to `position: fixed`/`sticky` (the red's own probe6d found
+  //      exactly two such elements pre-fix: the header and the bottom-left
+  //      Feedback launcher — both now reset/hidden under `@media print` in
+  //      src/index.css) — fails on the unfixed tree, where the header's own
+  //      `sticky top-0` survives untouched. Plus the red's own page.pdf()
+  //      smoke: a real PDF, non-empty, no exception, run mid-simulation
+  //      exactly as the red's probe6b did.
+  section('41', 'print stylesheet', 4, async () => {
+    const printPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const exitTour = printPage.getByRole('button', { name: /exit tour/i });
+    await printPage.goto(BASE, { waitUntil: 'networkidle' });
+    if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+    await printPage.waitForTimeout(500);
+    const runBtn = printPage.getByRole('button', { name: /^run$/i });
+    if (await runBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await runBtn.click();
+      await printPage.waitForTimeout(2000);
+    }
+
+    await printPage.emulateMedia({ media: 'print' });
+    await printPage.waitForTimeout(300);
+    const stickyOrFixed = await printPage.evaluate(() => Array.from(document.querySelectorAll('*'))
+      .filter((el) => {
+        const p = getComputedStyle(el).position;
+        return p === 'fixed' || p === 'sticky';
+      })
+      .map((el) => ({ tag: el.tagName, cls: el.className.toString().slice(0, 80), pos: getComputedStyle(el).position })));
+    record('FIX: no element computes position:fixed/sticky under print media',
+      stickyOrFixed.length === 0, JSON.stringify(stickyOrFixed));
+
+    const headerPosition = await printPage.evaluate(() => {
+      const h = document.querySelector('header');
+      return h ? getComputedStyle(h).position : null;
+    });
+    record('FIX: the header specifically is not position:sticky under print media',
+      headerPosition !== 'sticky', `headerPosition=${headerPosition}`);
+
+    // The red's own page.pdf() smoke, unchanged: a real PDF is produced,
+    // non-empty, no thrown exception — print media is reset by page.pdf()
+    // itself (Chromium always renders print output under print media), so
+    // this exercises the exact same stylesheet as the assertions above.
+    let pdfBytes = 0;
+    let pdfThrew = null;
+    try {
+      const pdf = await printPage.pdf({ format: 'A4', printBackground: true });
+      pdfBytes = pdf.length;
+    } catch (e) {
+      pdfThrew = String(e?.message ?? e);
+    }
+    record('page.pdf() produces a non-empty PDF with no exception', pdfThrew === null && pdfBytes > 1000,
+      pdfThrew ?? `bytes=${pdfBytes}`);
+
+    await printPage.close();
+  });
+
   await executeSections();
 
 } catch (e) {

@@ -338,7 +338,7 @@ export function Walkthrough({
        modality while the page stays live would be a lie to a screen reader.
        Advancing is by the Next button or the arrow keys; a click-to-advance
        backdrop would have fought every drag of the 3D scene. */
-    <div className="fixed inset-0 z-[60] pointer-events-none" role="dialog" aria-label="Guided tour">
+    <div data-print="hide" className="fixed inset-0 z-[60] pointer-events-none" role="dialog" aria-label="Guided tour">
 
       {/* Spotlight: an enormous ring shadow dims everything except the target. */}
       {rect && (

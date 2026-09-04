@@ -290,3 +290,75 @@ input.no-native-spinner {
     min-height: 24px;
   }
 }
+
+/* ── print stylesheet ────────────────────────────────────────────────────
+ * RED-APP-9/004: page.pdf() (Cmd/Ctrl+P, "Save as PDF") had ZERO @media
+ * print rules anywhere in the app. Chromium's print pagination captures a
+ * `position: sticky` element's on-screen "stuck" position and bakes it in
+ * as an opaque, absolutely-positioned box wherever the page-break algorithm
+ * happens to land it, rather than printing it once in flow — the header
+ * (`sticky top-0`) landed roughly in the middle of printed page 1,
+ * obscuring real content both above and below it. The red's own probe
+ * (probe6d_find_stray.mjs) confirmed exactly two elements on the page ever
+ * compute to `position: sticky`/`fixed`: the header and the bottom-left
+ * Feedback launcher.
+ *
+ * Hooked off plain `data-print` attributes (App.tsx, Walkthrough.tsx) rather
+ * than Tailwind utility-class chains, so this stays readable and does not
+ * silently drift if an unrelated className edit reorders/removes a class
+ * this file would otherwise have had to pattern-match against.
+ */
+@media print {
+  /* The one `position: sticky` element on the page. Reset to static so it
+   * prints once, in flow, at the top of page 1 — never re-baked as a
+   * floating box mid-page. The on-screen sticky behavior is untouched
+   * (this rule only exists under `@media print`). */
+  [data-print="static"] {
+    position: static !important;
+  }
+
+  /* Controls that mean nothing on paper: theme toggle, workspace menu,
+   * "Get Desktop App", Sign In / Sign Up, the bottom-left Feedback
+   * launcher (itself `position: fixed` — hiding it removes the second
+   * stray sticky/fixed element the same way `static` above handles the
+   * first), and the guided-tour overlay (`position: fixed`, plus its own
+   * `backdrop-blur-sm` spotlight scrim — hiding the whole thing is simpler
+   * and more robust than trying to reset each of its layered pieces). */
+  [data-print="hide"] {
+    display: none !important;
+    /* `display: none` alone does not clear a hidden element's OWN computed
+     * `position` (a `getComputedStyle` check does not care whether the
+     * element renders) — several of these (the Feedback launcher, the tour
+     * overlay) are themselves `position: fixed`, so reset that too. */
+    position: static !important;
+  }
+
+  /* The interactive 3D plot is WebGL; Chromium's print path does not
+   * reliably rasterize it. Replaced by the plain-HTML legend line that
+   * already sits right above it (App.tsx) plus a one-line print-only note
+   * explaining why — never left to print as a blank or broken canvas. */
+  [data-tour="plot"] {
+    display: none !important;
+  }
+
+  /* backdrop-filter (blur) is a known Chromium print limitation: it can
+   * render as a solid, opaque block instead of being ignored, rather than
+   * simply not blurring anything (there is nothing behind a printed page
+   * for it to blur). Neutralized everywhere rather than enumerating every
+   * modal that happens to use it. */
+  * {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  /* The two-column body grid (left settings, right plot/report) is only
+   * ever meant for an interactive SCREEN — on paper everything must flow
+   * top-to-bottom in page order (report, matrix, equilibrium panel) rather
+   * than risk two columns fighting a page break. `lg:grid-cols-12` already
+   * collapses to one column below that breakpoint, but print does not
+   * reliably use the same viewport width as the screen it was invoked
+   * from, so this is asserted explicitly rather than left to inherit. */
+  main.grid {
+    display: block !important;
+  }
+}
