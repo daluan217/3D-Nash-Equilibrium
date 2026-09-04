@@ -27,6 +27,16 @@
  *                            runs before Electron's own 'ready' event),
  *                            then fire 'ready', wait past 800ms, then fire
  *                            'activate'. Expect ZERO windows ever created.
+ *   mode = 'data-conflict' — same startup-blocked timing, but with the
+ *                            explicit database-conflict kind (2 candidates).
+ *                            Captures the native dialog options so the
+ *                            integration test can assert its backup-first
+ *                            recovery hint (plural wording).
+ *   mode = 'data-conflict-single' — same, but with candidateCount: 1 (a
+ *                            conflict copy with no primary db.json yet).
+ *                            Captures the dialog options so the test can
+ *                            assert the singular wording never claims a
+ *                            nonexistent second file.
  *   mode = 'slowboot-normal' — do NOT simulate a lock failure (genuine slow
  *                            boot: serverStarted stays false with no lock
  *                            issue). Fire 'ready', wait past 800ms. Expect
@@ -40,13 +50,15 @@ const path = require('path');
 
 const mainCjsPath = process.argv[2];
 const mode = process.argv[3];
-if (!mainCjsPath || !['lockfail', 'slowboot-normal'].includes(mode)) {
-  console.log('usage: electron-window-guard-runner.cjs <mainCjsPath> <lockfail|slowboot-normal>');
+const VALID_MODES = ['lockfail', 'data-conflict', 'data-conflict-single', 'slowboot-normal'];
+if (!mainCjsPath || !VALID_MODES.includes(mode)) {
+  console.log(`usage: electron-window-guard-runner.cjs <mainCjsPath> <${VALID_MODES.join('|')}>`);
   process.exit(2);
 }
 
 let windowCount = 0;
 let dialogShown = 0;
+let dialogOptions = null;
 const onHandlers = {};
 
 function totalStub(name) {
@@ -91,8 +103,9 @@ const fakeApp = {
 };
 
 const fakeDialog = {
-  showMessageBox() {
+  showMessageBox(options) {
     dialogShown++;
+    dialogOptions = options;
     // Never resolves within this test's real-time window — matches the
     // real UX (a modal dialog sits open until the user clicks something),
     // and specifically exercises that `lockFailurePending`/the timer
@@ -122,16 +135,24 @@ Module._load = function (request, parent, isMain) {
 
 require(path.resolve(mainCjsPath));
 
-if (mode === 'lockfail') {
+if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-single') {
   // The real ordering: server.ts calls this synchronously during the
   // top-level require() above (which already ran), i.e. BEFORE Electron's
   // own 'ready' event ever fires.
-  globalThis.onDesktopLockFailure({ message: 'test lock failure', lockFile: '/tmp/x/.server.lock' });
+  let payload;
+  if (mode === 'data-conflict') {
+    payload = { message: 'test database conflict', lockFile: '/tmp/x/db.json 2', kind: 'data-conflict', candidateCount: 2 };
+  } else if (mode === 'data-conflict-single') {
+    payload = { message: 'test database conflict (copy only)', lockFile: '/tmp/x/db.json 2', kind: 'data-conflict', candidateCount: 1 };
+  } else {
+    payload = { message: 'test lock failure', lockFile: '/tmp/x/.server.lock' };
+  }
+  globalThis.onDesktopLockFailure(payload);
   if (typeof onHandlers.ready === 'function') onHandlers.ready();
   setTimeout(() => {
     if (typeof onHandlers.activate === 'function') onHandlers.activate();
     setTimeout(() => {
-      console.log(`RUNNER_RESULT ${JSON.stringify({ windowCount, dialogShown })}`);
+      console.log(`RUNNER_RESULT ${JSON.stringify({ windowCount, dialogShown, dialogOptions })}`);
       process.exit(0);
     }, 50);
   }, 900); // past the 800ms fallback
