@@ -380,7 +380,14 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNou
     const sc = avoid ? bankScenarioAvoiding(payoffs, domain, avoid.name) : bankScenario(payoffs, domain);
     if (sc) return { scenario: actorNouns ? sc : withoutActorNouns(sc) };
   }
-  if (!LOCAL_PROMPT) {
+  // Actor-mode requests always go through generateScenario, even when
+  // REPORT_LOCAL_PROMPT is set: the local explainer was trained only on the
+  // full-report task with the compact LOCAL_SYSTEM_PROMPT (no actor-noun
+  // rule, no SCENARIO_SCHEMA_WITH_ACTORS), so an actor-mode draw through
+  // generateReport can never carry actorA/actorB — it would just burn every
+  // reroll attempt against a schema that structurally cannot satisfy the
+  // actor-noun validator, then fall through to bank-fallback or failure.
+  if (!LOCAL_PROMPT || actorNouns) {
     return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true, actorNouns });
   }
   const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });

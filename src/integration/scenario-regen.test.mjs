@@ -146,6 +146,19 @@ async function call(method, url, { body, token } = {}) {
 
 const PAYOFFS = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 2, b12: 0, b21: 0, b22: 3 };
 
+// A "no news is good news" loop is not a check: `call()` returns
+// `{status, json:null}` on malformed JSON and never throws on a non-200, so
+// counting only the desired shape (actor nouns present / absent) silently
+// treats every failed or malformed response as a noun-free non-match. This
+// requires every response actually be the real, well-formed scenario shape.
+const isValidScenarioShape = (sc) =>
+  !!sc && typeof sc.name === 'string' && sc.name.length > 0
+    && typeof sc.row1 === 'string' && sc.row1.length > 0
+    && typeof sc.row2 === 'string' && sc.row2.length > 0
+    && typeof sc.col1 === 'string' && sc.col1.length > 0
+    && typeof sc.col2 === 'string' && sc.col2.length > 0
+    && typeof sc.description === 'string' && sc.description.length > 0;
+
 // Env recipe shared by every "flag ON, hosted" section — pinned per CLAUDE.md's
 // harness rule (explicit REPORT_MODEL; no REPORT_REASONING override, matching
 // what production actually passes).
@@ -408,17 +421,31 @@ try {
     let none429 = true;
     let bankActorRows = 0;
     let ordinaryActorLeaks = 0;
+    let regenInvalid = 0;
+    let ordinaryInvalid = 0;
     for (let i = 0; i < 25; i++) {
       const rr = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
       if (rr.status === 429) none429 = false;
-      const sc = rr.json?.scenario;
-      if (sc?.actorA?.length && sc?.actorB?.length
-        && sc.actorA.every((term) => sc.description.includes(term))
-        && sc.actorB.every((term) => sc.description.includes(term))) bankActorRows++;
+      if (rr.status !== 200 || !isValidScenarioShape(rr.json?.scenario)) {
+        regenInvalid++;
+      } else {
+        const sc = rr.json.scenario;
+        if (sc.actorA?.length && sc.actorB?.length
+          && sc.actorA.every((term) => sc.description.includes(term))
+          && sc.actorB.every((term) => sc.description.includes(term))) bankActorRows++;
+      }
       const ordinary = await call('POST', '/api/report', { body: { payoffs: PAYOFFS, scenarioOnly: true } });
-      if (ordinary.json?.scenario?.actorA || ordinary.json?.scenario?.actorB) ordinaryActorLeaks++;
+      if (ordinary.status !== 200 || !isValidScenarioShape(ordinary.json?.scenario)) {
+        ordinaryInvalid++;
+      } else if (ordinary.json.scenario.actorA || ordinary.json.scenario.actorB) {
+        ordinaryActorLeaks++;
+      }
     }
     record('desktop: 25 regenerate calls, never a 429 (hosted-only rate limit lifted under IS_ELECTRON)', none429);
+    record('desktop: all 25 regenerate calls returned 200 with a well-formed scenario', regenInvalid === 0,
+      `invalid/malformed=${regenInvalid}/25`);
+    record('desktop: all 25 ordinary scenario-only report calls returned 200 with a well-formed scenario', ordinaryInvalid === 0,
+      `invalid/malformed=${ordinaryInvalid}/25`);
     record('desktop: bank actor nouns survive the regenerate response wire verbatim', bankActorRows > 0,
       `actor-bearing rows=${bankActorRows}/25`);
     record('desktop: ordinary bank scenario draws stay noun-free', ordinaryActorLeaks === 0,
@@ -564,6 +591,34 @@ try {
       Array.isArray(stillThere2?.colorTermsA) && stillThere2.colorTermsA.length === 0,
       `colorTermsA=${JSON.stringify(stillThere2?.colorTermsA)}`);
 
+    await stop();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 11. REPORT_LOCAL_PROMPT=1 — actor mode must not fall back to the local
+  //     explainer's report prompt/schema. That schema has no actorA/actorB
+  //     property (REPORT_SCHEMA is shared and frozen for the full-report
+  //     path), so a pre-fix regenerate under this flag would route through
+  //     generateReport, get content that can never satisfy the actor-noun
+  //     validator, exhaust every reroll, and come back with no scenario at
+  //     all. The mock's `actors` response is deliberately NOT a valid report
+  //     envelope (no claimedEquilibria/geometryClaims/proseClaims/prose), so
+  //     it only succeeds if the server routes this call through
+  //     generateScenario instead — proving the fix, not just its symptom.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    calls = 0; mode = 'actors'; sequence = null;
+    await boot({ ...HOSTED_ON_ENV, REPORT_LOCAL_PROMPT: '1' });
+    const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+    record('REPORT_LOCAL_PROMPT=1: regenerate still returns 200 with a scenario (not stuck behind the local report prompt)',
+      r.status === 200 && !!r.json?.scenario, `status=${r.status} body=${JSON.stringify(r.json)}`);
+    record('REPORT_LOCAL_PROMPT=1: actor nouns are present on the regenerate response',
+      r.json?.scenario?.actorA?.[0] === 'A harbor operator' && r.json?.scenario?.actorB?.[0] === 'a tug company',
+      `scenario=${JSON.stringify(r.json?.scenario)}`);
+    const schema = lastProviderRequest?.response_format?.json_schema?.schema;
+    record('REPORT_LOCAL_PROMPT=1: the provider request used the scenario-only actor schema, not the frozen report schema',
+      !!schema?.properties?.suggestedScenario?.properties?.actorA && !schema?.properties?.claimedEquilibria,
+      `schema keys=${JSON.stringify(Object.keys(schema?.properties ?? {}))}`);
     await stop();
   }
 
