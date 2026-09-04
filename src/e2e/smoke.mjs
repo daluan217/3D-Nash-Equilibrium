@@ -235,7 +235,10 @@ async function waitForScene(timeout = 60000, p = page) {
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await dismissTour();
-  await page.waitForTimeout(400);
+  // A successful navigation can precede React's interactive controls.  The
+  // first payoff input is the stable readiness boundary every core section
+  // needs; waiting for it removes a fixed delay without racing the UI.
+  await $.matrix.first().waitFor({ state: 'visible' });
 }
 /* The tour auto-opens ~700ms after every anonymous load (by design), and a
  * fresh CI browser is always anonymous. Dismiss it through the

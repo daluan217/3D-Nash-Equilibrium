@@ -49,13 +49,18 @@ for (let shard = 1; shard <= 4; shard++) {
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
+const historicalShard1Ids = ['1', '5', '6', '14', '21', '23', '27', '33'];
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SHARD: '1/4' }).selected.map(({ id }) => id),
-  definitions.filter(({ shard }) => shard === 1).map(({ id }) => id),
+  historicalShard1Ids,
   'the CI shard selector must retain its historical section assignment');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
   'a local section selector must run exactly the requested H1 regressions');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '999' }), /unknown E2E_SECTION ID/,
   'a local section selector must reject an identifier that does not name a registered section');
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E_SHARD must not be blank/,
+  'a whitespace-only shard must not silently become an unset selector');
+assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
+  'a whitespace-only section list must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/4', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,

@@ -226,6 +226,15 @@ const SCENARIO_REROLL_LIMIT = (() => {
  */
 type RegenAvoid = { name?: string; description?: string; domain?: string };
 
+// Actor declarations are a regeneration-preview affordance, not part of the
+// long-standing report/new-scenario response shape.  Bank rows may carry them
+// as source metadata, so remove them at the shared screened-result boundary
+// whenever the caller did not explicitly opt in.
+function withoutActorNouns(sc: SuggestedScenario): SuggestedScenario {
+  const { actorA: _actorA, actorB: _actorB, ...nounFree } = sc;
+  return nounFree;
+}
+
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
@@ -260,7 +269,7 @@ async function inventScreenedScenario(
       continue;
     }
     if (!gateOn || storyOk(draw.scenario)) {
-      return { scenario: draw.scenario };
+      return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
     }
     // GATE-DROPPED: a real draw came back and the screen rejected it. This
     // is the only case the bounded reroll setting governs.
@@ -295,7 +304,7 @@ async function inventScreenedScenario(
     ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
     : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
   if (fallback && (!gateOn || storyOk(fallback))) {
-    return { scenario: fallback, scenarioSource: 'bank-fallback' };
+    return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
   }
   return { scenario: null, failure: exhaustionFailure };
 }
@@ -369,7 +378,7 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNou
   const domain = pickScenarioDomainExcluding(avoid?.domain);
   if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
     const sc = avoid ? bankScenarioAvoiding(payoffs, domain, avoid.name) : bankScenario(payoffs, domain);
-    if (sc) return { scenario: sc };
+    if (sc) return { scenario: actorNouns ? sc : withoutActorNouns(sc) };
   }
   if (!LOCAL_PROMPT) {
     return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true, actorNouns });

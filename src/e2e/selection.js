@@ -3,8 +3,16 @@
  * CI uses E2E_SHARD; E2E_SECTION is a local-only surgical rerun aid.
  */
 export function selectSmokeSections(definitions, env = process.env) {
-  const shardRaw = env.E2E_SHARD?.trim();
-  const sectionRaw = env.E2E_SECTION?.trim();
+  const readConfigured = (name) => {
+    const raw = env[name];
+    if (raw === undefined) return null;
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      throw new Error(`${name} must not be blank when configured`);
+    }
+    return raw.trim();
+  };
+  const shardRaw = readConfigured('E2E_SHARD');
+  const sectionRaw = readConfigured('E2E_SECTION');
   if (shardRaw && sectionRaw) throw new Error('Set E2E_SHARD or E2E_SECTION, not both.');
 
   let shard = null;

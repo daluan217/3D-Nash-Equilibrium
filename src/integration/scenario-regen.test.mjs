@@ -388,7 +388,9 @@ try {
 
   // ═══════════════════════════════════════════════════════════════════════
   // 8. DESKTOP — bank first (0 provider calls even with credentials
-  //    configured), reachable with NO credentials at all, never rate-limited
+  //    configured), reachable with NO credentials at all, never rate-limited.
+  //    Actor nouns are retained only for regenerate; ordinary scenario-only
+  //    report draws must stay on their frozen noun-free contract.
   // ═══════════════════════════════════════════════════════════════════════
   {
     calls = 0; mode = 'story';
@@ -405,6 +407,7 @@ try {
       health.json?.capabilities?.scenarioRegen === true, `capabilities=${JSON.stringify(health.json?.capabilities)}`);
     let none429 = true;
     let bankActorRows = 0;
+    let ordinaryActorLeaks = 0;
     for (let i = 0; i < 25; i++) {
       const rr = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
       if (rr.status === 429) none429 = false;
@@ -412,10 +415,14 @@ try {
       if (sc?.actorA?.length && sc?.actorB?.length
         && sc.actorA.every((term) => sc.description.includes(term))
         && sc.actorB.every((term) => sc.description.includes(term))) bankActorRows++;
+      const ordinary = await call('POST', '/api/report', { body: { payoffs: PAYOFFS, scenarioOnly: true } });
+      if (ordinary.json?.scenario?.actorA || ordinary.json?.scenario?.actorB) ordinaryActorLeaks++;
     }
     record('desktop: 25 regenerate calls, never a 429 (hosted-only rate limit lifted under IS_ELECTRON)', none429);
     record('desktop: bank actor nouns survive the regenerate response wire verbatim', bankActorRows > 0,
       `actor-bearing rows=${bankActorRows}/25`);
+    record('desktop: ordinary bank scenario draws stay noun-free', ordinaryActorLeaks === 0,
+      `actor-bearing ordinary draws=${ordinaryActorLeaks}/25`);
     await stop();
   }
 
@@ -443,6 +450,15 @@ try {
     record('timeout: ladder exhaustion is rescued by the bank fallback (a scenario is still returned)',
       r.status === 200 && !!r.json?.scenario && r.json?.scenarioSource === 'bank-fallback',
       `status=${r.status} body=${JSON.stringify(r.json)}`);
+    const ordinaryFallback = await call('POST', '/api/report', {
+      body: { payoffs: PAYOFFS, scenarioOnly: true },
+    });
+    record('timeout: the ordinary report fallback remains noun-free',
+      ordinaryFallback.status === 200
+        && ordinaryFallback.json?.scenarioSource === 'bank-fallback'
+        && !ordinaryFallback.json?.scenario?.actorA
+        && !ordinaryFallback.json?.scenario?.actorB,
+      `status=${ordinaryFallback.status} scenario=${JSON.stringify(ordinaryFallback.json?.scenario)}`);
     await stop();
   }
 
