@@ -1374,12 +1374,21 @@ function testUserColorTerms() {
   // this exact order is not reachable through the real predicate today — but
   // the ordering is the correctness boundary regardless of what the
   // predicate currently enforces, so it is asserted at the source directly.
+  const ASSIGN_LINE = 'if (options.actorNouns) Object.assign(sc, cleanScenarioActorNouns(value, sc));';
   const emptyCheckIndex = cleanScenarioSource.indexOf('Object.values(sc).some(Boolean)');
-  const assignIndex = cleanScenarioSource.indexOf('if (options.actorNouns) Object.assign(sc, cleanScenarioActorNouns(value, sc));');
+  const assignIndex = cleanScenarioSource.indexOf(ASSIGN_LINE);
   assert(emptyCheckIndex !== -1 && assignIndex !== -1 && emptyCheckIndex < assignIndex,
     'cleanScenario must reject an empty base scenario BEFORE actor metadata can be merged in, not after');
-  assert(/return sc;\s*\}\s*$/.test(cleanScenarioSource.trimEnd()),
-    'cleanScenario must return the built object directly once the empty check has already run, not re-check emptiness after the actor-noun merge');
+  // CodeRabbit follow-up on PR #111: checking only that the ONE emptiness
+  // check is early and the function ends with `return sc;` would still pass
+  // if a SECOND `.some(Boolean)` check were added after the actor-noun
+  // merge (the function could still end with `return sc;` further down).
+  // The real invariant is that the check occurs EXACTLY ONCE, before the
+  // merge — so assert nothing shaped like an emptiness check exists in the
+  // remainder of the function after the merge line at all.
+  const afterAssign = cleanScenarioSource.slice(assignIndex + ASSIGN_LINE.length);
+  assert(!/\.some\(Boolean\)/.test(afterAssign),
+    'cleanScenario must not repeat an emptiness check after the actor-noun merge — the ONE check before the merge must be the only one, not merely the first of several');
   const reportRouteSource = serverSrc.slice(
     serverSrc.indexOf('app.post("/api/report"'),
     serverSrc.indexOf('app.post("/api/scenario/regenerate"'),
