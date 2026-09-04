@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { selectSmokeSections } from './selection.js';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -32,32 +33,6 @@ function record(name, pass, detail) {
 
 function section(id, name, shard, run) {
   sections.push({ id: String(id), name, shard, run });
-}
-
-function selectedShard() {
-  const raw = process.env.E2E_SHARD?.trim();
-  if (!raw) return null;
-  const match = /^(\d+)\/(\d+)$/.exec(raw);
-  if (!match) throw new Error(`E2E_SHARD must look like "2/4"; got ${JSON.stringify(raw)}`);
-  const shard = Number(match[1]);
-  const count = Number(match[2]);
-  if (count !== 4 || shard < 1 || shard > count) {
-    throw new Error(`smoke.mjs defines exactly 4 shards; got ${JSON.stringify(raw)}`);
-  }
-  return { raw, shard, count };
-}
-
-// Local investigation can run one named regression without paying for its
-// entire shard. CI intentionally leaves this unset and continues to use the
-// four-way E2E_SHARD matrix above.
-function selectedSectionIds() {
-  const raw = process.env.E2E_SECTION?.trim();
-  if (!raw) return null;
-  const ids = raw.split(',').map((id) => id.trim()).filter(Boolean);
-  if (ids.length === 0 || new Set(ids).size !== ids.length) {
-    throw new Error(`E2E_SECTION must be one or more distinct section IDs; got ${JSON.stringify(raw)}`);
-  }
-  return { raw, ids: new Set(ids) };
 }
 
 // ── boot the production server (unless one is already listening) ────────────
@@ -190,27 +165,10 @@ async function runSection(definition, attempt) {
 }
 
 async function executeSections() {
-  const requested = selectedShard();
-  const requestedSections = selectedSectionIds();
-  if (requested && requestedSections) throw new Error('Set E2E_SHARD or E2E_SECTION, not both.');
-  executedShard = requested;
-  const selected = requestedSections
-    ? sections.filter((definition) => requestedSections.ids.has(definition.id))
-    : requested
-    ? sections.filter((definition) => definition.shard === requested.shard)
-    : sections;
-  if (requestedSections && selected.length !== requestedSections.ids.size) {
-    const missing = [...requestedSections.ids].filter((id) => !selected.some((definition) => definition.id === id));
-    throw new Error(`unknown E2E_SECTION ID(s): ${missing.join(', ')}`);
-  }
-  if (selected.length === 0) throw new Error(`no smoke sections selected for ${requestedSections?.raw ?? requested?.raw ?? 'all'}`);
-
-  const selection = requestedSections
-    ? ` for sections ${requestedSections.raw}`
-    : requested
-      ? ` for shard ${requested.raw}`
-      : ' (all shards locally)';
-  console.log(`Running ${selected.length}/${sections.length} smoke sections${selection}.`);
+  const selection = selectSmokeSections(sections);
+  executedShard = selection.shard;
+  const selected = selection.selected;
+  console.log(`Running ${selected.length}/${sections.length} smoke sections${selection.label}.`);
   // Shards 2-4 can begin with a primary-page section even though section 1 is
   // assigned to shard 1. Load the same clean starting page once for them.
   if (selected[0].id !== '1' && selected.some((definition) => primaryPageSection(definition.id))) {
@@ -1637,18 +1595,21 @@ try {
     const previewLocator = savePage.getByText('New scenario (preview)', { exact: false });
     await previewLocator.waitFor({ state: 'visible', timeout: 5000 });
     record('the regenerated preview shows the mocked scenario name', await savePage.getByText(REGEN_STORY_A.name, { exact: false }).isVisible().catch(() => false));
-    const previewActorClasses = await savePage.evaluate(() => {
+    const previewActorSpans = await savePage.evaluate(() => {
       const marker = [...document.querySelectorAll('p')].find((node) => node.textContent?.trim() === 'New scenario (preview)');
       const card = marker?.parentElement;
       const spans = card?.querySelectorAll('span') ?? [];
       return [...spans]
         .filter((span) => span.textContent?.toLowerCase() === 'the north orchard' || span.textContent === 'the south orchard')
-        .map((span) => `${span.textContent?.toLowerCase()}:${span.className}`);
+        .map((span) => ({ term: span.textContent?.toLowerCase(), className: span.className }));
     });
+    const northSpans = previewActorSpans.filter((span) => span.term === 'the north orchard');
+    const southSpans = previewActorSpans.filter((span) => span.term === 'the south orchard');
     record('H1: actor nouns from the enabled regenerate mock are colour-coded on the preview',
-      previewActorClasses.includes('the north orchard:text-player-a-ink dark:text-player-a-ink-dark font-semibold')
-      && previewActorClasses.includes('the south orchard:text-player-b-ink dark:text-player-b-ink-dark font-semibold'),
-      JSON.stringify(previewActorClasses));
+      northSpans.length > 0 && southSpans.length > 0
+      && northSpans.every((span) => span.className === 'text-player-a-ink dark:text-player-a-ink-dark font-semibold')
+      && southSpans.every((span) => span.className === 'text-player-b-ink dark:text-player-b-ink-dark font-semibold'),
+      JSON.stringify(previewActorSpans));
 
     record('typed Name field is untouched while the preview is showing', await nameField.inputValue() === 'My Own Typed Name');
     record('typed Description field is untouched while the preview is showing', await descField.inputValue() === 'My own typed description, carefully written by hand.');

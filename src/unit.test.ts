@@ -1358,6 +1358,25 @@ function testUserColorTerms() {
     + 'Any other field here reaches the model prompt.');
   assert(!/\.\.\./.test(m![1]),
     'cleanScenario must not spread the client object into the prompt scenario');
+  const cleanScenarioSource = serverSrc.slice(
+    serverSrc.indexOf('function cleanScenario('),
+    serverSrc.indexOf('function cleanPayoffs('),
+  );
+  assert(/options: \{ actorNouns\?: boolean \} = \{\}/.test(cleanScenarioSource),
+    'cleanScenario must default actor noun retention off for all callers');
+  assert(/if \(options\.actorNouns\) Object\.assign\(sc, cleanScenarioActorNouns\(value, sc\)\);/.test(cleanScenarioSource),
+    'actor noun retention must be an explicit cleanScenario opt-in');
+  const reportRouteSource = serverSrc.slice(
+    serverSrc.indexOf('app.post("/api/report"'),
+    serverSrc.indexOf('app.post("/api/scenario/regenerate"'),
+  );
+  assert(/const scenario = cleanScenario\(req\.body\?\.scenario\);/.test(reportRouteSource),
+    '/api/report must use cleanScenario without actor noun retention');
+  assert(!/actorNouns:\s*true/.test(reportRouteSource),
+    '/api/report must never carry client actor nouns into its prompt scenario');
+  const regenRouteSource = serverSrc.slice(serverSrc.indexOf('app.post("/api/scenario/regenerate"'));
+  assert(/const cleanedScenario = cleanScenario\(scenario, \{ actorNouns: true \}\);/.test(regenRouteSource),
+    'only the regenerate response boundary must opt in to actor noun retention');
 
   // Actor nouns are the one deliberate extension to this boundary. The pure
   // sanitizer owns their cap/dedup/collision policy and delegates the final

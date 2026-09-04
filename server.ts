@@ -2029,7 +2029,7 @@ function cleanColorTerms(body: any, allowClear = false): Partial<Pick<SavedGame,
  * as markup. Lengths are capped so a long description cannot crowd out the
  * grounding payload that keeps the explanation correct.
  */
-function cleanScenario(value: any): Scenario | undefined {
+function cleanScenario(value: any, options: { actorNouns?: boolean } = {}): Scenario | undefined {
   if (!value || typeof value !== "object") return undefined;
   const noTags = (v: unknown, n: number) =>
     cleanText(v, n).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
@@ -2048,9 +2048,9 @@ function cleanScenario(value: any): Scenario | undefined {
     description: noTags(value.description, 1200) || undefined,
   };
   // Regenerate is the only caller whose response can legitimately carry actor
-  // nouns. Keep the fields through this server boundary only when the shared
-  // bank predicate still verifies them against the cleaned description/labels.
-  Object.assign(sc, cleanScenarioActorNouns(value, sc));
+  // nouns. Full-report inputs stay on the frozen schema even when a client
+  // sends extra fields; opt in only at the regenerate response boundary.
+  if (options.actorNouns) Object.assign(sc, cleanScenarioActorNouns(value, sc));
   return Object.values(sc).some(Boolean) ? sc : undefined;
 }
 
@@ -3245,7 +3245,7 @@ async function startServer() {
     // Apply the same response clamp as any client-supplied scenario before the
     // preview sees it. This is what keeps bank and cloud nouns on one safe wire
     // shape even if a future caller bypasses the model's structured schema.
-    const cleanedScenario = cleanScenario(scenario);
+    const cleanedScenario = cleanScenario(scenario, { actorNouns: true });
     console.log(`[regen] served source=${scenarioSource ?? (scenario ? 'model' : 'none')} desktop=${process.env.IS_ELECTRON === 'true'}`);
     return res.json({ scenario: cleanedScenario ?? null, failure: cleanedScenario ? null : (failure ?? "error"), scenarioSource });
   }));
