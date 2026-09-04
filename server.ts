@@ -26,6 +26,7 @@ import { validateReport, validateScenario, validateProseClaims, validateProseDir
 import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
 import { stripUnsafeText, clampGraphemeSafe } from "./src/utils/textSafety";
+import { cleanScenarioActorNouns } from "./src/utils/scenarioActorNouns";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
 // since the materialized best-reply table landed: the 2026-08-27 follow-up
@@ -225,15 +226,28 @@ const SCENARIO_REROLL_LIMIT = (() => {
  */
 type RegenAvoid = { name?: string; description?: string; domain?: string };
 
+// Actor declarations are a regeneration-preview affordance, not part of the
+// long-standing report/new-scenario response shape.  Bank rows may carry them
+// as source metadata, so remove them at the shared screened-result boundary
+// whenever the caller did not explicitly opt in.
+function withoutActorNouns(sc: SuggestedScenario): SuggestedScenario {
+  const { actorA: _actorA, actorB: _actorB, ...nounFree } = sc;
+  return nounFree;
+}
+
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
   avoid?: RegenAvoid,
+  actorNouns = false,
 ): Promise<{ scenario: SuggestedScenario | null; failure?: string; scenarioSource?: 'bank-fallback' }> {
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
   const storyOk = (sc: SuggestedScenario): boolean => {
-    if (!validateScenario(sc, payoffs).ok) return false;
+    // Actor declarations are a regenerate-only response contract. The full
+    // report schema deliberately remains unchanged, so its existing gate must
+    // not start demanding fields it can never receive.
+    if (!validateScenario(sc, payoffs, { actorNouns }).ok) return false;
     const claimFree = scenarioIsClaimFree(sc);
     if (!claimFree.ok) { onDrop?.(claimFree.reason); return false; }
     if (avoid && isSameStory(sc, avoid)) { onDrop?.('regen-same-story'); return false; }
@@ -245,7 +259,7 @@ async function inventScreenedScenario(
   let gateRerollsUsed = 0;
   let exhaustionFailure = "validation-failed";
   for (;;) {
-    const draw = await drawWithDeadline(payoffs, avoid);
+    const draw = await drawWithDeadline(payoffs, avoid, actorNouns);
     if (!draw.scenario) {
       // LOST: the draw never produced a scenario at all (timeout, provider
       // error, unparseable output). Exactly one retry, same as before this
@@ -255,7 +269,7 @@ async function inventScreenedScenario(
       continue;
     }
     if (!gateOn || storyOk(draw.scenario)) {
-      return { scenario: draw.scenario };
+      return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
     }
     // GATE-DROPPED: a real draw came back and the screen rejected it. This
     // is the only case the bounded reroll setting governs.
@@ -290,7 +304,7 @@ async function inventScreenedScenario(
     ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
     : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
   if (fallback && (!gateOn || storyOk(fallback))) {
-    return { scenario: fallback, scenarioSource: 'bank-fallback' };
+    return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
   }
   return { scenario: null, failure: exhaustionFailure };
 }
@@ -335,7 +349,7 @@ const SCENARIO_DEADLINE_MS = (() => {
   return Number.isInteger(raw) && raw >= 1 && raw <= 2147483647 ? raw : 20_000;
 })();
 
-async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<{ scenario: null; failure: string }>((resolve) => {
     timer = setTimeout(() => resolve({ scenario: null, failure: "timeout" }), SCENARIO_DEADLINE_MS);
@@ -344,7 +358,7 @@ async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid): Promi
   });
   try {
     return await Promise.race([
-      inventScenario(payoffs, avoid).catch((err) => {
+      inventScenario(payoffs, avoid, actorNouns).catch((err) => {
         console.warn(`[report] scenario draw failed: ${err?.message ?? err}`);
         return { scenario: null, failure: "error" as const };
       }),
@@ -355,7 +369,7 @@ async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid): Promi
   }
 }
 
-async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
   // On the desktop bank path only, bias the domain away from where the
   // CURRENT story came from (regen's `avoid.domain`, from `bankDomainFor`) so
   // a regenerate is not just non-identical but reads as a new setting too.
@@ -364,10 +378,17 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid): Promise
   const domain = pickScenarioDomainExcluding(avoid?.domain);
   if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
     const sc = avoid ? bankScenarioAvoiding(payoffs, domain, avoid.name) : bankScenario(payoffs, domain);
-    if (sc) return { scenario: sc };
+    if (sc) return { scenario: actorNouns ? sc : withoutActorNouns(sc) };
   }
-  if (!LOCAL_PROMPT) {
-    return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true });
+  // Actor-mode requests always go through generateScenario, even when
+  // REPORT_LOCAL_PROMPT is set: the local explainer was trained only on the
+  // full-report task with the compact LOCAL_SYSTEM_PROMPT (no actor-noun
+  // rule, no SCENARIO_SCHEMA_WITH_ACTORS), so an actor-mode draw through
+  // generateReport can never carry actorA/actorB — it would just burn every
+  // reroll attempt against a schema that structurally cannot satisfy the
+  // actor-noun validator, then fall through to bank-fallback or failure.
+  if (!LOCAL_PROMPT || actorNouns) {
+    return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true, actorNouns });
   }
   const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
   return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
@@ -2024,7 +2045,7 @@ function cleanColorTerms(body: any, allowClear = false): Partial<Pick<SavedGame,
  * as markup. Lengths are capped so a long description cannot crowd out the
  * grounding payload that keeps the explanation correct.
  */
-function cleanScenario(value: any): Scenario | undefined {
+function cleanScenario(value: any, options: { actorNouns?: boolean } = {}): Scenario | undefined {
   if (!value || typeof value !== "object") return undefined;
   const noTags = (v: unknown, n: number) =>
     cleanText(v, n).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
@@ -2042,6 +2063,10 @@ function cleanScenario(value: any): Scenario | undefined {
     col2: label(value.col2),
     description: noTags(value.description, 1200) || undefined,
   };
+  // Regenerate is the only caller whose response can legitimately carry actor
+  // nouns. Full-report inputs stay on the frozen schema even when a client
+  // sends extra fields; opt in only at the regenerate response boundary.
+  if (options.actorNouns) Object.assign(sc, cleanScenarioActorNouns(value, sc));
   return Object.values(sc).some(Boolean) ? sc : undefined;
 }
 
@@ -3231,9 +3256,14 @@ async function startServer() {
       payoffs,
       (reason) => console.warn(`[regen] scenario dropped: ${reason}`),
       avoid,
+      true,
     );
+    // Apply the same response clamp as any client-supplied scenario before the
+    // preview sees it. This is what keeps bank and cloud nouns on one safe wire
+    // shape even if a future caller bypasses the model's structured schema.
+    const cleanedScenario = cleanScenario(scenario, { actorNouns: true });
     console.log(`[regen] served source=${scenarioSource ?? (scenario ? 'model' : 'none')} desktop=${process.env.IS_ELECTRON === 'true'}`);
-    return res.json({ scenario, failure: scenario ? null : (failure ?? "error"), scenarioSource });
+    return res.json({ scenario: cleanedScenario ?? null, failure: cleanedScenario ? null : (failure ?? "error"), scenarioSource });
   }));
 
   // ── Feedback API ───────────────────────────────────────────────────────────

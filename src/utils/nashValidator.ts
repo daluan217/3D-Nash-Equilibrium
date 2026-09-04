@@ -42,6 +42,7 @@ import { computeAllNE, computeIndifference, regretA, regretB, equilibriumSet, ha
 // Pure like gameEngine — types in, numbers out, no I/O. Importing it keeps this
 // module dependency-free in the sense the header means.
 import { describeGeometry } from './geometry';
+import { actorNounsOk } from './scenarioBank';
 
 /** Matches the solver's own r3 rounding, so tolerance is consistent. */
 const COORD_TOL = 0.0015;
@@ -1655,7 +1656,11 @@ const BRACE_DEBRIS = /[{}]/;
  */
 const SELF_TALK = /\bneed clean json\b|\bmust include only\b|\blet['\u2019]?s formulate\b|\bi accidentally\b|\bas an ai\b/i;
 
-export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): ScenarioValidation {
+export function validateScenario(
+  sc: SuggestedScenario,
+  g: GamePayoffs,
+  options: { actorNouns?: boolean } = {},
+): ScenarioValidation {
   const issues: string[] = [];
 
   // MODEL-INTERNAL DEBRIS. First, because a description carrying a decoder's
@@ -1741,6 +1746,17 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
     issues.push('actorA/actorB is not an array of strings — malformed declaration shape');
   }
 
+  // FEATURE-REGEN's schema explicitly asks for actor nouns, unlike the full
+  // report's deliberately frozen schema. Only this opt-in path therefore
+  // re-enables the useful, decidable declaration checks: literal occurrence in
+  // the description and exclusive ownership (plus the shared bank safety
+  // bars). A semantic role-noun/misattribution classifier remains retired: its
+  // 8,069-scenario measurement found no target defect and the old rule could
+  // not identify the one letter-form defect the existing check already catches.
+  if (options.actorNouns && !actorNounsOk(sc)) {
+    issues.push('actorA/actorB must be verbatim, disjoint, non-label actor nouns for regenerate');
+  }
+
   const claims = sc.storyClaims ?? null;
   // Same shape guards as validateProseClaims: a provider without strict
   // structured outputs can hand these back as non-arrays, and the gate must
@@ -1772,8 +1788,10 @@ export function validateScenario(sc: SuggestedScenario, g: GamePayoffs): Scenari
   const desc = normalizeProseMinus(sc.description ?? '');
 
   /**
-   * THE ROLE-NOUN MISATTRIBUTION CHECK IS GONE. It could not fire, and the
-   * defect it guards is not there.
+   * THE SEMANTIC ROLE-NOUN MISATTRIBUTION CHECK IS STILL GONE. The narrow,
+   * structural verbatim/disjoint declaration check above is deliberately
+   * enabled for regenerate only; this retired check was a different attempt
+   * to infer which player's option a role phrase meant.
    *
    * IT COULD NOT FIRE. It was gated on `sc.actorA`/`sc.actorB` being declared.
    * `SCENARIO_SCHEMA` references `REPORT_SCHEMA.properties.suggestedScenario`,
