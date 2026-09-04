@@ -46,17 +46,18 @@ function record(name, pass, detail) {
 let calls = 0;
 let mode = 'story';
 let sequence = null; // per-call mode, consumed by index, clamped past the end
-// RED-REGEN/001 ("fix the tests that lied"): these used to carry
-// actorA/actorB, a shape SCENARIO_SCHEMA (src/utils/report.ts,
-// additionalProperties:false, reused verbatim from REPORT_SCHEMA) cannot
-// produce on any real path — cloud or bank. A mock that returns fields the
-// real, schema-constrained provider structurally cannot return was testing a
-// code path that is unreachable in production; every mock scenario here
-// mirrors exactly the schema's own fields, nothing more.
+let lastProviderRequest = null;
+// H1 changes the regenerate call site's schema only. The report schema remains
+// frozen; actor-bearing fixtures below exercise the new, strict regen shape.
 const STORY = {
   name: 'Mock Harbor Run', row1: 'Load Now', row2: 'Load Later',
   col1: 'Send Tug', col2: 'Hold Tug',
   description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week.',
+};
+const STORY_WITH_ACTORS = {
+  ...STORY,
+  actorA: ['A harbor operator'],
+  actorB: ['a tug company'],
 };
 const STORY2 = {
   name: 'Mock Kiln Slot', row1: 'Fire Early', row2: 'Fire Late',
@@ -71,9 +72,11 @@ const mock = createServer((req, res) => {
   req.on('data', (c) => { body += c; });
   req.on('end', () => {
     calls++;
+    try { lastProviderRequest = JSON.parse(body); } catch { lastProviderRequest = null; }
     const effectiveMode = sequence ? sequence[Math.min(calls - 1, sequence.length - 1)] : mode;
     if (effectiveMode === 'hang') return; // accepted, never answered — the timeout shape
-    const content = effectiveMode === 'story2' ? JSON.stringify({ suggestedScenario: STORY2 })
+    const content = effectiveMode === 'actors' ? JSON.stringify({ suggestedScenario: STORY_WITH_ACTORS })
+      : effectiveMode === 'story2' ? JSON.stringify({ suggestedScenario: STORY2 })
       : effectiveMode === 'same' ? JSON.stringify({ suggestedScenario: SAME_AS_STORY })
       : JSON.stringify({ suggestedScenario: STORY });
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -191,7 +194,7 @@ try {
   // 2. FLAG ON, hosted, mock returns a clean story — one call, no fallback
   // ═══════════════════════════════════════════════════════════════════════
   {
-    calls = 0; mode = 'story'; sequence = null;
+    calls = 0; mode = 'actors'; sequence = null; lastProviderRequest = null;
     await boot(HOSTED_ON_ENV);
     const health = await call('GET', '/api/health');
     record('flag ON + credentials: /api/health capabilities.scenarioRegen is true',
@@ -201,6 +204,18 @@ try {
     record('flag ON: scenarioSource is undefined on an ordinary model draw',
       r.json?.scenarioSource === undefined, `scenarioSource=${JSON.stringify(r.json?.scenarioSource)}`);
     record('flag ON: exactly one provider call for a clean draw', calls === 1, `calls=${calls}`);
+    const schema = lastProviderRequest?.response_format?.json_schema?.schema;
+    const actorProperties = schema?.properties?.suggestedScenario?.properties;
+    record('flag ON: regenerate asks the cloud provider for actorA/actorB in its strict schema',
+      !!actorProperties?.actorA && !!actorProperties?.actorB,
+      `actor fields=${JSON.stringify(Object.keys(actorProperties ?? {}))}`);
+    record('flag ON: returned actor nouns are present, verbatim in the description, and disjoint',
+      r.json?.scenario?.actorA?.[0] === 'A harbor operator'
+        && r.json?.scenario?.actorB?.[0] === 'a tug company'
+        && r.json.scenario.description.includes(r.json.scenario.actorA[0])
+        && r.json.scenario.description.includes(r.json.scenario.actorB[0])
+        && r.json.scenario.actorA[0].toLowerCase() !== r.json.scenario.actorB[0].toLowerCase(),
+      `scenario=${JSON.stringify(r.json?.scenario)}`);
     await stop();
   }
 
@@ -389,11 +404,18 @@ try {
     record('desktop, no credentials: capabilities.scenarioRegen is true (bank makes canInvent() true)',
       health.json?.capabilities?.scenarioRegen === true, `capabilities=${JSON.stringify(health.json?.capabilities)}`);
     let none429 = true;
+    let bankActorRows = 0;
     for (let i = 0; i < 25; i++) {
       const rr = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
       if (rr.status === 429) none429 = false;
+      const sc = rr.json?.scenario;
+      if (sc?.actorA?.length && sc?.actorB?.length
+        && sc.actorA.every((term) => sc.description.includes(term))
+        && sc.actorB.every((term) => sc.description.includes(term))) bankActorRows++;
     }
     record('desktop: 25 regenerate calls, never a 429 (hosted-only rate limit lifted under IS_ELECTRON)', none429);
+    record('desktop: bank actor nouns survive the regenerate response wire verbatim', bankActorRows > 0,
+      `actor-bearing rows=${bankActorRows}/25`);
     await stop();
   }
 
@@ -427,18 +449,18 @@ try {
   // ═══════════════════════════════════════════════════════════════════════
   // 10. RED-REGEN/001 — Keep never wipes a user's existing colour-term
   //     chips: register → save WITH chips → regenerate → a Keep-shaped PATCH
-  //     built exactly as the FIXED client (App.tsx's keepRegen +
-  //     scenarioRegen.ts's keepFill) sends it — the mock draw supplies no
-  //     actorA/actorB (see above: no real draw ever can), so the fixed
-  //     client re-sends the SAME chips unchanged, with allowClear:true, the
-  //     same flag every real Save always carries — → GET: chips intact.
+  //     built exactly as the fixed client (App.tsx's keepRegen +
+  //     scenarioRegen.ts's keepFill) sends it. The mock draw supplies actor
+  //     nouns through the enabled regenerate schema, so the fixed client
+  //     retains its chips and adds those nouns, with allowClear:true — → GET:
+  //     chips intact.
   //     This is the real-HTTP reproduction from RED-REGEN/001's finding,
   //     replayed here as a permanent regression: the ORIGINAL reproduction
   //     (the client's OLD keepFill, which unconditionally sent
   //     colorTermsA/B: []) is what this section's shape is built to refute.
   // ═══════════════════════════════════════════════════════════════════════
   {
-    calls = 0; mode = 'story'; sequence = null;
+    calls = 0; mode = 'actors'; sequence = null;
     await boot(HOSTED_ON_ENV);
     const email = `regen-keep-${Date.now()}@example.test`;
     const password = 'Sup3rSecret1';
@@ -463,8 +485,8 @@ try {
     const regen = await call('POST', '/api/scenario/regenerate', {
       body: { payoffs: PAYOFFS, current: { name: 'Chip preservation fixture', description: 'A vendor and a buyer negotiate delivery windows.' } },
     });
-    record('chip-preservation: regenerate returns 200 with a scenario carrying no actorA/actorB (the real schema shape)',
-      regen.status === 200 && !!regen.json?.scenario && !('actorA' in (regen.json.scenario ?? {})) && !('actorB' in (regen.json.scenario ?? {})),
+    record('chip-preservation: regenerate returns the actor-noun schema shape',
+      regen.status === 200 && regen.json?.scenario?.actorA?.[0] === 'A harbor operator' && regen.json?.scenario?.actorB?.[0] === 'a tug company',
       `status=${regen.status} scenario=${JSON.stringify(regen.json?.scenario)}`);
 
     // The Keep-shaped PATCH a FIXED client sends: new description/labels from
@@ -477,7 +499,8 @@ try {
         description: regen.json.scenario.description,
         row1Label: regen.json.scenario.row1, row2Label: regen.json.scenario.row2,
         col1Label: regen.json.scenario.col1, col2Label: regen.json.scenario.col2,
-        colorTermsA: ['the vendor'], colorTermsB: ['the buyer'],
+        colorTermsA: ['the vendor', ...regen.json.scenario.actorA],
+        colorTermsB: ['the buyer', ...regen.json.scenario.actorB],
         allowClear: true,
       },
     });
@@ -493,6 +516,10 @@ try {
     record('RED-REGEN/001: colorTermsB still contains "the buyer" after Keep',
       Array.isArray(stillThere?.colorTermsB) && stillThere.colorTermsB.includes('the buyer'),
       `colorTermsB=${JSON.stringify(stillThere?.colorTermsB)}`);
+    record('H1: Keep-shaped PATCH persists generated actor nouns alongside user chips',
+      stillThere?.colorTermsA?.includes('the vendor') && stillThere?.colorTermsA?.includes('A harbor operator')
+        && stillThere?.colorTermsB?.includes('the buyer') && stillThere?.colorTermsB?.includes('a tug company'),
+      `terms=${JSON.stringify({ a: stillThere?.colorTermsA, b: stillThere?.colorTermsB })}`);
     record('chip-preservation: the new labels from the draw are the ones actually stored',
       stillThere?.row1Label === regen.json.scenario.row1 && stillThere?.col1Label === regen.json.scenario.col1,
       `row1Label=${JSON.stringify(stillThere?.row1Label)} col1Label=${JSON.stringify(stillThere?.col1Label)}`);

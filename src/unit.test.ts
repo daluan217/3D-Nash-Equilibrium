@@ -32,6 +32,7 @@ import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
 import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, regenKeptColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { keepFill } from './utils/scenarioRegen';
+import { cleanScenarioActorNouns } from './utils/scenarioActorNouns';
 import { readFileSync as readFileForContract, readdirSync as readDirForContract } from 'node:fs';
 import ReactForRender from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -1357,6 +1358,44 @@ function testUserColorTerms() {
     + 'Any other field here reaches the model prompt.');
   assert(!/\.\.\./.test(m![1]),
     'cleanScenario must not spread the client object into the prompt scenario');
+
+  // Actor nouns are the one deliberate extension to this boundary. The pure
+  // sanitizer owns their cap/dedup/collision policy and delegates the final
+  // verbatim/disjoint decision to scenarioBank.actorNounsOk; user colour chips
+  // remain outside cleanScenario and can never reach a model prompt.
+  const actorContext = {
+    description: 'The harbor operator coordinates with the tug company at the berth.',
+    row1: 'Load now', row2: 'Load later', col1: 'Send tug', col2: 'Hold tug',
+  };
+  const cleanActors = cleanScenarioActorNouns({
+    actorA: ['the harbor operator', 'the harbor operator', 'Load now'],
+    actorB: ['the tug company'],
+  }, actorContext);
+  assert(JSON.stringify(cleanActors) === JSON.stringify({ actorA: ['the harbor operator'], actorB: ['the tug company'] }),
+    `server actor sanitizer must dedup and remove label/cross-owner nouns, got ${JSON.stringify(cleanActors)}`);
+  const crossOwned = cleanScenarioActorNouns({ actorA: ['the harbor operator'], actorB: ['the harbor operator'] }, actorContext);
+  assert(!('actorA' in crossOwned) && !('actorB' in crossOwned),
+    'server actor sanitizer must drop a noun claimed by both players');
+  const overlongActor = `the ${'harbor '.repeat(12)}operator`;
+  const clampedActors = cleanScenarioActorNouns({ actorA: [overlongActor], actorB: ['the tug company'] }, {
+    ...actorContext,
+    description: `${overlongActor} coordinates with the tug company at the berth.`,
+  });
+  assert((clampedActors.actorA?.[0].length ?? 0) <= 60,
+    'server actor sanitizer must cap each noun at 60 grapheme-safe UTF-16 units');
+  assert(!('actorA' in cleanScenarioActorNouns({ actorA: ['the warehouse manager'], actorB: ['the tug company'] }, actorContext)),
+    'a non-verbatim actor noun must drop the whole actor declaration rather than ship a coloured fabrication');
+  const actorScenario = {
+    name: 'Harbor handover', ...actorContext,
+    actorA: ['the harbor operator'], actorB: ['the tug company'], storyClaims: null,
+  };
+  assert(validateScenario(actorScenario, MATCHING_PENNIES, { actorNouns: true }).ok,
+    'the regenerate-only actor gate accepts verbatim, disjoint declarations');
+  const nonVerbatimActor = { ...actorScenario, actorA: ['the warehouse manager'] };
+  assert(!validateScenario(nonVerbatimActor, MATCHING_PENNIES, { actorNouns: true }).ok,
+    'the regenerate-only actor gate rejects a non-verbatim declaration');
+  assert(validateScenario(nonVerbatimActor, MATCHING_PENNIES).ok,
+    'the full-report path remains unchanged when it does not opt into actor declarations');
 
   // ── ownership is exclusive ──
   // A phrase belongs to one player. The editor never produces both, but a

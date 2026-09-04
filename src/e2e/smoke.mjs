@@ -322,21 +322,19 @@ async function mockRegenOn(p, regenerateHandler) {
   if (regenerateHandler) await p.route('**/api/scenario/regenerate', regenerateHandler);
 }
 
-// RED-REGEN/001 ("fix the tests that lied"): these used to carry
-// actorA/actorB, which SCENARIO_SCHEMA (additionalProperties:false, the SAME
-// object REPORT_SCHEMA.properties.suggestedScenario uses) cannot produce on
-// any real path. A mock returning a shape the real, schema-constrained
-// provider structurally cannot return was exercising a code path that is
-// unreachable in production.
+// H1: the regenerate-only schema (not the frozen report schema) carries actor
+// nouns. The route mocks below deliberately emit the exact enabled wire shape.
 const REGEN_STORY_A = {
   name: 'Cider Press Bookings',
   row1: 'Early Slot', row2: 'Late Slot', col1: 'Reserve', col2: 'Walk-in',
-  description: 'Two orchards are booking time on the shared cider press before the fruit turns.',
+  description: 'The north orchard and the south orchard are booking time on the shared cider press before the fruit turns.',
+  actorA: ['the north orchard'], actorB: ['the south orchard'],
 };
 const REGEN_STORY_B = {
   name: 'Kiln Firing Schedule',
   row1: 'Morning Fire', row2: 'Evening Fire', col1: 'Glaze Batch', col2: 'Bisque Batch',
   description: 'A potter and a kiln co-op are scheduling a shared firing slot.',
+  actorA: ['A potter'], actorB: ['a kiln co-op'],
 };
 
 try {
@@ -1611,6 +1609,13 @@ try {
     const previewLocator = savePage.getByText('New scenario (preview)', { exact: false });
     await previewLocator.waitFor({ state: 'visible', timeout: 5000 });
     record('the regenerated preview shows the mocked scenario name', await savePage.getByText(REGEN_STORY_A.name, { exact: false }).isVisible().catch(() => false));
+    const previewActorsColored = await savePage.evaluate(() => {
+      const card = [...document.querySelectorAll('div')].find((node) => node.textContent?.includes('New scenario (preview)'));
+      const spans = card?.querySelectorAll('span') ?? [];
+      return [...spans].some((span) => span.textContent === 'the north orchard' && span.className.includes('text-player-a-ink'))
+        && [...spans].some((span) => span.textContent === 'the south orchard' && span.className.includes('text-player-b-ink'));
+    });
+    record('H1: actor nouns from the enabled regenerate mock are colour-coded on the preview', previewActorsColored);
 
     record('typed Name field is untouched while the preview is showing', await nameField.inputValue() === 'My Own Typed Name');
     record('typed Description field is untouched while the preview is showing', await descField.inputValue() === 'My own typed description, carefully written by hand.');
@@ -1644,10 +1649,9 @@ try {
   //      user-reached case, not just an empty-to-empty vacuous pass
   //      (CodeRabbit, this PR) — REAL, pre-existing colour chips placed
   //      through the actual chip-picker UI survive Regenerate -> Keep ->
-  //      Save Changes. The mocked draw supplies no actorA/actorB (RED-REGEN/
-  //      001: no real draw ever can), so the chips reaching the PATCH body
-  //      must be EXACTLY what was placed before Regenerate — neither wiped
-  //      nor altered.
+  //      Save Changes. The mocked draw supplies actorA/actorB through the
+  //      enabled regenerate schema, so the PATCH must preserve user chips and
+  //      ADD the returned nouns.
   //      src/scenarioregen.test.ts and src/unit.test.ts cover the same
   //      preserve/add/never-reassign behaviour as pure-function fixtures,
   //      and src/integration/scenario-regen.test.mjs section 10 covers it
@@ -1727,18 +1731,18 @@ try {
     record('the PATCH body carries the regenerated description', !!patchBody && patchBody.description === REGEN_STORY_B.description);
     // RED-REGEN/001 (CodeRabbit: exercise the REAL, user-reached case — this
     // game was saved with the "vendor"/"buyer" chips placed above through
-    // the actual UI, and the mocked draw supplies no actorA/actorB, exactly
-    // the real schema's shape). Keep must leave those chips exactly as they
-    // were — this is the fixture that FAILS against the pre-fix keepFill
-    // (which unconditionally sent colorTermsA/B: []).
+    // the actual UI, while the mock supplies actor nouns). Keep must retain
+    // those user chips while adding the actor terms — the old keepFill
+    // unconditionally sent colorTermsA/B: [].
     record('RED-REGEN/001: a real, pre-existing chip on player A survives Regenerate -> Keep -> Save Changes',
       !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('vendor'),
       JSON.stringify(patchBody?.colorTermsA));
     record('RED-REGEN/001: same for the pre-existing chip on player B',
       !!patchBody && Array.isArray(patchBody.colorTermsB) && patchBody.colorTermsB.includes('buyer'),
       JSON.stringify(patchBody?.colorTermsB));
-    record('RED-REGEN/001: nothing extra was fabricated alongside the real chips',
-      !!patchBody && patchBody.colorTermsA.length === 1 && patchBody.colorTermsB.length === 1,
+    record('H1: Keep adds exactly the returned actor nouns alongside the real chips',
+      !!patchBody && patchBody.colorTermsA.includes('A potter') && patchBody.colorTermsB.includes('a kiln co-op')
+        && patchBody.colorTermsA.length === 2 && patchBody.colorTermsB.length === 2,
       JSON.stringify({ colorTermsA: patchBody?.colorTermsA, colorTermsB: patchBody?.colorTermsB }));
     await editPage.close();
   });
