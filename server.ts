@@ -607,6 +607,20 @@ interface SavedGame {
    */
   colorTermsA?: string[];
   colorTermsB?: string[];
+  /**
+   * RED-APP-9/002: `POST /api/games` had no idempotency mechanism at all — a
+   * dropped response after the server already wrote the row (a flaky mobile
+   * connection, a proxy hiccup) left the client's own `fetch()` throwing
+   * while the row existed server-side; the Save dialog's natural recovery
+   * (stay open, let the user retry) then created a second, byte-identical
+   * row on the retry, with the UI actively under-reporting it (only the
+   * retry's own response gets appended to `userCustomGames`) until the next
+   * full reload. The client now mints ONE `clientRequestId` per Save-dialog
+   * submission and resends the SAME one on every retry; this is stored so a
+   * later POST from the same user with the same id can be recognized as
+   * "this already happened" rather than "a new save."
+   */
+  clientRequestId?: string;
 }
 
 interface User {
@@ -4064,14 +4078,44 @@ async function startServer() {
     if (!cleanName || !cleanMatrix) {
       return res.status(400).json({ error: "Game name and payoffs matrix are required." });
     }
+    // RED-APP-9/002: the client mints this once per Save-dialog submission
+    // and resends the same value on every retry — bounded and type-checked
+    // defensively since it comes straight off the request body, but nothing
+    // more elaborate than a plain string is needed (this is a same-user
+    // dedupe key, not a security token).
+    const rawRequestId = req.body?.clientRequestId;
+    const clientRequestId = typeof rawRequestId === "string" && rawRequestId.length > 0 && rawRequestId.length <= 100
+      ? rawRequestId
+      : undefined;
 
     // The ENTIRE read-build-save sequence is serialized (see
     // serializeGameWrite's own comment): `loadDB()` happens INSIDE the
     // queued function so it reads whatever the most recently queued write
     // actually committed, not a snapshot taken before this request had to
-    // wait its turn.
+    // wait its turn — including the idempotency check below, so two
+    // concurrent retries of the SAME clientRequestId can never both pass it
+    // and create two rows.
     await serializeGameWrite(async () => {
       const db = loadDB();
+
+      // A retry of a request whose response the client never saw (dropped
+      // connection after the server already committed the row) must return
+      // the ORIGINAL row, not create a second one. Scoped to this user only
+      // — the id is client-chosen and unauthenticated users can't reach this
+      // route at all, but there is no reason to let one user's key collide
+      // with another's.
+      if (clientRequestId) {
+        const existing = db.games.find(g => g.userId === user.id && g.clientRequestId === clientRequestId);
+        if (existing) {
+          res.json({
+            success: true,
+            message: "Game saved successfully!",
+            game: existing
+          });
+          return;
+        }
+      }
+
       const newGame: SavedGame = {
         id: makeId("g"),
         userId: user.id,
@@ -4080,7 +4124,8 @@ async function startServer() {
         payoffs: cleanMatrix,
         createdAt: new Date().toISOString(),
         ...cleanLabels(req.body),
-        ...cleanColorTerms(req.body, true)
+        ...cleanColorTerms(req.body, true),
+        ...(clientRequestId ? { clientRequestId } : {})
       };
 
       // A NEW games array, not a push onto the live `db.games` (==

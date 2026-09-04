@@ -309,6 +309,56 @@ try {
       if (llId) await call('DELETE', `/api/games/${llId}`, { token });
     }
 
+    // ── RED-APP-9/002 — POST /api/games idempotency via clientRequestId.
+    // A dropped response after the server already wrote the row (a network
+    // flap) followed by the client's own retry — same clientRequestId sent
+    // both times — must return the SAME row, not create a duplicate; a
+    // different id (a genuinely new save) must still create a second row.
+    {
+      const dupeId = `int-dupe-${Date.now()}`;
+      const first = await call('POST', '/api/games', {
+        token,
+        body: { name: 'Idempotency fixture', payoffs: MP, clientRequestId: dupeId },
+      });
+      const firstGame = first.json?.game;
+      record('POST /api/games with a fresh clientRequestId creates a row',
+        first.status === 200 && !!firstGame?.id, `status=${first.status} id=${firstGame?.id}`);
+
+      const retry = await call('POST', '/api/games', {
+        token,
+        body: { name: 'Idempotency fixture', payoffs: MP, clientRequestId: dupeId },
+      });
+      const retryGame = retry.json?.game;
+      record('a retry with the SAME clientRequestId returns the EXISTING row, not a new one',
+        retry.status === 200 && retryGame?.id === firstGame?.id,
+        `firstId=${firstGame?.id} retryId=${retryGame?.id}`);
+
+      const afterRetry = await call('GET', '/api/games', { token });
+      const matchingRows = (afterRetry.json || []).filter((g) => g.name === 'Idempotency fixture');
+      record('exactly ONE row exists server-side after the retry (no silent duplicate)',
+        matchingRows.length === 1, `count=${matchingRows.length}`);
+
+      const distinctId = `int-dupe-${Date.now()}-b`;
+      const second = await call('POST', '/api/games', {
+        token,
+        body: { name: 'Idempotency fixture', payoffs: MP, clientRequestId: distinctId },
+      });
+      const secondGame = second.json?.game;
+      record('a DIFFERENT clientRequestId creates a genuinely new second row',
+        second.status === 200 && !!secondGame?.id && secondGame.id !== firstGame?.id,
+        `firstId=${firstGame?.id} secondId=${secondGame?.id}`);
+
+      const noKeyA = await call('POST', '/api/games', { token, body: { name: 'No key fixture', payoffs: MP } });
+      const noKeyB = await call('POST', '/api/games', { token, body: { name: 'No key fixture', payoffs: MP } });
+      record('POST /api/games with NO clientRequestId is unaffected (still creates on every call, backward compatible)',
+        noKeyA.status === 200 && noKeyB.status === 200 && noKeyA.json?.game?.id !== noKeyB.json?.game?.id,
+        `a=${noKeyA.json?.game?.id} b=${noKeyB.json?.game?.id}`);
+
+      for (const id of [firstGame?.id, secondGame?.id, noKeyA.json?.game?.id, noKeyB.json?.game?.id]) {
+        if (id) await call('DELETE', `/api/games/${id}`, { token });
+      }
+    }
+
     // PATCH is the scenario-keep path: story edits only, never payoffs
     const patched = await call('PATCH', `/api/games/${gameId}`, {
       token,

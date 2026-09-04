@@ -572,6 +572,19 @@ export default function App() {
   // completes, so the explanation regenerates there — from the fields as
   // actually submitted, since the user may have edited them in the modal.
   const regenExplanationAfterSaveRef = useRef(false);
+  /**
+   * RED-APP-9/002: one id per Save-dialog SUBMISSION ATTEMPT (not per
+   * keystroke, not per dialog open) — minted lazily on the first submit
+   * inside `handleSaveGameSubmit`, then reused unchanged on every retry
+   * (including the resume-after-re-auth path at the effect just below,
+   * which reopens the SAME in-progress save rather than starting a new
+   * one) so a dropped response followed by a retry sends the server the
+   * same idempotency key both times. Reset to null wherever a dialog open
+   * means "start saving something new" (a fresh "Save Preset" click, or
+   * "Save this scenario with the game") so that case mints its own id
+   * rather than colliding with a previous, unrelated save.
+   */
+  const saveRequestIdRef = useRef<string | null>(null);
   useEffect(() => {
     // Watching the token rather than any one success handler means the save
     // modal comes back regardless of which path produced the sign-in (login,
@@ -1384,6 +1397,9 @@ export default function App() {
     });
     setSaveError('');
     regenExplanationAfterSaveRef.current = true;
+    // A fresh save attempt for a different scenario — never reuse a
+    // clientRequestId minted for whatever the dialog last tried to save.
+    saveRequestIdRef.current = null;
     setIsSaveModalOpen(true);
   };
 
@@ -2205,6 +2221,11 @@ export default function App() {
     }
     setSaveError('');
     setSaveLoading(true);
+    // RED-APP-9/002: minted ONCE per save attempt and reused on every retry
+    // (a dropped response after the server already wrote the row must not
+    // read as "a new save" the second time) — see the ref's own doc comment.
+    if (!saveRequestIdRef.current) saveRequestIdRef.current = crypto.randomUUID();
+    const clientRequestId = saveRequestIdRef.current;
     try {
       const res = await fetch(getApiUrl('/api/games'), {
         method: 'POST',
@@ -2225,11 +2246,15 @@ export default function App() {
           // The user's own highlights. Deliberately NOT part of the scenario
           // sent to the model — they colour this description and nothing else.
           colorTermsA: saveTerms.a,
-          colorTermsB: saveTerms.b
+          colorTermsB: saveTerms.b,
+          clientRequestId
         })
       });
       const data = await res.json();
       if (res.ok) {
+        // This attempt is done (successfully) — the NEXT Save Preset click
+        // is a new attempt and must mint its own id, not reuse this one.
+        saveRequestIdRef.current = null;
         setUserCustomGames(prev => [...prev, data.game]);
         setActivePreset(data.game.id);
         // Kept-scenario saves rewrite the explanation in the story's terms.
@@ -4066,6 +4091,9 @@ export default function App() {
                       row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',
                       col1: scenarioForReport?.col1 ?? '', col2: scenarioForReport?.col2 ?? '',
                     });
+                    // A brand-new "Save Preset" click — a new save attempt,
+                    // never a retry of whatever the dialog last submitted.
+                    saveRequestIdRef.current = null;
                     setIsSaveModalOpen(true);
                   }}
                   className="inline-flex items-center gap-1 text-xs font-bold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-950/40 hover:bg-accent-100 dark:hover:bg-accent-900/50 border border-accent-200/50 dark:border-accent-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"

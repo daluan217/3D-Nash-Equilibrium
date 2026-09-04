@@ -2400,6 +2400,72 @@ try {
     }
   });
 
+  // ══ 39. RED-APP-9/002 — a dropped response after a successful Save must
+  //      not create a silent duplicate on retry. route.fetch() really sends
+  //      the request (the server writes the row); route.abort() drops the
+  //      RESPONSE before the page's own fetch() resolves, modeling a flaky
+  //      connection precisely. The client-minted clientRequestId is the same
+  //      on the retry, so the server must recognize it and return the
+  //      original row rather than creating a second one.
+  section('39', 'network-flap save does not duplicate', 2, async () => {
+    const flapPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const flapConsoleErrors = [];
+    flapPage.on('console', (m) => { if (m.type() === 'error') flapConsoleErrors.push(m.text()); });
+    flapPage.on('pageerror', (e) => flapConsoleErrors.push(String(e)));
+
+    const uniq = await registerAndLogin(flapPage, 'e9flap');
+    const gameName = `Flap-${uniq}`;
+
+    await flapPage.getByRole('button', { name: /save preset/i }).click();
+    await flapPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+
+    let flapped = false;
+    await flapPage.route('**/api/games', async (route) => {
+      if (route.request().method() !== 'POST' || flapped) return route.continue();
+      flapped = true;
+      await route.fetch(); // really creates the game server-side
+      await route.abort('connectionreset'); // client never sees the 200
+    });
+
+    await flapPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+    await flapPage.waitForTimeout(1500);
+    const errorShown = await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').innerText().catch(() => '');
+    record('after the flap: dialog shows a network-error message (not a false success)', /network error/i.test(errorShown), errorShown.slice(0, 200));
+    const nameFieldValue = await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').inputValue().catch(() => '');
+    record('typed game name survived the flap unchanged (retry uses the preserved text)', nameFieldValue === gameName, `got "${nameFieldValue}"`);
+
+    // Retry: route.continue() from here on (flapped=true), so this really
+    // reaches the server — with the SAME clientRequestId as the dropped one.
+    await flapPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+    await flapPage.waitForTimeout(1200);
+    const dialogClosedAfterRetry = !(await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').isVisible({ timeout: 1000 }).catch(() => false));
+    record('retry succeeds (dialog closes)', dialogClosedAfterRetry);
+
+    const authToken = await flapPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+    const listResp = await flapPage.evaluate(async (t) => {
+      const r = await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } });
+      return r.json();
+    }, authToken);
+    const serverRows = listResp.filter((g) => g.name === gameName);
+    record('FIX: server holds exactly ONE game with this name (the dropped write and the retry deduped)',
+      serverRows.length === 1, `serverCount=${serverRows.length}, ids=${serverRows.map((g) => g.id).join(',')}`);
+
+    await flapPage.reload({ waitUntil: 'networkidle' });
+    // Poll rather than a fixed sleep: a fresh reload re-runs the
+    // auth/me + games fetch effects from scratch, which can take longer
+    // than a short sleep on a busy CI runner.
+    await flapPage.getByRole('button', { name: gameName, exact: true }).first()
+      .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    const uiCountAfterReload = await flapPage.getByRole('button', { name: gameName, exact: true }).count();
+    record('FIX: exactly one row visible after a reload too (no duplicate reaches the user)', uiCountAfterReload === 1, `uiCountAfterReload=${uiCountAfterReload}`);
+
+    record('no console errors through the flap+retry sequence (net::ERR_CONNECTION_RESET is expected browser noise, filtered)',
+      flapConsoleErrors.filter((t) => !/ERR_CONNECTION_RESET/.test(t)).length === 0,
+      flapConsoleErrors.join(' | '));
+    await flapPage.close();
+  });
+
   await executeSections();
 
 } catch (e) {
