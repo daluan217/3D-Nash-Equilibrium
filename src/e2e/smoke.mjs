@@ -2024,10 +2024,14 @@ try {
     if (await shortPage.locator('[role="dialog"][aria-label="Account"]').count()) {
       await shortPage.keyboard.press('Escape');
     }
-    // CodeRabbit: poll for the Account dialog to actually close, not a
-    // blind settle delay.
-    await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'),
-      null, { timeout: 5000 }).catch(() => {});
+    // CodeRabbit: poll for the Account dialog to actually close (the count()
+    // above is only a snapshot and Escape has no completion signal), and
+    // RECORD a cleanup failure instead of swallowing it — a Feedback FAIL
+    // caused by a still-open Account modal must say so.
+    const accountGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'),
+      null, { timeout: 5000 }).then(() => true).catch(() => false);
+    record('320x256 cleanup: the Account dialog is closed before the Feedback check', accountGone,
+      accountGone ? undefined : 'Account dialog still open 5 s after the close click / Escape');
 
     // Stub the feedback POST — untested-controls.json's own policy for this
     // control is "never actually send real email through SMTP"; this test is
