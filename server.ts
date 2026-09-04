@@ -852,6 +852,53 @@ function localFileSaveBlocked(): boolean {
   return true;
 }
 
+/**
+ * Return direct iCloud/Finder-style conflict copies of the desktop database.
+ *
+ * A sync conflict can leave a perfectly valid second database beside the
+ * primary as `db.json 2` (and later-numbered siblings). Before this check,
+ * `loadDBFromFile()` only ever opened the exact `db.json` path, so it quietly
+ * served one library while another, equally plausible library remained
+ * invisible. Choosing, merging, renaming, or deleting a copy automatically
+ * would each risk destroying saved games, so the safe recovery is to stop and
+ * make the ambiguity visible to the person who owns both files.
+ *
+ * This deliberately matches only the narrow observed naming shape. It does
+ * not treat normal recovery artifacts (`db.json.corrupt-*`,
+ * `db.json.unreadable-*`) or atomic-write scratch files as conflicts; those
+ * have their own established recovery behavior below and at startup.
+ */
+function desktopDbConflictCopies(): string[] {
+  const userDataPath = process.env.ELECTRON_USER_DATA_PATH;
+  if (!userDataPath) return [];
+  try {
+    return fs.readdirSync(userDataPath)
+      // Finder's first duplicate is " 2"; permit later conflict numbers too,
+      // but not " 1" (which is not this conflict-copy convention).
+      .filter((name) => /^db\.json (?:[2-9]|[1-9]\d+)$/.test(name))
+      .sort()
+      .map((name) => path.join(userDataPath, name));
+  } catch (err) {
+    // A read failure for the data directory is diagnosed by the ordinary
+    // load/create path immediately below. Do not mislabel that distinct
+    // availability problem as an iCloud conflict.
+    console.error(`Could not inspect ${userDataPath} for desktop database conflict copies:`, err);
+    return [];
+  }
+}
+
+function reportDesktopDbConflict(conflictCopies: string[]): boolean {
+  const primary = path.basename(DB_FILE);
+  const copies = conflictCopies.map((copy) => path.basename(copy)).join(", ");
+  return reportDesktopLockFailure(
+    `Refusing to start: found multiple possible local databases in ${path.dirname(DB_FILE)}: ${primary} and ${copies}. `
+    + `Sync software can create a conflict copy while the app is closed. To protect your saved games, the app will not choose, merge, rename, or delete either file. `
+    + `Select "Show Location" to back up and inspect both files, resolve the conflict, then relaunch.`,
+    conflictCopies[0],
+    "data-conflict",
+  );
+}
+
 function loadDBFromFile(): DB | null {
   try {
     const dbDir = path.dirname(DB_FILE);
@@ -860,6 +907,11 @@ function loadDBFromFile(): DB | null {
     }
   } catch (err) {
     console.error("Error creating database directory:", err);
+  }
+  const conflictCopies = desktopDbConflictCopies();
+  if (conflictCopies.length > 0) {
+    reportDesktopDbConflict(conflictCopies);
+    return null;
   }
   if (!fs.existsSync(DB_FILE)) {
     const fresh: DB = { users: [], games: [] };
@@ -1092,7 +1144,11 @@ let gcsBaselineDb: DB | null = null;
  * integration tests included) is untouched: no hook is registered, so
  * `process.exit(1)` still fires exactly as before.
  */
-function reportDesktopLockFailure(message: string, lockFile: string): boolean {
+function reportDesktopLockFailure(
+  message: string,
+  lockFile: string,
+  kind: "lock" | "data-conflict" = "lock",
+): boolean {
   console.error(message);
   const onFailure = process.env.IS_ELECTRON === "true" ? (globalThis as any).onDesktopLockFailure : undefined;
   if (typeof onFailure === "function") {
@@ -1101,8 +1157,9 @@ function reportDesktopLockFailure(message: string, lockFile: string): boolean {
     // tells the caller to stop (no initDB, no listen) WITHOUT exiting itself
     // — the Electron process must stay alive for the async dialog to render.
     // `lockFile` is passed structurally (not parsed back out of the message)
-    // so the dialog's own "delete it and retry" action never has to guess a
-    // path out of prose.
+    // so the dialog's own recovery action never has to guess a path out of
+    // prose. `kind` keeps a database-conflict's backup-first recovery hint
+    // distinct from the lock-file instructions.
     //
     // Marked settled BEFORE calling the hook, not after: `onFailure` itself
     // may synchronously trigger further code (electron-main.cjs's own hook
@@ -1111,7 +1168,7 @@ function reportDesktopLockFailure(message: string, lockFile: string): boolean {
     // shown and dismissed — as reported, not still "starting up" (see
     // `startupOutcomeReported`'s own comment).
     startupOutcomeReported = true;
-    onFailure({ message, lockFile });
+    onFailure({ message, lockFile, kind });
     return false;
   }
   process.exit(1);

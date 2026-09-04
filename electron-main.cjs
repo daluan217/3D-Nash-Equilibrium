@@ -201,7 +201,7 @@ if (!gotTheLock) {
     }
   }
 
-  global.onDesktopLockFailure = ({ message, lockFile }) => {
+  global.onDesktopLockFailure = ({ message, lockFile, kind = 'lock' }) => {
     lockFailurePending = true;
     // Cancel the slow-boot fallback outright — a cancelled timer cannot fire
     // regardless of what races it against (see this block's own comment
@@ -229,9 +229,13 @@ if (!gotTheLock) {
       // with no window, no error, nothing to notice. The old wording ("...
       // then relaunch") told the user to do exactly the thing that fails
       // silently. Now says explicitly to quit THIS app first.
-      detail: `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
-        + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
-        + 'start normally while blocked), then relaunch it.',
+      detail: kind === 'data-conflict'
+        ? `${message}\n\n"Show Location" reveals the detected conflict copy. Back up both database files before resolving the conflict. `
+          + 'This app will not choose, merge, rename, or delete either copy. When you\'re done, quit this app (it will not '
+          + 'start normally while blocked), then relaunch it.'
+        : `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
+          + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
+          + 'start normally while blocked), then relaunch it.',
     }).then((result) => {
       if (result.response === 1) {
         revealLockLocation(lockFile);

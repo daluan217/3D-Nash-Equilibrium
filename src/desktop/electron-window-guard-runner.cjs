@@ -27,6 +27,10 @@
  *                            runs before Electron's own 'ready' event),
  *                            then fire 'ready', wait past 800ms, then fire
  *                            'activate'. Expect ZERO windows ever created.
+ *   mode = 'data-conflict' — same startup-blocked timing, but with the
+ *                            explicit database-conflict kind. Captures the
+ *                            native dialog options so the integration test
+ *                            can assert its backup-first recovery hint.
  *   mode = 'slowboot-normal' — do NOT simulate a lock failure (genuine slow
  *                            boot: serverStarted stays false with no lock
  *                            issue). Fire 'ready', wait past 800ms. Expect
@@ -40,13 +44,14 @@ const path = require('path');
 
 const mainCjsPath = process.argv[2];
 const mode = process.argv[3];
-if (!mainCjsPath || !['lockfail', 'slowboot-normal'].includes(mode)) {
-  console.log('usage: electron-window-guard-runner.cjs <mainCjsPath> <lockfail|slowboot-normal>');
+if (!mainCjsPath || !['lockfail', 'data-conflict', 'slowboot-normal'].includes(mode)) {
+  console.log('usage: electron-window-guard-runner.cjs <mainCjsPath> <lockfail|data-conflict|slowboot-normal>');
   process.exit(2);
 }
 
 let windowCount = 0;
 let dialogShown = 0;
+let dialogOptions = null;
 const onHandlers = {};
 
 function totalStub(name) {
@@ -91,8 +96,9 @@ const fakeApp = {
 };
 
 const fakeDialog = {
-  showMessageBox() {
+  showMessageBox(options) {
     dialogShown++;
+    dialogOptions = options;
     // Never resolves within this test's real-time window — matches the
     // real UX (a modal dialog sits open until the user clicks something),
     // and specifically exercises that `lockFailurePending`/the timer
@@ -122,16 +128,20 @@ Module._load = function (request, parent, isMain) {
 
 require(path.resolve(mainCjsPath));
 
-if (mode === 'lockfail') {
+if (mode === 'lockfail' || mode === 'data-conflict') {
   // The real ordering: server.ts calls this synchronously during the
   // top-level require() above (which already ran), i.e. BEFORE Electron's
   // own 'ready' event ever fires.
-  globalThis.onDesktopLockFailure({ message: 'test lock failure', lockFile: '/tmp/x/.server.lock' });
+  globalThis.onDesktopLockFailure(
+    mode === 'data-conflict'
+      ? { message: 'test database conflict', lockFile: '/tmp/x/db.json 2', kind: 'data-conflict' }
+      : { message: 'test lock failure', lockFile: '/tmp/x/.server.lock' },
+  );
   if (typeof onHandlers.ready === 'function') onHandlers.ready();
   setTimeout(() => {
     if (typeof onHandlers.activate === 'function') onHandlers.activate();
     setTimeout(() => {
-      console.log(`RUNNER_RESULT ${JSON.stringify({ windowCount, dialogShown })}`);
+      console.log(`RUNNER_RESULT ${JSON.stringify({ windowCount, dialogShown, dialogOptions })}`);
       process.exit(0);
     }, 50);
   }, 900); // past the 800ms fallback
