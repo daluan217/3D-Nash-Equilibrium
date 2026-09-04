@@ -2099,11 +2099,18 @@ function cleanScenario(value: any, options: { actorNouns?: boolean } = {}): Scen
     col2: label(value.col2),
     description: noTags(value.description, 1200) || undefined,
   };
+  // A result carrying only actor nouns and no base scenario field (name,
+  // labels, description) is not a usable scenario. Checked BEFORE actor
+  // metadata is added, so `Object.assign` below can never smuggle an
+  // otherwise-empty draw past this guard (CodeRabbit, PR #111: with
+  // NASH_SCENARIO_CHECKS=0 letting an ungated draw reach here, actorA/actorB
+  // alone used to count as "non-empty").
+  if (!Object.values(sc).some(Boolean)) return undefined;
   // Regenerate is the only caller whose response can legitimately carry actor
   // nouns. Full-report inputs stay on the frozen schema even when a client
   // sends extra fields; opt in only at the regenerate response boundary.
   if (options.actorNouns) Object.assign(sc, cleanScenarioActorNouns(value, sc));
-  return Object.values(sc).some(Boolean) ? sc : undefined;
+  return sc;
 }
 
 function cleanPayoffs(value: any): GamePayoffs | null {

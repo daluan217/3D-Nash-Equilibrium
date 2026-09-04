@@ -1366,6 +1366,20 @@ function testUserColorTerms() {
     'cleanScenario must default actor noun retention off for all callers');
   assert(/if \(options\.actorNouns\) Object\.assign\(sc, cleanScenarioActorNouns\(value, sc\)\);/.test(cleanScenarioSource),
     'actor noun retention must be an explicit cleanScenario opt-in');
+  // CodeRabbit, PR #111: the base-scenario non-empty check must run BEFORE
+  // actor metadata is merged in, or an ungated draw (NASH_SCENARIO_CHECKS=0)
+  // carrying only actorA/actorB could make an otherwise-empty scenario read
+  // as non-empty. `actorNounsOk` (scenarioBank.ts) independently requires
+  // every accepted noun to appear verbatim in a non-empty description, so
+  // this exact order is not reachable through the real predicate today — but
+  // the ordering is the correctness boundary regardless of what the
+  // predicate currently enforces, so it is asserted at the source directly.
+  const emptyCheckIndex = cleanScenarioSource.indexOf('Object.values(sc).some(Boolean)');
+  const assignIndex = cleanScenarioSource.indexOf('if (options.actorNouns) Object.assign(sc, cleanScenarioActorNouns(value, sc));');
+  assert(emptyCheckIndex !== -1 && assignIndex !== -1 && emptyCheckIndex < assignIndex,
+    'cleanScenario must reject an empty base scenario BEFORE actor metadata can be merged in, not after');
+  assert(/return sc;\s*\}\s*$/.test(cleanScenarioSource.trimEnd()),
+    'cleanScenario must return the built object directly once the empty check has already run, not re-check emptiness after the actor-noun merge');
   const reportRouteSource = serverSrc.slice(
     serverSrc.indexOf('app.post("/api/report"'),
     serverSrc.indexOf('app.post("/api/scenario/regenerate"'),
