@@ -7,6 +7,7 @@
  * happened). Run by CI (.github/workflows/test.yml, job `e2e`) and locally:
  *
  *   E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
+ *   E2E_SHARD=2/4 E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
  *
  * Exit 0 only if every check passes and the browser logged no console errors.
  */
@@ -20,9 +21,30 @@ const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
 
 const results = [];
+const sections = [];
+let activeSection = null;
+let activeAttempt = 1;
+let executedShard = null;
 function record(name, pass, detail) {
-  results.push({ name, pass, detail });
+  results.push({ name, pass, detail, sectionId: activeSection?.id ?? null, attempt: activeAttempt });
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
+}
+
+function section(id, name, shard, run) {
+  sections.push({ id: String(id), name, shard, run });
+}
+
+function selectedShard() {
+  const raw = process.env.E2E_SHARD?.trim();
+  if (!raw) return null;
+  const match = /^(\d+)\/(\d+)$/.exec(raw);
+  if (!match) throw new Error(`E2E_SHARD must look like "2/4"; got ${JSON.stringify(raw)}`);
+  const shard = Number(match[1]);
+  const count = Number(match[2]);
+  if (count !== 4 || shard < 1 || shard > count) {
+    throw new Error(`smoke.mjs defines exactly 4 shards; got ${JSON.stringify(raw)}`);
+  }
+  return { raw, shard, count };
 }
 
 // ── boot the production server (unless one is already listening) ────────────
@@ -89,6 +111,93 @@ page.on('console', (m) => {
   if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 200));
 });
 page.on('pageerror', (e) => consoleErrors.push('PAGEERROR: ' + e.message.slice(0, 200)));
+
+const evidenceTag = process.env.E2E_SHARD
+  ? `shard-${process.env.E2E_SHARD.replace('/', '-of-')}`
+  : 'all';
+const failurePng = `/tmp/e2e_smoke_failure_${evidenceTag}.png`;
+const failureHtml = `/tmp/e2e_smoke_failure_${evidenceTag}.html`;
+const endPng = `/tmp/e2e_smoke_end_${evidenceTag}.png`;
+const finalAttemptBySection = new Map();
+
+async function captureFailureEvidence() {
+  await page.screenshot({ path: failurePng, fullPage: true }).catch(() => {});
+  try {
+    const fs = await import('node:fs');
+    fs.writeFileSync(failureHtml, await page.content().catch(() => '<unavailable>'));
+  } catch { /* evidence capture must never mask the original failure */ }
+}
+
+function primaryPageSection(id) {
+  const number = Number.parseInt(id, 10);
+  return Number.isFinite(number) && number <= 16;
+}
+
+async function runSection(definition, attempt) {
+  activeSection = definition;
+  activeAttempt = attempt;
+  const resultStart = results.length;
+  const startedAt = Date.now();
+  console.log(`\n════ SECTION ${definition.id} [shard ${definition.shard}/4] ${definition.name}${attempt > 1 ? ' (retry)' : ''} ════`);
+  try {
+    await definition.run();
+  } catch (e) {
+    record(`section ${definition.id} completed without a script error`, false,
+      String(e?.message ?? e).slice(0, 300));
+  }
+  let attemptResults = results.slice(resultStart);
+  // A malformed/refactored section that silently records nothing must never
+  // make a retry disappear from the final-attempt filter and turn green.
+  if (attemptResults.length === 0) {
+    record(`section ${definition.id} recorded at least one check`, false,
+      'section returned without calling record()');
+    attemptResults = results.slice(resultStart);
+  }
+  const passed = attemptResults.length > 0 && attemptResults.every((result) => result.pass);
+  finalAttemptBySection.set(definition.id, attempt);
+  console.log(`SECTION-${passed ? 'PASS' : 'FAIL'} ${definition.id} ${definition.name} (${Date.now() - startedAt}ms)`);
+  if (!passed) await captureFailureEvidence();
+  activeSection = null;
+  activeAttempt = 1;
+  return passed;
+}
+
+async function executeSections() {
+  const requested = selectedShard();
+  executedShard = requested;
+  const selected = requested
+    ? sections.filter((definition) => definition.shard === requested.shard)
+    : sections;
+  if (selected.length === 0) throw new Error(`no smoke sections selected for ${requested?.raw ?? 'all'}`);
+
+  console.log(`Running ${selected.length}/${sections.length} smoke sections${requested ? ` for shard ${requested.raw}` : ' (all shards locally)'}.`);
+  // Shards 2-4 can begin with a primary-page section even though section 1 is
+  // assigned to shard 1. Load the same clean starting page once for them.
+  if (selected[0].id !== '1' && selected.some((definition) => primaryPageSection(definition.id))) {
+    await gotoHome();
+  }
+
+  const failed = [];
+  for (const definition of selected) {
+    const passed = await runSection(definition, 1);
+    if (!passed) {
+      failed.push(definition);
+      // A thrown primary-page action can strand the shared page behind a
+      // dialog or mid-run. Recover before another selected core section uses
+      // it; dedicated-page sections are isolated by construction.
+      if (primaryPageSection(definition.id)) await gotoHome().catch(() => {});
+    }
+  }
+
+  if (failed.length > 0) {
+    console.log(`\n════ RETRYING ONLY FAILED SECTIONS: ${failed.map((definition) => `${definition.id} ${definition.name}`).join(', ')} ════`);
+    for (const definition of failed) {
+      if (primaryPageSection(definition.id)) await gotoHome().catch(() => {});
+      const passed = await runSection(definition, 2);
+      if (passed) console.log(`pass-after-section-retry: ${definition.id} ${definition.name}`);
+    }
+  }
+}
 
 const $ = {
   run: page.getByRole('button', { name: /^Run$/ }),
@@ -221,13 +330,15 @@ const REGEN_STORY_B = {
 try {
   // ══ 1. cold load (guards: build integrity — a broken bundle was once the
   //      only failure mode CI could not see, because nothing built or ran it)
-  await gotoHome();
-  record('page loads with the app title',
-    (await page.title()).includes('Nash Equilibrium'),
-    await page.title());
+  section('1', 'cold load', 1, async () => {
+    await gotoHome();
+    record('page loads with the app title',
+      (await page.title()).includes('Nash Equilibrium'),
+      await page.title());
+  });
 
   // ══ 2. API + deterministic report path (no key → computed ground truth)
-  {
+  section('2', 'deterministic report API', 2, async () => {
     const r = await fetch(`${BASE}/api/report`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -238,10 +349,10 @@ try {
       && Array.isArray(j.groundTruth) && j.groundTruth.length > 0;
     record('report API falls back to deterministic ground truth without a key', ok,
       `status=${r.status} source=${j.source} NEs=${j.groundTruth?.length}`);
-  }
+  });
 
   // ══ 3. pasted typographic minus (round 14: silently became 0 on the live site)
-  {
+  section('3', 'typographic minus input', 3, async () => {
     const cell = $.matrix.nth(0);
     await cell.click();
     await cell.fill('');
@@ -252,10 +363,10 @@ try {
     record('U+2212 pasted into A(1,1) commits to -4', v === '-4', `got "${v}"`);
     await cell.fill('0'); await cell.blur();
     await page.waitForTimeout(200);
-  }
+  });
 
   // ══ 4. start point of 0 (round 14: log said Start (0.217) over a box reading 0)
-  {
+  section('4', 'zero start point', 4, async () => {
     await $.x0.fill('0'); await $.x0.blur(); await page.waitForTimeout(200);
     await $.step.click();
     // poll, don't sleep: on CI's SwiftShader runner the step can take seconds
@@ -266,11 +377,11 @@ try {
     }, null, { timeout: 90000 }).then((h) => h.jsonValue()).catch(() => '');
     record('x0=0 + Step opens the log "Start (0.000, …)"', /^Start \(0\.000/.test(line), line);
     await $.reset.click(); await page.waitForTimeout(300);
-  }
+  });
 
   // ══ 5. THE TAB WEDGE (round 15: one Step click at step-size 0.001 wedged the
   //      tab permanently, live on the public site)
-  {
+  section('5', 'tab-wedge fixture', 1, async () => {
     const vals = [7, -7, -6, -4, -7, 1, 0, -6];
     for (let i = 0; i < 8; i++) { await $.matrix.nth(i).fill(String(vals[i])); await $.matrix.nth(i).blur(); }
     await page.waitForTimeout(300);
@@ -293,10 +404,10 @@ try {
     record('tab-wedge fixture: progress reads 1 / 1504', prog.some((p) => p === '1 / 1504'), JSON.stringify(prog));
     await $.reset.click(); await page.waitForTimeout(300);
     await $.stepSize.fill('0.1'); await $.stepSize.blur(); await page.waitForTimeout(200);
-  }
+  });
 
   // ══ 6. a preset runs to convergence (guards the solver + run loop + UI wiring)
-  {
+  section('6', 'mixed convergence', 1, async () => {
     await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
     await page.waitForTimeout(500);
     await setSpeed(10); await page.waitForTimeout(300);
@@ -318,7 +429,7 @@ try {
     await $.reset.click();
     await page.waitForFunction(() => document.querySelectorAll('div.overflow-y-auto.font-mono p').length === 1,
       null, { timeout: 5000 });
-  }
+  });
 
   // ══ 6b. every standard preset reads as a story, not a grid reference
   //       (RED-PUBLIC A/B: 4 of 6 presets fell back to the generic "Row 1" /
@@ -334,7 +445,7 @@ try {
   //       "x = P(A plays Row 1), y = P(B plays Col 1)" via MathTex on every
   //       game, preset or not — a body-wide check would fail on the FIXED
   //       code too and the check would be measuring the wrong thing.
-  {
+  section('6b', 'standard preset stories', 4, async () => {
     const ROWCOL = /\b(row|col(?:umn)?)\s*\d\b/i;
     // Each preset's own row1Label (headerMarker) AND a distinct phrase that
     // only appears in that preset's PROSE (narrativeMarker) — two separate
@@ -412,11 +523,16 @@ try {
     await $.reset.click();
     await page.waitForFunction(() => document.querySelectorAll('div.overflow-y-auto.font-mono p').length === 1,
       null, { timeout: 5000 });
-  }
+  });
 
   // ══ 7. regret mode converges and names what it did (round 14 wording defect;
   //      guards the mixed-NE realization branch)
-  {
+  section('7', 'regret convergence wording', 2, async () => {
+    // This used to inherit Penalty Kick from §6b. Every section must carry
+    // its own fixture now that shards can start here and retries can run it
+    // alone.
+    await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
+    await page.waitForTimeout(500);
     await $.regret.click();
     await page.waitForTimeout(300);
     await $.run.click();
@@ -427,10 +543,10 @@ try {
       body.includes('regret contraction cycles')
       && !body.includes('contraction cycles of search corridors'));
     await $.shrink.click(); await page.waitForTimeout(300);
-  }
+  });
 
   // ══ 8. switching mover clears the run (round 14: stale run under new rules)
-  {
+  section('8', 'mover switch clears run', 3, async () => {
     await $.run.click();
     await page.waitForSelector('text=Converged', { timeout: 240000 });
     const before = await page.locator('text=Converged').count();
@@ -440,11 +556,11 @@ try {
     const lines = await $.logLines.count();
     record('clicking Player B clears the Converged pill and the log', before > 0 && after === 0 && lines === 1,
       `${lines} log lines`);
-  }
+  });
 
   // ══ 9. the report surface, end to end, on the no-key path (guards the
   //      report UI + its agreement with the solver-computed equilibria)
-  {
+  section('9', 'deterministic report UI', 4, async () => {
     await $.reset.click();
     const vals = [-9, 3, 0, 5, 5, 0, 1, 1];
     for (let i = 0; i < 8; i++) { await $.matrix.nth(i).fill(String(vals[i])); await $.matrix.nth(i).blur(); }
@@ -457,11 +573,11 @@ try {
     const computed = /authoritative|computed/i.test(body);
     record('report renders the computed Pure NE (Row2, Col2) for the fixture', hasNE);
     record('no-key path shows the deterministic report as authoritative', computed);
-  }
+  });
   // ══ 10. matrix edit after a jump clears the run (round 14: "Search Game,
   //      Run to 49/49, Go to step 0, edit b22" left a STALE certified run on
   //      the new game)
-  {
+  section('10', 'matrix edit clears jumped run', 2, async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Search Game' }).first().click();
@@ -479,12 +595,12 @@ try {
     const pill = await page.locator('text=Converged').count();
     record('matrix edit after Go-to-step-0 clears the run', lines === 1 && pill === 0,
       `${lines} log lines, Converged pill=${pill}`);
-  }
+  });
 
   // ══ 11. the PURE settlement branch (check 6 exercises the mixed one; BoS
   //      settles at a corner — the wording and the realised payoff here are
   //      their own code path, one a red team falsified with a wrong number)
-  {
+  section('11', 'pure settlement wording', 3, async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Battle of the Sexes' }).first().click();
@@ -495,11 +611,11 @@ try {
     const body = await page.evaluate(() => document.body.innerText);
     record('BoS converges with the pure-settlement wording',
       body.includes('Mover priority settled') && /realised -?\d/.test(body.replace('realized', 'realised')));
-  }
+  });
 
   // ══ 12. theme round-trip (the light/dark pairing convention — a panel left
   //      dark "by omission" in light mode is this repo's classic regression)
-  {
+  section('12', 'theme round trip', 4, async () => {
     const before = await page.evaluate(() => document.documentElement.classList.contains('dark'));
     await page.locator('[aria-label="Toggle dark mode"]').first().click();
     await page.waitForTimeout(300);
@@ -515,18 +631,30 @@ try {
       await page.locator('[aria-label="Toggle dark mode"]').first().click();
       await page.waitForTimeout(200);
     }
-  }
+  });
 
   // ══ 13. Reset returns the app to a fresh state (guards the default-game
   //      restore path after two presets, a manual matrix, and a report)
-  {
+  section('13', 'reset clears run', 4, async () => {
+    await $.reset.click();
+    await page.waitForTimeout(300);
+    await page.getByRole('button', { name: 'Battle of the Sexes' }).first().click();
+    await page.waitForTimeout(500);
+    await setSpeed(10);
+    await $.run.click();
+    await page.waitForSelector('text=Converged', { timeout: 240000 });
+    const linesBefore = await $.logLines.count();
+    const pillBefore = await page.locator('text=Converged').count();
+    record('Reset fixture has a completed run to clear', linesBefore > 1 && pillBefore > 0,
+      `${linesBefore} log lines, Converged pill=${pillBefore}`);
+
     await $.reset.click();
     await page.waitForTimeout(400);
     const lines = await $.logLines.count();
     const pill = await page.locator('text=Converged').count();
     record('Reset clears the log and the Converged pill', lines === 1 && pill === 0,
       `${lines} log lines, Converged pill=${pill}`);
-  }
+  });
 
   // ══ 14. the plot stays directly manipulable (rotate AND zoom)
   //
@@ -550,7 +678,7 @@ try {
   //      reachable at all: the plot must remain rotatable and zoomable. If
   //      direct manipulation breaks, the camera code above is moot and this
   //      fails loudly.
-  {
+  section('14', 'plot rotate and zoom', 1, async () => {
     await $.reset.click();
     await page.locator('#plotly-3d-market-simulation').scrollIntoViewIfNeeded();
     const sceneReady = await waitForScene();
@@ -591,7 +719,7 @@ try {
 
     await $.reset.click();
     await page.waitForTimeout(300);
-  }
+  });
 
   // ══ 15. NO CAMERA FLASH WHEN A PAUSED RUN RESUMES (round 17, reported from a
   //      screen recording: pause mid-run by pressing the plot, rotate AND zoom,
@@ -605,7 +733,7 @@ try {
   //      camera from node misses it and "the view did not move" passes against
   //      the bug (three such attempts did). Sample it INSIDE the react call
   //      instead: that is where the stale pose is observable.
-  {
+  section('15', 'camera stability on resume', 2, async () => {
     const view = page.viewportSize();
     // Wide enough that the plot and the Run button are both on screen — if
     // Playwright has to scroll to reach Run, the plot moves and the comparison
@@ -677,7 +805,7 @@ try {
     await page.waitForTimeout(300);
     await page.setViewportSize(view);
     await page.waitForTimeout(300);
-  }
+  });
 
   // ══ 16. ZOOMING PAUSES A RUNNING SIMULATION (reported: a trackpad pinch
   //      adjusted the view while the run kept stepping underneath it)
@@ -688,7 +816,7 @@ try {
   //      as a `wheel` event with ctrlKey set. A plain wheel over the scene
   //      zooms the camera too. Both are reaching into the picture, so both
   //      pause, exactly as a press does.
-  {
+  section('16', 'zoom pauses simulation', 3, async () => {
     await $.reset.click();
     await page.waitForTimeout(400);
     await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
@@ -716,7 +844,7 @@ try {
     record('zooming the scene pauses a running simulation', wasRunning === true && stillRunning === false);
     await $.reset.click();
     await page.waitForTimeout(300);
-  }
+  });
 
   // ══ 17. THE 320px ROW/COL LABEL DOES NOT BREAK MID-WORD (RED-APP-4 round 4,
   //      findings/RED-APP-4/004-320px-row-label-midword-break.md)
@@ -737,7 +865,7 @@ try {
   //
   //      A SEPARATE page at a fixed 320px viewport, since the shared page
   //      above never resizes this narrow.
-  {
+  section('17', '320px label wrapping', 3, async () => {
     const narrowPage = await browser.newPage({ viewport: { width: 320, height: 900 } });
     await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
     const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
@@ -791,7 +919,7 @@ try {
       `wordRectCount=${wordRectCount} (secondary: box=${JSON.stringify(box)} lineHeight=${lineHeight} lines=${lines})`);
 
     await narrowPage.close();
-  }
+  });
 
   // ══ 18. THE IDLE SPIN RESPECTS prefers-reduced-motion (RED-APP-4 round 4,
   //      findings/RED-APP-4/003-idle-spin-ignores-reduced-motion.md)
@@ -808,7 +936,7 @@ try {
   //      A SEPARATE page (not the shared one above) because the preference
   //      must be readable from the very first render, and setting it mid-way
   //      through this suite would contaminate every later check.
-  {
+  section('18', 'reduced-motion idle spin', 2, async () => {
     const rmPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
     const eye = () => rmPage.evaluate(() => {
       const el = document.getElementById('plotly-3d-market-simulation');
@@ -866,7 +994,7 @@ try {
       firstMoveAt === null ? `held at ${JSON.stringify(lastEye)} for 6s` : `moved to ${JSON.stringify(firstMoveAt)} from ${JSON.stringify(e0)}`);
 
     await rmPage.close();
-  }
+  });
 
   // ══ 19. THE EXPANDED LOG DIALOG MANAGES FOCUS (CodeRabbit finding, PR #90
   //      re-review, src/App.tsx:3086)
@@ -882,7 +1010,7 @@ try {
   //      A SEPARATE page (not the shared one above), since this leaves the
   //      dialog open/closed and moves focus around — state later checks in
   //      this suite do not expect.
-  {
+  section('19', 'expanded log focus', 2, async () => {
     const focusPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
     await focusPage.goto(BASE, { waitUntil: 'networkidle' });
     const focusExitTour = focusPage.getByRole('button', { name: /exit tour/i });
@@ -930,7 +1058,7 @@ try {
       restoredToOpener);
 
     await focusPage.close();
-  }
+  });
 
   // ══ 20. THE OTHER FOUR MODALS ALSO TRAP TAB (RED-APP-5 finding 002,
   //      round 5) — #90 (section 19 above) only fixed the expand-log
@@ -958,7 +1086,7 @@ try {
   //        Enter press against Feedback, whose own leak point is <body>, so
   //        it STILL could not discriminate. Mutation-verified against
   //        BOTH dialogs before shipping — see the finding's blue-note.)
-  {
+  section('20', 'modal focus traps', 3, async () => {
     const trapPage = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
     const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
@@ -1046,7 +1174,7 @@ try {
       secondDialogCount === 1, `found ${secondDialogCount}`);
 
     await trapPage.close();
-  }
+  });
 
   // ══ 21. THE LIVE REGION ANNOUNCES "SETTLED, NOT AN EQUILIBRIUM" AS ITS OWN
   //      PHASE (RED-APP-6/001) — a run that goes STATIONARY at a point that
@@ -1061,7 +1189,7 @@ try {
   //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 — settles at
   //      (0,1) with regret ~18 for A under the app's own defaults
   //      (firstMover A, shrink mode, step 0.1, x0=y0=0.217).
-  {
+  section('21', 'settled live-region wording', 1, async () => {
     const settledPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
     const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
@@ -1115,7 +1243,7 @@ try {
       finalLive === 'Simulation settled — not a Nash equilibrium.', `finalLive=${JSON.stringify(finalLive)}`);
 
     await settledPage.close();
-  }
+  });
 
   // ══ 22. ESCAPE CLOSES ONLY THE TOPMOST LAYER — A DIALOG OVER THE TOUR
   //      DOES NOT ALSO DISMISS THE TOUR (RED-APP-6/002). Walkthrough.tsx has
@@ -1123,7 +1251,7 @@ try {
   //      Escape handlers now stopPropagation when they actually close
   //      something, so the same keypress can never also reach the tour's
   //      listener and reset its step to 0.
-  {
+  section('22', 'Escape closes topmost layer', 4, async () => {
     const escPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await escPage.goto(BASE, { waitUntil: 'networkidle' });
     // Tour auto-opens on a fresh anonymous load — do NOT exit it here.
@@ -1177,16 +1305,17 @@ try {
       `before=${JSON.stringify(tourTitleBefore)} after=${JSON.stringify(tourTitleAfter)}`);
 
     await escPage.close();
-  }
+  });
 
   // ══ 23. A STALLED /api/report REQUEST RECOVERS ON ITS OWN, WITH HONEST
   //      WORDING (RED-APP-6/003). Before this fix, `fetchLlmExplanation` had
   //      no AbortController anywhere — a request that neither resolves nor
   //      rejects (a stalled connection, not a closed one) left the button
   //      stuck on "Analyzing…", disabled, forever. Waits past
-  //      REPORT_FETCH_TIMEOUT_MS (22s, App.tsx) — real wall-clock time, since
-  //      the defect class is specifically "nothing ever forces recovery".
-  {
+  //      REPORT_FETCH_TIMEOUT_MS (22s normally; 5s in CI's throwaway e2e
+  //      artifact) — real wall-clock time, since the defect class is
+  //      specifically "nothing ever forces recovery".
+  section('23', 'stalled report timeout wording', 1, async () => {
     const hangPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     let intercepted = false;
     await hangPage.route('**/api/report', async (route) => {
@@ -1223,7 +1352,7 @@ try {
     // re-enabling) up to a bound comfortably past REPORT_FETCH_TIMEOUT_MS,
     // instead of always sleeping the full 23s regardless of when the abort
     // actually fires -- returns as soon as the state changes, and still
-    // gives the real client-side timeout its full window to fire.
+    // gives the configured client-side timeout its full window to fire.
     await hangPage.waitForFunction(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => /analyzing|explain this game|regenerate/i.test(b.textContent || ''));
       return !!btn && !btn.disabled;
@@ -1247,7 +1376,7 @@ try {
     record('the rest of the app (Run) stays usable while the report request was stuck', runStillUsable);
 
     await hangPage.close();
-  }
+  });
 
   // ══ 24. THE 40-CHAR NO-SPACE LABEL DOES NOT OVERFLOW 320px (RED-APP-6/004,
   //      WCAG 1.4.10 reflow) — the matrix's outer grid had two bare `1fr`
@@ -1257,7 +1386,7 @@ try {
   //      forcing the grid — and the page — past the viewport instead of
   //      wrapping or shrinking. Fixed with minmax(0, 1fr) on both tracks,
   //      matching what the per-cell payoff-pair grid already did correctly.
-  {
+  section('24', 'long-label 320px reflow', 2, async () => {
     const overflowPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
     const oExitTour = overflowPage.getByRole('button', { name: /exit tour/i });
@@ -1335,7 +1464,7 @@ try {
       record('the 40-char no-space label does not overflow 320px (RED-APP-6/004)', !(await overflowing()));
     }
     await narrow320.close();
-  }
+  });
 
   // ══ 25. THE SAVE DIALOG'S NAME FIELD CLAMPS TO 40 CHARS EVEN WHEN
   //      PREFILLED PROGRAMMATICALLY FROM AN AI-SUGGESTED NAME (RED-APP-6/005)
@@ -1346,7 +1475,7 @@ try {
   //      `/api/report` response is fully replaced with a synthetic but
   //      `envelopeIsTrustworthy()`-satisfying ('template' source) envelope
   //      carrying a crafted 72-character name.
-  {
+  section('25', 'suggested-name clamp', 3, async () => {
     const clampPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await clampPage.route('**/api/report', async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -1408,14 +1537,14 @@ try {
         nameValue === 'A'.repeat(40), `length=${nameValue ? nameValue.length : null} value=${JSON.stringify(nameValue)}`);
     }
     await clampPage.close();
-  }
+  });
 
   // ══ 26. FEATURE-REGEN — hidden when the server capability is off (the
   //      default: NASH_SCENARIO_REGEN is unset on this build, so the real,
   //      unmocked /api/health has no `capabilities.scenarioRegen` at all).
   //      No route mock in this section on purpose — it must be true against
   //      the ACTUAL running server, not a stand-in for one.
-  {
+  section('26', 'scenario regeneration hidden', 4, async () => {
     const offPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     // CodeRabbit finding: a FIXED sleep before asserting "absent" can pass
     // for the wrong reason on a stalled CI runner (the button is absent
@@ -1437,12 +1566,12 @@ try {
     const regenVisibleOff = await offPage.getByRole('button', { name: 'Regenerate scenario' }).isVisible({ timeout: 1000 }).catch(() => false);
     record('Regenerate scenario is NOT shown when the server capability is off (default)', !regenVisibleOff);
     await offPage.close();
-  }
+  });
 
   // ══ 27. FEATURE-REGEN — Save dialog: Discard preserves typed edits
   //      (RED-APP-4 class), then Keep replaces desc/labels but leaves a
   //      user-TYPED name untouched (director's amended name rule).
-  {
+  section('27', 'save-dialog regenerate semantics', 1, async () => {
     const savePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     let regenCalls = 0;
     await mockRegenOn(savePage, async (route) => {
@@ -1491,7 +1620,7 @@ try {
     record('Keep NEVER replaces a user-TYPED name (director\'s amended rule)', await nameField.inputValue() === 'My Own Typed Name',
       await nameField.inputValue());
     await savePage.close();
-  }
+  });
 
   // ══ 28. FEATURE-REGEN — Edit dialog: an UNTOUCHED (not re-typed this
   //      session) name IS replaced on Keep, description/labels replace, the
@@ -1507,7 +1636,7 @@ try {
   //      preserve/add/never-reassign behaviour as pure-function fixtures,
   //      and src/integration/scenario-regen.test.mjs section 10 covers it
   //      end-to-end through the real REST API.
-  {
+  section('28', 'edit-dialog regenerate semantics', 2, async () => {
     const editPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(editPage, async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_B }) });
@@ -1596,11 +1725,11 @@ try {
       !!patchBody && patchBody.colorTermsA.length === 1 && patchBody.colorTermsB.length === 1,
       JSON.stringify({ colorTermsA: patchBody?.colorTermsA, colorTermsB: patchBody?.colorTermsB }));
     await editPage.close();
-  }
+  });
 
   // ══ 29. FEATURE-REGEN — double-click issues exactly one request, and
   //      focus/aria-live behave (a11y).
-  {
+  section('29', 'regenerate double-click guard', 3, async () => {
     const dblPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     let hits = 0;
     await mockRegenOn(dblPage, async (route) => {
@@ -1665,15 +1794,15 @@ try {
     }
     record('the live region announces the scenario is ready', sawReady);
     await dblPage.close();
-  }
+  });
 
   // ══ 30. FEATURE-REGEN — a stalled regenerate request recovers on its own
   //      with honest timeout wording. Real wall-clock wait past
-  //      REPORT_FETCH_TIMEOUT_MS (22s, App.tsx — handleRegenerateScenario
-  //      uses the SAME fetchWithTimeout default as /api/report, see §23's
-  //      sibling check), because the defect class this guards is "nothing
-  //      ever forces recovery".
-  {
+  //      REPORT_FETCH_TIMEOUT_MS (22s normally; 5s in CI's e2e artifact —
+  //      handleRegenerateScenario uses the SAME fetchWithTimeout default as
+  //      /api/report, see §23's sibling check), because the defect class this
+  //      guards is "nothing ever forces recovery".
+  section('30', 'regenerate timeout wording', 3, async () => {
     const toPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     let toIntercepted = false;
     await mockRegenOn(toPage, async (route) => {
@@ -1692,9 +1821,10 @@ try {
     }, null, { timeout: 5000 }).catch(() => {});
     record('the regenerate request was actually intercepted (precondition)', toIntercepted);
 
-    // Poll for recovery rather than a flat sleep — this IS the 22s wait, not
-    // a workaround for one: a real regression (no recovery at all) must time
-    // this loop out rather than pass on a stale snapshot.
+    // Poll for recovery rather than a flat sleep. A real regression (no
+    // recovery at all) must time this loop out rather than pass on a stale
+    // snapshot; CI's injected timeout only makes the positive transition
+    // happen sooner.
     let recovered = null;
     for (let i = 0; i < 30 && !recovered; i++) {
       const state = await toPage.evaluate(() => {
@@ -1705,17 +1835,17 @@ try {
       if (state && state.ariaDisabled !== 'true') recovered = state;
       else await toPage.waitForTimeout(1000);
     }
-    record('the regenerate button un-sticks (re-enabled) after the ~22s timeout',
+    record('the regenerate button un-sticks (re-enabled) after the configured timeout',
       !!recovered, JSON.stringify(recovered));
     record('the dialog shows the timeout-specific wording, not a generic failure message',
       /taking longer than expected/i.test(recovered?.note || ''), JSON.stringify(recovered));
     await toPage.close();
-  }
+  });
 
   // ══ 31. FEATURE-REGEN — a 429 from the shared rate-limit bucket shows the
   //      server's own wording, and the button recovers immediately (no stuck
   //      "Regenerating…").
-  {
+  section('31', 'regenerate 429 wording', 4, async () => {
     const rlPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(rlPage, async (route) => {
       await route.fulfill({
@@ -1744,11 +1874,11 @@ try {
     });
     record('the button is re-enabled (not stuck loading) after a 429', rlDisabled !== 'true', `aria-disabled=${rlDisabled}`);
     await rlPage.close();
-  }
+  });
 
   // ══ 32. FEATURE-REGEN — cross-dialog staleness: Edit A's slow response
   //      must never land on Edit B.
-  {
+  section('32', 'cross-dialog regeneration staleness', 4, async () => {
     const stalePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(stalePage, async (route) => {
       await new Promise((r) => setTimeout(r, 3000));
@@ -1810,7 +1940,7 @@ try {
       bNameBefore === bNameAfter && bNameAfter === 'Stale Game B', `before=${bNameBefore} after=${bNameAfter}`);
     record('cross-dialog staleness: A\'s late preview never rendered inside B', !bHasPreview);
     await stalePage.close();
-  }
+  });
 
   // ══ 33. RED-APP-8/001 — a write-action 401 that clears the auth token
   //      (#101's own fix: updateAuthToken(null) so the app's state agrees
@@ -1824,7 +1954,7 @@ try {
   //      the 401 with a route interception (byte-identical downstream code
   //      path to a real TTL expiry — `res.status === 401` is all the client
   //      reads) rather than waiting out AUTH_TOKEN_TTL_MS.
-  {
+  section('33', 'expired-auth tour guard', 1, async () => {
     const tourPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(tourPage, 'e2e8tourreopen');
     record('control: a signed-in load does not auto-open the tour',
@@ -1892,7 +2022,7 @@ try {
     record('RED-APP-8/001 fix: my saved game\'s matrix is unchanged (not swapped for a preset)',
       JSON.stringify(await readMatrix()) === JSON.stringify(myValues), JSON.stringify(await readMatrix()));
     await tourPage.close();
-  }
+  });
 
   // ══ 34. RED-APP-8/004 — a real QuotaExceededError thrown from
   //      localStorage.setItem('nash_sim_theme', ...) must not blank the
@@ -1904,7 +2034,7 @@ try {
   //      app's own JS ever runs, modeling "the browser already has no quota
   //      left" rather than something the app itself did — same technique
   //      the director's own repro used.
-  {
+  section('34', 'storage-quota error boundary', 2, async () => {
     const quotaPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await quotaPage.addInitScript(() => {
       const real = window.localStorage.setItem.bind(window.localStorage);
@@ -1948,7 +2078,7 @@ try {
     record('RED-APP-8/004 fix: the app is otherwise interactive (theme toggle click actually changes the theme state) after the quota failure',
       themeButtonWorks);
     await quotaPage.close();
-  }
+  });
 
   // ══ 35. RED-APP-8/005 — the Account and Feedback dialogs must be reachable
   //      at a short (400%-zoom-equivalent) viewport. Save/Edit already had
@@ -1961,7 +2091,7 @@ try {
   //      by scrolling a genuine scrollable ANCESTOR into view (the dialog
   //      itself, post-fix) — there is no such ancestor pre-fix, so the click
   //      times out instead of silently "succeeding" through some shortcut.
-  {
+  section('35', 'short-viewport dialogs', 3, async () => {
     const shortPage = await browser.newPage({ viewport: { width: 320, height: 256 } });
     // NOTE: no page-wide setDefaultTimeout override here — the two
     // reachability clicks below already pass their own explicit
@@ -2053,7 +2183,7 @@ try {
     } catch (e) { feedbackReachable = false; feedbackErr = String(e?.message ?? e).split('\n')[0]; }
     record('RED-APP-8/005 fix: the Feedback dialog\'s submit button is reachable at 320x256', feedbackReachable, feedbackReachable ? undefined : feedbackErr);
     await shortPage.close();
-  }
+  });
 
   // ══ 36. RED-APP-8/002 — the label inputs' grapheme-safe clamp (#101, RED-
   //      APP-7/004) must never fight an open IME composition. A native
@@ -2065,7 +2195,7 @@ try {
   //      isComposing:true) per keystroke, matching how
   //      @testing-library/user-event drives React's own composition
   //      detection (which reads exactly `e.nativeEvent.isComposing`).
-  {
+  section('36', 'IME-safe label clamp', 4, async () => {
     const imePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(imePage, 'e2e8ime');
     await imePage.getByRole('button', { name: /save preset/i }).click();
@@ -2115,7 +2245,7 @@ try {
         info.domValueFinal !== '国际关系与地区安全合作机制建设的历史沿革与展望研究究究究究究究究究究究究究究究究究究究究究');
     }
     await imePage.close();
-  }
+  });
 
   // ══ 37. RED-APP-8/003 — the FIRST time the label-input clamp actually
   //      narrows a value, native Undo (Cmd/Ctrl+Z) must not go permanently
@@ -2123,7 +2253,7 @@ try {
   //      events) past the 40-unit budget, then presses Undo repeatedly and
   //      confirms the value actually changes at least once (the pre-fix
   //      behaviour: 50 presses, zero change, ever).
-  {
+  section('37', 'label-clamp undo', 4, async () => {
     const undoPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(undoPage, 'e2e8undo');
     await undoPage.getByRole('button', { name: /save preset/i }).click();
@@ -2162,35 +2292,41 @@ try {
     record('control: an unclamped field\'s undo works normally', controlAfterUndo !== 'short' && controlAfterUndo.length < 5,
       `"${controlAfterUndo}"`);
     await undoPage.close();
-  }
+  });
+
+  await executeSections();
 
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
   // with no console errors is unactionable without seeing what the page
   // looked like (what overlay was up, whether the button was even there).
-  await page.screenshot({ path: '/tmp/e2e_smoke_failure.png', fullPage: true }).catch(() => {});
-  try {
-    const fs = await import('node:fs');
-    fs.writeFileSync('/tmp/e2e_smoke_failure.html',
-      await page.content().catch(() => '<unavailable>'));
-  } catch { /* evidence capture must never mask the original failure */ }
-  record('suite completed without a script error', false, e.message.slice(0, 200));
+  await captureFailureEvidence();
+  record('suite completed without a script error', false,
+    String(e?.message ?? e).slice(0, 200));
 }
 
-await page.screenshot({ path: '/tmp/e2e_smoke_end.png' }).catch(() => {});
+await page.screenshot({ path: endPng }).catch(() => {});
 await browser.close();
 
 // console errors: external analytics/resource failures are not the app's
 // signal here; everything else is a failure of the check that ran
 const relevantErrors = consoleErrors.filter((t) =>
   !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED/i.test(t));
-record('no console/page errors across the whole suite', relevantErrors.length === 0,
-  relevantErrors.slice(0, 3).join(' | '));
+if (executedShard && relevantErrors.length === 0) {
+  // Enforce this guard independently in every shard, but do not inflate the
+  // historical functional-check count from one global check to four.
+  console.log('PASS no console/page errors across this shard');
+} else {
+  record(`no console/page errors across ${executedShard ? 'this shard' : 'the whole suite'}`,
+    relevantErrors.length === 0, relevantErrors.slice(0, 3).join(' | '));
+}
 
 await killServer();
 try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effort */ }
 
-const fails = results.filter((r) => !r.pass);
-console.log(`\n══════ E2E SMOKE: ${results.length - fails.length}/${results.length} checks passed ══════`);
+const finalResults = results.filter((result) => result.sectionId === null
+  || result.attempt === finalAttemptBySection.get(result.sectionId));
+const fails = finalResults.filter((result) => !result.pass);
+console.log(`\n══════ E2E SMOKE: ${finalResults.length - fails.length}/${finalResults.length} checks passed ══════`);
 if (fails.length) fails.forEach((f) => console.log(`  FAIL ${f.name} — ${f.detail}`));
 process.exit(fails.length ? 1 : 0);

@@ -39,6 +39,7 @@ import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe } from './utils/textSafety';
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
+import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import {
@@ -377,7 +378,15 @@ function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElemen
  * `clear()` is returned separately and called from the caller's own
  * `finally` block, alongside its other per-request cleanup.
  */
-const REPORT_FETCH_TIMEOUT_MS = 22_000;
+// CI's smoke suite can compile a shorter timeout into its throwaway test
+// bundle so the two stalled-request wording checks do not each spend 22 real
+// seconds. Ordinary local and production builds leave the variable unset and
+// therefore exercise the shipping 22-second value. This is intentionally a
+// Vite build-time variable: dist/ is static, so a server-process environment
+// variable cannot change code that is already running in the browser.
+const REPORT_FETCH_TIMEOUT_MS = resolveReportFetchTimeoutMs(
+  import.meta.env.VITE_E2E_FETCH_TIMEOUT_MS,
+);
 
 // `timeoutMs` defaults to REPORT_FETCH_TIMEOUT_MS; exported and parameterized
 // only so src/fetchtimeout.test.ts can exercise the real logic with a short

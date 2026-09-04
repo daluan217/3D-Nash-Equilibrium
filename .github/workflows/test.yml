@@ -27,6 +27,7 @@ name: Test
 # Actions; CI never sees the local machine's default Node, so the Node 26 Vite
 # hang documented for local dev is not a concern here.
 on:
+  workflow_dispatch:
   push:
     branches: [main, review-mirror]
   pull_request:
@@ -107,6 +108,11 @@ jobs:
 
       - name: Build production bundle
         run: npm run build
+        env:
+          # The ordinary browser timeout remains 22s. This artifact exists
+          # only for CI, where the stalled-request sections need to verify the
+          # same abort + wording path without spending 44 seconds waiting.
+          VITE_E2E_FETCH_TIMEOUT_MS: '5000'
 
       - name: Scan the bundle for secret-shaped strings
         run: |
@@ -352,14 +358,17 @@ jobs:
         env:
           REGEN_TEST_PORT: '3160'
 
-  e2e:
+  e2e_smoke:
+    name: e2e smoke (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    # 75, not 45: the smoke suite is 103 checks and one attempt takes 17-26 min on
-    # the 2-core SwiftShader runner, and the step retries once. On 2026-09-03 run
-    # 33814822611 went 102/103 -> retry 103/103 -> AI-surface 8/8 and was then
-    # CANCELLED by the 45-min cap with every check green, which blocked the deploy.
-    timeout-minutes: 75
+    timeout-minutes: 25
     needs: build
+    strategy:
+      # One bad shard must not cancel its siblings and destroy their evidence.
+      # GitHub's "Re-run failed jobs" then re-runs only the failed matrix child.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
 
@@ -381,26 +390,65 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Boot the production server and run the smoke suite
-        # One automatic retry: GitHub's 2-core SwiftShader runners
-        # occasionally stall a frame for minutes (observed: a 120s click
-        # actionability timeout with zero console errors, on a suite that
-        # passed identical code on the previous run). A real regression
-        # fails both attempts; a stalled runner gets a second chance.
-        # The outcome is recorded so a PASS-AFTER-RETRY still uploads the
-        # first attempt's stall evidence (failure() alone is false there).
+        # smoke.mjs retries only the failed named sections once. It never
+        # repeats the whole shard for a one-check SwiftShader stall.
         id: smoke
         run: |
-          if node src/e2e/smoke.mjs; then
-            echo "smoke_outcome=pass" >> "$GITHUB_OUTPUT"
-          elif node src/e2e/smoke.mjs; then
-            echo "smoke_outcome=pass-after-retry" >> "$GITHUB_OUTPUT"
-          else
+          set +e
+          node src/e2e/smoke.mjs 2>&1 | tee "$RUNNER_TEMP/e2e-smoke-${{ matrix.shard }}.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
             echo "smoke_outcome=fail" >> "$GITHUB_OUTPUT"
-            exit 1
+            exit "$status"
+          elif grep -q '^pass-after-section-retry:' "$RUNNER_TEMP/e2e-smoke-${{ matrix.shard }}.log"; then
+            echo "smoke_outcome=pass-after-section-retry" >> "$GITHUB_OUTPUT"
+          else
+            echo "smoke_outcome=pass" >> "$GITHUB_OUTPUT"
           fi
         env:
-          E2E_PORT: '3099'
-          E2E_BASE: http://localhost:3099
+          E2E_SHARD: ${{ matrix.shard }}/4
+          E2E_PORT: 309${{ matrix.shard }}
+          E2E_BASE: http://localhost:309${{ matrix.shard }}
+
+      - name: Upload shard evidence
+        # Keep evidence from a pass-after-section-retry: that first failed
+        # attempt is the transient-stall picture worth retaining.
+        if: always() && steps.smoke.outputs.smoke_outcome != 'pass'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-evidence-shard-${{ matrix.shard }}
+          path: |
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-4.png
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-4.html
+            ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e_ai_surface:
+    name: e2e AI surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the bundle built by the build job
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install headless Chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run the AI-surface suite
         # The controls that CONSUME a model response — "Explain this game" and
@@ -428,20 +476,27 @@ jobs:
           E2E_PORT: '3098'
           E2E_BASE: http://localhost:3098
 
-      - name: Upload failure evidence (screenshot + page HTML)
-        # runs whenever the suite did not pass clean on the first attempt —
-        # including the pass-after-retry case, whose evidence is exactly the
-        # transient-stall picture worth keeping. if-no-files-found: ignore
-        # keeps this a no-op when the suite passed without any failure.
-        if: always() && steps.smoke.outputs.smoke_outcome != 'pass'
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-failure-evidence
-          path: |
-            /tmp/e2e_smoke_failure.png
-            /tmp/e2e_smoke_failure.html
-          retention-days: 7
-          if-no-files-found: ignore
+  # Branch protection requires the exact context "e2e". Keep that stable
+  # while the implementation fans out behind it. The deploy gate therefore
+  # cannot pass until all four smoke shards and the AI-surface suite pass.
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [e2e_smoke, e2e_ai_surface]
+    steps:
+      - name: Require every e2e child job to pass
+        env:
+          SMOKE_RESULT: ${{ needs.e2e_smoke.result }}
+          AI_SURFACE_RESULT: ${{ needs.e2e_ai_surface.result }}
+        run: |
+          if [ "$SMOKE_RESULT" != success ] || [ "$AI_SURFACE_RESULT" != success ]; then
+            echo "Smoke matrix: $SMOKE_RESULT"
+            echo "AI surface: $AI_SURFACE_RESULT"
+            exit 1
+          fi
+          echo "All e2e shards and the AI-surface suite passed."
 
   # The container Cloud Run actually runs. Until now nothing built it before
   # production did: Cloud Build builds this Dockerfile on push to main, main
