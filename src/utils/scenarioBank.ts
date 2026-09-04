@@ -283,6 +283,22 @@ export function actorNounsOk(sc: {
   // one — checking the raw length would let a single-character noun through
   // the same floor `cleanUserColorTerms` enforces (CodeRabbit, phase 3 review).
   if (all.some((t) => { const n = norm(t); return n.length < 2 || !descNorm.includes(n); })) return false;
+  // LITERAL-SUBSTRING GUARD (RED-REGEN-2/001, 2026-09-04). The check above is
+  // NORMALIZED (NFKC + zero-width-stripped) — a noun that clears it only via
+  // normalization (a zero-width space spliced into "farmer", or fullwidth
+  // Latin "Ａ ｇｒａｉｎ ｔｒａｄｅｒ") is not a byte-for-byte substring of the
+  // description. `ColorCoded.tsx` builds its highlight regex from the RAW,
+  // unnormalized term against the RAW, unnormalized description text (only
+  // regex metacharacters escaped, `gi` flags, no `.normalize()` anywhere) —
+  // so a noun that passes only the normalized check above can never actually
+  // highlight, silently, even though the server calls it "verbatim" and lets
+  // it ship as a colour-term chip. Reject-and-reroll at the gate instead:
+  // require the raw, trimmed noun to ALSO be a literal, case-insensitive
+  // substring of the raw description — exactly what the highlighter's own
+  // regex needs to find a match. Checked on the RAW noun, not `norm(t)`: a
+  // normalized-only match is precisely the thing being rejected here.
+  const rawDescLower = (sc.description ?? '').toLowerCase();
+  if (all.some((t) => !rawDescLower.includes(t.trim().toLowerCase()))) return false;
   const aSet = new Set((a as string[]).map(norm));
   const bSet = new Set((b as string[]).map(norm));
   if ([...aSet].some((t) => bSet.has(t))) return false;

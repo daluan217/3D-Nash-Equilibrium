@@ -66,6 +66,17 @@ const STORY2 = {
 };
 // Well-formed but repeats the SAME story every draw — the avoid gate's target.
 const SAME_AS_STORY = { ...STORY, description: STORY.description + ' Scheduling stays informal between them.' };
+// RED-REGEN-2/001 fixture: an actor noun that is only NFKC/zero-width-equal
+// to the description, not a literal substring of it — the red's exact ZWSP
+// string (a zero-width space spliced into "farmer"). The pre-fix
+// `actorNounsOk` accepted this (normalized comparison only); the fix must
+// reject-and-reroll it so it never reaches the client.
+const ZWSP_STORY = {
+  name: 'Mock Farm Plot', row1: 'Plant Early', row2: 'Plant Late',
+  col1: 'Harvest Soon', col2: 'Harvest Late',
+  description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
+  actorA: ['A far' + '​' + 'mer'], actorB: ['a rival grower'],
+};
 
 const mock = createServer((req, res) => {
   let body = '';
@@ -78,6 +89,7 @@ const mock = createServer((req, res) => {
     const content = effectiveMode === 'actors' ? JSON.stringify({ suggestedScenario: STORY_WITH_ACTORS })
       : effectiveMode === 'story2' ? JSON.stringify({ suggestedScenario: STORY2 })
       : effectiveMode === 'same' ? JSON.stringify({ suggestedScenario: SAME_AS_STORY })
+      : effectiveMode === 'zwsp' ? JSON.stringify({ suggestedScenario: ZWSP_STORY })
       : JSON.stringify({ suggestedScenario: STORY });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -619,6 +631,34 @@ try {
     record('REPORT_LOCAL_PROMPT=1: the provider request used the scenario-only actor schema, not the frozen report schema',
       !!schema?.properties?.suggestedScenario?.properties?.actorA && !schema?.properties?.claimedEquilibria,
       `schema keys=${JSON.stringify(Object.keys(schema?.properties ?? {}))}`);
+    await stop();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 12. RED-REGEN-2/001 — an actor noun that only matches the description
+  //     through NFKC/zero-width normalization (never a byte-for-byte literal
+  //     substring) is rejected at the gate and rerolled, never reaching the
+  //     client — reusing the red's exact reproduction (ZWSP_STORY above,
+  //     verbatim from /private/tmp/h2-regen-red/probes/red_regen2_server.mjs
+  //     fixture `zwsp`). Every draw from the mock repeats this same
+  //     unfixable noun, so the ladder must exhaust and fall back to the bank
+  //     exactly like the other reject-and-reroll classes (avoid gate,
+  //     non-verbatim, label collision) already covered above.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    calls = 0; mode = 'zwsp'; sequence = null; lastProviderRequest = null;
+    await boot(HOSTED_ON_ENV);
+    const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+    record('RED-REGEN-2/001: still 200 with a scenario (bank fallback rescues the exhausted ladder)',
+      r.status === 200 && !!r.json?.scenario, `status=${r.status} body=${JSON.stringify(r.json)}`);
+    const wireActorA = r.json?.scenario?.actorA ?? [];
+    const hasZwspNoun = wireActorA.some((t) => /[​-‍﻿]/.test(t));
+    record('RED-REGEN-2/001: the zero-width-spliced noun never reaches the client wire',
+      !hasZwspNoun, `actorA=${JSON.stringify(wireActorA)}`);
+    record('RED-REGEN-2/001: the provider was asked 1 + NASH_SCENARIO_REROLLS (default 2) = 3 times before falling back',
+      calls === 3, `calls=${calls}`);
+    record('RED-REGEN-2/001: falls back to the bank (scenarioSource=bank-fallback), same treatment as any other rejected draw',
+      r.json?.scenarioSource === 'bank-fallback', `scenarioSource=${JSON.stringify(r.json?.scenarioSource)}`);
     await stop();
   }
 

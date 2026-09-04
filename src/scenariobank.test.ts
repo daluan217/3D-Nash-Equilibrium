@@ -584,6 +584,44 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
       actorNounsOk({ ...base, actorA: ['a regional freight broker'], actorB: ['a dockside contractor'] }));
     check('actorNounsOk: no declaration at all is accepted (silence is safe)',
       actorNounsOk({ ...base, actorA: null, actorB: undefined }));
+
+    /**
+     * LITERAL-SUBSTRING GUARD (RED-REGEN-2/001, director-reproduced
+     * 2026-09-04). The normalized "verbatim" check above accepts a noun that
+     * is only NFKC- or zero-width-equal to the description, not a literal
+     * substring of it — but `ColorCoded.tsx` highlights by matching the RAW
+     * noun against the RAW description (no `.normalize()`, no zero-width
+     * strip). Such a noun ships, and even gets kept as a colour-term chip,
+     * but never actually highlights: silent breakage of the field's whole
+     * purpose. These two fixtures are the red's EXACT reproduction strings
+     * (server-run2-fe45c49.log) — both must now be rejected.
+     */
+    {
+      const zwspNoun = 'A far' + '​' + 'mer'; // zero-width space spliced into "farmer"
+      check('actorNounsOk: a noun that only normalized-matches via a zero-width character is rejected (RED-REGEN-2/001)',
+        !actorNounsOk({
+          row1: 'Plant Early', row2: 'Plant Late', col1: 'Harvest Soon', col2: 'Harvest Late',
+          description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
+          actorA: [zwspNoun], actorB: ['a rival grower'],
+        }));
+      const nfkcNoun = 'Ａ ｇｒａｉｎ ｔｒａｄｅｒ'; // fullwidth Latin, NFKC-normalizes to "A grain trader"
+      check('actorNounsOk: a noun that only normalized-matches via NFKC fullwidth-Latin folding is rejected (RED-REGEN-2/001)',
+        !actorNounsOk({
+          row1: 'Ship Now', row2: 'Ship Later', col1: 'Buy Now', col2: 'Buy Later',
+          description: 'A grain trader and a mill buyer negotiate the timing of a shipment.',
+          actorA: [nfkcNoun], actorB: null,
+        }));
+      // Positive control: the SAME noun, but literally present in the
+      // description (no zero-width char, no fullwidth folding needed) — must
+      // still be accepted, so the new guard cannot be rejecting on some other
+      // property of these fixtures (e.g. their punctuation or length).
+      check('actorNounsOk: the plain, literal form of the same noun is still accepted (positive control for the new guard)',
+        actorNounsOk({
+          row1: 'Plant Early', row2: 'Plant Late', col1: 'Harvest Soon', col2: 'Harvest Late',
+          description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
+          actorA: ['A farmer'], actorB: ['a rival grower'],
+        }));
+    }
   }
 }
 
