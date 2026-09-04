@@ -1,0 +1,923 @@
+{"idx":14,"d":"coppice cutting cycles","b":2,"name":"Shared Coppice Planning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3710,"outputTokens":16,"reasoningTokens":0}
+{"idx":4,"d":"apiary winter siting","b":3,"name":"Winter Apiary Siting","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4115,"outputTokens":18,"reasoningTokens":0}
+{"idx":15,"d":"truffle foraging permits","b":3,"name":"Truffle Permit Accord","actorA":["Estate A"],"actorB":["Estate B"],"ok":true,"failure":null,"ms":4116,"outputTokens":18,"reasoningTokens":0}
+{"idx":13,"d":"textile dyeing shifts","b":1,"name":"Dye-House Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4735,"outputTokens":12,"reasoningTokens":0}
+{"idx":20,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4967,"outputTokens":12,"reasoningTokens":0}
+{"idx":21,"d":"archive digitisation","b":0,"name":"Pamphlet Digitisation","actorA":["coordinator"],"actorB":["technician"],"ok":true,"failure":null,"ms":4998,"outputTokens":16,"reasoningTokens":0}
+{"idx":2,"d":"greenhouse heat sharing","b":0,"name":"Greenhouse Heat Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5141,"outputTokens":11,"reasoningTokens":0}
+{"idx":16,"d":"lock-keeper shift swaps","b":0,"name":"Lock-Keeper Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5345,"outputTokens":11,"reasoningTokens":0}
+{"idx":31,"d":"sawmill kiln booking","b":3,"name":"Kiln Booking","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2677,"outputTokens":11,"reasoningTokens":0}
+{"idx":35,"d":"courier route bidding","b":1,"name":"Neighborhood Courier Bid","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2790,"outputTokens":12,"reasoningTokens":0}
+{"idx":28,"d":"planetarium show slots","b":0,"name":"Planetarium Show Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3402,"outputTokens":11,"reasoningTokens":0}
+{"idx":45,"d":"ferry timetable slots","b":0,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2888,"outputTokens":12,"reasoningTokens":0}
+{"idx":38,"d":"bell foundry casting","b":3,"name":"Landmark Bell Commission","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3172,"outputTokens":11,"reasoningTokens":0}
+{"idx":48,"d":"seed bank exchanges","b":0,"name":"Seed Bank Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2990,"outputTokens":12,"reasoningTokens":0}
+{"idx":39,"d":"avalanche patrol rosters","b":0,"name":"Morning Avalanche Roster","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3392,"outputTokens":12,"reasoningTokens":0}
+{"idx":36,"d":"salt pan harvesting","b":0,"name":"Shared Salt Pan","actorA":["Harvester A"],"actorB":["Harvester B"],"ok":true,"failure":null,"ms":3810,"outputTokens":18,"reasoningTokens":0}
+{"idx":54,"d":"seaweed drying racks","b":2,"name":"Seaweed Rack Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3827,"outputTokens":null,"reasoningTokens":null}
+{"idx":87,"d":"salt marsh grazing rights","b":0,"name":"Marsh Turnout","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3176,"outputTokens":11,"reasoningTokens":0}
+{"idx":62,"d":"vineyard irrigation","b":2,"name":"Vineyard Water Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4212,"outputTokens":11,"reasoningTokens":0}
+{"idx":77,"d":"greenhouse heat sharing","b":0,"name":"Shared Greenhouse Heat","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3391,"outputTokens":16,"reasoningTokens":0}
+{"idx":95,"d":"satellite downlink windows","b":0,"name":"Downlink Fine-Tuning","actorA":["the team"],"actorB":["the relay-station scheduler"],"ok":true,"failure":null,"ms":3956,"outputTokens":23,"reasoningTokens":0}
+{"idx":59,"d":"pollination contracts","b":1,"name":"Orchard Pollination","actorA":["the manager"],"actorB":["the beekeeper"],"ok":true,"failure":null,"ms":5537,"outputTokens":18,"reasoningTokens":0}
+{"idx":89,"d":"cranberry bog flooding","b":3,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4131,"outputTokens":11,"reasoningTokens":0}
+{"idx":100,"d":"satellite downlink windows","b":0,"name":"Shared Downlink Window","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":5653,"outputTokens":null,"reasoningTokens":null}
+{"idx":106,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3004,"outputTokens":26,"reasoningTokens":0}
+{"idx":117,"d":"dairy co-op pricing","b":2,"name":"Milk Season Pricing","actorA":["the cooperative"],"actorB":["the chain"],"ok":true,"failure":null,"ms":3090,"outputTokens":20,"reasoningTokens":0}
+{"idx":114,"d":"greenhouse heat sharing","b":1,"name":"Greenhouse Heat Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3593,"outputTokens":11,"reasoningTokens":0}
+{"idx":120,"d":"radio telescope time","b":2,"name":"Radio Telescope Allocation","actorA":["A national observatory"],"actorB":["A partner research institute"],"ok":true,"failure":null,"ms":3136,"outputTokens":17,"reasoningTokens":0}
+{"idx":102,"d":"courier route bidding","b":0,"name":"Neighborhood Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5015,"outputTokens":12,"reasoningTokens":0}
+{"idx":122,"d":"seaweed drying racks","b":0,"name":"Shared Seaweed Rack","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":3782,"outputTokens":20,"reasoningTokens":0}
+{"idx":123,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2903,"outputTokens":null,"reasoningTokens":null}
+{"idx":119,"d":"thatching crew rotas","b":3,"name":"Manor Thatching Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4882,"outputTokens":12,"reasoningTokens":0}
+{"idx":129,"d":"peat bog restoration","b":0,"name":"Bog Water Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4196,"outputTokens":18,"reasoningTokens":0}
+{"idx":145,"d":"weir maintenance windows","b":1,"name":"Weir Maintenance Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3564,"outputTokens":12,"reasoningTokens":0}
+{"idx":134,"d":"ferry timetable slots","b":2,"name":"Seasonal Ferry Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4579,"outputTokens":16,"reasoningTokens":0}
+{"idx":131,"d":"marathon road closures","b":2,"name":"Marathon Road Closures","actorA":["A city traffic agency"],"actorB":["The marathon organizer"],"ok":true,"failure":null,"ms":5239,"outputTokens":19,"reasoningTokens":0}
+{"idx":155,"d":"thatching crew rotas","b":0,"name":"Thatching Crew Rotas","actorA":["the first crew lead"],"actorB":["the second crew lead"],"ok":true,"failure":null,"ms":3496,"outputTokens":20,"reasoningTokens":0}
+{"idx":163,"d":"film release timing","b":1,"name":"Twin Film Releases","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3105,"outputTokens":12,"reasoningTokens":0}
+{"idx":151,"d":"vinyl pressing queues","b":2,"name":"Vinyl Pressing Queue","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4736,"outputTokens":11,"reasoningTokens":0}
+{"idx":171,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4547,"outputTokens":12,"reasoningTokens":0}
+{"idx":174,"d":"thatching crew rotas","b":0,"name":"Cottage Thatching Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3287,"outputTokens":16,"reasoningTokens":0}
+{"idx":177,"d":"fishing quota negotiation","b":1,"name":"Quay Quota Talks","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":3110,"outputTokens":22,"reasoningTokens":0}
+{"idx":182,"d":"oyster bed leases","b":0,"name":"Tidal Lease Lines","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2723,"outputTokens":12,"reasoningTokens":0}
+{"idx":179,"d":"peat bog restoration","b":3,"name":"Peatland Recovery Pact","actorA":["A national peatland agency"],"actorB":["a major bogland owner"],"ok":true,"failure":null,"ms":3128,"outputTokens":22,"reasoningTokens":0}
+{"idx":194,"d":"microbrewery distribution","b":0,"name":"Local Beer Run","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3160,"outputTokens":12,"reasoningTokens":0}
+{"idx":183,"d":"seaweed drying racks","b":1,"name":"Shared Seaweed Racks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4008,"outputTokens":12,"reasoningTokens":0}
+{"idx":190,"d":"greenhouse heat sharing","b":0,"name":"Shared Greenhouse Heat","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3662,"outputTokens":16,"reasoningTokens":0}
+{"idx":209,"d":"textile dyeing shifts","b":0,"name":"Small-Batch Rinsing","actorA":["the first dyeing shift"],"actorB":["the second dyeing shift"],"ok":true,"failure":null,"ms":3068,"outputTokens":22,"reasoningTokens":0}
+{"idx":197,"d":"radio telescope time","b":3,"name":"Deep-Sky Allocation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4649,"outputTokens":12,"reasoningTokens":0}
+{"idx":215,"d":"telescope mirror recoating","b":1,"name":"Mirror Recoating Schedule","actorA":["the observatory"],"actorB":["the shop"],"ok":true,"failure":null,"ms":4326,"outputTokens":17,"reasoningTokens":0}
+{"idx":213,"d":"saffron harvest labour","b":0,"name":"Saffron Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4883,"outputTokens":12,"reasoningTokens":0}
+{"idx":222,"d":"canal lock scheduling","b":1,"name":"Shared Canal Lock","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3598,"outputTokens":16,"reasoningTokens":0}
+{"idx":204,"d":"planetarium show slots","b":0,"name":"Planetarium Scheduling","actorA":["the planetarium"],"actorB":["the club"],"ok":true,"failure":null,"ms":5906,"outputTokens":17,"reasoningTokens":0}
+{"idx":218,"d":"coffee roastery sourcing","b":1,"name":"Weekly Bean Order","actorA":["the roaster"],"actorB":["the café manager"],"ok":true,"failure":null,"ms":4748,"outputTokens":22,"reasoningTokens":0}
+{"idx":228,"d":"salt pan harvesting","b":0,"name":"Salt Pan Harvesting","actorA":["the first"],"actorB":["the second"],"ok":true,"failure":null,"ms":2986,"outputTokens":16,"reasoningTokens":0}
+{"idx":226,"d":"seaweed drying racks","b":1,"name":"Shared Seaweed Racks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4454,"outputTokens":12,"reasoningTokens":0}
+{"idx":232,"d":"courier route bidding","b":2,"name":"Seasonal Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3280,"outputTokens":16,"reasoningTokens":0}
+{"idx":237,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Adjustments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3509,"outputTokens":12,"reasoningTokens":0}
+{"idx":249,"d":"orchard frost watch","b":1,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2619,"outputTokens":12,"reasoningTokens":0}
+{"idx":229,"d":"film release timing","b":3,"name":"Blockbuster Release Clash","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4528,"outputTokens":16,"reasoningTokens":0}
+{"idx":241,"d":"harbour pilot rotations","b":0,"name":"Harbour Pilot Rotations","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2874,"outputTokens":11,"reasoningTokens":0}
+{"idx":248,"d":"radio telescope time","b":0,"name":"Quiet Sky Session","actorA":["Team A"],"actorB":["Team B"],"ok":true,"failure":null,"ms":2953,"outputTokens":16,"reasoningTokens":0}
+{"idx":235,"d":"seed bank exchanges","b":3,"name":"Seed Bank Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4560,"outputTokens":16,"reasoningTokens":0}
+{"idx":238,"d":"salt pan harvesting","b":2,"name":"Salt Pan Season","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4575,"outputTokens":18,"reasoningTokens":0}
+{"idx":254,"d":"freight rail scheduling","b":1,"name":"Freight Rail Scheduling","actorA":["A regional rail dispatcher"],"actorB":["a connecting freight carrier"],"ok":true,"failure":null,"ms":2898,"outputTokens":21,"reasoningTokens":0}
+{"idx":271,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2741,"outputTokens":11,"reasoningTokens":0}
+{"idx":257,"d":"orchard frost watch","b":0,"name":"Orchard Frost Watch","actorA":["orchard keepers"],"actorB":null,"ok":true,"failure":null,"ms":3174,"outputTokens":20,"reasoningTokens":0}
+{"idx":266,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3388,"outputTokens":12,"reasoningTokens":0}
+{"idx":263,"d":"osier bed cutting","b":3,"name":"Osier Bed Harvest","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3605,"outputTokens":12,"reasoningTokens":0}
+{"idx":272,"d":"apiary winter siting","b":1,"name":"Winter Apiary Siting","actorA":["Beekeeper A"],"actorB":["Beekeeper B"],"ok":true,"failure":null,"ms":3355,"outputTokens":20,"reasoningTokens":0}
+{"idx":280,"d":"reindeer herding routes","b":3,"name":"Reindeer Herding Routes","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":2650,"outputTokens":18,"reasoningTokens":0}
+{"idx":279,"d":"textile dyeing shifts","b":2,"name":"Seasonal Dyeing Run","actorA":["the mill"],"actorB":["the finishing partner"],"ok":true,"failure":null,"ms":3497,"outputTokens":17,"reasoningTokens":0}
+{"idx":269,"d":"antique restoration bids","b":0,"name":"Antique Finish Quotes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4953,"outputTokens":11,"reasoningTokens":0}
+{"idx":289,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Spacing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3013,"outputTokens":12,"reasoningTokens":0}
+{"idx":301,"d":"textile dyeing shifts","b":3,"name":"Dye-House Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2889,"outputTokens":11,"reasoningTokens":0}
+{"idx":305,"d":"truffle foraging permits","b":0,"name":"Woodland Truffle Permits","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2807,"outputTokens":12,"reasoningTokens":0}
+{"idx":311,"d":"kiln firing schedules","b":2,"name":"Seasonal Kiln Booking","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3394,"outputTokens":12,"reasoningTokens":0}
+{"idx":300,"d":"salt pan harvesting","b":0,"name":"Salt Pan Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4630,"outputTokens":11,"reasoningTokens":0}
+{"idx":314,"d":"vineyard irrigation","b":1,"name":"Shared Vineyard Canal","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2864,"outputTokens":12,"reasoningTokens":0}
+{"idx":312,"d":"planetarium show slots","b":0,"name":"Evening Planetarium Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2965,"outputTokens":11,"reasoningTokens":0}
+{"idx":315,"d":"letterpress print runs","b":3,"name":"The Landmark Edition","actorA":["A major publisher"],"actorB":["a letterpress workshop"],"ok":true,"failure":null,"ms":2962,"outputTokens":19,"reasoningTokens":0}
+{"idx":327,"d":"dune fence placement","b":2,"name":"Seasonal Dune Fences","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3074,"outputTokens":15,"reasoningTokens":0}
+{"idx":328,"d":"glacier survey flights","b":3,"name":"Glacier Survey Flights","actorA":["Agency A"],"actorB":["Agency B"],"ok":true,"failure":null,"ms":2952,"outputTokens":18,"reasoningTokens":0}
+{"idx":319,"d":"vineyard irrigation","b":0,"name":"Vineyard Irrigation","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4424,"outputTokens":null,"reasoningTokens":null}
+{"idx":349,"d":"oyster bed leases","b":1,"name":"Oyster Bed Lease Renewal","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":2825,"outputTokens":24,"reasoningTokens":0}
+{"idx":345,"d":"ferry timetable slots","b":0,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3197,"outputTokens":12,"reasoningTokens":0}
+{"idx":340,"d":"bird ringing station slots","b":1,"name":"Bird-Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5046,"outputTokens":19,"reasoningTokens":0}
+{"idx":354,"d":"courier route bidding","b":3,"name":"Continental Route Contract","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3420,"outputTokens":16,"reasoningTokens":0}
+{"idx":329,"d":"observatory dome time","b":0,"name":"Shared Focus Window","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5302,"outputTokens":12,"reasoningTokens":0}
+{"idx":333,"d":"kiln firing schedules","b":3,"name":"Kiln Firing Contract","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5361,"outputTokens":11,"reasoningTokens":0}
+{"idx":365,"d":"freight rail scheduling","b":2,"name":"Shared Rail Timetable","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":2894,"outputTokens":20,"reasoningTokens":0}
+{"idx":362,"d":"letterpress print runs","b":2,"name":"Letterpress Run Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3398,"outputTokens":12,"reasoningTokens":0}
+{"idx":357,"d":"salt marsh grazing rights","b":2,"name":"Marsh Grazing Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4929,"outputTokens":11,"reasoningTokens":0}
+{"idx":364,"d":"satellite downlink windows","b":1,"name":"Satellite Downlink Windows","actorA":["An Earth-observation team"],"actorB":["A regional communications provider"],"ok":true,"failure":null,"ms":3350,"outputTokens":25,"reasoningTokens":0}
+{"idx":378,"d":"cider press bookings","b":1,"name":"Shared Cider Press","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2557,"outputTokens":11,"reasoningTokens":0}
+{"idx":374,"d":"film release timing","b":2,"name":"Seasonal Film Releases","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2821,"outputTokens":12,"reasoningTokens":0}
+{"idx":369,"d":"letterpress print runs","b":3,"name":"Edition Run","actorA":["A publisher"],"actorB":["The letterpress printer"],"ok":true,"failure":null,"ms":3097,"outputTokens":15,"reasoningTokens":0}
+{"idx":372,"d":"wool scouring capacity","b":0,"name":"Scouring Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3089,"outputTokens":16,"reasoningTokens":0}
+{"idx":390,"d":"avalanche patrol rosters","b":2,"name":"Avalanche Patrol Rosters","actorA":["Chief A"],"actorB":["Chief B"],"ok":true,"failure":null,"ms":2881,"outputTokens":16,"reasoningTokens":0}
+{"idx":381,"d":"radio telescope time","b":0,"name":"Radio Telescope Scheduling","actorA":["A small radio observatory"],"actorB":["A visiting astronomy team"],"ok":true,"failure":null,"ms":3299,"outputTokens":18,"reasoningTokens":0}
+{"idx":393,"d":"silage clamp sharing","b":2,"name":"Silage Clamp Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2976,"outputTokens":12,"reasoningTokens":0}
+{"idx":385,"d":"ferry timetable slots","b":0,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3849,"outputTokens":16,"reasoningTokens":0}
+{"idx":400,"d":"dairy co-op pricing","b":1,"name":"Dairy Co-op Contract","actorA":["the cooperative"],"actorB":["the chain"],"ok":true,"failure":null,"ms":3159,"outputTokens":20,"reasoningTokens":0}
+{"idx":421,"d":"thatching crew rotas","b":1,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3269,"outputTokens":12,"reasoningTokens":0}
+{"idx":405,"d":"stadium concession pricing","b":3,"name":"Championship Concessions","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3319,"outputTokens":12,"reasoningTokens":0}
+{"idx":414,"d":"coppice cutting cycles","b":0,"name":"Coppice Cycle Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3511,"outputTokens":16,"reasoningTokens":0}
+{"idx":436,"d":"kiln firing schedules","b":3,"name":"Shared Kiln Run","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3202,"outputTokens":11,"reasoningTokens":0}
+{"idx":438,"d":"archive digitisation","b":2,"name":"Archive Digitisation","actorA":["A regional archive"],"actorB":["Its digitisation contractor"],"ok":true,"failure":null,"ms":2933,"outputTokens":19,"reasoningTokens":0}
+{"idx":427,"d":"falconry pest control","b":0,"name":"Hedgerow Falconry","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3500,"outputTokens":11,"reasoningTokens":0}
+{"idx":439,"d":"salt marsh grazing rights","b":1,"name":"Marsh Allotments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3162,"outputTokens":11,"reasoningTokens":0}
+{"idx":454,"d":"silage clamp sharing","b":2,"name":"Shared Clamp Booking","actorA":["Farm A"],"actorB":["Farm B"],"ok":true,"failure":null,"ms":3159,"outputTokens":16,"reasoningTokens":0}
+{"idx":458,"d":"salt pan harvesting","b":2,"name":"Salt Pan Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3141,"outputTokens":14,"reasoningTokens":0}
+{"idx":443,"d":"coppice cutting cycles","b":0,"name":"Coppice Cycle Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3879,"outputTokens":12,"reasoningTokens":0}
+{"idx":460,"d":"truffle foraging permits","b":2,"name":"Truffle Grove Permits","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2972,"outputTokens":12,"reasoningTokens":0}
+{"idx":473,"d":"telescope mirror recoating","b":1,"name":"Observatory Recoating","actorA":["the observatory"],"actorB":["the contractor"],"ok":true,"failure":null,"ms":2886,"outputTokens":21,"reasoningTokens":0}
+{"idx":476,"d":"film release timing","b":2,"name":"Release Window Duel","actorA":["Studio A"],"actorB":["Studio B"],"ok":true,"failure":null,"ms":3117,"outputTokens":20,"reasoningTokens":0}
+{"idx":482,"d":"film release timing","b":3,"name":"Blockbuster Release Timing","actorA":["Studio A"],"actorB":["Studio B"],"ok":true,"failure":null,"ms":2898,"outputTokens":16,"reasoningTokens":0}
+{"idx":481,"d":"charcoal burn scheduling","b":0,"name":"Small Kiln Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3104,"outputTokens":12,"reasoningTokens":0}
+{"idx":432,"d":"reindeer herding routes","b":3,"name":"Reindeer Route Accord","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":8235,"outputTokens":11,"reasoningTokens":0}
+{"idx":501,"d":"tidal turbine servicing","b":1,"name":"Tidal Turbine Servicing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2978,"outputTokens":12,"reasoningTokens":0}
+{"idx":468,"d":"reindeer herding routes","b":2,"name":"Tundra Route Planning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5828,"outputTokens":11,"reasoningTokens":0}
+{"idx":487,"d":"fishing quota negotiation","b":0,"name":"Small Quota Adjustment","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":3593,"outputTokens":18,"reasoningTokens":0}
+{"idx":507,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Slats","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2354,"outputTokens":12,"reasoningTokens":0}
+{"idx":508,"d":"apiary winter siting","b":1,"name":"Winter Apiary Siting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2959,"outputTokens":16,"reasoningTokens":0}
+{"idx":505,"d":"orchard frost watch","b":2,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3405,"outputTokens":19,"reasoningTokens":0}
+{"idx":514,"d":"lighthouse relief shifts","b":2,"name":"Lighthouse Relief Shifts","actorA":["A lighthouse relief coordinator"],"actorB":["The coastal operations chief"],"ok":true,"failure":null,"ms":3267,"outputTokens":24,"reasoningTokens":0}
+{"idx":515,"d":"greenhouse heat sharing","b":3,"name":"Shared Greenhouse Heat","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3081,"outputTokens":16,"reasoningTokens":0}
+{"idx":516,"d":"radio telescope time","b":0,"name":"Telescope Fine-Tuning","actorA":["Team A"],"actorB":["Team B"],"ok":true,"failure":null,"ms":3110,"outputTokens":16,"reasoningTokens":0}
+{"idx":518,"d":"avalanche patrol rosters","b":2,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3104,"outputTokens":12,"reasoningTokens":0}
+{"idx":503,"d":"stone wall repair bids","b":3,"name":"Stone Wall Repair Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":6762,"outputTokens":12,"reasoningTokens":0}
+{"idx":528,"d":"fishing quota negotiation","b":0,"name":"Dockside Quota","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3269,"outputTokens":16,"reasoningTokens":0}
+{"idx":540,"d":"orchard frost watch","b":2,"name":"Orchard Frost Watch","actorA":["An orchard manager"],"actorB":["a regional frost-alert coordinator"],"ok":true,"failure":null,"ms":3180,"outputTokens":25,"reasoningTokens":0}
+{"idx":524,"d":"greenhouse heat sharing","b":1,"name":"Greenhouse Heat Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4110,"outputTokens":12,"reasoningTokens":0}
+{"idx":556,"d":"puppet theatre touring","b":0,"name":"Tour Stop Timing","actorA":["the troupe's stage manager"],"actorB":["the venue's curtain operator"],"ok":true,"failure":null,"ms":2984,"outputTokens":23,"reasoningTokens":0}
+{"idx":563,"d":"salt pan harvesting","b":3,"name":"Shared Salt Pan","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3595,"outputTokens":12,"reasoningTokens":0}
+{"idx":520,"d":"textile dyeing shifts","b":0,"name":"Dye-Bath Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5866,"outputTokens":11,"reasoningTokens":0}
+{"idx":575,"d":"freight rail scheduling","b":3,"name":"Mountain Corridor Timetable","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3479,"outputTokens":12,"reasoningTokens":0}
+{"idx":555,"d":"freight rail scheduling","b":0,"name":"Freight Rail Timing","actorA":["the dispatcher"],"actorB":["the coordinator"],"ok":true,"failure":null,"ms":4564,"outputTokens":21,"reasoningTokens":0}
+{"idx":577,"d":"bat survey nights","b":1,"name":"Bat Survey Nights","actorA":["Coordinator A"],"actorB":["Coordinator B"],"ok":true,"failure":null,"ms":2999,"outputTokens":18,"reasoningTokens":0}
+{"idx":578,"d":"glacier survey flights","b":3,"name":"Glacier Survey Flights","actorA":["A polar research agency"],"actorB":["Its aviation contractor"],"ok":true,"failure":null,"ms":3414,"outputTokens":23,"reasoningTokens":0}
+{"idx":587,"d":"letterpress print runs","b":1,"name":"Letterpress Print Run","actorA":["the studio"],"actorB":["the shop"],"ok":true,"failure":null,"ms":2769,"outputTokens":16,"reasoningTokens":0}
+{"idx":585,"d":"ferry timetable slots","b":0,"name":"Ferry Slot Adjustments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3077,"outputTokens":16,"reasoningTokens":0}
+{"idx":588,"d":"thatching crew rotas","b":0,"name":"Thatch Crew Rotas","actorA":["Crew A"],"actorB":["Crew B"],"ok":true,"failure":null,"ms":3299,"outputTokens":22,"reasoningTokens":0}
+{"idx":597,"d":"planetarium show slots","b":3,"name":"Flagship Dome Season","actorA":["network director"],"actorB":["producer"],"ok":true,"failure":null,"ms":2632,"outputTokens":20,"reasoningTokens":0}
+{"idx":595,"d":"ferry timetable slots","b":3,"name":"Ferry Timetable Slots","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3110,"outputTokens":16,"reasoningTokens":0}
+{"idx":592,"d":"antique restoration bids","b":0,"name":"Clock Restoration Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3281,"outputTokens":16,"reasoningTokens":0}
+{"idx":598,"d":"stone wall repair bids","b":1,"name":"Stone Wall Repair Bids","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3102,"outputTokens":null,"reasoningTokens":null}
+{"idx":602,"d":"sawmill kiln booking","b":0,"name":"Shared Kiln Booking","actorA":["Sawmill A"],"actorB":["Sawmill B"],"ok":true,"failure":null,"ms":2885,"outputTokens":20,"reasoningTokens":0}
+{"idx":603,"d":"urban beehive siting","b":1,"name":"City Hive Siting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2807,"outputTokens":12,"reasoningTokens":0}
+{"idx":600,"d":"satellite downlink windows","b":3,"name":"Orbital Downlink Coordination","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3305,"outputTokens":20,"reasoningTokens":0}
+{"idx":615,"d":"reindeer herding routes","b":0,"name":"Reindeer Herding Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2189,"outputTokens":12,"reasoningTokens":0}
+{"idx":616,"d":"wool scouring capacity","b":1,"name":"Scouring Bookings","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2845,"outputTokens":16,"reasoningTokens":0}
+{"idx":610,"d":"coffee roastery sourcing","b":3,"name":"Coffee Harvest Commitments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3180,"outputTokens":16,"reasoningTokens":0}
+{"idx":621,"d":"oyster bed leases","b":0,"name":"Oyster Bed Leases","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2876,"outputTokens":16,"reasoningTokens":0}
+{"idx":626,"d":"freight rail scheduling","b":1,"name":"Shared Corridor Scheduling","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3306,"outputTokens":20,"reasoningTokens":0}
+{"idx":640,"d":"kiln firing schedules","b":2,"name":"Kiln Firing Season","actorA":["the studio"],"actorB":["the tile maker"],"ok":true,"failure":null,"ms":2909,"outputTokens":17,"reasoningTokens":0}
+{"idx":633,"d":"coffee roastery sourcing","b":1,"name":"Coffee Sourcing Choice","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2938,"outputTokens":12,"reasoningTokens":0}
+{"idx":619,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4855,"outputTokens":12,"reasoningTokens":0}
+{"idx":629,"d":"osier bed cutting","b":2,"name":"Osier Bed Cutting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5250,"outputTokens":16,"reasoningTokens":0}
+{"idx":631,"d":"coppice cutting cycles","b":0,"name":"Coppice Rotation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4877,"outputTokens":16,"reasoningTokens":0}
+{"idx":614,"d":"sawmill kiln booking","b":3,"name":"Sawmill Kiln Booking","actorA":["A large sawmill"],"actorB":["an industrial kiln operator"],"ok":true,"failure":null,"ms":7395,"outputTokens":25,"reasoningTokens":0}
+{"idx":655,"d":"vinyl pressing queues","b":0,"name":"Vinyl Pressing Queue","actorA":["coordinator"],"actorB":["scheduler"],"ok":true,"failure":null,"ms":2808,"outputTokens":13,"reasoningTokens":0}
+{"idx":652,"d":"kelp farm harvesting","b":1,"name":"Kelp Harvest Timing","actorA":["Farmer A"],"actorB":["Farmer B"],"ok":true,"failure":null,"ms":3356,"outputTokens":15,"reasoningTokens":0}
+{"idx":641,"d":"stadium concession pricing","b":1,"name":"Stadium Concessions","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5184,"outputTokens":12,"reasoningTokens":0}
+{"idx":643,"d":"bat survey nights","b":0,"name":"Bat Survey Night","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4705,"outputTokens":11,"reasoningTokens":0}
+{"idx":649,"d":"seed bank exchanges","b":0,"name":"Seed Sample Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4179,"outputTokens":12,"reasoningTokens":0}
+{"idx":657,"d":"truffle foraging permits","b":3,"name":"Truffle Grove Concession","actorA":["Estate A"],"actorB":["Estate B"],"ok":true,"failure":null,"ms":4027,"outputTokens":18,"reasoningTokens":0}
+{"idx":656,"d":"archive digitisation","b":2,"name":"Archive Digitisation Partnership","actorA":["A national archive"],"actorB":["A scholarly publisher"],"ok":true,"failure":null,"ms":4715,"outputTokens":18,"reasoningTokens":0}
+{"idx":669,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3671,"outputTokens":null,"reasoningTokens":null}
+{"idx":667,"d":"glacier survey flights","b":3,"name":"Glacier Survey Flights","actorA":["Agency A"],"actorB":["Agency B"],"ok":true,"failure":null,"ms":5616,"outputTokens":18,"reasoningTokens":0}
+{"idx":673,"d":"reindeer herding routes","b":3,"name":"Reindeer Migration Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3439,"outputTokens":12,"reasoningTokens":0}
+{"idx":670,"d":"oyster bed leases","b":1,"name":"Adjacent Oyster Leases","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4318,"outputTokens":16,"reasoningTokens":0}
+{"idx":677,"d":"planetarium show slots","b":2,"name":"Planetarium Premiere","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3303,"outputTokens":11,"reasoningTokens":0}
+{"idx":675,"d":"kiln firing schedules","b":3,"name":"High-Stakes Kiln Run","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4760,"outputTokens":12,"reasoningTokens":0}
+{"idx":678,"d":"charcoal burn scheduling","b":3,"name":"Kiln Allocation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3257,"outputTokens":11,"reasoningTokens":0}
+{"idx":674,"d":"salt marsh grazing rights","b":2,"name":"Salt Marsh Grazing Rights","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5679,"outputTokens":12,"reasoningTokens":0}
+{"idx":682,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4781,"outputTokens":null,"reasoningTokens":null}
+{"idx":706,"d":"vineyard irrigation","b":0,"name":"Vineyard Watering","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2542,"outputTokens":12,"reasoningTokens":0}
+{"idx":693,"d":"reindeer herding routes","b":1,"name":"Tundra Herding Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4064,"outputTokens":12,"reasoningTokens":0}
+{"idx":688,"d":"stone wall repair bids","b":0,"name":"Stone Wall Bids","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4865,"outputTokens":19,"reasoningTokens":0}
+{"idx":692,"d":"rope ferry staffing","b":1,"name":"Rope Ferry Staffing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4836,"outputTokens":20,"reasoningTokens":0}
+{"idx":707,"d":"reindeer herding routes","b":1,"name":"Tundra Route Planning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2882,"outputTokens":11,"reasoningTokens":0}
+{"idx":695,"d":"seed bank exchanges","b":2,"name":"Seasonal Seed Exchange","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3393,"outputTokens":null,"reasoningTokens":null}
+{"idx":710,"d":"lighthouse relief shifts","b":1,"name":"Lighthouse Relief Shifts","actorA":["Keeper A"],"actorB":["Keeper B"],"ok":true,"failure":null,"ms":2679,"outputTokens":18,"reasoningTokens":0}
+{"idx":712,"d":"wool scouring capacity","b":3,"name":"Scouring Capacity Pact","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2976,"outputTokens":12,"reasoningTokens":0}
+{"idx":718,"d":"mushroom substrate supply","b":3,"name":"Mushroom Substrate Contract","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3293,"outputTokens":12,"reasoningTokens":0}
+{"idx":719,"d":"salt pan harvesting","b":2,"name":"Salt Pan Season","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":3257,"outputTokens":18,"reasoningTokens":0}
+{"idx":713,"d":"thatching crew rotas","b":1,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3513,"outputTokens":null,"reasoningTokens":null}
+{"idx":709,"d":"charcoal burn scheduling","b":0,"name":"Charcoal Burn Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5934,"outputTokens":11,"reasoningTokens":0}
+{"idx":724,"d":"dairy co-op pricing","b":0,"name":"Local Milk Pricing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3416,"outputTokens":null,"reasoningTokens":null}
+{"idx":717,"d":"salt marsh grazing rights","b":2,"name":"Marsh Grazing Schedule","actorA":["The first cooperative"],"actorB":["the second"],"ok":true,"failure":null,"ms":4320,"outputTokens":17,"reasoningTokens":0}
+{"idx":727,"d":"stadium concession pricing","b":0,"name":"Stadium Snack Prices","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3583,"outputTokens":12,"reasoningTokens":0}
+{"idx":734,"d":"greenhouse heat sharing","b":2,"name":"Shared Greenhouse Heat","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3184,"outputTokens":12,"reasoningTokens":0}
+{"idx":748,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":["the first lock-keeper"],"actorB":["the second"],"ok":true,"failure":null,"ms":3221,"outputTokens":16,"reasoningTokens":0}
+{"idx":750,"d":"ferry timetable slots","b":2,"name":"Seasonal Ferry Slots","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3474,"outputTokens":null,"reasoningTokens":null}
+{"idx":742,"d":"reindeer herding routes","b":3,"name":"Reindeer Migration Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3599,"outputTokens":12,"reasoningTokens":0}
+{"idx":758,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2590,"outputTokens":12,"reasoningTokens":0}
+{"idx":753,"d":"film release timing","b":2,"name":"Release Window","actorA":["A film studio"],"actorB":["its distribution partner"],"ok":true,"failure":null,"ms":3922,"outputTokens":18,"reasoningTokens":0}
+{"idx":747,"d":"thatching crew rotas","b":1,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5165,"outputTokens":16,"reasoningTokens":0}
+{"idx":766,"d":"coppice cutting cycles","b":0,"name":"Coppice Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3191,"outputTokens":11,"reasoningTokens":0}
+{"idx":751,"d":"orchard harvest contracts","b":3,"name":"Orchard Harvest Contracts","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5618,"outputTokens":24,"reasoningTokens":0}
+{"idx":774,"d":"observatory dome time","b":2,"name":"Dome-Time Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3109,"outputTokens":12,"reasoningTokens":0}
+{"idx":787,"d":"oyster bed leases","b":1,"name":"Oyster Bed Leases","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3623,"outputTokens":16,"reasoningTokens":0}
+{"idx":773,"d":"telescope mirror recoating","b":1,"name":"Routine Mirror Recoat","actorA":["the observatory"],"actorB":["the contractor"],"ok":true,"failure":null,"ms":4629,"outputTokens":14,"reasoningTokens":0}
+{"idx":800,"d":"vinyl pressing queues","b":3,"name":"Vinyl Release Queue","actorA":["A major record label"],"actorB":["The pressing plant"],"ok":true,"failure":null,"ms":2852,"outputTokens":19,"reasoningTokens":0}
+{"idx":794,"d":"seed bank exchanges","b":1,"name":"Community Seed Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3379,"outputTokens":12,"reasoningTokens":0}
+{"idx":789,"d":"silage clamp sharing","b":2,"name":"Shared Silage Clamp","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3478,"outputTokens":11,"reasoningTokens":0}
+{"idx":806,"d":"silage clamp sharing","b":3,"name":"Silage Clamp Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3037,"outputTokens":12,"reasoningTokens":0}
+{"idx":802,"d":"wool scouring capacity","b":0,"name":"Shared Wool Scouring","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3302,"outputTokens":11,"reasoningTokens":0}
+{"idx":815,"d":"dune fence placement","b":0,"name":"Dune Fence Adjustment","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3006,"outputTokens":16,"reasoningTokens":0}
+{"idx":825,"d":"quarry blasting windows","b":2,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2559,"outputTokens":15,"reasoningTokens":0}
+{"idx":827,"d":"radio telescope time","b":3,"name":"Observatory Allocation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3380,"outputTokens":11,"reasoningTokens":0}
+{"idx":828,"d":"cranberry bog flooding","b":0,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3219,"outputTokens":16,"reasoningTokens":0}
+{"idx":830,"d":"courier route bidding","b":3,"name":"National Courier Contract","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3282,"outputTokens":12,"reasoningTokens":0}
+{"idx":833,"d":"salt marsh grazing rights","b":2,"name":"Salt Marsh Grazing Rights","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3190,"outputTokens":null,"reasoningTokens":null}
+{"idx":835,"d":"cranberry bog flooding","b":3,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2960,"outputTokens":11,"reasoningTokens":0}
+{"idx":837,"d":"ferry timetable slots","b":1,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2935,"outputTokens":11,"reasoningTokens":0}
+{"idx":841,"d":"osier bed cutting","b":2,"name":"Shared Osier Bed","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4355,"outputTokens":16,"reasoningTokens":0}
+{"idx":849,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3085,"outputTokens":null,"reasoningTokens":null}
+{"idx":860,"d":"antique restoration bids","b":0,"name":"Antique Restoration Bids","actorA":["Restorer A"],"actorB":["Restorer B"],"ok":true,"failure":null,"ms":2986,"outputTokens":22,"reasoningTokens":0}
+{"idx":838,"d":"salt marsh grazing rights","b":0,"name":"Salt-Marsh Rotation","actorA":["the first"],"actorB":["the second"],"ok":true,"failure":null,"ms":5124,"outputTokens":16,"reasoningTokens":0}
+{"idx":863,"d":"wool scouring capacity","b":2,"name":"Scouring Capacity Commitments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3453,"outputTokens":11,"reasoningTokens":0}
+{"idx":842,"d":"observatory dome time","b":3,"name":"Observatory Dome Time","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4746,"outputTokens":11,"reasoningTokens":0}
+{"idx":871,"d":"cider press bookings","b":3,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4355,"outputTokens":12,"reasoningTokens":0}
+{"idx":861,"d":"telescope mirror recoating","b":2,"name":"Mirror Recoating","actorA":["the consortium"],"actorB":["Its coating contractor"],"ok":true,"failure":null,"ms":4724,"outputTokens":17,"reasoningTokens":0}
+{"idx":872,"d":"orchard frost watch","b":1,"name":"Orchard Frost Watch","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":3008,"outputTokens":24,"reasoningTokens":0}
+{"idx":873,"d":"wool scouring capacity","b":3,"name":"Scouring Capacity Commitments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3585,"outputTokens":12,"reasoningTokens":0}
+{"idx":880,"d":"orchard frost watch","b":0,"name":"Orchard Frost Watch","actorA":["Keeper A"],"actorB":["Keeper B"],"ok":true,"failure":null,"ms":3357,"outputTokens":18,"reasoningTokens":0}
+{"idx":883,"d":"vineyard irrigation","b":1,"name":"Vineyard Watering Schedule","actorA":["Manager A"],"actorB":["Manager B"],"ok":true,"failure":null,"ms":2977,"outputTokens":16,"reasoningTokens":0}
+{"idx":890,"d":"courier route bidding","b":0,"name":"Neighborhood Route Bid","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2604,"outputTokens":16,"reasoningTokens":0}
+{"idx":886,"d":"salt pan harvesting","b":3,"name":"Salt Pan Harvest Accord","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3056,"outputTokens":12,"reasoningTokens":0}
+{"idx":887,"d":"seaweed drying racks","b":3,"name":"Seaweed Rack Scheduling","actorA":["Enterprise A"],"actorB":["Enterprise B"],"ok":true,"failure":null,"ms":2922,"outputTokens":16,"reasoningTokens":0}
+{"idx":878,"d":"glacier survey flights","b":3,"name":"Glacier Survey Flights","actorA":["A national glacier institute"],"actorB":["A neighboring polar research consortium"],"ok":true,"failure":null,"ms":4722,"outputTokens":18,"reasoningTokens":0}
+{"idx":892,"d":"seaweed drying racks","b":3,"name":"Seaweed Rack Scheduling","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":2685,"outputTokens":18,"reasoningTokens":0}
+{"idx":902,"d":"truffle foraging permits","b":1,"name":"Truffle Permit Allocation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2707,"outputTokens":12,"reasoningTokens":0}
+{"idx":899,"d":"seaweed drying racks","b":3,"name":"Seaweed Rack Allocation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3291,"outputTokens":12,"reasoningTokens":0}
+{"idx":907,"d":"apiary winter siting","b":0,"name":"Winter Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2881,"outputTokens":null,"reasoningTokens":null}
+{"idx":914,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Roster","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2860,"outputTokens":null,"reasoningTokens":null}
+{"idx":901,"d":"truffle foraging permits","b":2,"name":"Truffle Foraging Permits","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4109,"outputTokens":null,"reasoningTokens":null}
+{"idx":921,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Tuning","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2671,"outputTokens":null,"reasoningTokens":null}
+{"idx":922,"d":"reindeer herding routes","b":2,"name":"Seasonal Reindeer Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2851,"outputTokens":12,"reasoningTokens":0}
+{"idx":924,"d":"observatory dome time","b":3,"name":"Dome-Time Allocation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2753,"outputTokens":12,"reasoningTokens":0}
+{"idx":919,"d":"seed bank exchanges","b":0,"name":"Seed Bank Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4830,"outputTokens":22,"reasoningTokens":0}
+{"idx":910,"d":"charcoal burn scheduling","b":0,"name":"Small Kiln Timing","actorA":["Burner A"],"actorB":["Burner B"],"ok":true,"failure":null,"ms":5240,"outputTokens":22,"reasoningTokens":0}
+{"idx":931,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3078,"outputTokens":null,"reasoningTokens":null}
+{"idx":936,"d":"freight rail scheduling","b":2,"name":"Seasonal Rail Corridor","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2821,"outputTokens":null,"reasoningTokens":null}
+{"idx":925,"d":"archive digitisation","b":0,"name":"Archive Digitisation","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4488,"outputTokens":19,"reasoningTokens":0}
+{"idx":937,"d":"bell foundry casting","b":3,"name":"Memorial Bell Casting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2567,"outputTokens":11,"reasoningTokens":0}
+{"idx":932,"d":"orchard harvest contracts","b":1,"name":"Orchard Harvest Contracts","actorA":["the orchard owner"],"actorB":["the juice maker"],"ok":true,"failure":null,"ms":4522,"outputTokens":18,"reasoningTokens":0}
+{"idx":939,"d":"ferry timetable slots","b":1,"name":"Ferry Timetable Slots","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":2979,"outputTokens":16,"reasoningTokens":0}
+{"idx":941,"d":"thatching crew rotas","b":0,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2985,"outputTokens":12,"reasoningTokens":0}
+{"idx":942,"d":"ferry timetable slots","b":1,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3155,"outputTokens":12,"reasoningTokens":0}
+{"idx":938,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5059,"outputTokens":11,"reasoningTokens":0}
+{"idx":945,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":["The first coordinator"],"actorB":["the second"],"ok":true,"failure":null,"ms":3281,"outputTokens":17,"reasoningTokens":0}
+{"idx":965,"d":"salt marsh grazing rights","b":0,"name":"Marsh Grazing Adjustments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2671,"outputTokens":11,"reasoningTokens":0}
+{"idx":944,"d":"stone wall repair bids","b":2,"name":"Stone Wall Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4494,"outputTokens":12,"reasoningTokens":0}
+{"idx":970,"d":"truffle foraging permits","b":3,"name":"The Truffle Grove Permit","actorA":["A regional grove trust"],"actorB":["A commercial truffle cooperative"],"ok":true,"failure":null,"ms":2492,"outputTokens":23,"reasoningTokens":0}
+{"idx":961,"d":"silage clamp sharing","b":1,"name":"Shared Silage Clamp","actorA":["Farmer A"],"actorB":["Farmer B"],"ok":true,"failure":null,"ms":3528,"outputTokens":22,"reasoningTokens":0}
+{"idx":950,"d":"microbrewery distribution","b":3,"name":"Craft Beer Distribution","actorA":["The brewery"],"actorB":["the distributor"],"ok":true,"failure":null,"ms":4826,"outputTokens":16,"reasoningTokens":0}
+{"idx":972,"d":"vineyard irrigation","b":2,"name":"Vineyard Water Schedule","actorA":["Manager A"],"actorB":["Manager B"],"ok":true,"failure":null,"ms":3494,"outputTokens":16,"reasoningTokens":0}
+{"idx":994,"d":"stadium concession pricing","b":3,"name":"Championship Concessions","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2543,"outputTokens":11,"reasoningTokens":0}
+{"idx":987,"d":"harbour pilot rotations","b":0,"name":"Harbour Pilot Rotation","actorA":["Pilot A"],"actorB":["Pilot B"],"ok":true,"failure":null,"ms":2981,"outputTokens":18,"reasoningTokens":0}
+{"idx":1001,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2650,"outputTokens":16,"reasoningTokens":0}
+{"idx":979,"d":"film release timing","b":0,"name":"Small Film Release","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4523,"outputTokens":11,"reasoningTokens":0}
+{"idx":978,"d":"charcoal burn scheduling","b":1,"name":"Kiln Burn Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5221,"outputTokens":16,"reasoningTokens":0}
+{"idx":1010,"d":"vineyard irrigation","b":0,"name":"Vineyard Drip Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2879,"outputTokens":11,"reasoningTokens":0}
+{"idx":992,"d":"bakery supply orders","b":3,"name":"Flour Supply Contract","actorA":["A large bakery chain"],"actorB":["a regional milling cooperative"],"ok":true,"failure":null,"ms":4907,"outputTokens":20,"reasoningTokens":0}
+{"idx":1002,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Adjustments","actorA":["Worker A"],"actorB":["Worker B"],"ok":true,"failure":null,"ms":3739,"outputTokens":16,"reasoningTokens":0}
+{"idx":1024,"d":"salt marsh grazing rights","b":0,"name":"Marsh Grazing Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2454,"outputTokens":11,"reasoningTokens":0}
+{"idx":1017,"d":"hospital triage staffing","b":2,"name":"Winter Triage Plans","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3036,"outputTokens":12,"reasoningTokens":0}
+{"idx":1011,"d":"osier bed cutting","b":3,"name":"Shared Osier Bed","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":4726,"outputTokens":17,"reasoningTokens":0}
+{"idx":1035,"d":"cranberry bog flooding","b":1,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3192,"outputTokens":11,"reasoningTokens":0}
+{"idx":1042,"d":"rope ferry staffing","b":1,"name":"Creek Ferry Shifts","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2337,"outputTokens":20,"reasoningTokens":0}
+{"idx":1037,"d":"pollination contracts","b":0,"name":"Orchard Pollination","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3578,"outputTokens":null,"reasoningTokens":null}
+{"idx":1039,"d":"courier route bidding","b":2,"name":"Seasonal Route Bidding","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3516,"outputTokens":null,"reasoningTokens":null}
+{"idx":1041,"d":"oyster bed leases","b":0,"name":"Oyster Lease Adjustment","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3045,"outputTokens":11,"reasoningTokens":0}
+{"idx":1034,"d":"observatory dome time","b":0,"name":"Dome Time Tuning","actorA":["the night observer"],"actorB":["the dome operator"],"ok":true,"failure":null,"ms":4303,"outputTokens":22,"reasoningTokens":0}
+{"idx":1025,"d":"truffle foraging permits","b":1,"name":"Woodland Truffle Permits","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5788,"outputTokens":12,"reasoningTokens":0}
+{"idx":1047,"d":"library acquisitions","b":0,"name":"Routine Library Order","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2870,"outputTokens":null,"reasoningTokens":null}
+{"idx":1049,"d":"salt marsh grazing rights","b":1,"name":"Marsh Grazing Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2747,"outputTokens":12,"reasoningTokens":0}
+{"idx":1045,"d":"saffron harvest labour","b":0,"name":"Saffron Picking Day","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3940,"outputTokens":12,"reasoningTokens":0}
+{"idx":1059,"d":"greenhouse heat sharing","b":2,"name":"Greenhouse Heat Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2957,"outputTokens":12,"reasoningTokens":0}
+{"idx":1064,"d":"dairy co-op pricing","b":0,"name":"Weekly Milk Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2709,"outputTokens":12,"reasoningTokens":0}
+{"idx":1063,"d":"vinyl pressing queues","b":1,"name":"Shared Pressing Queue","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3021,"outputTokens":16,"reasoningTokens":0}
+{"idx":1066,"d":"radio telescope time","b":1,"name":"Radio Telescope Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2951,"outputTokens":12,"reasoningTokens":0}
+{"idx":1061,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4718,"outputTokens":22,"reasoningTokens":0}
+{"idx":1067,"d":"coffee roastery sourcing","b":0,"name":"House Blend Sourcing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3294,"outputTokens":null,"reasoningTokens":null}
+{"idx":1094,"d":"textile dyeing shifts","b":2,"name":"Seasonal Fabric Run","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2976,"outputTokens":null,"reasoningTokens":null}
+{"idx":1087,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3457,"outputTokens":null,"reasoningTokens":null}
+{"idx":1093,"d":"telescope mirror recoating","b":1,"name":"Telescope Mirror Recoating","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3238,"outputTokens":null,"reasoningTokens":null}
+{"idx":1072,"d":"hospital triage staffing","b":1,"name":"Evening Triage Staffing","actorA":["Hospital A"],"actorB":["Hospital B"],"ok":true,"failure":null,"ms":4006,"outputTokens":16,"reasoningTokens":0}
+{"idx":1096,"d":"radio telescope time","b":2,"name":"Radio Telescope Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4404,"outputTokens":12,"reasoningTokens":0}
+{"idx":1117,"d":"oyster bed leases","b":1,"name":"Oyster Bed Leases","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2772,"outputTokens":null,"reasoningTokens":null}
+{"idx":1114,"d":"seaweed drying racks","b":0,"name":"Seaweed Drying Racks","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3029,"outputTokens":null,"reasoningTokens":null}
+{"idx":1109,"d":"truffle foraging permits","b":2,"name":"Truffle Permit Season","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3591,"outputTokens":null,"reasoningTokens":null}
+{"idx":1115,"d":"stadium concession pricing","b":3,"name":"Championship Concessions","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3186,"outputTokens":null,"reasoningTokens":null}
+{"idx":1101,"d":"vineyard irrigation","b":3,"name":"Vineyard Water Allocation","actorA":["A vineyard cooperative"],"actorB":["the regional water authority"],"ok":true,"failure":null,"ms":5080,"outputTokens":23,"reasoningTokens":0}
+{"idx":1108,"d":"salt pan harvesting","b":0,"name":"Salt Pan Timing","actorA":["Worker A"],"actorB":["Worker B"],"ok":true,"failure":null,"ms":4730,"outputTokens":16,"reasoningTokens":0}
+{"idx":1120,"d":"wool scouring capacity","b":3,"name":"Wool Scouring Capacity","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3037,"outputTokens":12,"reasoningTokens":0}
+{"idx":1121,"d":"radio telescope time","b":0,"name":"Routine Telescope Session","actorA":["the observatory"],"actorB":["the partner"],"ok":true,"failure":null,"ms":3302,"outputTokens":17,"reasoningTokens":0}
+{"idx":1124,"d":"vineyard irrigation","b":3,"name":"Vineyard Water Allocation","actorA":["Owner A"],"actorB":["owner B"],"ok":true,"failure":null,"ms":2978,"outputTokens":20,"reasoningTokens":0}
+{"idx":1127,"d":"reindeer herding routes","b":3,"name":"Tundra Route Coordination","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":2834,"outputTokens":22,"reasoningTokens":0}
+{"idx":1131,"d":"freight rail scheduling","b":1,"name":"Regional Rail Timetable","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3192,"outputTokens":14,"reasoningTokens":0}
+{"idx":1146,"d":"dairy co-op pricing","b":1,"name":"Dairy Co-op Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3134,"outputTokens":12,"reasoningTokens":0}
+{"idx":1139,"d":"freight rail scheduling","b":2,"name":"Harvest Corridor Scheduling","actorA":["railroad"],"actorB":["shipper"],"ok":true,"failure":null,"ms":3344,"outputTokens":16,"reasoningTokens":0}
+{"idx":1125,"d":"silage clamp sharing","b":1,"name":"Shared Silage Clamp","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4166,"outputTokens":12,"reasoningTokens":0}
+{"idx":1150,"d":"osier bed cutting","b":0,"name":"Osier Bed Cutting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4180,"outputTokens":11,"reasoningTokens":0}
+{"idx":1151,"d":"archive digitisation","b":1,"name":"Archive Digitisation","actorA":["the archive"],"actorB":["the vendor"],"ok":true,"failure":null,"ms":3084,"outputTokens":20,"reasoningTokens":0}
+{"idx":1159,"d":"silage clamp sharing","b":3,"name":"Silage Clamp Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2579,"outputTokens":12,"reasoningTokens":0}
+{"idx":1166,"d":"seaweed drying racks","b":3,"name":"Shared Seaweed Racks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2871,"outputTokens":16,"reasoningTokens":0}
+{"idx":1172,"d":"lock-keeper shift swaps","b":1,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2567,"outputTokens":12,"reasoningTokens":0}
+{"idx":1169,"d":"falconry pest control","b":1,"name":"Orchard Falconry","actorA":["the grower"],"actorB":["the falconer"],"ok":true,"failure":null,"ms":2976,"outputTokens":19,"reasoningTokens":0}
+{"idx":1176,"d":"courier route bidding","b":3,"name":"Critical Courier Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3183,"outputTokens":16,"reasoningTokens":0}
+{"idx":1165,"d":"charcoal burn scheduling","b":1,"name":"Shared Kiln Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5183,"outputTokens":11,"reasoningTokens":0}
+{"idx":1193,"d":"port dredging windows","b":2,"name":"Port Dredging Windows","actorA":["A port authority"],"actorB":["A dredging contractor"],"ok":true,"failure":null,"ms":2890,"outputTokens":19,"reasoningTokens":0}
+{"idx":1187,"d":"bakery supply orders","b":1,"name":"Weekly Flour Order","actorA":["the bakery"],"actorB":["the wholesaler"],"ok":true,"failure":null,"ms":4113,"outputTokens":17,"reasoningTokens":0}
+{"idx":1198,"d":"kelp farm harvesting","b":0,"name":"Shared Kelp Raft","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2776,"outputTokens":12,"reasoningTokens":0}
+{"idx":1185,"d":"charcoal burn scheduling","b":1,"name":"Kiln Burn Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4848,"outputTokens":11,"reasoningTokens":0}
+{"idx":1200,"d":"kelp farm harvesting","b":2,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3517,"outputTokens":12,"reasoningTokens":0}
+{"idx":1203,"d":"osier bed cutting","b":1,"name":"Osier Bed Cutting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3292,"outputTokens":16,"reasoningTokens":0}
+{"idx":1204,"d":"eel pass inspections","b":2,"name":"Eel Pass Inspections","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2820,"outputTokens":17,"reasoningTokens":0}
+{"idx":1211,"d":"tidal turbine servicing","b":3,"name":"Tidal Turbine Servicing","actorA":["the grid operator"],"actorB":["the maintenance contractor"],"ok":true,"failure":null,"ms":2861,"outputTokens":18,"reasoningTokens":0}
+{"idx":1202,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5407,"outputTokens":12,"reasoningTokens":0}
+{"idx":1217,"d":"ferry timetable slots","b":3,"name":"Island Ferry Timetable","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3145,"outputTokens":16,"reasoningTokens":0}
+{"idx":1223,"d":"ferry timetable slots","b":1,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2960,"outputTokens":18,"reasoningTokens":0}
+{"idx":1224,"d":"radio telescope time","b":0,"name":"Quiet-Sky Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3284,"outputTokens":null,"reasoningTokens":null}
+{"idx":1229,"d":"canal lock scheduling","b":1,"name":"Canal Lock Scheduling","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":2976,"outputTokens":20,"reasoningTokens":0}
+{"idx":1212,"d":"apiary winter siting","b":1,"name":"Winter Apiary Siting","actorA":["Beekeeper A"],"actorB":["Beekeeper B"],"ok":true,"failure":null,"ms":5002,"outputTokens":20,"reasoningTokens":0}
+{"idx":1216,"d":"stadium concession pricing","b":2,"name":"Stadium Concession Pricing","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":5137,"outputTokens":20,"reasoningTokens":0}
+{"idx":1233,"d":"charcoal burn scheduling","b":3,"name":"Charcoal Burn Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3077,"outputTokens":11,"reasoningTokens":0}
+{"idx":1234,"d":"ferry timetable slots","b":2,"name":"Seasonal Ferry Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2537,"outputTokens":16,"reasoningTokens":0}
+{"idx":1241,"d":"textile dyeing shifts","b":0,"name":"Dye-Bath Adjustment","actorA":["the dyeing lead"],"actorB":["the finishing lead"],"ok":true,"failure":null,"ms":2672,"outputTokens":19,"reasoningTokens":0}
+{"idx":1251,"d":"film release timing","b":3,"name":"Premiere Calendar","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3047,"outputTokens":16,"reasoningTokens":0}
+{"idx":1273,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2899,"outputTokens":18,"reasoningTokens":0}
+{"idx":1264,"d":"textile dyeing shifts","b":3,"name":"Dyeing Shift Timetable","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3288,"outputTokens":16,"reasoningTokens":0}
+{"idx":1263,"d":"quarry blasting windows","b":0,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3659,"outputTokens":24,"reasoningTokens":0}
+{"idx":1278,"d":"clocktower maintenance","b":1,"name":"Clocktower Maintenance","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3168,"outputTokens":null,"reasoningTokens":null}
+{"idx":1274,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3513,"outputTokens":12,"reasoningTokens":0}
+{"idx":1258,"d":"reindeer herding routes","b":3,"name":"Tundra Herd Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4008,"outputTokens":11,"reasoningTokens":0}
+{"idx":1282,"d":"greenhouse heat sharing","b":0,"name":"Shared Greenhouse","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2991,"outputTokens":12,"reasoningTokens":0}
+{"idx":1281,"d":"saffron harvest labour","b":3,"name":"Saffron Harvest Labour","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3733,"outputTokens":null,"reasoningTokens":null}
+{"idx":1293,"d":"fishing quota negotiation","b":0,"name":"Small Quota Adjustment","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2914,"outputTokens":null,"reasoningTokens":null}
+{"idx":1302,"d":"radio telescope time","b":2,"name":"Radio Telescope Allocation","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2970,"outputTokens":null,"reasoningTokens":null}
+{"idx":1298,"d":"ferry timetable slots","b":3,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3131,"outputTokens":14,"reasoningTokens":0}
+{"idx":1307,"d":"vinyl pressing queues","b":1,"name":"Vinyl Pressing Queues","actorA":["a small record label"],"actorB":["the pressing plant"],"ok":true,"failure":null,"ms":3080,"outputTokens":23,"reasoningTokens":0}
+{"idx":1301,"d":"lighthouse relief shifts","b":0,"name":"Lighthouse Relief Shifts","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3299,"outputTokens":null,"reasoningTokens":null}
+{"idx":1284,"d":"thatching crew rotas","b":1,"name":"Cottage Thatching Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4407,"outputTokens":12,"reasoningTokens":0}
+{"idx":1310,"d":"bakery supply orders","b":3,"name":"Bakery Supply Orders","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2665,"outputTokens":null,"reasoningTokens":null}
+{"idx":1308,"d":"seed bank exchanges","b":0,"name":"Seed Packet Timing","actorA":["Bank A"],"actorB":["Bank B"],"ok":true,"failure":null,"ms":3446,"outputTokens":20,"reasoningTokens":0}
+{"idx":1326,"d":"falconry pest control","b":3,"name":"Falconry Crop Defense","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2455,"outputTokens":11,"reasoningTokens":0}
+{"idx":1318,"d":"bell foundry casting","b":0,"name":"Bell Tuning","actorA":["the casting lead"],"actorB":["the finishing lead"],"ok":true,"failure":null,"ms":3853,"outputTokens":22,"reasoningTokens":0}
+{"idx":1319,"d":"lock-keeper shift swaps","b":3,"name":"Critical Lock Shift","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3411,"outputTokens":19,"reasoningTokens":0}
+{"idx":1321,"d":"kelp farm harvesting","b":0,"name":"Kelp Patch Trimming","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3756,"outputTokens":16,"reasoningTokens":0}
+{"idx":1334,"d":"dairy co-op pricing","b":3,"name":"Dairy Contract","actorA":["A regional dairy co-op"],"actorB":["A national milk processor"],"ok":true,"failure":null,"ms":2638,"outputTokens":21,"reasoningTokens":0}
+{"idx":1322,"d":"fishing quota negotiation","b":1,"name":"Coastal Quota Talks","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":4113,"outputTokens":18,"reasoningTokens":0}
+{"idx":1328,"d":"fishing quota negotiation","b":1,"name":"Shared Fishing Quota","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3364,"outputTokens":null,"reasoningTokens":null}
+{"idx":1323,"d":"falconry pest control","b":0,"name":"Orchard Falconry","actorA":["A falconer"],"actorB":["A neighboring falconer"],"ok":true,"failure":null,"ms":4394,"outputTokens":21,"reasoningTokens":0}
+{"idx":1342,"d":"fishing quota negotiation","b":0,"name":"Shared Quota Adjustment","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2749,"outputTokens":11,"reasoningTokens":0}
+{"idx":1335,"d":"bakery supply orders","b":3,"name":"Flour Capacity Deal","actorA":["the bakery"],"actorB":["the mill"],"ok":true,"failure":null,"ms":2887,"outputTokens":16,"reasoningTokens":0}
+{"idx":1339,"d":"courier route bidding","b":3,"name":"Critical Route Contract","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3026,"outputTokens":16,"reasoningTokens":0}
+{"idx":1346,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3248,"outputTokens":25,"reasoningTokens":0}
+{"idx":1354,"d":"dairy co-op pricing","b":1,"name":"Dairy Co-op Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2990,"outputTokens":16,"reasoningTokens":0}
+{"idx":1343,"d":"sawmill kiln booking","b":0,"name":"Shared Kiln Booking","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4108,"outputTokens":18,"reasoningTokens":0}
+{"idx":1352,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4313,"outputTokens":15,"reasoningTokens":0}
+{"idx":1366,"d":"marathon road closures","b":1,"name":"Marathon Road Closures","actorA":["A city traffic office"],"actorB":["A nearby delivery cooperative"],"ok":true,"failure":null,"ms":3016,"outputTokens":20,"reasoningTokens":0}
+{"idx":1365,"d":"salt marsh grazing rights","b":2,"name":"Salt-Marsh Grazing Rights","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3057,"outputTokens":12,"reasoningTokens":0}
+{"idx":1353,"d":"courier route bidding","b":1,"name":"Courier Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4932,"outputTokens":11,"reasoningTokens":0}
+{"idx":1368,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3030,"outputTokens":12,"reasoningTokens":0}
+{"idx":1379,"d":"sawmill kiln booking","b":3,"name":"Sawmill Kiln Booking","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2999,"outputTokens":17,"reasoningTokens":0}
+{"idx":1382,"d":"ski-lift grooming","b":2,"name":"Summit Lift Grooming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2876,"outputTokens":22,"reasoningTokens":0}
+{"idx":1386,"d":"satellite downlink windows","b":2,"name":"Orbital Downlink Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2627,"outputTokens":24,"reasoningTokens":0}
+{"idx":1391,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":["Mira"],"actorB":["Leon"],"ok":true,"failure":null,"ms":3075,"outputTokens":15,"reasoningTokens":0}
+{"idx":1394,"d":"courier route bidding","b":0,"name":"Neighborhood Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3034,"outputTokens":12,"reasoningTokens":0}
+{"idx":1371,"d":"stadium concession pricing","b":0,"name":"Stadium Snack Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4877,"outputTokens":12,"reasoningTokens":0}
+{"idx":1373,"d":"herbarium loan requests","b":0,"name":"Herbarium Loan Handling","actorA":["herbarium"],"actorB":["archive"],"ok":true,"failure":null,"ms":4823,"outputTokens":16,"reasoningTokens":0}
+{"idx":1393,"d":"ice rink resurfacing","b":3,"name":"Championship Ice Resurfacing","actorA":["the operator"],"actorB":["the contractor"],"ok":true,"failure":null,"ms":3997,"outputTokens":16,"reasoningTokens":0}
+{"idx":1402,"d":"radio telescope time","b":0,"name":"Shared Telescope Tuning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2981,"outputTokens":12,"reasoningTokens":0}
+{"idx":1405,"d":"wool scouring capacity","b":2,"name":"Wool Scouring Capacity","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3119,"outputTokens":11,"reasoningTokens":0}
+{"idx":1401,"d":"avalanche patrol rosters","b":1,"name":"Avalanche Patrol Rosters","actorA":["The first patrol chief"],"actorB":["the second"],"ok":true,"failure":null,"ms":4552,"outputTokens":18,"reasoningTokens":0}
+{"idx":1409,"d":"film release timing","b":2,"name":"Release Calendar","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3235,"outputTokens":null,"reasoningTokens":null}
+{"idx":1424,"d":"seed bank exchanges","b":0,"name":"Seed Lot Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3008,"outputTokens":22,"reasoningTokens":0}
+{"idx":1416,"d":"wool scouring capacity","b":1,"name":"Shared Scouring Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3131,"outputTokens":16,"reasoningTokens":0}
+{"idx":1420,"d":"film release timing","b":0,"name":"Indie Film Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3695,"outputTokens":16,"reasoningTokens":0}
+{"idx":1431,"d":"kiln firing schedules","b":0,"name":"Shared Kiln Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3319,"outputTokens":20,"reasoningTokens":0}
+{"idx":1448,"d":"greenhouse heat sharing","b":0,"name":"Greenhouse Heat Sharing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2623,"outputTokens":12,"reasoningTokens":0}
+{"idx":1444,"d":"silage clamp sharing","b":0,"name":"Shared Silage Clamp","actorA":["Farmer A"],"actorB":["Farmer B"],"ok":true,"failure":null,"ms":3031,"outputTokens":22,"reasoningTokens":0}
+{"idx":1442,"d":"bat survey nights","b":2,"name":"Bat Survey Night","actorA":["the team"],"actorB":["the landholder"],"ok":true,"failure":null,"ms":3164,"outputTokens":17,"reasoningTokens":0}
+{"idx":1440,"d":"thatching crew rotas","b":1,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3339,"outputTokens":11,"reasoningTokens":0}
+{"idx":1438,"d":"vinyl pressing queues","b":2,"name":"Pressing Queue Decisions","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4076,"outputTokens":null,"reasoningTokens":null}
+{"idx":1455,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Accord","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2735,"outputTokens":16,"reasoningTokens":0}
+{"idx":1436,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4931,"outputTokens":12,"reasoningTokens":0}
+{"idx":1452,"d":"ferry timetable slots","b":3,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4109,"outputTokens":20,"reasoningTokens":0}
+{"idx":1456,"d":"fishing quota negotiation","b":1,"name":"Shared Fishing Quota","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3184,"outputTokens":18,"reasoningTokens":0}
+{"idx":1469,"d":"film release timing","b":2,"name":"Awards-Season Release","actorA":["A film studio"],"actorB":["a streaming platform"],"ok":true,"failure":null,"ms":3393,"outputTokens":18,"reasoningTokens":0}
+{"idx":1484,"d":"silage clamp sharing","b":3,"name":"Silage Clamp Sharing","actorA":["Farm A"],"actorB":["Farm B"],"ok":true,"failure":null,"ms":3099,"outputTokens":16,"reasoningTokens":0}
+{"idx":1468,"d":"courier route bidding","b":1,"name":"Neighborhood Courier Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4088,"outputTokens":16,"reasoningTokens":0}
+{"idx":1490,"d":"reindeer herding routes","b":0,"name":"Tundra Route Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2874,"outputTokens":20,"reasoningTokens":0}
+{"idx":1478,"d":"orchard frost watch","b":1,"name":"Orchard Frost Watch","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":3836,"outputTokens":24,"reasoningTokens":0}
+{"idx":1471,"d":"charcoal burn scheduling","b":2,"name":"Seasonal Charcoal Burns","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4318,"outputTokens":16,"reasoningTokens":0}
+{"idx":1457,"d":"dairy co-op pricing","b":1,"name":"Co-op Milk Pricing","actorA":["A local dairy co-op"],"actorB":["A neighborhood grocer"],"ok":true,"failure":null,"ms":5515,"outputTokens":24,"reasoningTokens":0}
+{"idx":1491,"d":"vineyard irrigation","b":0,"name":"Vineyard Watering","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2987,"outputTokens":11,"reasoningTokens":0}
+{"idx":1496,"d":"bird ringing station slots","b":0,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3188,"outputTokens":16,"reasoningTokens":0}
+{"idx":1501,"d":"ferry timetable slots","b":0,"name":"Ferry Timetable Slots","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":2881,"outputTokens":20,"reasoningTokens":0}
+{"idx":1498,"d":"charcoal burn scheduling","b":2,"name":"Kiln Season Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3158,"outputTokens":18,"reasoningTokens":0}
+{"idx":1505,"d":"truffle foraging permits","b":1,"name":"Truffle Grove Permits","actorA":["Forager A"],"actorB":["Forager B"],"ok":true,"failure":null,"ms":3413,"outputTokens":22,"reasoningTokens":0}
+{"idx":1506,"d":"ferry timetable slots","b":2,"name":"Seasonal Ferry Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3561,"outputTokens":12,"reasoningTokens":0}
+{"idx":1516,"d":"marathon road closures","b":2,"name":"Marathon Road Closures","actorA":["A marathon organizer"],"actorB":["The city transit authority"],"ok":true,"failure":null,"ms":3654,"outputTokens":19,"reasoningTokens":0}
+{"idx":1521,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3134,"outputTokens":14,"reasoningTokens":0}
+{"idx":1525,"d":"hospital triage staffing","b":0,"name":"Triage Shift Balance","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3191,"outputTokens":11,"reasoningTokens":0}
+{"idx":1530,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2979,"outputTokens":19,"reasoningTokens":0}
+{"idx":1542,"d":"orchard frost watch","b":0,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2930,"outputTokens":17,"reasoningTokens":0}
+{"idx":1536,"d":"lighthouse relief shifts","b":2,"name":"Lighthouse Relief Shifts","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3267,"outputTokens":16,"reasoningTokens":0}
+{"idx":1548,"d":"falconry pest control","b":1,"name":"Allotment Falcon Flights","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3266,"outputTokens":11,"reasoningTokens":0}
+{"idx":1561,"d":"harbour pilot rotations","b":0,"name":"Harbour Pilot Rotation","actorA":["Pilot A"],"actorB":["Pilot B"],"ok":true,"failure":null,"ms":3158,"outputTokens":22,"reasoningTokens":0}
+{"idx":1570,"d":"bakery supply orders","b":0,"name":"Bakery Flour Restock","actorA":["the bakery"],"actorB":["the supplier"],"ok":true,"failure":null,"ms":3398,"outputTokens":13,"reasoningTokens":0}
+{"idx":1573,"d":"charcoal burn scheduling","b":3,"name":"Charcoal Burn Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3188,"outputTokens":12,"reasoningTokens":0}
+{"idx":1576,"d":"planetarium show slots","b":0,"name":"Planetarium Show Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2802,"outputTokens":21,"reasoningTokens":0}
+{"idx":1564,"d":"film release timing","b":3,"name":"Blockbuster Release Window","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4466,"outputTokens":12,"reasoningTokens":0}
+{"idx":1578,"d":"urban beehive siting","b":3,"name":"Urban Beehive Siting","actorA":["A city planning office"],"actorB":["A beekeepers’ cooperative"],"ok":true,"failure":null,"ms":2517,"outputTokens":22,"reasoningTokens":0}
+{"idx":1577,"d":"bird ringing station slots","b":2,"name":"Bird-Ringing Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2942,"outputTokens":11,"reasoningTokens":0}
+{"idx":1583,"d":"film release timing","b":0,"name":"Weekday Release Slots","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2823,"outputTokens":null,"reasoningTokens":null}
+{"idx":1579,"d":"eel pass inspections","b":2,"name":"Eel Pass Review","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3199,"outputTokens":null,"reasoningTokens":null}
+{"idx":1590,"d":"bakery supply orders","b":3,"name":"Bakery Supply Orders","actorA":["the bakery"],"actorB":["the cooperative"],"ok":true,"failure":null,"ms":2757,"outputTokens":16,"reasoningTokens":0}
+{"idx":1587,"d":"cranberry bog flooding","b":0,"name":"Neighboring Cranberry Bogs","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2954,"outputTokens":11,"reasoningTokens":0}
+{"idx":1614,"d":"stone wall repair bids","b":1,"name":"Stone Wall Bids","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3118,"outputTokens":null,"reasoningTokens":null}
+{"idx":1600,"d":"bird ringing station slots","b":1,"name":"Bird-Ringing Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3908,"outputTokens":12,"reasoningTokens":0}
+{"idx":1593,"d":"reindeer herding routes","b":1,"name":"Reindeer Route Planning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4109,"outputTokens":12,"reasoningTokens":0}
+{"idx":1592,"d":"dairy co-op pricing","b":2,"name":"Seasonal Milk Pricing","actorA":["The co-op"],"actorB":["the processor"],"ok":true,"failure":null,"ms":4596,"outputTokens":21,"reasoningTokens":0}
+{"idx":1620,"d":"canal lock scheduling","b":2,"name":"Canal Lock Coordination","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3086,"outputTokens":18,"reasoningTokens":0}
+{"idx":1621,"d":"greenhouse heat sharing","b":1,"name":"Shared Greenhouse Heat","actorA":["Mira"],"actorB":["Leon"],"ok":true,"failure":null,"ms":2967,"outputTokens":15,"reasoningTokens":0}
+{"idx":1625,"d":"apiary winter siting","b":0,"name":"Winter Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3239,"outputTokens":null,"reasoningTokens":null}
+{"idx":1628,"d":"cider press bookings","b":0,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3407,"outputTokens":null,"reasoningTokens":null}
+{"idx":1629,"d":"coppice cutting cycles","b":3,"name":"Coppice Cutting Cycles","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2861,"outputTokens":12,"reasoningTokens":0}
+{"idx":1631,"d":"glacier survey flights","b":1,"name":"Glacier Survey Flights","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2659,"outputTokens":null,"reasoningTokens":null}
+{"idx":1646,"d":"coffee roastery sourcing","b":1,"name":"Roastery-Café Release","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3090,"outputTokens":18,"reasoningTokens":0}
+{"idx":1637,"d":"courier route bidding","b":1,"name":"Neighborhood Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3300,"outputTokens":16,"reasoningTokens":0}
+{"idx":1647,"d":"textile dyeing shifts","b":0,"name":"Dyeing Shift Timing","actorA":["a dyer"],"actorB":["The shift coordinator"],"ok":true,"failure":null,"ms":2970,"outputTokens":18,"reasoningTokens":0}
+{"idx":1635,"d":"hospital triage staffing","b":2,"name":"Surge Triage Staffing","actorA":["A hospital emergency-department leadership team"],"actorB":["The hospital’s ward-management team"],"ok":true,"failure":null,"ms":4624,"outputTokens":26,"reasoningTokens":0}
+{"idx":1655,"d":"bat survey nights","b":0,"name":"Bat Survey Nights","actorA":["one volunteer"],"actorB":["a second volunteer"],"ok":true,"failure":null,"ms":2364,"outputTokens":21,"reasoningTokens":0}
+{"idx":1644,"d":"wool scouring capacity","b":1,"name":"Wool Scouring Bookings","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4732,"outputTokens":12,"reasoningTokens":0}
+{"idx":1649,"d":"fishing quota negotiation","b":0,"name":"Tidepool Quota Talks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4666,"outputTokens":12,"reasoningTokens":0}
+{"idx":1656,"d":"bird ringing station slots","b":0,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2874,"outputTokens":12,"reasoningTokens":0}
+{"idx":1664,"d":"reindeer herding routes","b":2,"name":"Reindeer Herding Routes","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3006,"outputTokens":null,"reasoningTokens":null}
+{"idx":1660,"d":"wool scouring capacity","b":1,"name":"Wool Scouring Schedule","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3723,"outputTokens":null,"reasoningTokens":null}
+{"idx":1651,"d":"ice rink resurfacing","b":0,"name":"Rink Resurfacing","actorA":["manager"],"actorB":["technician"],"ok":true,"failure":null,"ms":5548,"outputTokens":15,"reasoningTokens":0}
+{"idx":1681,"d":"stadium concession pricing","b":2,"name":"Stadium Concession Pricing","actorA":["the stadium concessionaire"],"actorB":["Venue management"],"ok":true,"failure":null,"ms":3367,"outputTokens":16,"reasoningTokens":0}
+{"idx":1683,"d":"bell foundry casting","b":0,"name":"Bell Foundry Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3212,"outputTokens":23,"reasoningTokens":0}
+{"idx":1690,"d":"stadium concession pricing","b":1,"name":"Stadium Snack Pricing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2774,"outputTokens":18,"reasoningTokens":0}
+{"idx":1670,"d":"bakery supply orders","b":2,"name":"Seasonal Flour Order","actorA":["A regional bakery"],"actorB":["its flour supplier"],"ok":true,"failure":null,"ms":4659,"outputTokens":18,"reasoningTokens":0}
+{"idx":1689,"d":"bakery supply orders","b":2,"name":"Seasonal Flour Orders","actorA":["the bakery"],"actorB":["the distributor"],"ok":true,"failure":null,"ms":3455,"outputTokens":20,"reasoningTokens":0}
+{"idx":1695,"d":"dune fence placement","b":0,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3017,"outputTokens":16,"reasoningTokens":0}
+{"idx":1700,"d":"osier bed cutting","b":1,"name":"Osier Bed Cutting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2864,"outputTokens":12,"reasoningTokens":0}
+{"idx":1699,"d":"canal lock scheduling","b":0,"name":"Canal Lock Timing","actorA":["the upstream operator"],"actorB":["the downstream operator"],"ok":true,"failure":null,"ms":3253,"outputTokens":18,"reasoningTokens":0}
+{"idx":1701,"d":"orchard frost watch","b":3,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3416,"outputTokens":12,"reasoningTokens":0}
+{"idx":1703,"d":"textile dyeing shifts","b":0,"name":"Dyehouse Shift Adjustments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3360,"outputTokens":11,"reasoningTokens":0}
+{"idx":1705,"d":"weir maintenance windows","b":2,"name":"Seasonal Weir Maintenance","actorA":["the district"],"actorB":["the authority"],"ok":true,"failure":null,"ms":3085,"outputTokens":20,"reasoningTokens":0}
+{"idx":1707,"d":"stadium concession pricing","b":1,"name":"Stadium Concession Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3318,"outputTokens":16,"reasoningTokens":0}
+{"idx":1719,"d":"thatching crew rotas","b":2,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3725,"outputTokens":12,"reasoningTokens":0}
+{"idx":1723,"d":"saffron harvest labour","b":0,"name":"Saffron Picking Shift","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2964,"outputTokens":null,"reasoningTokens":null}
+{"idx":1720,"d":"thatching crew rotas","b":3,"name":"Ridgeway Thatching Rota","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3494,"outputTokens":null,"reasoningTokens":null}
+{"idx":1722,"d":"truffle foraging permits","b":0,"name":"Truffle Permit Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3391,"outputTokens":12,"reasoningTokens":0}
+{"idx":1751,"d":"wool scouring capacity","b":3,"name":"Scouring Capacity","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2884,"outputTokens":12,"reasoningTokens":0}
+{"idx":1753,"d":"seaweed drying racks","b":2,"name":"Seaweed Rack Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2933,"outputTokens":12,"reasoningTokens":0}
+{"idx":1746,"d":"pollination contracts","b":1,"name":"Orchard Pollination","actorA":["the orchard"],"actorB":["the beekeeper"],"ok":true,"failure":null,"ms":4217,"outputTokens":22,"reasoningTokens":0}
+{"idx":1778,"d":"stadium concession pricing","b":2,"name":"Stadium Concession Pricing","actorA":["A stadium food concessionaire"],"actorB":["A beverage concessionaire"],"ok":true,"failure":null,"ms":2398,"outputTokens":21,"reasoningTokens":0}
+{"idx":1776,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2806,"outputTokens":12,"reasoningTokens":0}
+{"idx":1756,"d":"stadium concession pricing","b":0,"name":"Stadium Snack Prices","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3296,"outputTokens":12,"reasoningTokens":0}
+{"idx":1772,"d":"hospital triage staffing","b":2,"name":"Triage Staffing","actorA":["The chief medical officer"],"actorB":["the nursing director"],"ok":true,"failure":null,"ms":3218,"outputTokens":19,"reasoningTokens":0}
+{"idx":1752,"d":"bakery supply orders","b":2,"name":"Seasonal Flour Contract","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4723,"outputTokens":14,"reasoningTokens":0}
+{"idx":1782,"d":"greenhouse heat sharing","b":3,"name":"Greenhouse Heat Sharing","actorA":["Greenhouse A"],"actorB":["Greenhouse B"],"ok":true,"failure":null,"ms":3294,"outputTokens":18,"reasoningTokens":0}
+{"idx":1788,"d":"courier route bidding","b":2,"name":"Seasonal Route Bidding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2986,"outputTokens":16,"reasoningTokens":0}
+{"idx":1790,"d":"mushroom substrate supply","b":3,"name":"Mushroom Substrate Supply","actorA":["grower"],"actorB":["producer"],"ok":true,"failure":null,"ms":2884,"outputTokens":17,"reasoningTokens":0}
+{"idx":1799,"d":"hospital triage staffing","b":1,"name":"Triage Shift Coordination","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3041,"outputTokens":11,"reasoningTokens":0}
+{"idx":1806,"d":"avalanche patrol rosters","b":2,"name":"Avalanche Patrol Rosters","actorA":["North Ridge"],"actorB":["Cedar Pass"],"ok":true,"failure":null,"ms":2781,"outputTokens":17,"reasoningTokens":0}
+{"idx":1809,"d":"truffle foraging permits","b":0,"name":"Small Truffle Permit","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4110,"outputTokens":11,"reasoningTokens":0}
+{"idx":1823,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Coverage","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3362,"outputTokens":22,"reasoningTokens":0}
+{"idx":1829,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3293,"outputTokens":16,"reasoningTokens":0}
+{"idx":1832,"d":"thatching crew rotas","b":3,"name":"Emergency Thatch Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2800,"outputTokens":12,"reasoningTokens":0}
+{"idx":1837,"d":"courier route bidding","b":1,"name":"Courier Route Bidding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2942,"outputTokens":12,"reasoningTokens":0}
+{"idx":1814,"d":"vineyard irrigation","b":0,"name":"Shared Vine Rows","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4504,"outputTokens":16,"reasoningTokens":0}
+{"idx":1813,"d":"vinyl pressing queues","b":2,"name":"Seasonal Vinyl Release","actorA":["the label"],"actorB":["the plant"],"ok":true,"failure":null,"ms":5719,"outputTokens":16,"reasoningTokens":0}
+{"idx":1808,"d":"archive digitisation","b":2,"name":"Archive Digitisation","actorA":["the archive"],"actorB":["the contractor"],"ok":true,"failure":null,"ms":6380,"outputTokens":13,"reasoningTokens":0}
+{"idx":1839,"d":"kiln firing schedules","b":1,"name":"Kiln Firing Coordination","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3672,"outputTokens":null,"reasoningTokens":null}
+{"idx":1841,"d":"kelp farm harvesting","b":2,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3192,"outputTokens":17,"reasoningTokens":0}
+{"idx":1848,"d":"reindeer herding routes","b":3,"name":"Tundra Migration Routes","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":3281,"outputTokens":18,"reasoningTokens":0}
+{"idx":1854,"d":"bell foundry casting","b":2,"name":"Foundry Commission","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3725,"outputTokens":null,"reasoningTokens":null}
+{"idx":1861,"d":"dune fence placement","b":0,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3069,"outputTokens":12,"reasoningTokens":0}
+{"idx":1852,"d":"dune fence placement","b":3,"name":"Shared Dune Fence","actorA":["the municipality"],"actorB":["the resort authority"],"ok":true,"failure":null,"ms":4884,"outputTokens":14,"reasoningTokens":0}
+{"idx":1853,"d":"apiary winter siting","b":3,"name":"Winter Apiary Siting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5680,"outputTokens":16,"reasoningTokens":0}
+{"idx":1855,"d":"dairy co-op pricing","b":0,"name":"Dairy Co-op Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":6216,"outputTokens":12,"reasoningTokens":0}
+{"idx":1866,"d":"lighthouse relief shifts","b":1,"name":"Lighthouse Relief","actorA":["Keeper A"],"actorB":["Keeper B"],"ok":true,"failure":null,"ms":4598,"outputTokens":18,"reasoningTokens":0}
+{"idx":1917,"d":"port dredging windows","b":0,"name":"Port Dredging Windows","actorA":["A small port’s operations coordinator"],"actorB":["The dredging contractor"],"ok":true,"failure":null,"ms":3437,"outputTokens":23,"reasoningTokens":0}
+{"idx":1868,"d":"cranberry bog flooding","b":2,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4409,"outputTokens":20,"reasoningTokens":0}
+{"idx":1901,"d":"vinyl pressing queues","b":2,"name":"Seasonal Vinyl Queue","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4750,"outputTokens":12,"reasoningTokens":0}
+{"idx":1923,"d":"dairy co-op pricing","b":3,"name":"Dairy Co-op Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2211,"outputTokens":12,"reasoningTokens":0}
+{"idx":1907,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4418,"outputTokens":11,"reasoningTokens":0}
+{"idx":1919,"d":"vinyl pressing queues","b":0,"name":"Vinyl Queue Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4772,"outputTokens":12,"reasoningTokens":0}
+{"idx":1926,"d":"osier bed cutting","b":2,"name":"Osier Bed Cutting","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2830,"outputTokens":null,"reasoningTokens":null}
+{"idx":1935,"d":"vinyl pressing queues","b":1,"name":"Vinyl Pressing Queue","actorA":["A small record label"],"actorB":["The pressing plant"],"ok":true,"failure":null,"ms":2936,"outputTokens":23,"reasoningTokens":0}
+{"idx":1942,"d":"silage clamp sharing","b":1,"name":"Shared Silage Clamp","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3070,"outputTokens":16,"reasoningTokens":0}
+{"idx":1925,"d":"cranberry bog flooding","b":1,"name":"Neighboring Bog Floods","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4522,"outputTokens":12,"reasoningTokens":0}
+{"idx":1932,"d":"courier route bidding","b":0,"name":"Small Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4322,"outputTokens":16,"reasoningTokens":0}
+{"idx":1947,"d":"wool scouring capacity","b":1,"name":"Wool Mill Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4049,"outputTokens":16,"reasoningTokens":0}
+{"idx":1951,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2988,"outputTokens":15,"reasoningTokens":0}
+{"idx":1952,"d":"osier bed cutting","b":0,"name":"Shared Osier Bed","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2786,"outputTokens":12,"reasoningTokens":0}
+{"idx":1948,"d":"observatory dome time","b":1,"name":"Dome Scheduling","actorA":["Team A"],"actorB":["Team B"],"ok":true,"failure":null,"ms":4479,"outputTokens":20,"reasoningTokens":0}
+{"idx":1957,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3400,"outputTokens":15,"reasoningTokens":0}
+{"idx":1954,"d":"salt marsh grazing rights","b":1,"name":"Marsh Grazing Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4289,"outputTokens":11,"reasoningTokens":0}
+{"idx":1983,"d":"coffee roastery sourcing","b":0,"name":"Roastery Sourcing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2462,"outputTokens":16,"reasoningTokens":0}
+{"idx":1958,"d":"saffron harvest labour","b":0,"name":"Saffron Harvest Shift","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3845,"outputTokens":12,"reasoningTokens":0}
+{"idx":1973,"d":"coffee roastery sourcing","b":2,"name":"Harvest Sourcing Terms","actorA":["The roastery"],"actorB":["the partner"],"ok":true,"failure":null,"ms":3465,"outputTokens":18,"reasoningTokens":0}
+{"idx":1985,"d":"vinyl pressing queues","b":2,"name":"Vinyl Pressing Queues","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3450,"outputTokens":12,"reasoningTokens":0}
+{"idx":1966,"d":"falconry pest control","b":1,"name":"Orchard Falconry","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4586,"outputTokens":11,"reasoningTokens":0}
+{"idx":1978,"d":"kiln firing schedules","b":0,"name":"Shared Kiln Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4210,"outputTokens":11,"reasoningTokens":0}
+{"idx":1993,"d":"thatching crew rotas","b":2,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3003,"outputTokens":12,"reasoningTokens":0}
+{"idx":1998,"d":"coppice cutting cycles","b":3,"name":"Coppice Rotation Pact","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3250,"outputTokens":16,"reasoningTokens":0}
+{"idx":2000,"d":"apiary winter siting","b":1,"name":"Winter Apiary Siting","actorA":["Lena"],"actorB":["Omar"],"ok":true,"failure":null,"ms":3310,"outputTokens":16,"reasoningTokens":0}
+{"idx":2007,"d":"glacier survey flights","b":0,"name":"Glacier Survey Flights","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3332,"outputTokens":12,"reasoningTokens":0}
+{"idx":2025,"d":"ferry timetable slots","b":1,"name":"Ferry Timetable Slots","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":2904,"outputTokens":16,"reasoningTokens":0}
+{"idx":1988,"d":"falconry pest control","b":2,"name":"Vineyard Falconry","actorA":["Manager A"],"actorB":["Manager B"],"ok":true,"failure":null,"ms":6469,"outputTokens":20,"reasoningTokens":0}
+{"idx":2028,"d":"bat survey nights","b":0,"name":"Bat Survey Nights","actorA":["the first"],"actorB":["the second"],"ok":true,"failure":null,"ms":3467,"outputTokens":20,"reasoningTokens":0}
+{"idx":2021,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4977,"outputTokens":21,"reasoningTokens":0}
+{"idx":2019,"d":"avalanche patrol rosters","b":1,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5627,"outputTokens":16,"reasoningTokens":0}
+{"idx":2036,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3749,"outputTokens":22,"reasoningTokens":0}
+{"idx":2011,"d":"harbour pilot rotations","b":0,"name":"Harbour Pilot Rotation","actorA":["Coordinator A"],"actorB":["Coordinator B"],"ok":true,"failure":null,"ms":5965,"outputTokens":18,"reasoningTokens":0}
+{"idx":2039,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":["Mira"],"actorB":["Jon"],"ok":true,"failure":null,"ms":3693,"outputTokens":15,"reasoningTokens":0}
+{"idx":2047,"d":"reindeer herding routes","b":3,"name":"Tundra Migration","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2962,"outputTokens":12,"reasoningTokens":0}
+{"idx":2041,"d":"greenhouse heat sharing","b":1,"name":"Greenhouse Heat Sharing","actorA":["the first grower"],"actorB":["the second"],"ok":true,"failure":null,"ms":3442,"outputTokens":18,"reasoningTokens":0}
+{"idx":2053,"d":"coffee roastery sourcing","b":0,"name":"Small Coffee Order","actorA":["A small coffee roastery"],"actorB":["A nearby café"],"ok":true,"failure":null,"ms":3090,"outputTokens":21,"reasoningTokens":0}
+{"idx":2051,"d":"wool scouring capacity","b":0,"name":"Small Wool Scour","actorA":["Mill A"],"actorB":["Mill B"],"ok":true,"failure":null,"ms":3272,"outputTokens":16,"reasoningTokens":0}
+{"idx":2058,"d":"coffee roastery sourcing","b":2,"name":"Seasonal Coffee Sourcing","actorA":["the roastery"],"actorB":["the cooperative"],"ok":true,"failure":null,"ms":3893,"outputTokens":22,"reasoningTokens":0}
+{"idx":2057,"d":"osier bed cutting","b":1,"name":"Shared Osier Bed","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4018,"outputTokens":12,"reasoningTokens":0}
+{"idx":2052,"d":"quarry blasting windows","b":1,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4798,"outputTokens":15,"reasoningTokens":0}
+{"idx":2075,"d":"bird ringing station slots","b":0,"name":"Ringing Station Slots","actorA":["the coordinator"],"actorB":["a visiting volunteer"],"ok":true,"failure":null,"ms":3306,"outputTokens":17,"reasoningTokens":0}
+{"idx":2062,"d":"silage clamp sharing","b":3,"name":"Shared Silage Clamp","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4839,"outputTokens":12,"reasoningTokens":0}
+{"idx":2063,"d":"orchard harvest contracts","b":0,"name":"Orchard Contract Tune-Up","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":3625,"outputTokens":24,"reasoningTokens":0}
+{"idx":2081,"d":"archive digitisation","b":3,"name":"The Archive Conversion Pact","actorA":["A national archive"],"actorB":["A rights consortium"],"ok":true,"failure":null,"ms":3065,"outputTokens":18,"reasoningTokens":0}
+{"idx":2079,"d":"observatory dome time","b":1,"name":"Observatory Dome Time","actorA":["the astronomer"],"actorB":["the coordinator"],"ok":true,"failure":null,"ms":3628,"outputTokens":20,"reasoningTokens":0}
+{"idx":2090,"d":"radio telescope time","b":2,"name":"Radio Telescope Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2954,"outputTokens":12,"reasoningTokens":0}
+{"idx":2092,"d":"glacier survey flights","b":0,"name":"Glacier Survey Flights","actorA":["A small glacier survey team"],"actorB":["A second survey team"],"ok":true,"failure":null,"ms":3056,"outputTokens":21,"reasoningTokens":0}
+{"idx":2096,"d":"observatory dome time","b":3,"name":"Flagship Observatory Window","actorA":["A lead space-observation team"],"actorB":["a partner consortium"],"ok":true,"failure":null,"ms":3068,"outputTokens":21,"reasoningTokens":0}
+{"idx":2100,"d":"falconry pest control","b":3,"name":"Falconry Pest Control","actorA":["The estate"],"actorB":["the trust"],"ok":true,"failure":null,"ms":3267,"outputTokens":16,"reasoningTokens":0}
+{"idx":2102,"d":"salt pan harvesting","b":0,"name":"Salt Pan Harvesting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3388,"outputTokens":16,"reasoningTokens":0}
+{"idx":2104,"d":"cider press bookings","b":3,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2933,"outputTokens":11,"reasoningTokens":0}
+{"idx":2106,"d":"coppice cutting cycles","b":1,"name":"Coppice Cycle Planning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3158,"outputTokens":16,"reasoningTokens":0}
+{"idx":2124,"d":"oyster bed leases","b":0,"name":"Oyster Bed Boundaries","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2944,"outputTokens":16,"reasoningTokens":0}
+{"idx":2127,"d":"stadium concession pricing","b":2,"name":"Stadium Concessions","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3012,"outputTokens":16,"reasoningTokens":0}
+{"idx":2093,"d":"vineyard irrigation","b":1,"name":"Shared Vineyard Watering","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":6152,"outputTokens":11,"reasoningTokens":0}
+{"idx":2128,"d":"osier bed cutting","b":1,"name":"Osier Bed Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3189,"outputTokens":12,"reasoningTokens":0}
+{"idx":2132,"d":"marathon road closures","b":2,"name":"Marathon Road Closures","actorA":["A city transportation department"],"actorB":["a marathon organizer"],"ok":true,"failure":null,"ms":2883,"outputTokens":19,"reasoningTokens":0}
+{"idx":2134,"d":"greenhouse heat sharing","b":0,"name":"Shared Greenhouse Heat","actorA":["Mira"],"actorB":["Leo"],"ok":true,"failure":null,"ms":2922,"outputTokens":15,"reasoningTokens":0}
+{"idx":2130,"d":"quarry blasting windows","b":3,"name":"Quarry Blasting Windows","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3885,"outputTokens":16,"reasoningTokens":0}
+{"idx":2142,"d":"cider press bookings","b":2,"name":"Cider Press Bookings","actorA":["Producer A"],"actorB":["Producer B"],"ok":true,"failure":null,"ms":3392,"outputTokens":16,"reasoningTokens":0}
+{"idx":2162,"d":"osier bed cutting","b":1,"name":"Osier Bed Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3573,"outputTokens":12,"reasoningTokens":0}
+{"idx":2164,"d":"seaweed drying racks","b":2,"name":"Shared Drying Racks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3503,"outputTokens":12,"reasoningTokens":0}
+{"idx":2168,"d":"silage clamp sharing","b":2,"name":"Shared Silage Clamp","actorA":["Farm A"],"actorB":["Farm B"],"ok":true,"failure":null,"ms":3188,"outputTokens":16,"reasoningTokens":0}
+{"idx":2169,"d":"harbour pilot rotations","b":0,"name":"Harbour Pilot Rotations","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3200,"outputTokens":12,"reasoningTokens":0}
+{"idx":2170,"d":"eel pass inspections","b":0,"name":"Eel Pass Inspection","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3709,"outputTokens":22,"reasoningTokens":0}
+{"idx":2174,"d":"dune fence placement","b":0,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3189,"outputTokens":16,"reasoningTokens":0}
+{"idx":2159,"d":"marathon road closures","b":1,"name":"Marathon Detour","actorA":["A city traffic coordinator"],"actorB":["The marathon organizer"],"ok":true,"failure":null,"ms":5819,"outputTokens":19,"reasoningTokens":0}
+{"idx":2178,"d":"cranberry bog flooding","b":1,"name":"Shared Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2876,"outputTokens":12,"reasoningTokens":0}
+{"idx":2180,"d":"letterpress print runs","b":1,"name":"Letterpress Print Run","actorA":["A small publisher"],"actorB":["a local print shop"],"ok":true,"failure":null,"ms":3308,"outputTokens":19,"reasoningTokens":0}
+{"idx":2182,"d":"marathon road closures","b":0,"name":"Marathon Road Closures","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2966,"outputTokens":11,"reasoningTokens":0}
+{"idx":2191,"d":"seaweed drying racks","b":1,"name":"Tideway Drying Racks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3682,"outputTokens":12,"reasoningTokens":0}
+{"idx":2181,"d":"vinyl pressing queues","b":2,"name":"Seasonal Vinyl Release","actorA":["the label"],"actorB":["the plant"],"ok":true,"failure":null,"ms":4552,"outputTokens":16,"reasoningTokens":0}
+{"idx":2194,"d":"salt pan harvesting","b":0,"name":"Salt Pan Adjustment","actorA":["Keeper A"],"actorB":["Keeper B"],"ok":true,"failure":null,"ms":3310,"outputTokens":18,"reasoningTokens":0}
+{"idx":2203,"d":"coppice cutting cycles","b":3,"name":"Coppice Cycle Coordination","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3140,"outputTokens":16,"reasoningTokens":0}
+{"idx":2198,"d":"stadium concession pricing","b":1,"name":"Stadium Concession Pricing","actorA":["Vendor A"],"actorB":["Vendor B"],"ok":true,"failure":null,"ms":3347,"outputTokens":22,"reasoningTokens":0}
+{"idx":2212,"d":"bird ringing station slots","b":3,"name":"Migration Survey Slots","actorA":["A national bird-monitoring agency"],"actorB":["an international conservation consortium"],"ok":true,"failure":null,"ms":3108,"outputTokens":22,"reasoningTokens":0}
+{"idx":2215,"d":"courier route bidding","b":0,"name":"Overflow Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3103,"outputTokens":12,"reasoningTokens":0}
+{"idx":2211,"d":"osier bed cutting","b":0,"name":"Osier Bed Trim","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5055,"outputTokens":16,"reasoningTokens":0}
+{"idx":2227,"d":"stone wall repair bids","b":0,"name":"Stone Wall Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2876,"outputTokens":16,"reasoningTokens":0}
+{"idx":2217,"d":"courier route bidding","b":0,"name":"Neighborhood Route Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3302,"outputTokens":11,"reasoningTokens":0}
+{"idx":2219,"d":"radio telescope time","b":1,"name":"Shared Telescope Schedule","actorA":["Team A"],"actorB":["Team B"],"ok":true,"failure":null,"ms":3284,"outputTokens":20,"reasoningTokens":0}
+{"idx":2233,"d":"cider press bookings","b":0,"name":"Shared Cider Press","actorA":["Orchard A"],"actorB":["Orchard B"],"ok":true,"failure":null,"ms":3575,"outputTokens":18,"reasoningTokens":0}
+{"idx":2230,"d":"library acquisitions","b":2,"name":"Seasonal Library Acquisitions","actorA":["the library"],"actorB":["the publisher"],"ok":true,"failure":null,"ms":3647,"outputTokens":20,"reasoningTokens":0}
+{"idx":2241,"d":"film release timing","b":0,"name":"Quiet Weekend Releases","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2859,"outputTokens":11,"reasoningTokens":0}
+{"idx":2240,"d":"coppice cutting cycles","b":0,"name":"Coppice Rotation Plans","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3208,"outputTokens":16,"reasoningTokens":0}
+{"idx":2257,"d":"avalanche patrol rosters","b":3,"name":"High-Pass Patrol Roster","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2859,"outputTokens":12,"reasoningTokens":0}
+{"idx":2247,"d":"dune fence placement","b":2,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3163,"outputTokens":15,"reasoningTokens":0}
+{"idx":2238,"d":"ski-lift grooming","b":3,"name":"Summit Lift Grooming","actorA":["The first resort"],"actorB":["the second"],"ok":true,"failure":null,"ms":5416,"outputTokens":17,"reasoningTokens":0}
+{"idx":2258,"d":"hospital triage staffing","b":1,"name":"Everyday Triage Staffing","actorA":["the charge nurse"],"actorB":["the staffing coordinator"],"ok":true,"failure":null,"ms":3183,"outputTokens":18,"reasoningTokens":0}
+{"idx":2259,"d":"puppet theatre touring","b":0,"name":"Puppet Tour Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3585,"outputTokens":22,"reasoningTokens":0}
+{"idx":2251,"d":"osier bed cutting","b":1,"name":"Osier Bed Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4587,"outputTokens":11,"reasoningTokens":0}
+{"idx":2261,"d":"observatory dome time","b":1,"name":"Shared Dome Evening","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3045,"outputTokens":12,"reasoningTokens":0}
+{"idx":2263,"d":"seaweed drying racks","b":2,"name":"Seaweed Rack Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3462,"outputTokens":12,"reasoningTokens":0}
+{"idx":2274,"d":"urban beehive siting","b":3,"name":"Rooftop Hive Siting","actorA":["A city apiary office"],"actorB":["A rooftop cooperative"],"ok":true,"failure":null,"ms":3522,"outputTokens":17,"reasoningTokens":0}
+{"idx":2281,"d":"ski-lift grooming","b":1,"name":"Ski-Lift Grooming","actorA":["A ski resort manager"],"actorB":["a lift-operations contractor"],"ok":true,"failure":null,"ms":3498,"outputTokens":21,"reasoningTokens":0}
+{"idx":2270,"d":"greenhouse heat sharing","b":3,"name":"Cold-Snap Heat Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4446,"outputTokens":18,"reasoningTokens":0}
+{"idx":2289,"d":"charcoal burn scheduling","b":1,"name":"Shared Kiln Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3125,"outputTokens":11,"reasoningTokens":0}
+{"idx":2277,"d":"cider press bookings","b":1,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4726,"outputTokens":19,"reasoningTokens":0}
+{"idx":2285,"d":"vinyl pressing queues","b":0,"name":"Shared Pressing Queue","actorA":["Label A"],"actorB":["Label B"],"ok":true,"failure":null,"ms":4524,"outputTokens":20,"reasoningTokens":0}
+{"idx":2301,"d":"film release timing","b":2,"name":"Release Window","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3391,"outputTokens":18,"reasoningTokens":0}
+{"idx":2303,"d":"hospital triage staffing","b":3,"name":"Mass-Casualty Triage","actorA":["Hospital A"],"actorB":["Hospital B"],"ok":true,"failure":null,"ms":2919,"outputTokens":16,"reasoningTokens":0}
+{"idx":2290,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":4666,"outputTokens":20,"reasoningTokens":0}
+{"idx":2312,"d":"harbour pilot rotations","b":0,"name":"Harbour Pilot Rotation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3067,"outputTokens":16,"reasoningTokens":0}
+{"idx":2305,"d":"vinyl pressing queues","b":3,"name":"Vinyl Pressing Queues","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4518,"outputTokens":16,"reasoningTokens":0}
+{"idx":2314,"d":"cranberry bog flooding","b":3,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3903,"outputTokens":12,"reasoningTokens":0}
+{"idx":2307,"d":"seed bank exchanges","b":0,"name":"Bean Seed Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4993,"outputTokens":12,"reasoningTokens":0}
+{"idx":2316,"d":"stadium concession pricing","b":0,"name":"Concession Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3737,"outputTokens":16,"reasoningTokens":0}
+{"idx":2331,"d":"bird ringing station slots","b":3,"name":"Migration Station Slots","actorA":["A university migration team"],"actorB":["A national conservation agency"],"ok":true,"failure":null,"ms":2827,"outputTokens":20,"reasoningTokens":0}
+{"idx":2318,"d":"charcoal burn scheduling","b":2,"name":"Kiln Season Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5333,"outputTokens":12,"reasoningTokens":0}
+{"idx":2322,"d":"film release timing","b":0,"name":"Quiet Film Launches","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5383,"outputTokens":16,"reasoningTokens":0}
+{"idx":2324,"d":"antique restoration bids","b":0,"name":"Cabinet Touch-Up Bids","actorA":["Restorer A"],"actorB":["Restorer B"],"ok":true,"failure":null,"ms":5239,"outputTokens":18,"reasoningTokens":0}
+{"idx":2341,"d":"thatching crew rotas","b":3,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2763,"outputTokens":19,"reasoningTokens":0}
+{"idx":2333,"d":"weir maintenance windows","b":0,"name":"Weir Maintenance Windows","actorA":["The upstream weir crew"],"actorB":["The downstream weir crew"],"ok":true,"failure":null,"ms":3152,"outputTokens":22,"reasoningTokens":0}
+{"idx":2344,"d":"seed bank exchanges","b":0,"name":"Seed-Lot Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3022,"outputTokens":22,"reasoningTokens":0}
+{"idx":2332,"d":"bakery supply orders","b":0,"name":"Small Flour Restock","actorA":["A neighborhood bakery manager"],"actorB":["A nearby mill coordinator"],"ok":true,"failure":null,"ms":5057,"outputTokens":20,"reasoningTokens":0}
+{"idx":2346,"d":"stone wall repair bids","b":0,"name":"Garden Wall Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3463,"outputTokens":12,"reasoningTokens":0}
+{"idx":2335,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5557,"outputTokens":11,"reasoningTokens":0}
+{"idx":2349,"d":"charcoal burn scheduling","b":0,"name":"Charcoal Burn Timing","actorA":["Mira"],"actorB":["Sol"],"ok":true,"failure":null,"ms":3189,"outputTokens":15,"reasoningTokens":0}
+{"idx":2353,"d":"fishing quota negotiation","b":0,"name":"Inlet Quota Adjustment","actorA":["Fisher A"],"actorB":["Fisher B"],"ok":true,"failure":null,"ms":4008,"outputTokens":16,"reasoningTokens":0}
+{"idx":2360,"d":"bat survey nights","b":0,"name":"Bat Survey Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3881,"outputTokens":12,"reasoningTokens":0}
+{"idx":2361,"d":"truffle foraging permits","b":0,"name":"Truffle Permit Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3635,"outputTokens":11,"reasoningTokens":0}
+{"idx":2364,"d":"salt pan harvesting","b":3,"name":"Shared Salt Pan","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2981,"outputTokens":null,"reasoningTokens":null}
+{"idx":2362,"d":"film release timing","b":0,"name":"Quiet Release Weekend","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3336,"outputTokens":16,"reasoningTokens":0}
+{"idx":2365,"d":"reindeer herding routes","b":0,"name":"Reindeer Route Choice","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3328,"outputTokens":11,"reasoningTokens":0}
+{"idx":2367,"d":"fishing quota negotiation","b":0,"name":"Bay Quota Tweak","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3113,"outputTokens":11,"reasoningTokens":0}
+{"idx":2376,"d":"kelp farm harvesting","b":0,"name":"Kelp Plot Timing","actorA":["Farmer A"],"actorB":["Farmer B"],"ok":true,"failure":null,"ms":3045,"outputTokens":18,"reasoningTokens":0}
+{"idx":2381,"d":"vineyard irrigation","b":0,"name":"Vineyard Watering","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2980,"outputTokens":12,"reasoningTokens":0}
+{"idx":2379,"d":"weir maintenance windows","b":1,"name":"Shared Weir Maintenance","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2988,"outputTokens":12,"reasoningTokens":0}
+{"idx":2377,"d":"dune fence placement","b":1,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3192,"outputTokens":16,"reasoningTokens":0}
+{"idx":2385,"d":"lighthouse relief shifts","b":0,"name":"Lighthouse Relief Shifts","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2965,"outputTokens":14,"reasoningTokens":0}
+{"idx":2397,"d":"film release timing","b":2,"name":"Seasonal Film Releases","actorA":["Studio A"],"actorB":["Studio B"],"ok":true,"failure":null,"ms":3081,"outputTokens":20,"reasoningTokens":0}
+{"idx":2393,"d":"bat survey nights","b":1,"name":"Bat Survey Night","actorA":["a volunteer coordinator"],"actorB":["a nearby landowner"],"ok":true,"failure":null,"ms":3324,"outputTokens":19,"reasoningTokens":0}
+{"idx":2392,"d":"lighthouse relief shifts","b":0,"name":"Lighthouse Relief","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5037,"outputTokens":11,"reasoningTokens":0}
+{"idx":2412,"d":"ferry timetable slots","b":1,"name":"Island Ferry Scheduling","actorA":["A small island ferry company"],"actorB":["A regional water-taxi cooperative"],"ok":true,"failure":null,"ms":3076,"outputTokens":23,"reasoningTokens":0}
+{"idx":2409,"d":"avalanche patrol rosters","b":1,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3084,"outputTokens":11,"reasoningTokens":0}
+{"idx":2411,"d":"coppice cutting cycles","b":3,"name":"Coppice Cycle Pact","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3183,"outputTokens":12,"reasoningTokens":0}
+{"idx":2403,"d":"weir maintenance windows","b":1,"name":"Weir Maintenance Windows","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5214,"outputTokens":12,"reasoningTokens":0}
+{"idx":2413,"d":"marathon road closures","b":3,"name":"Marathon Road Closures","actorA":["A city transportation agency"],"actorB":["the marathon organizer"],"ok":true,"failure":null,"ms":3998,"outputTokens":19,"reasoningTokens":0}
+{"idx":2419,"d":"antique restoration bids","b":3,"name":"Imperial Cabinet Restoration","actorA":["Firm A"],"actorB":["Firm B"],"ok":true,"failure":null,"ms":3474,"outputTokens":22,"reasoningTokens":0}
+{"idx":2424,"d":"urban beehive siting","b":0,"name":"Rooftop Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3468,"outputTokens":18,"reasoningTokens":0}
+{"idx":2430,"d":"charcoal burn scheduling","b":2,"name":"Charcoal Burn Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2916,"outputTokens":16,"reasoningTokens":0}
+{"idx":2425,"d":"dune fence placement","b":0,"name":"Dune Fence Alignment","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3567,"outputTokens":12,"reasoningTokens":0}
+{"idx":2427,"d":"ferry timetable slots","b":0,"name":"Ferry Timetable Slots","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":3532,"outputTokens":20,"reasoningTokens":0}
+{"idx":2431,"d":"radio telescope time","b":0,"name":"Quiet-Sky Calibration","actorA":["Team A"],"actorB":["Team B"],"ok":true,"failure":null,"ms":3507,"outputTokens":16,"reasoningTokens":0}
+{"idx":2435,"d":"dune fence placement","b":1,"name":"Shared Dune Fences","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3393,"outputTokens":16,"reasoningTokens":0}
+{"idx":2462,"d":"quarry blasting windows","b":0,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3496,"outputTokens":12,"reasoningTokens":0}
+{"idx":2476,"d":"truffle foraging permits","b":0,"name":"Truffle Plot Permits","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2705,"outputTokens":11,"reasoningTokens":0}
+{"idx":2474,"d":"glacier survey flights","b":3,"name":"Ice-Shelf Survey Coordination","actorA":["Agency A"],"actorB":["Agency B"],"ok":true,"failure":null,"ms":2956,"outputTokens":18,"reasoningTokens":0}
+{"idx":2468,"d":"glacier survey flights","b":1,"name":"Glacier Survey Flights","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3498,"outputTokens":11,"reasoningTokens":0}
+{"idx":2457,"d":"salt marsh grazing rights","b":1,"name":"Marsh Grazing Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4434,"outputTokens":12,"reasoningTokens":0}
+{"idx":2450,"d":"osier bed cutting","b":0,"name":"Osier Bed Trimming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5558,"outputTokens":20,"reasoningTokens":0}
+{"idx":2466,"d":"oyster bed leases","b":0,"name":"Oyster Bed Lease Adjustments","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":6040,"outputTokens":12,"reasoningTokens":0}
+{"idx":54,"d":"seaweed drying racks","b":2,"name":"Seaweed Rack Scheduling","actorA":["Cooperative A"],"actorB":["Cooperative B"],"ok":true,"failure":null,"ms":3558,"outputTokens":18,"reasoningTokens":0}
+{"idx":4,"d":"apiary winter siting","b":3,"name":"Winter Apiary Siting","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4001,"outputTokens":18,"reasoningTokens":0}
+{"idx":106,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4019,"outputTokens":26,"reasoningTokens":0}
+{"idx":100,"d":"satellite downlink windows","b":0,"name":"Shared Downlink Window","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5462,"outputTokens":12,"reasoningTokens":0}
+{"idx":123,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2918,"outputTokens":null,"reasoningTokens":null}
+{"idx":129,"d":"peat bog restoration","b":0,"name":"Bog Water Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2942,"outputTokens":18,"reasoningTokens":0}
+{"idx":238,"d":"salt pan harvesting","b":2,"name":"Salt Pan Season","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3357,"outputTokens":18,"reasoningTokens":0}
+{"idx":319,"d":"vineyard irrigation","b":0,"name":"Vineyard Irrigation","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3662,"outputTokens":null,"reasoningTokens":null}
+{"idx":327,"d":"dune fence placement","b":2,"name":"Seasonal Dune Fences","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3148,"outputTokens":null,"reasoningTokens":null}
+{"idx":340,"d":"bird ringing station slots","b":1,"name":"Bird-Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2926,"outputTokens":19,"reasoningTokens":0}
+{"idx":458,"d":"salt pan harvesting","b":2,"name":"Salt Pan Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3862,"outputTokens":12,"reasoningTokens":0}
+{"idx":669,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3451,"outputTokens":null,"reasoningTokens":null}
+{"idx":505,"d":"orchard frost watch","b":2,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4610,"outputTokens":19,"reasoningTokens":0}
+{"idx":598,"d":"stone wall repair bids","b":1,"name":"Stone Wall Repair Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4593,"outputTokens":16,"reasoningTokens":0}
+{"idx":682,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":["A local bird-ringing team"],"actorB":["A visiting bird club"],"ok":true,"failure":null,"ms":3149,"outputTokens":22,"reasoningTokens":0}
+{"idx":688,"d":"stone wall repair bids","b":0,"name":"Stone Wall Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3124,"outputTokens":12,"reasoningTokens":0}
+{"idx":692,"d":"rope ferry staffing","b":1,"name":"Rope Ferry Staffing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2721,"outputTokens":20,"reasoningTokens":0}
+{"idx":713,"d":"thatching crew rotas","b":1,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3184,"outputTokens":12,"reasoningTokens":0}
+{"idx":695,"d":"seed bank exchanges","b":2,"name":"Seasonal Seed Exchange","actorA":["The National Seed Archive"],"actorB":["A regional seed cooperative"],"ok":true,"failure":null,"ms":4242,"outputTokens":20,"reasoningTokens":0}
+{"idx":750,"d":"ferry timetable slots","b":2,"name":"Seasonal Ferry Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3550,"outputTokens":20,"reasoningTokens":0}
+{"idx":751,"d":"orchard harvest contracts","b":3,"name":"Orchard Harvest Contracts","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2926,"outputTokens":24,"reasoningTokens":0}
+{"idx":825,"d":"quarry blasting windows","b":2,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2526,"outputTokens":19,"reasoningTokens":0}
+{"idx":724,"d":"dairy co-op pricing","b":0,"name":"Local Milk Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5219,"outputTokens":12,"reasoningTokens":0}
+{"idx":833,"d":"salt marsh grazing rights","b":2,"name":"Salt Marsh Grazing Rights","actorA":["A cattle cooperative"],"actorB":["A coastal land authority"],"ok":true,"failure":null,"ms":3218,"outputTokens":19,"reasoningTokens":0}
+{"idx":901,"d":"truffle foraging permits","b":2,"name":"Truffle Foraging Permits","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3233,"outputTokens":12,"reasoningTokens":0}
+{"idx":907,"d":"apiary winter siting","b":0,"name":"Winter Hive Siting","actorA":["Mira"],"actorB":["Sol"],"ok":true,"failure":null,"ms":2859,"outputTokens":19,"reasoningTokens":0}
+{"idx":849,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5054,"outputTokens":12,"reasoningTokens":0}
+{"idx":914,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Roster","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3130,"outputTokens":12,"reasoningTokens":0}
+{"idx":919,"d":"seed bank exchanges","b":0,"name":"Seed Bank Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3387,"outputTokens":11,"reasoningTokens":0}
+{"idx":921,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Tuning","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4360,"outputTokens":null,"reasoningTokens":null}
+{"idx":925,"d":"archive digitisation","b":0,"name":"Archive Digitisation","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3492,"outputTokens":null,"reasoningTokens":null}
+{"idx":931,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2899,"outputTokens":12,"reasoningTokens":0}
+{"idx":936,"d":"freight rail scheduling","b":2,"name":"Seasonal Rail Corridor","actorA":["Operator A"],"actorB":["Operator B"],"ok":true,"failure":null,"ms":2780,"outputTokens":16,"reasoningTokens":0}
+{"idx":1042,"d":"rope ferry staffing","b":1,"name":"Creek Ferry Shifts","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2803,"outputTokens":12,"reasoningTokens":0}
+{"idx":1039,"d":"courier route bidding","b":2,"name":"Seasonal Route Bidding","actorA":["Company A"],"actorB":["Company B"],"ok":true,"failure":null,"ms":3307,"outputTokens":16,"reasoningTokens":0}
+{"idx":1037,"d":"pollination contracts","b":0,"name":"Orchard Pollination","actorA":["the orchard manager"],"actorB":["the beekeeper"],"ok":true,"failure":null,"ms":3468,"outputTokens":19,"reasoningTokens":0}
+{"idx":1047,"d":"library acquisitions","b":0,"name":"Routine Library Order","actorA":["the library"],"actorB":["its local distributor"],"ok":true,"failure":null,"ms":3185,"outputTokens":21,"reasoningTokens":0}
+{"idx":1061,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2974,"outputTokens":26,"reasoningTokens":0}
+{"idx":1087,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3020,"outputTokens":16,"reasoningTokens":0}
+{"idx":1067,"d":"coffee roastery sourcing","b":0,"name":"House Blend Sourcing","actorA":["roaster"],"actorB":["café"],"ok":true,"failure":null,"ms":3176,"outputTokens":17,"reasoningTokens":0}
+{"idx":1093,"d":"telescope mirror recoating","b":1,"name":"Telescope Mirror Recoating","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3076,"outputTokens":23,"reasoningTokens":0}
+{"idx":1094,"d":"textile dyeing shifts","b":2,"name":"Seasonal Fabric Run","actorA":["color director"],"actorB":["dye-house partner"],"ok":true,"failure":null,"ms":3057,"outputTokens":18,"reasoningTokens":0}
+{"idx":1114,"d":"seaweed drying racks","b":0,"name":"Seaweed Drying Racks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2665,"outputTokens":16,"reasoningTokens":0}
+{"idx":1109,"d":"truffle foraging permits","b":2,"name":"Truffle Permit Season","actorA":["Alba Grove"],"actorB":["Black Oak"],"ok":true,"failure":null,"ms":3019,"outputTokens":17,"reasoningTokens":0}
+{"idx":1115,"d":"stadium concession pricing","b":3,"name":"Championship Concessions","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3172,"outputTokens":12,"reasoningTokens":0}
+{"idx":1131,"d":"freight rail scheduling","b":1,"name":"Regional Rail Timetable","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2847,"outputTokens":16,"reasoningTokens":0}
+{"idx":1117,"d":"oyster bed leases","b":1,"name":"Oyster Bed Leases","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":3815,"outputTokens":20,"reasoningTokens":0}
+{"idx":1204,"d":"eel pass inspections","b":2,"name":"Eel Pass Inspections","actorA":["the office"],"actorB":["the operator"],"ok":true,"failure":null,"ms":3701,"outputTokens":13,"reasoningTokens":0}
+{"idx":1223,"d":"ferry timetable slots","b":1,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2890,"outputTokens":16,"reasoningTokens":0}
+{"idx":1224,"d":"radio telescope time","b":0,"name":"Quiet-Sky Scheduling","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3109,"outputTokens":11,"reasoningTokens":0}
+{"idx":1263,"d":"quarry blasting windows","b":0,"name":"Quarry Blasting Windows","actorA":["blasting foreman"],"actorB":["scheduling coordinator"],"ok":true,"failure":null,"ms":3172,"outputTokens":19,"reasoningTokens":0}
+{"idx":1273,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3393,"outputTokens":18,"reasoningTokens":0}
+{"idx":1278,"d":"clocktower maintenance","b":1,"name":"Clocktower Maintenance","actorA":["The town clock committee"],"actorB":["The nearby shop association"],"ok":true,"failure":null,"ms":3083,"outputTokens":24,"reasoningTokens":0}
+{"idx":1281,"d":"saffron harvest labour","b":3,"name":"Saffron Harvest Labour","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3507,"outputTokens":12,"reasoningTokens":0}
+{"idx":1298,"d":"ferry timetable slots","b":3,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3076,"outputTokens":12,"reasoningTokens":0}
+{"idx":1301,"d":"lighthouse relief shifts","b":0,"name":"Lighthouse Relief Shifts","actorA":["Keeper A"],"actorB":["Keeper B"],"ok":true,"failure":null,"ms":3121,"outputTokens":18,"reasoningTokens":0}
+{"idx":1293,"d":"fishing quota negotiation","b":0,"name":"Small Quota Adjustment","actorA":["Boat A"],"actorB":["Boat B"],"ok":true,"failure":null,"ms":4624,"outputTokens":18,"reasoningTokens":0}
+{"idx":1310,"d":"bakery supply orders","b":3,"name":"Bakery Supply Orders","actorA":["A regional bakery chain"],"actorB":["A major mill"],"ok":true,"failure":null,"ms":3091,"outputTokens":19,"reasoningTokens":0}
+{"idx":1319,"d":"lock-keeper shift swaps","b":3,"name":"Critical Lock Shift","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3566,"outputTokens":20,"reasoningTokens":0}
+{"idx":1302,"d":"radio telescope time","b":2,"name":"Radio Telescope Allocation","actorA":["Team A"],"actorB":["Team B"],"ok":true,"failure":null,"ms":5125,"outputTokens":16,"reasoningTokens":0}
+{"idx":1328,"d":"fishing quota negotiation","b":1,"name":"Shared Fishing Quota","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4729,"outputTokens":null,"reasoningTokens":null}
+{"idx":1343,"d":"sawmill kiln booking","b":0,"name":"Shared Kiln Booking","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4318,"outputTokens":18,"reasoningTokens":0}
+{"idx":1346,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4310,"outputTokens":26,"reasoningTokens":0}
+{"idx":1352,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4214,"outputTokens":17,"reasoningTokens":0}
+{"idx":1379,"d":"sawmill kiln booking","b":3,"name":"Sawmill Kiln Booking","actorA":["A large sawmill"],"actorB":["The kiln operator"],"ok":true,"failure":null,"ms":3417,"outputTokens":20,"reasoningTokens":0}
+{"idx":1382,"d":"ski-lift grooming","b":2,"name":"Summit Lift Grooming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4420,"outputTokens":15,"reasoningTokens":0}
+{"idx":1386,"d":"satellite downlink windows","b":2,"name":"Orbital Downlink Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3695,"outputTokens":24,"reasoningTokens":0}
+{"idx":1409,"d":"film release timing","b":2,"name":"Release Calendar","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3617,"outputTokens":11,"reasoningTokens":0}
+{"idx":1424,"d":"seed bank exchanges","b":0,"name":"Seed Lot Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4802,"outputTokens":22,"reasoningTokens":0}
+{"idx":1438,"d":"vinyl pressing queues","b":2,"name":"Pressing Queue Decisions","actorA":["A record label"],"actorB":["The vinyl pressing plant"],"ok":true,"failure":null,"ms":3347,"outputTokens":19,"reasoningTokens":0}
+{"idx":1452,"d":"ferry timetable slots","b":3,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3417,"outputTokens":20,"reasoningTokens":0}
+{"idx":1431,"d":"kiln firing schedules","b":0,"name":"Shared Kiln Timing","actorA":["the first potter"],"actorB":["the second"],"ok":true,"failure":null,"ms":5685,"outputTokens":18,"reasoningTokens":0}
+{"idx":1456,"d":"fishing quota negotiation","b":1,"name":"Shared Fishing Quota","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5958,"outputTokens":11,"reasoningTokens":0}
+{"idx":1490,"d":"reindeer herding routes","b":0,"name":"Tundra Route Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5015,"outputTokens":20,"reasoningTokens":0}
+{"idx":1498,"d":"charcoal burn scheduling","b":2,"name":"Kiln Season Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4908,"outputTokens":null,"reasoningTokens":null}
+{"idx":1521,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4353,"outputTokens":22,"reasoningTokens":0}
+{"idx":1542,"d":"orchard frost watch","b":0,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3370,"outputTokens":17,"reasoningTokens":0}
+{"idx":1530,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4913,"outputTokens":19,"reasoningTokens":0}
+{"idx":1576,"d":"planetarium show slots","b":0,"name":"Planetarium Show Slots","actorA":["scheduler"],"actorB":["presenter"],"ok":true,"failure":null,"ms":5064,"outputTokens":16,"reasoningTokens":0}
+{"idx":1579,"d":"eel pass inspections","b":2,"name":"Eel Pass Review","actorA":["the authority"],"actorB":["the operator"],"ok":true,"failure":null,"ms":5038,"outputTokens":16,"reasoningTokens":0}
+{"idx":1583,"d":"film release timing","b":0,"name":"Weekday Release Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3866,"outputTokens":12,"reasoningTokens":0}
+{"idx":1614,"d":"stone wall repair bids","b":1,"name":"Stone Wall Bids","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2573,"outputTokens":12,"reasoningTokens":0}
+{"idx":1620,"d":"canal lock scheduling","b":2,"name":"Canal Lock Coordination","actorA":["The first operator"],"actorB":["the second"],"ok":true,"failure":null,"ms":3319,"outputTokens":17,"reasoningTokens":0}
+{"idx":1625,"d":"apiary winter siting","b":0,"name":"Winter Hive Siting","actorA":["Beekeeper A"],"actorB":["Beekeeper B"],"ok":true,"failure":null,"ms":3480,"outputTokens":20,"reasoningTokens":0}
+{"idx":1628,"d":"cider press bookings","b":0,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3480,"outputTokens":12,"reasoningTokens":0}
+{"idx":1646,"d":"coffee roastery sourcing","b":1,"name":"Roastery-Café Release","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2666,"outputTokens":14,"reasoningTokens":0}
+{"idx":1631,"d":"glacier survey flights","b":1,"name":"Glacier Survey Flights","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3911,"outputTokens":11,"reasoningTokens":0}
+{"idx":1660,"d":"wool scouring capacity","b":1,"name":"Wool Scouring Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3094,"outputTokens":16,"reasoningTokens":0}
+{"idx":1683,"d":"bell foundry casting","b":0,"name":"Bell Foundry Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2400,"outputTokens":23,"reasoningTokens":0}
+{"idx":1690,"d":"stadium concession pricing","b":1,"name":"Stadium Snack Pricing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2867,"outputTokens":12,"reasoningTokens":0}
+{"idx":1664,"d":"reindeer herding routes","b":2,"name":"Reindeer Herding Routes","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3594,"outputTokens":null,"reasoningTokens":null}
+{"idx":1720,"d":"thatching crew rotas","b":3,"name":"Ridgeway Thatching Rota","actorA":["A thatching cooperative"],"actorB":["the estate restoration board"],"ok":true,"failure":null,"ms":3584,"outputTokens":20,"reasoningTokens":0}
+{"idx":1723,"d":"saffron harvest labour","b":0,"name":"Saffron Picking Shift","actorA":["Grower A"],"actorB":["Grower B"],"ok":true,"failure":null,"ms":3381,"outputTokens":24,"reasoningTokens":0}
+{"idx":1823,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Coverage","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2770,"outputTokens":22,"reasoningTokens":0}
+{"idx":1752,"d":"bakery supply orders","b":2,"name":"Seasonal Flour Contract","actorA":["A regional bakery"],"actorB":["Its flour supplier"],"ok":true,"failure":null,"ms":5428,"outputTokens":18,"reasoningTokens":0}
+{"idx":1854,"d":"bell foundry casting","b":2,"name":"Foundry Commission","actorA":["the foundry"],"actorB":["the council"],"ok":true,"failure":null,"ms":3092,"outputTokens":14,"reasoningTokens":0}
+{"idx":1841,"d":"kelp farm harvesting","b":2,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3351,"outputTokens":22,"reasoningTokens":0}
+{"idx":1839,"d":"kiln firing schedules","b":1,"name":"Kiln Firing Coordination","actorA":["the studio"],"actorB":["the supplier"],"ok":true,"failure":null,"ms":3903,"outputTokens":13,"reasoningTokens":0}
+{"idx":1926,"d":"osier bed cutting","b":2,"name":"Osier Bed Cutting","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3379,"outputTokens":null,"reasoningTokens":null}
+{"idx":1957,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3194,"outputTokens":22,"reasoningTokens":0}
+{"idx":1868,"d":"cranberry bog flooding","b":2,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4674,"outputTokens":11,"reasoningTokens":0}
+{"idx":1951,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4055,"outputTokens":null,"reasoningTokens":null}
+{"idx":2052,"d":"quarry blasting windows","b":1,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2727,"outputTokens":null,"reasoningTokens":null}
+{"idx":2021,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3295,"outputTokens":null,"reasoningTokens":null}
+{"idx":2170,"d":"eel pass inspections","b":0,"name":"Eel Pass Inspection","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3157,"outputTokens":null,"reasoningTokens":null}
+{"idx":2036,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4716,"outputTokens":26,"reasoningTokens":0}
+{"idx":2247,"d":"dune fence placement","b":2,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2883,"outputTokens":15,"reasoningTokens":0}
+{"idx":2270,"d":"greenhouse heat sharing","b":3,"name":"Cold-Snap Heat Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3170,"outputTokens":18,"reasoningTokens":0}
+{"idx":2259,"d":"puppet theatre touring","b":0,"name":"Puppet Tour Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4006,"outputTokens":18,"reasoningTokens":0}
+{"idx":2277,"d":"cider press bookings","b":1,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2929,"outputTokens":19,"reasoningTokens":0}
+{"idx":2301,"d":"film release timing","b":2,"name":"Release Window","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2990,"outputTokens":16,"reasoningTokens":0}
+{"idx":2341,"d":"thatching crew rotas","b":3,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3702,"outputTokens":19,"reasoningTokens":0}
+{"idx":2344,"d":"seed bank exchanges","b":0,"name":"Seed-Lot Exchange","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3854,"outputTokens":null,"reasoningTokens":null}
+{"idx":2364,"d":"salt pan harvesting","b":3,"name":"Shared Salt Pan","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3297,"outputTokens":12,"reasoningTokens":0}
+{"idx":2385,"d":"lighthouse relief shifts","b":0,"name":"Lighthouse Relief Shifts","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3854,"outputTokens":11,"reasoningTokens":0}
+{"idx":2424,"d":"urban beehive siting","b":0,"name":"Rooftop Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2669,"outputTokens":18,"reasoningTokens":0}
+{"idx":2450,"d":"osier bed cutting","b":0,"name":"Osier Bed Trimming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5019,"outputTokens":20,"reasoningTokens":0}
+{"idx":4,"d":"apiary winter siting","b":3,"name":"Winter Apiary Siting","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4491,"outputTokens":18,"reasoningTokens":0}
+{"idx":106,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4828,"outputTokens":null,"reasoningTokens":null}
+{"idx":123,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3078,"outputTokens":null,"reasoningTokens":null}
+{"idx":129,"d":"peat bog restoration","b":0,"name":"Bog Water Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4567,"outputTokens":18,"reasoningTokens":0}
+{"idx":238,"d":"salt pan harvesting","b":2,"name":"Salt Pan Season","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2980,"outputTokens":18,"reasoningTokens":0}
+{"idx":319,"d":"vineyard irrigation","b":0,"name":"Vineyard Irrigation","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3189,"outputTokens":11,"reasoningTokens":0}
+{"idx":327,"d":"dune fence placement","b":2,"name":"Seasonal Dune Fences","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4019,"outputTokens":null,"reasoningTokens":null}
+{"idx":340,"d":"bird ringing station slots","b":1,"name":"Bird-Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4541,"outputTokens":19,"reasoningTokens":0}
+{"idx":505,"d":"orchard frost watch","b":2,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2969,"outputTokens":15,"reasoningTokens":0}
+{"idx":669,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3497,"outputTokens":12,"reasoningTokens":0}
+{"idx":692,"d":"rope ferry staffing","b":1,"name":"Rope Ferry Staffing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3134,"outputTokens":20,"reasoningTokens":0}
+{"idx":750,"d":"ferry timetable slots","b":2,"name":"Seasonal Ferry Slots","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3394,"outputTokens":null,"reasoningTokens":null}
+{"idx":751,"d":"orchard harvest contracts","b":3,"name":"Orchard Harvest Contracts","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3445,"outputTokens":24,"reasoningTokens":0}
+{"idx":825,"d":"quarry blasting windows","b":2,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3131,"outputTokens":null,"reasoningTokens":null}
+{"idx":921,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Tuning","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3184,"outputTokens":null,"reasoningTokens":null}
+{"idx":1061,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":["lock-keepers"],"actorB":["lock-keeper"],"ok":true,"failure":null,"ms":3503,"outputTokens":22,"reasoningTokens":0}
+{"idx":925,"d":"archive digitisation","b":0,"name":"Archive Digitisation","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3666,"outputTokens":19,"reasoningTokens":0}
+{"idx":1131,"d":"freight rail scheduling","b":1,"name":"Regional Rail Timetable","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3474,"outputTokens":null,"reasoningTokens":null}
+{"idx":1093,"d":"telescope mirror recoating","b":1,"name":"Telescope Mirror Recoating","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5173,"outputTokens":23,"reasoningTokens":0}
+{"idx":1273,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3187,"outputTokens":15,"reasoningTokens":0}
+{"idx":1319,"d":"lock-keeper shift swaps","b":3,"name":"Critical Lock Shift","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3057,"outputTokens":19,"reasoningTokens":0}
+{"idx":1343,"d":"sawmill kiln booking","b":0,"name":"Shared Kiln Booking","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2965,"outputTokens":18,"reasoningTokens":0}
+{"idx":1328,"d":"fishing quota negotiation","b":1,"name":"Shared Fishing Quota","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5557,"outputTokens":12,"reasoningTokens":0}
+{"idx":1346,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3340,"outputTokens":21,"reasoningTokens":0}
+{"idx":1352,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2869,"outputTokens":17,"reasoningTokens":0}
+{"idx":1382,"d":"ski-lift grooming","b":2,"name":"Summit Lift Grooming","actorA":["A ski resort’s operations manager"],"actorB":["its grooming contractor"],"ok":true,"failure":null,"ms":3525,"outputTokens":22,"reasoningTokens":0}
+{"idx":1386,"d":"satellite downlink windows","b":2,"name":"Orbital Downlink Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3800,"outputTokens":null,"reasoningTokens":null}
+{"idx":1424,"d":"seed bank exchanges","b":0,"name":"Seed Lot Exchange","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3612,"outputTokens":null,"reasoningTokens":null}
+{"idx":1452,"d":"ferry timetable slots","b":3,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3021,"outputTokens":16,"reasoningTokens":0}
+{"idx":1490,"d":"reindeer herding routes","b":0,"name":"Tundra Route Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4240,"outputTokens":20,"reasoningTokens":0}
+{"idx":1498,"d":"charcoal burn scheduling","b":2,"name":"Kiln Season Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4109,"outputTokens":21,"reasoningTokens":0}
+{"idx":1521,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4492,"outputTokens":null,"reasoningTokens":null}
+{"idx":1530,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5933,"outputTokens":19,"reasoningTokens":0}
+{"idx":1542,"d":"orchard frost watch","b":0,"name":"Orchard Frost Watch","actorA":["The first caretaker"],"actorB":["the second"],"ok":true,"failure":null,"ms":3826,"outputTokens":15,"reasoningTokens":0}
+{"idx":1646,"d":"coffee roastery sourcing","b":1,"name":"Roastery-Café Release","actorA":["A small coffee roastery"],"actorB":["A partner café"],"ok":true,"failure":null,"ms":5280,"outputTokens":21,"reasoningTokens":0}
+{"idx":1664,"d":"reindeer herding routes","b":2,"name":"Reindeer Herding Routes","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4729,"outputTokens":null,"reasoningTokens":null}
+{"idx":1683,"d":"bell foundry casting","b":0,"name":"Bell Foundry Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3082,"outputTokens":23,"reasoningTokens":0}
+{"idx":1823,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Coverage","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3866,"outputTokens":18,"reasoningTokens":0}
+{"idx":1841,"d":"kelp farm harvesting","b":2,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3273,"outputTokens":22,"reasoningTokens":0}
+{"idx":1926,"d":"osier bed cutting","b":2,"name":"Osier Bed Cutting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2934,"outputTokens":11,"reasoningTokens":0}
+{"idx":1951,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5646,"outputTokens":15,"reasoningTokens":0}
+{"idx":1957,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4712,"outputTokens":null,"reasoningTokens":null}
+{"idx":2021,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3522,"outputTokens":17,"reasoningTokens":0}
+{"idx":2036,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5015,"outputTokens":22,"reasoningTokens":0}
+{"idx":2052,"d":"quarry blasting windows","b":1,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2841,"outputTokens":15,"reasoningTokens":0}
+{"idx":2247,"d":"dune fence placement","b":2,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2493,"outputTokens":15,"reasoningTokens":0}
+{"idx":2170,"d":"eel pass inspections","b":0,"name":"Eel Pass Inspection","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2672,"outputTokens":26,"reasoningTokens":0}
+{"idx":2259,"d":"puppet theatre touring","b":0,"name":"Puppet Tour Timing","actorA":["director"],"actorB":["venue manager"],"ok":true,"failure":null,"ms":4400,"outputTokens":16,"reasoningTokens":0}
+{"idx":2270,"d":"greenhouse heat sharing","b":3,"name":"Cold-Snap Heat Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":6048,"outputTokens":18,"reasoningTokens":0}
+{"idx":2277,"d":"cider press bookings","b":1,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2802,"outputTokens":19,"reasoningTokens":0}
+{"idx":2341,"d":"thatching crew rotas","b":3,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3583,"outputTokens":19,"reasoningTokens":0}
+{"idx":2344,"d":"seed bank exchanges","b":0,"name":"Seed-Lot Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4263,"outputTokens":18,"reasoningTokens":0}
+{"idx":2424,"d":"urban beehive siting","b":0,"name":"Rooftop Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3147,"outputTokens":null,"reasoningTokens":null}
+{"idx":2450,"d":"osier bed cutting","b":0,"name":"Osier Bed Trimming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3988,"outputTokens":20,"reasoningTokens":0}
+{"idx":106,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4399,"outputTokens":21,"reasoningTokens":0}
+{"idx":4,"d":"apiary winter siting","b":3,"name":"Winter Apiary Siting","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4628,"outputTokens":11,"reasoningTokens":0}
+{"idx":123,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4900,"outputTokens":11,"reasoningTokens":0}
+{"idx":129,"d":"peat bog restoration","b":0,"name":"Bog Water Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5452,"outputTokens":18,"reasoningTokens":0}
+{"idx":327,"d":"dune fence placement","b":2,"name":"Seasonal Dune Fences","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2951,"outputTokens":15,"reasoningTokens":0}
+{"idx":238,"d":"salt pan harvesting","b":2,"name":"Salt Pan Season","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4242,"outputTokens":18,"reasoningTokens":0}
+{"idx":340,"d":"bird ringing station slots","b":1,"name":"Bird-Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3095,"outputTokens":19,"reasoningTokens":0}
+{"idx":505,"d":"orchard frost watch","b":2,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2878,"outputTokens":19,"reasoningTokens":0}
+{"idx":750,"d":"ferry timetable slots","b":2,"name":"Seasonal Ferry Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3023,"outputTokens":16,"reasoningTokens":0}
+{"idx":692,"d":"rope ferry staffing","b":1,"name":"Rope Ferry Staffing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3950,"outputTokens":11,"reasoningTokens":0}
+{"idx":825,"d":"quarry blasting windows","b":2,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4051,"outputTokens":15,"reasoningTokens":0}
+{"idx":751,"d":"orchard harvest contracts","b":3,"name":"Orchard Harvest Contracts","actorA":["A regional orchard cooperative"],"actorB":["A national produce buyer"],"ok":true,"failure":null,"ms":5127,"outputTokens":24,"reasoningTokens":0}
+{"idx":921,"d":"seaweed drying racks","b":0,"name":"Seaweed Rack Tuning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5131,"outputTokens":12,"reasoningTokens":0}
+{"idx":925,"d":"archive digitisation","b":0,"name":"Archive Digitisation","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5268,"outputTokens":19,"reasoningTokens":0}
+{"idx":1093,"d":"telescope mirror recoating","b":1,"name":"Telescope Mirror Recoating","actorA":["A small observatory"],"actorB":["The recoating shop"],"ok":true,"failure":null,"ms":3275,"outputTokens":20,"reasoningTokens":0}
+{"idx":1131,"d":"freight rail scheduling","b":1,"name":"Regional Rail Timetable","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4333,"outputTokens":14,"reasoningTokens":0}
+{"idx":1273,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3394,"outputTokens":18,"reasoningTokens":0}
+{"idx":1343,"d":"sawmill kiln booking","b":0,"name":"Shared Kiln Booking","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2560,"outputTokens":12,"reasoningTokens":0}
+{"idx":1319,"d":"lock-keeper shift swaps","b":3,"name":"Critical Lock Shift","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4624,"outputTokens":19,"reasoningTokens":0}
+{"idx":1346,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3028,"outputTokens":26,"reasoningTokens":0}
+{"idx":1352,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4723,"outputTokens":15,"reasoningTokens":0}
+{"idx":1386,"d":"satellite downlink windows","b":2,"name":"Orbital Downlink Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3647,"outputTokens":20,"reasoningTokens":0}
+{"idx":1424,"d":"seed bank exchanges","b":0,"name":"Seed Lot Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2978,"outputTokens":12,"reasoningTokens":0}
+{"idx":1490,"d":"reindeer herding routes","b":0,"name":"Tundra Route Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2984,"outputTokens":20,"reasoningTokens":0}
+{"idx":1452,"d":"ferry timetable slots","b":3,"name":"Ferry Timetable Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5528,"outputTokens":11,"reasoningTokens":0}
+{"idx":1498,"d":"charcoal burn scheduling","b":2,"name":"Kiln Season Timing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3518,"outputTokens":null,"reasoningTokens":null}
+{"idx":1521,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3336,"outputTokens":14,"reasoningTokens":0}
+{"idx":1530,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3439,"outputTokens":null,"reasoningTokens":null}
+{"idx":1664,"d":"reindeer herding routes","b":2,"name":"Reindeer Herding Routes","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3048,"outputTokens":null,"reasoningTokens":null}
+{"idx":1683,"d":"bell foundry casting","b":0,"name":"Bell Foundry Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2957,"outputTokens":23,"reasoningTokens":0}
+{"idx":1823,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Coverage","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3047,"outputTokens":22,"reasoningTokens":0}
+{"idx":1841,"d":"kelp farm harvesting","b":2,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2364,"outputTokens":18,"reasoningTokens":0}
+{"idx":1951,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3145,"outputTokens":15,"reasoningTokens":0}
+{"idx":1957,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3108,"outputTokens":22,"reasoningTokens":0}
+{"idx":2021,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3447,"outputTokens":17,"reasoningTokens":0}
+{"idx":2036,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3009,"outputTokens":22,"reasoningTokens":0}
+{"idx":2052,"d":"quarry blasting windows","b":1,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3411,"outputTokens":15,"reasoningTokens":0}
+{"idx":2170,"d":"eel pass inspections","b":0,"name":"Eel Pass Inspection","actorA":["A small stream’s eel-pass caretaker"],"actorB":["A local fisheries volunteer"],"ok":true,"failure":null,"ms":3016,"outputTokens":26,"reasoningTokens":0}
+{"idx":2270,"d":"greenhouse heat sharing","b":3,"name":"Cold-Snap Heat Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2748,"outputTokens":14,"reasoningTokens":0}
+{"idx":2247,"d":"dune fence placement","b":2,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3631,"outputTokens":15,"reasoningTokens":0}
+{"idx":2277,"d":"cider press bookings","b":1,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3587,"outputTokens":19,"reasoningTokens":0}
+{"idx":2341,"d":"thatching crew rotas","b":3,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3614,"outputTokens":16,"reasoningTokens":0}
+{"idx":2424,"d":"urban beehive siting","b":0,"name":"Rooftop Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3309,"outputTokens":null,"reasoningTokens":null}
+{"idx":2344,"d":"seed bank exchanges","b":0,"name":"Seed-Lot Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3651,"outputTokens":18,"reasoningTokens":0}
+{"idx":2450,"d":"osier bed cutting","b":0,"name":"Osier Bed Trimming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2710,"outputTokens":20,"reasoningTokens":0}
+{"idx":106,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":5620,"outputTokens":null,"reasoningTokens":null}
+{"idx":129,"d":"peat bog restoration","b":0,"name":"Bog Water Tuning","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2872,"outputTokens":11,"reasoningTokens":0}
+{"idx":238,"d":"salt pan harvesting","b":2,"name":"Salt Pan Season","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3631,"outputTokens":18,"reasoningTokens":0}
+{"idx":327,"d":"dune fence placement","b":2,"name":"Seasonal Dune Fences","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3053,"outputTokens":15,"reasoningTokens":0}
+{"idx":340,"d":"bird ringing station slots","b":1,"name":"Bird-Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4721,"outputTokens":19,"reasoningTokens":0}
+{"idx":505,"d":"orchard frost watch","b":2,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3592,"outputTokens":19,"reasoningTokens":0}
+{"idx":825,"d":"quarry blasting windows","b":2,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":6289,"outputTokens":15,"reasoningTokens":0}
+{"idx":925,"d":"archive digitisation","b":0,"name":"Archive Digitisation","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3292,"outputTokens":19,"reasoningTokens":0}
+{"idx":1131,"d":"freight rail scheduling","b":1,"name":"Regional Rail Timetable","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3165,"outputTokens":14,"reasoningTokens":0}
+{"idx":1273,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3380,"outputTokens":18,"reasoningTokens":0}
+{"idx":1319,"d":"lock-keeper shift swaps","b":3,"name":"Critical Lock Shift","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3612,"outputTokens":11,"reasoningTokens":0}
+{"idx":1346,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2877,"outputTokens":26,"reasoningTokens":0}
+{"idx":1352,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3598,"outputTokens":null,"reasoningTokens":null}
+{"idx":1386,"d":"satellite downlink windows","b":2,"name":"Orbital Downlink Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3876,"outputTokens":null,"reasoningTokens":null}
+{"idx":1490,"d":"reindeer herding routes","b":0,"name":"Tundra Route Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3278,"outputTokens":17,"reasoningTokens":0}
+{"idx":1498,"d":"charcoal burn scheduling","b":2,"name":"Kiln Season Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3321,"outputTokens":20,"reasoningTokens":0}
+{"idx":1521,"d":"kelp farm harvesting","b":3,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5119,"outputTokens":11,"reasoningTokens":0}
+{"idx":1530,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2691,"outputTokens":19,"reasoningTokens":0}
+{"idx":1664,"d":"reindeer herding routes","b":2,"name":"Reindeer Herding Routes","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4503,"outputTokens":11,"reasoningTokens":0}
+{"idx":1683,"d":"bell foundry casting","b":0,"name":"Bell Foundry Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3287,"outputTokens":16,"reasoningTokens":0}
+{"idx":1823,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Coverage","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3183,"outputTokens":12,"reasoningTokens":0}
+{"idx":1841,"d":"kelp farm harvesting","b":2,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3499,"outputTokens":17,"reasoningTokens":0}
+{"idx":1951,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3480,"outputTokens":15,"reasoningTokens":0}
+{"idx":1957,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4506,"outputTokens":18,"reasoningTokens":0}
+{"idx":2021,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2907,"outputTokens":17,"reasoningTokens":0}
+{"idx":2036,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3067,"outputTokens":22,"reasoningTokens":0}
+{"idx":2052,"d":"quarry blasting windows","b":1,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4950,"outputTokens":15,"reasoningTokens":0}
+{"idx":2247,"d":"dune fence placement","b":2,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2979,"outputTokens":15,"reasoningTokens":0}
+{"idx":2270,"d":"greenhouse heat sharing","b":3,"name":"Cold-Snap Heat Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2879,"outputTokens":20,"reasoningTokens":0}
+{"idx":2277,"d":"cider press bookings","b":1,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3406,"outputTokens":19,"reasoningTokens":0}
+{"idx":2341,"d":"thatching crew rotas","b":3,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3256,"outputTokens":19,"reasoningTokens":0}
+{"idx":2344,"d":"seed bank exchanges","b":0,"name":"Seed-Lot Exchange","actorA":["The first curator"],"actorB":["the second"],"ok":true,"failure":null,"ms":3499,"outputTokens":17,"reasoningTokens":0}
+{"idx":2424,"d":"urban beehive siting","b":0,"name":"Rooftop Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3414,"outputTokens":18,"reasoningTokens":0}
+{"idx":2450,"d":"osier bed cutting","b":0,"name":"Osier Bed Trimming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2916,"outputTokens":20,"reasoningTokens":0}
+{"idx":106,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":6617,"outputTokens":21,"reasoningTokens":0}
+{"idx":238,"d":"salt pan harvesting","b":2,"name":"Salt Pan Season","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3262,"outputTokens":18,"reasoningTokens":0}
+{"idx":327,"d":"dune fence placement","b":2,"name":"Seasonal Dune Fences","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2984,"outputTokens":15,"reasoningTokens":0}
+{"idx":340,"d":"bird ringing station slots","b":1,"name":"Bird-Ringing Station Slots","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3595,"outputTokens":11,"reasoningTokens":0}
+{"idx":505,"d":"orchard frost watch","b":2,"name":"Orchard Frost Watch","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3865,"outputTokens":null,"reasoningTokens":null}
+{"idx":825,"d":"quarry blasting windows","b":2,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3542,"outputTokens":null,"reasoningTokens":null}
+{"idx":925,"d":"archive digitisation","b":0,"name":"Archive Digitisation","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":6069,"outputTokens":19,"reasoningTokens":0}
+{"idx":1131,"d":"freight rail scheduling","b":1,"name":"Regional Rail Timetable","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3156,"outputTokens":14,"reasoningTokens":0}
+{"idx":1273,"d":"bird ringing station slots","b":1,"name":"Ringing Station Slots","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3129,"outputTokens":18,"reasoningTokens":0}
+{"idx":1346,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3198,"outputTokens":25,"reasoningTokens":0}
+{"idx":1352,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3255,"outputTokens":17,"reasoningTokens":0}
+{"idx":1386,"d":"satellite downlink windows","b":2,"name":"Orbital Downlink Scheduling","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3828,"outputTokens":null,"reasoningTokens":null}
+{"idx":1490,"d":"reindeer herding routes","b":0,"name":"Tundra Route Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4833,"outputTokens":20,"reasoningTokens":0}
+{"idx":1498,"d":"charcoal burn scheduling","b":2,"name":"Kiln Season Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3275,"outputTokens":21,"reasoningTokens":0}
+{"idx":1530,"d":"antique restoration bids","b":2,"name":"Antique Restoration Bids","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3025,"outputTokens":19,"reasoningTokens":0}
+{"idx":1683,"d":"bell foundry casting","b":0,"name":"Bell Foundry Tuning","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3054,"outputTokens":23,"reasoningTokens":0}
+{"idx":1841,"d":"kelp farm harvesting","b":2,"name":"Kelp Harvest Timing","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3152,"outputTokens":18,"reasoningTokens":0}
+{"idx":1951,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3083,"outputTokens":15,"reasoningTokens":0}
+{"idx":1957,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3400,"outputTokens":12,"reasoningTokens":0}
+{"idx":2021,"d":"salt pan harvesting","b":1,"name":"Salt Pan Harvest","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3487,"outputTokens":21,"reasoningTokens":0}
+{"idx":2036,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5150,"outputTokens":22,"reasoningTokens":0}
+{"idx":2052,"d":"quarry blasting windows","b":1,"name":"Quarry Blasting Windows","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3174,"outputTokens":15,"reasoningTokens":0}
+{"idx":2247,"d":"dune fence placement","b":2,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3097,"outputTokens":15,"reasoningTokens":0}
+{"idx":2270,"d":"greenhouse heat sharing","b":3,"name":"Cold-Snap Heat Exchange","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3019,"outputTokens":14,"reasoningTokens":0}
+{"idx":2277,"d":"cider press bookings","b":1,"name":"Cider Press Bookings","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3235,"outputTokens":19,"reasoningTokens":0}
+{"idx":2341,"d":"thatching crew rotas","b":3,"name":"Thatching Crew Rotas","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4941,"outputTokens":19,"reasoningTokens":0}
+{"idx":2424,"d":"urban beehive siting","b":0,"name":"Rooftop Hive Siting","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3080,"outputTokens":18,"reasoningTokens":0}
+{"idx":2450,"d":"osier bed cutting","b":0,"name":"Osier Bed Trimming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3100,"outputTokens":20,"reasoningTokens":0}

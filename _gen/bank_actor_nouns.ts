@@ -36,7 +36,7 @@ const LIMIT = process.env.NOUNS_LIMIT ? Number(process.env.NOUNS_LIMIT) : Infini
 const CONCURRENCY = Number(process.env.NOUNS_CONCURRENCY || 8);
 const RESUME = process.env.NOUNS_RESUME === '1';
 
-const SYSTEM_PROMPT = `You extract, you never invent, rewrite, or paraphrase. You will be given a short scene-setting description for a 2x2 game and its four option labels. Player A chooses between row1 and row2; Player B chooses between col1 and col2.
+const STRICT_SYSTEM_PROMPT = `You extract, you never invent, rewrite, or paraphrase. You will be given a short scene-setting description for a 2x2 game and its four option labels. Player A chooses between row1 and row2; Player B chooses between col1 and col2.
 
 If the description refers to Player A using a ROLE NOUN — a phrase like "a ferry operator", "the gatekeeper", "the north farm" — instead of writing the letter A, copy that EXACT phrase into actorA: verbatim, same words, same article ("a"/"an"/"the"), same capitalization, exactly as it appears in the description you were given. List every DISTINCT such phrase used for Player A, in the order it first appears, up to 3. If Player A is referred to only as "A"/"Player A", or there is no single clear noun phrase naming them, set actorA to null.
 
@@ -47,6 +47,45 @@ Hard rules:
 - Never use the same phrase for both players.
 - Never include an option label (row1, row2, col1, col2) as a noun — a player's identity and their option are different things.
 - When in doubt, prefer null over a guess. A missed noun costs nothing; an invented one is worse than none.`;
+
+/**
+ * LOOSER extraction prompt (H5, handoff 2026-09-04) — a SECOND pass over ONLY
+ * the rows the strict pass above left with no noun on EITHER player (645 of
+ * 2483). Still pure verbatim-substring extraction — never rewriting, never
+ * inventing — but relaxed on two axes the strict prompt was conservative about:
+ *   1. accept a slightly MORE GENERAL role phrase when that is the only handle
+ *      the description gives (e.g. "the operator", "the buyer") rather than
+ *      insisting on a fully specific one;
+ *   2. accept a noun for just ONE player, leaving the other null, instead of
+ *      requiring a matched pair — a single correctly-named side is still useful
+ *      colour labelling.
+ * Everything the strict prompt forbade stays forbidden: no composing, no
+ * compound noun naming both parties ("the upstream and downstream lock-keepers"),
+ * no collective noun assigned to one side when the description frames both
+ * symmetrically with "each"/"both", no option labels, nothing that is not a
+ * literal contiguous substring. `actorNounsOk` is the hard floor downstream — a
+ * looser draw that trips it is dropped, so loosening the prompt can only ever
+ * ADD rows that already clear the shipped predicate, never weaken it.
+ */
+const LOOSE_SYSTEM_PROMPT = `You extract, you never invent, rewrite, or paraphrase. You will be given a short scene-setting description for a 2x2 game and its four option labels. Player A chooses between row1 and row2; Player B chooses between col1 and col2.
+
+If the description refers to Player A using ANY role noun — even a general one like "the operator", "the buyer", "the owner", or "the station" — instead of writing the letter A, copy that EXACT phrase into actorA: verbatim, same words, same article ("a"/"an"/"the"), same capitalization, exactly as it appears in the description you were given. List every DISTINCT such phrase used for Player A, in the order it first appears, up to 3. If Player A is referred to only as "A"/"Player A" with no noun standing in for them anywhere, set actorA to null.
+
+Do the exact same for Player B into actorB.
+
+It is fine to name only ONE player: if Player A has a clear role noun but Player B is only ever "B"/"Player B", fill actorA and leave actorB null (and vice versa). A single named side is still useful.
+
+Hard rules (unchanged — loosening WHICH nouns you accept never loosens these):
+- Copy, do not compose. If a phrase is not a literal, contiguous substring of the description exactly as given, leave it out.
+- One noun names ONE party. Never copy a phrase that names both players at once (e.g. "the two operators", "the upstream and downstream keepers") into either field.
+- If the description frames the two sides symmetrically — "each side", "both parties", "two rival X" without ever singling one out — a shared/collective noun ("the operators", "the farmers") belongs to NEITHER player; set both to null rather than assigning it to one.
+- Never use the same phrase for both players.
+- Never include an option label (row1, row2, col1, col2) as a noun.
+- Still prefer null over a guess. A missed noun costs nothing; an invented one is worse than none.`;
+
+// Default stays the strict prompt (reproduces phase 3); NOUNS_LOOSE=1 selects
+// the looser variant for the no-noun re-attempt pass.
+const SYSTEM_PROMPT = process.env.NOUNS_LOOSE === '1' ? LOOSE_SYSTEM_PROMPT : STRICT_SYSTEM_PROMPT;
 
 const SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -155,6 +194,15 @@ async function pool<T>(items: T[], concurrency: number, worker: (t: T, i: number
 // run once by hand, not a loop.
 const RETRY_FAILED = process.env.NOUNS_RETRY_FAILED === '1';
 
+// Row selection: re-attempt ONLY the rows the strict phase-3 pass left with no
+// noun on EITHER player (H5, handoff 2026-09-04). Those rows are mostly
+// `ok:true` with a correct null in the phase-3 log, so RETRY_FAILED (which only
+// selects `ok:false`) will not pick them — they must be selected off the BANK's
+// current merged state instead. Written to a SEPARATE OUT (NOUNS_OUT) so the
+// phase-3 raw log is never clobbered.
+const ONLY_NONOUN = process.env.NOUNS_ONLY_NONOUN === '1';
+const hasNoun = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
+
 async function main() {
   const bank: BankEntry[] = JSON.parse(readFileSync(BANK_PATH, 'utf8'));
   const latestByIdx = new Map<number, RawRow>();
@@ -166,7 +214,21 @@ async function main() {
   if (!RESUME && !RETRY_FAILED) writeFileSync(OUT, '');
 
   let targets: Array<{ e: BankEntry; idx: number }>;
-  if (RETRY_FAILED) {
+  if (ONLY_NONOUN) {
+    // The 645 rows whose MERGED bank entry currently carries no noun on either
+    // player. A RESUME/RETRY_FAILED-loaded log narrows further so a re-run of
+    // this same pass skips idxs already attempted (RESUME) or retries only the
+    // ones that came back `ok:false` (RETRY_FAILED, for transient relay errors).
+    targets = bank
+      .map((e, idx) => ({ e, idx }))
+      .filter(({ e }) => !hasNoun(e.s.actorA) && !hasNoun(e.s.actorB))
+      .filter(({ idx }) => {
+        if (RETRY_FAILED) return latestByIdx.get(idx)?.ok === false;
+        if (RESUME) return !latestByIdx.has(idx);
+        return true;
+      });
+    console.log(`no-noun re-attempt: ${targets.length} rows (of ${bank.length} total; ${latestByIdx.size} already in ${OUT})`);
+  } else if (RETRY_FAILED) {
     targets = bank
       .map((e, idx) => ({ e, idx }))
       .filter(({ idx }) => latestByIdx.get(idx)?.ok === false);
