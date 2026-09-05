@@ -17,7 +17,12 @@
  */
 
 import { GamePayoffs } from './types';
-import { payoffTexRhs, fmtPayoffPair, indifferenceAt as indifferenceAtForDisplay } from './utils/gameEngine';
+import {
+  payoffTexRhs,
+  fmtPayoffPair,
+  indifferenceAt as indifferenceAtForDisplay,
+  numericInputProblem,
+} from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
 import {
   isAgentRouterEndpoint,
@@ -267,12 +272,23 @@ function testParseNumericInputTable() {
   for (const raw of junk) {
     assert(parseNumericInput(raw) === null, `parseNumericInput(${JSON.stringify(raw)}) must be null`);
   }
-  // parseFloat prefix semantics are the shipped contract: a trailing garbage
-  // suffix does not invalidate the leading number
-  const prefix: [string, number][] = [['1.2.3', 1.2], ['4abc', 4]];
-  for (const [raw, want] of prefix) {
-    assert(parseNumericInput(raw) === want, `parseNumericInput("${raw}") = ${parseNumericInput(raw)}, want ${want}`);
+  // RED-APP-10/002 REVERSED the old prefix contract: parseFloat read "3 5" as 3
+  // and "2-3" as 2 with nothing on screen saying so (a spreadsheet paste of a
+  // whole row into one cell). The whole string must now be ONE number; the
+  // field keeps the text and a hint says why.
+  const notOne: string[] = ['1.2.3', '4abc', '3 5', '3\t5', '3\n5', '2-3', '3 5 0 1', '1..2', '1e9999'];
+  for (const raw of notOne) {
+    assert(parseNumericInput(raw) === null, `parseNumericInput(${JSON.stringify(raw)}) must be null (not one number), got ${parseNumericInput(raw)}`);
+    assert(numericInputProblem(raw) === 'not-one-number', `numericInputProblem(${JSON.stringify(raw)}) must be 'not-one-number', got ${numericInputProblem(raw)}`);
   }
+  for (const raw of ['3,5', '３，５', '1,000']) {
+    assert(numericInputProblem(raw) === 'comma', `numericInputProblem(${JSON.stringify(raw)}) must be 'comma'`);
+  }
+  // In-progress typing is not a problem yet, and complete numbers never are.
+  for (const raw of ['', '-', '+', '.', '-.', ' ', '3.', '.5', ' 7 ', '-0.25', '1e2', '−4']) {
+    assert(numericInputProblem(raw) === null, `numericInputProblem(${JSON.stringify(raw)}) must be null, got ${numericInputProblem(raw)}`);
+  }
+  assert(parseNumericInput('3.') === 3 && parseNumericInput('.5') === 0.5, 'trailing/leading dot forms still parse as complete numbers');
   const ok: [string, number][] = [['0', 0], ['0.5', 0.5], [' 7 ', 7], ['1e2', 100], ['-0.25', -0.25], ['+3', 3]];
   for (const [raw, want] of ok) {
     assert(parseNumericInput(raw) === want, `parseNumericInput("${raw}") = ${parseNumericInput(raw)}, want ${want}`);
@@ -2010,12 +2026,13 @@ function testLabelOwnershipResolution() {
   assert(pctPair.a.length === 1 && pctPair.a[0] === '50%' && pctPair.b.length === 1 && pctPair.b[0] === '50',
     `A's "50%" and B's unrelated "50" must both survive with their own spelling — got ${JSON.stringify(pctPair)}`);
   // CJK bracket pairs at the edges fold away like ASCII ones (CodeRabbit #128).
-  for (const [o, c] of [['\u300C', '\u300D'], ['\u300E', '\u300F'], ['\u3008', '\u3009'], ['\u300A', '\u300B'], ['\u3010', '\u3011'], ['\uFF08', '\uFF09'], ['\uFF3B', '\uFF3D']] as const) {
+  for (const [o, c] of [['\u300C', '\u300D'], ['\u300E', '\u300F'], ['\u3008', '\u3009'], ['\u300A', '\u300B'], ['\u3010', '\u3011'], ['\u3014', '\u3015'], ['\uFF08', '\uFF09'], ['\uFF3B', '\uFF3D'], ['\uFF5B', '\uFF5D']] as const) {
     assert(colorTermKey(`${o}Cooperate${c}`) === 'cooperate',
       `a CJK bracket pair ${o}${c} at the edges must fold away — got ${JSON.stringify(colorTermKey(`${o}Cooperate${c}`))}`);
   }
   const cjkPair = cleanUserColorTermPair(['\u300CCooperate\u300D'], ['Cooperate']);
-  assert(cjkPair.a.length === 1 && cjkPair.b.length === 0, `a CJK-bracketed chip owns the bare phrase — got ${JSON.stringify(cjkPair)}`);
+  assert(cjkPair.a.length === 1 && cjkPair.a[0] === '\u300CCooperate\u300D' && cjkPair.b.length === 0,
+    `a CJK-bracketed chip owns the bare phrase and keeps its spelling — got ${JSON.stringify(cjkPair)}`);
   assert(colorTermKey('Cooperate\u3002') === 'cooperate' && colorTermKey('\u00A1Cooperate!') === 'cooperate',
     `non-ASCII edge punctuation (ideographic full stop, inverted exclamation) must fold away — got ${JSON.stringify([colorTermKey('Cooperate\u3002'), colorTermKey('\u00A1Cooperate!')])}`);
 

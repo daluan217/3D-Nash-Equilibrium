@@ -281,12 +281,36 @@ export function containsAmbiguousComma(raw: string | null | undefined): boolean 
   return typeof raw === 'string' && /[,\uFF0C]/.test(raw);
 }
 
+/** Exactly one complete decimal number (optional sign/exponent), nothing else. */
+const SINGLE_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+function canonicalNumericText(raw: string): string {
+  return normalizeFullwidthDigits(raw.replace(NUMERIC_INPUT_MINUS, '-').replace(NUMERIC_INPUT_PLUS, '+')).trim();
+}
+
+/**
+ * RED-APP-10/002 (director-generalised from RED-DESKTOP-9/002): WHY a typed
+ * field cannot commit, for the hint beside it. 'comma' — an ambiguous decimal/
+ * thousands separator; 'not-one-number' — more than one number or trailing
+ * text ("3 5", "3\t5" from a spreadsheet, "2-3"), which parseFloat used to
+ * truncate silently to the leading digits. In-progress typing ("", "-", ".",
+ * "-.") is not a problem yet — the inactivity timer handles it.
+ */
+export function numericInputProblem(raw: string | null | undefined): 'comma' | 'not-one-number' | null {
+  if (typeof raw !== 'string') return null;
+  if (containsAmbiguousComma(raw)) return 'comma';
+  const canonical = canonicalNumericText(raw);
+  if (canonical === '' || /^[+-]?\.?$/.test(canonical)) return null;
+  // A syntactically fine number that is not finite ("1e9999") cannot commit either.
+  return SINGLE_NUMBER.test(canonical) && Number.isFinite(parseFloat(canonical)) ? null : 'not-one-number';
+}
+
 export function parseNumericInput(raw: string | null | undefined): number | null {
   if (typeof raw !== 'string') return null;
   if (containsAmbiguousComma(raw)) return null;
-  const canonical = normalizeFullwidthDigits(
-    raw.replace(NUMERIC_INPUT_MINUS, '-').replace(NUMERIC_INPUT_PLUS, '+'),
-  );
+  const canonical = canonicalNumericText(raw);
+  // The whole string must be ONE number: parseFloat's prefix semantics read
+  // "3 5" as 3 and "2-3" as 2 with nothing on screen saying so (RED-APP-10/002).
+  if (!SINGLE_NUMBER.test(canonical)) return null;
   const v = parseFloat(canonical);
   return Number.isFinite(v) ? v : null;
 }

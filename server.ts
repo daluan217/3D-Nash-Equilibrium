@@ -474,7 +474,7 @@ const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number;
   JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
     sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
-import { cleanUserColorTermPair } from "./src/utils/colorTerms";
+import { cleanUserColorTermPair, cleanUserColorTerms } from "./src/utils/colorTerms";
 import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
 import { bankAvailable, bankScenario, bankDomainFor, bankScenarioAvoiding } from "./src/utils/bankSource";
 import { isSameStory } from "./src/utils/scenarioRegen";
@@ -4215,7 +4215,27 @@ async function startServer() {
       // value means "not supplied", but an edit that deliberately empties
       // the box must be able to remove the text.
       if (nextDescription || (allowClear && "description" in req.body)) updatedGame.description = nextDescription;
-      Object.assign(updatedGame, nextLabels, nextTerms);
+      Object.assign(updatedGame, nextLabels);
+      // Colour terms are paired against the STORED other side when only one
+      // array is sent (the Edit dialog sends only what changed, RED-APP-10/001),
+      // so a phrase can never end up owned by both players and a tab that
+      // changed only B never clobbers another tab's change to A.
+      const hasA = "colorTermsA" in (req.body ?? {});
+      const hasB = "colorTermsB" in (req.body ?? {});
+      if (hasA || hasB) {
+        const pair = cleanUserColorTermPair(
+          hasA ? req.body.colorTermsA : (game.colorTermsA ?? []),
+          hasB ? req.body.colorTermsB : (game.colorTermsB ?? []),
+        );
+        // An explicitly submitted side is written even when the pairing empties
+        // it (every B term already owned by A) — the client asked for exactly
+        // that; only an absent, empty or invalid submission without allowClear
+        // leaves the stored value alone (CodeRabbit, #126).
+        const explicitA = hasA && cleanUserColorTerms(req.body.colorTermsA).length > 0;
+        const explicitB = hasB && cleanUserColorTerms(req.body.colorTermsB).length > 0;
+        if (!hasA || explicitA || pair.a.length > 0 || allowClear) updatedGame.colorTermsA = pair.a;
+        if (!hasB || explicitB || pair.b.length > 0 || allowClear) updatedGame.colorTermsB = pair.b;
+      }
       // `users` is NOT part of this candidate — see saveDBAwaited's own
       // comment for why a users snapshot here would race a concurrent,
       // unserialized account write.
