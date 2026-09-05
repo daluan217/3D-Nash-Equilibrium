@@ -4223,9 +4223,11 @@ async function startServer() {
       const hasA = "colorTermsA" in (req.body ?? {});
       const hasB = "colorTermsB" in (req.body ?? {});
       if (hasA || hasB) {
+        const storedA = game.colorTermsA ?? [];
+        const storedB = game.colorTermsB ?? [];
         const pair = cleanUserColorTermPair(
-          hasA ? req.body.colorTermsA : (game.colorTermsA ?? []),
-          hasB ? req.body.colorTermsB : (game.colorTermsB ?? []),
+          hasA ? req.body.colorTermsA : storedA,
+          hasB ? req.body.colorTermsB : storedB,
         );
         // An explicitly submitted side is written even when the pairing empties
         // it (every B term already owned by A) — the client asked for exactly
@@ -4233,6 +4235,41 @@ async function startServer() {
         // leaves the stored value alone (CodeRabbit, #126).
         const explicitA = hasA && cleanUserColorTerms(req.body.colorTermsA).length > 0;
         const explicitB = hasB && cleanUserColorTerms(req.body.colorTermsB).length > 0;
+        // RED-REGEN-7/001: this pairing was built to resolve ONE request's own
+        // two fields against each other (including the deliberate case just
+        // above — a single request naming BOTH fields, whose own two
+        // submissions collide, still writes the emptied side; the client's
+        // own chip-picker keeps its two lists mutually exclusive already, so
+        // that shape is a same-request self-collision, not this defect).
+        // Two independent tabs, each sending only the field it means to
+        // change, replay the exact same pairing across requests that never
+        // saw each other — the "stored other side" read here can be a
+        // DIFFERENT tab's commit made after this request's own snapshot was
+        // taken. Scoped to exactly that: the OTHER side must be the one that
+        // came from STORAGE (absent from this request), not from this same
+        // body. Two silent-corruption shapes follow, and both must refuse
+        // (409) instead of writing:
+        // (a) a side this request never mentioned would be REWRITTEN anyway
+        //     ("wolf" arrives on A, B was never named, but B's already-stored
+        //     "Wolf" now collides and would be wiped);
+        // (b) a side this request explicitly submitted is silently emptied by
+        //     a collision with the OTHER side's STORED value, when that other
+        //     side was not part of this request either (the tie always
+        //     resolves in favour of colorTermsA, so only B — the second
+        //     argument above — can actually be emptied this way; A is checked
+        //     too so the guard still holds if the argument order ever changes).
+        const sameTerms = (x: readonly string[], y: readonly string[]) =>
+          x.length === y.length && x.every((v, i) => v === y[i]);
+        const untouchedAChanged = !hasA && !sameTerms(pair.a, cleanUserColorTerms(storedA));
+        const untouchedBChanged = !hasB && !sameTerms(pair.b, cleanUserColorTerms(storedB));
+        const explicitAEmptiedByStoredB = !hasB && hasA && explicitA && pair.a.length === 0;
+        const explicitBEmptiedByStoredA = !hasA && hasB && explicitB && pair.b.length === 0;
+        if (untouchedAChanged || untouchedBChanged || explicitAEmptiedByStoredB || explicitBEmptiedByStoredA) {
+          return res.status(409).json({
+            error: "This description's highlights changed on another device or tab. "
+              + "Reopen Edit to see the latest before saving again.",
+          });
+        }
         if (!hasA || explicitA || pair.a.length > 0 || allowClear) updatedGame.colorTermsA = pair.a;
         if (!hasB || explicitB || pair.b.length > 0 || allowClear) updatedGame.colorTermsB = pair.b;
       }
