@@ -3062,6 +3062,98 @@ try {
     await stepPage.close();
   });
 
+  // ══ 45. RED-DESKTOP-10/001 (director-reproduced): the desktop app's LOCAL
+  //      database has a server-side owner (ensureLocalOwner, IS_ELECTRON) — no
+  //      account. 70b140f shipped that and the Save button's visibility, but the
+  //      submit/list/edit/delete paths still demanded a token: every desktop
+  //      save failed with "Sign in or create an account…", no request was ever
+  //      sent, and games already on disk never listed. This section boots its
+  //      OWN desktop-shaped server (IS_ELECTRON=true, empty user-data, no
+  //      credentials) and drives the whole CRUD cycle from an Electron-UA page
+  //      that never signs in.
+  section('45', 'desktop local owner: save, list, edit, delete without an account', 4, async () => {
+    const deskPort = String(Number(PORT) + 1000);
+    const deskBase = `http://127.0.0.1:${deskPort}`;
+    const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-desk-'));
+    const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
+      cwd: deskData,
+      env: { ...process.env, NODE_ENV: 'production', PORT: deskPort, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: deskData },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    desk.stderr.on('data', () => {});
+    const deskCtx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      // What a packaged BrowserWindow really sends: Electron appends its own token.
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36',
+    });
+    try {
+      let up = false;
+      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
+      const dp = await deskCtx.newPage();
+      const deskErrors = [];
+      dp.on('pageerror', (e) => deskErrors.push(String(e)));
+      dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
+      const gameCalls = [];
+      dp.on('request', (r) => { if (r.url().includes('/api/games')) gameCalls.push(`${r.method()} ${new URL(r.url()).pathname}`); });
+      await dp.goto(deskBase, { waitUntil: 'networkidle' });
+      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
+      if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
+      record('precondition: the guided tour is dismissed', tourGone);
+      record('precondition: the page really is unauthenticated (no token in localStorage)',
+        await dp.evaluate(() => !localStorage.getItem('nash_sim_token_local') && !localStorage.getItem('nash_sim_token_cloud') && !localStorage.getItem('nash_sim_token')));
+      record('FIX: the sidebar does not nag "Sign in here" on the desktop local database (the local owner needs no account)',
+        !(await dp.getByRole('button', { name: /^sign in here$/i }).isVisible().catch(() => false)));
+      record('the saved-games list was fetched for the local owner on load (GET /api/games without an account)',
+        gameCalls.some((c) => c.startsWith('GET /api/games')), JSON.stringify(gameCalls));
+
+      // ── Save ──
+      const name = `Desk-${Date.now().toString(36)}`;
+      await dp.getByRole('button', { name: /save preset/i }).click();
+      await dp.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 8000 });
+      await dp.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(name);
+      await dp.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+      const saveClosed = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 8000 }).then(() => true).catch(() => false);
+      const saveDialogText = saveClosed ? '' : await dp.locator('[role="dialog"][aria-label="Save custom game"]').innerText().catch(() => '');
+      record('FIX: Save Game Profile succeeds without an account (dialog closes; no "Sign in or create an account" refusal)',
+        saveClosed && !/sign in or create an account/i.test(saveDialogText), saveDialogText.slice(0, 120));
+      record('a POST /api/games was actually sent', gameCalls.some((c) => c.startsWith('POST /api/games')), JSON.stringify(gameCalls));
+      const row = dp.getByRole('button', { name, exact: true });
+      record('the saved game appears in the sidebar list', await row.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false));
+
+      // ── List survives a reload (the fetch on load is the second half of the finding) ──
+      await dp.reload({ waitUntil: 'networkidle' });
+      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      record('FIX: after a reload the local owner\'s game is listed again (no account, no token)',
+        await dp.getByRole('button', { name, exact: true }).waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
+
+      // ── Edit ──
+      await dp.locator('div.group', { has: dp.getByRole('button', { name, exact: true }) }).getByTitle(/^Edit /).click();
+      await dp.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 8000 });
+      await dp.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first().fill('Edited on the desktop without an account.');
+      await dp.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /^save changes$/i }).click();
+      const editClosed = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Edit saved game"]'), null, { timeout: 8000 }).then(() => true).catch(() => false);
+      record('FIX: Save Changes (PATCH) succeeds without an account', editClosed && gameCalls.some((c) => c.startsWith('PATCH /api/games/')), JSON.stringify(gameCalls.slice(-3)));
+      const stored = await dp.evaluate(async () => (await (await fetch('/api/games')).json()));
+      record('the edit reached the local database (GET shows the new description)',
+        Array.isArray(stored) && stored.length === 1 && stored[0].description === 'Edited on the desktop without an account.', JSON.stringify(stored.map?.((g) => g.description)));
+
+      // ── Delete ──
+      dp.once('dialog', async (d) => { await d.accept(); });
+      await dp.locator('div.group', { has: dp.getByRole('button', { name, exact: true }) }).getByTitle('Delete this saved game').click();
+      record('FIX: Delete succeeds without an account (row gone)',
+        await dp.getByRole('button', { name, exact: true }).waitFor({ state: 'hidden', timeout: 8000 }).then(() => true).catch(() => false));
+      const after = await dp.evaluate(async () => (await (await fetch('/api/games')).json()));
+      record('the local database is empty again after the delete', Array.isArray(after) && after.length === 0, JSON.stringify(after));
+      record('no console/page errors through the desktop CRUD cycle', deskErrors.length === 0, deskErrors.join(' | ').slice(0, 200));
+    } finally {
+      await deskCtx.close().catch(() => {});
+      if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
+      try { rmSync(deskData, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
   await executeSections();
 
 } catch (e) {
