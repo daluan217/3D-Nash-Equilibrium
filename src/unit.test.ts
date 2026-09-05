@@ -2014,6 +2014,24 @@ function testLabelOwnershipResolution() {
   const trailingPair = cleanUserColorTermPair(['Cooperate.'], ['Cooperate']);
   assert(trailingPair.a.length === 1 && trailingPair.b.length === 0,
     `trailing punctuation must not let B own a phrase A already holds — got ${JSON.stringify(trailingPair)}`);
+  // RED-REGEN-6/001+002: the acute accent must fold BEFORE NFKC decomposes it;
+  // and edge trimming must not eat meaningful symbols — "50%" is not "50",
+  // "#tag" is not "tag", "-5" is not "5" — or an unrelated chip on the other
+  // player evicts the user's real one.
+  assert(colorTermKey("Farmer\u00B4s Market") === "farmer's market",
+    `an acute accent used as an apostrophe must fold like the curly one — got ${JSON.stringify(colorTermKey("Farmer\u00B4s Market"))}`);
+  assert(colorTermKey('50%') === '50%' && colorTermKey('#tag') === '#tag' && colorTermKey('-5') === '-5' && colorTermKey('50') === '50',
+    `edge trimming must keep %, # and a leading minus — got ${JSON.stringify([colorTermKey('50%'), colorTermKey('#tag'), colorTermKey('-5')])}`);
+  const pctPair = cleanUserColorTermPair(['50%'], ['50']);
+  assert(pctPair.a.length === 1 && pctPair.a[0] === '50%' && pctPair.b.length === 1 && pctPair.b[0] === '50',
+    `A's "50%" and B's unrelated "50" must both survive with their own spelling — got ${JSON.stringify(pctPair)}`);
+  // CJK bracket pairs at the edges fold away like ASCII ones (CodeRabbit #128).
+  for (const [o, c] of [['\u300C', '\u300D'], ['\u300E', '\u300F'], ['\u3008', '\u3009'], ['\u300A', '\u300B'], ['\u3010', '\u3011'], ['\uFF08', '\uFF09'], ['\uFF3B', '\uFF3D']] as const) {
+    assert(colorTermKey(`${o}Cooperate${c}`) === 'cooperate',
+      `a CJK bracket pair ${o}${c} at the edges must fold away — got ${JSON.stringify(colorTermKey(`${o}Cooperate${c}`))}`);
+  }
+  const cjkPair = cleanUserColorTermPair(['\u300CCooperate\u300D'], ['Cooperate']);
+  assert(cjkPair.a.length === 1 && cjkPair.b.length === 0, `a CJK-bracketed chip owns the bare phrase — got ${JSON.stringify(cjkPair)}`);
   assert(colorTermKey('Cooperate\u3002') === 'cooperate' && colorTermKey('\u00A1Cooperate!') === 'cooperate',
     `non-ASCII edge punctuation (ideographic full stop, inverted exclamation) must fold away — got ${JSON.stringify([colorTermKey('Cooperate\u3002'), colorTermKey('\u00A1Cooperate!')])}`);
 
