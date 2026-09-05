@@ -2342,6 +2342,67 @@ try {
     await undoPage.close();
   });
 
+  // ══ 42. RED-DESKTOP-9/002 -- a comma in a payoff cell is REJECTED, not
+  //      reinterpreted as a decimal separator and not silently truncated to
+  //      its leading digits (bare parseFloat made "3,5" -> 3). Repro from the
+  //      finding: type "3,5" into a cell and blur -- pre-fix, the cell read
+  //      "3" with no error, no border, no toast, and the solver silently used
+  //      3. Post-fix, the cell must keep its PREVIOUS value and a hint must
+  //      say why, the same treatment any other unparseable text gets.
+  section('42', 'comma-decimal payoff input rejected', 1, async () => {
+    // A DEDICATED page: this section's id (42) is not a primaryPageSection
+    // (id <= 16), so the harness never calls gotoHome() for it when it is
+    // selected on its own (E2E_SECTION=42) -- the shared `page` may still be
+    // on about:blank. Every other section past id 16 opens its own page for
+    // the same reason; this one dismisses the tour itself rather than
+    // relying on gotoHome(), matching section 35's pattern.
+    const commaPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await commaPage.goto(BASE, { waitUntil: 'networkidle' });
+    try { await commaPage.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    let tourGone = await commaPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+      null, { timeout: 5000 }).then(() => true).catch(() => false);
+    if (!tourGone) {
+      await commaPage.keyboard.press('Escape');
+      tourGone = await commaPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).then(() => true).catch(() => false);
+    }
+    record('precondition: the guided tour is dismissed before the matrix checks below', tourGone);
+
+    const matrix = commaPage.locator('input[inputmode="decimal"][class*="text-center"]');
+    const payoffHint = commaPage.locator('[data-testid="payoff-input-hint"]');
+    await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+    const cell = matrix.nth(1); // a live B-payoff cell; whichever value the default preset holds
+    const before = await cell.inputValue();
+    await cell.click();
+    await cell.fill('');
+    await commaPage.keyboard.type('3,5', { delay: 20 });
+    const midTyping = await cell.inputValue();
+    record('the cell shows exactly what was typed (no live truncation while a comma is present)',
+      midTyping === '3,5', `got "${midTyping}"`);
+    const hintDuringTyping = await payoffHint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+    record('a hint appears while the field holds an ambiguous comma', hintDuringTyping);
+    await cell.blur();
+    await commaPage.waitForTimeout(200);
+    const afterBlur = await cell.inputValue();
+    record('RED-DESKTOP-9/002 fix: blur reverts the cell to its PREVIOUS value, not a truncated "3"',
+      afterBlur === before, `before="${before}" after="${afterBlur}"`);
+    const hintAfterBlur = await payoffHint.isVisible().catch(() => false);
+    record('the hint is still visible after blur, explaining why the edit was rejected', hintAfterBlur);
+    // Recovery + a positive control: a genuine dotted decimal still commits
+    // normally and clears the hint (this fix must not have made ALL edits
+    // inert, only comma-holding ones).
+    await cell.click();
+    await cell.fill('');
+    await commaPage.keyboard.type('7.5', { delay: 20 });
+    await cell.blur();
+    await commaPage.waitForTimeout(200);
+    const dotCommitted = await cell.inputValue();
+    record('control: a dotted decimal ("7.5") still commits normally', dotCommitted === '7.5', `got "${dotCommitted}"`);
+    const hintClearedAfterValidEdit = !(await payoffHint.isVisible().catch(() => false));
+    record('the hint clears once a valid (comma-free) edit is made', hintClearedAfterValidEdit);
+    await commaPage.close();
+  });
+
   await executeSections();
 
 } catch (e) {

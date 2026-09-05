@@ -30,6 +30,7 @@ import {
   commitPayoffInput,
   commitStartCoordinate,
   parseNumericInput,
+  containsAmbiguousComma,
   commitStepSize,
   commitStepIndex,
   precomputeThinHistory,
@@ -837,6 +838,14 @@ export default function App() {
     a11: '2', b11: '1', a12: '0', b12: '0',
     a21: '0', b21: '0', a22: '1', b22: '2',
   });
+
+  // RED-DESKTOP-9/002: a comma is REJECTED, not reinterpreted or silently
+  // truncated to its leading digits (parseNumericInput's containsAmbiguousComma
+  // guard) — the cell keeps whatever value the game already holds and this
+  // hint tells the user why, instead of the field silently substituting a
+  // different, plausible-looking number with no visible sign anything went
+  // wrong.
+  const [payoffInputHint, setPayoffInputHint] = useState<string | null>(null);
 
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction
   const inactiveTimersRef = useRef<Record<string, any>>({});
@@ -3661,6 +3670,19 @@ export default function App() {
 
   // ── Matrix Editor Input Clamps ─────────────────────────────────────────────
   const updatePayoffField = (field: keyof GamePayoffs, valStr: string) => {
+    // RED-DESKTOP-9/002: a comma is REJECTED outright, not reinterpreted and
+    // not silently truncated to its leading digits ("3,5" -> 3, "1,000" -> 1
+    // via a bare parseFloat) — the box still shows exactly what was typed so
+    // the user can see and fix the mistake, but nothing about the GAME
+    // commits: no payoff change, no preset flip to "custom", no run reset.
+    // The field is left exactly where it was, same as any other unparseable
+    // text, and a hint says why.
+    if (containsAmbiguousComma(valStr)) {
+      setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
+      setPayoffInputHint('Use a dot for decimals, not a comma.');
+      return;
+    }
+    setPayoffInputHint(null);
     setActivePreset('custom');
     setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
 
@@ -3718,6 +3740,18 @@ export default function App() {
     // Cancel the inactivity timer immediately when blurred
     if (inactiveTimersRef.current[field]) {
       clearTimeout(inactiveTimersRef.current[field]);
+    }
+
+    // RED-DESKTOP-9/002: a comma-holding field never reached a committed
+    // value in the first place (updatePayoffField's own guard above), so
+    // blur reverts the DISPLAYED text back to the value the game still
+    // holds, rather than falling into commitPayoffInput's ordinary
+    // unparseable-input path (which commits 0 — correct for genuine
+    // garbage, but not what "reject the comma, leave the value alone" means
+    // here). The hint stays up until the user edits the field again.
+    if (containsAmbiguousComma(rawPayoffs[field])) {
+      setRawPayoffs((prev) => ({ ...prev, [field]: String(payoffs[field]) }));
+      return;
     }
 
     // Blur used to be a SECOND, independently written string->number conversion.
@@ -4184,6 +4218,15 @@ export default function App() {
               </div>
               <span className="text-xs text-muted dark:text-muted-dark font-mono">Range: [-100, 100]</span>
             </div>
+            {payoffInputHint && (
+              <div
+                data-testid="payoff-input-hint"
+                role="status"
+                className="text-xs text-amber-700 dark:text-amber-400 -mt-1"
+              >
+                {payoffInputHint}
+              </div>
+            )}
 
             {/* Row-label column capped at 72px (was "auto"): mobile CI caught this
                 --  an auto-sized column grows to fit whatever text is in it (e.g.

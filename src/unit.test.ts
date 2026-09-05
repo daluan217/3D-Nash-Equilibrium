@@ -40,6 +40,7 @@ import { ColorCoded } from './components/ColorCoded';
 import {
   EA, EB, regretA, regretB, r3,
   parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepSize, commitStepIndex,
+  containsAmbiguousComma,
   normalizeProseMinus,
   computeMixedNE, computeAllNE, fmtProb, texProb,
   profileConcept, resolveProfile, indifferenceAt,
@@ -261,6 +262,30 @@ function testParseNumericInputTable() {
   for (const [raw, want] of ok) {
     assert(parseNumericInput(raw) === want, `parseNumericInput("${raw}") = ${parseNumericInput(raw)}, want ${want}`);
   }
+
+  // RED-DESKTOP-9/002: a comma is REJECTED, not reinterpreted as a decimal
+  // separator and not silently truncated to its leading digits. Before this
+  // fix, bare parseFloat made "3,5" -> 3 and "1,000" -> 1: a real keystroke
+  // silently replaced by a DIFFERENT, plausible-looking number, with nothing
+  // telling the user their input was cut short. A dotted decimal must keep
+  // working exactly as before (comma is the ONLY new rejection, not decimals
+  // in general), and a fullwidth-digit input with no comma must be unaffected.
+  const commaRejected: (string | null | undefined)[] = ['3,5', '1,000', '-0,5', '3,', ',5', '1,2,3'];
+  for (const raw of commaRejected) {
+    assert(containsAmbiguousComma(raw), `containsAmbiguousComma(${JSON.stringify(raw)}) must be true`);
+    assert(parseNumericInput(raw) === null,
+      `parseNumericInput(${JSON.stringify(raw)}) must reject the comma outright (got ${parseNumericInput(raw)}), `
+      + 'not silently truncate to its leading digits');
+  }
+  const commaFree: [string, number][] = [['3.5', 3.5], ['-0.5', -0.5], ['３１', 31]];
+  for (const [raw, want] of commaFree) {
+    assert(!containsAmbiguousComma(raw), `containsAmbiguousComma("${raw}") must be false`);
+    assert(parseNumericInput(raw) === want,
+      `parseNumericInput("${raw}") must still parse as ${want} (dotted decimals and fullwidth digits are untouched `
+      + `by the comma rejection), got ${parseNumericInput(raw)}`);
+  }
+  assert(!containsAmbiguousComma(null) && !containsAmbiguousComma(undefined),
+    'containsAmbiguousComma must not throw or misreport on null/undefined');
 }
 
 function testCommitPayoffInputTable() {
