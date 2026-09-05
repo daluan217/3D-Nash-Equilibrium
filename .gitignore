@@ -31,3 +31,9 @@ _gen/exemplars/*.json
 # Untracked from the tree on 2026-08-29; it remains in history at cfc7637 and
 # three later commits, which was accepted rather than rewriting public main.
 SOME_DESCRIPTION.md
+# session handoff files travel by hand, never by git
+handoffs/
+handbacks/
+# CLAUDE.md is local (line above); its session-history half lives beside it, also local
+CLAUDE-SESSION-HISTORY.md
+CLAUDE.md.bak*
