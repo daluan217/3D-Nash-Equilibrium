@@ -1093,7 +1093,47 @@ function testCheckProseValidatesPartialContinuumCoordinates() {
     'the pre-fix fixture text must not accidentally already carry the fix (fixture sanity check)');
 }
 
+function testContinuumCornerMarkersVisibleUniqueAndNamed() {
+  // RED-MATH-11/001+002+003 (director-fixed). For a single segment and for an
+  // L-shaped set (two components sharing a corner):
+  //  - every corner is drawn ONCE (shared corners deduplicated across components),
+  //  - the corner outline is large enough to protrude around the settled sphere
+  //    (>= 1.3x the current-position sphere, the ratio the Pure/Mixed diamonds
+  //    already rely on — 0.85x diamondSize hid it completely),
+  //  - no trace shows a literal "_" on hover: every '_'-named trace hovers as
+  //    coordinates only or not at all, and every continuum marker carries the real name.
+  const SEGMENT: GamePayoffs = { a11: 0, a12: 2, a21: 0, a22: 3, b11: -6, b12: 9, b21: 6, b22: -3 };
+  const LSHAPE: GamePayoffs = { a11: -3, a12: 4, a21: -3, a22: 1, b11: 1, b12: 1, b21: 6, b22: -2 };
+  for (const [label, g, expectCorners] of [['segment', SEGMENT, 2], ['L-shape', LSHAPE, 3]] as const) {
+    const comps = equilibriumSet(g).filter((r) => Math.abs(r.x1 - r.x0) > 1e-9 || Math.abs(r.y1 - r.y0) > 1e-9);
+    ok(comps.length === (label === 'segment' ? 1 : 2), `${label} fixture sanity: ${comps.length} continuum component(s)`);
+    const st = createInitialState(0.5, 0.5, g);
+    const traces = makeTraces(buildSurfaces(g), g, st, 'both', computeAllNE(g), false, 'shrink');
+    const sphere = traces.find((t: any) => /current position/i.test(t.name ?? ''));
+    ok(!!sphere, `${label}: the current-position sphere trace exists`);
+    const cont = traces.filter((t: any) => t.legendgroup === 'continuumNE' && t.mode === 'markers');
+    const midSize = Math.min(...cont.map((t: any) => t.marker.size));
+    const corners = cont.filter((t: any) => t.marker.size > midSize);
+    const keys = corners.map((t: any) => `${t.x[0].toFixed(9)},${t.y[0].toFixed(9)}`);
+    ok(keys.length === expectCorners && new Set(keys).size === keys.length,
+      `${label}: ${expectCorners} distinct corner markers, each drawn once — got ${keys.length} markers at ${JSON.stringify(keys)}`);
+    for (const t of corners) {
+      ok(t.marker.size >= 1.3 * sphere.marker.size,
+        `${label}: a corner outline (${t.marker.size}) must be >= 1.3x the sphere (${sphere.marker.size}) to protrude around it`);
+    }
+    for (const t of cont) ok(t.name === 'Equilibrium continuum', `${label}: continuum markers carry the real name, got ${JSON.stringify(t.name)}`);
+    for (const t of traces) {
+      if (t.name === '_') {
+        ok(t.hoverinfo === 'skip' || t.hoverinfo === 'x+y+z',
+          `${label}: a '_'-named trace (${t.mode}) must hover as coordinates only or not at all, never its name — got ${JSON.stringify(t.hoverinfo)}`);
+      }
+    }
+  }
+  console.log('✓ continuum corner markers: unique across components, protruding, named; decorative traces never hover');
+}
+
 testPayloadAgreesWithPanel();
+testContinuumCornerMarkersVisibleUniqueAndNamed();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();
