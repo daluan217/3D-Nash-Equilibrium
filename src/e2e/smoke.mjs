@@ -2726,6 +2726,14 @@ await browser.close();
 const EXPECTED_STATUS_NOISE = {
   '31': [429], // §31 deliberately mocks a 429 to test the "AI limit reached" wording
   '33': [401], // §33 deliberately mocks a 401 to test the Edit dialog's Sign-In card
+  // §38 (RED-APP-9/001) deliberately DELETEs and PATCHes an already-deleted
+  // game from tab A — a REAL 404 from the real server (not a route mock),
+  // twice: once via the Delete button, once via the Edit dialog's Save
+  // Changes submit. Both are the exact behavior the section's own
+  // assertions verify ("shows the friendly deleted-elsewhere message",
+  // "phantom row removed") — same class of expected network-layer
+  // diagnostic as §31/§33's mocked statuses above.
+  '38': [404, 404],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),
