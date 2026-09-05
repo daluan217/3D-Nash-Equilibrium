@@ -270,7 +270,13 @@ function testParseNumericInputTable() {
   // telling the user their input was cut short. A dotted decimal must keep
   // working exactly as before (comma is the ONLY new rejection, not decimals
   // in general), and a fullwidth-digit input with no comma must be unaffected.
-  const commaRejected: (string | null | undefined)[] = ['3,5', '1,000', '-0,5', '3,', ',5', '1,2,3'];
+  // '３，５' (CodeRabbit CLI, this branch): a fullwidth comma (U+FF0C) — the
+  // same IME fullwidth-input-mode source as the fullwidth DIGITS already
+  // covered below — was missed by the first, ASCII-only draft; it must be
+  // caught BEFORE normalizeFullwidthDigits ever converts the digits, or the
+  // exact silent-truncation defect this fix exists to close reopens under a
+  // different comma glyph.
+  const commaRejected: (string | null | undefined)[] = ['3,5', '1,000', '-0,5', '3,', ',5', '1,2,3', '３，５'];
   for (const raw of commaRejected) {
     assert(containsAmbiguousComma(raw), `containsAmbiguousComma(${JSON.stringify(raw)}) must be true`);
     assert(parseNumericInput(raw) === null,

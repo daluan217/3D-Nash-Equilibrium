@@ -263,6 +263,20 @@ async function waitForScene(timeout = 60000, p = page) {
     return !!(gd && gd._fullLayout && gd._fullLayout.scene && gd._fullLayout.scene.camera);
   }, null, { timeout }).then(() => true).catch(() => false);
 }
+/* CodeRabbit (CLI, this branch): poll for a committed input value instead of
+ * a fixed sleep after blur — React's commit (and any state it drives, like
+ * section 42's payoffInputHint) lands asynchronously, and a flat wait is
+ * either a race on a slow runner or wasted time on a fast one. Returns once
+ * the value matches OR the timeout elapses; the caller reads inputValue()
+ * itself afterward either way, so a genuine failure still reports the wrong
+ * value rather than silently passing. */
+async function waitForInputValue(p, selector, nth, expected, timeout = 3000) {
+  return p.waitForFunction(
+    ({ selector, nth, expected }) => document.querySelectorAll(selector)[nth]?.value === expected,
+    { selector, nth, expected },
+    { timeout },
+  ).then(() => true).catch(() => false);
+}
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await dismissTour();
@@ -2382,7 +2396,7 @@ try {
     const hintDuringTyping = await payoffHint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
     record('a hint appears while the field holds an ambiguous comma', hintDuringTyping);
     await cell.blur();
-    await commaPage.waitForTimeout(200);
+    await waitForInputValue(commaPage, 'input[inputmode="decimal"][class*="text-center"]', 1, before, 3000);
     const afterBlur = await cell.inputValue();
     record('RED-DESKTOP-9/002 fix: blur reverts the cell to its PREVIOUS value, not a truncated "3"',
       afterBlur === before, `before="${before}" after="${afterBlur}"`);
@@ -2395,7 +2409,7 @@ try {
     await cell.fill('');
     await commaPage.keyboard.type('7.5', { delay: 20 });
     await cell.blur();
-    await commaPage.waitForTimeout(200);
+    await waitForInputValue(commaPage, 'input[inputmode="decimal"][class*="text-center"]', 1, '7.5', 3000);
     const dotCommitted = await cell.inputValue();
     record('control: a dotted decimal ("7.5") still commits normally', dotCommitted === '7.5', `got "${dotCommitted}"`);
     const hintClearedAfterValidEdit = !(await payoffHint.isVisible().catch(() => false));

@@ -845,7 +845,13 @@ export default function App() {
   // hint tells the user why, instead of the field silently substituting a
   // different, plausible-looking number with no visible sign anything went
   // wrong.
-  const [payoffInputHint, setPayoffInputHint] = useState<string | null>(null);
+  //
+  // CodeRabbit (CLI, this branch): tracks WHICH field raised it, not just a
+  // bare message — a hint from cell A must not be cleared by an unrelated
+  // valid edit to cell B (the field is still sitting on its rejected comma
+  // text either way), and must not survive a whole-matrix replacement
+  // (handleLoadPreset / handleGenerateGame both reset it explicitly).
+  const [payoffInputHint, setPayoffInputHint] = useState<{ field: keyof GamePayoffs; message: string } | null>(null);
 
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction
   const inactiveTimersRef = useRef<Record<string, any>>({});
@@ -2118,6 +2124,9 @@ export default function App() {
     setGenerateLoading(true);
     setGenerateNote('');
     setSaveError('');
+    // Same reasoning as handleLoadPreset: a fresh matrix makes any per-cell
+    // rejected-comma hint stale (CodeRabbit, this branch).
+    setPayoffInputHint(null);
     // Generate rolls a NEW MATRIX — any regen preview (or in-flight regen
     // request) was for the OLD one and must not survive it, same as the
     // dialog-close reset above. The button itself is also hidden while
@@ -2912,6 +2921,10 @@ export default function App() {
   // ── Preset loader action ───────────────────────────────────────────────────
   const handleLoadPreset = (key: string) => {
     setActivePreset(key);
+    // A whole-matrix replacement makes any per-cell rejected-comma hint stale
+    // (CodeRabbit, this branch) — the field it was about no longer holds the
+    // typed text the hint was explaining.
+    setPayoffInputHint(null);
     if (key !== 'custom') {
       const preset = mergedPresets[key];
       if (preset) {
@@ -3679,10 +3692,13 @@ export default function App() {
     // text, and a hint says why.
     if (containsAmbiguousComma(valStr)) {
       setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
-      setPayoffInputHint('Use a dot for decimals, not a comma.');
+      setPayoffInputHint({ field, message: 'Use a dot for decimals, not a comma.' });
       return;
     }
-    setPayoffInputHint(null);
+    // Clear only a hint THIS field raised — an unrelated valid edit to a
+    // different cell must not silently dismiss another cell's still-rejected
+    // comma text (CodeRabbit, this branch).
+    setPayoffInputHint((prev) => (prev?.field === field ? null : prev));
     setActivePreset('custom');
     setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
 
@@ -4224,7 +4240,7 @@ export default function App() {
                 role="status"
                 className="text-xs text-amber-700 dark:text-amber-400 -mt-1"
               >
-                {payoffInputHint}
+                {payoffInputHint.message}
               </div>
             )}
 

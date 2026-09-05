@@ -675,7 +675,12 @@ try {
     record('RED-CLOUD-9/001: served from the model directly (scenarioSource is undefined), not the bank fallback — the ladder never had to exhaust',
       r.json?.scenarioSource === undefined, `scenarioSource=${JSON.stringify(r.json?.scenarioSource)}`);
     record('RED-CLOUD-9/001: the rest of the draw (name/labels/description) survives untouched — only the nouns were stripped',
-      r.json?.scenario?.name === ZWSP_STORY.name && r.json?.scenario?.description === ZWSP_STORY.description,
+      r.json?.scenario?.name === ZWSP_STORY.name
+        && r.json?.scenario?.description === ZWSP_STORY.description
+        && r.json?.scenario?.row1 === ZWSP_STORY.row1
+        && r.json?.scenario?.row2 === ZWSP_STORY.row2
+        && r.json?.scenario?.col1 === ZWSP_STORY.col1
+        && r.json?.scenario?.col2 === ZWSP_STORY.col2,
       `name=${JSON.stringify(r.json?.scenario?.name)}`);
     await stop();
   }

@@ -267,9 +267,18 @@ function normalizeFullwidthDigits(s: string): string {
  * either way risks silently changing what the user meant even when it
  * "succeeds" — so it is rejected outright, the same as any other
  * unparseable string, rather than guessed at.
+ *
+ * CodeRabbit (CLI, this branch): the ASCII-only check missed U+FF0C
+ * FULLWIDTH COMMA — an IME's fullwidth input mode emits it, exactly the
+ * same source as the fullwidth DIGITS `normalizeFullwidthDigits` already
+ * handles a few lines below — so "３，５" (fullwidth 3, fullwidth comma,
+ * fullwidth 5) parsed as 3 with no comma ever detected: the same silent
+ * truncation this function exists to close, just spelled with a different
+ * comma glyph. Checked BEFORE normalisation (like the ASCII case), since a
+ * caller must reject before ever calling parseFloat, not after.
  */
 export function containsAmbiguousComma(raw: string | null | undefined): boolean {
-  return typeof raw === 'string' && raw.includes(',');
+  return typeof raw === 'string' && /[,\uFF0C]/.test(raw);
 }
 
 export function parseNumericInput(raw: string | null | undefined): number | null {
