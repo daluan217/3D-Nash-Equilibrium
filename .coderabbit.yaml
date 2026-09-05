@@ -5,6 +5,10 @@
 # same review scrutiny as production code. These path instructions ask
 # CodeRabbit to critique the test cases, not just the code under test.
 reviews:
+  auto_review:
+    # Draft PRs are not reviewed: blues push WIP drafts early (free CI, no lost work at the
+    # session limit) and mark ready exactly once for the single review that counts.
+    drafts: false
   path_instructions:
     - path: "src/unit.test.ts"
       instructions: |
