@@ -796,13 +796,17 @@ export default function App() {
     if (!localGamesOffer || localGamesBusy) return;
     setLocalGamesBusy(true);
     setLocalGamesError('');
-    try {
+    // Bounded like the report request (RED-APP-6/003): a stalled connection
+    // must not leave the dialog's buttons disabled forever (CodeRabbit on #132).
+    const controller = new AbortController();
+    const { promise, clear } = fetchWithTimeout(getApiUrl('/api/games/adopt-local'), {
+      method: 'POST',
       // The token travels explicitly: this runs right after sign-in, before the
       // authToken state (and authHeaders()) is guaranteed to have caught up.
-      const res = await fetch(getApiUrl('/api/games/adopt-local'), {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${localGamesOffer.token}` },
-      });
+      headers: { 'Authorization': `Bearer ${localGamesOffer.token}` },
+    }, controller);
+    try {
+      const res = await promise;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setLocalGamesError(data.error || `The move failed (status ${res.status}). Your games are still on this device.`);
@@ -812,9 +816,12 @@ export default function App() {
       setLogEntries(prev => [...prev, `✓ Moved ${moved} saved game${moved === 1 ? '' : 's'} from this device into your account.`]);
       setLocalGamesOffer(null);
       await refetchUserGames();
-    } catch {
-      setLocalGamesError('Connection error. Your games are still on this device.');
+    } catch (err) {
+      setLocalGamesError(err instanceof DOMException && err.name === 'AbortError'
+        ? 'The server did not answer in time. Your games are still on this device.'
+        : 'Connection error. Your games are still on this device.');
     } finally {
+      clear();
       setLocalGamesBusy(false);
     }
   };

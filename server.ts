@@ -2062,13 +2062,20 @@ function countLocalGames(db: DB): number {
  *
  * Re-parenting rather than copying, so asking twice cannot duplicate a library.
  */
-function adoptLocalGames(db: DB, userId: string): number {
-  if (!isDesktop() || userId === LOCAL_OWNER_ID) return 0;
-  const mine = db.games.filter((g) => g.userId === LOCAL_OWNER_ID);
-  for (const g of mine) g.userId = userId;
-  // In-memory only: the route persists with saveDBOrFail so a write that
-  // fails or is blocked becomes an honest 500, never `success: true`.
-  return mine.length;
+function adoptLocalGames(db: DB, userId: string): { games: SavedGame[]; adopted: number } {
+  if (!isDesktop() || userId === LOCAL_OWNER_ID) return { games: db.games, adopted: 0 };
+  // A NEW array of NEW objects, never a mutation of the live rows: the route
+  // persists this candidate with saveDBOrFail, which commits it to inMemoryDb
+  // only on a CONFIRMED write. A failed or blocked write must leave the
+  // process serving exactly what db.json still says (CodeRabbit on #132; the
+  // same rule POST/PATCH/DELETE follow).
+  let adopted = 0;
+  const games = db.games.map((g) => {
+    if (g.userId !== LOCAL_OWNER_ID) return g;
+    adopted += 1;
+    return { ...g, userId };
+  });
+  return { games, adopted };
 }
 
 /**
@@ -4311,8 +4318,8 @@ async function startServer() {
     // database is read INSIDE the queued function so it sees the last commit.
     await serializeGameWrite(async () => {
       const db = loadDB();
-      const adopted = adoptLocalGames(db, user.id);
-      if (adopted && !(await saveDBOrFail(db.games, res))) return; // 500 already sent
+      const { games, adopted } = adoptLocalGames(db, user.id);
+      if (adopted && !(await saveDBOrFail(games, res))) return; // 500 already sent; nothing changed in memory
       if (adopted) console.log(`[games] ${user.id} moved ${adopted} local game(s) into their account`);
       res.json({ success: true, adopted });
     });
