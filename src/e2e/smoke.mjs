@@ -2093,6 +2093,9 @@ try {
     });
     await tourPage.getByRole('button', { name: `Edit ${gameName}` }).click();
     await tourPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    // Since #126 the Edit dialog sends only what changed (a no-change Save
+    // Changes sends nothing), so make an edit first or the mocked 401 never fires.
+    await tourPage.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first().fill('Edited so a PATCH goes out and meets the mocked 401.');
     const patchDone401 = tourPage.waitForResponse(
       (r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
     await tourPage.getByRole('button', { name: /^save changes$/i }).click();
@@ -2770,7 +2773,7 @@ try {
       return pred();
     };
 
-    async function checkCommaRejected(label, commaInput, leadingDigit) {
+    async function checkCommaRejected(label, commaInput, leadingDigit, expectedHint = HINT_TEXT) {
       const before = await cell.inputValue();
       const gameBefore = await epSignature();
       const presetBefore = await presetSelected();
@@ -2784,8 +2787,8 @@ try {
         midTyping === commaInput, `got "${midTyping}"`);
       const hintDuringTyping = await payoffHint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
       const hintTextDuringTyping = hintDuringTyping ? await payoffHint.textContent().catch(() => null) : null;
-      record(`${label}: the hint appears with the exact guidance text while the field holds an ambiguous comma`,
-        hintDuringTyping && hintTextDuringTyping === HINT_TEXT, `visible=${hintDuringTyping} text=${JSON.stringify(hintTextDuringTyping)}`);
+      record(`${label}: the hint appears with the exact guidance text while the field holds the rejected input`,
+        hintDuringTyping && hintTextDuringTyping === expectedHint, `visible=${hintDuringTyping} text=${JSON.stringify(hintTextDuringTyping)}`);
       // The leading digit committed through the ordinary path before the comma
       // arrived. The comma's arrival must UNDO that in the game, not merely
       // hide it in the box: the Expected-Payoff formula must read exactly as
@@ -2829,6 +2832,11 @@ try {
     // branch), from the committed 7.5 and with a different leading digit.
     await checkCommaRejected('fullwidth comma (U+FF0C)', '２，５', 2);
     await checkDotCommits('fullwidth comma (U+FF0C)', '6.25');
+    // RED-APP-10/002: two numbers in one cell (a spreadsheet row pasted or typed
+    // with a space) used to commit the leading digit silently — same treatment
+    // as the comma, with its own message.
+    await checkCommaRejected('two numbers in one cell', '3 5', 3, 'One number per field.');
+    await checkDotCommits('two numbers in one cell', '1.5');
     await commaPage.close();
   });
 
@@ -2993,9 +3001,17 @@ try {
     ).catch(() => null);
     await symPage.getByRole('button', { name: /^save changes$/i }).click();
     await editPatchDone;
+    // Since #126 the Edit dialog sends only the fields that changed, so an
+    // unchanged chip array is deliberately ABSENT from the PATCH wire; the
+    // record itself is the ground truth: GET it and read the chip back.
+    record('a no-change Save Changes sends no PATCH at all (only changed fields go out, #126)',
+      patchBody === null, JSON.stringify(patchBody));
+    const symToken = await symPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+    const symStored = await symPage.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), symToken);
+    const symGame = (symStored || []).find((g) => g.name === gameName);
     record('the chip is preserved in the stored record even while its render is neutralized',
-      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('cooperate'),
-      JSON.stringify(patchBody?.colorTermsA));
+      Array.isArray(symGame?.colorTermsA) && symGame.colorTermsA.includes('cooperate'),
+      JSON.stringify(symGame?.colorTermsA));
     await symPage.close();
   });
 
@@ -3167,6 +3183,97 @@ try {
       if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
       try { rmSync(deskData, { recursive: true, force: true }); } catch { /* best effort */ }
     }
+  });
+
+  // ══ 46. RED-APP-10/001 + 003 (director-reproduced). 001: the Edit dialog
+  //      used to PATCH every field, so two tabs editing DIFFERENT fields of the
+  //      same game clobbered each other (20/20 at the API). It now sends only
+  //      the fields that changed. 003: Delete while offline used to do nothing
+  //      visible at all.
+  section('46', 'concurrent edits of different fields both survive; offline delete says so', 2, async () => {
+    // One context, two tabs: the second tab must share the first tab's login.
+    const twoTab = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const tabA = trackPage(await twoTab.newPage());
+    const uniq = await registerAndLogin(tabA, 'e10lu');
+    const gameName = `LU-${uniq}`;
+    await tabA.getByRole('button', { name: /save preset/i }).click();
+    await tabA.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 12000 });
+    await tabA.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+    await tabA.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+    await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
+    const tabB = trackPage(await twoTab.newPage());
+    await tabB.goto(BASE, { waitUntil: 'networkidle' });
+    const exitTourB = tabB.getByRole('button', { name: /exit tour/i });
+    if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
+    const rowB = tabB.getByRole('button', { name: gameName, exact: true });
+    await rowB.waitFor({ state: 'visible', timeout: 12000 });
+
+    // Both tabs open Edit on the same game.
+    const openEdit = async (tab) => {
+      await tab.locator('div.group', { has: tab.getByRole('button', { name: gameName, exact: true }) }).getByTitle(/^Edit /).click();
+      await tab.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
+    };
+    await openEdit(tabA);
+    await openEdit(tabB);
+    // Tab A changes ONLY the description; tab B changes ONLY the Row 1 label
+    // (the Edit dialog's text inputs in DOM order: Name, Row 1, Row 2, Col 1, Col 2).
+    await tabA.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first().fill('Description edited in tab A.');
+    await tabB.locator('[role="dialog"][aria-label="Edit saved game"] input[type="text"]').nth(1).fill('AlphaRow');
+    await tabA.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /^save changes$/i }).click();
+    await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Edit saved game"]'), null, { timeout: 12000 });
+    await tabB.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /^save changes$/i }).click();
+    await tabB.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Edit saved game"]'), null, { timeout: 12000 });
+    const token = await tabA.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+    const stored = await tabA.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), token);
+    const g = (stored || []).find((x) => x.name === gameName);
+    record('FIX: tab A\'s description edit survived tab B\'s later save of a DIFFERENT field',
+      g?.description === 'Description edited in tab A.', `description=${JSON.stringify(g?.description)}`);
+    record('FIX: tab B\'s Row 1 label edit is stored too (both changes kept — last writer wins per field, not per record)',
+      g?.row1Label === 'AlphaRow', `row1Label=${JSON.stringify(g?.row1Label)}`);
+    record('precondition: the record still carries its name (only changed fields were sent)', g?.name === gameName, JSON.stringify(g?.name));
+
+    // Colour terms, one array per tab (CodeRabbit on #126): tab A files "edited"
+    // under Player A, tab B files "Description" under Player B, both save —
+    // both chips must be stored.
+    await openEdit(tabA);
+    await openEdit(tabB);
+    const chipIn = async (tab, word, player) => {
+      await tab.evaluate(({ w, sel }) => {
+        const ta = document.querySelector(sel);
+        const idx = ta.value.indexOf(w);
+        ta.focus();
+        ta.setSelectionRange(idx, idx + w.length);
+      }, { w: word, sel: '[role="dialog"][aria-label="Edit saved game"] textarea' });
+      await tab.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: player }).click();
+      await tab.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /^save changes$/i }).click();
+      await tab.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Edit saved game"]'), null, { timeout: 12000 });
+    };
+    await chipIn(tabA, 'edited', 'Player A');
+    await chipIn(tabB, 'Description', 'Player B');
+    const stored2 = await tabA.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), token);
+    const g2 = (stored2 || []).find((x) => x.name === gameName);
+    record('FIX: tab A\'s Player-A chip survived tab B\'s later save of a Player-B chip (colour-term arrays are per field too)',
+      Array.isArray(g2?.colorTermsA) && g2.colorTermsA.includes('edited'), JSON.stringify(g2?.colorTermsA));
+    record('tab B\'s Player-B chip is stored as well', Array.isArray(g2?.colorTermsB) && g2.colorTermsB.includes('Description'), JSON.stringify(g2?.colorTermsB));
+
+    // 003: Delete while offline must SAY something.
+    await tabA.reload({ waitUntil: 'networkidle' });
+    const exitTourA = tabA.getByRole('button', { name: /exit tour/i });
+    if (await exitTourA.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourA.click();
+    await tabA.getByRole('button', { name: gameName, exact: true }).waitFor({ state: 'visible', timeout: 12000 });
+    const messages = [];
+    tabA.on('dialog', async (d) => { messages.push(d.message()); await d.accept(); });
+    await tabA.context().setOffline(true);
+    try {
+      await tabA.locator('div.group', { has: tabA.getByRole('button', { name: gameName, exact: true }) }).getByTitle('Delete this saved game').click();
+      const said = await (async () => { for (let i = 0; i < 40; i++) { if (messages.some((m) => /network error/i.test(m))) return true; await tabA.waitForTimeout(100); } return false; })();
+      record('FIX: Delete while offline shows a network-error message instead of failing silently', said, JSON.stringify(messages));
+      record('the row is still listed (nothing was deleted while offline)',
+        await tabA.getByRole('button', { name: gameName, exact: true }).isVisible().catch(() => false));
+    } finally {
+      await tabA.context().setOffline(false);
+    }
+    await twoTab.close();
   });
 
   // ══ 47. RED-MATH-12/002 (director-fixed): a legend entry the user switched
