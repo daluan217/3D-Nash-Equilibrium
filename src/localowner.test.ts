@@ -73,8 +73,8 @@ check('the owner is gated on IS_ELECTRON', /function isDesktop\(\)[\s\S]{0,120}I
 check('provisioning refuses to run off the desktop',
   /function ensureLocalOwner\(\)[\s\S]{0,160}if \(!isDesktop\(\)\) return null;/.test(server));
 // Adoption returns { games, adopted: 0 } off the desktop — the caller's array untouched.
-check('adoption refuses to run off the desktop',
-  /function adoptLocalGames\([\s\S]{0,260}if \(!isDesktop\(\)[\s\S]{0,80}adopted: 0 \}/.test(server));
+check('adoption refuses to run off the desktop and hands back the UNTOUCHED array',
+  /function adoptLocalGames\([\s\S]{0,260}if \(!isDesktop\(\) \|\| userId === LOCAL_OWNER_ID\) return \{ games: db\.games, adopted: 0 \};/.test(server));
 // Adoption RE-PARENTS (same rows, new owner) rather than copying — copying would
 // duplicate a library on a second sign-in — and it does so on NEW objects in a NEW
 // array (a map that spreads each row), never by writing into the live rows: the
