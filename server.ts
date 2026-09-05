@@ -4319,7 +4319,17 @@ async function startServer() {
     await serializeGameWrite(async () => {
       const db = loadDB();
       const { games, adopted } = adoptLocalGames(db, user.id);
-      if (adopted && !(await saveDBOrFail(games, res))) return; // 500 already sent; nothing changed in memory
+      // A failed write answers with THIS route's message, not saveDBOrFail's
+      // generic "Could not save your changes": RED-DESKTOP-12/001 — on the one
+      // failure the dialog is built to survive (a read-only or full user-data
+      // dir), the user was told a save failed and never that their games were
+      // still safe on the device, which is the whole point of refusing.
+      if (adopted && !(await saveDBAwaited(games))) {
+        return res.status(500).json({
+          error: "Could not move them: this device refused the write (is its storage read-only or full?). "
+            + "Your games are still saved on this device; try again once it can be written.",
+        });
+      }
       if (adopted) console.log(`[games] ${user.id} moved ${adopted} local game(s) into their account`);
       res.json({ success: true, adopted });
     });
