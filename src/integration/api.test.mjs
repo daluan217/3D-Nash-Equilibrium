@@ -317,18 +317,31 @@ try {
     {
       const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 11 units
       const lone = (s) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+      // Over budget by 5 units: the whole 11-unit cluster must go (exact value,
+      // CodeRabbit #119 — a check that only bounds the length would also pass a
+      // clamp that strips the ZWJ or empties the field).
       const gr = await call('POST', '/api/games', {
         token,
         body: { name: 'n'.repeat(74) + family, description: 'd'.repeat(794) + family, payoffs: MP },
       });
       const g = gr.json?.game;
-      record('server clamps an over-budget Game Name grapheme-safely (<= 80 units, no lone surrogate, no dangling ZWJ)',
-        gr.status === 200 && typeof g?.name === 'string' && g.name.length <= 80 && !lone(g.name) && !g.name.endsWith('\u200D'),
+      record('server clamps an over-budget Game Name grapheme-safely: exactly the 74 plain chars, the straddling cluster dropped whole',
+        gr.status === 200 && !!g?.id && g.name === 'n'.repeat(74) && !lone(g.name),
         `status=${gr.status} len=${g?.name?.length} tail=${JSON.stringify(g?.name?.slice(-6))}`);
-      record('server clamps an over-budget Description grapheme-safely (<= 800 units, no lone surrogate, no dangling ZWJ)',
-        typeof g?.description === 'string' && g.description.length <= 800 && !lone(g.description) && !g.description.endsWith('\u200D'),
+      record('server clamps an over-budget Description grapheme-safely: exactly the 794 plain chars, the straddling cluster dropped whole',
+        gr.status === 200 && !!g?.id && g.description === 'd'.repeat(794) && !lone(g.description),
         `len=${g?.description?.length} tail=${JSON.stringify(g?.description?.slice(-6))}`);
-      if (g?.id) await call('DELETE', `/api/games/${g.id}`, { token });
+      // Exact fit: a cluster ending precisely AT the budget must survive intact.
+      const fit = await call('POST', '/api/games', {
+        token,
+        body: { name: 'n'.repeat(69) + family, description: 'd'.repeat(789) + family, payoffs: MP },
+      });
+      const f = fit.json?.game;
+      record('a Game Name whose family cluster ends exactly at 80 units is stored intact (no over-eager trim)',
+        fit.status === 200 && !!f?.id && f.name === 'n'.repeat(69) + family && f.name.length === 80, `len=${f?.name?.length}`);
+      record('a Description whose family cluster ends exactly at 800 units is stored intact',
+        fit.status === 200 && !!f?.id && f.description === 'd'.repeat(789) + family && f.description.length === 800, `len=${f?.description?.length}`);
+      for (const id of [g?.id, f?.id]) if (id) await call('DELETE', `/api/games/${id}`, { token });
     }
 
     // ── RED-APP-9/002 — POST /api/games idempotency via clientRequestId.
