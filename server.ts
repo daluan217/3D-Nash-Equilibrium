@@ -27,6 +27,7 @@ import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEF
 import type { ReasoningEffort } from "./src/utils/providers";
 import { stripUnsafeText, clampGraphemeSafe } from "./src/utils/textSafety";
 import { cleanScenarioActorNouns } from "./src/utils/scenarioActorNouns";
+import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from "./src/utils/fetchTimeout";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
 // since the materialized best-reply table landed: the 2026-08-27 follow-up
@@ -177,17 +178,10 @@ function scenarioRegenEnabled(): boolean {
  * a draw that the provider actually ANSWERED — fast, in practice — spends
  * from the bounded gate-drop budget.
  *
- * LATENCY: every extra attempt still goes through `drawWithDeadline`, so
- * each one is individually capped at `SCENARIO_DEADLINE_MS` (20s default) —
- * the total deadline guarantee is "N draws x the per-draw cap", not
- * unbounded. Theoretical worst case at the default setting is now 4 draws
- * (1 lost + 1 timeout-retry that itself gate-drops, + 2 gate rerolls) x 20s
- * = 80s, up from the old 2 x 20s = 40s ceiling. In practice a gate-drop
- * means the provider ANSWERED (not a timeout), so the realistic added cost
- * of the two extra rerolls is roughly two ordinary provider round-trips
- * (production reasoning-on cloud: ~5.4-5.6s p50 each, so ~11s typical
- * added latency, only on the ~7% of draws that gate-drop at all — most
- * requests pay nothing extra).
+ * All attempts share a 20s request budget, leaving 2s of the browser's 22s
+ * timeout for the screened bank rescue and response. Per-draw caps alone
+ * previously let retries take 40–80s: the browser had already abandoned the
+ * request before its otherwise valid fallback could arrive.
  */
 const SCENARIO_REROLL_LIMIT = (() => {
   const raw = Number(process.env.NASH_SCENARIO_REROLLS);
@@ -196,6 +190,8 @@ const SCENARIO_REROLL_LIMIT = (() => {
   if (!Number.isInteger(raw) || raw < 0) return DEFAULT;
   return Math.min(raw, MAX);
 })();
+
+const SCENARIO_REQUEST_BUDGET_MS = DEFAULT_REPORT_FETCH_TIMEOUT_MS - 2_000;
 
 /**
  * RED-CLOUD-6/002: the reroll ladder above is correctly implemented (every
@@ -293,6 +289,7 @@ async function inventScreenedScenario(
   avoid?: RegenAvoid,
   actorNouns = false,
 ): Promise<{ scenario: SuggestedScenario | null; failure?: string; scenarioSource?: 'bank-fallback' }> {
+  const requestDeadline = performance.now() + SCENARIO_REQUEST_BUDGET_MS;
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
   const storyOk = (sc: SuggestedScenario): boolean => {
@@ -311,7 +308,10 @@ async function inventScreenedScenario(
   let gateRerollsUsed = 0;
   let exhaustionFailure = "validation-failed";
   for (;;) {
-    const draw = await drawWithDeadline(payoffs, avoid, actorNouns);
+    const remainingMs = requestDeadline - performance.now();
+    if (remainingMs <= 0) { exhaustionFailure = 'timeout'; break; }
+    const draw = await drawWithDeadline(payoffs, avoid, actorNouns, remainingMs);
+    if (performance.now() >= requestDeadline) { exhaustionFailure = 'timeout'; break; }
     if (!draw.scenario) {
       // LOST: the draw never produced a scenario at all (timeout, provider
       // error, unparseable output). Exactly one retry, same as before this
@@ -414,10 +414,10 @@ const SCENARIO_DEADLINE_MS = (() => {
   return Number.isInteger(raw) && raw >= 1 && raw <= 2147483647 ? raw : 20_000;
 })();
 
-async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false, remainingMs = SCENARIO_REQUEST_BUDGET_MS): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<{ scenario: null; failure: string }>((resolve) => {
-    timer = setTimeout(() => resolve({ scenario: null, failure: "timeout" }), SCENARIO_DEADLINE_MS);
+    timer = setTimeout(() => resolve({ scenario: null, failure: "timeout" }), Math.ceil(Math.min(SCENARIO_DEADLINE_MS, remainingMs)));
     // Never hold the process open for a draw nobody is waiting for.
     timer.unref?.();
   });
