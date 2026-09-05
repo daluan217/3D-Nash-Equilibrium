@@ -72,11 +72,22 @@ check('account deletion is covered by the strict list',
 check('the owner is gated on IS_ELECTRON', /function isDesktop\(\)[\s\S]{0,120}IS_ELECTRON === 'true'/.test(server));
 check('provisioning refuses to run off the desktop',
   /function ensureLocalOwner\(\)[\s\S]{0,160}if \(!isDesktop\(\)\) return null;/.test(server));
+// Adoption returns { games, adopted: 0 } off the desktop — the caller's array untouched.
 check('adoption refuses to run off the desktop',
-  /function adoptLocalGames\([\s\S]{0,200}if \(!isDesktop\(\)[\s\S]{0,40}return 0;/.test(server));
-// Adoption RE-PARENTS; copying would duplicate a library on a second sign-in.
-check('adoption re-parents rather than copies',
-  /for \(const g of mine\) g\.userId = userId;/.test(server) && !/db\.games\.push/.test(server.slice(server.indexOf('function adoptLocalGames'), server.indexOf('function adoptLocalGames') + 900)));
+  /function adoptLocalGames\([\s\S]{0,260}if \(!isDesktop\(\)[\s\S]{0,80}adopted: 0 \}/.test(server));
+// Adoption RE-PARENTS (same rows, new owner) rather than copying — copying would
+// duplicate a library on a second sign-in — and it does so on NEW objects in a NEW
+// array (a map that spreads each row), never by writing into the live rows: the
+// route commits the candidate only through saveDBOrFail's confirmed write
+// (RED-DESKTOP-11/001 + CodeRabbit on #132). Writing `g.userId = userId` into the
+// live row is the bug this guards against.
+const adoptSrc = server.slice(server.indexOf('function adoptLocalGames'), server.indexOf('function adoptLocalGames') + 1200);
+check('adoption re-parents rather than copies, on a fresh array of fresh objects',
+  /db\.games\.map\(/.test(adoptSrc) && /\{ \.\.\.g, userId \}/.test(adoptSrc)
+  && !/\.push\(/.test(adoptSrc) && !/g\.userId = userId/.test(adoptSrc));
+// And the route persists that candidate, never the live array.
+check('the adopt-local route commits the candidate through saveDBOrFail',
+  /adopt-local[\s\S]{0,900}const \{ games, adopted \} = adoptLocalGames\(db, user\.id\);[\s\S]{0,160}saveDBOrFail\(games, res\)/.test(server));
 
 /* ------------------------------------------------------ known positives */
 const MUST_FLAG: Array<[string, string]> = [
