@@ -3004,8 +3004,8 @@ try {
     // Since #126 the Edit dialog sends only the fields that changed, so an
     // unchanged chip array is deliberately ABSENT from the PATCH wire; the
     // record itself is the ground truth: GET it and read the chip back.
-    record('the PATCH body never re-sends the unchanged chip array (only changed fields go out, #126)',
-      !!patchBody && !('colorTermsA' in patchBody), JSON.stringify(Object.keys(patchBody || {})));
+    record('a no-change Save Changes sends no PATCH at all (only changed fields go out, #126)',
+      patchBody === null, JSON.stringify(patchBody));
     const symToken = await symPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
     const symStored = await symPage.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), symToken);
     const symGame = (symStored || []).find((g) => g.name === gameName);
