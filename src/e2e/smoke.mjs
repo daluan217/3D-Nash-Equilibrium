@@ -2477,6 +2477,8 @@ try {
     await checkCommaRejected('fullwidth comma (U+FF0C)', '２，５', 2);
     await checkDotCommits('fullwidth comma (U+FF0C)', '6.25');
     await commaPage.close();
+  });
+
   // ══ 43. RED-REGEN-3/001 (director-reproduced) — a pre-existing colour-term
   //      chip that string-matches a BRAND-NEW, SYMMETRIC option label (a real
   //      option BOTH players can pick, ~19% of the shipped bank) must render
