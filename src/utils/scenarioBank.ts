@@ -283,6 +283,46 @@ export function actorNounsOk(sc: {
   // one — checking the raw length would let a single-character noun through
   // the same floor `cleanUserColorTerms` enforces (CodeRabbit, phase 3 review).
   if (all.some((t) => { const n = norm(t); return n.length < 2 || !descNorm.includes(n); })) return false;
+  // LITERAL-SUBSTRING GUARD (RED-REGEN-2/001, 2026-09-04). The check above is
+  // NORMALIZED (NFKC + zero-width-stripped) — a noun that clears it only via
+  // normalization (a zero-width space spliced into "farmer", or fullwidth
+  // Latin "Ａ ｇｒａｉｎ ｔｒａｄｅｒ") is not a byte-for-byte substring of the
+  // description. `ColorCoded.tsx` builds its highlight regex from the RAW,
+  // unnormalized term against the RAW, unnormalized description text (only
+  // regex metacharacters escaped, word-boundary lookarounds, `gi` flags, no
+  // `.normalize()` anywhere) — so a noun that passes only the normalized
+  // check above can never actually highlight, silently, even though the
+  // server calls it "verbatim" and lets it ship as a colour-term chip.
+  //
+  // Reuse that EXACT predicate, not a hand-rolled `.toLowerCase().includes()`
+  // (CodeRabbit review): the two are not equivalent. `.toLowerCase()` folds
+  // U+212A KELVIN SIGN to ASCII "k" (`'K'.toLowerCase() === 'k'`), but a
+  // plain `gi`-flagged regex (no `u` flag, exactly what ColorCoded.tsx uses)
+  // does NOT fold it (`/k/i.test('K')` is false) — so a noun containing
+  // the Kelvin sign could pass an `.includes()`-based check against an
+  // ordinary "kelvin" in the description while still never matching the
+  // real highlighter's regex, reopening the exact defect this guard exists
+  // to close. A plain substring check also ignores the highlighter's
+  // word-boundary lookarounds, so it would accept "vendor" as verbatim
+  // inside "prevendors" (no word boundary there) even though the real regex
+  // never matches it. Building the identical regex here makes this
+  // predicate and the highlighter's decision provably the same by
+  // construction, not merely similar — which is also why the term is used
+  // RAW, not `.trim()`'d (CodeRabbit, this review): `ColorCoded.tsx` builds
+  // its own regex from the entry's term exactly as stored, with no trim, so
+  // a noun carrying incidental leading/trailing whitespace would highlight
+  // (or fail to) based on that literal whitespace too — trimming here would
+  // accept a whitespace-padded noun this predicate is supposed to reject,
+  // because the real regex's word-boundary lookarounds see the space
+  // character as part of the match, not the caller's convenience trim.
+  const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const highlightWouldMatch = (term: string, desc: string) => {
+    if (!term) return false;
+    const re = new RegExp(`(?<![\\w])(?:${escapeForRegex(term)})(?![\\w])`, 'gi');
+    return re.test(desc);
+  };
+  const rawDesc = sc.description ?? '';
+  if (all.some((t) => !highlightWouldMatch(t, rawDesc))) return false;
   const aSet = new Set((a as string[]).map(norm));
   const bSet = new Set((b as string[]).map(norm));
   if ([...aSet].some((t) => bSet.has(t))) return false;

@@ -584,6 +584,84 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
       actorNounsOk({ ...base, actorA: ['a regional freight broker'], actorB: ['a dockside contractor'] }));
     check('actorNounsOk: no declaration at all is accepted (silence is safe)',
       actorNounsOk({ ...base, actorA: null, actorB: undefined }));
+
+    /**
+     * LITERAL-SUBSTRING GUARD (RED-REGEN-2/001, director-reproduced
+     * 2026-09-04). The normalized "verbatim" check above accepts a noun that
+     * is only NFKC- or zero-width-equal to the description, not a literal
+     * substring of it — but `ColorCoded.tsx` highlights by matching the RAW
+     * noun against the RAW description (no `.normalize()`, no zero-width
+     * strip). Such a noun ships, and even gets kept as a colour-term chip,
+     * but never actually highlights: silent breakage of the field's whole
+     * purpose. These two fixtures are the red's EXACT reproduction strings
+     * (server-run2-fe45c49.log) — both must now be rejected.
+     */
+    {
+      const zwspNoun = 'A far' + '​' + 'mer'; // zero-width space spliced into "farmer"
+      check('actorNounsOk: a noun that only normalized-matches via a zero-width character is rejected (RED-REGEN-2/001)',
+        !actorNounsOk({
+          row1: 'Plant Early', row2: 'Plant Late', col1: 'Harvest Soon', col2: 'Harvest Late',
+          description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
+          actorA: [zwspNoun], actorB: ['a rival grower'],
+        }));
+      const nfkcNoun = 'Ａ ｇｒａｉｎ ｔｒａｄｅｒ'; // fullwidth Latin, NFKC-normalizes to "A grain trader"
+      check('actorNounsOk: a noun that only normalized-matches via NFKC fullwidth-Latin folding is rejected (RED-REGEN-2/001)',
+        !actorNounsOk({
+          row1: 'Ship Now', row2: 'Ship Later', col1: 'Buy Now', col2: 'Buy Later',
+          description: 'A grain trader and a mill buyer negotiate the timing of a shipment.',
+          actorA: [nfkcNoun], actorB: null,
+        }));
+      // Positive control: the SAME noun, but literally present in the
+      // description (no zero-width char, no fullwidth folding needed) — must
+      // still be accepted, so the new guard cannot be rejecting on some other
+      // property of these fixtures (e.g. their punctuation or length).
+      check('actorNounsOk: the plain, literal form of the same noun is still accepted (positive control for the new guard)',
+        actorNounsOk({
+          row1: 'Plant Early', row2: 'Plant Late', col1: 'Harvest Soon', col2: 'Harvest Late',
+          description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
+          actorA: ['A farmer'], actorB: ['a rival grower'],
+        }));
+      // CodeRabbit (this review): a hand-rolled `.toLowerCase().includes()`
+      // is NOT equivalent to the real highlighter's `gi`-flagged (no `u`)
+      // regex. `.toLowerCase()` folds U+212A KELVIN SIGN to ASCII "k", but
+      // `/k/i` (no `u` flag) does not fold it back the other way -- a noun
+      // spelled with the Kelvin sign can look like a literal match under
+      // `.includes()` while the real ColorCoded.tsx regex would never match
+      // it. Must be rejected by the SAME guard as the ZWSP/NFKC fixtures.
+      check('actorNounsOk: a noun using U+212A KELVIN SIGN in place of "K" is rejected even though .toLowerCase() would fold it to a match (RED-REGEN-2/001 CodeRabbit follow-up)',
+        !actorNounsOk({
+          row1: 'Raise Temp', row2: 'Hold Temp', col1: 'Log Reading', col2: 'Skip Reading',
+          description: 'A lab technician tracks the room’s Kelvin reading, while a facilities engineer decides whether to log it.',
+          actorA: ['Kelvin reading'], actorB: ['a facilities engineer'],
+        }));
+      // Same review: the highlighter's regex requires a WORD BOUNDARY on
+      // both sides (`(?<!\w)...(?!\w)`), so a noun that is merely a raw
+      // substring of a LONGER word in the description (no boundary) can
+      // never actually highlight either, even though `.includes()` would
+      // have called it verbatim.
+      check('actorNounsOk: a noun that is only a substring of a LONGER word in the description (no word boundary) is rejected',
+        !actorNounsOk({
+          row1: 'Ship Now', row2: 'Ship Later', col1: 'Buy Now', col2: 'Buy Later',
+          description: 'Two prevendors negotiate the timing of a shipment while a mill buyer waits.',
+          actorA: ['vendor'], actorB: ['a mill buyer'],
+        }));
+      // CodeRabbit (re-review): the guard must use the RAW term, not a
+      // `.trim()`'d one -- ColorCoded.tsx builds its regex from the term
+      // exactly as stored, so a noun carrying a trailing space changes what
+      // the real word-boundary lookaround requires immediately after the
+      // match. A trimmed comparison would wrongly call this verbatim (the
+      // trimmed phrase is a plain substring of the description); the real
+      // highlighter's regex, with the trailing space literal, needs a
+      // non-word character right after that space -- but the description
+      // continues straight into "coordinates" (a word character), so the
+      // real regex never matches. Must be rejected here too.
+      check('actorNounsOk: a noun with a trailing space is rejected when the real highlighter regex (untrimmed) could never match at that boundary',
+        !actorNounsOk({
+          row1: 'Load Now', row2: 'Load Later', col1: 'Send Tug', col2: 'Hold Tug',
+          description: 'The harbor operator coordinates with the tug company at the berth.',
+          actorA: ['the harbor operator '], actorB: ['the tug company'],
+        }));
+    }
   }
 }
 
