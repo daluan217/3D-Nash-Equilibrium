@@ -777,7 +777,9 @@ export default function App() {
     } catch (err) {
       console.error('Error fetching custom games:', err);
     }
-  }, [authToken, apiBaseUrl]);
+    // dbMode: a desktop database switch can keep the same token and base URL
+    // while changing where /api/games resolves (CodeRabbit, #119).
+  }, [authToken, apiBaseUrl, dbMode]);
 
   useEffect(() => {
     if (authToken && user) {

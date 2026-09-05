@@ -309,6 +309,28 @@ try {
       if (llId) await call('DELETE', `/api/games/${llId}`, { token });
     }
 
+    // ── RED-APP-9/003 at the API (CodeRabbit, #119: exercise server.ts itself,
+    // not a re-implementation of its pipeline). A Game Name / Description
+    // whose ZWJ family emoji straddles server.ts's own budget (80 / 800 UTF-16
+    // units) must be stored within budget with no lone surrogate and no
+    // dangling ZWJ — the clamp happens in server.ts's cleanText.
+    {
+      const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 11 units
+      const lone = (s) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+      const gr = await call('POST', '/api/games', {
+        token,
+        body: { name: 'n'.repeat(74) + family, description: 'd'.repeat(794) + family, payoffs: MP },
+      });
+      const g = gr.json?.game;
+      record('server clamps an over-budget Game Name grapheme-safely (<= 80 units, no lone surrogate, no dangling ZWJ)',
+        gr.status === 200 && typeof g?.name === 'string' && g.name.length <= 80 && !lone(g.name) && !g.name.endsWith('\u200D'),
+        `status=${gr.status} len=${g?.name?.length} tail=${JSON.stringify(g?.name?.slice(-6))}`);
+      record('server clamps an over-budget Description grapheme-safely (<= 800 units, no lone surrogate, no dangling ZWJ)',
+        typeof g?.description === 'string' && g.description.length <= 800 && !lone(g.description) && !g.description.endsWith('\u200D'),
+        `len=${g?.description?.length} tail=${JSON.stringify(g?.description?.slice(-6))}`);
+      if (g?.id) await call('DELETE', `/api/games/${g.id}`, { token });
+    }
+
     // ── RED-APP-9/002 — POST /api/games idempotency via clientRequestId.
     // A dropped response after the server already wrote the row (a network
     // flap) followed by the client's own retry — same clientRequestId sent
@@ -332,7 +354,7 @@ try {
       });
       const retryGame = retry.json?.game;
       record('a retry with the SAME clientRequestId returns the EXISTING row id, not a new one',
-        retry.status === 200 && retryGame?.id === firstGame?.id,
+        retry.status === 200 && !!retryGame?.id && retryGame.id === firstGame?.id,
         `firstId=${firstGame?.id} retryId=${retryGame?.id}`);
       record('...and the row now carries the retry\'s edited content (updated in place, never stale)',
         retryGame?.name === 'Idempotency fixture (edited)', `name=${retryGame?.name}`);

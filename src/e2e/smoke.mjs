@@ -2422,10 +2422,12 @@ try {
       let dialogMsg = null;
       tabA.once('dialog', async (d) => { dialogMsg = d.message(); await d.accept(); });
       await tabA.locator('div.group', { has: rowA }).getByTitle('Delete this saved game').click();
-      await tabA.waitForTimeout(600);
+      // State-based wait (CodeRabbit, #119): the row leaves the DOM only after the
+      // 404 handler has alerted (alert() blocks until accepted) and re-rendered,
+      // so "row hidden" is the completion signal for both checks below.
+      const rowGoneA = await rowA.waitFor({ state: 'hidden', timeout: 8000 }).then(() => true).catch(() => false);
       record('tab A: 404 shows the friendly "deleted elsewhere" message, not a bare "not found"',
         /deleted elsewhere/i.test(dialogMsg || ''), `alert="${dialogMsg}"`);
-      const rowGoneA = !(await rowA.isVisible({ timeout: 4000 }).catch(() => false));
       record('FIX: phantom row removed from tab A after the server confirms 404 (no reload)', rowGoneA);
       const tokenAfterDelete = await tabA.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud') || localStorage.getItem('nash_sim_token'));
       record('tab A: auth token not cleared by a 404 (only a 401 should clear it)', !!tokenAfterDelete);
@@ -2454,7 +2456,8 @@ try {
       const descField = tabA.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first();
       await descField.fill('Edited after the other tab deleted the underlying game.');
       await tabA.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /save changes/i }).click();
-      await tabA.waitForTimeout(600);
+      await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').getByText(/deleted elsewhere/i)
+        .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
       const editErrorText = await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').innerText().catch(() => '');
       record('tab A: PATCH-on-deleted shows the friendly message inside the still-open dialog', /deleted elsewhere/i.test(editErrorText));
       record('FIX: phantom row already gone from tab A\'s list BEFORE Cancel is even clicked',
@@ -2501,7 +2504,8 @@ try {
     });
 
     await flapPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
-    await flapPage.waitForTimeout(1500);
+    await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').getByText(/network error/i)
+      .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
     const errorShown = await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').innerText().catch(() => '');
     record('after the flap: dialog shows a network-error message (not a false success)', /network error/i.test(errorShown), errorShown.slice(0, 200));
     const nameFieldValue = await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').inputValue().catch(() => '');
@@ -2515,8 +2519,8 @@ try {
     const editedName = `${gameName}-v2`;
     await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(editedName);
     await flapPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
-    await flapPage.waitForTimeout(1200);
-    const dialogClosedAfterRetry = !(await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').isVisible({ timeout: 1000 }).catch(() => false));
+    const dialogClosedAfterRetry = await flapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
+      null, { timeout: 8000 }).then(() => true).catch(() => false);
     record('retry succeeds (dialog closes)', dialogClosedAfterRetry);
 
     const authToken = await flapPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
