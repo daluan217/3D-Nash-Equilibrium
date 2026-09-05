@@ -326,10 +326,39 @@ function getModalFocusables(container: HTMLElement): HTMLElement[] {
   ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
 }
 
+/**
+ * The control the user last focused or pressed, so a dialog can hand focus
+ * back to what opened it. `focusin` covers keyboard users; `pointerdown`
+ * covers browsers (Safari, Firefox on macOS) where clicking a button does
+ * not focus it. Installed once, lazily, by the first dialog that opens.
+ */
+let lastInteractedControl: HTMLElement | null = null;
+let openerTrackingInstalled = false;
+function installOpenerTracking(): void {
+  if (openerTrackingInstalled || typeof document === 'undefined') return;
+  openerTrackingInstalled = true;
+  document.addEventListener('focusin', (e) => {
+    if (e.target instanceof HTMLElement && e.target !== document.body) lastInteractedControl = e.target;
+  }, true);
+  document.addEventListener('pointerdown', (e) => {
+    const control = (e.target as HTMLElement | null)?.closest?.('button, [href], input, select, textarea, [tabindex]');
+    if (control instanceof HTMLElement) lastInteractedControl = control;
+  }, true);
+}
+
 function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElement | null>) {
+  // Tracking must exist BEFORE the click that opens the dialog, so it is
+  // installed on mount, not on open.
+  useEffect(() => { installOpenerTracking(); }, []);
   useEffect(() => {
     if (!open) return;
     const container = containerRef.current;
+    // RED-APP-11/004: every close path (Escape, Cancel, a successful Save)
+    // dropped focus to <body> — a keyboard user was thrown back to the top
+    // of the page. Remember what opened the dialog and, on close, return
+    // focus there if it still exists and nothing else has claimed focus.
+    const opener = lastInteractedControl && container && !container.contains(lastInteractedControl)
+      ? lastInteractedControl : null;
     if (container && !container.contains(document.activeElement)) {
       getModalFocusables(container)[0]?.focus();
     }
@@ -360,7 +389,12 @@ function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElemen
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      const active = document.activeElement;
+      const focusLost = !active || active === document.body || !document.contains(active);
+      if (opener && opener.isConnected && focusLost) opener.focus();
+    };
   }, [open, containerRef]);
 }
 
@@ -2198,8 +2232,16 @@ export default function App() {
     }
   };
 
+  // RED-APP-11/003: one request per game at a time. A rapid double-click
+  // while offline fired two DELETEs and stacked two identical blocking
+  // alerts; the ref decides synchronously, the state disables the button.
+  const deletingGamesRef = useRef<Set<string>>(new Set());
+  const [deletingGameIds, setDeletingGameIds] = useState<string[]>([]);
   const handleDeleteGame = async (gameId: string) => {
     if (!canOwnGames) return;
+    if (deletingGamesRef.current.has(gameId)) return;
+    deletingGamesRef.current.add(gameId);
+    setDeletingGameIds(Array.from(deletingGamesRef.current));
     try {
       const res = await fetch(getApiUrl(`/api/games/${gameId}`), {
         method: 'DELETE',
@@ -2236,6 +2278,9 @@ export default function App() {
       // RED-APP-10/003: offline, the click used to do nothing visible at all.
       // The alert IS the report (no console noise: Save/Edit report the same way).
       alert('Network error. Failed to delete game. Check your connection and try again.');
+    } finally {
+      deletingGamesRef.current.delete(gameId);
+      setDeletingGameIds(Array.from(deletingGamesRef.current));
     }
   };
 
@@ -4388,7 +4433,9 @@ export default function App() {
                           e.stopPropagation();
                           handleDeleteGame(game.id);
                         }}
-                        className={`p-1 rounded-md transition-colors cursor-pointer ${isSelected
+                        disabled={deletingGameIds.includes(game.id)}
+                        aria-busy={deletingGameIds.includes(game.id) || undefined}
+                        className={`p-1 rounded-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait ${isSelected
                             ? 'text-accent-100 hover:text-white hover:bg-accent-600'
                             : 'text-slate-400 hover:text-danger-500 dark:text-slate-500 dark:hover:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-950/40'
                           }`}
