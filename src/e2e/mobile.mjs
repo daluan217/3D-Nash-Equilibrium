@@ -229,6 +229,13 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   const settle = async (pred, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await page.waitForTimeout(100); } return pred(); };
   const isRunning = () => page.evaluate(() =>
     [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+  // Simulation STATE, not a label: the current-position sphere's (x, y) in
+  // Plotly's resolved data moves only when a step ran AND Plotly.react drew it.
+  const spherePos = () => page.evaluate((id) => {
+    const t = (document.getElementById(id)?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? ''));
+    return t ? [t.x[0], t.y[0]] : null;
+  }, PLOT);
+  const sphereMoved = async (from, ms) => settle(async () => { const p = await spherePos(); return !!p && !!from && Math.hypot(p[0] - from[0], p[1] - from[1]) > 1e-6; }, ms);
   await page.goto(BASE, { waitUntil: 'networkidle' });
   record('[touch camera] the guided tour can be dismissed', await dismissTour(page));
   // A long-running game at the slowest speed, so the run is still going when
@@ -241,8 +248,10 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   });
+  const posAtStart = await spherePos();
   await page.getByRole('button', { name: /^Run$/ }).tap();
-  record('[touch camera] precondition: the run is going before the pause tap', await settle(isRunning, 8000));
+  record('[touch camera] precondition: the run is going before the pause tap (the sphere moved and the Pause control is up)',
+    (await sphereMoved(posAtStart, 8000)) && (await isRunning()));
   const plot = page.locator(`#${PLOT}`);
   const box = await plot.boundingBox();
   await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2); // a press on the plot pauses the run
@@ -290,9 +299,11 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   record('[touch camera] FIX: the idle spin continues from the rotated view (eye.z preserved), not from the stale pre-gesture pose',
     Math.abs(zOf(spun.live) - zOf(after.live)) < 0.05 && Math.abs(zOf(spun.live) - zOf(before.live)) > 0.3,
     `afterGesture.z=${zOf(after.live)} afterSpin=${JSON.stringify(spun.live)} before.z=${zOf(before.live)}`);
+  const posBeforeResume = await spherePos();
   await page.getByRole('button', { name: /^(Resume|Run)$/ }).first().tap();
-  record('[touch camera] precondition: Resume restarted the run', await settle(isRunning, 8000));
-  await settle(async () => false, 1200); // one full redraw cycle of the running sim
+  // Resume has exercised the redraw path exactly when the sphere has moved
+  // again — a step ran and Plotly.react drew it (CodeRabbit: state, not a label).
+  record('[touch camera] precondition: Resume restarted the run (the sphere moved again after the tap)', await sphereMoved(posBeforeResume, 8000));
   const resumed = await cams();
   // The drag changed the camera's ELEVATION (eye.z); a snap-back restores the
   // pre-gesture z. The idle spin only turns about z, so z is the invariant to
@@ -308,8 +319,10 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   record('[touch camera] precondition: the Reset View control is reachable on the phone layout', await resetBtn.isVisible().catch(() => false));
   if (await resetBtn.isVisible().catch(() => false)) {
     await resetBtn.tap();
-    const resetLanded = await settle(async () => { const c = (await cams()).live; return !!c && Math.abs(c.z - zOf(after.live)) > 0.3; }, 5000);
-    record('[touch camera] Reset View still resets a touch-rotated camera (the pre-react sync does not undo it)', resetLanded, JSON.stringify((await cams()).live));
+    // DEFAULT_CAMERA in PlotlyView.tsx is eye {1.6, -1.6, 1.1}; assert the pose itself.
+    const DEFAULT_EYE = { x: 1.6, y: -1.6, z: 1.1 };
+    const resetLanded = await settle(async () => dist((await cams()).live, DEFAULT_EYE) < 1e-6, 5000);
+    record('[touch camera] Reset View still resets a touch-rotated camera to the default pose (the pre-react sync does not undo it)', resetLanded, JSON.stringify((await cams()).live));
   }
   await ctx.close();
 }
