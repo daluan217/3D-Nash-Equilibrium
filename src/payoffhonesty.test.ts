@@ -530,8 +530,25 @@ function testPlottingSkipsIsolatedDiamondsOnContinuum() {
   const continuumTraces = traces.filter((t: any) => t.legendgroup === 'continuumNE');
   ok(isolated.length === 0,
     `fixture: a fully-flat game must draw ZERO isolated Pure/Mixed NE diamonds (all 4 corners are on the one continuum), found ${isolated.length}: ${JSON.stringify(isolated)}`);
-  ok(continuumTraces.length === 1,
-    `fixture: exactly one continuum marker must be drawn for the single 'area' component, found ${continuumTraces.length}`);
+  // RED-MATH-10/001: the component now also draws a hollow diamond at each
+  // of its own corners plus a dashed line tracing it (so the sphere is never
+  // orphaned when it settles on a corner rather than the midpoint) — for
+  // this 'area' fixture that is 4 corner markers + 2 line traces (one per
+  // tracked surface, trackingMode='both') ON TOP OF the 1 midpoint marker,
+  // so the trace COUNT is no longer 1. The invariant that still must hold is
+  // the one `testPlottingDrawsContinuumMarker` already checks elsewhere:
+  // exactly ONE of them carries the legend entry (the midpoint stays the
+  // single anchor) and at least one is drawn at all.
+  ok(continuumTraces.length >= 1,
+    `fixture: at least one continuum trace must be drawn for the single 'area' component, found ${continuumTraces.length}`);
+  ok(continuumTraces.filter((t: any) => t.showlegend === true).length === 1,
+    `fixture: exactly one continuumNE trace must carry the legend entry (the midpoint anchor), found ${continuumTraces.filter((t: any) => t.showlegend === true).length}`);
+  const contMarkers = continuumTraces.filter((t: any) => t.mode === 'markers');
+  const contLines = continuumTraces.filter((t: any) => t.mode === 'lines');
+  ok(contMarkers.length === 5,
+    `fixture: the 'area' component (4 distinct corners) must draw 1 midpoint + 4 corner markers = 5 marker traces, found ${contMarkers.length}`);
+  ok(contLines.length === 2,
+    `fixture: trackingMode='both' must draw one dashed continuum line per tracked surface (A and B) = 2, found ${contLines.length}`);
 
   // Reach — the red's own 200,000-game int[-9,9] sweep (mulberry32 seed 99),
   // through the REAL makeTraces, checking every isolated pure/mixed diamond
@@ -587,6 +604,144 @@ function testPlottingSkipsIsolatedDiamondsOnContinuum() {
   console.log(`✓ plotting.ts draws no isolated Pure/Mixed NE diamond for a point already covered by a continuum marker: `
     + `${N} games swept, ${continuumGames} had a genuine continuum, 0 double-marked (was 100% pre-fix per the finding), `
     + `${isolatedDiamondCount} stray isolated diamonds still correctly drawn.`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5b2. RED-MATH-10/001 — the current-position sphere pins itself (~line 92 of
+//      plotting.ts, untouched by RED-MATH-9/002's fix) to the nearest
+//      `computeAllNE` point once a run converges, REGARDLESS of whether that
+//      point is on a continuum. On 70.1% of real converged runs on continuum
+//      games (306,651/437,720 in the red's exact 300k int[-9,9] sweep,
+//      5 starts × 2 firstMovers, reproduced below at the same scale/seed/
+//      starts) the sphere settles on a CORNER of the component — a genuine
+//      pure-strategy vertex #114 correctly stopped double-marking — leaving
+//      it with no nearby glyph at all: the continuum's only remaining marker
+//      sat at the component's MIDPOINT, mean 0.38 (up to 0.71) plot-units
+//      away. Fixed by drawing a hollow diamond at every distinct corner of
+//      the component plus a dashed line tracing it, so the settled point is
+//      always within a drawn glyph or on the drawn line. This sweep checks
+//      that directly against the REAL `makeTraces` output — not a
+//      reimplementation of the glyph geometry — for every one of the
+//      306,651 real convergences the finding measured.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Distance from point (px,py) to the line segment (ax,ay)-(bx,by), in the
+ * x,y plane (the plot's domain — never the z/payoff axis). */
+function distToContinuumSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-18) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function pickCommittedNEForSweep(pureNEs: NashEquilibrium[], firstMover: 'A' | 'B'): NashEquilibrium | null {
+  if (pureNEs.length === 0) return null;
+  if (pureNEs.length === 1) return pureNEs[0];
+  return pureNEs.reduce((best, ne) => {
+    const myScore = firstMover === 'A' ? ne.eA : ne.eB;
+    const bestScore = firstMover === 'A' ? best.eA : best.eB;
+    return myScore > bestScore ? ne : best;
+  });
+}
+
+function testContinuumSettledPointAlwaysOnDrawnGlyph() {
+  // Known positive, hand-verified: the finding's exact repro. The settled
+  // corner (0,1) is a genuine computeAllNE pure point ON the continuum
+  // segment [0, 0.375] × {1}, 0.1875 plot-units from the (kept) midpoint
+  // marker — pre-fix, no drawn glyph sat within 1e-9 of it.
+  const FIXTURE: GamePayoffs = { a11: 0, a12: 2, a21: 0, a22: 3, b11: -6, b12: 9, b21: 6, b22: -3 };
+  const allNEf = computeAllNE(FIXTURE);
+  const stf = createInitialState(0, 1, FIXTURE);
+  stf.exactX = 0; stf.exactY = 1; stf.converged = true;
+  const surfF = buildSurfaces(FIXTURE);
+  const tracesF = makeTraces(surfF, FIXTURE, stf, 'both', allNEf, false, 'shrink');
+  const contF = tracesF.filter((t: any) => t.legendgroup === 'continuumNE');
+  const withinF = contF.some((t: any) => {
+    if (t.mode === 'markers') {
+      const xs: number[] = t.x; const ys: number[] = t.y;
+      return xs.some((xv: number, i: number) => Math.abs(xv - 0) < 1e-9 && Math.abs(ys[i] - 1) < 1e-9);
+    }
+    if (t.mode === 'lines') {
+      const xs: number[] = t.x; const ys: number[] = t.y;
+      for (let k = 0; k < xs.length - 1; k++) {
+        if (Number.isNaN(xs[k]) || Number.isNaN(xs[k + 1])) continue;
+        if (distToContinuumSegment(0, 1, xs[k], ys[k], xs[k + 1], ys[k + 1]) < 1e-9) return true;
+      }
+    }
+    return false;
+  });
+  ok(withinF, `fixture: settled corner (0,1) must be within a drawn continuumNE glyph or on a drawn segment — traces=${JSON.stringify(contF)}`);
+
+  // Reach — the red's own exact corpus: 300,000 random int[-9,9] games
+  // (mulberry32 seed 9001 — `mk` below is the same algorithm this file
+  // already uses elsewhere), both firstMovers, the red's 5 start points,
+  // stepMode='shrink'. Real `doStep` convergence, real `makeTraces` output.
+  const rng = mk(9001);
+  const N = 300000;
+  const STARTS: [number, number][] = [[0.5, 0.5], [0.2, 0.8], [0.1, 0.9], [0.35, 0.6], [0.05, 0.05]];
+  let continuumGames = 0;
+  let convergedRuns = 0;
+  let settledOnCorner = 0;
+  let cornerOnContinuum = 0;
+  let notOnDrawnGlyph = 0;
+  const sharedSurf2 = buildSurfaces({ a11: 0, a12: 0, a21: 0, a22: 0, b11: 0, b12: 0, b21: 0, b22: 0 });
+  for (let i = 0; i < N; i++) {
+    const cell = () => Math.floor(rng() * 19) - 9;
+    const g: GamePayoffs = {
+      a11: cell(), a12: cell(), a21: cell(), a22: cell(),
+      b11: cell(), b12: cell(), b21: cell(), b22: cell(),
+    };
+    if (!hasContinuum(g)) continue;
+    continuumGames++;
+    const allNE = computeAllNE(g);
+    const pureNEs = allNE.filter((n) => n.type === 'pure');
+    const rects = continuumComponents(g);
+    for (const firstMover of ['A', 'B'] as const) {
+      const committedNE = pickCommittedNEForSweep(pureNEs, firstMover);
+      for (const [x0, y0] of STARTS) {
+        const s = createInitialState(x0, y0, g);
+        for (let step = 0; step < 4000 && !s.converged; step++) {
+          doStep(g, s, firstMover, 0.1, allNE, committedNE, () => {}, () => {}, () => {}, 'shrink');
+        }
+        if (!s.converged) continue;
+        convergedRuns++;
+        const match = allNE.find((ne) => Math.abs(ne.x - s.exactX) < 1e-6 && Math.abs(ne.y - s.exactY) < 1e-6);
+        if (!match) continue;
+        settledOnCorner++;
+        if (!rects.some((r) => pointInRect(r, match.x, match.y))) continue;
+        cornerOnContinuum++;
+        const traces = makeTraces(sharedSurf2, g, s, 'both', allNE, false, 'shrink');
+        const cont = traces.filter((t: any) => t.legendgroup === 'continuumNE');
+        let within = false;
+        for (const t of cont) {
+          const xs: number[] = t.x; const ys: number[] = t.y;
+          if (t.mode === 'markers') {
+            for (let k = 0; k < xs.length; k++) {
+              if (Math.abs(xs[k] - match.x) < 1e-9 && Math.abs(ys[k] - match.y) < 1e-9) { within = true; break; }
+            }
+          } else if (t.mode === 'lines') {
+            for (let k = 0; k < xs.length - 1; k++) {
+              if (Number.isNaN(xs[k]) || Number.isNaN(xs[k + 1])) continue;
+              if (distToContinuumSegment(match.x, match.y, xs[k], ys[k], xs[k + 1], ys[k + 1]) < 1e-9) { within = true; break; }
+            }
+          }
+          if (within) break;
+        }
+        if (!within) notOnDrawnGlyph++;
+      }
+    }
+  }
+  ok(continuumGames > 35000, `corpus too small: only ${continuumGames} continuum games found out of ${N}`);
+  ok(cornerOnContinuum > 250000,
+    `the exact RED-MATH-10/001 class (settled on a continuum corner) was barely exercised: ${cornerOnContinuum}`);
+  ok(notOnDrawnGlyph === 0,
+    `${notOnDrawnGlyph}/${cornerOnContinuum} settled points on a continuum corner are NOT within a drawn glyph or on a drawn segment (must be 0 after the fix; was 306,651/306,651 pre-fix per the finding)`);
+  console.log(`✓ every settled point on a continuum corner sits on a drawn glyph or the drawn dashed segment: `
+    + `${N} games swept, ${continuumGames} had a genuine continuum, ${convergedRuns} converged runs, `
+    + `${settledOnCorner} settled exactly on a computeAllNE point, ${cornerOnContinuum} of those on a continuum `
+    + `(the RED-MATH-10/001 class) — 0 orphaned (was 306,651/306,651 pre-fix per the finding).`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -944,6 +1099,7 @@ testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();
 testPlottingDrawsContinuumMarker();
 testPlottingSkipsIsolatedDiamondsOnContinuum();
+testContinuumSettledPointAlwaysOnDrawnGlyph();
 testSimLogNamesContinuumOnRealRuns();
 testAppTsxUsesContinuumAwareLogAndDisplay();
 testStrayPointsNotOfferedAsContinuumRepresentatives();
