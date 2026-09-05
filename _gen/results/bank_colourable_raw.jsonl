@@ -1,0 +1,43 @@
+{"idx":271,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4254,"outputTokens":12,"reasoningTokens":0}
+{"idx":89,"d":"cranberry bog flooding","b":3,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4954,"outputTokens":12,"reasoningTokens":0}
+{"idx":20,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5202,"outputTokens":11,"reasoningTokens":0}
+{"idx":235,"d":"seed bank exchanges","b":3,"name":"Seed Bank Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5439,"outputTokens":12,"reasoningTokens":0}
+{"idx":106,"d":"lock-keeper shift swaps","b":1,"name":"Lock-Keeper Shift Swaps","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":5673,"outputTokens":22,"reasoningTokens":0}
+{"idx":77,"d":"greenhouse heat sharing","b":0,"name":"Shared Greenhouse Heat","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5791,"outputTokens":11,"reasoningTokens":0}
+{"idx":327,"d":"dune fence placement","b":2,"name":"Seasonal Dune Fences","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3679,"outputTokens":15,"reasoningTokens":0}
+{"idx":501,"d":"tidal turbine servicing","b":1,"name":"Tidal Turbine Servicing","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":2939,"outputTokens":null,"reasoningTokens":null}
+{"idx":518,"d":"avalanche patrol rosters","b":2,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3006,"outputTokens":12,"reasoningTokens":0}
+{"idx":372,"d":"wool scouring capacity","b":0,"name":"Scouring Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3920,"outputTokens":11,"reasoningTokens":0}
+{"idx":575,"d":"freight rail scheduling","b":3,"name":"Mountain Corridor Timetable","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3873,"outputTokens":12,"reasoningTokens":0}
+{"idx":670,"d":"oyster bed leases","b":1,"name":"Adjacent Oyster Leases","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3043,"outputTokens":12,"reasoningTokens":0}
+{"idx":815,"d":"dune fence placement","b":0,"name":"Dune Fence Adjustment","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2856,"outputTokens":12,"reasoningTokens":0}
+{"idx":849,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Exchange","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2993,"outputTokens":11,"reasoningTokens":0}
+{"idx":914,"d":"lock-keeper shift swaps","b":2,"name":"Canal Shift Roster","actorA":["the upstream lock"],"actorB":["the downstream lock"],"ok":true,"failure":null,"ms":2962,"outputTokens":18,"reasoningTokens":0}
+{"idx":1114,"d":"seaweed drying racks","b":0,"name":"Seaweed Drying Racks","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3008,"outputTokens":12,"reasoningTokens":0}
+{"idx":1035,"d":"cranberry bog flooding","b":1,"name":"Cranberry Bog Flooding","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3104,"outputTokens":11,"reasoningTokens":0}
+{"idx":979,"d":"film release timing","b":0,"name":"Small Film Release","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4861,"outputTokens":11,"reasoningTokens":0}
+{"idx":1165,"d":"charcoal burn scheduling","b":1,"name":"Shared Kiln Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2879,"outputTokens":12,"reasoningTokens":0}
+{"idx":1120,"d":"wool scouring capacity","b":3,"name":"Wool Scouring Capacity","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3709,"outputTokens":12,"reasoningTokens":0}
+{"idx":1251,"d":"film release timing","b":3,"name":"Premiere Calendar","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2974,"outputTokens":12,"reasoningTokens":0}
+{"idx":1281,"d":"saffron harvest labour","b":3,"name":"Saffron Harvest Labour","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3308,"outputTokens":12,"reasoningTokens":0}
+{"idx":1319,"d":"lock-keeper shift swaps","b":3,"name":"Critical Lock Shift","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4853,"outputTokens":15,"reasoningTokens":0}
+{"idx":1346,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":4545,"outputTokens":21,"reasoningTokens":0}
+{"idx":1491,"d":"vineyard irrigation","b":0,"name":"Vineyard Watering","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4141,"outputTokens":11,"reasoningTokens":0}
+{"idx":1644,"d":"wool scouring capacity","b":1,"name":"Wool Scouring Bookings","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3130,"outputTokens":12,"reasoningTokens":0}
+{"idx":1583,"d":"film release timing","b":0,"name":"Weekday Release Slots","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3740,"outputTokens":null,"reasoningTokens":null}
+{"idx":1751,"d":"wool scouring capacity","b":3,"name":"Scouring Capacity","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3397,"outputTokens":null,"reasoningTokens":null}
+{"idx":1942,"d":"silage clamp sharing","b":1,"name":"Shared Silage Clamp","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":3376,"outputTokens":null,"reasoningTokens":null}
+{"idx":1954,"d":"salt marsh grazing rights","b":1,"name":"Marsh Grazing Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2772,"outputTokens":12,"reasoningTokens":0}
+{"idx":1907,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":4725,"outputTokens":12,"reasoningTokens":0}
+{"idx":1957,"d":"lock-keeper shift swaps","b":3,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"error","ms":4385,"outputTokens":null,"reasoningTokens":null}
+{"idx":2036,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":2756,"outputTokens":15,"reasoningTokens":0}
+{"idx":2019,"d":"avalanche patrol rosters","b":1,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3784,"outputTokens":12,"reasoningTokens":0}
+{"idx":2128,"d":"osier bed cutting","b":1,"name":"Osier Bed Timing","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2970,"outputTokens":11,"reasoningTokens":0}
+{"idx":1965,"d":"lock-keeper shift swaps","b":0,"name":"Canal Shift Swap","actorA":["the first"],"actorB":["the second"],"ok":true,"failure":null,"ms":4903,"outputTokens":13,"reasoningTokens":0}
+{"idx":2174,"d":"dune fence placement","b":0,"name":"Dune Fence Placement","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":3805,"outputTokens":12,"reasoningTokens":0}
+{"idx":2261,"d":"observatory dome time","b":1,"name":"Shared Dome Evening","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2861,"outputTokens":12,"reasoningTokens":0}
+{"idx":2409,"d":"avalanche patrol rosters","b":1,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2975,"outputTokens":11,"reasoningTokens":0}
+{"idx":2450,"d":"osier bed cutting","b":0,"name":"Osier Bed Trimming","actorA":null,"actorB":null,"ok":false,"failure":"failed-actorNounsOk","ms":3303,"outputTokens":20,"reasoningTokens":0}
+{"idx":2457,"d":"salt marsh grazing rights","b":1,"name":"Marsh Grazing Schedule","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":2901,"outputTokens":11,"reasoningTokens":0}
+{"idx":2435,"d":"dune fence placement","b":1,"name":"Shared Dune Fences","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":5012,"outputTokens":12,"reasoningTokens":0}
+{"idx":619,"d":"avalanche patrol rosters","b":0,"name":"Avalanche Patrol Rosters","actorA":null,"actorB":null,"ok":true,"failure":null,"ms":66613,"outputTokens":11,"reasoningTokens":0}

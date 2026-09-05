@@ -1656,6 +1656,19 @@ const BRACE_DEBRIS = /[{}]/;
  */
 const SELF_TALK = /\bneed clean json\b|\bmust include only\b|\blet['\u2019]?s formulate\b|\bi accidentally\b|\bas an ai\b/i;
 
+// RED-CLOUD-9/001: a process-lifetime tally of how often the actor-noun
+// strip-not-reject branch below fires, logged on every increment so it shows
+// up in server logs without a separate metrics pipeline. Exported read/reset
+// so `src/nashvalidator.test.ts` can assert on it without depending on
+// console output.
+let actorNounsStrippedCount = 0;
+export function getActorNounsStrippedCount(): number {
+  return actorNounsStrippedCount;
+}
+export function _resetActorNounsStrippedCountForTest(): void {
+  actorNounsStrippedCount = 0;
+}
+
 export function validateScenario(
   sc: SuggestedScenario,
   g: GamePayoffs,
@@ -1750,11 +1763,31 @@ export function validateScenario(
   // report's deliberately frozen schema. Only this opt-in path therefore
   // re-enables the useful, decidable declaration checks: literal occurrence in
   // the description and exclusive ownership (plus the shared bank safety
-  // bars). A semantic role-noun/misattribution classifier remains retired: its
+  // bars — `actorNounsOk`, hardened by the literal-substring guard, RED-REGEN-2/001,
+  // #115 — remains the one thing that decides whether a noun pair is safe).
+  // A semantic role-noun/misattribution classifier remains retired: its
   // 8,069-scenario measurement found no target defect and the old rule could
   // not identify the one letter-form defect the existing check already catches.
+  //
+  // RED-CLOUD-9/001: this used to `issues.push(...)`, which fails the WHOLE
+  // scenario's `.ok` over one mis-copied article in one noun's phrase (e.g.
+  // "An orchard grower" on first mention, "the grower" on later reference —
+  // never verbatim as "the orchard grower" anywhere in one sentence) — an
+  // otherwise good, claim-free, on-topic, non-colliding story, discarded and
+  // rerolled for an unrelated reason. `scenarioActorNouns.ts`'s own doc
+  // comment states the intended policy: "the bank's policy is 'no nouns'
+  // rather than partly repairing model prose" — i.e. drop the NOUNS, not the
+  // STORY. That policy already exists in `cleanScenarioActorNouns`, but ran
+  // one gate too late to ever apply to THIS failure, because this check
+  // failed the whole scenario first. Strip the nouns here instead and let the
+  // rest of the story stand; `actorNounsOk` is unchanged and still the sole
+  // authority on whether a declared pair is safe to keep.
   if (options.actorNouns && !actorNounsOk(sc)) {
-    issues.push('actorA/actorB must be verbatim, disjoint, non-label actor nouns for regenerate');
+    delete sc.actorA;
+    delete sc.actorB;
+    actorNounsStrippedCount += 1;
+    // eslint-disable-next-line no-console -- observability counter, not a debug leftover; see getActorNounsStrippedCount.
+    console.warn(`[nashValidator] actor nouns stripped, story kept (count=${actorNounsStrippedCount})`);
   }
 
   const claims = sc.storyClaims ?? null;

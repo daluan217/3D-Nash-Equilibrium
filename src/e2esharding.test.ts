@@ -35,7 +35,7 @@ const expectedIds = [
   '1', '2', '3', '4', '5', '6', '6b', '7', '8', '9', '10', '11', '12',
   '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23',
   '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
-  '36', '37', '38', '39', '40', '41',
+  '36', '37', '38', '39', '40', '41', '42',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
@@ -49,7 +49,7 @@ for (let shard = 1; shard <= 4; shard++) {
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
-const historicalShard1Ids = ['1', '5', '6', '14', '21', '23', '27', '33', '38'];
+const historicalShard1Ids = ['1', '5', '6', '14', '21', '23', '27', '33', '38', '42'];
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SHARD: '1/4' }).selected.map(({ id }) => id),
   historicalShard1Ids,
   'the CI shard selector must retain its historical section assignment');
