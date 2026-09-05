@@ -302,7 +302,10 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
     Math.abs(zOf(resumed.live) - zOf(after.live)) < 0.05 && Math.abs(zOf(resumed.live) - zOf(before.live)) > 0.3,
     `before=${JSON.stringify(before.live)} afterGesture=${JSON.stringify(after.live)} afterResume=${JSON.stringify(resumed.live)}`);
   // Reset View must still win over the live pose (CodeRabbit, #129).
-  const resetBtn = page.getByRole('button', { name: /reset view/i });
+  // The button's visible label is hidden at phone widths; its accessible name
+  // is the title ("Reset 3D camera to default perspective").
+  const resetBtn = page.getByRole('button', { name: /reset (view|3d camera)/i }).first();
+  record('[touch camera] precondition: the Reset View control is reachable on the phone layout', await resetBtn.isVisible().catch(() => false));
   if (await resetBtn.isVisible().catch(() => false)) {
     await resetBtn.tap();
     const resetLanded = await settle(async () => { const c = (await cams()).live; return !!c && Math.abs(c.z - zOf(after.live)) > 0.3; }, 5000);
