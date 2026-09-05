@@ -780,7 +780,7 @@ export default function App() {
    * grounded in a fresh server read every time.
    */
   const refetchUserGames = useCallback(async () => {
-    if (!canOwnGames) { setUserCustomGames([]); return; }
+    if (!canOwnGames) { gamesFetchSeqRef.current += 1; setUserCustomGames([]); return; }
     // Only the NEWEST request may write the list: a database-mode or owner
     // switch re-fetches at once, and the earlier request's late response must
     // not overwrite the current list with the other database's rows
@@ -802,6 +802,9 @@ export default function App() {
     if ((authToken && user) || localOwnerMode) {
       void refetchUserGames();
     } else {
+      // Clearing the list also retires any request still in flight, or its late
+      // response would repopulate the list in the new mode (CodeRabbit, #123).
+      gamesFetchSeqRef.current += 1;
       setUserCustomGames([]);
     }
   }, [authToken, user, dbMode, apiBaseUrl, refetchUserGames, localOwnerMode]);
