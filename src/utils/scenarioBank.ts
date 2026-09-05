@@ -257,6 +257,32 @@ export const SERVE_PROBES: GamePayoffs[] = (() => {
  * partially repair model output; a row that fails gets NO nouns, not a
  * best-effort trim (see CLAUDE.md's `no-rewriting-rung3-ceiling`).
  */
+/**
+ * Whether ColorCoded would ACTUALLY highlight `term` inside `desc` — the
+ * IDENTICAL regex `ColorCoded.tsx` builds from a caller-supplied term (raw,
+ * unnormalized term against the raw, unnormalized description; only regex
+ * metacharacters escaped; word-boundary lookarounds; `gi` flags; no
+ * `.normalize()` anywhere). Extracted to module scope (RED-DESKTOP-9/001) so
+ * `scenarioIsColourable` and `actorNounsOk` can share one predicate rather
+ * than each growing its own subtly different idea of "verbatim" — exactly the
+ * failure this project has hit before (`.toLowerCase()` folds U+212A KELVIN
+ * SIGN to ASCII "k" where a plain `gi` regex does not; a bare `.includes()`
+ * ignores word boundaries and would accept "vendor" inside "prevendors").
+ * Building the identical regex here makes this predicate and the real
+ * highlighter's decision provably the same by construction. The term is used
+ * RAW, not `.trim()`'d, for the same reason: `ColorCoded.tsx` never trims
+ * either, so incidental whitespace in a term changes what its word-boundary
+ * lookarounds see.
+ */
+export function escapeForColourRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+export function highlightWouldMatch(term: string, desc: string): boolean {
+  if (!term) return false;
+  const re = new RegExp(`(?<![\\w])(?:${escapeForColourRegex(term)})(?![\\w])`, 'gi');
+  return re.test(desc);
+}
+
 export function actorNounsOk(sc: {
   actorA?: unknown; actorB?: unknown; description?: string | null;
   row1?: string | null; row2?: string | null; col1?: string | null; col2?: string | null;
@@ -315,12 +341,10 @@ export function actorNounsOk(sc: {
   // accept a whitespace-padded noun this predicate is supposed to reject,
   // because the real regex's word-boundary lookarounds see the space
   // character as part of the match, not the caller's convenience trim.
-  const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const highlightWouldMatch = (term: string, desc: string) => {
-    if (!term) return false;
-    const re = new RegExp(`(?<![\\w])(?:${escapeForRegex(term)})(?![\\w])`, 'gi');
-    return re.test(desc);
-  };
+  //
+  // `highlightWouldMatch`/`escapeForColourRegex` now live at module scope
+  // (RED-DESKTOP-9/001) so `scenarioIsColourable` shares this exact
+  // predicate instead of growing its own.
   const rawDesc = sc.description ?? '';
   if (all.some((t) => !highlightWouldMatch(t, rawDesc))) return false;
   const aSet = new Set((a as string[]).map(norm));
@@ -399,4 +423,42 @@ export function actorNounsOk(sc: {
     || firstSecondChoose;
   if (onlyOneSide && symmetricFraming) return false;
   return true;
+}
+
+/**
+ * RED-DESKTOP-9/001: whether a scenario has ANY term either player's colour
+ * can attach to — a description with zero colourable terms for a player
+ * renders that player's half of the story with NO highlight at all, even
+ * though the game clearly has two distinct players making two distinct
+ * choices. Measured on the shipped bank (2,483 rows): 152 (6.12%) have a
+ * row/col option label the description never states verbatim (paraphrased
+ * scene-setting — "an early or late release" for labels "Early Release"/
+ * "Late Release" — is normal, unpenalised English; `SCENARIO_SYSTEM_PROMPT`'s
+ * "name the options with their exact labels" rule is deliberately scoped to
+ * COMPARATIVE-claim sentences only, not scene-setting), and 47 (1.89%) of
+ * those also carry no actorA/actorB, leaving that player with literally
+ * nothing to colour.
+ *
+ * Deliberately NOT a "labels must be verbatim" gate (studied and rejected —
+ * see `onlyPairHeldCollectively`'s own precedent: paraphrase is normal,
+ * ordinary English, not a defect). This predicate only asks the narrower,
+ * decidable question the colour feature actually depends on: does EACH
+ * player have at least one own term (a label OR a declared actor noun) that
+ * the highlighter's own regex would actually match somewhere in the
+ * description? A row can fail this while being a perfectly good, honest,
+ * claim-free story — it is a colourability screen, not a truthfulness one.
+ *
+ * Uses `highlightWouldMatch`, the SAME predicate `actorNounsOk` uses, so this
+ * can never disagree with what the real highlighter (`ColorCoded.tsx`) would
+ * actually do with the row.
+ */
+export function scenarioIsColourable(sc: {
+  actorA?: unknown; actorB?: unknown; description?: string | null;
+  row1?: string | null; row2?: string | null; col1?: string | null; col2?: string | null;
+}): boolean {
+  const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []);
+  const desc = sc.description ?? '';
+  const aTerms = [sc.row1, sc.row2, ...strList(sc.actorA)].filter((t): t is string => typeof t === 'string' && t.length > 0);
+  const bTerms = [sc.col1, sc.col2, ...strList(sc.actorB)].filter((t): t is string => typeof t === 'string' && t.length > 0);
+  return aTerms.some((t) => highlightWouldMatch(t, desc)) && bTerms.some((t) => highlightWouldMatch(t, desc));
 }

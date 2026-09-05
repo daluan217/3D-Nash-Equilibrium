@@ -69,8 +69,11 @@ const SAME_AS_STORY = { ...STORY, description: STORY.description + ' Scheduling 
 // RED-REGEN-2/001 fixture: an actor noun that is only NFKC/zero-width-equal
 // to the description, not a literal substring of it — the red's exact ZWSP
 // string (a zero-width space spliced into "farmer"). The pre-fix
-// `actorNounsOk` accepted this (normalized comparison only); the fix must
-// reject-and-reroll it so it never reaches the client.
+// `actorNounsOk` accepted this (normalized comparison only); RED-REGEN-2/001
+// fixed `actorNounsOk` itself to require a literal substring, so this pair
+// still fails the noun check today — RED-CLOUD-9/001 (this round) changed
+// only what happens NEXT: the nouns are stripped and the story is accepted,
+// not discarded and rerolled (see section 12 below).
 const ZWSP_STORY = {
   name: 'Mock Farm Plot', row1: 'Plant Early', row2: 'Plant Late',
   col1: 'Harvest Soon', col2: 'Harvest Late',
@@ -637,28 +640,48 @@ try {
   // ═══════════════════════════════════════════════════════════════════════
   // 12. RED-REGEN-2/001 — an actor noun that only matches the description
   //     through NFKC/zero-width normalization (never a byte-for-byte literal
-  //     substring) is rejected at the gate and rerolled, never reaching the
-  //     client — reusing the red's exact reproduction (ZWSP_STORY above,
-  //     verbatim from /private/tmp/h2-regen-red/probes/red_regen2_server.mjs
-  //     fixture `zwsp`). Every draw from the mock repeats this same
-  //     unfixable noun, so the ladder must exhaust and fall back to the bank
-  //     exactly like the other reject-and-reroll classes (avoid gate,
-  //     non-verbatim, label collision) already covered above.
+  //     substring) is never accepted onto the client wire — reusing the
+  //     red's exact reproduction (ZWSP_STORY above, verbatim from
+  //     /private/tmp/h2-regen-red/probes/red_regen2_server.mjs fixture
+  //     `zwsp`).
+  //
+  //     UPDATED for RED-CLOUD-9/001 (this round): a non-verbatim/colliding
+  //     actor-noun pair is no longer treated as a reason to discard the
+  //     WHOLE story and reroll — nashValidator.ts's validateScenario now
+  //     STRIPS the offending nouns in place and accepts the rest of the
+  //     draw (scenarioActorNouns.ts's own documented policy, "no nouns, not
+  //     a rejected story", finally applied at the point it can fire). So
+  //     this same ZWSP fixture is now accepted on the FIRST draw, with no
+  //     nouns at all, rather than exhausting the reroll ladder and falling
+  //     back to the bank. The one thing that must still hold — the
+  //     zero-width-spliced noun never reaching the client — holds even more
+  //     directly now: there is no noun on the wire whatsoever.
   // ═══════════════════════════════════════════════════════════════════════
   {
     calls = 0; mode = 'zwsp'; sequence = null; lastProviderRequest = null;
     await boot(HOSTED_ON_ENV);
     const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
-    record('RED-REGEN-2/001: still 200 with a scenario (bank fallback rescues the exhausted ladder)',
+    record('RED-REGEN-2/001 (post RED-CLOUD-9/001): still 200 with a scenario (the story ships, stripped of nouns)',
       r.status === 200 && !!r.json?.scenario, `status=${r.status} body=${JSON.stringify(r.json)}`);
     const wireActorA = r.json?.scenario?.actorA ?? [];
     const hasZwspNoun = wireActorA.some((t) => /[​-‍﻿]/.test(t));
     record('RED-REGEN-2/001: the zero-width-spliced noun never reaches the client wire',
       !hasZwspNoun, `actorA=${JSON.stringify(wireActorA)}`);
-    record('RED-REGEN-2/001: the provider was asked 1 + NASH_SCENARIO_REROLLS (default 2) = 3 times before falling back',
-      calls === 3, `calls=${calls}`);
-    record('RED-REGEN-2/001: falls back to the bank (scenarioSource=bank-fallback), same treatment as any other rejected draw',
-      r.json?.scenarioSource === 'bank-fallback', `scenarioSource=${JSON.stringify(r.json?.scenarioSource)}`);
+    record('RED-CLOUD-9/001: no nouns reach the wire at all (stripped, not merely sanitized)',
+      wireActorA.length === 0 && (r.json?.scenario?.actorB ?? []).length === 0,
+      `actorA=${JSON.stringify(wireActorA)} actorB=${JSON.stringify(r.json?.scenario?.actorB)}`);
+    record('RED-CLOUD-9/001: the provider is asked exactly ONCE — the story is accepted (nouns stripped), not discarded and rerolled',
+      calls === 1, `calls=${calls}`);
+    record('RED-CLOUD-9/001: served from the model directly (scenarioSource is undefined), not the bank fallback — the ladder never had to exhaust',
+      r.json?.scenarioSource === undefined, `scenarioSource=${JSON.stringify(r.json?.scenarioSource)}`);
+    record('RED-CLOUD-9/001: the rest of the draw (name/labels/description) survives untouched — only the nouns were stripped',
+      r.json?.scenario?.name === ZWSP_STORY.name
+        && r.json?.scenario?.description === ZWSP_STORY.description
+        && r.json?.scenario?.row1 === ZWSP_STORY.row1
+        && r.json?.scenario?.row2 === ZWSP_STORY.row2
+        && r.json?.scenario?.col1 === ZWSP_STORY.col1
+        && r.json?.scenario?.col2 === ZWSP_STORY.col2,
+      `name=${JSON.stringify(r.json?.scenario?.name)}`);
     await stop();
   }
 
