@@ -251,8 +251,39 @@ function normalizeFullwidthDigits(s: string): string {
     .replace(new RegExp(String.fromCharCode(FULLWIDTH_FULL_STOP), 'g'), '.');
 }
 
+/**
+ * RED-DESKTOP-9/002: a comma anywhere in a numeric field's raw text. Exported
+ * so a caller (App.tsx's payoff-cell handlers) can special-case the comma
+ * failure mode specifically — e.g. to show a targeted hint — without
+ * duplicating what counts as "a comma" here.
+ *
+ * `parseFloat` does not reject a trailing comma as unparseable: it parses
+ * only the LEADING digits it recognises and silently stops, so "3,5" reads
+ * as 3 and "1,000" reads as 1 — a real, meaningful keystroke silently
+ * truncated to a DIFFERENT, plausible-looking number, with nothing on
+ * screen telling the user their input was cut short. A comma is genuinely
+ * ambiguous (the decimal separator across most of continental Europe and
+ * Latin America; a thousands separator elsewhere) and reinterpreting it
+ * either way risks silently changing what the user meant even when it
+ * "succeeds" — so it is rejected outright, the same as any other
+ * unparseable string, rather than guessed at.
+ *
+ * CodeRabbit (CLI, this branch): the ASCII-only check missed U+FF0C
+ * FULLWIDTH COMMA — an IME's fullwidth input mode emits it, exactly the
+ * same source as the fullwidth DIGITS `normalizeFullwidthDigits` already
+ * handles a few lines below — so "３，５" (fullwidth 3, fullwidth comma,
+ * fullwidth 5) parsed as 3 with no comma ever detected: the same silent
+ * truncation this function exists to close, just spelled with a different
+ * comma glyph. Checked BEFORE normalisation (like the ASCII case), since a
+ * caller must reject before ever calling parseFloat, not after.
+ */
+export function containsAmbiguousComma(raw: string | null | undefined): boolean {
+  return typeof raw === 'string' && /[,\uFF0C]/.test(raw);
+}
+
 export function parseNumericInput(raw: string | null | undefined): number | null {
   if (typeof raw !== 'string') return null;
+  if (containsAmbiguousComma(raw)) return null;
   const canonical = normalizeFullwidthDigits(
     raw.replace(NUMERIC_INPUT_MINUS, '-').replace(NUMERIC_INPUT_PLUS, '+'),
   );

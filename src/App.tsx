@@ -30,6 +30,7 @@ import {
   commitPayoffInput,
   commitStartCoordinate,
   parseNumericInput,
+  containsAmbiguousComma,
   commitStepSize,
   commitStepIndex,
   precomputeThinHistory,
@@ -837,6 +838,55 @@ export default function App() {
     a11: '2', b11: '1', a12: '0', b12: '0',
     a21: '0', b21: '0', a22: '1', b22: '2',
   });
+
+  // RED-DESKTOP-9/002: a comma is REJECTED, not reinterpreted or silently
+  // truncated to its leading digits (parseNumericInput's containsAmbiguousComma
+  // guard) — the cell keeps whatever value the game already holds and this
+  // hint tells the user why, instead of the field silently substituting a
+  // different, plausible-looking number with no visible sign anything went
+  // wrong.
+  //
+  // CodeRabbit (CLI, this branch): tracks WHICH field raised it, not just a
+  // bare message — a hint from cell A must not be cleared by an unrelated
+  // valid edit to cell B (the field is still sitting on its rejected comma
+  // text either way), and must not survive a whole-matrix replacement
+  // (handleLoadPreset / handleGenerateGame both reset it explicitly).
+  const [payoffInputHint, setPayoffInputHint] = useState<{ field: keyof GamePayoffs; message: string } | null>(null);
+
+  /**
+   * RED-DESKTOP-9/002, second half. The comma guard in `updatePayoffField`
+   * refuses a string that CONTAINS a comma — but the user types one character
+   * at a time, so the comma-free PREFIX of "3,5" (the "3") has already gone
+   * through the ordinary branch and committed: payoff changed, preset flipped
+   * to "custom", run reset, plot redrawn — all before the comma ever appears.
+   * The first version of this fix reverted the DISPLAY to `payoffs[field]` on
+   * blur, which by then was that already-committed leading digit; its e2e
+   * check passed only because the fixture's cell happened to hold 3 already.
+   *
+   * So the pre-edit state is captured here, on FOCUS (before any keystroke of
+   * this edit session can run), and restored — payoff AND active preset — the
+   * moment the field turns ambiguous, then again on blur. What cannot be
+   * undone is a run the leading digit already reset; that is the ordinary
+   * consequence of typing a digit into the matrix, and it is visible.
+   */
+  const payoffFieldSnapshotRef = useRef<Partial<Record<keyof GamePayoffs, { value: number; preset: string }>>>({});
+  const handlePayoffFocus = (field: keyof GamePayoffs) => {
+    payoffFieldSnapshotRef.current[field] = { value: payoffs[field], preset: activePreset };
+  };
+  /** Put the GAME back to what it held when this cell was focused, if a comma-free prefix moved it. */
+  const restorePreEditPayoff = (field: keyof GamePayoffs) => {
+    const snap = payoffFieldSnapshotRef.current[field];
+    if (!snap || payoffs[field] === snap.value) return;
+    const restored: GamePayoffs = { ...payoffs, [field]: snap.value };
+    setPayoffs(restored);
+    setActivePreset(snap.preset);
+    setInitialized(false);
+    // Writer contract (src/test.ts, testPayoffsWritersAllInvalidate): every
+    // payoff writer resets a live run. The leading digit's own commit already
+    // did, so this is a no-op in practice; kept so the invariant holds by
+    // construction rather than by argument.
+    if (runCtx) handleReset(restored);
+  };
 
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction
   const inactiveTimersRef = useRef<Record<string, any>>({});
@@ -2109,6 +2159,9 @@ export default function App() {
     setGenerateLoading(true);
     setGenerateNote('');
     setSaveError('');
+    // Same reasoning as handleLoadPreset: a fresh matrix makes any per-cell
+    // rejected-comma hint stale (CodeRabbit, this branch).
+    setPayoffInputHint(null);
     // Generate rolls a NEW MATRIX — any regen preview (or in-flight regen
     // request) was for the OLD one and must not survive it, same as the
     // dialog-close reset above. The button itself is also hidden while
@@ -2903,6 +2956,10 @@ export default function App() {
   // ── Preset loader action ───────────────────────────────────────────────────
   const handleLoadPreset = (key: string) => {
     setActivePreset(key);
+    // A whole-matrix replacement makes any per-cell rejected-comma hint stale
+    // (CodeRabbit, this branch) — the field it was about no longer holds the
+    // typed text the hint was explaining.
+    setPayoffInputHint(null);
     if (key !== 'custom') {
       const preset = mergedPresets[key];
       if (preset) {
@@ -3661,6 +3718,26 @@ export default function App() {
 
   // ── Matrix Editor Input Clamps ─────────────────────────────────────────────
   const updatePayoffField = (field: keyof GamePayoffs, valStr: string) => {
+    // RED-DESKTOP-9/002: a comma is REJECTED outright, not reinterpreted and
+    // not silently truncated to its leading digits ("3,5" -> 3, "1,000" -> 1
+    // via a bare parseFloat) — the box still shows exactly what was typed so
+    // the user can see and fix the mistake, but nothing about the GAME
+    // commits: no payoff change, no preset flip to "custom", no run reset.
+    // The field is left exactly where it was, same as any other unparseable
+    // text, and a hint says why.
+    if (containsAmbiguousComma(valStr)) {
+      setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
+      setPayoffInputHint({ field, message: 'Use a dot for decimals, not a comma.' });
+      // The comma-free prefix typed before this comma has already committed;
+      // undo that now, not at blur — the plot and the solver must not spend the
+      // rest of the edit on a value the user never finished typing.
+      restorePreEditPayoff(field);
+      return;
+    }
+    // Clear only a hint THIS field raised — an unrelated valid edit to a
+    // different cell must not silently dismiss another cell's still-rejected
+    // comma text (CodeRabbit, this branch).
+    setPayoffInputHint((prev) => (prev?.field === field ? null : prev));
     setActivePreset('custom');
     setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
 
@@ -3718,6 +3795,24 @@ export default function App() {
     // Cancel the inactivity timer immediately when blurred
     if (inactiveTimersRef.current[field]) {
       clearTimeout(inactiveTimersRef.current[field]);
+    }
+
+    // RED-DESKTOP-9/002: a comma-holding field never committed as typed, so
+    // blur reverts the DISPLAYED text to the value the cell held BEFORE this
+    // edit began — the focus-time snapshot, NOT `payoffs[field]`, which the
+    // comma-free leading digit may already have moved (see
+    // `payoffFieldSnapshotRef`) — rather than falling into
+    // commitPayoffInput's ordinary unparseable-input path (which commits 0:
+    // right for genuine garbage, wrong for "reject the comma, leave the value
+    // alone"). The game itself is re-asserted too, in case the change handler
+    // never saw the comma arrive one keystroke at a time (a single paste of
+    // "3,5" does reach it, but belt and braces costs nothing here). The hint
+    // stays up until the user edits the field again.
+    if (containsAmbiguousComma(rawPayoffs[field])) {
+      const snap = payoffFieldSnapshotRef.current[field];
+      restorePreEditPayoff(field);
+      setRawPayoffs((prev) => ({ ...prev, [field]: String(snap ? snap.value : payoffs[field]) }));
+      return;
     }
 
     // Blur used to be a SECOND, independently written string->number conversion.
@@ -4184,6 +4279,15 @@ export default function App() {
               </div>
               <span className="text-xs text-muted dark:text-muted-dark font-mono">Range: [-100, 100]</span>
             </div>
+            {payoffInputHint && (
+              <div
+                data-testid="payoff-input-hint"
+                role="status"
+                className="text-xs text-amber-700 dark:text-amber-400 -mt-1"
+              >
+                {payoffInputHint.message}
+              </div>
+            )}
 
             {/* Row-label column capped at 72px (was "auto"): mobile CI caught this
                 --  an auto-sized column grows to fit whatever text is in it (e.g.
@@ -4218,6 +4322,7 @@ export default function App() {
                   value={rawPayoffs.a11}
                   onChange={(e) => updatePayoffField('a11', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a11')}
                   onBlur={() => handlePayoffBlur('a11')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4229,6 +4334,7 @@ export default function App() {
                   value={rawPayoffs.b11}
                   onChange={(e) => updatePayoffField('b11', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b11')}
                   onBlur={() => handlePayoffBlur('b11')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4241,6 +4347,7 @@ export default function App() {
                   value={rawPayoffs.a12}
                   onChange={(e) => updatePayoffField('a12', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a12')}
                   onBlur={() => handlePayoffBlur('a12')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4252,6 +4359,7 @@ export default function App() {
                   value={rawPayoffs.b12}
                   onChange={(e) => updatePayoffField('b12', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b12')}
                   onBlur={() => handlePayoffBlur('b12')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4267,6 +4375,7 @@ export default function App() {
                   value={rawPayoffs.a21}
                   onChange={(e) => updatePayoffField('a21', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a21')}
                   onBlur={() => handlePayoffBlur('a21')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4278,6 +4387,7 @@ export default function App() {
                   value={rawPayoffs.b21}
                   onChange={(e) => updatePayoffField('b21', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b21')}
                   onBlur={() => handlePayoffBlur('b21')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4290,6 +4400,7 @@ export default function App() {
                   value={rawPayoffs.a22}
                   onChange={(e) => updatePayoffField('a22', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a22')}
                   onBlur={() => handlePayoffBlur('a22')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4301,6 +4412,7 @@ export default function App() {
                   value={rawPayoffs.b22}
                   onChange={(e) => updatePayoffField('b22', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b22')}
                   onBlur={() => handlePayoffBlur('b22')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />

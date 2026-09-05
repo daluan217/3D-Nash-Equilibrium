@@ -11,7 +11,7 @@
  */
 import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, __resetBankSeen } from './utils/bankSource';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
-import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, type BankEntry } from './utils/scenarioBank';
+import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, type BankEntry } from './utils/scenarioBank';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
 import { readFileSync } from 'node:fs';
 import type { GamePayoffs } from './types';
@@ -456,6 +456,59 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const shipped = screenNounRows(allBankRows());
   check('every shipped row carrying actorA/actorB still passes actorNounsOk', shipped.bad === 0,
     `${shipped.bad} of ${shipped.scanned} noun-bearing rows fail actorNounsOk — the artifact is stale, re-run _gen/bank_actor_nouns_merge.ts. First: ${shipped.firstBad}`);
+
+  /**
+   * COLOURABLE-ROW RE-SCREEN (RED-DESKTOP-9/001, 2026-09-04). `scenarioIsColourable`
+   * is applied to EVERY shipped row (not only noun-bearing ones, unlike the
+   * actor-noun re-screen above) — the colour feature depends on the row's
+   * OWN labels being colourable even when it declares no nouns at all. A row
+   * that fails this renders one or both players' half of the story with NO
+   * highlight anywhere: exhaustively measured at 152/2483 (6.12%) label-not-
+   * verbatim and 47/2483 (1.89%) fully uncolourable-for-one-player before the
+   * targeted extraction+drop pass this fix ships with; the artifact is
+   * re-screened here rather than trusted, for the identical reason every
+   * other bank gate above is re-run rather than trusted once at build time.
+   */
+  function screenColourableRows(rows: readonly BankEntry[]): { bad: number; scanned: number; firstBad: string } {
+    let bad = 0; let scanned = 0; let firstBad = '';
+    for (const e of rows) {
+      scanned++;
+      if (!scenarioIsColourable(e.s)) {
+        bad++;
+        if (!firstBad) firstBad = `"${e.s.name}" row1=${JSON.stringify(e.s.row1)} row2=${JSON.stringify(e.s.row2)} col1=${JSON.stringify(e.s.col1)} col2=${JSON.stringify(e.s.col2)} actorA=${JSON.stringify(e.s.actorA)} actorB=${JSON.stringify(e.s.actorB)} description=${JSON.stringify(e.s.description)}`;
+      }
+    }
+    return { bad, scanned, firstBad };
+  }
+
+  const colourable = screenColourableRows(allBankRows());
+  check('every shipped row has a colourable term for BOTH players', colourable.bad === 0,
+    `${colourable.bad} of ${colourable.scanned} shipped rows have no colourable term for at least one player — the artifact is stale, re-run the RED-DESKTOP-9/001 extraction+drop pass. First: ${colourable.firstBad}`);
+
+  /**
+   * KNOWN-POSITIVE for scenarioIsColourable itself: a row whose labels the
+   * description never states verbatim, and which declares no actor nouns,
+   * must fail — the same shape the finding's real "Cider Press Bookings"-
+   * style rows take. A row with a plain, label-matching description must
+   * pass, and adding a verbatim noun for the missing side must flip a
+   * one-sided failure back to passing.
+   */
+  {
+    // Labels deliberately share NO word with the paraphrased wording below —
+    // "Dawn Roster"/"dawn shift" and "Midday Roster"/"midday shift" differ in
+    // their second word, so neither label can accidentally match by fragment
+    // (the real "Avalanche Patrol Rosters" shape from the finding).
+    const colourableBase = { row1: 'Dawn Roster', row2: 'Midday Roster', col1: 'Reserve Capacity', col2: 'Open Calendar' };
+    check('scenarioIsColourable: a description using neither player\'s labels verbatim, no nouns, is rejected',
+      !scenarioIsColourable({ ...colourableBase, description: 'The two neighbors are arranging a booking for the season.' }));
+    check('scenarioIsColourable: a description that states both sets of labels verbatim is accepted',
+      scenarioIsColourable({ ...colourableBase, description: 'A coordinator chooses between Dawn Roster and Midday Roster, while a manager chooses between Reserve Capacity and Open Calendar.' }));
+    const paraphrased = 'The orchard grower is arranging a booking with a press manager. The grower picks a dawn shift or a midday shift, while the press manager picks a reserved slot or an open slot.';
+    check('scenarioIsColourable: a noun for only ONE player does not rescue the OTHER player\'s paraphrased labels',
+      !scenarioIsColourable({ ...colourableBase, description: paraphrased, actorA: ['The orchard grower'], actorB: null }));
+    check('scenarioIsColourable: a verbatim actor noun for EACH player rescues both paraphrased sides',
+      scenarioIsColourable({ ...colourableBase, description: paraphrased, actorA: ['The orchard grower'], actorB: ['the press manager'] }));
+  }
 
   /**
    * KNOWN-POSITIVE for the skip condition itself: a malformed `actorA: ''`
