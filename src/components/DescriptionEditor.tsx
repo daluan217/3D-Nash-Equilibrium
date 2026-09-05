@@ -114,22 +114,35 @@ export function DescriptionEditor({
     );
   };
 
-  const chip = (term: string, player: 'A' | 'B') => (
-    <button
-      key={player + term}
-      type="button"
-      onClick={() => remove(term)}
-      title="Remove this highlight"
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition
-        ${player === 'A'
-          ? 'border-player-a-300 dark:border-player-a-800 text-player-a-ink dark:text-player-a-ink-dark hover:bg-player-a-50 dark:hover:bg-player-a-900/30'
-          : 'border-player-b-300 dark:border-player-b-800 text-player-b-ink dark:text-player-b-ink-dark hover:bg-player-b-50 dark:hover:bg-player-b-900/30'}`}
-    >
-      {term}
-      <span aria-hidden="true" className="text-slate-400">×</span>
-      <span className="sr-only">Remove highlight</span>
-    </button>
-  );
+  // RED-REGEN-4/002: a chip whose highlight the label-ownership rule suppressed
+  // (it names an option label on the other side) must SAY so — the chip stays,
+  // its pill goes neutral, and the title explains why nothing is coloured.
+  const renderedTerms = new Set([...merged.a, ...merged.b].map((t) => t.toLowerCase()));
+  const chip = (term: string, player: 'A' | 'B') => {
+    const suppressed = !renderedTerms.has(term.toLowerCase());
+    const colour = player === 'A'
+      ? 'border-player-a-300 dark:border-player-a-800 text-player-a-ink dark:text-player-a-ink-dark hover:bg-player-a-50 dark:hover:bg-player-a-900/30'
+      : 'border-player-b-300 dark:border-player-b-800 text-player-b-ink dark:text-player-b-ink-dark hover:bg-player-b-50 dark:hover:bg-player-b-900/30';
+    const neutral = 'border-dashed border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800';
+    return (
+      <button
+        key={player + term}
+        type="button"
+        onClick={() => remove(term)}
+        data-player={player}
+        data-suppressed={suppressed ? 'true' : undefined}
+        title={suppressed
+          ? `Not highlighted: "${term}" names an option label that is not exclusively this player's (shared by both, or the other player's), so it stays neutral. Remove to drop the chip.`
+          : 'Remove this highlight'}
+        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${suppressed ? neutral : colour}`}
+      >
+        {term}
+        {suppressed && <span className="font-normal">(not highlighted)</span>}
+        <span aria-hidden="true" className="text-slate-400">×</span>
+        <span className="sr-only">Remove highlight</span>
+      </button>
+    );
+  };
 
   return (
     <div>
