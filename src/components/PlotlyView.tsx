@@ -274,6 +274,13 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const pinchStartEye = useRef<{x: number; y: number; z: number} | null>(null);
   // Tracks the camera the user has rotated to so Plotly.react never overrides it
   const cameraRef = useRef<any>(DEFAULT_CAMERA);
+  /**
+   * Legend entries the USER switched off. Every simulation step rebuilds the
+   * traces from scratch, and a fresh trace carries no `visible`, so a legend
+   * toggle used to last exactly until the next step (RED-MATH-12/002). The
+   * click handler records the group; the redraw re-applies it.
+   */
+  const userHiddenGroupsRef = useRef<Set<string>>(new Set());
   /** Spin paused because the visitor took the wheel. Mirrored in a ref so the
    *  animation loop can read it without being torn down and rebuilt. */
   const [spinPaused, setSpinPaused] = useState(false);
@@ -722,6 +729,12 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         if (hidden.has(t.name)) t.visible = 'legendonly';
       }
     }
+    // What the user switched off in the legend stays off across redraws.
+    if (userHiddenGroupsRef.current.size) {
+      for (const t of traces as any[]) {
+        if (userHiddenGroupsRef.current.has(t.legendgroup ?? t.name)) t.visible = 'legendonly';
+      }
+    }
 
     /* Tour callouts.
      *
@@ -1033,12 +1046,23 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // Toggle the whole group so clicking the legend hides the real path too.
       try { el2.removeAllListeners('plotly_legendclick'); } catch {}
       el2.on('plotly_legendclick', (ev: any) => {
-        const grp = ev?.data?.[ev.curveNumber]?.legendgroup;
-        if (grp !== 'amoves' && grp !== 'bmoves') return true; // default toggle
-        const indices: number[] = [];
-        ev.data.forEach((t: any, i: number) => { if (t.legendgroup === grp) indices.push(i); });
-        const cur = ev.data[ev.curveNumber].visible;
+        const clicked = ev?.data?.[ev.curveNumber];
+        const grp = clicked?.legendgroup;
+        const cur = clicked?.visible;
         const nextVisible = (cur === undefined || cur === true) ? 'legendonly' : true;
+        // Record the user's choice by group (or name for ungrouped entries) so
+        // the next redraw keeps it (RED-MATH-12/002).
+        const key = grp ?? clicked?.name;
+        if (key) { if (nextVisible === 'legendonly') userHiddenGroupsRef.current.add(key); else userHiddenGroupsRef.current.delete(key); }
+        if (grp && grp !== 'amoves' && grp !== 'bmoves') return true; // Plotly's own group toggle
+        // amoves/bmoves: the legend entry is a stub trace and the real path a
+        // separate trace in the same group. Ungrouped entries: toggle every trace
+        // sharing the clicked NAME (Plotly's default would flip just the one
+        // clicked; the redraw re-applies by name — CodeRabbit).
+        const indices: number[] = [];
+        ev.data.forEach((t: any, i: number) => {
+          if (grp ? t.legendgroup === grp : (t.name ?? '').toLowerCase() === (clicked?.name ?? '').toLowerCase()) indices.push(i);
+        });
         (window as any).Plotly?.restyle(plotId, { visible: nextVisible }, indices);
         return false; // suppress Plotly's single-trace default
       });
