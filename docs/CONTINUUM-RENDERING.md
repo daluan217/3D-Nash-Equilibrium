@@ -11,10 +11,13 @@ next change can be checked against it instead of against the next screenshot.
 
 For every 2×2 game, in every rendered plot:
 
-1. **Every point of every equilibrium-continuum component lies on a drawn glyph or the
-   drawn dashed line.** A settled current-position sphere anywhere on a component —
+1. **Every point of every equilibrium-continuum `segment` lies on a drawn glyph or the
+   drawn dashed line.** A settled current-position sphere anywhere on a segment —
    corner or interior — always has something under it that says "equilibrium." Enforced
    by `testContinuumSettledPointAlwaysOnDrawnGlyph` (300k-game sweep, data-space).
+   An `area` component is drawn as its dashed perimeter plus its corner and midpoint
+   markers; a point in its interior (e.g. `(0.25, 0.25)` of the full square) has the
+   perimeter around it but no glyph under it — see "Known gaps".
 2. **A sphere pinned to a corner sits inside a visible outline larger than itself.** The
    corner marker's symbol/size (`diamond-open`, `diamondSize * 2`) must protrude around
    the sphere the way the Pure/Mixed NE diamonds do (`>= 1.3x` the sphere's own size).
@@ -38,10 +41,13 @@ For every 2×2 game, in every rendered plot:
    group (or any group) survives the next `Plotly.react` call triggered by a running
    simulation, not just a same-data re-render (`PlotlyView.tsx`'s `userHiddenGroupsRef` +
    `plotly_legendclick` handler).
-8. **Mobile sizes scale the same contract.** `isMobile` halves marker sizes
-   (`diamondSize`, `sphereSize` and their multipliers) uniformly; clauses 2–4 hold at
-   both size sets, checked in `testContinuumCornerMarkersVisibleUniqueAndNamed` and
-   `testShortContinuumCollapsesToOneMarker`.
+8. **Mobile sizes scale the same contract.** `isMobile` selects a smaller size set —
+   `diamondSize` 10.5 → 7, `sphereSize` 8 → 5.5, `ghostSize` 6.5 → 5 (roughly two thirds,
+   not half). Clauses 2–4 constrain RATIOS between a marker and the sphere (a corner
+   outline is `diamondSize * 2`: 21 vs 8 on desktop, 14 vs 5.5 on mobile, both well above
+   the `>= 1.3x` bar), so they hold at either set; the named tests
+   (`testContinuumCornerMarkersVisibleUniqueAndNamed`, `testShortContinuumCollapsesToOneMarker`)
+   run at the desktop set only. The mobile set has no separate automated check.
 
 ## Screen-space, in detail — deriving L and X
 
