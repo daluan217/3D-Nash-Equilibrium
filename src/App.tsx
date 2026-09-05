@@ -489,6 +489,18 @@ export default function App() {
     return safeGetItem(key) || safeGetItem('nash_sim_token');
   });
 
+  // RED-DESKTOP-10/001: the desktop app's LOCAL database has a server-side
+  // owner (`ensureLocalOwner`, IS_ELECTRON) — no account, no token. Every gate
+  // below that used to ask "is there a token?" asks "is there an owner?"; the
+  // Authorization header is sent only when a token exists. 70b140f shipped the
+  // server half and the Save button's visibility; the submit/list/edit/delete
+  // paths still demanded a token, so every desktop save failed with a sign-in
+  // message and saved games never listed.
+  const localOwnerMode = isElectron && dbMode === 'local' && !authToken;
+  const canOwnGames = !!authToken || localOwnerMode;
+  const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});
+  const gamesFetchSeqRef = useRef(0);
+
   const updateAuthToken = (token: string | null) => {
     setAuthToken(token);
     const key = dbMode === 'cloud' ? 'nash_sim_token_cloud' : 'nash_sim_token_local';
@@ -768,26 +780,34 @@ export default function App() {
    * grounded in a fresh server read every time.
    */
   const refetchUserGames = useCallback(async () => {
-    if (!authToken) { setUserCustomGames([]); return; }
+    if (!canOwnGames) { gamesFetchSeqRef.current += 1; setUserCustomGames([]); return; }
+    // Only the NEWEST request may write the list: a database-mode or owner
+    // switch re-fetches at once, and the earlier request's late response must
+    // not overwrite the current list with the other database's rows
+    // (CodeRabbit, RED-DESKTOP-10/001 review).
+    const seq = ++gamesFetchSeqRef.current;
     try {
-      const res = await fetch(getApiUrl('/api/games'), {
-        headers: { 'Authorization': `Bearer ${authToken}` }
-      });
-      setUserCustomGames(res.ok ? await res.json() : []);
+      const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });
+      const rows = res.ok ? await res.json() : [];
+      if (seq !== gamesFetchSeqRef.current) return;
+      setUserCustomGames(rows);
     } catch (err) {
       console.error('Error fetching custom games:', err);
     }
     // dbMode: a desktop database switch can keep the same token and base URL
     // while changing where /api/games resolves (CodeRabbit, #119).
-  }, [authToken, apiBaseUrl, dbMode]);
+  }, [authToken, apiBaseUrl, dbMode, canOwnGames]);
 
   useEffect(() => {
-    if (authToken && user) {
+    if ((authToken && user) || localOwnerMode) {
       void refetchUserGames();
     } else {
+      // Clearing the list also retires any request still in flight, or its late
+      // response would repopulate the list in the new mode (CodeRabbit, #123).
+      gamesFetchSeqRef.current += 1;
       setUserCustomGames([]);
     }
-  }, [authToken, user, dbMode, apiBaseUrl, refetchUserGames]);
+  }, [authToken, user, dbMode, apiBaseUrl, refetchUserGames, localOwnerMode]);
 
   // ── Preset Selector State ──────────────────────────────────────────────────
   const [activePreset, setActivePreset] = useState<string>('bos');
@@ -2042,14 +2062,14 @@ export default function App() {
 
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editGameId || !authToken) return;
+    if (!editGameId || !canOwnGames) return;
     if (!cleanText(editName)) { setEditError('Please enter a game name.'); return; }
     setEditError('');
     setEditLoading(true);
     try {
       const res = await fetch(getApiUrl(`/api/games/${editGameId}`), {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           // cleanText, not .trim() alone: RED-PUBLIC D — a bidi override or
           // raw control character typed into any of these fields used to
@@ -2133,11 +2153,11 @@ export default function App() {
   };
 
   const handleDeleteGame = async (gameId: string) => {
-    if (!authToken) return;
+    if (!canOwnGames) return;
     try {
       const res = await fetch(getApiUrl(`/api/games/${gameId}`), {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${authToken}` }
+        headers: authHeaders()
       });
       if (res.ok) {
         setUserCustomGames(prev => prev.filter(g => g.id !== gameId));
@@ -2308,7 +2328,7 @@ export default function App() {
     // baffling "Invalid or expired session." — say what to actually do.
     // The banner renders this case as an invitation with a Sign In button,
     // not an error (see the !authToken branch at the saveError render).
-    if (!authToken) {
+    if (!canOwnGames) {
       setSaveError('Sign in or create an account to save this game.');
       return;
     }
@@ -2322,10 +2342,7 @@ export default function App() {
     try {
       const res = await fetch(getApiUrl('/api/games'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
-        },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           // cleanText, not .trim() alone: RED-PUBLIC D — see the matching
           // comment in handleEditGameSubmit above.
@@ -4265,7 +4282,7 @@ export default function App() {
               )}
             </div>
 
-            {!user ? (
+            {!user && !localOwnerMode ? (
               <div className="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-950/30 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 text-center">
                 <span>Want to name and save custom presets? </span>
                 <button
