@@ -756,6 +756,82 @@ export function makeTraces(
       },
     });
     continuumShown = true;
+
+    // RED-MATH-10/001: `computeAllNE`'s pin-to-nearest-point logic (~line 92,
+    // untouched by RED-MATH-9/002's fix) still snaps the current-position
+    // sphere onto a genuine computeAllNE point even when that point is a
+    // CORNER of this very component — a pure-strategy vertex on an otherwise
+    // mixed-strategy segment. #114 correctly stopped drawing that corner's
+    // own solid diamond (it duplicated the hollow marker above), but left the
+    // component's only remaining glyph at the MIDPOINT, which measured a mean
+    // 0.38 (up to 0.71) plot-units away from where the sphere actually
+    // settles on 70.1% of real converged runs on continuum games. Draw the
+    // SAME hollow glyph at the component's own corners too, joined by a thin
+    // dashed line tracing the component itself, so a settled point anywhere
+    // on the component — corner or interior — always sits on a drawn glyph
+    // or the drawn line, not on bare surface. `kindOf(r)` (the same
+    // classification `describeContinuumRect` uses) distinguishes the ordinary
+    // 'segment' case (exactly 2 distinct corners: one axis is fixed) from the
+    // rare fully-degenerate 'area' case (4 corners; both axes free — the
+    // whole [0,1]×[0,1] square, reachable only when both players are
+    // indifferent everywhere) so the line traces the actual shape either way:
+    // a straight run between the 2 endpoints, or the rectangle's perimeter.
+    const cornersRaw: [number, number][] = [[r.x0, r.y0], [r.x0, r.y1], [r.x1, r.y0], [r.x1, r.y1]];
+    const corners: [number, number][] = [];
+    cornersRaw.forEach(([cx, cy]) => {
+      if (!corners.some(([ex, ey]) => Math.abs(ex - cx) < 1e-9 && Math.abs(ey - cy) < 1e-9)) {
+        corners.push([cx, cy]);
+      }
+    });
+    corners.forEach(([ex, ey]) => {
+      const zAe = EA(ex, ey, g);
+      const zBe = EB(ex, ey, g);
+      const zValE = trackingMode === 'B' ? zBe : zAe;
+      traces.push({
+        type: 'scatter3d',
+        mode: 'markers',
+        name: '_',
+        showlegend: false,
+        legendgroup: 'continuumNE',
+        x: trackingMode === 'both' ? [ex, ex] : [ex],
+        y: trackingMode === 'both' ? [ey, ey] : [ey],
+        z: trackingMode === 'both' ? [zAe, zBe] : [zValE],
+        marker: {
+          size: diamondSize * 0.85, color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
+          line: { color: '#8E44AD', width: 2 },
+        },
+      });
+    });
+
+    // Dashed line tracing the component. Pushed AFTER the corner/midpoint
+    // diamonds (same draw-order tie-break already used for the Pure/Mixed NE
+    // diamond+connector pattern above: both are translucent (opacity < 1), so
+    // whichever is pushed FIRST wins a depth tie against whichever is pushed
+    // SECOND — diamonds first means the line never punches through one) and
+    // is itself translucent so it still loses any depth tie against the
+    // opaque current-position sphere drawn last.
+    const pathPts: [number, number][] = kindOf(r) === 'area'
+      ? [[r.x0, r.y0], [r.x0, r.y1], [r.x1, r.y1], [r.x1, r.y0], [r.x0, r.y0]]
+      : [[r.x0, r.y0], [r.x1, r.y1]];
+    const drawContinuumLine = (which: 'A' | 'B') => {
+      const lx = pathPts.map((p) => p[0]);
+      const ly = pathPts.map((p) => p[1]);
+      const lz = pathPts.map((p) => (which === 'A' ? EA(p[0], p[1], g) : EB(p[0], p[1], g)));
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines',
+        name: '_',
+        showlegend: false,
+        legendgroup: 'continuumNE',
+        x: lx,
+        y: ly,
+        z: lz,
+        opacity: 0.95,
+        line: { color: '#8E44AD', width: 3, dash: 'dash' },
+      });
+    };
+    if (trackingMode === 'A' || trackingMode === 'both') drawContinuumLine('A');
+    if (trackingMode === 'B' || trackingMode === 'both') drawContinuumLine('B');
   });
 
   // ── Tracking spheres (the large display balls) ────────────────────────────
