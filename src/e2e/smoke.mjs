@@ -7,7 +7,7 @@
  * happened). Run by CI (.github/workflows/test.yml, job `e2e`) and locally:
  *
  *   E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
- *   E2E_SHARD=2/8 E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
+ *   E2E_SHARD=2/12 E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
  *
  * Exit 0 only if every check passes and the browser logged no console errors.
  */
