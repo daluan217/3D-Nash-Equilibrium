@@ -44,11 +44,61 @@ the mutation test (removing the override from the spawned env — equivalent to
 the budget silently becoming the real ~20s production one again — fails 5 of 6
 subtests; the fast control is unaffected).
 
+## Cancellation
+
+Being *bounded* by the budget above did not mean being *cancelled*: a draw that
+lost its race against the deadline, or whose client disconnected mid-flight,
+used to keep running in the background and could still make new physical
+provider requests on its own. Three shapes of this were found (2026-09-05
+transport probe against 3f699f4/v0.0.160), and reproduced independently
+(`round12/notes/BLUE-CANCEL-12/repro-before-fix.log`):
+
+- **429 storm**: the OpenAI-compatible SDK clients' own default retry
+  (`maxRetries`, up to 3 physical attempts per shape) multiplied one logical
+  draw into up to 6 physical requests for a single 429 — invisible to the
+  ladder's own budget accounting, which only ever saw 2 logical draws.
+- **Client gone, retry still fires**: when the client disconnected mid-draw,
+  the ladder's own "one retry" policy did not check for that, so a second
+  physical request could start seconds after nobody was listening.
+- **Fallback delivered, retry still fires**: a draw abandoned to the deadline
+  timer kept running for real; if the provider eventually answered with a
+  retryable status, the SDK started another physical request on its own —
+  observed ~1.4s after the bank fallback had already gone out to the client.
+
+`ProviderRequest.signal` (providers.ts) now threads an `AbortSignal` through
+every adapter (Gemini, Foundry-OpenAI, Foundry-Anthropic, OpenRouter): checked
+before each physical attempt (including each schema-negotiation variant) and
+passed to the underlying SDK call so an in-flight request is aborted rather
+than abandoned. Every SDK client now sets `maxRetries: 0` (Gemini:
+`httpOptions.retryOptions.attempts: 1`) — the ladder is the only retrier, so
+its own physical-request count is now accurate. `inventScreenedScenario`
+(server.ts) owns one `AbortController` per invocation, combined with a
+`clientGoneSignal(res)` built from `res`'s `close` event (discriminated by
+`res.writableEnded`, since that event also fires on ordinary completion): the
+combined signal is threaded through every draw, the ladder refuses to start a
+new one once the client is gone, and aborts whatever it is still waiting on
+the instant it has an answer to give (success, bank fallback, or exhaustion).
+
+### Evidence
+
+`node src/integration/scenario-cancellation.test.mjs` runs the same
+shipping-bundle/loopback-provider setup as the suite above, asserting the
+PHYSICAL request count for: a client abort mid-flight (expect 1, not 2), a
+late response arriving after the fallback was already sent (expect 1, not 2),
+and a 429 storm (expect 2 — one per logical draw — not 6), plus two fast
+controls that must keep working (a valid draw, and a rejected-then-valid
+reroll). It also asserts every outgoing request body carries the pinned
+`REPORT_MODEL` and no `reasoning_effort`. Reverting providers.ts/report.ts/
+server.ts to their pre-fix state (939b3be^) fails exactly the three named
+cancellation checks while both controls stay green
+(`round12/notes/BLUE-CANCEL-12/cancellation-mutation.log`) — the isolating
+mutation this suite is checked against. It is part of both
+`npm run test:integration` and the CI integration job.
+
 ## Limits and follow-up
 
 The two-second allowance is a response margin, not a guarantee against arbitrary
-network delay or event-loop stalls. SDK requests are still abandoned rather than
-cancelled; propagating cancellation through every provider adapter is separate
-work. This suite establishes behavior under transport failures, not model story
-quality or a measured frequency of slow responses in production. Fresh cloud
-quality sampling must still use the production model with no reasoning override.
+network delay or event-loop stalls. This suite establishes behavior under
+transport failures, not model story quality or a measured frequency of slow
+responses in production. Fresh cloud quality sampling must still use the
+production model with no reasoning override.
