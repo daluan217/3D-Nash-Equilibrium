@@ -382,6 +382,22 @@ jobs:
         env:
           REGEN_TEST_PORT: '3160'
 
+      # RED-REGEN-7/001: two INDEPENDENT PATCH /api/games/:id requests (two
+      # tabs/devices), each naming only the colour-term field it changed,
+      # each naming the same real-world phrase in a different spelling
+      # ("wolf"/"Wolf") — the per-field pairing #126 added to fix
+      # RED-APP-10/001 re-runs its "A wins" exclusivity across requests that
+      # never saw each other, silently dropping the second submitter's own
+      # new chip or destroying the first submitter's already-committed one,
+      # both reporting 200 success. Now refused with 409 instead of written;
+      # regression-guards the non-colliding per-field case (RED-APP-10/001)
+      # and the same-request self-collision case (#126/CodeRabbit) both stay
+      # exactly as they were.
+      - name: Boot the production server and run the colour-term PATCH race suite
+        run: node src/integration/colorterms-patch-race.test.mjs
+        env:
+          COLORTERMS_RACE_PORT: '3182'
+
   e2e_smoke:
     name: e2e smoke (${{ matrix.shard }}/12)
     runs-on: ubuntu-latest

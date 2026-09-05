@@ -2183,6 +2183,12 @@ export default function App() {
         // with the server's; the header flips to "Sign in" and the
         // `!authToken` branch on the error render above fires naturally.
         if (res.status === 401) updateAuthToken(null);
+        // RED-REGEN-7/001: a 409 here means another tab/device's colour-term
+        // edit collided with this one — this generic branch already does the
+        // right thing (show the server's message, leave the dialog OPEN so
+        // the user can reopen a fresh Edit and resolve it) with no special
+        // case needed; do not add a 409-specific branch that closes the
+        // dialog or drops the message.
         setEditError(data.error || 'Failed to update game.');
       }
     } catch {
