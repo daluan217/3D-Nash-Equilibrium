@@ -877,9 +877,15 @@ export default function App() {
   const restorePreEditPayoff = (field: keyof GamePayoffs) => {
     const snap = payoffFieldSnapshotRef.current[field];
     if (!snap || payoffs[field] === snap.value) return;
-    setPayoffs((prev: GamePayoffs) => ({ ...prev, [field]: snap.value }));
+    const restored: GamePayoffs = { ...payoffs, [field]: snap.value };
+    setPayoffs(restored);
     setActivePreset(snap.preset);
     setInitialized(false);
+    // Writer contract (src/test.ts, testPayoffsWritersAllInvalidate): every
+    // payoff writer resets a live run. The leading digit's own commit already
+    // did, so this is a no-op in practice; kept so the invariant holds by
+    // construction rather than by argument.
+    if (runCtx) handleReset(restored);
   };
 
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction

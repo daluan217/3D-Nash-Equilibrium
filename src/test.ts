@@ -2408,10 +2408,12 @@ function testPayoffsWritersAllInvalidate() {
   //   handleLoadPreset    -> handleReset()      — resets
   //   updatePayoffField   -> if (runCtx) reset  — resets
   //   inactivity timer    -> sets 0 to 0        — cannot change a value
+  //   restorePreEditPayoff -> if (runCtx) reset — resets (RED-DESKTOP-9/002: puts a
+  //                          cell back to its focus-time value when a comma appears)
   //   (handlePayoffBlur now delegates to updatePayoffField, so it is NOT a site;
   //    the useState declaration destructures the setter and does not match.)
-  assert(sites.length === 4,
-    'setPayoffs must be CALLED in exactly four places. This enumeration is load-bearing: it is what '
+  assert(sites.length === 5,
+    'setPayoffs must be CALLED in exactly five places. This enumeration is load-bearing: it is what '
     + 'makes runStale unable to be true while a run still exists, which is what closes the '
     + '"narrating a dead run" class. A new writer must either call handleReset (like every loader) '
     + 'or be provably value-preserving; then update this count.\n  '
