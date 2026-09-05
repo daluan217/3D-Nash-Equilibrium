@@ -852,6 +852,12 @@ export default function App() {
   // text either way), and must not survive a whole-matrix replacement
   // (handleLoadPreset / handleGenerateGame both reset it explicitly).
   const [payoffInputHint, setPayoffInputHint] = useState<{ field: keyof GamePayoffs; message: string } | null>(null);
+  // Same treatment for the step-size box (director hardening after RED-DESKTOP-9/002:
+  // the one other typed decimal field). A comma is rejected with the same hint, and the
+  // value in force is put back to what it was when the box was focused — the comma-free
+  // prefix ("5" of "5,5") has already committed (clamped to 0.999) before the comma exists.
+  const [stepInputHint, setStepInputHint] = useState<string | null>(null);
+  const stepFieldSnapshotRef = useRef<number | null>(null);
 
   /**
    * RED-DESKTOP-9/002, second half. The comma guard in `updatePayoffField`
@@ -4622,11 +4628,26 @@ export default function App() {
                   type="text"
                   inputMode="decimal"
                   value={shrinkStepRaw}
+                  onFocus={() => { stepFieldSnapshotRef.current = shrinkStep; }}
                   onChange={(e) => {
-                    setShrinkStepRaw(e.target.value);
-                    setShrinkStep(commitStepSize(e.target.value, shrinkStep));
+                    const v = e.target.value;
+                    setShrinkStepRaw(v);
+                    if (containsAmbiguousComma(v)) {
+                      setStepInputHint('Use a dot for decimals, not a comma.');
+                      const snap = stepFieldSnapshotRef.current;
+                      if (snap !== null && snap !== shrinkStep) setShrinkStep(snap);
+                      return;
+                    }
+                    setStepInputHint(null);
+                    setShrinkStep(commitStepSize(v, shrinkStep));
                   }}
                   onBlur={() => {
+                    if (containsAmbiguousComma(shrinkStepRaw)) {
+                      const snap = stepFieldSnapshotRef.current ?? shrinkStep;
+                      setShrinkStep(snap);
+                      setShrinkStepRaw(snap.toFixed(3));
+                      return; // the hint stays until the next edit
+                    }
                     const clamped = commitStepSize(shrinkStepRaw, shrinkStep);
                     setShrinkStep(clamped);
                     setShrinkStepRaw(clamped.toFixed(3));
@@ -4635,13 +4656,18 @@ export default function App() {
                   className="w-20 font-mono font-semibold text-accent-600 dark:text-accent-400 text-right bg-transparent border-b border-accent-300 dark:border-accent-700 focus:outline-none focus:border-accent-500"
                 />
               </div>
+              {stepInputHint && (
+                <div data-testid="step-input-hint" role="status" className="text-xs text-amber-700 dark:text-amber-400 text-right -mt-0.5 mb-1">
+                  {stepInputHint}
+                </div>
+              )}
               <input
                 type="range"
                 min="0.001"
                 max="0.999"
                 step="0.001"
                 value={shrinkStep}
-                onChange={(e) => { const v = commitStepSize(e.target.value, shrinkStep); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); }}
+                onChange={(e) => { const v = commitStepSize(e.target.value, shrinkStep); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); setStepInputHint(null); }}
                 aria-label={stepMode === 'regret' ? 'Regret Step Weight (lambda) slider' : 'Initial Domain Shrink Step Size slider'}
                 className="w-full accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
