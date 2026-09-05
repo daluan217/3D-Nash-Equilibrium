@@ -1930,6 +1930,30 @@ function testLabelOwnershipResolution() {
   });
   assert(!savedSymmetric.a.includes('Cooperate') && !savedSymmetric.b.includes('Cooperate'),
     `stale chip + symmetric label must ALSO be neutral in the saved render (plain editor) — got ${JSON.stringify(savedSymmetric)}`);
+  // ── Fixture 2b (RED-REGEN-4/001): apostrophe TYPOGRAPHY is not canonical
+  // equivalence — a chip typed with a straight ' and a label typed with a
+  // curly ’ are the same phrase to a reader, so they must still collide.
+  // Symmetric label (both sides) → neutral; A-exclusive label with the chip
+  // filed under B → neutral; own-side match → kept (unchanged behaviour).
+  const CURLY = { row1: 'Farmer\u2019s Market', row2: 'Hold Back', col1: 'Farmer\u2019s Market', col2: 'Ignore' };
+  const straightChip = ["Farmer's Market"];
+  const curlyPreview = regenPreviewColorTerms(CURLY, [], [], straightChip, []);
+  assert(!curlyPreview.a.some((t) => /farmer/i.test(t)) && !curlyPreview.b.some((t) => /farmer/i.test(t)),
+    `straight-apostrophe chip vs curly symmetric label must be neutral — got ${JSON.stringify(curlyPreview)}`);
+  const curlySaved = savedGameColorTerms({
+    row1Label: CURLY.row1, row2Label: CURLY.row2, col1Label: CURLY.col1, col2Label: CURLY.col2,
+    colorTermsA: straightChip, colorTermsB: [],
+  });
+  assert(!curlySaved.a.some((t) => /farmer/i.test(t)) && !curlySaved.b.some((t) => /farmer/i.test(t)),
+    `...and in the saved render — got ${JSON.stringify(curlySaved)}`);
+  const CURLY_A_ONLY = { row1: 'Fisherman\u2019s Boat', row2: 'Stay Home', col1: 'Hunt', col2: 'Retreat' };
+  const filedOnB = regenPreviewColorTerms(CURLY_A_ONLY, [], [], [], ["Fisherman's Boat"]);
+  assert(!filedOnB.b.some((t) => /fisherman/i.test(t)),
+    `a straight-apostrophe chip filed on B that names A's curly label must not paint B — got ${JSON.stringify(filedOnB)}`);
+  const filedOnA = regenPreviewColorTerms(CURLY_A_ONLY, [], [], ["Fisherman's Boat"], []);
+  assert(filedOnA.a.includes("Fisherman's Boat"),
+    `own-side match keeps the chip (unchanged behaviour) — got ${JSON.stringify(filedOnA)}`);
+
   // The chip itself is never deleted from the record — only its colouring
   // effect is suppressed. `regenKeptColorTerms` (what Keep stores) still
   // carries it forward untouched.

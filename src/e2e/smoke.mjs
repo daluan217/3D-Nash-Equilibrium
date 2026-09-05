@@ -2870,21 +2870,25 @@ try {
     // CodeRabbit (this review): a bare `button:has-text("cooperate")` would
     // pass identically for a chip filed on EITHER player — it only proves a
     // button with that text exists, not that it is actually Player A's chip.
-    // Read the chip button's own styling (DescriptionEditor's `chip()` gives
-    // Player A's chip `text-player-a-ink` and Player B's `text-player-b-ink`,
-    // never both) so a chip accidentally placed on the wrong side would fail
-    // this precondition instead of passing it.
+    // Read the chip button's own `data-player` (DescriptionEditor's `chip()`
+    // stamps the side it was filed on) so a chip accidentally placed on the
+    // wrong side would fail this precondition instead of passing it. Its
+    // colour class is NOT the signal any more: the dialog was opened on
+    // Prisoners Dilemma, whose labels are already the symmetric
+    // "Cooperate", so this chip is (correctly) marked suppressed from the
+    // moment it is placed (RED-REGEN-4/002).
     const chipInfo = await symPage.evaluate(() => {
       const dlg = document.querySelector('[role="dialog"][aria-label="Save custom game"]');
       // The chip button's textContent also carries its "×"/"Remove highlight"
       // child spans, so match a leading "cooperate" rather than full equality.
       const btn = [...(dlg?.querySelectorAll('button') ?? [])]
         .find((b) => /^cooperate/i.test(b.textContent?.trim() || ''));
-      return btn ? { text: btn.textContent, cls: btn.className } : null;
+      return btn ? { text: btn.textContent, cls: btn.className, player: btn.getAttribute('data-player'), suppressed: btn.getAttribute('data-suppressed') } : null;
     });
     record('precondition: a real "cooperate" chip is placed on Player A specifically (unrelated text)',
-      !!chipInfo && /text-player-a-ink/.test(chipInfo.cls) && !/text-player-b-ink/.test(chipInfo.cls),
-      JSON.stringify(chipInfo));
+      !!chipInfo && chipInfo.player === 'A', JSON.stringify(chipInfo));
+    record('RED-REGEN-4/002: a chip that names a symmetric option label is marked "not highlighted" from the moment it is placed',
+      !!chipInfo && chipInfo.suppressed === 'true' && /not highlighted/i.test(chipInfo.text || ''), JSON.stringify(chipInfo));
 
     // Regenerate -> the mocked draw's labels are SYMMETRIC (row1===col1==="Cooperate").
     const symRegenBtn = symPage.getByRole('button', { name: 'Regenerate scenario' });
@@ -2927,6 +2931,16 @@ try {
       JSON.stringify(previewCheck.cooperateSpans));
 
     await symPage.getByRole('button', { name: 'Keep' }).click();
+    // RED-REGEN-4/002: after Keep the dialog's labels are the symmetric ones, so
+    // the chip's own pill must SAY its highlight is suppressed — neutral styling,
+    // a "(not highlighted)" marker and an explanatory title — not full Player A colour.
+    const suppressedPill = symPage.locator('[role="dialog"][aria-label="Save custom game"] button[data-suppressed="true"]', { hasText: /cooperate/i }).first();
+    const pillShown = await suppressedPill.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+    const pillInfo = pillShown ? await suppressedPill.evaluate((b) => ({ cls: b.className, title: b.title, text: b.textContent })) : null;
+    record('the neutralized chip\'s pill is marked as not highlighted (neutral styling + "(not highlighted)" + an explanatory title)',
+      !!pillInfo && /not highlighted/i.test(pillInfo.text || '') && /other side/i.test(pillInfo.title || '')
+        && /border-dashed/.test(pillInfo.cls) && !/text-player-a-ink|text-player-b-ink/.test(pillInfo.cls),
+      JSON.stringify(pillInfo));
     await symPage.waitForTimeout(300);
     await symPage.getByRole('button', { name: /^save game profile$/i }).click();
     await symPage.waitForTimeout(800);
