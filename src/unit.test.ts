@@ -30,7 +30,7 @@ import {
 } from './utils/providers';
 import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
 import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
-import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, regenKeptColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, regenKeptColorTerms, regenPreviewColorTerms, optionLabelTerms } from './utils/colorTerms';
 import { keepFill } from './utils/scenarioRegen';
 import { cleanScenarioActorNouns } from './utils/scenarioActorNouns';
 import { readFileSync as readFileForContract, readdirSync as readDirForContract } from 'node:fs';
@@ -1742,7 +1742,7 @@ function testDescriptionPreviewMatchesSave() {
   // internally, but pinning the record shape here is what can actually catch a
   // row1-vs-row1Label mapping mistake at either call site.
   const preview = (labels: any, uA: string[], uB: string[]) =>
-    mergeDescriptionTerms(dialogBaseColorTerms(labels), uA, uB);          // DescriptionEditor.tsx
+    mergeDescriptionTerms(dialogBaseColorTerms(labels), uA, uB, optionLabelTerms(labels));          // DescriptionEditor.tsx
   const saved = (labels: any, uA: string[], uB: string[]) =>
     savedGameColorTerms({
       row1Label: labels.row1, row2Label: labels.row2,
@@ -1869,7 +1869,9 @@ function testRegenColorTerms() {
   // other saved/custom game's preview and save use, per
   // testDescriptionPreviewMatchesSave above.
   const savedKept = keepFill(colliding, false, noExisting);
-  const savedTerms = mergeDescriptionTerms(dialogBaseColorTerms(savedKept.labels), savedKept.terms.a, savedKept.terms.b);
+  const savedTerms = mergeDescriptionTerms(
+    dialogBaseColorTerms(savedKept.labels), savedKept.terms.a, savedKept.terms.b, optionLabelTerms(savedKept.labels),
+  );
   assert(JSON.stringify(previewTerms) === JSON.stringify(savedTerms),
     `regen preview and the post-Keep saved render disagree on a colliding actor-noun/label pair: `
     + `preview=${JSON.stringify(previewTerms)} saved=${JSON.stringify(savedTerms)}`);
@@ -1889,6 +1891,86 @@ function testRegenColorTerms() {
 
   console.log('✓ regen colour terms: Keep never destroys existing chips, actor nouns only ADD, and the '
     + 'preview card renders exactly what Keep will produce');
+}
+
+function testLabelOwnershipResolution() {
+  // RED-REGEN-3/001 (director-reproduced): a pre-existing user colour-term
+  // chip that string-matches a BRAND-NEW option label used to win
+  // unconditionally over `dropAmbiguous`'s own ambiguity resolution — so a
+  // stale "Cooperate" chip on player A repainted a fresh SYMMETRIC label
+  // (row1===col1==="Cooperate", ~19% of the shipped bank shares a label
+  // verbatim between a Row and a Col option) as exclusively A's, in both the
+  // regen preview AND the eventual saved render. Director's rule: resolve by
+  // LABEL OWNERSHIP, not chip ownership. Reproduces the red's exact probe
+  // (round9/probes-3/symmetric_label_existing_chip.ts) through the real,
+  // shipped functions.
+  const SYMMETRIC = { row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect' };
+  const ASYMMETRIC = { row1: 'Wolf', row2: 'Stay Home', col1: 'Hunt', col2: 'Retreat' };
+
+  // ── Fixture 1: no-chip control — ground truth stays exactly what
+  // dropAmbiguous already gives with no user chips at all (unchanged by this
+  // fix; the regression this whole finding guards is chip-INDUCED).
+  const noChipPreview = regenPreviewColorTerms(SYMMETRIC, [], [], [], []);
+  assert(!noChipPreview.a.includes('Cooperate') && !noChipPreview.b.includes('Cooperate'),
+    `no-chip control: a symmetric label must be neutral with no chips at all — got ${JSON.stringify(noChipPreview)}`);
+
+  // ── Fixture 2: stale chip + a BRAND-NEW SYMMETRIC label → neutral on BOTH
+  // sides, in the regen preview AND in the saved render (descriptionColorTerms
+  // / savedGameColorTerms — the plain, non-regen saved-game editor's own
+  // entry point, since the root cause lives in the shared
+  // `mergeDescriptionTerms`, not anything regen-specific).
+  const staleChipA = ['Cooperate'];
+  const previewSymmetric = regenPreviewColorTerms(SYMMETRIC, [], [], staleChipA, []);
+  assert(!previewSymmetric.a.includes('Cooperate') && !previewSymmetric.b.includes('Cooperate'),
+    `stale chip + symmetric label must be neutral in the regen preview — got ${JSON.stringify(previewSymmetric)}`);
+  const savedSymmetric = savedGameColorTerms({
+    row1Label: SYMMETRIC.row1, row2Label: SYMMETRIC.row2,
+    col1Label: SYMMETRIC.col1, col2Label: SYMMETRIC.col2,
+    colorTermsA: staleChipA, colorTermsB: [],
+  });
+  assert(!savedSymmetric.a.includes('Cooperate') && !savedSymmetric.b.includes('Cooperate'),
+    `stale chip + symmetric label must ALSO be neutral in the saved render (plain editor) — got ${JSON.stringify(savedSymmetric)}`);
+  // The chip itself is never deleted from the record — only its colouring
+  // effect is suppressed. `regenKeptColorTerms` (what Keep stores) still
+  // carries it forward untouched.
+  const keptSymmetric = regenKeptColorTerms([], [], staleChipA, []);
+  assert(keptSymmetric.a.includes('Cooperate'),
+    `the chip must survive in the stored record even while neutralized on screen — got ${JSON.stringify(keptSymmetric)}`);
+
+  // ── Fixture 3: a chip equal to the OTHER player's label (not shared,
+  // asymmetric) → neutral. "wolf" is filed on B here, but the label
+  // "Wolf" belongs to A alone (row1) in ASYMMETRIC.
+  const otherLabelPreview = regenPreviewColorTerms(ASYMMETRIC, [], [], [], ['Wolf']);
+  assert(!otherLabelPreview.a.includes('Wolf') && !otherLabelPreview.b.includes('Wolf'),
+    `a chip equal to the OTHER player's label must be neutral — got ${JSON.stringify(otherLabelPreview)}`);
+
+  // ── Fixture 4: a chip equal to the user's OWN side's label → unchanged
+  // (still coloured — this is not a collision, it is a no-op reassertion of
+  // what the base already says).
+  const ownLabelPreview = regenPreviewColorTerms(ASYMMETRIC, [], [], ['Wolf'], []);
+  assert(ownLabelPreview.a.includes('Wolf') && !ownLabelPreview.b.includes('Wolf'),
+    `a chip equal to the user's OWN label must stay coloured — got ${JSON.stringify(ownLabelPreview)}`);
+
+  // ── Fixture 5: a non-label chip (matches no option label at all) → keeps
+  // today's unconditional-override behaviour, exactly as before this fix.
+  const nonLabelPreview = regenPreviewColorTerms(ASYMMETRIC, [], [], ['the hedge'], []);
+  assert(nonLabelPreview.a.includes('the hedge'),
+    `a chip matching no label must still override as before — got ${JSON.stringify(nonLabelPreview)}`);
+
+  // NEGATIVE CONTROL: the comparison is only worth something if it can fail.
+  // Feeding the SAME chip against labels where it collides with NEITHER side
+  // must produce a genuinely DIFFERENT (non-neutralized) result than the
+  // symmetric case above.
+  const noCollision = regenPreviewColorTerms(
+    { row1: 'Advertise', row2: 'Hold back', col1: 'Match', col2: 'Ignore' }, [], [], staleChipA, [],
+  );
+  assert(noCollision.a.includes('Cooperate'),
+    'the label-ownership check is tautological if a genuinely non-colliding chip is ALSO neutralized');
+
+  console.log('✓ label ownership resolution: a chip matching an option label is resolved by which '
+    + 'player actually owns that label, never by which side the chip happens to be filed on — '
+    + 'symmetric and other-player collisions render neutral (chip data untouched), own-label and '
+    + 'non-label chips are unaffected');
 }
 
 function testDescriptionsAreNeverHtml() {
@@ -2148,6 +2230,7 @@ function runUnitTests() {
   testSavedGameColorTermsBehaviour();
   testDescriptionPreviewMatchesSave();
   testRegenColorTerms();
+  testLabelOwnershipResolution();
   testDescriptionsAreNeverHtml();
   testUserColorTerms();
   testCameraRelayoutPredicate();

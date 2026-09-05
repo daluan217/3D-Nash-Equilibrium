@@ -38,6 +38,8 @@ export function DescriptionEditor({
   onTermsChange,
   baseA = [],
   baseB = [],
+  labelA = [],
+  labelB = [],
   placeholder = 'What is this game about?',
   maxLength = 800,
 }: {
@@ -52,11 +54,26 @@ export function DescriptionEditor({
    *  term previews in the user's colour and then saves in the other one. */
   baseA?: string[];
   baseB?: string[];
+  /** The dialog's own OPTION LABEL text only (no structural notation, no
+   *  actor nouns) — `mergeDescriptionTerms`'s label-ownership check
+   *  (RED-REGEN-3/001): a chip that string-matches a label on the OPPOSITE
+   *  side from where it was filed renders neutral rather than mis-colouring
+   *  a symmetric or other-player label. Passed separately from `baseA`/
+   *  `baseB` because those are already ambiguity-resolved — the raw label
+   *  text is what this check needs. */
+  labelA?: string[];
+  labelB?: string[];
   placeholder?: string;
   maxLength?: number;
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const [hint, setHint] = useState('');
+
+  // Computed once — the preview used to call `mergeDescriptionTerms` twice
+  // with identical arguments (once for aTerms, once for bTerms), the same
+  // "two calls that must agree" shape the module-level comment already
+  // warns about.
+  const merged = mergeDescriptionTerms({ a: baseA, b: baseB }, termsA, termsB, { a: labelA, b: labelB });
 
   const addSelection = (player: 'A' | 'B') => {
     const ta = taRef.current;
@@ -161,11 +178,13 @@ export function DescriptionEditor({
               it runs the same ColorCoded the saved description will. */}
           <p className="mt-1.5 rounded-lg bg-slate-50 p-2 text-[12px] leading-relaxed text-slate-600 dark:bg-slate-950/40 dark:text-slate-300">
             {/* Merged exactly as the saved description merges, so what this
-                preview shows is what the game will show. */}
+                preview shows is what the game will show. Computed once —
+                two separate calls that must independently agree is the same
+                shape as two lists that must agree. */}
             <ColorCoded
               text={value}
-              aTerms={mergeDescriptionTerms({ a: baseA, b: baseB }, termsA, termsB).a}
-              bTerms={mergeDescriptionTerms({ a: baseA, b: baseB }, termsA, termsB).b}
+              aTerms={merged.a}
+              bTerms={merged.b}
             />
           </p>
         </>

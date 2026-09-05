@@ -83,18 +83,48 @@ function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
   // Canonically-equivalent labels (NFC vs NFD "Réserve") render identically but
   // compare unequal without normalizing first, so a shared action would survive
   // on both sides and ColorCoded's first-match order would paint it as A's.
-  const norm = (t: string) => t
+  const inB = new Set(b.map(normTerm));
+  const shared = new Set(a.map(normTerm).filter((t) => inB.has(t)));
+  if (shared.size === 0) return { a, b };
+  return {
+    a: a.filter((t) => !shared.has(normTerm(t))),
+    b: b.filter((t) => !shared.has(normTerm(t))),
+  };
+}
+
+/**
+ * The same normalization `dropAmbiguous` uses, shared so a term compares
+ * equal to a label under exactly one rule everywhere in this module: NFKC
+ * (canonically-equivalent forms render identically), zero-width characters
+ * stripped, trimmed, case-folded.
+ */
+function normTerm(t: string): string {
+  return t
     .normalize('NFKC')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .trim()
     .toLowerCase();
-  const inB = new Set(b.map(norm));
-  const shared = new Set(a.map(norm).filter((t) => inB.has(t)));
-  if (shared.size === 0) return { a, b };
-  return {
-    a: a.filter((t) => !shared.has(norm(t))),
-    b: b.filter((t) => !shared.has(norm(t))),
-  };
+}
+
+/**
+ * A scenario's own OPTION LABEL text per player -- row1/row2 for A, col1/col2
+ * for B -- trimmed, empties dropped, BEFORE any ambiguity resolution or actor
+ * noun is added. This is the ground truth `mergeDescriptionTerms` checks a
+ * user/kept colour term against to resolve a collision by LABEL OWNERSHIP
+ * (RED-REGEN-3/001): deliberately narrower than `colorTermsFor`'s full term
+ * list -- no "Row 1"/"Col 1" structural notation (those two strings are never
+ * equal to each other, so they can never collide across players) and no actor
+ * nouns (a same-side/opposite-side actor-noun collision is already resolved,
+ * separately, by `regenKeptColorTerms`).
+ */
+export function optionLabelTerms(sc: ScenarioLabels | null | undefined): { a: string[]; b: string[] } {
+  const a: string[] = [];
+  const b: string[] = [];
+  if (sc) {
+    for (const t of [sc.row1, sc.row2]) if (t && t.trim()) a.push(t.trim());
+    for (const t of [sc.col1, sc.col2]) if (t && t.trim()) b.push(t.trim());
+  }
+  return { a, b };
 }
 
 // ── user-chosen colour terms ────────────────────────────────────────────────
@@ -182,18 +212,52 @@ export function cleanUserColorTermPair(
  * Exported so the editor's preview and the saved description can merge
  * identically; a preview that disagrees with the save is the exact defect class
  * this whole change set exists to remove.
+ *
+ * RED-REGEN-3/001: that "explicit assignment wins" rule is right for a
+ * DELIBERATE human override, and wrong when the "user term" is only a STALE
+ * chip that happens to string-match a brand-new OPTION LABEL the user never
+ * typed or reviewed against this exact draw — Regenerate is exactly what
+ * produces that combination routinely (measured: ~19% of the shipped bank
+ * shares a label verbatim between a Row and a Col option). `labelOwnership`,
+ * when given, resolves that case by LABEL ownership instead of chip
+ * ownership: a term that string-matches an option label on the OPPOSITE side
+ * from where the user filed it — whether that label is exclusive to the
+ * opposite side, or shared by both sides (symmetric) — renders NEUTRAL
+ * (excluded from both `a` and `b`, never the wrongly-claimed colour and never
+ * a fallback to the label's own legitimate colour either, since a stale
+ * mis-filed chip is exactly as misleading as no attribution at all). A term
+ * that matches only its OWN filed side's label, or matches no label at all,
+ * keeps today's unconditional-override behaviour unchanged. The underlying
+ * CHIP data (`colorTermsA`/`colorTermsB` on the saved record) is never
+ * touched by this — only what gets rendered — so if the labels later change
+ * back, the chip colours again on its own (director's decision, 2026-09-04:
+ * an AI action never destroys user-authored data, and this collision is not
+ * even an AI action).
  */
 export function mergeDescriptionTerms(
   base: { a: readonly string[]; b: readonly string[] },
   userA: readonly string[],
   userB: readonly string[],
+  labelOwnership?: { a: readonly string[]; b: readonly string[] },
 ): { a: string[]; b: string[] } {
   const user = cleanUserColorTermPair([...userA], [...userB]);
-  const claimed = new Set([...user.a, ...user.b].map((t) => t.toLowerCase()));
-  const keep = (t: string) => !claimed.has(t.toLowerCase());
+  const labelA = new Set((labelOwnership?.a ?? []).map(normTerm));
+  const labelB = new Set((labelOwnership?.b ?? []).map(normTerm));
+
+  // A term filed under A that string-matches a label on B's side (whether
+  // B-exclusive or shared with A too) is neutralized; symmetric for B.
+  const neutral = new Set<string>();
+  for (const t of user.a) if (labelB.has(normTerm(t))) neutral.add(normTerm(t));
+  for (const t of user.b) if (labelA.has(normTerm(t))) neutral.add(normTerm(t));
+
+  const keptUserA = user.a.filter((t) => !neutral.has(normTerm(t)));
+  const keptUserB = user.b.filter((t) => !neutral.has(normTerm(t)));
+
+  const claimed = new Set([...keptUserA, ...keptUserB].map(normTerm));
+  const keep = (t: string) => !claimed.has(normTerm(t)) && !neutral.has(normTerm(t));
   return {
-    a: [...user.a, ...base.a.filter(keep)],
-    b: [...user.b, ...base.b.filter(keep)],
+    a: [...keptUserA, ...base.a.filter(keep)],
+    b: [...keptUserB, ...base.b.filter(keep)],
   };
 }
 
@@ -283,7 +347,7 @@ export function regenPreviewColorTerms(
     row1: labels.row1 ?? '', row2: labels.row2 ?? '',
     col1: labels.col1 ?? '', col2: labels.col2 ?? '',
   };
-  return mergeDescriptionTerms(dialogBaseColorTerms(dialogLabels), kept.a, kept.b);
+  return mergeDescriptionTerms(dialogBaseColorTerms(dialogLabels), kept.a, kept.b, optionLabelTerms(dialogLabels));
 }
 
 /**
@@ -299,7 +363,7 @@ export function descriptionColorTerms(
   userA: readonly string[] = [],
   userB: readonly string[] = [],
 ): { a: string[]; b: string[] } {
-  return mergeDescriptionTerms(colorTermsFor(sc, actorA, actorB), userA, userB);
+  return mergeDescriptionTerms(colorTermsFor(sc, actorA, actorB), userA, userB, optionLabelTerms(sc));
 }
 
 /** A saved game's stored record, as far as colouring is concerned. */
