@@ -3276,6 +3276,56 @@ try {
     await twoTab.close();
   });
 
+  // ══ 47. RED-MATH-12/002 (director-fixed): a legend entry the user switched
+  //      off stayed off only until the next simulation step — every step rebuilds
+  //      the traces from scratch with no `visible`, so the group snapped back.
+  //      The click handler now records the hidden group and the redraw re-applies
+  //      it. Checked on the continuum group (the brief's case) after a real
+  //      simState-driven redraw (the sphere moved in Plotly's resolved data).
+  section('47', 'a legend toggle survives the next simulation redraw', 3, async () => {
+    const lp = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await lp.goto(BASE, { waitUntil: 'networkidle' });
+    try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    const tourGone = await lp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false);
+    record('precondition: the guided tour is dismissed', tourGone);
+    const matrix = lp.locator('input[inputmode="decimal"][class*="text-center"]');
+    await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+    const vals = [0, -6, 2, 9, 0, 6, 3, -3]; // a continuum game (segment x in [0, 0.375], y = 1)
+    for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
+    // Plotly's resolved data: what is actually drawn.
+    const contVisible = () => lp.evaluate(() => (document.querySelector('.js-plotly-plot')?._fullData ?? [])
+      .filter((t) => t.legendgroup === 'continuumNE').map((t) => t.visible === undefined ? true : t.visible));
+    const spherePos = () => lp.evaluate(() => { const t = (document.querySelector('.js-plotly-plot')?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return t ? [t.x[0], t.y[0]] : null; });
+    await lp.waitForFunction(() => (document.querySelector('.js-plotly-plot')?._fullData ?? []).some((t) => t.legendgroup === 'continuumNE'), null, { timeout: 15000 });
+    record('precondition: the continuum group is drawn and visible', (await contVisible()).every((v) => v === true), JSON.stringify(await contVisible()));
+    // Click the legend entry the way a user does: Plotly's legend is SVG and its
+    // click handler sits on the entry's `.legendtoggle` rect (a real pointer
+    // click on the <text> times out in Playwright because the WebGL layer sits
+    // over the SVG for hit-testing), so dispatch the click on that rect.
+    // Plotly toggles on real mouse-down/up (with a double-click timer), so send
+    // pointer events at the entry's own coordinates rather than a synthetic click.
+    // `force: true`: Playwright's actionability check judges the SVG <text> as
+    // covered by the WebGL layer and never clicks it; the forced click lands on
+    // the entry exactly as a real pointer does (RED-MATH-12's own probe used it).
+    const clickLegendEntry = () => lp.locator('text.legendtext', { hasText: 'Equilibrium continuum' }).first().click({ force: true });
+    await clickLegendEntry();
+    const hidden = await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.length > 0 && ts.every((t) => t.visible === 'legendonly'); }, null, { timeout: 8000 }).then(() => true).catch(() => false);
+    record('the legend click hides the whole continuum group', hidden, JSON.stringify(await contVisible()));
+    // A real simulation redraw: Run, wait until the sphere has moved in Plotly's resolved data.
+    const p0 = await spherePos();
+    await lp.getByRole('button', { name: /^Run$/ }).click();
+    const moved = await lp.waitForFunction((from) => { const t = (document.querySelector('.js-plotly-plot')?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return !!t && !!from && Math.hypot(t.x[0] - from[0], t.y[0] - from[1]) > 1e-6; }, p0, { timeout: 20000 }).then(() => true).catch(() => false);
+    record('precondition: the run redrew the plot (the sphere moved)', moved);
+    const afterRedraw = await contVisible();
+    record('FIX: the continuum group is still hidden after the simulation redraw (the user\'s legend choice survives)',
+      afterRedraw.length > 0 && afterRedraw.every((v) => v === 'legendonly'), JSON.stringify(afterRedraw));
+    // And switching it back on works.
+    await clickLegendEntry();
+    const shown = await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.length > 0 && ts.every((t) => t.visible === undefined || t.visible === true); }, null, { timeout: 8000 }).then(() => true).catch(() => false);
+    record('a second click shows the group again', shown, JSON.stringify(await contVisible()));
+    await lp.close();
+  });
+
   await executeSections();
 
 } catch (e) {

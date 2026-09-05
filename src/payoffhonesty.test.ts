@@ -1133,7 +1133,28 @@ function testContinuumCornerMarkersVisibleUniqueAndNamed() {
 }
 
 testPayloadAgreesWithPanel();
+function testShortContinuumCollapsesToOneMarker() {
+  // RED-MATH-12/001 (director-fixed): a component shorter than 0.12 draws ONE 2x
+  // outline at its midpoint and no corner markers; a normal segment keeps its
+  // two corner outlines. The red's fixture: segment {x0:0,x1:0.0526,y0:0,y1:0}.
+  const SHORT: GamePayoffs = { a11: -5, a12: -8, a21: -3, a22: -8, b11: 9, b12: -9, b21: 1, b22: 2 };
+  const LONG: GamePayoffs = { a11: 0, a12: 2, a21: 0, a22: 3, b11: -6, b12: 9, b21: 6, b22: -3 };
+  const markers = (g: GamePayoffs) => makeTraces(buildSurfaces(g), g, createInitialState(0.5, 0.5, g), 'both', computeAllNE(g), false, 'shrink')
+    .filter((t: any) => t.legendgroup === 'continuumNE' && t.mode === 'markers') as any[];
+  const shortRects = equilibriumSet(SHORT).filter((r) => Math.abs(r.x1 - r.x0) > 1e-9 || Math.abs(r.y1 - r.y0) > 1e-9);
+  ok(shortRects.length === 1 && Math.hypot(shortRects[0].x1 - shortRects[0].x0, shortRects[0].y1 - shortRects[0].y0) < 0.12,
+    `fixture sanity: SHORT has one component shorter than 0.12 (got ${JSON.stringify(shortRects)})`);
+  const sm = markers(SHORT);
+  ok(sm.length === 1, `a short component draws exactly one continuum marker (no corner outlines) — got ${sm.length}`);
+  const lm = markers(LONG);
+  ok(sm[0].marker.size >= Math.max(...lm.map((t) => t.marker.size)) - 1e-9,
+    `the short component's single marker is as large as a corner outline (${sm[0].marker.size} vs ${Math.max(...lm.map((t) => t.marker.size))})`);
+  ok(lm.length === 3, `a normal segment still draws midpoint + 2 corners — got ${lm.length}`);
+  console.log('✓ a short continuum component collapses to one enlarged marker; long ones keep their corners');
+}
+
 testContinuumCornerMarkersVisibleUniqueAndNamed();
+testShortContinuumCollapsesToOneMarker();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();

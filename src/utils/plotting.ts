@@ -746,6 +746,14 @@ export function makeTraces(
   continuumRects.forEach((r) => {
     const mx = (r.x0 + r.x1) / 2;
     const my = (r.y0 + r.y1) / 2;
+    // RED-MATH-12/001: marker size is screen-space, the component's length is
+    // data-space. On a SHORT component (2% of continuum games; the red's fixture
+    // is 0.053 long) the two 2x corner outlines and the midpoint marker fused
+    // into one blob. Below this length the component is drawn as ONE 2x outline
+    // at its midpoint (which then covers both corners and the sphere pinned to
+    // either) plus the dashed line; 0.2 was measured clearly legible, 0.053 not.
+    const SHORT_CONTINUUM = 0.12;
+    const isShort = Math.hypot(r.x1 - r.x0, r.y1 - r.y0) < SHORT_CONTINUUM;
     const zAc = EA(mx, my, g);
     const zBc = EB(mx, my, g);
     const zVal = trackingMode === 'B' ? zBc : zAc;
@@ -759,7 +767,7 @@ export function makeTraces(
       y: trackingMode === 'both' ? [my, my] : [my],
       z: trackingMode === 'both' ? [zAc, zBc] : [zVal],
       marker: {
-        size: diamondSize * 0.85, color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
+        size: diamondSize * (isShort ? 2 : 0.85), color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
         line: { color: '#8E44AD', width: 2 },
       },
     });
@@ -784,7 +792,7 @@ export function makeTraces(
     // whole [0,1]×[0,1] square, reachable only when both players are
     // indifferent everywhere) so the line traces the actual shape either way:
     // a straight run between the 2 endpoints, or the rectangle's perimeter.
-    const cornersRaw: [number, number][] = [[r.x0, r.y0], [r.x0, r.y1], [r.x1, r.y0], [r.x1, r.y1]];
+    const cornersRaw: [number, number][] = isShort ? [] : [[r.x0, r.y0], [r.x0, r.y1], [r.x1, r.y0], [r.x1, r.y1]];
     const corners: [number, number][] = [];
     cornersRaw.forEach(([cx, cy]) => {
       if (!drawnCorners.some(([ex, ey]) => Math.abs(ex - cx) < 1e-9 && Math.abs(ey - cy) < 1e-9)) {
