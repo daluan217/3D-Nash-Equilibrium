@@ -112,15 +112,19 @@ function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
  */
 export function colorTermKey(t: string): string {
   return t
-    .normalize('NFKC')
-    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+    // Glyph folds run BEFORE NFKC: NFKC decomposes U+00B4 ACUTE ACCENT into
+    // SPACE + U+0301, so a fold after it never sees the glyph (RED-REGEN-6/001).
     .replace(/[\u2018\u2019\u02BC\u02B9\u2032\u0060\u00B4]/g, "'")
     .replace(/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g, '"')
     .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
     .replace(/\s+/g, ' ')
-    // \p{P} = every Unicode punctuation class, so an ideographic full stop (。) or
-    // a Devanagari danda at the edge folds away like an ASCII period (CodeRabbit).
-    .replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, '')
+    // Edge trimming: sentence punctuation, quotes and brackets only — NOT the
+    // whole \p{P} class, which also ate '%', '#' and a leading '-' and folded
+    // "50%" onto the unrelated "50" (RED-REGEN-6/002). Covers the ideographic
+    // and fullwidth forms (。、，；：！？) that a CJK keyboard produces.
+    .replace(/^[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F\u3008\u3009\u300A\u300B\u3010\u3011\u3014\u3015\uFF08\uFF09\uFF3B\uFF3D\uFF5B\uFF5D()[\]{}]+|[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F\u3008\u3009\u300A\u300B\u3010\u3011\u3014\u3015\uFF08\uFF09\uFF3B\uFF3D\uFF5B\uFF5D()[\]{}]+$/g, '')
     .toLowerCase();
 }
 function normTerm(t: string): string {
