@@ -2093,6 +2093,9 @@ try {
     });
     await tourPage.getByRole('button', { name: `Edit ${gameName}` }).click();
     await tourPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    // Since #126 the Edit dialog sends only what changed (a no-change Save
+    // Changes sends nothing), so make an edit first or the mocked 401 never fires.
+    await tourPage.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first().fill('Edited so a PATCH goes out and meets the mocked 401.');
     const patchDone401 = tourPage.waitForResponse(
       (r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
     await tourPage.getByRole('button', { name: /^save changes$/i }).click();
@@ -2998,9 +3001,17 @@ try {
     ).catch(() => null);
     await symPage.getByRole('button', { name: /^save changes$/i }).click();
     await editPatchDone;
+    // Since #126 the Edit dialog sends only the fields that changed, so an
+    // unchanged chip array is deliberately ABSENT from the PATCH wire; the
+    // record itself is the ground truth: GET it and read the chip back.
+    record('the PATCH body never re-sends the unchanged chip array (only changed fields go out, #126)',
+      !!patchBody && !('colorTermsA' in patchBody), JSON.stringify(Object.keys(patchBody || {})));
+    const symToken = await symPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+    const symStored = await symPage.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), symToken);
+    const symGame = (symStored || []).find((g) => g.name === gameName);
     record('the chip is preserved in the stored record even while its render is neutralized',
-      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('cooperate'),
-      JSON.stringify(patchBody?.colorTermsA));
+      Array.isArray(symGame?.colorTermsA) && symGame.colorTermsA.includes('cooperate'),
+      JSON.stringify(symGame?.colorTermsA));
     await symPage.close();
   });
 
