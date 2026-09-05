@@ -124,7 +124,7 @@ export function colorTermKey(t: string): string {
     // whole \p{P} class, which also ate '%', '#' and a leading '-' and folded
     // "50%" onto the unrelated "50" (RED-REGEN-6/002). Covers the ideographic
     // and fullwidth forms (。、，；：！？) that a CJK keyboard produces.
-    .replace(/^[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F()[\]{}]+|[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F()[\]{}]+$/g, '')
+    .replace(/^[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F\u3008\u3009\u300A\u300B\u3010\u3011\u3014\u3015\uFF08\uFF09\uFF3B\uFF3D\uFF5B\uFF5D()[\]{}]+|[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F\u3008\u3009\u300A\u300B\u3010\u3011\u3014\u3015\uFF08\uFF09\uFF3B\uFF3D\uFF5B\uFF5D()[\]{}]+$/g, '')
     .toLowerCase();
 }
 function normTerm(t: string): string {
