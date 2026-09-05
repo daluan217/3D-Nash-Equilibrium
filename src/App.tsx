@@ -1163,6 +1163,8 @@ export default function App() {
   useModalTabTrap(isAuthModalOpen, authDialogRef);
   useModalTabTrap(isSaveModalOpen, saveDialogRef);
   useModalTabTrap(isEditModalOpen, editDialogRef);
+  const localGamesDialogRef = useRef<HTMLDivElement>(null);
+  useModalTabTrap(!!localGamesOffer, localGamesDialogRef);
 
   // Auto-scroll the logs browser to the bottom on new entries
   useEffect(() => {
@@ -2675,7 +2677,11 @@ export default function App() {
       // topmost layer: the dialog first, the tour only on a second press
       // with nothing else open. Do not stopPropagation when nothing here was
       // open — that Escape press must still reach the tour.
-      if (isFeedbackOpen) { closeFeedback(); e.stopPropagation(); }
+      // The local-games question sits above every other layer (z-[66]) and
+      // opens right after the Account dialog closes, so it is the topmost
+      // candidate; Escape = "leave them on this device", never mid-move.
+      if (localGamesOffer) { if (!localGamesBusy) setLocalGamesOffer(null); e.stopPropagation(); }
+      else if (isFeedbackOpen) { closeFeedback(); e.stopPropagation(); }
       else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); e.stopPropagation(); }
       else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; e.stopPropagation(); }
       // RED-APP-5 001, round 5: the Edit-saved-game dialog was missing from
@@ -2687,7 +2693,7 @@ export default function App() {
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isFeedbackOpen, isSaveModalOpen, isAuthModalOpen, isEditModalOpen]);
+  }, [isFeedbackOpen, isSaveModalOpen, isAuthModalOpen, isEditModalOpen, localGamesOffer, localGamesBusy]);
 
   /**
    * RED-APP-5 finding 004 (round 5): no `aria-live`/`role="status"`/
@@ -5893,6 +5899,7 @@ export default function App() {
           onClick={() => { if (!localGamesBusy) setLocalGamesOffer(null); }}
         >
           <div
+            ref={localGamesDialogRef}
             role="dialog"
             aria-modal="true"
             aria-label="Games saved on this device"

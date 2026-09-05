@@ -2062,13 +2062,12 @@ function countLocalGames(db: DB): number {
  *
  * Re-parenting rather than copying, so asking twice cannot duplicate a library.
  */
-function adoptLocalGames(userId: string): number {
+function adoptLocalGames(db: DB, userId: string): number {
   if (!isDesktop() || userId === LOCAL_OWNER_ID) return 0;
-  const db = loadDB();
   const mine = db.games.filter((g) => g.userId === LOCAL_OWNER_ID);
-  if (!mine.length) return 0;
   for (const g of mine) g.userId = userId;
-  saveDB(db);
+  // In-memory only: the route persists with saveDBOrFail so a write that
+  // fails or is blocked becomes an honest 500, never `success: true`.
   return mine.length;
 }
 
@@ -4270,12 +4269,16 @@ async function startServer() {
     if (!user) {
       return res.status(401).json({ error: "Sign in to move the games saved on this device into an account." });
     }
-    let adopted = 0;
     // Serialized with every other game write: the move reads and rewrites the
-    // whole games array, and a concurrent save must not be lost under it.
-    await serializeGameWrite(async () => { adopted = adoptLocalGames(user.id); });
-    if (adopted) console.log(`[games] ${user.id} moved ${adopted} local game(s) into their account`);
-    res.json({ success: true, adopted });
+    // whole games array, and a concurrent save must not be lost under it. The
+    // database is read INSIDE the queued function so it sees the last commit.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const adopted = adoptLocalGames(db, user.id);
+      if (adopted && !(await saveDBOrFail(db.games, res))) return; // 500 already sent
+      if (adopted) console.log(`[games] ${user.id} moved ${adopted} local game(s) into their account`);
+      res.json({ success: true, adopted });
+    });
   }));
 
   app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
