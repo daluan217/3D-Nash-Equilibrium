@@ -7,7 +7,7 @@
  * happened). Run by CI (.github/workflows/test.yml, job `e2e`) and locally:
  *
  *   E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
- *   E2E_SHARD=2/4 E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
+ *   E2E_SHARD=2/8 E2E_BASE=http://localhost:3099 node src/e2e/smoke.mjs
  *
  * Exit 0 only if every check passes and the browser logged no console errors.
  */
@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { selectSmokeSections } from './selection.js';
+import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -171,7 +171,7 @@ async function runSection(definition, attempt) {
   activeAttempt = attempt;
   const resultStart = results.length;
   const startedAt = Date.now();
-  console.log(`\n════ SECTION ${definition.id} [shard ${definition.shard}/4] ${definition.name}${attempt > 1 ? ' (retry)' : ''} ════`);
+  console.log(`\n════ SECTION ${definition.id} [shard ${definition.shard}/${SHARD_COUNT}] ${definition.name}${attempt > 1 ? ' (retry)' : ''} ════`);
   try {
     await definition.run();
   } catch (e) {
@@ -200,8 +200,8 @@ async function executeSections() {
   executedShard = selection.shard;
   const selected = selection.selected;
   console.log(`Running ${selected.length}/${sections.length} smoke sections${selection.label}.`);
-  // Shards 2-4 can begin with a primary-page section even though section 1 is
-  // assigned to shard 1. Load the same clean starting page once for them.
+  // Any shard other than the one that owns section 1 can begin with a
+  // primary-page section. Load the same clean starting page once for them.
   if (selected[0].id !== '1' && selected.some((definition) => primaryPageSection(definition.id))) {
     await gotoHome();
   }
@@ -382,7 +382,7 @@ const REGEN_STORY_SYMMETRIC = {
 try {
   // ══ 1. cold load (guards: build integrity — a broken bundle was once the
   //      only failure mode CI could not see, because nothing built or ran it)
-  section('1', 'cold load', 5, async () => {
+  section('1', 'cold load', 12, async () => {
     await gotoHome();
     record('page loads with the app title',
       (await page.title()).includes('Nash Equilibrium'),
@@ -390,7 +390,7 @@ try {
   });
 
   // ══ 2. API + deterministic report path (no key → computed ground truth)
-  section('2', 'deterministic report API', 3, async () => {
+  section('2', 'deterministic report API', 8, async () => {
     const r = await fetch(`${BASE}/api/report`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -404,7 +404,7 @@ try {
   });
 
   // ══ 3. pasted typographic minus (round 14: silently became 0 on the live site)
-  section('3', 'typographic minus input', 2, async () => {
+  section('3', 'typographic minus input', 4, async () => {
     const cell = $.matrix.nth(0);
     await cell.click();
     await cell.fill('');
@@ -418,7 +418,7 @@ try {
   });
 
   // ══ 4. start point of 0 (round 14: log said Start (0.217) over a box reading 0)
-  section('4', 'zero start point', 5, async () => {
+  section('4', 'zero start point', 7, async () => {
     await $.x0.fill('0'); await $.x0.blur(); await page.waitForTimeout(200);
     await $.step.click();
     // poll, don't sleep: on CI's SwiftShader runner the step can take seconds
@@ -433,7 +433,7 @@ try {
 
   // ══ 5. THE TAB WEDGE (round 15: one Step click at step-size 0.001 wedged the
   //      tab permanently, live on the public site)
-  section('5', 'tab-wedge fixture', 4, async () => {
+  section('5', 'tab-wedge fixture', 9, async () => {
     const vals = [7, -7, -6, -4, -7, 1, 0, -6];
     for (let i = 0; i < 8; i++) { await $.matrix.nth(i).fill(String(vals[i])); await $.matrix.nth(i).blur(); }
     await page.waitForTimeout(300);
@@ -459,7 +459,7 @@ try {
   });
 
   // ══ 6. a preset runs to convergence (guards the solver + run loop + UI wiring)
-  section('6', 'mixed convergence', 6, async () => {
+  section('6', 'mixed convergence', 12, async () => {
     await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
     await page.waitForTimeout(500);
     await setSpeed(10); await page.waitForTimeout(300);
@@ -497,7 +497,7 @@ try {
   //       "x = P(A plays Row 1), y = P(B plays Col 1)" via MathTex on every
   //       game, preset or not — a body-wide check would fail on the FIXED
   //       code too and the check would be measuring the wrong thing.
-  section('6b', 'standard preset stories', 8, async () => {
+  section('6b', 'standard preset stories', 9, async () => {
     const ROWCOL = /\b(row|col(?:umn)?)\s*\d\b/i;
     // Each preset's own row1Label (headerMarker) AND a distinct phrase that
     // only appears in that preset's PROSE (narrativeMarker) — two separate
@@ -579,7 +579,7 @@ try {
 
   // ══ 7. regret mode converges and names what it did (round 14 wording defect;
   //      guards the mixed-NE realization branch)
-  section('7', 'regret convergence wording', 7, async () => {
+  section('7', 'regret convergence wording', 11, async () => {
     // This used to inherit Penalty Kick from §6b. Every section must carry
     // its own fixture now that shards can start here and retries can run it
     // alone.
@@ -598,7 +598,7 @@ try {
   });
 
   // ══ 8. switching mover clears the run (round 14: stale run under new rules)
-  section('8', 'mover switch clears run', 6, async () => {
+  section('8', 'mover switch clears run', 12, async () => {
     await $.run.click();
     await page.waitForSelector('text=Converged', { timeout: 240000 });
     const before = await page.locator('text=Converged').count();
@@ -612,7 +612,7 @@ try {
 
   // ══ 9. the report surface, end to end, on the no-key path (guards the
   //      report UI + its agreement with the solver-computed equilibria)
-  section('9', 'deterministic report UI', 5, async () => {
+  section('9', 'deterministic report UI', 7, async () => {
     await $.reset.click();
     const vals = [-9, 3, 0, 5, 5, 0, 1, 1];
     for (let i = 0; i < 8; i++) { await $.matrix.nth(i).fill(String(vals[i])); await $.matrix.nth(i).blur(); }
@@ -629,7 +629,7 @@ try {
   // ══ 10. matrix edit after a jump clears the run (round 14: "Search Game,
   //      Run to 49/49, Go to step 0, edit b22" left a STALE certified run on
   //      the new game)
-  section('10', 'matrix edit clears jumped run', 4, async () => {
+  section('10', 'matrix edit clears jumped run', 11, async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Search Game' }).first().click();
@@ -652,7 +652,7 @@ try {
   // ══ 11. the PURE settlement branch (check 6 exercises the mixed one; BoS
   //      settles at a corner — the wording and the realised payoff here are
   //      their own code path, one a red team falsified with a wrong number)
-  section('11', 'pure settlement wording', 6, async () => {
+  section('11', 'pure settlement wording', 5, async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Battle of the Sexes' }).first().click();
@@ -667,7 +667,7 @@ try {
 
   // ══ 12. theme round-trip (the light/dark pairing convention — a panel left
   //      dark "by omission" in light mode is this repo's classic regression)
-  section('12', 'theme round trip', 7, async () => {
+  section('12', 'theme round trip', 10, async () => {
     const before = await page.evaluate(() => document.documentElement.classList.contains('dark'));
     await page.locator('[aria-label="Toggle dark mode"]').first().click();
     await page.waitForTimeout(300);
@@ -687,7 +687,7 @@ try {
 
   // ══ 13. Reset returns the app to a fresh state (guards the default-game
   //      restore path after two presets, a manual matrix, and a report)
-  section('13', 'reset clears run', 2, async () => {
+  section('13', 'reset clears run', 11, async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Battle of the Sexes' }).first().click();
@@ -734,7 +734,7 @@ try {
   //      reachable at all: the plot must remain rotatable and zoomable. If
   //      direct manipulation breaks, the camera code above is moot and this
   //      fails loudly.
-  section('14', 'plot rotate and zoom', 3, async () => {
+  section('14', 'plot rotate and zoom', 8, async () => {
     await $.reset.click();
     await page.locator('#plotly-3d-market-simulation').scrollIntoViewIfNeeded();
     const sceneReady = await waitForScene();
@@ -789,7 +789,7 @@ try {
   //      camera from node misses it and "the view did not move" passes against
   //      the bug (three such attempts did). Sample it INSIDE the react call
   //      instead: that is where the stale pose is observable.
-  section('15', 'camera stability on resume', 6, async () => {
+  section('15', 'camera stability on resume', 5, async () => {
     const view = page.viewportSize();
     // Wide enough that the plot and the Run button are both on screen — if
     // Playwright has to scroll to reach Run, the plot moves and the comparison
@@ -872,7 +872,7 @@ try {
   //      as a `wheel` event with ctrlKey set. A plain wheel over the scene
   //      zooms the camera too. Both are reaching into the picture, so both
   //      pause, exactly as a press does.
-  section('16', 'zoom pauses simulation', 7, async () => {
+  section('16', 'zoom pauses simulation', 3, async () => {
     await $.reset.click();
     await page.waitForTimeout(400);
     await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
@@ -921,7 +921,7 @@ try {
   //
   //      A SEPARATE page at a fixed 320px viewport, since the shared page
   //      above never resizes this narrow.
-  section('17', '320px label wrapping', 7, async () => {
+  section('17', '320px label wrapping', 8, async () => {
     const narrowPage = await newTrackedPage({ viewport: { width: 320, height: 900 } });
     await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
     const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
@@ -992,7 +992,7 @@ try {
   //      A SEPARATE page (not the shared one above) because the preference
   //      must be readable from the very first render, and setting it mid-way
   //      through this suite would contaminate every later check.
-  section('18', 'reduced-motion idle spin', 6, async () => {
+  section('18', 'reduced-motion idle spin', 3, async () => {
     const rmPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     const eye = () => rmPage.evaluate(() => {
       const el = document.getElementById('plotly-3d-market-simulation');
@@ -1066,7 +1066,7 @@ try {
   //      A SEPARATE page (not the shared one above), since this leaves the
   //      dialog open/closed and moves focus around — state later checks in
   //      this suite do not expect.
-  section('19', 'expanded log focus', 2, async () => {
+  section('19', 'expanded log focus', 6, async () => {
     const focusPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await focusPage.goto(BASE, { waitUntil: 'networkidle' });
     const focusExitTour = focusPage.getByRole('button', { name: /exit tour/i });
@@ -1142,7 +1142,7 @@ try {
   //        Enter press against Feedback, whose own leak point is <body>, so
   //        it STILL could not discriminate. Mutation-verified against
   //        BOTH dialogs before shipping — see the finding's blue-note.)
-  section('20', 'modal focus traps', 8, async () => {
+  section('20', 'modal focus traps', 9, async () => {
     const trapPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
     const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
@@ -1245,7 +1245,7 @@ try {
   //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 — settles at
   //      (0,1) with regret ~18 for A under the app's own defaults
   //      (firstMover A, shrink mode, step 0.1, x0=y0=0.217).
-  section('21', 'settled live-region wording', 3, async () => {
+  section('21', 'settled live-region wording', 4, async () => {
     const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
     const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
@@ -1307,7 +1307,7 @@ try {
   //      Escape handlers now stopPropagation when they actually close
   //      something, so the same keypress can never also reach the tour's
   //      listener and reset its step to 0.
-  section('22', 'Escape closes topmost layer', 5, async () => {
+  section('22', 'Escape closes topmost layer', 8, async () => {
     const escPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await escPage.goto(BASE, { waitUntil: 'networkidle' });
     // Tour auto-opens on a fresh anonymous load — do NOT exit it here.
@@ -1371,7 +1371,7 @@ try {
   //      REPORT_FETCH_TIMEOUT_MS (22s normally; 5s in CI's throwaway e2e
   //      artifact) — real wall-clock time, since the defect class is
   //      specifically "nothing ever forces recovery".
-  section('23', 'stalled report timeout wording', 7, async () => {
+  section('23', 'stalled report timeout wording', 10, async () => {
     const hangPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let intercepted = false;
     await hangPage.route('**/api/report', async (route) => {
@@ -1442,7 +1442,7 @@ try {
   //      forcing the grid — and the page — past the viewport instead of
   //      wrapping or shrinking. Fixed with minmax(0, 1fr) on both tracks,
   //      matching what the per-cell payoff-pair grid already did correctly.
-  section('24', 'long-label 320px reflow', 8, async () => {
+  section('24', 'long-label 320px reflow', 10, async () => {
     const overflowPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
     const oExitTour = overflowPage.getByRole('button', { name: /exit tour/i });
@@ -1531,7 +1531,7 @@ try {
   //      `/api/report` response is fully replaced with a synthetic but
   //      `envelopeIsTrustworthy()`-satisfying ('template' source) envelope
   //      carrying a crafted 72-character name.
-  section('25', 'suggested-name clamp', 3, async () => {
+  section('25', 'suggested-name clamp', 8, async () => {
     const clampPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await clampPage.route('**/api/report', async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -1600,7 +1600,7 @@ try {
   //      unmocked /api/health has no `capabilities.scenarioRegen` at all).
   //      No route mock in this section on purpose — it must be true against
   //      the ACTUAL running server, not a stand-in for one.
-  section('26', 'scenario regeneration hidden', 8, async () => {
+  section('26', 'scenario regeneration hidden', 10, async () => {
     const offPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     // CodeRabbit finding: a FIXED sleep before asserting "absent" can pass
     // for the wrong reason on a stalled CI runner (the button is absent
@@ -1627,7 +1627,7 @@ try {
   // ══ 27. FEATURE-REGEN — Save dialog: Discard preserves typed edits
   //      (RED-APP-4 class), then Keep replaces desc/labels but leaves a
   //      user-TYPED name untouched (director's amended name rule).
-  section('27', 'save-dialog regenerate semantics', 4, async () => {
+  section('27', 'save-dialog regenerate semantics', 6, async () => {
     const savePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let regenCalls = 0;
     await mockRegenOn(savePage, async (route) => {
@@ -1706,7 +1706,7 @@ try {
   //      preserve/add/never-reassign behaviour as pure-function fixtures,
   //      and src/integration/scenario-regen.test.mjs section 10 covers it
   //      end-to-end through the real REST API.
-  section('28', 'edit-dialog regenerate semantics', 2, async () => {
+  section('28', 'edit-dialog regenerate semantics', 11, async () => {
     const editPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(editPage, async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_B }) });
@@ -1799,7 +1799,7 @@ try {
 
   // ══ 29. FEATURE-REGEN — double-click issues exactly one request, and
   //      focus/aria-live behave (a11y).
-  section('29', 'regenerate double-click guard', 7, async () => {
+  section('29', 'regenerate double-click guard', 9, async () => {
     const dblPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let hits = 0;
     await mockRegenOn(dblPage, async (route) => {
@@ -1872,7 +1872,7 @@ try {
   //      handleRegenerateScenario uses the SAME fetchWithTimeout default as
   //      /api/report, see §23's sibling check), because the defect class this
   //      guards is "nothing ever forces recovery".
-  section('30', 'regenerate timeout wording', 5, async () => {
+  section('30', 'regenerate timeout wording', 4, async () => {
     const toPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let toIntercepted = false;
     await mockRegenOn(toPage, async (route) => {
@@ -1915,7 +1915,7 @@ try {
   // ══ 31. FEATURE-REGEN — a 429 from the shared rate-limit bucket shows the
   //      server's own wording, and the button recovers immediately (no stuck
   //      "Regenerating…").
-  section('31', 'regenerate 429 wording', 1, async () => {
+  section('31', 'regenerate 429 wording', 6, async () => {
     const rlPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(rlPage, async (route) => {
       await route.fulfill({
@@ -1948,7 +1948,7 @@ try {
 
   // ══ 32. FEATURE-REGEN — cross-dialog staleness: Edit A's slow response
   //      must never land on Edit B.
-  section('32', 'cross-dialog regeneration staleness', 3, async () => {
+  section('32', 'cross-dialog regeneration staleness', 12, async () => {
     const stalePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(stalePage, async (route) => {
       await new Promise((r) => setTimeout(r, 3000));
@@ -2043,7 +2043,7 @@ try {
   //      the 401 with a route interception (byte-identical downstream code
   //      path to a real TTL expiry — `res.status === 401` is all the client
   //      reads) rather than waiting out AUTH_TOKEN_TTL_MS.
-  section('33', 'expired-auth tour guard', 8, async () => {
+  section('33', 'expired-auth tour guard', 10, async () => {
     const tourPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(tourPage, 'e2e8tourreopen');
     record('control: a signed-in load does not auto-open the tour',
@@ -2126,7 +2126,7 @@ try {
   //      app's own JS ever runs, modeling "the browser already has no quota
   //      left" rather than something the app itself did — same technique
   //      the director's own repro used.
-  section('34', 'storage-quota error boundary', 1, async () => {
+  section('34', 'storage-quota error boundary', 2, async () => {
     const quotaPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await quotaPage.addInitScript(() => {
       const real = window.localStorage.setItem.bind(window.localStorage);
@@ -2183,7 +2183,7 @@ try {
   //      by scrolling a genuine scrollable ANCESTOR into view (the dialog
   //      itself, post-fix) — there is no such ancestor pre-fix, so the click
   //      times out instead of silently "succeeding" through some shortcut.
-  section('35', 'short-viewport dialogs', 7, async () => {
+  section('35', 'short-viewport dialogs', 11, async () => {
     const shortPage = await newTrackedPage({ viewport: { width: 320, height: 256 } });
     // NOTE: no page-wide setDefaultTimeout override here — the two
     // reachability clicks below already pass their own explicit
@@ -2287,7 +2287,7 @@ try {
   //      isComposing:true) per keystroke, matching how
   //      @testing-library/user-event drives React's own composition
   //      detection (which reads exactly `e.nativeEvent.isComposing`).
-  section('36', 'IME-safe label clamp', 4, async () => {
+  section('36', 'IME-safe label clamp', 1, async () => {
     const imePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(imePage, 'e2e8ime');
     await imePage.getByRole('button', { name: /save preset/i }).click();
@@ -2345,7 +2345,7 @@ try {
   //      events) past the 40-unit budget, then presses Undo repeatedly and
   //      confirms the value actually changes at least once (the pre-fix
   //      behaviour: 50 presses, zero change, ever).
-  section('37', 'label-clamp undo', 3, async () => {
+  section('37', 'label-clamp undo', 7, async () => {
     const undoPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(undoPage, 'e2e8undo');
     await undoPage.getByRole('button', { name: /save preset/i }).click();
@@ -2396,7 +2396,7 @@ try {
   //      assertions above can't leak into it): Edit dialog open in A, delete
   //      in B, submit in A -> dialog shows the error, row is already gone
   //      underneath, and Cancel closes cleanly (no reload needed either).
-  section('38', 'phantom saved-game row after a 404', 4, async () => {
+  section('38', 'phantom saved-game row after a 404', 5, async () => {
     const twoTabContext = await browser.newContext();
     const tabA = trackPage(await twoTabContext.newPage());
     const tabB = trackPage(await twoTabContext.newPage());
@@ -2485,7 +2485,7 @@ try {
   //      connection precisely. The client-minted clientRequestId is the same
   //      on the retry, so the server must recognize it and return the
   //      original row rather than creating a second one.
-  section('39', 'network-flap save does not duplicate', 8, async () => {
+  section('39', 'network-flap save does not duplicate', 5, async () => {
     const flapPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const flapConsoleErrors = [];
     flapPage.on('console', (m) => { if (m.type() === 'error') flapConsoleErrors.push(m.text()); });
@@ -2570,7 +2570,7 @@ try {
   //      lands EXACTLY at the budget must appear intact; one unit further
   //      over budget must be rejected outright, leaving the pre-existing
   //      text unchanged and never a dangling ZWJ/surrogate.
-  section('40', 'Name/Description grapheme-safe paste clamp', 1, async () => {
+  section('40', 'Name/Description grapheme-safe paste clamp', 7, async () => {
     const familyEmoji = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 👨‍👩‍👧‍👦, 11 UTF-16 units
     const endsUgly = (s) => /\u{200D}$/u.test(s) || /[\uD800-\uDBFF]$/.test(s);
 
@@ -2672,7 +2672,7 @@ try {
   //      `sticky top-0` survives untouched. Plus the red's own page.pdf()
   //      smoke: a real PDF, non-empty, no exception, run mid-simulation
   //      exactly as the red's probe6b did.
-  section('41', 'print stylesheet', 5, async () => {
+  section('41', 'print stylesheet', 2, async () => {
     const printPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const exitTour = printPage.getByRole('button', { name: /exit tour/i });
     await printPage.goto(BASE, { waitUntil: 'networkidle' });
@@ -2848,7 +2848,7 @@ try {
   //      Real DOM, real ColorCoded render, real chip-picker UI, real
   //      save/PATCH/GET round trip; `/api/scenario/regenerate` mocked exactly
   //      like every other regen section (the flag-off server, untouched).
-  section('43', 'symmetric-label chip collision renders neutral', 6, async () => {
+  section('43', 'symmetric-label chip collision renders neutral', 12, async () => {
     const symPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(symPage, async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_SYMMETRIC }) });
@@ -3102,7 +3102,7 @@ try {
   //      OWN desktop-shaped server (IS_ELECTRON=true, empty user-data, no
   //      credentials) and drives the whole CRUD cycle from an Electron-UA page
   //      that never signs in.
-  section('45', 'desktop local owner: save, list, edit, delete without an account', 5, async () => {
+  section('45', 'desktop local owner: save, list, edit, delete without an account', 6, async () => {
     const deskPort = String(Number(PORT) + 1000);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-desk-'));
@@ -3190,7 +3190,7 @@ try {
   //      same game clobbered each other (20/20 at the API). It now sends only
   //      the fields that changed. 003: Delete while offline used to do nothing
   //      visible at all.
-  section('46', 'concurrent edits of different fields both survive; offline delete says so', 6, async () => {
+  section('46', 'concurrent edits of different fields both survive; offline delete says so', 7, async () => {
     // One context, two tabs: the second tab must share the first tab's login.
     const twoTab = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const tabA = trackPage(await twoTab.newPage());

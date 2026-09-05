@@ -42,7 +42,7 @@ assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 8, 'the smoke suite is split into 8 CI shards (test.yml matrix must match)');
+assert.strictEqual(SHARD_COUNT, 12, 'the smoke suite is split into 12 CI shards (test.yml matrix must match)');
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   assert(definitions.some((definition) => definition.shard === shard),
     `shard ${shard} must own at least one section`);
@@ -50,19 +50,23 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
 for (const definition of definitions) {
   assert(definition.shard >= 1 && definition.shard <= SHARD_COUNT, `section ${definition.id} names a shard outside 1..${SHARD_COUNT}`);
 }
-// Balance guard: no shard may carry more than 1/4 of the sections (a re-shuffle
-// that piles work onto one shard is the 11-minute shard 1 this split removed).
+// Balance guard: no shard may carry more than a quarter of the sections (a
+// re-shuffle that piles work onto one shard is the 11-minute shard 1 the split
+// removed). This is deliberately a COUNT bound, not definitions.length /
+// SHARD_COUNT: shards are packed by measured duration, so one shard legitimately
+// holds a single 120 s section while another holds seven short ones.
+const MAX_SECTION_SHARE = 1 / 4;
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   const n = definitions.filter((d) => d.shard === shard).length;
-  assert(n <= Math.ceil(definitions.length / 4), `shard ${shard} carries ${n} sections — rebalance by measured duration`);
+  assert(n <= Math.ceil(definitions.length * MAX_SECTION_SHARE), `shard ${shard} carries ${n} sections — rebalance by measured duration`);
 }
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
-const historicalShard1Ids = ['31', '34', '40', '42'];
-assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SHARD: '1/8' }).selected.map(({ id }) => id),
+const historicalShard1Ids = ['36', '42'];
+assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SHARD: '1/12' }).selected.map(({ id }) => id),
   historicalShard1Ids,
-  'the CI shard selector must retain its measured-duration assignment (rebalanced to 8 shards 2026-09-05)');
+  'the CI shard selector must retain its measured-duration assignment (rebalanced to 12 shards 2026-09-05)');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
   'a local section selector must run exactly the requested H1 regressions');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '999' }), /unknown E2E_SECTION ID/,
@@ -71,7 +75,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/8', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/12', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
