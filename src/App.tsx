@@ -499,6 +499,7 @@ export default function App() {
   const localOwnerMode = isElectron && dbMode === 'local' && !authToken;
   const canOwnGames = !!authToken || localOwnerMode;
   const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});
+  const gamesFetchSeqRef = useRef(0);
 
   const updateAuthToken = (token: string | null) => {
     setAuthToken(token);
@@ -780,9 +781,16 @@ export default function App() {
    */
   const refetchUserGames = useCallback(async () => {
     if (!canOwnGames) { setUserCustomGames([]); return; }
+    // Only the NEWEST request may write the list: a database-mode or owner
+    // switch re-fetches at once, and the earlier request's late response must
+    // not overwrite the current list with the other database's rows
+    // (CodeRabbit, RED-DESKTOP-10/001 review).
+    const seq = ++gamesFetchSeqRef.current;
     try {
       const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });
-      setUserCustomGames(res.ok ? await res.json() : []);
+      const rows = res.ok ? await res.json() : [];
+      if (seq !== gamesFetchSeqRef.current) return;
+      setUserCustomGames(rows);
     } catch (err) {
       console.error('Error fetching custom games:', err);
     }
