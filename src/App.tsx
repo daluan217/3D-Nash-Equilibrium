@@ -41,7 +41,7 @@ import {
 } from './utils/gameEngine';
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
-import { cleanText, clampGraphemeSafe } from './utils/textSafety';
+import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
@@ -160,14 +160,16 @@ const clampLabelInput = (v: string) => clampGraphemeSafe(v, 40);
 function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
   const ne = e.nativeEvent as InputEvent;
   if (ne.isComposing) return; // not cancelable anyway — let composition through untouched
-  const data = ne.data;
-  if (!data) return; // deletions and other non-inserting edits have nothing to bound
   const target = e.target as HTMLInputElement;
-  const current = target.value;
-  const selStart = target.selectionStart ?? current.length;
-  const selEnd = target.selectionEnd ?? current.length;
-  const prospective = current.slice(0, selStart) + data + current.slice(selEnd);
-  if (clampGraphemeSafe(prospective, 40) !== prospective) {
+  // RED-APP-9/003: the boundary math itself (read the prospective value,
+  // compare it to its own grapheme-safe clamp) now lives once in
+  // `wouldExceedGraphemeBudget` (src/utils/textSafety.ts), shared with the
+  // Game Name inputs (same 40-unit budget, reusing THIS function directly)
+  // and the Description textarea (DescriptionEditor.tsx's own
+  // onBeforeInput, at its own maxLength) — a second hand-copied
+  // implementation is exactly the kind of drift this codebase has been
+  // burned by before.
+  if (wouldExceedGraphemeBudget(target, ne.data, 40)) {
     e.preventDefault();
   }
 }
@@ -576,6 +578,19 @@ export default function App() {
   // completes, so the explanation regenerates there — from the fields as
   // actually submitted, since the user may have edited them in the modal.
   const regenExplanationAfterSaveRef = useRef(false);
+  /**
+   * RED-APP-9/002: one id per Save-dialog SUBMISSION ATTEMPT (not per
+   * keystroke, not per dialog open) — minted lazily on the first submit
+   * inside `handleSaveGameSubmit`, then reused unchanged on every retry
+   * (including the resume-after-re-auth path at the effect just below,
+   * which reopens the SAME in-progress save rather than starting a new
+   * one) so a dropped response followed by a retry sends the server the
+   * same idempotency key both times. Reset to null wherever a dialog open
+   * means "start saving something new" (a fresh "Save Preset" click, or
+   * "Save this scenario with the game") so that case mints its own id
+   * rather than colliding with a previous, unrelated save.
+   */
+  const saveRequestIdRef = useRef<string | null>(null);
   useEffect(() => {
     // Watching the token rather than any one success handler means the save
     // modal comes back regardless of which path produced the sign-in (login,
@@ -742,20 +757,37 @@ export default function App() {
     }
   }, [authToken, dbMode, apiBaseUrl]);
 
+  /**
+   * RED-APP-9/001: a 404 from PATCH/DELETE /api/games/:id (another tab,
+   * profile, or device already deleted the row) is the server telling this
+   * client, authoritatively, that its local list is stale — before this fix
+   * neither failure path acted on that, so a deleted game's row stayed a
+   * permanent phantom until a full reload. Both 404 handlers below call this
+   * SAME re-fetch the initial-mount effect uses, so "the list has been
+   * refreshed" is never just a local filter guessing at the truth — it is
+   * grounded in a fresh server read every time.
+   */
+  const refetchUserGames = useCallback(async () => {
+    if (!authToken) { setUserCustomGames([]); return; }
+    try {
+      const res = await fetch(getApiUrl('/api/games'), {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      setUserCustomGames(res.ok ? await res.json() : []);
+    } catch (err) {
+      console.error('Error fetching custom games:', err);
+    }
+    // dbMode: a desktop database switch can keep the same token and base URL
+    // while changing where /api/games resolves (CodeRabbit, #119).
+  }, [authToken, apiBaseUrl, dbMode]);
+
   useEffect(() => {
     if (authToken && user) {
-      fetch(getApiUrl('/api/games'), {
-        headers: { 'Authorization': `Bearer ${authToken}` }
-      })
-        .then((res) => res.ok ? res.json() : [])
-        .then((data) => {
-          setUserCustomGames(data);
-        })
-        .catch((err) => console.error('Error fetching custom games:', err));
+      void refetchUserGames();
     } else {
       setUserCustomGames([]);
     }
-  }, [authToken, user, dbMode, apiBaseUrl]);
+  }, [authToken, user, dbMode, apiBaseUrl, refetchUserGames]);
 
   // ── Preset Selector State ──────────────────────────────────────────────────
   const [activePreset, setActivePreset] = useState<string>('bos');
@@ -1435,6 +1467,9 @@ export default function App() {
     });
     setSaveError('');
     regenExplanationAfterSaveRef.current = true;
+    // A fresh save attempt for a different scenario — never reuse a
+    // clientRequestId minted for whatever the dialog last tried to save.
+    saveRequestIdRef.current = null;
     setIsSaveModalOpen(true);
   };
 
@@ -2057,6 +2092,22 @@ export default function App() {
         } else {
           setLlmEnvelope(null);
         }
+      } else if (res.status === 404) {
+        // RED-APP-9/001: the game this dialog is editing was already deleted
+        // elsewhere (another tab/profile/device) — the server's 404 is
+        // authoritative, so prune the phantom row and re-fetch rather than
+        // just surfacing the error string and leaving the stale row in
+        // place. The dialog itself is left OPEN (same as any other failed
+        // submit) so the user can read the message and Cancel; by the time
+        // they do, the underlying list is already correct — no reload
+        // needed. If the deleted game was the one currently loaded on the
+        // board, fall back the same way the Delete button already does
+        // (handleLoadPreset('bos')) rather than leaving the matrix pointed
+        // at a saved-game id that no longer resolves to anything.
+        setUserCustomGames((prev) => prev.filter((g) => g.id !== editGameId));
+        if (activePreset === editGameId) handleLoadPreset('bos');
+        void refetchUserGames();
+        setEditError('This game was deleted elsewhere; the list has been refreshed.');
       } else {
         // RED-APP-7/001: a validly-signed but EXPIRED token dies mid-session
         // (the tab stayed open past AUTH_TOKEN_TTL_MS) without React ever
@@ -2088,6 +2139,19 @@ export default function App() {
           handleLoadPreset('bos');
         }
         setLogEntries(prev => [...prev, `🗑 Deleted custom game.`]);
+      } else if (res.status === 404) {
+        // RED-APP-9/001: clicking Delete on a game someone else already
+        // deleted used to re-alert "Game not found." forever — the row was
+        // never removed from `userCustomGames`, so the exact same phantom
+        // reappeared the instant the alert was dismissed. The server's 404
+        // is authoritative here: prune it and re-fetch, same fallback as a
+        // normal successful delete if it was the active game.
+        setUserCustomGames(prev => prev.filter(g => g.id !== gameId));
+        if (activePreset === gameId) {
+          handleLoadPreset('bos');
+        }
+        void refetchUserGames();
+        alert('This game was deleted elsewhere; the list has been refreshed.');
       } else {
         // RED-APP-7/001: same dead-token cleanup as Save/Edit — an expired
         // token must not keep asserting "signed in" (header, Save/Edit's own
@@ -2244,6 +2308,11 @@ export default function App() {
     }
     setSaveError('');
     setSaveLoading(true);
+    // RED-APP-9/002: minted ONCE per save attempt and reused on every retry
+    // (a dropped response after the server already wrote the row must not
+    // read as "a new save" the second time) — see the ref's own doc comment.
+    if (!saveRequestIdRef.current) saveRequestIdRef.current = crypto.randomUUID();
+    const clientRequestId = saveRequestIdRef.current;
     try {
       const res = await fetch(getApiUrl('/api/games'), {
         method: 'POST',
@@ -2264,11 +2333,15 @@ export default function App() {
           // The user's own highlights. Deliberately NOT part of the scenario
           // sent to the model — they colour this description and nothing else.
           colorTermsA: saveTerms.a,
-          colorTermsB: saveTerms.b
+          colorTermsB: saveTerms.b,
+          clientRequestId
         })
       });
       const data = await res.json();
       if (res.ok) {
+        // This attempt is done (successfully) — the NEXT Save Preset click
+        // is a new attempt and must mint its own id, not reuse this one.
+        saveRequestIdRef.current = null;
         setUserCustomGames(prev => [...prev, data.game]);
         setActivePreset(data.game.id);
         // Kept-scenario saves rewrite the explanation in the story's terms.
@@ -3986,8 +4059,16 @@ export default function App() {
       {/* Visually hidden — see `liveStatus`'s own comment above for why this
           announces run PHASE transitions only, never every log line. */}
       <div aria-live="polite" role="status" className="sr-only">{liveStatus}</div>
-      {/* ── Heading Banner ── */}
+      {/* ── Heading Banner ──
+          RED-APP-9/004: `sticky top-0` is exactly what Chromium's print
+          pagination bakes in as an opaque floating box wherever the page-
+          break algorithm lands it, rather than printing the header once in
+          flow at the top of page 1. `data-print="static"` is the print
+          stylesheet's hook (src/index.css) to reset this ONE element back
+          to `position: static` for print only — the on-screen sticky
+          behavior is untouched. */}
       <header
+        data-print="static"
         className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle${tourOpen ? ' [@media(max-height:560px)]:!static' : ''}`}
         style={isElectron ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
       >
@@ -4024,7 +4105,7 @@ export default function App() {
           </div>
           {isTouchDevice ? (
             /* ── TOUCH (phones + tablets): single compact row ── */
-            <div className="flex items-center justify-end gap-2 w-full flex-wrap">
+            <div data-print="hide" className="flex items-center justify-end gap-2 w-full flex-wrap">
               {!isElectron && (
                 <button
                   aria-label="Get the desktop app"
@@ -4063,7 +4144,7 @@ export default function App() {
             </div>
           ) : (
             /* ── NON-TOUCH (desktops/laptops): original flex row ── */
-            <div className="flex items-center flex-wrap gap-2.5">
+            <div data-print="hide" className="flex items-center flex-wrap gap-2.5">
               {!isElectron && (
                 <button
                   onClick={() => setIsDownloadModalOpen(true)}
@@ -4166,6 +4247,9 @@ export default function App() {
                       row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',
                       col1: scenarioForReport?.col1 ?? '', col2: scenarioForReport?.col2 ?? '',
                     });
+                    // A brand-new "Save Preset" click — a new save attempt,
+                    // never a retry of whatever the dialog last submitted.
+                    saveRequestIdRef.current = null;
                     setIsSaveModalOpen(true);
                   }}
                   className="inline-flex items-center gap-1 text-xs font-bold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-950/40 hover:bg-accent-100 dark:hover:bg-accent-900/50 border border-accent-200/50 dark:border-accent-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
@@ -4669,6 +4753,18 @@ export default function App() {
             <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="dashed" /> Search Corridor</span>
             <span className="flex items-center gap-1 text-orange-500 dark:text-orange-400"><LegendSwatch shape="ring" /> Ghost positions</span>
           </div>
+
+          {/* RED-APP-9/004: printed/PDF output replaces the plot with this
+              same legend line (on-screen it stays exactly as it was) plus a
+              print-only note — the WebGL canvas below is hidden for print
+              ([data-tour="plot"] in src/index.css), since Chromium's print
+              path does not reliably rasterize it. `hidden print:block`
+              keeps this invisible on screen (Tailwind's built-in print
+              variant), so nothing changes for the interactive app. */}
+          <p className="hidden print:block text-xs text-slate-500">
+            The interactive 3D plot is not shown in print — WebGL canvases do not render in a printed page.
+            Open this game in the app to view it.
+          </p>
 
           {/* Plotly 3D visual component */}
           <PlotlyView
@@ -5699,8 +5795,13 @@ export default function App() {
                   type="text"
                   className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  maxLength={40}
+                  onBeforeInput={clampLabelBeforeInput}
+                  onChange={(e) => setEditName((e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value))}
+                  onCompositionEnd={(e) => {
+                    const v = e.currentTarget.value;
+                    const clamped = clampLabelInput(v);
+                    if (clamped !== v) setEditName(clamped);
+                  }}
                   required
                 />
               </div>
@@ -6106,8 +6207,13 @@ export default function App() {
                   className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   placeholder="e.g. Battle of the Sexes 2.0"
                   value={saveName}
-                  onChange={(e) => setSaveName(e.target.value)}
-                  maxLength={40}
+                  onBeforeInput={clampLabelBeforeInput}
+                  onChange={(e) => setSaveName((e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value))}
+                  onCompositionEnd={(e) => {
+                    const v = e.currentTarget.value;
+                    const clamped = clampLabelInput(v);
+                    if (clamped !== v) setSaveName(clamped);
+                  }}
                   required
                 />
               </div>
@@ -6252,6 +6358,7 @@ export default function App() {
           call-to-action inside a guided walkthrough reads as part of the tour. */}
       {!tourOpen && (
       <button
+        data-print="hide"
         onClick={openFeedback}
         title="Send feedback"
         className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-accent-600 hover:bg-accent-700 text-white text-xs font-semibold shadow-lg shadow-accent-600/20 transition-all cursor-pointer select-none"

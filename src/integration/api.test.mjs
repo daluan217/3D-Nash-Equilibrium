@@ -309,6 +309,96 @@ try {
       if (llId) await call('DELETE', `/api/games/${llId}`, { token });
     }
 
+    // ── RED-APP-9/003 at the API (CodeRabbit, #119: exercise server.ts itself,
+    // not a re-implementation of its pipeline). A Game Name / Description
+    // whose ZWJ family emoji straddles server.ts's own budget (80 / 800 UTF-16
+    // units) must be stored within budget with no lone surrogate and no
+    // dangling ZWJ — the clamp happens in server.ts's cleanText.
+    {
+      const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 11 units
+      const lone = (s) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+      // Over budget by 5 units: the whole 11-unit cluster must go (exact value,
+      // CodeRabbit #119 — a check that only bounds the length would also pass a
+      // clamp that strips the ZWJ or empties the field).
+      const gr = await call('POST', '/api/games', {
+        token,
+        body: { name: 'n'.repeat(74) + family, description: 'd'.repeat(794) + family, payoffs: MP },
+      });
+      const g = gr.json?.game;
+      record('server clamps an over-budget Game Name grapheme-safely: exactly the 74 plain chars, the straddling cluster dropped whole',
+        gr.status === 200 && !!g?.id && g.name === 'n'.repeat(74) && !lone(g.name),
+        `status=${gr.status} len=${g?.name?.length} tail=${JSON.stringify(g?.name?.slice(-6))}`);
+      record('server clamps an over-budget Description grapheme-safely: exactly the 794 plain chars, the straddling cluster dropped whole',
+        gr.status === 200 && !!g?.id && g.description === 'd'.repeat(794) && !lone(g.description),
+        `len=${g?.description?.length} tail=${JSON.stringify(g?.description?.slice(-6))}`);
+      // Exact fit: a cluster ending precisely AT the budget must survive intact.
+      const fit = await call('POST', '/api/games', {
+        token,
+        body: { name: 'n'.repeat(69) + family, description: 'd'.repeat(789) + family, payoffs: MP },
+      });
+      const f = fit.json?.game;
+      record('a Game Name whose family cluster ends exactly at 80 units is stored intact (no over-eager trim)',
+        fit.status === 200 && !!f?.id && f.name === 'n'.repeat(69) + family && f.name.length === 80, `len=${f?.name?.length}`);
+      record('a Description whose family cluster ends exactly at 800 units is stored intact',
+        fit.status === 200 && !!f?.id && f.description === 'd'.repeat(789) + family && f.description.length === 800, `len=${f?.description?.length}`);
+      for (const id of [g?.id, f?.id]) if (id) await call('DELETE', `/api/games/${id}`, { token });
+    }
+
+    // ── RED-APP-9/002 — POST /api/games idempotency via clientRequestId.
+    // A dropped response after the server already wrote the row (a network
+    // flap) followed by the client's own retry — same clientRequestId sent
+    // both times — must return the SAME row, not create a duplicate; a
+    // different id (a genuinely new save) must still create a second row.
+    {
+      const dupeId = `int-dupe-${Date.now()}`;
+      const first = await call('POST', '/api/games', {
+        token,
+        body: { name: 'Idempotency fixture', payoffs: MP, clientRequestId: dupeId },
+      });
+      const firstGame = first.json?.game;
+      record('POST /api/games with a fresh clientRequestId creates a row',
+        first.status === 200 && !!firstGame?.id, `status=${first.status} id=${firstGame?.id}`);
+
+      // The retry carries an EDITED name (the user changed the form between
+      // the dropped response and the retry): same row id, updated content.
+      const retry = await call('POST', '/api/games', {
+        token,
+        body: { name: 'Idempotency fixture (edited)', payoffs: MP, clientRequestId: dupeId },
+      });
+      const retryGame = retry.json?.game;
+      record('a retry with the SAME clientRequestId returns the EXISTING row id, not a new one',
+        retry.status === 200 && !!retryGame?.id && retryGame.id === firstGame?.id,
+        `firstId=${firstGame?.id} retryId=${retryGame?.id}`);
+      record('...and the row now carries the retry\'s edited content (updated in place, never stale)',
+        retryGame?.name === 'Idempotency fixture (edited)', `name=${retryGame?.name}`);
+
+      const afterRetry = await call('GET', '/api/games', { token });
+      const matchingRows = (afterRetry.json || []).filter((g) => /^Idempotency fixture/.test(g.name));
+      record('exactly ONE row exists server-side after the retry, with the edited name (no silent duplicate, no stale copy)',
+        matchingRows.length === 1 && matchingRows[0]?.name === 'Idempotency fixture (edited)',
+        `count=${matchingRows.length} names=${matchingRows.map((g) => g.name).join('|')}`);
+
+      const distinctId = `int-dupe-${Date.now()}-b`;
+      const second = await call('POST', '/api/games', {
+        token,
+        body: { name: 'Idempotency fixture', payoffs: MP, clientRequestId: distinctId },
+      });
+      const secondGame = second.json?.game;
+      record('a DIFFERENT clientRequestId creates a genuinely new second row',
+        second.status === 200 && !!secondGame?.id && secondGame.id !== firstGame?.id,
+        `firstId=${firstGame?.id} secondId=${secondGame?.id}`);
+
+      const noKeyA = await call('POST', '/api/games', { token, body: { name: 'No key fixture', payoffs: MP } });
+      const noKeyB = await call('POST', '/api/games', { token, body: { name: 'No key fixture', payoffs: MP } });
+      record('POST /api/games with NO clientRequestId is unaffected (still creates on every call, backward compatible)',
+        noKeyA.status === 200 && noKeyB.status === 200 && noKeyA.json?.game?.id !== noKeyB.json?.game?.id,
+        `a=${noKeyA.json?.game?.id} b=${noKeyB.json?.game?.id}`);
+
+      for (const id of [firstGame?.id, secondGame?.id, noKeyA.json?.game?.id, noKeyB.json?.game?.id]) {
+        if (id) await call('DELETE', `/api/games/${id}`, { token });
+      }
+    }
+
     // PATCH is the scenario-keep path: story edits only, never payoffs
     const patched = await call('PATCH', `/api/games/${gameId}`, {
       token,
