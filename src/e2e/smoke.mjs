@@ -3415,11 +3415,12 @@ try {
       await p.mouse.down();
       for (let i = 1; i <= 10; i++) { await p.mouse.move(x0 + i * 12, y0 + i * 5); await p.waitForTimeout(20); }
       await p.mouse.up();
-      await p.waitForTimeout(500);
-      const after = await eye();
+      const dist3 = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : 0);
+      // Bounded poll: stop as soon as the camera differs, give up after 3 s.
+      let after = await eye();
+      for (let i = 0; i < 30 && dist3(before, after) <= 0.05; i++) { await p.waitForTimeout(100); after = await eye(); }
       record('the press paused the run (as designed)', !(await isRunning()));
-      const moved = !!before && !!after && Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z) > 0.05;
-      record('that same first drag rotated the camera', moved, JSON.stringify({ before, after }));
+      record('that same first drag rotated the camera', dist3(before, after) > 0.05, JSON.stringify({ before, after }));
     } finally { await ctx.close().catch(() => {}); }
   });
 
@@ -3456,12 +3457,14 @@ try {
       });
       await del.click();
       await del.click({ force: true }).catch(() => {});
-      await p.waitForTimeout(3000);
+      // Bounded poll: the held request fails after 1.5 s, the alert follows,
+      // and the button re-enables in `finally`; give up after 6 s.
+      for (let i = 0; i < 60 && (dialogs.length === 0 || await del.isDisabled()); i++) await p.waitForTimeout(100);
+      await p.waitForTimeout(300); // a second click's request/alert, if any, would land right behind the first
       record('FIX: exactly one DELETE request was sent', deletes.length === 1, JSON.stringify(deletes));
       record('FIX: exactly one alert was shown', dialogs.length === 1, JSON.stringify(dialogs));
       record('the row is still listed (nothing was deleted)', await p.getByRole('button', { name, exact: true }).isVisible());
       await p.unroute('**/api/games/**');
-      await p.waitForTimeout(300);
       record('the Delete button is usable again once the request has settled', !(await del.isDisabled()));
     } finally { await ctx.close().catch(() => {}); }
   });
@@ -3486,7 +3489,8 @@ try {
       await row.waitFor({ state: 'visible', timeout: 10000 });
       const editBtn = row.getByTitle(/^Edit /);
       const dialog = p.getByRole('dialog', { name: 'Edit saved game' });
-      const focusIsEdit = () => p.evaluate(() => (document.activeElement?.getAttribute('title') ?? '').startsWith('Edit '));
+      // Element identity, not title text: the focused node must be THIS button.
+      const focusIsEdit = () => editBtn.evaluate((el) => document.activeElement === el);
       // Escape
       await editBtn.click(); await dialog.waitFor({ state: 'visible', timeout: 8000 });
       await p.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden', timeout: 8000 });
@@ -3506,7 +3510,7 @@ try {
       const saveDialog = p.getByRole('dialog', { name: 'Save custom game' });
       await saveDialog.waitFor({ state: 'visible', timeout: 8000 });
       await p.keyboard.press('Escape'); await saveDialog.waitFor({ state: 'hidden', timeout: 8000 });
-      record('FIX: after Escape on the Save dialog, focus is back on Save Preset', await p.evaluate(() => /save preset/i.test(document.activeElement?.textContent ?? '')), await p.evaluate(() => document.activeElement?.tagName));
+      record('FIX: after Escape on the Save dialog, focus is back on Save Preset', await savePreset.evaluate((el) => document.activeElement === el), await p.evaluate(() => document.activeElement?.tagName));
     } finally { await ctx.close().catch(() => {}); }
   });
 
