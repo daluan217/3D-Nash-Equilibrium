@@ -474,7 +474,7 @@ const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number;
   JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
     sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
-import { cleanUserColorTermPair } from "./src/utils/colorTerms";
+import { cleanUserColorTermPair, cleanUserColorTerms } from "./src/utils/colorTerms";
 import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
 import { bankAvailable, bankScenario, bankDomainFor, bankScenarioAvoiding } from "./src/utils/bankSource";
 import { isSameStory } from "./src/utils/scenarioRegen";
@@ -4227,8 +4227,14 @@ async function startServer() {
           hasA ? req.body.colorTermsA : (game.colorTermsA ?? []),
           hasB ? req.body.colorTermsB : (game.colorTermsB ?? []),
         );
-        if (!hasA || pair.a.length > 0 || allowClear) updatedGame.colorTermsA = pair.a;
-        if (!hasB || pair.b.length > 0 || allowClear) updatedGame.colorTermsB = pair.b;
+        // An explicitly submitted side is written even when the pairing empties
+        // it (every B term already owned by A) — the client asked for exactly
+        // that; only an absent, empty or invalid submission without allowClear
+        // leaves the stored value alone (CodeRabbit, #126).
+        const explicitA = hasA && cleanUserColorTerms(req.body.colorTermsA).length > 0;
+        const explicitB = hasB && cleanUserColorTerms(req.body.colorTermsB).length > 0;
+        if (!hasA || explicitA || pair.a.length > 0 || allowClear) updatedGame.colorTermsA = pair.a;
+        if (!hasB || explicitB || pair.b.length > 0 || allowClear) updatedGame.colorTermsB = pair.b;
       }
       // `users` is NOT part of this candidate — see saveDBAwaited's own
       // comment for why a users snapshot here would race a concurrent,
