@@ -1967,11 +1967,17 @@ try {
         null, { timeout: 5000 }).catch(() => {});
     }
     const editButtonFor = (name) => stalePage.getByRole('button', { name: new RegExp(`^Edit ${name}$`) });
-    // The Edit dialog's Name field ALSO carries no label association, and
-    // shares maxlength=40 with the four option-label inputs below it — it is
-    // the FIRST such input in DOM order (Name, then Description, then the
-    // four Option Names), so `.first()` is a stable, real selector here.
-    const editNameField = () => stalePage.locator('[role="dialog"][aria-label="Edit saved game"] input[maxlength="40"]').first();
+    // The Edit dialog's Name field ALSO carries no label association. It is
+    // the FIRST plain-text input in DOM order (Name, then Description as a
+    // textarea, then the four Option Name inputs), so `.first()` on a plain
+    // `input[type="text"]` selector is a stable, real selector here.
+    // RED-APP-9/003 removed the native maxLength attribute this locator used
+    // to key on (App.tsx's Name field is grapheme-safe-clamped via
+    // onBeforeInput/onChange now instead of a bare `maxLength={40}`) — the
+    // selector moves to the type attribute, which every one of the five text
+    // inputs still carries, with position doing the disambiguating work
+    // `maxlength` used to.
+    const editNameField = () => stalePage.locator('[role="dialog"][aria-label="Edit saved game"] input[type="text"]').first();
     await editButtonFor('Stale Game A').click();
     await stalePage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
     const staleRegenBtn = stalePage.getByRole('button', { name: 'Regenerate scenario' });
@@ -1984,6 +1990,19 @@ try {
     const staleRegenSettled = stalePage.waitForResponse(
       (r) => r.url().includes('/api/scenario/regenerate'), { timeout: 15000 },
     );
+    // RED-APP-9 hardening: this promise is deliberately created here but not
+    // awaited until several steps later (that's the whole point — it must
+    // stay pending while B opens). If anything upstream stalls for the full
+    // 15s before the real `.catch()` below is reached (a locator that no
+    // longer matches anything is exactly this shape — found while landing
+    // RED-APP-9/003, which changed what this dialog's Name input looks
+    // like), the promise can reject with ZERO handler attached yet, and
+    // Node's unhandled-rejection detector crashes the whole suite instead of
+    // failing this one section's own assertions. An immediate no-op catch
+    // makes this promise safe to leave floating for however long the steps
+    // in between take, without changing what the real `.catch()` below
+    // observes or how long IT waits.
+    staleRegenSettled.catch(() => {});
     await staleRegenBtn.click();
     await stalePage.waitForFunction(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Regenerate scenario');
@@ -2362,6 +2381,340 @@ try {
     record('control: an unclamped field\'s undo works normally', controlAfterUndo !== 'short' && controlAfterUndo.length < 5,
       `"${controlAfterUndo}"`);
     await undoPage.close();
+  });
+
+  // ══ 38. RED-APP-9/001 — a 404 from PATCH/DELETE /api/games/:id is
+  //      authoritative: another tab (or device, or profile) deleting a saved
+  //      game must not leave a permanent phantom row in THIS tab's list.
+  //      Two pages in one context = one browser, two tabs, same localStorage/
+  //      auth token — exactly the red's repro shape. DELETE path: delete in
+  //      B, then Delete-of-the-same-game in A must remove the row with no
+  //      reload. PATCH path (isolated on a second saved game, so the DELETE
+  //      assertions above can't leak into it): Edit dialog open in A, delete
+  //      in B, submit in A -> dialog shows the error, row is already gone
+  //      underneath, and Cancel closes cleanly (no reload needed either).
+  section('38', 'phantom saved-game row after a 404', 1, async () => {
+    const twoTabContext = await browser.newContext();
+    const tabA = trackPage(await twoTabContext.newPage());
+    const tabB = trackPage(await twoTabContext.newPage());
+    try {
+      const uniq = await registerAndLogin(tabA, 'e9ph');
+
+      // ── DELETE path ──
+      const deleteGameName = `PDel-${uniq}`;
+      await tabA.getByRole('button', { name: /save preset/i }).click();
+      await tabA.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 12000 });
+      await tabA.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(deleteGameName);
+      await tabA.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+      await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
+
+      await tabB.goto(BASE, { waitUntil: 'networkidle' });
+      const exitTourB = tabB.getByRole('button', { name: /exit tour/i });
+      if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
+      await tabB.waitForTimeout(500);
+      const rowB = tabB.getByRole('button', { name: deleteGameName, exact: true });
+      await rowB.waitFor({ state: 'visible', timeout: 12000 });
+      await tabB.locator('div.group', { has: rowB }).getByTitle('Delete this saved game').click();
+      await tabB.waitForFunction((n) => ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === n), deleteGameName, { timeout: 12000 });
+
+      const rowA = tabA.getByRole('button', { name: deleteGameName, exact: true });
+      record('tab A: row still shown before acting on it (no polling, expected stale)', await rowA.isVisible({ timeout: 4000 }).catch(() => false));
+      let dialogMsg = null;
+      tabA.once('dialog', async (d) => { dialogMsg = d.message(); await d.accept(); });
+      await tabA.locator('div.group', { has: rowA }).getByTitle('Delete this saved game').click();
+      // State-based wait (CodeRabbit, #119): the row leaves the DOM only after the
+      // 404 handler has alerted (alert() blocks until accepted) and re-rendered,
+      // so "row hidden" is the completion signal for both checks below.
+      const rowGoneA = await rowA.waitFor({ state: 'hidden', timeout: 8000 }).then(() => true).catch(() => false);
+      record('tab A: 404 shows the friendly "deleted elsewhere" message, not a bare "not found"',
+        /deleted elsewhere/i.test(dialogMsg || ''), `alert="${dialogMsg}"`);
+      record('FIX: phantom row removed from tab A after the server confirms 404 (no reload)', rowGoneA);
+      const tokenAfterDelete = await tabA.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud') || localStorage.getItem('nash_sim_token'));
+      record('tab A: auth token not cleared by a 404 (only a 401 should clear it)', !!tokenAfterDelete);
+
+      // ── PATCH path (a second, independent saved game) ──
+      const editGameName = `PEdit-${uniq}`;
+      await tabA.getByRole('button', { name: /save preset/i }).click();
+      await tabA.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 12000 });
+      await tabA.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(editGameName);
+      await tabA.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+      await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
+
+      const rowAEdit = tabA.getByRole('button', { name: editGameName, exact: true });
+      await tabA.locator('div.group', { has: rowAEdit }).getByTitle(/^Edit /).click();
+      await tabA.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
+
+      await tabB.reload({ waitUntil: 'networkidle' });
+      const exitTourB2 = tabB.getByRole('button', { name: /exit tour/i });
+      if (await exitTourB2.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB2.click();
+      await tabB.waitForTimeout(500);
+      const rowBEdit = tabB.getByRole('button', { name: editGameName, exact: true });
+      await rowBEdit.waitFor({ state: 'visible', timeout: 12000 });
+      await tabB.locator('div.group', { has: rowBEdit }).getByTitle('Delete this saved game').click();
+      await tabB.waitForFunction((n) => ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === n), editGameName, { timeout: 12000 });
+
+      const descField = tabA.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first();
+      await descField.fill('Edited after the other tab deleted the underlying game.');
+      await tabA.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /save changes/i }).click();
+      await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').getByText(/deleted elsewhere/i)
+        .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      const editErrorText = await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').innerText().catch(() => '');
+      record('tab A: PATCH-on-deleted shows the friendly message inside the still-open dialog', /deleted elsewhere/i.test(editErrorText));
+      record('FIX: phantom row already gone from tab A\'s list BEFORE Cancel is even clicked',
+        !(await tabA.getByRole('button', { name: editGameName, exact: true }).isVisible({ timeout: 2000 }).catch(() => false)));
+
+      const cancelBtn = tabA.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /cancel/i });
+      await cancelBtn.click();
+      await tabA.waitForTimeout(300);
+      record('Cancel closes the dialog cleanly after the 404',
+        !(await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').isVisible({ timeout: 2000 }).catch(() => false)));
+      record('FIX: row still gone from tab A\'s list after Cancel, with no reload',
+        !(await tabA.getByRole('button', { name: editGameName, exact: true }).isVisible({ timeout: 2000 }).catch(() => false)));
+    } finally {
+      await twoTabContext.close();
+    }
+  });
+
+  // ══ 39. RED-APP-9/002 — a dropped response after a successful Save must
+  //      not create a silent duplicate on retry. route.fetch() really sends
+  //      the request (the server writes the row); route.abort() drops the
+  //      RESPONSE before the page's own fetch() resolves, modeling a flaky
+  //      connection precisely. The client-minted clientRequestId is the same
+  //      on the retry, so the server must recognize it and return the
+  //      original row rather than creating a second one.
+  section('39', 'network-flap save does not duplicate', 2, async () => {
+    const flapPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    const flapConsoleErrors = [];
+    flapPage.on('console', (m) => { if (m.type() === 'error') flapConsoleErrors.push(m.text()); });
+    flapPage.on('pageerror', (e) => flapConsoleErrors.push(String(e)));
+
+    const uniq = await registerAndLogin(flapPage, 'e9flap');
+    const gameName = `Flap-${uniq}`;
+
+    await flapPage.getByRole('button', { name: /save preset/i }).click();
+    await flapPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+
+    let flapped = false;
+    await flapPage.route('**/api/games', async (route) => {
+      if (route.request().method() !== 'POST' || flapped) return route.continue();
+      flapped = true;
+      await route.fetch(); // really creates the game server-side
+      await route.abort('connectionreset'); // client never sees the 200
+    });
+
+    await flapPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+    await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').getByText(/network error/i)
+      .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    const errorShown = await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').innerText().catch(() => '');
+    record('after the flap: dialog shows a network-error message (not a false success)', /network error/i.test(errorShown), errorShown.slice(0, 200));
+    const nameFieldValue = await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').inputValue().catch(() => '');
+    record('typed game name survived the flap unchanged (retry uses the preserved text)', nameFieldValue === gameName, `got "${nameFieldValue}"`);
+
+    // Retry: route.continue() from here on (flapped=true), so this really
+    // reaches the server — with the SAME clientRequestId as the dropped one.
+    // The user edits the name first: the retry must then UPDATE the row the
+    // dropped write created (one row, carrying the edited name) — neither a
+    // duplicate nor the stale original coming back (director probe 2026-09-05).
+    const editedName = `${gameName}-v2`;
+    await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(editedName);
+    await flapPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+    const dialogClosedAfterRetry = await flapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
+      null, { timeout: 8000 }).then(() => true).catch(() => false);
+    record('retry succeeds (dialog closes)', dialogClosedAfterRetry);
+
+    const authToken = await flapPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+    const listResp = await flapPage.evaluate(async (t) => {
+      const r = await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } });
+      return r.json();
+    }, authToken);
+    const staleRows = listResp.filter((g) => g.name === gameName);
+    const serverRows = listResp.filter((g) => g.name === editedName);
+    record('FIX: server holds exactly ONE game for this attempt, carrying the EDITED name (dropped write + retry deduped AND updated)',
+      serverRows.length === 1 && staleRows.length === 0,
+      `edited=${serverRows.length} stale=${staleRows.length}, ids=${serverRows.map((g) => g.id).join(',')}`);
+
+    await flapPage.reload({ waitUntil: 'networkidle' });
+    // Poll rather than a fixed sleep: a fresh reload re-runs the
+    // auth/me + games fetch effects from scratch, which can take longer
+    // than a short sleep on a busy CI runner.
+    await flapPage.getByRole('button', { name: editedName, exact: true }).first()
+      .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    const uiCountAfterReload = await flapPage.getByRole('button', { name: editedName, exact: true }).count();
+    const staleUiCount = await flapPage.getByRole('button', { name: gameName, exact: true }).count();
+    record('FIX: exactly one row (the edited name) visible after a reload too — no duplicate, no stale name reaches the user',
+      uiCountAfterReload === 1 && staleUiCount === 0, `edited=${uiCountAfterReload} stale=${staleUiCount}`);
+
+    record('no console errors through the flap+retry sequence (net::ERR_CONNECTION_RESET is expected browser noise, filtered)',
+      flapConsoleErrors.filter((t) => !/ERR_CONNECTION_RESET/.test(t)).length === 0,
+      flapConsoleErrors.join(' | '));
+    await flapPage.close();
+  });
+
+  // ══ 40. RED-APP-9/003 — the Game Name and Description fields (both
+  //      dialogs) must clamp grapheme-safely, the same as the four
+  //      option-label inputs (#101/#105): reusing the exact
+  //      onBeforeInput/onChange/onCompositionEnd wiring (App.tsx's
+  //      clampLabelBeforeInput/clampLabelInput for Name; the equivalent in
+  //      DescriptionEditor.tsx for Description) means an insertion that
+  //      would push the field over budget is rejected WHOLESALE (never
+  //      truncated mid-cluster) — a real behavioral difference from the
+  //      native `maxLength` this replaces, which used to truncate AT the
+  //      boundary and could split a grapheme cluster in half. Two shapes per
+  //      field: a real clipboard paste of one whole grapheme cluster (a ZWJ
+  //      family emoji, 11 UTF-16 units — what an emoji picker inserts in one
+  //      shot, same as this app's own IME-composition-commit handling) that
+  //      lands EXACTLY at the budget must appear intact; one unit further
+  //      over budget must be rejected outright, leaving the pre-existing
+  //      text unchanged and never a dangling ZWJ/surrogate.
+  section('40', 'Name/Description grapheme-safe paste clamp', 3, async () => {
+    const familyEmoji = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 👨‍👩‍👧‍👦, 11 UTF-16 units
+    const endsUgly = (s) => /\u{200D}$/u.test(s) || /[\uD800-\uDBFF]$/.test(s);
+
+    async function pasteAtEnd(p, locator, text) {
+      await locator.click();
+      await p.evaluate(() => {
+        const el = document.activeElement;
+        if (el && 'selectionStart' in el) el.setSelectionRange(el.value.length, el.value.length);
+      });
+      await p.evaluate((t) => navigator.clipboard.writeText(t), text);
+      const isMac = process.platform === 'darwin';
+      await p.keyboard.press(isMac ? 'Meta+V' : 'Control+V');
+      await p.waitForTimeout(250);
+    }
+
+    // Fills with `fill()` (a direct value set through onChange, not
+    // onBeforeInput — matches how a real "type a bunch of plain characters"
+    // history would leave the field, without needing hundreds of individual
+    // keystrokes) then pastes the family-emoji cluster AT THE END, once at a
+    // width where the total lands exactly at budget (must appear intact)
+    // and once one unit further over (must be rejected wholesale).
+    async function checkClampedField(p, locator, filler, budget, label) {
+      await locator.fill(filler.repeat(budget - familyEmoji.length)); // total after paste == budget exactly
+      await pasteAtEnd(p, locator, familyEmoji);
+      const fits = await locator.inputValue();
+      record(`FIX: ${label} — a whole grapheme cluster landing exactly at the budget appears intact`,
+        fits.length === budget && fits.endsWith(familyEmoji), `len=${fits.length} tail=${JSON.stringify(fits.slice(-12))}`);
+      record(`${label} — never ends in a lone ZWJ/surrogate when it fits`, !endsUgly(fits), JSON.stringify(fits.slice(-8)));
+
+      await locator.fill(filler.repeat(budget - familyEmoji.length + 1)); // one unit further: total would be budget+1
+      const before = await locator.inputValue();
+      await pasteAtEnd(p, locator, familyEmoji);
+      const rejected = await locator.inputValue();
+      record(`FIX: ${label} — an insertion that would exceed the budget is rejected wholesale, not truncated mid-cluster`,
+        rejected === before, `before=${JSON.stringify(before.slice(-8))} after=${JSON.stringify(rejected.slice(-8))}`);
+      record(`${label} — never ends in a lone ZWJ/surrogate when the paste is rejected`, !endsUgly(rejected), JSON.stringify(rejected.slice(-8)));
+    }
+
+    const grContext = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
+    try {
+      const grPage = trackPage(await grContext.newPage());
+      await registerAndLogin(grPage, 'e9gr');
+
+      // ── Save dialog ──
+      await grPage.getByRole('button', { name: /save preset/i }).click();
+      await grPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      const saveNameField = grPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]');
+      await checkClampedField(grPage, saveNameField, 'A', 40, 'Save dialog Name field');
+      const finalSaveName = 'A'.repeat(40 - familyEmoji.length) + familyEmoji;
+      await saveNameField.fill(finalSaveName); // leave it in the intact, saveable state for the submit below
+
+      const saveDescField = grPage.locator('[role="dialog"][aria-label="Save custom game"] textarea').first();
+      await checkClampedField(grPage, saveDescField, 'B', 800, 'Save dialog Description field');
+      const finalSaveDesc = 'B'.repeat(800 - familyEmoji.length) + familyEmoji;
+      await saveDescField.fill(finalSaveDesc);
+
+      await grPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+      await grPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 5000 });
+
+      const authToken = await grPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+      const list = await grPage.evaluate(async (t) => {
+        const r = await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } });
+        return r.json();
+      }, authToken);
+      const saved = list.find((g) => g.name === finalSaveName);
+      record('the server-stored name carries the intact grapheme cluster (not a client-mangled half-emoji)',
+        saved?.name === finalSaveName, `stored=${JSON.stringify(saved?.name?.slice(-12))}`);
+      record('the server-stored description carries the intact grapheme cluster',
+        saved?.description === finalSaveDesc, `stored tail=${JSON.stringify(saved?.description?.slice(-12))}`);
+
+      // ── Edit dialog (same saved game) ──
+      const savedId = saved?.id;
+      const rowBtn = grPage.getByRole('button', { name: finalSaveName, exact: true });
+      await grPage.locator('div.group', { has: rowBtn }).getByTitle(/^Edit /).click();
+      await grPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+      const editNameField = grPage.locator('[role="dialog"][aria-label="Edit saved game"] input').first();
+      await checkClampedField(grPage, editNameField, 'A', 40, 'Edit dialog Name field');
+
+      const editDescField = grPage.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first();
+      await checkClampedField(grPage, editDescField, 'B', 800, 'Edit dialog Description field');
+
+      await grPage.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /cancel/i }).click();
+      if (savedId) {
+        await grPage.evaluate(async ({ id, t }) => {
+          await fetch(`/api/games/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
+        }, { id: savedId, t: authToken });
+      }
+    } finally {
+      await grContext.close();
+    }
+  });
+
+  // ══ 41. RED-APP-9/004 — print stylesheet. Deterministic: under
+  //      `page.emulateMedia({ media: 'print' })`, NOTHING on the page may
+  //      compute to `position: fixed`/`sticky` (the red's own probe6d found
+  //      exactly two such elements pre-fix: the header and the bottom-left
+  //      Feedback launcher — both now reset/hidden under `@media print` in
+  //      src/index.css) — fails on the unfixed tree, where the header's own
+  //      `sticky top-0` survives untouched. Plus the red's own page.pdf()
+  //      smoke: a real PDF, non-empty, no exception, run mid-simulation
+  //      exactly as the red's probe6b did.
+  section('41', 'print stylesheet', 4, async () => {
+    const printPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    const exitTour = printPage.getByRole('button', { name: /exit tour/i });
+    await printPage.goto(BASE, { waitUntil: 'networkidle' });
+    if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+    await printPage.waitForTimeout(500);
+    const runBtn = printPage.getByRole('button', { name: /^run$/i });
+    if (await runBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await runBtn.click();
+      await printPage.waitForTimeout(2000);
+    }
+
+    await printPage.emulateMedia({ media: 'print' });
+    await printPage.waitForTimeout(300);
+    const stickyOrFixed = await printPage.evaluate(() => Array.from(document.querySelectorAll('*'))
+      .filter((el) => {
+        const p = getComputedStyle(el).position;
+        return p === 'fixed' || p === 'sticky';
+      })
+      .map((el) => ({ tag: el.tagName, cls: el.className.toString().slice(0, 80), pos: getComputedStyle(el).position })));
+    record('FIX: no element computes position:fixed/sticky under print media',
+      stickyOrFixed.length === 0, JSON.stringify(stickyOrFixed));
+
+    const headerPosition = await printPage.evaluate(() => {
+      const h = document.querySelector('header');
+      return h ? getComputedStyle(h).position : null;
+    });
+    record('FIX: the header specifically is not position:sticky under print media',
+      headerPosition !== 'sticky', `headerPosition=${headerPosition}`);
+
+    // The red's own page.pdf() smoke, unchanged: a real PDF is produced,
+    // non-empty, no thrown exception — print media is reset by page.pdf()
+    // itself (Chromium always renders print output under print media), so
+    // this exercises the exact same stylesheet as the assertions above.
+    let pdfBytes = 0;
+    let pdfThrew = null;
+    try {
+      const pdf = await printPage.pdf({ format: 'A4', printBackground: true });
+      pdfBytes = pdf.length;
+    } catch (e) {
+      pdfThrew = String(e?.message ?? e);
+    }
+    record('page.pdf() produces a non-empty PDF with no exception', pdfThrew === null && pdfBytes > 1000,
+      pdfThrew ?? `bytes=${pdfBytes}`);
+
+    await printPage.close();
   });
 
   // ══ 42. RED-DESKTOP-9/002 -- a comma in a payoff cell is REJECTED, not
@@ -2752,6 +3105,14 @@ await browser.close();
 const EXPECTED_STATUS_NOISE = {
   '31': [429], // §31 deliberately mocks a 429 to test the "AI limit reached" wording
   '33': [401], // §33 deliberately mocks a 401 to test the Edit dialog's Sign-In card
+  // §38 (RED-APP-9/001) deliberately DELETEs and PATCHes an already-deleted
+  // game from tab A — a REAL 404 from the real server (not a route mock),
+  // twice: once via the Delete button, once via the Edit dialog's Save
+  // Changes submit. Both are the exact behavior the section's own
+  // assertions verify ("shows the friendly deleted-elsewhere message",
+  // "phantom row removed") — same class of expected network-layer
+  // diagnostic as §31/§33's mocked statuses above.
+  '38': [404, 404],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),
