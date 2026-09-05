@@ -132,7 +132,7 @@ export function DescriptionEditor({
         data-player={player}
         data-suppressed={suppressed ? 'true' : undefined}
         title={suppressed
-          ? `Not highlighted: "${term}" is an option label on the other side, so it stays neutral. Remove to drop the chip.`
+          ? `Not highlighted: "${term}" names an option label that is not exclusively this player's (shared by both, or the other player's), so it stays neutral. Remove to drop the chip.`
           : 'Remove this highlight'}
         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${suppressed ? neutral : colour}`}
       >

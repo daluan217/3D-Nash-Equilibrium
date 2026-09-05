@@ -2883,12 +2883,13 @@ try {
       // child spans, so match a leading "cooperate" rather than full equality.
       const btn = [...(dlg?.querySelectorAll('button') ?? [])]
         .find((b) => /^cooperate/i.test(b.textContent?.trim() || ''));
-      return btn ? { text: btn.textContent, cls: btn.className, player: btn.getAttribute('data-player'), suppressed: btn.getAttribute('data-suppressed') } : null;
+      return btn ? { text: btn.textContent, cls: btn.className, title: btn.title, player: btn.getAttribute('data-player'), suppressed: btn.getAttribute('data-suppressed') } : null;
     });
     record('precondition: a real "cooperate" chip is placed on Player A specifically (unrelated text)',
       !!chipInfo && chipInfo.player === 'A', JSON.stringify(chipInfo));
-    record('RED-REGEN-4/002: a chip that names a symmetric option label is marked "not highlighted" from the moment it is placed',
-      !!chipInfo && chipInfo.suppressed === 'true' && /not highlighted/i.test(chipInfo.text || ''), JSON.stringify(chipInfo));
+    record('RED-REGEN-4/002: a chip that names a symmetric option label is marked "not highlighted" from the moment it is placed (dashed neutral pill, no player colour, explanatory title)',
+      !!chipInfo && chipInfo.suppressed === 'true' && /not highlighted/i.test(chipInfo.text || '') && /stays neutral/i.test(chipInfo.title || '')
+        && /border-dashed/.test(chipInfo.cls) && !/text-player-a-ink|text-player-b-ink/.test(chipInfo.cls), JSON.stringify(chipInfo));
 
     // Regenerate -> the mocked draw's labels are SYMMETRIC (row1===col1==="Cooperate").
     const symRegenBtn = symPage.getByRole('button', { name: 'Regenerate scenario' });
@@ -2938,7 +2939,7 @@ try {
     const pillShown = await suppressedPill.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
     const pillInfo = pillShown ? await suppressedPill.evaluate((b) => ({ cls: b.className, title: b.title, text: b.textContent })) : null;
     record('the neutralized chip\'s pill is marked as not highlighted (neutral styling + "(not highlighted)" + an explanatory title)',
-      !!pillInfo && /not highlighted/i.test(pillInfo.text || '') && /other side/i.test(pillInfo.title || '')
+      !!pillInfo && /not highlighted/i.test(pillInfo.text || '') && /stays neutral/i.test(pillInfo.title || '')
         && /border-dashed/.test(pillInfo.cls) && !/text-player-a-ink|text-player-b-ink/.test(pillInfo.cls),
       JSON.stringify(pillInfo));
     await symPage.waitForTimeout(300);
