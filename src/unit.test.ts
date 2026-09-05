@@ -49,7 +49,10 @@ import {
 import { buildGroundingPayload } from './utils/report';
 import { describeGeometry, geometryBriefing } from './utils/geometry';
 import { tieProse } from './utils/tieProse';
-import { validateScenario, scenarioIsClaimFree, validateProseDirections, validateReport } from './utils/nashValidator';
+import {
+  validateScenario, scenarioIsClaimFree, validateProseDirections, validateReport,
+  getActorNounsStrippedCount, _resetActorNounsStrippedCountForTest,
+} from './utils/nashValidator';
 
 const TOL = 0.002;
 
@@ -1455,11 +1458,50 @@ function testUserColorTerms() {
   };
   assert(validateScenario(actorScenario, MATCHING_PENNIES, { actorNouns: true }).ok,
     'the regenerate-only actor gate accepts verbatim, disjoint declarations');
+  assert(JSON.stringify(actorScenario.actorA) === JSON.stringify(['the harbor operator']),
+    'a verbatim, disjoint declaration must survive validateScenario untouched');
+
+  // RED-CLOUD-9/001: a non-verbatim noun pair used to fail the WHOLE scenario
+  // here (issues.push -> ok:false), discarding an otherwise-good story over
+  // one mis-copied noun. It must now STRIP the nouns and ACCEPT the rest of
+  // the story — `actorNounsOk` (the #115 literal-regex check) still decides
+  // whether the pair is safe; only the consequence of it failing changed.
+  _resetActorNounsStrippedCountForTest();
   const nonVerbatimActor = { ...actorScenario, actorA: ['the warehouse manager'] };
-  assert(!validateScenario(nonVerbatimActor, MATCHING_PENNIES, { actorNouns: true }).ok,
-    'the regenerate-only actor gate rejects a non-verbatim declaration');
-  assert(validateScenario(nonVerbatimActor, MATCHING_PENNIES).ok,
+  const nonVerbatimResult = validateScenario(nonVerbatimActor, MATCHING_PENNIES, { actorNouns: true });
+  assert(nonVerbatimResult.ok,
+    'a non-verbatim actor-noun declaration must no longer reject the whole scenario');
+  assert(nonVerbatimResult.issues.length === 0,
+    'stripping the nouns must not leave a stale issue behind');
+  assert(!('actorA' in nonVerbatimActor) && !('actorB' in nonVerbatimActor),
+    'the non-verbatim actor pair must be stripped from the scenario, not left in place');
+  assert(getActorNounsStrippedCount() === 1,
+    'the strip-not-reject branch must count (and log) every time it fires');
+
+  // The red's exact real draw (RED-CLOUD-9/001): "An orchard grower" on first
+  // mention, "the grower" on later reference — the noun is never verbatim as
+  // "the orchard grower" anywhere in the description. Ordinary English
+  // first-mention/later-reference grammar, not a fabrication — must still be
+  // stripped-and-kept, not rejected outright.
+  const orchardScenario = {
+    name: 'Cider Press Bookings',
+    row1: 'Fixed Slot', row2: 'Late Slot', col1: 'Reserve Capacity', col2: 'Open Calendar',
+    description: 'An orchard grower is arranging an autumn cider-press booking with a press '
+      + 'manager. The grower chooses between Fixed Slot and Late Slot, while the press manager '
+      + 'chooses between Reserve Capacity and Open Calendar.',
+    actorA: ['the orchard grower'], actorB: ['the press manager'],
+    storyClaims: null,
+  };
+  const orchardResult = validateScenario(orchardScenario, MATCHING_PENNIES, { actorNouns: true });
+  assert(orchardResult.ok, 'the red\'s real orchard-grower draw must be accepted, nouns stripped');
+  assert(!('actorA' in orchardScenario) && !('actorB' in orchardScenario),
+    'the orchard-grower draw\'s non-verbatim noun must be stripped, not left in place');
+
+  const fullReportShape = { ...actorScenario, actorA: ['the warehouse manager'] };
+  assert(validateScenario(fullReportShape, MATCHING_PENNIES).ok,
     'the full-report path remains unchanged when it does not opt into actor declarations');
+  assert(JSON.stringify(fullReportShape.actorA) === JSON.stringify(['the warehouse manager']),
+    'the full-report path (no actorNouns option) must never strip anything, verbatim or not');
 
   // ── ownership is exclusive ──
   // A phrase belongs to one player. The editor never produces both, but a
