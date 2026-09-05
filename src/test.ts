@@ -2501,7 +2501,14 @@ function testRedTeamRound15BreakA() {
   // hrtime, not Date.now: 500 steps run in ~1.5ms, and Date.now's 1ms
   // granularity alone swung the ratio by 2x, which would make the bound either
   // flaky or useless.
+  let timedSamples = 0;
+  // Getters, not direct reads: both counters are mutated inside closures, which
+  // TypeScript's control-flow narrowing cannot see — after `assert(x === 3)` a
+  // direct `x === 4` is flagged TS2367 as an impossible comparison.
+  const sampled = () => timedSamples;
+  const steps = () => st.stepCount;
   const timeBlock = (count: number) => {
+    timedSamples++;
     const t = process.hrtime.bigint();
     for (let i = 0; i < count && !st.converged; i++) step();
     return Number(process.hrtime.bigint() - t) / 1e6;
@@ -2521,9 +2528,26 @@ function testRedTeamRound15BreakA() {
       doStep(g, warm, 'A', 0.001, all, null, () => {}, () => {}, () => { warm.running = false; }, 'shrink');
     }
   }
-  const early = timeBlock(300);
+  // Median of three 100-step samples per block, not one 300-step sample: on a
+  // shared CI runner a single GC pause or scheduling gap inside a ~1.5 ms
+  // window inflated one sample 4.2x (main a2b25c6, 2026-09-05) with no code
+  // change. The defect this guards is per-step O(k) copying, which raises
+  // EVERY late sample ~9x — the median still carries it (mutation-tested with
+  // an injected O(stepCount) loop per step); one transient pause is the
+  // outlier the median discards, and it discards nothing else (CodeRabbit).
+  const medianOf = (n: number, count: number) => {
+    const xs = Array.from({ length: n }, () => timeBlock(count)).sort((a, b) => a - b);
+    return xs[Math.floor(n / 2)];
+  };
+  const early = medianOf(3, 100);
+  // Structural contract of the measurement itself (CodeRabbit, #124): the
+  // sampling really is 3×100 / 600 / 3×100 steps of ONE run, so the ratio
+  // compares the same amount of work early and late.
+  assert(sampled() === 3 && steps() === 300, `early block must be three 100-step samples (samples=${sampled()}, steps=${steps()})`);
   timeBlock(600);
-  const late = timeBlock(300);
+  assert(sampled() === 4 && steps() === 900, `the intervening workload must be 600 steps (samples=${sampled()}, steps=${steps()})`);
+  const late = medianOf(3, 100);
+  assert(sampled() === 7 && steps() === 1200, `late block must be three 100-step samples (samples=${sampled()}, steps=${steps()})`);
   let n = st.stepCount;
   while (!st.converged && n < 20000) { step(); n++; }
   assert(st.converged, `the crash fixture must converge, not be cut off (stopped after ${n} steps)`);
