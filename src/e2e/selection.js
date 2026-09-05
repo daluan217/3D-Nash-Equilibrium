@@ -2,6 +2,15 @@
  * Pure smoke-section selection shared by the runner and its contract test.
  * CI uses E2E_SHARD; E2E_SECTION is a local-only surgical rerun aid.
  */
+/**
+ * How many CI shards the smoke suite is split into. 8 (was 4, 2026-09-05):
+ * measured section time per shard was 600/324/446/363 s — shard 1 ran 11 min
+ * while shard 2 ran 7 — and 8 balanced shards carry ~215 s of sections each.
+ * Assignment is by MEASURED duration (greedy longest-first), not by section
+ * order; a new section is placed into the lightest shard.
+ */
+export const SHARD_COUNT = 8;
+
 export function selectSmokeSections(definitions, env = process.env) {
   const readConfigured = (name) => {
     const raw = env[name];
@@ -18,11 +27,11 @@ export function selectSmokeSections(definitions, env = process.env) {
   let shard = null;
   if (shardRaw) {
     const match = /^(\d+)\/(\d+)$/.exec(shardRaw);
-    if (!match) throw new Error(`E2E_SHARD must look like "2/4"; got ${JSON.stringify(shardRaw)}`);
+    if (!match) throw new Error(`E2E_SHARD must look like "2/8"; got ${JSON.stringify(shardRaw)}`);
     const number = Number(match[1]);
     const count = Number(match[2]);
-    if (count !== 4 || number < 1 || number > count) {
-      throw new Error(`smoke.mjs defines exactly 4 shards; got ${JSON.stringify(shardRaw)}`);
+    if (count !== SHARD_COUNT || number < 1 || number > count) {
+      throw new Error(`smoke.mjs defines exactly ${SHARD_COUNT} shards; got ${JSON.stringify(shardRaw)}`);
     }
     shard = { raw: shardRaw, shard: number, count };
   }
