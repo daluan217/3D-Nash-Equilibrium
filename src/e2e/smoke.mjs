@@ -3347,9 +3347,9 @@ try {
       // The plot sits below the fold on a phone: touches dispatched outside
       // the visible viewport never reach the element's gesture handling.
       await plot.scrollIntoViewIfNeeded();
-      await p.waitForTimeout(300);
-      const r = await plot.boundingBox();
       const vh = await p.evaluate(() => window.innerHeight);
+      let r = await plot.boundingBox();
+      for (let i = 0; i < 30 && !(r && r.y >= 0 && r.y + r.height <= vh); i++) { await p.waitForTimeout(100); r = await plot.boundingBox(); }
       record('precondition: the plot is small enough on a phone for a pinch to leave it, and is inside the viewport',
         !!r && r.width < 500 && r.y >= 0 && r.y + r.height <= vh, JSON.stringify({ r, vh }));
       const cx = r.x + r.width / 2; const cy = r.y + r.height / 2;
@@ -3363,7 +3363,8 @@ try {
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts(40) });
       for (let i = 1; i <= 10; i++) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts(40 + (maxD - 40) * (i / 10)) }); await p.waitForTimeout(30); }
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await p.waitForTimeout(600);
+      const readEye = () => p.evaluate(() => JSON.stringify(document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye ?? null));
+      for (let i = 0, prev = await readEye(); i < 30; i++) { await p.waitForTimeout(100); const cur = await readEye(); if (cur === prev) break; prev = cur; }
       const moves = await p.evaluate(() => window.__tm);
       const scale = await p.evaluate(() => window.visualViewport ? window.visualViewport.scale : 1);
       record('the page did not zoom (visualViewport.scale stays 1)', Math.abs(scale - 1) < 0.02,
@@ -3397,16 +3398,17 @@ try {
       const isRunning = () => p.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
       // A mixed-equilibrium preset: the run keeps going instead of converging at once.
       await p.getByRole('button', { name: 'Spy vs. Analyst' }).first().click().catch(() => {});
-      await p.waitForTimeout(500);
-      await p.getByRole('button', { name: /^run$/i }).first().click();
-      await p.waitForTimeout(1500);
+      const runBtn = p.getByRole('button', { name: /^run$/i }).first();
+      await runBtn.waitFor({ state: 'visible', timeout: 8000 });
+      await runBtn.click();
+      for (let i = 0; i < 50 && !(await isRunning()); i++) await p.waitForTimeout(100);
       record('precondition: the simulation is running before the gesture', await isRunning());
       // Below the fold at 1280x900: a press outside the viewport hits <html>,
       // not the canvas, and would prove nothing about the drag.
       await plot.evaluate((el) => el.scrollIntoView({ block: 'center' }));
-      await p.waitForTimeout(300);
-      const r = await plot.boundingBox();
       const vh = await p.evaluate(() => window.innerHeight);
+      let r = await plot.boundingBox();
+      for (let i = 0; i < 30 && !(r && r.y >= 0 && r.y + r.height <= vh); i++) { await p.waitForTimeout(100); r = await plot.boundingBox(); }
       const hit = await p.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName ?? null, [r.x + r.width / 2, r.y + r.height / 2]);
       record('precondition: the plot is inside the viewport and the press lands on the canvas', !!r && r.y >= 0 && r.y + r.height <= vh && hit === 'CANVAS', JSON.stringify({ r, vh, hit }));
       const before = await eye();
@@ -3460,7 +3462,8 @@ try {
       // Bounded poll: the held request fails after 1.5 s, the alert follows,
       // and the button re-enables in `finally`; give up after 6 s.
       for (let i = 0; i < 60 && (dialogs.length === 0 || await del.isDisabled()); i++) await p.waitForTimeout(100);
-      await p.waitForTimeout(300); // a second click's request/alert, if any, would land right behind the first
+      // A second click's request/alert would follow the first within the held request's own delay; poll that window too.
+      for (let i = 0; i < 20 && deletes.length < 2 && dialogs.length < 2; i++) await p.waitForTimeout(100);
       record('FIX: exactly one DELETE request was sent', deletes.length === 1, JSON.stringify(deletes));
       record('FIX: exactly one alert was shown', dialogs.length === 1, JSON.stringify(dialogs));
       record('the row is still listed (nothing was deleted)', await p.getByRole('button', { name, exact: true }).isVisible());
