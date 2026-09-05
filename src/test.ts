@@ -2501,7 +2501,9 @@ function testRedTeamRound15BreakA() {
   // hrtime, not Date.now: 500 steps run in ~1.5ms, and Date.now's 1ms
   // granularity alone swung the ratio by 2x, which would make the bound either
   // flaky or useless.
+  let timedSamples = 0;
   const timeBlock = (count: number) => {
+    timedSamples++;
     const t = process.hrtime.bigint();
     for (let i = 0; i < count && !st.converged; i++) step();
     return Number(process.hrtime.bigint() - t) / 1e6;
@@ -2533,8 +2535,14 @@ function testRedTeamRound15BreakA() {
     return xs[Math.floor(n / 2)];
   };
   const early = medianOf(3, 100);
+  // Structural contract of the measurement itself (CodeRabbit, #124): the
+  // sampling really is 3×100 / 600 / 3×100 steps of ONE run, so the ratio
+  // compares the same amount of work early and late.
+  assert(timedSamples === 3 && st.stepCount === 300, `early block must be three 100-step samples (samples=${timedSamples}, steps=${st.stepCount})`);
   timeBlock(600);
+  assert(timedSamples === 4 && st.stepCount === 900, `the intervening workload must be 600 steps (samples=${timedSamples}, steps=${st.stepCount})`);
   const late = medianOf(3, 100);
+  assert(timedSamples === 7 && st.stepCount === 1200, `late block must be three 100-step samples (samples=${timedSamples}, steps=${st.stepCount})`);
   let n = st.stepCount;
   while (!st.converged && n < 20000) { step(); n++; }
   assert(st.converged, `the crash fixture must converge, not be cut off (stopped after ${n} steps)`);
