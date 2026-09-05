@@ -3043,8 +3043,9 @@ try {
       await box.blur();
       const committed = await settle(async () => (await box.inputValue()) === Number(dotted).toFixed(3));
       record(`${label}: control — a dotted decimal ("${dotted}") still commits normally`, committed, `got "${await box.inputValue()}"`);
-      const moved = await settle(async () => (await slider.inputValue()) !== sliderBefore);
-      record(`${label}: control — the committed decimal reaches the value in force (slider moved)`, moved);
+      const landed = await settle(async () => Number(await slider.inputValue()) === Number(dotted));
+      record(`${label}: control — the value in force (slider) is exactly the committed decimal ${dotted}`, landed,
+        `before=${sliderBefore} now=${await slider.inputValue()}`);
       record(`${label}: the hint clears once a valid edit is made`, !(await hint.isVisible().catch(() => false)));
     }
 
