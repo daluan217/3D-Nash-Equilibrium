@@ -2521,9 +2521,20 @@ function testRedTeamRound15BreakA() {
       doStep(g, warm, 'A', 0.001, all, null, () => {}, () => {}, () => { warm.running = false; }, 'shrink');
     }
   }
-  const early = timeBlock(300);
+  // Median of three 100-step samples per block, not one 300-step sample: on a
+  // shared CI runner a single GC pause or scheduling gap inside a ~1.5 ms
+  // window inflated one sample 4.2x (main a2b25c6, 2026-09-05) with no code
+  // change. The defect this guards is per-step O(k) copying, which raises
+  // EVERY late sample ~9x — the median still carries it (mutation-tested with
+  // an injected O(stepCount) loop per step); one transient pause is the
+  // outlier the median discards, and it discards nothing else (CodeRabbit).
+  const medianOf = (n: number, count: number) => {
+    const xs = Array.from({ length: n }, () => timeBlock(count)).sort((a, b) => a - b);
+    return xs[Math.floor(n / 2)];
+  };
+  const early = medianOf(3, 100);
   timeBlock(600);
-  const late = timeBlock(300);
+  const late = medianOf(3, 100);
   let n = st.stepCount;
   while (!st.converged && n < 20000) { step(); n++; }
   assert(st.converged, `the crash fixture must converge, not be cut off (stopped after ${n} steps)`);
