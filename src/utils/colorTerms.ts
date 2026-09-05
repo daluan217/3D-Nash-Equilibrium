@@ -104,21 +104,31 @@ function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
  * chip vs chip (cleanUserColorTerms), player vs player (cleanUserColorTermPair,
  * regenKeptColorTerms) — goes through it; RED-REGEN-4/001 and RED-REGEN-5/001
  * were the same phrase judged equal by one comparison and different by another.
- * Folds: NFKC; zero-width and soft hyphens gone; apostrophe-like and quote-like
- * glyphs to ASCII; dash glyphs to '-'; whitespace collapsed; leading/trailing
- * punctuation dropped (a drag-selection ends on the sentence's period,
- * RED-REGEN-5/002); case. Rendering never uses it — ColorCoded matches the
- * literal text — so a chip's stored spelling is untouched.
+ * Folds: NFKC; zero-width/joining and soft hyphens gone; apostrophe-like and
+ * quote-like glyphs to ASCII (including the prime family's REVERSED forms and
+ * the low-9 single quote — each was added only after its sibling in the same
+ * family was already here and a variant using the missing one still slipped
+ * through; docs/COLOUR-TERMS.md's KEY table names every glyph and its family);
+ * dash glyphs to '-'; whitespace collapsed; leading/trailing punctuation
+ * dropped (a drag-selection ends on the sentence's period, RED-REGEN-5/002);
+ * case. Rendering never uses it — ColorCoded matches the literal text — so a
+ * chip's stored spelling is untouched.
  */
 export function colorTermKey(t: string): string {
   return t
     // Glyph folds run BEFORE NFKC: NFKC decomposes U+00B4 ACUTE ACCENT into
     // SPACE + U+0301, so a fold after it never sees the glyph (RED-REGEN-6/001).
-    .replace(/[\u2018\u2019\u02BC\u02B9\u2032\u0060\u00B4]/g, "'")
-    .replace(/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g, '"')
+    // U+201A and U+2035 are the single/apostrophe-shaped siblings of U+201E
+    // and U+2032, already handled below — a fold list built one glyph at a
+    // time misses a sibling until something is measured against it.
+    .replace(/[\u2018\u2019\u201A\u02BC\u02B9\u2032\u2035\u0060\u00B4]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036\u00AB\u00BB]/g, '"')
     .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
     .normalize('NFKC')
-    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+    // U+2060 WORD JOINER is the same invisible-joiner class as the ZW*/BOM
+    // glyphs beside it — missing it here was the same one-glyph-at-a-time
+    // gap as the apostrophe family above, just in the strip list.
+    .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
     .replace(/\s+/g, ' ')
     // Edge trimming: sentence punctuation, quotes and brackets only — NOT the
     // whole \p{P} class, which also ate '%', '#' and a leading '-' and folded
