@@ -29,8 +29,23 @@ import {
   isRateLimit,
 } from './utils/providers';
 import { SCENARIO_DOMAINS, pickScenarioDomain } from './utils/scenarioDomains';
-import { colorTermsFor, descriptionColorTerms, cleanUserColorTerms, cleanUserColorTermPair, USER_TERMS_MAX, USER_TERM_MAX_LEN, STRUCTURAL_A_TERMS, STRUCTURAL_B_TERMS } from './utils/colorTerms';
-import { savedGameColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, regenKeptColorTerms, regenPreviewColorTerms, optionLabelTerms } from './utils/colorTerms';
+import {
+  STRUCTURAL_A_TERMS,
+  STRUCTURAL_B_TERMS,
+  USER_TERMS_MAX,
+  USER_TERM_MAX_LEN,
+  cleanUserColorTermPair,
+  cleanUserColorTerms,
+  colorTermKey,
+  colorTermsFor,
+  descriptionColorTerms,
+  regenKeptColorTerms,
+  regenPreviewColorTerms,
+  savedGameColorTerms,
+  dialogBaseColorTerms,
+  mergeDescriptionTerms,
+  optionLabelTerms,
+} from './utils/colorTerms';
 import { keepFill } from './utils/scenarioRegen';
 import { cleanScenarioActorNouns } from './utils/scenarioActorNouns';
 import { readFileSync as readFileForContract, readdirSync as readDirForContract } from 'node:fs';
@@ -1953,6 +1968,38 @@ function testLabelOwnershipResolution() {
   const filedOnA = regenPreviewColorTerms(CURLY_A_ONLY, [], [], ["Fisherman's Boat"], []);
   assert(filedOnA.a.includes("Fisherman's Boat"),
     `own-side match keeps the chip (unchanged behaviour) — got ${JSON.stringify(filedOnA)}`);
+
+  // ── Fixture 2c (RED-REGEN-5/001+002): ONE key for every comparison. The
+  // apostrophe fold used to live only in the chip-vs-label check; the
+  // cross-PLAYER exclusivity checks compared plain lowercase, so the same
+  // phrase spelled two ways could be claimed by both players. And a chip
+  // dragged with the sentence's final period never matched the bare label.
+  const bothWays = cleanUserColorTermPair(["Farmer's Market"], ['Farmer\u2019s Market']);
+  assert(bothWays.b.length === 0 && bothWays.a.length === 1 && bothWays.a[0] === "Farmer's Market",
+    `the same phrase with a curly apostrophe must not be claimed by B when A owns it, and A keeps its own spelling — got ${JSON.stringify(bothWays)}`);
+  const keptNoun = regenKeptColorTerms([], ['Farmer\u2019s Market'], ["Farmer's Market"], []);
+  assert(keptNoun.b.length === 0,
+    `a model noun spelled with a curly apostrophe must not claim the user's straight-apostrophe phrase on the other side — got ${JSON.stringify(keptNoun)}`);
+  const trailing = regenPreviewColorTerms(SYMMETRIC, [], [], ['Cooperate.'], []);
+  assert(!trailing.a.some((t) => /cooperate/i.test(t)) && !trailing.b.some((t) => /cooperate/i.test(t)),
+    `a chip carrying the sentence's final period must still collide with the symmetric label — got ${JSON.stringify(trailing)}`);
+  const backtick = regenPreviewColorTerms(CURLY, [], [], ['Farmer`s Market'], []);
+  assert(!backtick.a.some((t) => /farmer/i.test(t)) && !backtick.b.some((t) => /farmer/i.test(t)),
+    `a backtick used as an apostrophe must fold like the curly one (neutral on both sides) — got ${JSON.stringify(backtick)}`);
+  assert(colorTermKey('Cease\u2212fire') === 'cease-fire',
+    `the Unicode minus (U+2212) must fold to '-' like the other dash glyphs — got ${JSON.stringify(colorTermKey('Cease\u2212fire'))}`);
+  const dash = regenPreviewColorTerms({ row1: 'Cease-fire', row2: 'Hold', col1: 'Advance', col2: 'Wait' }, [], [], [], ['Cease\u2011fire']);
+  assert(!dash.b.some((t) => /cease/i.test(t)),
+    `a non-breaking-hyphen chip on B must collide with A's hyphenated label — got ${JSON.stringify(dash)}`);
+  assert(colorTermKey('  “Farmer’s—Market.”  ') === 'farmer\'s-market' && colorTermKey('...') === '',
+    `colorTermKey must fold quotes/apostrophes/dashes, strip edge punctuation and lowercase — got ${JSON.stringify([colorTermKey('  “Farmer’s—Market.”  '), colorTermKey('...')])}`);
+  assert(cleanUserColorTerms(['...', '!!', 'Cooperate']).length === 1,
+    'a punctuation-only chip has nothing to highlight and is dropped');
+  const trailingPair = cleanUserColorTermPair(['Cooperate.'], ['Cooperate']);
+  assert(trailingPair.a.length === 1 && trailingPair.b.length === 0,
+    `trailing punctuation must not let B own a phrase A already holds — got ${JSON.stringify(trailingPair)}`);
+  assert(colorTermKey('Cooperate\u3002') === 'cooperate' && colorTermKey('\u00A1Cooperate!') === 'cooperate',
+    `non-ASCII edge punctuation (ideographic full stop, inverted exclamation) must fold away — got ${JSON.stringify([colorTermKey('Cooperate\u3002'), colorTermKey('\u00A1Cooperate!')])}`);
 
   // The chip itself is never deleted from the record — only its colouring
   // effect is suppressed. `regenKeptColorTerms` (what Keep stores) still

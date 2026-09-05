@@ -98,16 +98,33 @@ function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
  * (canonically-equivalent forms render identically), zero-width characters
  * stripped, trimmed, case-folded.
  */
-function normTerm(t: string): string {
+/**
+ * THE ONE key under which two colour terms are "the same phrase". Every
+ * equality in this module — chip vs label (dropAmbiguous, mergeDescriptionTerms),
+ * chip vs chip (cleanUserColorTerms), player vs player (cleanUserColorTermPair,
+ * regenKeptColorTerms) — goes through it; RED-REGEN-4/001 and RED-REGEN-5/001
+ * were the same phrase judged equal by one comparison and different by another.
+ * Folds: NFKC; zero-width and soft hyphens gone; apostrophe-like and quote-like
+ * glyphs to ASCII; dash glyphs to '-'; whitespace collapsed; leading/trailing
+ * punctuation dropped (a drag-selection ends on the sentence's period,
+ * RED-REGEN-5/002); case. Rendering never uses it — ColorCoded matches the
+ * literal text — so a chip's stored spelling is untouched.
+ */
+export function colorTermKey(t: string): string {
   return t
     .normalize('NFKC')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    // RED-REGEN-4/001: apostrophe typography is not canonical equivalence — a
-    // curly ’ (U+2019), ‘, ʼ or ′ is the same word to a reader as a straight ',
-    // so a chip and a label that differ only there must still collide.
-    .replace(/[\u2018\u2019\u02BC\u02B9\u2032]/g, "'")
-    .trim()
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+    .replace(/[\u2018\u2019\u02BC\u02B9\u2032\u0060\u00B4]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g, '"')
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+    .replace(/\s+/g, ' ')
+    // \p{P} = every Unicode punctuation class, so an ideographic full stop (。) or
+    // a Devanagari danda at the edge folds away like an ASCII period (CodeRabbit).
+    .replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, '')
     .toLowerCase();
+}
+function normTerm(t: string): string {
+  return colorTermKey(t);
 }
 
 /**
@@ -172,7 +189,8 @@ export function cleanUserColorTerms(input: unknown): string[] {
     // break arrives with a newline that would never match the rendered text.
     const t = raw.replace(/\s+/g, ' ').trim().slice(0, USER_TERM_MAX_LEN);
     if (t.length < 2) continue;
-    const key = t.toLowerCase();
+    const key = colorTermKey(t);
+    if (key.length < 2) continue; // punctuation-only after folding: nothing to highlight
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(t);
@@ -195,10 +213,10 @@ export function cleanUserColorTermPair(
   b: unknown,
 ): { a: string[]; b: string[] } {
   const cleanA = cleanUserColorTerms(a);
-  const ownedByA = new Set(cleanA.map((t) => t.toLowerCase()));
+  const ownedByA = new Set(cleanA.map(colorTermKey));
   return {
     a: cleanA,
-    b: cleanUserColorTerms(b).filter((t) => !ownedByA.has(t.toLowerCase())),
+    b: cleanUserColorTerms(b).filter((t) => !ownedByA.has(colorTermKey(t))),
   };
 }
 
@@ -311,12 +329,12 @@ export function regenKeptColorTerms(
   existingB: readonly string[],
 ): { a: string[]; b: string[] } {
   const existing = cleanUserColorTermPair(existingA, existingB);
-  const ownedA = new Set(existing.a.map((t) => t.toLowerCase()));
-  const ownedB = new Set(existing.b.map((t) => t.toLowerCase()));
+  const ownedA = new Set(existing.a.map(colorTermKey));
+  const ownedB = new Set(existing.b.map(colorTermKey));
   // A generated actor noun may add a NEW highlight, but may never claim a
   // phrase the user already placed on the other side.
-  const newA = cleanUserColorTerms(actorA).filter((t) => !ownedB.has(t.toLowerCase()));
-  const newB = cleanUserColorTerms(actorB).filter((t) => !ownedA.has(t.toLowerCase()));
+  const newA = cleanUserColorTerms(actorA).filter((t) => !ownedB.has(colorTermKey(t)));
+  const newB = cleanUserColorTerms(actorB).filter((t) => !ownedA.has(colorTermKey(t)));
   return cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
 }
 
