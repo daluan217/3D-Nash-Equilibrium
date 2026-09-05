@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, devices } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
@@ -3413,6 +3413,197 @@ try {
       if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
       try { rmSync(deskData, { recursive: true, force: true }); } catch { /* best effort */ }
     }
+  });
+
+  // ── Contract (RED-APP-11/001, REFUTED): a pinch that starts on the plot and
+  // drifts outside it stays the camera's and never becomes the browser's page
+  // zoom. The red's probe — and the director's first reproduction with it —
+  // dispatched the touches with the plot BELOW THE FOLD, where they hit <html>
+  // and the browser zoomed the page; with the plot in the viewport every move
+  // is cancelable and prevented (Plotly prevents them itself once a touch
+  // starts on its canvas) and visualViewport.scale stays 1 on the ORIGINAL
+  // code. Kept as the guard for that property. Every pointer/touch section
+  // must scroll its target into view and assert it (see the precondition).
+  section('51', 'pinch drifting off the plot never becomes a native page zoom', 4, async () => {
+    const ctx = await browser.newContext({ ...devices['Pixel 7'] });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      const plot = p.locator('[data-tour="plot"]');
+      await plot.waitFor({ state: 'visible', timeout: 15000 });
+      await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene, null, { timeout: 20000 }).catch(() => {});
+      // The plot sits below the fold on a phone: touches dispatched outside
+      // the visible viewport never reach the element's gesture handling.
+      await plot.scrollIntoViewIfNeeded();
+      const vh = await p.evaluate(() => window.innerHeight);
+      let r = await plot.boundingBox();
+      for (let i = 0; i < 30 && !(r && r.y >= 0 && r.y + r.height <= vh); i++) { await p.waitForTimeout(100); r = await plot.boundingBox(); }
+      record('precondition: the plot is small enough on a phone for a pinch to leave it, and is inside the viewport',
+        !!r && r.width < 500 && r.y >= 0 && r.y + r.height <= vh, JSON.stringify({ r, vh }));
+      const cx = r.x + r.width / 2; const cy = r.y + r.height / 2;
+      const eyeBefore = await p.evaluate(() => document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye ?? null);
+      await p.evaluate(() => { window.__tm = []; document.addEventListener('touchmove', (e) => { window.__tm.push([e.cancelable, e.defaultPrevented]); }, false); });
+      const cdp = await ctx.newCDPSession(p);
+      const pts = (d) => [{ x: cx - d, y: cy, id: 0 }, { x: cx + d, y: cy, id: 1 }];
+      // Spread past the container's edge but stay inside the viewport: the
+      // last moves are OUTSIDE the plot (its left edge is at r.x), on the page.
+      const maxD = Math.min(cx - 6, r.x + r.width + 40 - cx);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts(40) });
+      for (let i = 1; i <= 10; i++) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts(40 + (maxD - 40) * (i / 10)) }); await p.waitForTimeout(30); }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      const readEye = () => p.evaluate(() => JSON.stringify(document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye ?? null));
+      for (let i = 0, prev = await readEye(); i < 30; i++) { await p.waitForTimeout(100); const cur = await readEye(); if (cur === prev) break; prev = cur; }
+      const moves = await p.evaluate(() => window.__tm);
+      const scale = await p.evaluate(() => window.visualViewport ? window.visualViewport.scale : 1);
+      record('the page did not zoom (visualViewport.scale stays 1)', Math.abs(scale - 1) < 0.02,
+        `scale=${scale} maxD=${maxD.toFixed(0)} plot=[${r.x.toFixed(0)}..${(r.x + r.width).toFixed(0)}] moves=${moves.length} cancelable=${moves.filter((m) => m[0]).length} prevented=${moves.filter((m) => m[1]).length}`);
+      const eyeAfter = await p.evaluate(() => document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye ?? null);
+      const mag = (e) => (e ? Math.hypot(e.x, e.y, e.z) : NaN);
+      record('the whole gesture zoomed the CAMERA instead (eye distance changed)', !!eyeBefore && !!eyeAfter && Math.abs(mag(eyeAfter) - mag(eyeBefore)) > 0.05, JSON.stringify({ before: eyeBefore, after: eyeAfter }));
+      const run = p.getByRole('button', { name: /^(run|resume)$/i }).first();
+      const rb = await run.boundingBox().catch(() => null);
+      record('the Run button is still on screen afterwards', !!rb && rb.x >= 0 && rb.x + rb.width <= 412 + 1, JSON.stringify(rb));
+    } finally { await ctx.close().catch(() => {}); }
+  });
+
+  // ── Contract (RED-APP-11/002, REFUTED): the FIRST press-and-drag on a
+  // RUNNING simulation rotates the camera. The red's probes pressed at the
+  // plot's centre while the plot sat below the fold at 1280x900, so the
+  // mousedown hit <html> (elementFromPoint returned null) and Plotly never saw
+  // a drag; the second gesture "worked" only because pausing reflowed the
+  // page. With the plot in view the ORIGINAL code rotates on the first drag,
+  // mouse and touch alike. Kept as the guard for that property.
+  section('52', 'the first drag on a running simulation rotates the camera', 3, async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      const plot = p.locator('[data-tour="plot"]');
+      await plot.waitFor({ state: 'visible', timeout: 15000 });
+      await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?._scene, null, { timeout: 20000 }).catch(() => {});
+      const eye = () => p.evaluate(() => { const el = document.getElementById('plotly-3d-market-simulation'); const e = el?._fullLayout?.scene?._scene?.getCamera?.()?.eye ?? el?._fullLayout?.scene?.camera?.eye; return e ? { x: e.x, y: e.y, z: e.z } : null; });
+      const isRunning = () => p.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+      // A mixed-equilibrium preset: the run keeps going instead of converging at once.
+      await p.getByRole('button', { name: 'Spy vs. Analyst' }).first().click().catch(() => {});
+      const runBtn = p.getByRole('button', { name: /^run$/i }).first();
+      await runBtn.waitFor({ state: 'visible', timeout: 8000 });
+      await runBtn.click();
+      for (let i = 0; i < 50 && !(await isRunning()); i++) await p.waitForTimeout(100);
+      record('precondition: the simulation is running before the gesture', await isRunning());
+      // Below the fold at 1280x900: a press outside the viewport hits <html>,
+      // not the canvas, and would prove nothing about the drag.
+      await plot.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+      const vh = await p.evaluate(() => window.innerHeight);
+      let r = await plot.boundingBox();
+      for (let i = 0; i < 30 && !(r && r.y >= 0 && r.y + r.height <= vh); i++) { await p.waitForTimeout(100); r = await plot.boundingBox(); }
+      const hit = await p.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName ?? null, [r.x + r.width / 2, r.y + r.height / 2]);
+      record('precondition: the plot is inside the viewport and the press lands on the canvas', !!r && r.y >= 0 && r.y + r.height <= vh && hit === 'CANVAS', JSON.stringify({ r, vh, hit }));
+      const before = await eye();
+      const x0 = r.x + r.width / 2; const y0 = r.y + r.height / 2;
+      await p.mouse.move(x0, y0);
+      await p.mouse.down();
+      for (let i = 1; i <= 10; i++) { await p.mouse.move(x0 + i * 12, y0 + i * 5); await p.waitForTimeout(20); }
+      await p.mouse.up();
+      const dist3 = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : 0);
+      // Bounded poll: stop as soon as the camera differs, give up after 3 s.
+      let after = await eye();
+      for (let i = 0; i < 30 && dist3(before, after) <= 0.05; i++) { await p.waitForTimeout(100); after = await eye(); }
+      record('the press paused the run (as designed)', !(await isRunning()));
+      record('that same first drag rotated the camera', dist3(before, after) > 0.05, JSON.stringify({ before, after }));
+    } finally { await ctx.close().catch(() => {}); }
+  });
+
+  // ── RED-APP-11/003: Delete has an in-flight guard — a rapid double-click
+  // while offline sends ONE request and shows ONE alert. Counts network
+  // requests and dialog events, not the button's state. Mutation that fails
+  // it: remove the deletingGamesRef check — two DELETEs, two alerts.
+  section('53', 'a double-click on Delete while offline sends one request and one alert', 1, async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      const uniq = await registerAndLogin(p, 'del');
+      const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+      record('precondition: signed in with a stored token', typeof token === 'string' && token.length > 0);
+      const name = `DoubleDelete-${uniq}`;
+      const saved = await p.evaluate(async ([n, t]) => (await fetch('/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ name: n, description: 'to be deleted twice at once', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) })).status, [name, token]);
+      record('precondition: a saved game exists', saved === 200, `status ${saved}`);
+      await p.reload({ waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      const row = p.locator('div.group', { has: p.getByRole('button', { name, exact: true }) });
+      await row.waitFor({ state: 'visible', timeout: 10000 });
+      const del = row.getByTitle('Delete this saved game');
+      const dialogs = []; p.on('dialog', async (d) => { dialogs.push(d.message()); await d.accept(); });
+      const deletes = []; p.on('request', (rq) => { if (rq.method() === 'DELETE' && rq.url().includes('/api/games/')) deletes.push(rq.url()); });
+      // Hold the DELETE in flight for a moment, then fail it like a dead
+      // connection: the second click must land WHILE the first request is
+      // pending, which a bare setOffline() cannot guarantee (the failure is
+      // instant and the guard would legitimately be clear again).
+      await p.route('**/api/games/**', async (route) => {
+        if (route.request().method() !== 'DELETE') return route.continue();
+        await new Promise((r) => setTimeout(r, 1500));
+        await route.abort('internetdisconnected');
+      });
+      await del.click();
+      await del.click({ force: true }).catch(() => {});
+      // Bounded poll: the held request fails after 1.5 s, the alert follows,
+      // and the button re-enables in `finally`; give up after 6 s.
+      for (let i = 0; i < 60 && (dialogs.length === 0 || await del.isDisabled()); i++) await p.waitForTimeout(100);
+      // A second click's request/alert would follow the first within the held request's own delay; poll that window too.
+      for (let i = 0; i < 20 && deletes.length < 2 && dialogs.length < 2; i++) await p.waitForTimeout(100);
+      record('FIX: exactly one DELETE request was sent', deletes.length === 1, JSON.stringify(deletes));
+      record('FIX: exactly one alert was shown', dialogs.length === 1, JSON.stringify(dialogs));
+      record('the row is still listed (nothing was deleted)', await p.getByRole('button', { name, exact: true }).isVisible());
+      await p.unroute('**/api/games/**');
+      record('the Delete button is usable again once the request has settled', !(await del.isDisabled()));
+    } finally { await ctx.close().catch(() => {}); }
+  });
+
+  // ── RED-APP-11/004: closing the Edit dialog by Escape, Cancel or a
+  // successful Save returns focus to the Edit button that opened it; the Save
+  // dialog returns focus to Save Preset. Reads document.activeElement.
+  // Mutation that fails it: drop the opener.focus() in useModalTabTrap's
+  // cleanup — activeElement is <body> on every path.
+  section('54', 'closing a dialog returns focus to the control that opened it', 6, async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      const uniq = await registerAndLogin(p, 'foc');
+      const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+      const name = `Focus-${uniq}`;
+      await p.evaluate(async ([n, t]) => fetch('/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ name: n, description: 'focus return check', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) }), [name, token]);
+      await p.reload({ waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      const row = p.locator('div.group', { has: p.getByRole('button', { name, exact: true }) });
+      await row.waitFor({ state: 'visible', timeout: 10000 });
+      const editBtn = row.getByTitle(/^Edit /);
+      const dialog = p.getByRole('dialog', { name: 'Edit saved game' });
+      // Element identity, not title text: the focused node must be THIS button.
+      const focusIsEdit = () => editBtn.evaluate((el) => document.activeElement === el);
+      // Escape
+      await editBtn.click(); await dialog.waitFor({ state: 'visible', timeout: 8000 });
+      await p.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden', timeout: 8000 });
+      record('FIX: after Escape, focus is back on the Edit button', await focusIsEdit(), await p.evaluate(() => document.activeElement?.tagName));
+      // Cancel
+      await editBtn.click(); await dialog.waitFor({ state: 'visible', timeout: 8000 });
+      await dialog.getByRole('button', { name: /cancel/i }).click(); await dialog.waitFor({ state: 'hidden', timeout: 8000 });
+      record('FIX: after Cancel, focus is back on the Edit button', await focusIsEdit(), await p.evaluate(() => document.activeElement?.tagName));
+      // Successful save
+      await editBtn.click(); await dialog.waitFor({ state: 'visible', timeout: 8000 });
+      await dialog.locator('textarea').first().fill('focus return check, edited');
+      await dialog.getByRole('button', { name: /^save changes$/i }).click(); await dialog.waitFor({ state: 'hidden', timeout: 10000 });
+      record('FIX: after a successful Save Changes, focus is back on the Edit button', await focusIsEdit(), await p.evaluate(() => document.activeElement?.tagName));
+      // Save dialog too
+      const savePreset = p.getByRole('button', { name: /save preset/i });
+      await savePreset.click();
+      const saveDialog = p.getByRole('dialog', { name: 'Save custom game' });
+      await saveDialog.waitFor({ state: 'visible', timeout: 8000 });
+      await p.keyboard.press('Escape'); await saveDialog.waitFor({ state: 'hidden', timeout: 8000 });
+      record('FIX: after Escape on the Save dialog, focus is back on Save Preset', await savePreset.evaluate((el) => document.activeElement === el), await p.evaluate(() => document.activeElement?.tagName));
+    } finally { await ctx.close().catch(() => {}); }
   });
 
 await executeSections();
