@@ -2998,6 +2998,84 @@ try {
     await symPage.close();
   });
 
+  // ══ 44. Director hardening (class of RED-DESKTOP-9/002, second surface): the
+  //      step-size / regret-weight box is the one other typed decimal field.
+  //      A comma must be rejected with the same hint, and the value in force
+  //      must return to its focus-time value — the comma-free prefix ("5" of
+  //      "5,5") commits (clamped to 0.999) before the comma exists. The value
+  //      in force is read from the SLIDER (bound to shrinkStep), not the box.
+  section('44', 'comma in the step-size box rejected, value restored', 3, async () => {
+    const stepPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await stepPage.goto(BASE, { waitUntil: 'networkidle' });
+    try { await stepPage.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    let tourGone = await stepPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+      null, { timeout: 5000 }).then(() => true).catch(() => false);
+    if (!tourGone) {
+      await stepPage.keyboard.press('Escape');
+      tourGone = await stepPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+        null, { timeout: 10000 }).then(() => true).catch(() => false);
+    }
+    record('precondition: the guided tour is dismissed before the step-size checks', tourGone);
+
+    const box = stepPage.getByLabel('Initial Domain Shrink Step Size', { exact: true });
+    const slider = stepPage.getByLabel('Initial Domain Shrink Step Size slider', { exact: true });
+    const hint = stepPage.locator('[data-testid="step-input-hint"]');
+    const HINT_TEXT = 'Use a dot for decimals, not a comma.';
+    await box.waitFor({ state: 'visible', timeout: 20000 });
+    const settle = async (pred) => {
+      for (let i = 0; i < 30; i++) { if (await pred()) return true; await stepPage.waitForTimeout(100); }
+      return pred();
+    };
+
+    async function checkCommaRejected(label, commaInput, prefixCommits) {
+      const before = await box.inputValue();
+      const sliderBefore = await slider.inputValue();
+      record(`${label}: fixture guard — the value in force (${sliderBefore}) differs from what the typed prefix alone would commit (${prefixCommits})`,
+        Number(sliderBefore) !== prefixCommits);
+      await box.click();
+      await box.fill('');
+      await stepPage.keyboard.type(commaInput, { delay: 20 });
+      const midTyping = await box.inputValue();
+      record(`${label}: the box shows exactly what was typed`, midTyping === commaInput, `got "${midTyping}"`);
+      const hintShown = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintText = hintShown ? await hint.textContent().catch(() => null) : null;
+      record(`${label}: the hint appears with the exact guidance text`, hintShown && hintText === HINT_TEXT, `visible=${hintShown} text=${JSON.stringify(hintText)}`);
+      const restored = await settle(async () => (await slider.inputValue()) === sliderBefore);
+      record(`${label}: the value in force (slider) is back to its pre-edit value while the comma is still in the box`,
+        restored, `before=${sliderBefore} now=${await slider.inputValue()}`);
+      await box.blur();
+      const boxReverted = await settle(async () => (await box.inputValue()) === before);
+      record(`${label}: blur reverts the box to its pre-edit text, not the committed prefix`, boxReverted, `before="${before}" after="${await box.inputValue()}"`);
+      record(`${label}: after blur the slider still holds the pre-edit value`, (await slider.inputValue()) === sliderBefore);
+      record(`${label}: the hint is still visible after blur`, await hint.isVisible().catch(() => false));
+    }
+    async function checkDotCommits(label, dotted) {
+      const sliderBefore = await slider.inputValue();
+      await box.click();
+      await box.fill('');
+      await stepPage.keyboard.type(dotted, { delay: 20 });
+      await box.blur();
+      const committed = await settle(async () => (await box.inputValue()) === Number(dotted).toFixed(3));
+      record(`${label}: control — a dotted decimal ("${dotted}") still commits normally`, committed, `got "${await box.inputValue()}"`);
+      const landed = await settle(async () => Number(await slider.inputValue()) === Number(dotted));
+      record(`${label}: control — the value in force (slider) is exactly the committed decimal ${dotted}`, landed,
+        `before=${sliderBefore} now=${await slider.inputValue()}`);
+      record(`${label}: the hint clears once a valid edit is made`, !(await hint.isVisible().catch(() => false)));
+    }
+
+    await checkCommaRejected('ASCII comma', '5,5', 0.999);
+    // A slider edit is a valid edit too: it must clear the stale comma hint (CodeRabbit CLI).
+    await slider.focus();
+    await stepPage.keyboard.press('ArrowRight');
+    record('a slider edit after a rejected comma clears the hint', await settle(async () => !(await hint.isVisible().catch(() => false))));
+    await checkDotCommits('ASCII comma', '0.25');
+    await checkCommaRejected('fullwidth comma (U+FF0C)', '３，５', 0.999);
+    await checkDotCommits('fullwidth comma (U+FF0C)', '0.15');
+    await checkCommaRejected('ASCII digits + fullwidth comma', '5，5', 0.999);
+    await checkDotCommits('ASCII digits + fullwidth comma', '0.35');
+    await stepPage.close();
+  });
+
   await executeSections();
 
 } catch (e) {
