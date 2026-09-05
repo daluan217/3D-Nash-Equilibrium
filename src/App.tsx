@@ -88,7 +88,7 @@ import {
 
 import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import {
   regenKeyEquals,
@@ -2870,6 +2870,12 @@ export default function App() {
    */
   const saveBaseTerms = useMemo(() => dialogBaseColorTerms(saveLabels), [saveLabels]);
   const editBaseTerms = useMemo(() => dialogBaseColorTerms(editLabels), [editLabels]);
+  // RED-REGEN-3/001: the dialog's own RAW option-label text (not the
+  // already-ambiguity-resolved base above) — what DescriptionEditor's
+  // label-ownership check needs to neutralize a chip that string-matches
+  // the OPPOSITE side's label instead of mis-colouring it.
+  const saveLabelTerms = useMemo(() => optionLabelTerms(saveLabels), [saveLabels]);
+  const editLabelTerms = useMemo(() => optionLabelTerms(editLabels), [editLabels]);
   // Exactly what Keep will store and DescriptionEditor will then render —
   // `regenPreviewColorTerms` is the ONE function both this preview card and
   // the post-Keep saved render compose through (RED-REGEN/002), fed the
@@ -5600,6 +5606,8 @@ export default function App() {
                   onTermsChange={(a, b) => setEditTerms({ a, b })}
                   baseA={editBaseTerms.a}
                   baseB={editBaseTerms.b}
+                  labelA={editLabelTerms.a}
+                  labelB={editLabelTerms.b}
                   maxLength={800}
                 />
               </div>
@@ -6007,6 +6015,8 @@ export default function App() {
                   onTermsChange={(a, b) => setSaveTerms({ a, b })}
                   baseA={saveBaseTerms.a}
                   baseB={saveBaseTerms.b}
+                  labelA={saveLabelTerms.a}
+                  labelB={saveLabelTerms.b}
                   placeholder="Explain the background storyline or payoff choices of this strategic profile."
                   maxLength={800}
                 />

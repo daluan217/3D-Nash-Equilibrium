@@ -356,6 +356,14 @@ const REGEN_STORY_B = {
   description: 'A potter and a kiln co-op are scheduling a shared firing slot.',
   actorA: ['A potter'], actorB: ['a kiln co-op'],
 };
+// RED-REGEN-3/001: a SYMMETRIC draw (row1===col1) — schema-legal and not
+// rare (measured: 477/2483 = 19.2% of the shipped bank shares a label
+// verbatim between a Row and a Col option).
+const REGEN_STORY_SYMMETRIC = {
+  name: 'Symmetric PD Test',
+  row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect',
+  description: 'Two firms decide independently whether to Cooperate or Defect on a shared logistics standard this quarter.',
+};
 
 try {
   // ══ 1. cold load (guards: build integrity — a broken bundle was once the
@@ -2340,6 +2348,158 @@ try {
     record('control: an unclamped field\'s undo works normally', controlAfterUndo !== 'short' && controlAfterUndo.length < 5,
       `"${controlAfterUndo}"`);
     await undoPage.close();
+  });
+
+  // ══ 38. RED-REGEN-3/001 (director-reproduced) — a pre-existing colour-term
+  //      chip that string-matches a BRAND-NEW, SYMMETRIC option label (a real
+  //      option BOTH players can pick, ~19% of the shipped bank) must render
+  //      NEUTRAL, not repainted as one player's exclusively — in the regen
+  //      preview AND in the persisted render after Keep -> Save -> reopen.
+  //      Real DOM, real ColorCoded render, real chip-picker UI, real
+  //      save/PATCH/GET round trip; `/api/scenario/regenerate` mocked exactly
+  //      like every other regen section (the flag-off server, untouched).
+  section('43', 'symmetric-label chip collision renders neutral', 1, async () => {
+    const symPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(symPage, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_SYMMETRIC }) });
+    });
+    const uniq = await registerAndLogin(symPage, 'e2e9symlabel');
+    const gameName = `SymLabelGame${uniq}`;
+    await symPage.getByRole('button', { name: /save preset/i }).click();
+    await symPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await symPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+
+    // Place a REAL chip, through the real chip-picker UI, on the word
+    // "cooperate" in the user's OWN unrelated prior text — nothing to do
+    // with the draw about to arrive.
+    const descField = symPage.locator('[role="dialog"][aria-label="Save custom game"] textarea');
+    await descField.fill('The two firms already cooperate informally on scheduling.');
+    const selectWord = async (word) => {
+      await symPage.evaluate(({ w, sel }) => {
+        const ta = document.querySelector(sel);
+        const idx = ta.value.indexOf(w);
+        ta.focus();
+        ta.setSelectionRange(idx, idx + w.length);
+      }, { w: word, sel: '[role="dialog"][aria-label="Save custom game"] textarea' });
+    };
+    const saveDialog = symPage.getByRole('dialog', { name: 'Save custom game' });
+    await selectWord('cooperate');
+    await saveDialog.getByRole('button', { name: 'Player A' }).click();
+    // CodeRabbit (this review): a bare `button:has-text("cooperate")` would
+    // pass identically for a chip filed on EITHER player — it only proves a
+    // button with that text exists, not that it is actually Player A's chip.
+    // Read the chip button's own styling (DescriptionEditor's `chip()` gives
+    // Player A's chip `text-player-a-ink` and Player B's `text-player-b-ink`,
+    // never both) so a chip accidentally placed on the wrong side would fail
+    // this precondition instead of passing it.
+    const chipInfo = await symPage.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Save custom game"]');
+      // The chip button's textContent also carries its "×"/"Remove highlight"
+      // child spans, so match a leading "cooperate" rather than full equality.
+      const btn = [...(dlg?.querySelectorAll('button') ?? [])]
+        .find((b) => /^cooperate/i.test(b.textContent?.trim() || ''));
+      return btn ? { text: btn.textContent, cls: btn.className } : null;
+    });
+    record('precondition: a real "cooperate" chip is placed on Player A specifically (unrelated text)',
+      !!chipInfo && /text-player-a-ink/.test(chipInfo.cls) && !/text-player-b-ink/.test(chipInfo.cls),
+      JSON.stringify(chipInfo));
+
+    // Regenerate -> the mocked draw's labels are SYMMETRIC (row1===col1==="Cooperate").
+    const symRegenBtn = symPage.getByRole('button', { name: 'Regenerate scenario' });
+    await symRegenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await symRegenBtn.click();
+    const symPreview = symPage.getByText('New scenario (preview)', { exact: false });
+    await symPreview.waitFor({ state: 'visible', timeout: 5000 });
+    // Scoped to the DESCRIPTION paragraph specifically, not the whole preview
+    // card: the card also has an "A: Cooperate / Defect" / "B: Cooperate /
+    // Defect" structural summary line (always styled per-player — it labels
+    // which RAW OPTION belongs to which side, not a ColorCoded claim about a
+    // WORD in the prose) that must not be confused with the actual rendered
+    // occurrence of "Cooperate" inside the AI-written description text.
+    // A NEUTRAL word (this fix's whole point) is rendered by ColorCoded as
+    // plain, unwrapped text — it never gets a <span> at all, only a COLOURED
+    // match does (see ColorCoded.tsx: aTerms/bTerms entries are the only
+    // things `applyRule` wraps). So `.every(...)` over the matched-span list
+    // must NOT be asserted non-empty (CodeRabbit's literal suggestion would
+    // make the CORRECT, fixed rendering fail this check, since it correctly
+    // produces zero colour-matching spans) — the real vacuous-pass risk is
+    // the marker/card/paragraph SELECTOR CHAIN silently finding nothing.
+    // Guard that specifically: prove the paragraph was located AND the word
+    // is genuinely present in it (as plain text or a span, either is fine),
+    // then separately check that no SPAN inside it carries a player colour.
+    const previewCheck = await symPage.evaluate((expectedDesc) => {
+      const marker = [...document.querySelectorAll('p')].find((n) => n.textContent?.trim() === 'New scenario (preview)');
+      const card = marker?.parentElement;
+      const descParagraph = [...(card?.querySelectorAll('p') ?? [])]
+        .find((p) => p.textContent?.includes(expectedDesc.slice(0, 30)));
+      const paragraphText = descParagraph?.textContent || '';
+      const cooperateSpans = [...(descParagraph?.querySelectorAll('span') ?? [])]
+        .filter((s) => /cooperate/i.test(s.textContent || ''))
+        .map((s) => ({ text: s.textContent, cls: s.className }));
+      return { found: !!descParagraph, hasWord: /cooperate/i.test(paragraphText), cooperateSpans };
+    }, REGEN_STORY_SYMMETRIC.description);
+    record('precondition: the preview\'s description paragraph was located and genuinely contains "Cooperate"',
+      previewCheck.found && previewCheck.hasWord, JSON.stringify(previewCheck));
+    record('the word "Cooperate" in the new, both-players-can-pick description renders NEUTRAL (no coloured span) in the preview',
+      previewCheck.cooperateSpans.every((s) => !/text-player-a-ink|text-player-b-ink/.test(s.cls)),
+      JSON.stringify(previewCheck.cooperateSpans));
+
+    await symPage.getByRole('button', { name: 'Keep' }).click();
+    await symPage.waitForTimeout(300);
+    await symPage.getByRole('button', { name: /^save game profile$/i }).click();
+    await symPage.waitForTimeout(800);
+
+    // Reopen the Edit dialog: a fresh render, through the real saved-game
+    // PATCH/GET round trip, not the preview closure above.
+    await symPage.getByRole('button', { name: `Edit ${gameName}` }).click();
+    await symPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+    const editDialog = symPage.getByRole('dialog', { name: 'Edit saved game' });
+    const editDescText = await editDialog.locator('textarea').inputValue();
+    record('precondition: the saved description is the regenerated symmetric-label story',
+      /Cooperate or Defect/.test(editDescText));
+    // Same shape as the preview check above: a NEUTRAL word renders as plain
+    // text, never a span, so the meaningful guard against a broken selector
+    // is "the DescriptionEditor preview paragraph was found and genuinely
+    // contains the word" — not "a matching span exists" (the fixed, correct
+    // rendering has none).
+    const savedCheck = await symPage.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+      // DescriptionEditor's own live preview paragraph (its className is
+      // this component's, unique within the Edit dialog).
+      const descParagraph = dlg?.querySelector('p.mt-1\\.5.rounded-lg.bg-slate-50') ?? null;
+      const paragraphText = descParagraph?.textContent || '';
+      const cooperateSpans = [...(descParagraph?.querySelectorAll('span') ?? [])]
+        .filter((s) => /^cooperate$/i.test((s.textContent || '').trim()))
+        .map((s) => ({ text: s.textContent, cls: s.className }));
+      return { found: !!descParagraph, hasWord: /cooperate/i.test(paragraphText), cooperateSpans };
+    });
+    record('precondition: the saved render\'s description preview paragraph was located and genuinely contains "Cooperate"',
+      savedCheck.found && savedCheck.hasWord, JSON.stringify(savedCheck));
+    record('the SAVED render (post-Keep, post-Save, reopened Edit dialog) is ALSO neutral (no coloured span), not painted as Player A only',
+      savedCheck.cooperateSpans.every((s) => !/text-player-a-ink|text-player-b-ink/.test(s.cls)),
+      JSON.stringify(savedCheck.cooperateSpans));
+
+    // The chip is never deleted from the record: it survives in the PATCH
+    // body even while neutralized on screen (director's decision: an AI
+    // action never destroys user-authored data).
+    let patchBody = null;
+    await symPage.route(`**/api/games/*`, async (route) => {
+      if (route.request().method() === 'PATCH') patchBody = JSON.parse(route.request().postData() || '{}');
+      await route.continue();
+    });
+    // The chip already went out on the earlier PATCH (Save Game Profile
+    // above uses POST, not PATCH); re-open Edit's own Save Changes path to
+    // observe a PATCH directly.
+    const editPatchDone = symPage.waitForResponse(
+      (r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH',
+      { timeout: 15000 },
+    ).catch(() => null);
+    await symPage.getByRole('button', { name: /^save changes$/i }).click();
+    await editPatchDone;
+    record('the chip is preserved in the stored record even while its render is neutralized',
+      !!patchBody && Array.isArray(patchBody.colorTermsA) && patchBody.colorTermsA.includes('cooperate'),
+      JSON.stringify(patchBody?.colorTermsA));
+    await symPage.close();
   });
 
   await executeSections();
