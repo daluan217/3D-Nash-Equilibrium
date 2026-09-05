@@ -6,6 +6,7 @@
 import React, { useRef, useState } from 'react';
 import { ColorCoded } from './ColorCoded';
 import {
+  colorTermKey,
   cleanUserColorTerms,
   cleanUserColorTermPair,
   mergeDescriptionTerms,
@@ -91,13 +92,13 @@ export function DescriptionEditor({
       );
       return;
     }
-    const nextA = player === 'A' ? [...termsA, term] : termsA.filter((t) => t.toLowerCase() !== term.toLowerCase());
-    const nextB = player === 'B' ? [...termsB, term] : termsB.filter((t) => t.toLowerCase() !== term.toLowerCase());
+    const nextA = player === 'A' ? [...termsA, term] : termsA.filter((t) => colorTermKey(t) !== colorTermKey(term));
+    const nextB = player === 'B' ? [...termsB, term] : termsB.filter((t) => colorTermKey(t) !== colorTermKey(term));
     // As a pair, so a phrase can never end up owned by both players.
     const { a: cleanA, b: cleanB } = cleanUserColorTermPair(nextA, nextB);
     if (
-      (player === 'A' && !cleanA.some((t) => t.toLowerCase() === term.toLowerCase()))
-      || (player === 'B' && !cleanB.some((t) => t.toLowerCase() === term.toLowerCase()))
+      (player === 'A' && !cleanA.some((t) => colorTermKey(t) === colorTermKey(term)))
+      || (player === 'B' && !cleanB.some((t) => colorTermKey(t) === colorTermKey(term)))
     ) {
       setHint(`That is ${USER_TERMS_MAX} highlights already — remove one to add another.`);
       return;
@@ -117,9 +118,12 @@ export function DescriptionEditor({
   // RED-REGEN-4/002: a chip whose highlight the label-ownership rule suppressed
   // (it names an option label on the other side) must SAY so — the chip stays,
   // its pill goes neutral, and the title explains why nothing is coloured.
-  const renderedTerms = new Set([...merged.a, ...merged.b].map((t) => t.toLowerCase()));
+  // Per player, not pooled: a chip filed on A whose phrase renders as B's is
+  // suppressed for A even though the key is "rendered" somewhere (CodeRabbit).
+  const renderedA = new Set(merged.a.map(colorTermKey));
+  const renderedB = new Set(merged.b.map(colorTermKey));
   const chip = (term: string, player: 'A' | 'B') => {
-    const suppressed = !renderedTerms.has(term.toLowerCase());
+    const suppressed = !(player === 'A' ? renderedA : renderedB).has(colorTermKey(term));
     const colour = player === 'A'
       ? 'border-player-a-300 dark:border-player-a-800 text-player-a-ink dark:text-player-a-ink-dark hover:bg-player-a-50 dark:hover:bg-player-a-900/30'
       : 'border-player-b-300 dark:border-player-b-800 text-player-b-ink dark:text-player-b-ink-dark hover:bg-player-b-50 dark:hover:bg-player-b-900/30';
