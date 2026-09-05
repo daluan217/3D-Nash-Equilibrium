@@ -2026,12 +2026,13 @@ function testLabelOwnershipResolution() {
   assert(pctPair.a.length === 1 && pctPair.a[0] === '50%' && pctPair.b.length === 1 && pctPair.b[0] === '50',
     `A's "50%" and B's unrelated "50" must both survive with their own spelling — got ${JSON.stringify(pctPair)}`);
   // CJK bracket pairs at the edges fold away like ASCII ones (CodeRabbit #128).
-  for (const [o, c] of [['\u300C', '\u300D'], ['\u300E', '\u300F'], ['\u3008', '\u3009'], ['\u300A', '\u300B'], ['\u3010', '\u3011'], ['\uFF08', '\uFF09'], ['\uFF3B', '\uFF3D']] as const) {
+  for (const [o, c] of [['\u300C', '\u300D'], ['\u300E', '\u300F'], ['\u3008', '\u3009'], ['\u300A', '\u300B'], ['\u3010', '\u3011'], ['\u3014', '\u3015'], ['\uFF08', '\uFF09'], ['\uFF3B', '\uFF3D'], ['\uFF5B', '\uFF5D']] as const) {
     assert(colorTermKey(`${o}Cooperate${c}`) === 'cooperate',
       `a CJK bracket pair ${o}${c} at the edges must fold away — got ${JSON.stringify(colorTermKey(`${o}Cooperate${c}`))}`);
   }
   const cjkPair = cleanUserColorTermPair(['\u300CCooperate\u300D'], ['Cooperate']);
-  assert(cjkPair.a.length === 1 && cjkPair.b.length === 0, `a CJK-bracketed chip owns the bare phrase — got ${JSON.stringify(cjkPair)}`);
+  assert(cjkPair.a.length === 1 && cjkPair.a[0] === '\u300CCooperate\u300D' && cjkPair.b.length === 0,
+    `a CJK-bracketed chip owns the bare phrase and keeps its spelling — got ${JSON.stringify(cjkPair)}`);
   assert(colorTermKey('Cooperate\u3002') === 'cooperate' && colorTermKey('\u00A1Cooperate!') === 'cooperate',
     `non-ASCII edge punctuation (ideographic full stop, inverted exclamation) must fold away — got ${JSON.stringify([colorTermKey('Cooperate\u3002'), colorTermKey('\u00A1Cooperate!')])}`);
 
