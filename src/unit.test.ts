@@ -1995,6 +1995,11 @@ function testLabelOwnershipResolution() {
     `colorTermKey must fold quotes/apostrophes/dashes, strip edge punctuation and lowercase — got ${JSON.stringify([colorTermKey('  “Farmer’s—Market.”  '), colorTermKey('...')])}`);
   assert(cleanUserColorTerms(['...', '!!', 'Cooperate']).length === 1,
     'a punctuation-only chip has nothing to highlight and is dropped');
+  const trailingPair = cleanUserColorTermPair(['Cooperate.'], ['Cooperate']);
+  assert(trailingPair.a.length === 1 && trailingPair.b.length === 0,
+    `trailing punctuation must not let B own a phrase A already holds — got ${JSON.stringify(trailingPair)}`);
+  assert(colorTermKey('Cooperate\u3002') === 'cooperate' && colorTermKey('\u00A1Cooperate!') === 'cooperate',
+    `non-ASCII edge punctuation (ideographic full stop, inverted exclamation) must fold away — got ${JSON.stringify([colorTermKey('Cooperate\u3002'), colorTermKey('\u00A1Cooperate!')])}`);
 
   // The chip itself is never deleted from the record — only its colouring
   // effect is suppressed. `regenKeptColorTerms` (what Keep stores) still

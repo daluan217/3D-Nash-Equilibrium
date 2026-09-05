@@ -118,7 +118,9 @@ export function colorTermKey(t: string): string {
     .replace(/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g, '"')
     .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
     .replace(/\s+/g, ' ')
-    .replace(/^[\s.,;:!?"'()[\]{}\u2026-]+|[\s.,;:!?"'()[\]{}\u2026-]+$/g, '')
+    // \p{P} = every Unicode punctuation class, so an ideographic full stop (。) or
+    // a Devanagari danda at the edge folds away like an ASCII period (CodeRabbit).
+    .replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, '')
     .toLowerCase();
 }
 function normTerm(t: string): string {
