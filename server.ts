@@ -4107,10 +4107,24 @@ async function startServer() {
       if (clientRequestId) {
         const existing = db.games.find(g => g.userId === user.id && g.clientRequestId === clientRequestId);
         if (existing) {
+          // Same attempt, retried. The user may have EDITED the form between
+          // the dropped response and the retry (director probe 2026-09-05:
+          // rename, retry -> the original row came back and the UI showed a
+          // name the user had already changed), so the retry's content wins:
+          // the row is updated in place — never duplicated, never stale.
+          const updated: SavedGame = {
+            ...existing,
+            name: cleanName,
+            description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
+            payoffs: cleanMatrix,
+            ...cleanLabels(req.body),
+            ...cleanColorTerms(req.body, true)
+          };
+          if (!(await saveDBOrFail(db.games.map(g => (g.id === existing.id ? updated : g)), res))) return;
           res.json({
             success: true,
             message: "Game saved successfully!",
-            game: existing
+            game: updated
           });
           return;
         }

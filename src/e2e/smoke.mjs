@@ -2501,6 +2501,11 @@ try {
 
     // Retry: route.continue() from here on (flapped=true), so this really
     // reaches the server — with the SAME clientRequestId as the dropped one.
+    // The user edits the name first: the retry must then UPDATE the row the
+    // dropped write created (one row, carrying the edited name) — neither a
+    // duplicate nor the stale original coming back (director probe 2026-09-05).
+    const editedName = `${gameName}-v2`;
+    await flapPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(editedName);
     await flapPage.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
     await flapPage.waitForTimeout(1200);
     const dialogClosedAfterRetry = !(await flapPage.locator('[role="dialog"][aria-label="Save custom game"]').isVisible({ timeout: 1000 }).catch(() => false));
@@ -2511,18 +2516,22 @@ try {
       const r = await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } });
       return r.json();
     }, authToken);
-    const serverRows = listResp.filter((g) => g.name === gameName);
-    record('FIX: server holds exactly ONE game with this name (the dropped write and the retry deduped)',
-      serverRows.length === 1, `serverCount=${serverRows.length}, ids=${serverRows.map((g) => g.id).join(',')}`);
+    const staleRows = listResp.filter((g) => g.name === gameName);
+    const serverRows = listResp.filter((g) => g.name === editedName);
+    record('FIX: server holds exactly ONE game for this attempt, carrying the EDITED name (dropped write + retry deduped AND updated)',
+      serverRows.length === 1 && staleRows.length === 0,
+      `edited=${serverRows.length} stale=${staleRows.length}, ids=${serverRows.map((g) => g.id).join(',')}`);
 
     await flapPage.reload({ waitUntil: 'networkidle' });
     // Poll rather than a fixed sleep: a fresh reload re-runs the
     // auth/me + games fetch effects from scratch, which can take longer
     // than a short sleep on a busy CI runner.
-    await flapPage.getByRole('button', { name: gameName, exact: true }).first()
+    await flapPage.getByRole('button', { name: editedName, exact: true }).first()
       .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
-    const uiCountAfterReload = await flapPage.getByRole('button', { name: gameName, exact: true }).count();
-    record('FIX: exactly one row visible after a reload too (no duplicate reaches the user)', uiCountAfterReload === 1, `uiCountAfterReload=${uiCountAfterReload}`);
+    const uiCountAfterReload = await flapPage.getByRole('button', { name: editedName, exact: true }).count();
+    const staleUiCount = await flapPage.getByRole('button', { name: gameName, exact: true }).count();
+    record('FIX: exactly one row (the edited name) visible after a reload too — no duplicate, no stale name reaches the user',
+      uiCountAfterReload === 1 && staleUiCount === 0, `edited=${uiCountAfterReload} stale=${staleUiCount}`);
 
     record('no console errors through the flap+retry sequence (net::ERR_CONNECTION_RESET is expected browser noise, filtered)',
       flapConsoleErrors.filter((t) => !/ERR_CONNECTION_RESET/.test(t)).length === 0,

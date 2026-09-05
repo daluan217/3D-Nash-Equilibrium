@@ -324,19 +324,24 @@ try {
       record('POST /api/games with a fresh clientRequestId creates a row',
         first.status === 200 && !!firstGame?.id, `status=${first.status} id=${firstGame?.id}`);
 
+      // The retry carries an EDITED name (the user changed the form between
+      // the dropped response and the retry): same row id, updated content.
       const retry = await call('POST', '/api/games', {
         token,
-        body: { name: 'Idempotency fixture', payoffs: MP, clientRequestId: dupeId },
+        body: { name: 'Idempotency fixture (edited)', payoffs: MP, clientRequestId: dupeId },
       });
       const retryGame = retry.json?.game;
-      record('a retry with the SAME clientRequestId returns the EXISTING row, not a new one',
+      record('a retry with the SAME clientRequestId returns the EXISTING row id, not a new one',
         retry.status === 200 && retryGame?.id === firstGame?.id,
         `firstId=${firstGame?.id} retryId=${retryGame?.id}`);
+      record('...and the row now carries the retry\'s edited content (updated in place, never stale)',
+        retryGame?.name === 'Idempotency fixture (edited)', `name=${retryGame?.name}`);
 
       const afterRetry = await call('GET', '/api/games', { token });
-      const matchingRows = (afterRetry.json || []).filter((g) => g.name === 'Idempotency fixture');
-      record('exactly ONE row exists server-side after the retry (no silent duplicate)',
-        matchingRows.length === 1, `count=${matchingRows.length}`);
+      const matchingRows = (afterRetry.json || []).filter((g) => /^Idempotency fixture/.test(g.name));
+      record('exactly ONE row exists server-side after the retry, with the edited name (no silent duplicate, no stale copy)',
+        matchingRows.length === 1 && matchingRows[0]?.name === 'Idempotency fixture (edited)',
+        `count=${matchingRows.length} names=${matchingRows.map((g) => g.name).join('|')}`);
 
       const distinctId = `int-dupe-${Date.now()}-b`;
       const second = await call('POST', '/api/games', {
