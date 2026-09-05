@@ -1945,11 +1945,17 @@ try {
         null, { timeout: 5000 }).catch(() => {});
     }
     const editButtonFor = (name) => stalePage.getByRole('button', { name: new RegExp(`^Edit ${name}$`) });
-    // The Edit dialog's Name field ALSO carries no label association, and
-    // shares maxlength=40 with the four option-label inputs below it — it is
-    // the FIRST such input in DOM order (Name, then Description, then the
-    // four Option Names), so `.first()` is a stable, real selector here.
-    const editNameField = () => stalePage.locator('[role="dialog"][aria-label="Edit saved game"] input[maxlength="40"]').first();
+    // The Edit dialog's Name field ALSO carries no label association. It is
+    // the FIRST plain-text input in DOM order (Name, then Description as a
+    // textarea, then the four Option Name inputs), so `.first()` on a plain
+    // `input[type="text"]` selector is a stable, real selector here.
+    // RED-APP-9/003 removed the native maxLength attribute this locator used
+    // to key on (App.tsx's Name field is grapheme-safe-clamped via
+    // onBeforeInput/onChange now instead of a bare `maxLength={40}`) — the
+    // selector moves to the type attribute, which every one of the five text
+    // inputs still carries, with position doing the disambiguating work
+    // `maxlength` used to.
+    const editNameField = () => stalePage.locator('[role="dialog"][aria-label="Edit saved game"] input[type="text"]').first();
     await editButtonFor('Stale Game A').click();
     await stalePage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
     const staleRegenBtn = stalePage.getByRole('button', { name: 'Regenerate scenario' });
@@ -1962,6 +1968,19 @@ try {
     const staleRegenSettled = stalePage.waitForResponse(
       (r) => r.url().includes('/api/scenario/regenerate'), { timeout: 15000 },
     );
+    // RED-APP-9 hardening: this promise is deliberately created here but not
+    // awaited until several steps later (that's the whole point — it must
+    // stay pending while B opens). If anything upstream stalls for the full
+    // 15s before the real `.catch()` below is reached (a locator that no
+    // longer matches anything is exactly this shape — found while landing
+    // RED-APP-9/003, which changed what this dialog's Name input looks
+    // like), the promise can reject with ZERO handler attached yet, and
+    // Node's unhandled-rejection detector crashes the whole suite instead of
+    // failing this one section's own assertions. An immediate no-op catch
+    // makes this promise safe to leave floating for however long the steps
+    // in between take, without changing what the real `.catch()` below
+    // observes or how long IT waits.
+    staleRegenSettled.catch(() => {});
     await staleRegenBtn.click();
     await stalePage.waitForFunction(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Regenerate scenario');
@@ -2354,8 +2373,8 @@ try {
   //      underneath, and Cancel closes cleanly (no reload needed either).
   section('38', 'phantom saved-game row after a 404', 1, async () => {
     const twoTabContext = await browser.newContext();
-    const tabA = await twoTabContext.newPage();
-    const tabB = await twoTabContext.newPage();
+    const tabA = trackPage(await twoTabContext.newPage());
+    const tabB = trackPage(await twoTabContext.newPage());
     try {
       const uniq = await registerAndLogin(tabA, 'e9ph');
 
@@ -2439,7 +2458,7 @@ try {
   //      on the retry, so the server must recognize it and return the
   //      original row rather than creating a second one.
   section('39', 'network-flap save does not duplicate', 2, async () => {
-    const flapPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const flapPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const flapConsoleErrors = [];
     flapPage.on('console', (m) => { if (m.type() === 'error') flapConsoleErrors.push(m.text()); });
     flapPage.on('pageerror', (e) => flapConsoleErrors.push(String(e)));
@@ -2554,7 +2573,7 @@ try {
 
     const grContext = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
     try {
-      const grPage = await grContext.newPage();
+      const grPage = trackPage(await grContext.newPage());
       await registerAndLogin(grPage, 'e9gr');
 
       // ── Save dialog ──
@@ -2616,7 +2635,7 @@ try {
   //      smoke: a real PDF, non-empty, no exception, run mid-simulation
   //      exactly as the red's probe6b did.
   section('41', 'print stylesheet', 4, async () => {
-    const printPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const printPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const exitTour = printPage.getByRole('button', { name: /exit tour/i });
     await printPage.goto(BASE, { waitUntil: 'networkidle' });
     if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
