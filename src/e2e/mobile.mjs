@@ -205,6 +205,78 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   await ctx.close();
 }
 
+// ── 1b. camera survives a touch rotate across a redraw (Daniel, 2026-09-05) ─
+// On a phone: pause a run, rotate or zoom with a finger, Resume — the view
+// snapped back to the pre-gesture pose. Plotly emits plotly_relayout for a
+// camera change only on mouse-up and wheel; a touch rotate moves the live GL
+// camera and emits nothing, so every record of the pose went stale and the
+// next Plotly.react (Resume here; also a report arriving, a matrix edit, a
+// theme switch) re-applied it. The fix corrects Plotly's record through a
+// relayout on touchend and before every react. Desktop has no touch, so only
+// a device profile can see this.
+{
+  const ctx = await browser.newContext({ ...devices['Pixel 7'] });
+  const page = await ctx.newPage();
+  page.setDefaultTimeout(120000);
+  const cams = () => page.evaluate((id) => {
+    const el = document.getElementById(id);
+    const r = (v) => (v ? { x: v.x, y: v.y, z: v.z } : null);
+    return { live: r(el?._fullLayout?.scene?._scene?.getCamera?.()?.eye), recorded: r(el?._fullLayout?.scene?.camera?.eye) };
+  }, PLOT);
+  const dist = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : Infinity);
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  record('[touch camera] the guided tour can be dismissed', await dismissTour(page));
+  await page.getByRole('button', { name: /^Run$/ }).tap();
+  await page.waitForTimeout(1500);
+  const plot = page.locator(`#${PLOT}`);
+  const box = await plot.boundingBox();
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2); // a press on the plot pauses the run
+  await page.waitForTimeout(600);
+  const before = await cams();
+  // A one-finger rotate, delivered as touch events on Plotly's own canvas.
+  const canvas = plot.locator('canvas').first();
+  const cb = await canvas.boundingBox();
+  const x0 = cb.x + cb.width / 2, y0 = cb.y + cb.height / 2;
+  const touch = (type, x, y) => canvas.dispatchEvent(type, {
+    touches: type === 'touchend' ? [] : [{ identifier: 1, clientX: x, clientY: y }],
+    changedTouches: [{ identifier: 1, clientX: x, clientY: y }],
+    targetTouches: type === 'touchend' ? [] : [{ identifier: 1, clientX: x, clientY: y }],
+    bubbles: true, cancelable: true, composed: true,
+  });
+  await touch('touchstart', x0, y0);
+  for (let i = 1; i <= 8; i++) { await touch('touchmove', x0 + i * 12, y0 + i * 4); await page.waitForTimeout(30); }
+  await touch('touchend', x0 + 96, y0 + 32);
+  await page.waitForTimeout(500);
+  const after = await cams();
+  record('[touch camera] precondition: the one-finger rotate moved the live camera', dist(before.live, after.live) > 0.05, JSON.stringify(after.live));
+  record('[touch camera] FIX: after the gesture Plotly\'s recorded camera equals the live camera (the touch rotate is recorded)',
+    dist(after.live, after.recorded) < 1e-6, JSON.stringify(after));
+  // The visible snap comes from the next CONSUMER of the recorded pose — the
+  // idle spin's first frame is the deterministic one (it turns about z from
+  // whatever pose it believes the camera has), so resume the spin first.
+  const spinBtn = page.getByRole('button', { name: /resume spinning/i });
+  record('[touch camera] precondition: the idle spin is paused after the gesture (its Resume control is shown)', await spinBtn.isVisible().catch(() => false));
+  await spinBtn.tap().catch(() => {});
+  await page.waitForTimeout(900);
+  const spun = await cams();
+  record('[touch camera] FIX: the idle spin continues from the rotated view (eye.z preserved), not from the stale pre-gesture pose',
+    Math.abs(spun.live.z - after.live.z) < 0.05 && Math.abs(spun.live.z - before.live.z) > 0.3,
+    `afterGesture.z=${after.live.z} afterSpin=${JSON.stringify(spun.live)} before.z=${before.live.z}`);
+  await page.getByRole('button', { name: /^(Resume|Run)$/ }).first().tap();
+  await page.waitForTimeout(2000);
+  const resumed = await cams();
+  // The drag changed the camera's ELEVATION (eye.z); a snap-back restores the
+  // pre-gesture z. The idle spin only turns about z, so z is the invariant to
+  // check — the eye's radius is preserved by a turntable rotate and cannot
+  // tell a kept view from a snapped one (mutation-tested: it passed the snap).
+  record('[touch camera] precondition: the gesture changed the elevation, so a snap-back would be visible in eye.z',
+    Math.abs(after.live.z - before.live.z) > 0.3, `before.z=${before.live.z} afterGesture.z=${after.live.z}`);
+  record('[touch camera] FIX: Resume keeps the rotated view — eye.z stays at the post-gesture elevation, not back at the pre-gesture one',
+    Math.abs(resumed.live.z - after.live.z) < 0.05 && Math.abs(resumed.live.z - before.live.z) > 0.3,
+    `before=${JSON.stringify(before.live)} afterGesture=${JSON.stringify(after.live)} afterResume=${JSON.stringify(resumed.live)}`);
+  await ctx.close();
+}
+
 // ── 2. the compute budget: a phone has far less of it ───────────────────────
 // 4x is Lighthouse's "mobile" setting. The interesting failures here are the
 // ones that make the app unusable rather than merely slower: a first paint that

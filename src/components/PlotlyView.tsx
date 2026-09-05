@@ -91,6 +91,8 @@ export const PLOT_ID = 'plotly-3d-market-simulation';
 export interface CameraPose {
   eye: { x: number; y: number; z: number };
   center?: { x: number; y: number; z: number };
+  /** Camera roll axis; Plotly's default is +z. Read back from the live scene so a rotate that tilted it survives a redraw. */
+  up?: { x: number; y: number; z: number };
 }
 
 /** Where the tour parks the camera. Scene coordinates are normalised about the
@@ -158,6 +160,49 @@ let cameraBusy = false;
 export function isCameraRelayout(eventData: Record<string, unknown> | null | undefined): boolean {
   if (!eventData) return false;
   return Object.keys(eventData).some((k) => k === 'scene.camera' || k.startsWith('scene.camera.'));
+}
+
+/**
+ * The camera the user is LOOKING AT, read from the live GL scene — the only
+ * source that is right on every input path. Plotly emits `plotly_relayout`
+ * for a camera change only on mouse-up and wheel: a one-finger TOUCH rotate
+ * moves the scene's camera and emits nothing (director repro, Pixel 7 profile,
+ * 2026-09-05: live eye moved, `_fullLayout.scene.camera` did not), so a ref
+ * fed by that event goes stale on phones and the next Plotly.react snaps the
+ * view back — on Resume, on a report arriving, on a matrix edit, on a theme
+ * switch. Falls back to Plotly's recorded camera where the scene is not up.
+ */
+export function readLiveCamera(plotId: string): CameraPose | null {
+  const gd = document.getElementById(plotId) as any;
+  const scene = gd?._fullLayout?.scene;
+  const live = scene?._scene?.getCamera?.() ?? scene?.camera;
+  if (!live?.eye) return null;
+  return {
+    eye: { ...live.eye },
+    center: { ...(live.center ?? { x: 0, y: 0, z: 0 }) },
+    up: { ...(live.up ?? { x: 0, y: 0, z: 1 }) },
+  };
+}
+
+/**
+ * Make Plotly's OWN record of the camera agree with the live scene. `uirevision`
+ * keeps `_fullLayout.scene.camera` across a Plotly.react whenever the incoming
+ * layout camera equals the previous input — so writing our ref, or even
+ * `gd.layout`, is not enough after a touch rotate: the stale record wins the
+ * next react. Only a relayout updates the record (it also emits
+ * plotly_relayout, which refreshes cameraRef through the ordinary listener).
+ * Returns true when a correction was needed.
+ */
+export function syncPlotlyCameraToScene(plotId: string): boolean {
+  const Plotly = (window as any).Plotly;
+  const gd = document.getElementById(plotId) as any;
+  const recorded = gd?._fullLayout?.scene?.camera;
+  const live = readLiveCamera(plotId);
+  if (!Plotly || !gd || !live || !recorded?.eye) return false;
+  const same = (a: any, b: any) => !!a && !!b && Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9 && Math.abs(a.z - b.z) < 1e-9;
+  if (same(live.eye, recorded.eye) && same(live.center, recorded.center ?? { x: 0, y: 0, z: 0 }) && same(live.up, recorded.up ?? { x: 0, y: 0, z: 1 })) return false;
+  Plotly.relayout(gd, { 'scene.camera': live });
+  return true;
 }
 
 export function rebindPlotInput(): void {
@@ -445,6 +490,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     const onTouchEnd = () => {
       pinchStartDist.current = null;
       pinchStartEye.current = null;
+      // A one-finger rotate emits no relayout: record where the finger left
+      // the camera in Plotly's own record (the relayout this issues refreshes
+      // cameraRef through the listener), or the next react snaps the view back.
+      syncPlotlyCameraToScene(plotId);
     };
 
     document.addEventListener('touchstart', onTouchStart, true);
@@ -815,6 +864,14 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       }
     }
 
+    // Plotly's record and our ref must reflect what is on screen NOW, not the
+    // last relayout event — a touch rotate emits none (see readLiveCamera).
+    if (document.getElementById(plotId)) {
+      syncPlotlyCameraToScene(plotId);
+      const liveNow = readLiveCamera(plotId);
+      if (liveNow) cameraRef.current = liveNow;
+    }
+
     // Merge custom dynamic interactions into layout
     const layout = {
       ...plotLayout,
@@ -936,13 +993,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
          * eye was ever being stored.
          */
         if (!isCameraRelayout(eventData)) return;
-        const live = (document.getElementById(plotId) as any)?._fullLayout?.scene?.camera;
-        if (!live?.eye) return;
-        cameraRef.current = {
-          eye: { ...live.eye },
-          center: { ...(live.center ?? { x: 0, y: 0, z: 0 }) },
-          up: { ...(live.up ?? { x: 0, y: 0, z: 1 }) },
-        };
+        const live = readLiveCamera(plotId);
+        if (!live) return;
+        cameraRef.current = live;
 
         /*
          * Correct Plotly's OWN memory of the camera, in place.
