@@ -2382,38 +2382,92 @@ try {
     }
     record('precondition: the guided tour is dismissed before the matrix checks below', tourGone);
 
-    const matrix = commaPage.locator('input[inputmode="decimal"][class*="text-center"]');
+    const matrixSelector = 'input[inputmode="decimal"][class*="text-center"]';
+    const matrix = commaPage.locator(matrixSelector);
     const payoffHint = commaPage.locator('[data-testid="payoff-input-hint"]');
+    const HINT_TEXT = 'Use a dot for decimals, not a comma.';
     await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
-    const cell = matrix.nth(1); // a live B-payoff cell; whichever value the default preset holds
-    const before = await cell.inputValue();
-    await cell.click();
-    await cell.fill('');
-    await commaPage.keyboard.type('3,5', { delay: 20 });
-    const midTyping = await cell.inputValue();
-    record('the cell shows exactly what was typed (no live truncation while a comma is present)',
-      midTyping === '3,5', `got "${midTyping}"`);
-    const hintDuringTyping = await payoffHint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
-    record('a hint appears while the field holds an ambiguous comma', hintDuringTyping);
-    await cell.blur();
-    await waitForInputValue(commaPage, 'input[inputmode="decimal"][class*="text-center"]', 1, before, 3000);
-    const afterBlur = await cell.inputValue();
-    record('RED-DESKTOP-9/002 fix: blur reverts the cell to its PREVIOUS value, not a truncated "3"',
-      afterBlur === before, `before="${before}" after="${afterBlur}"`);
-    const hintAfterBlur = await payoffHint.isVisible().catch(() => false);
-    record('the hint is still visible after blur, explaining why the edit was rejected', hintAfterBlur);
-    // Recovery + a positive control: a genuine dotted decimal still commits
-    // normally and clears the hint (this fix must not have made ALL edits
-    // inert, only comma-holding ones).
-    await cell.click();
-    await cell.fill('');
-    await commaPage.keyboard.type('7.5', { delay: 20 });
-    await cell.blur();
-    await waitForInputValue(commaPage, 'input[inputmode="decimal"][class*="text-center"]', 1, '7.5', 3000);
-    const dotCommitted = await cell.inputValue();
-    record('control: a dotted decimal ("7.5") still commits normally', dotCommitted === '7.5', `got "${dotCommitted}"`);
-    const hintClearedAfterValidEdit = !(await payoffHint.isVisible().catch(() => false));
-    record('the hint clears once a valid (comma-free) edit is made', hintClearedAfterValidEdit);
+
+    // Start from a KNOWN preset so the game-state checks have a fixed
+    // reference: Prisoners Dilemma, whose B(1,1) payoff is 3. The first
+    // version of this section relied on whatever the page happened to hold
+    // and typed "3,5" into a cell that already held 3 — so the leading "3"
+    // committing through the ordinary path was invisible, and the check
+    // passed against a fix that did not work. Two guards below make that
+    // impossible now: the fixture asserts the pre-edit value DIFFERS from the
+    // typed leading digit, and the game is read from the Expected-Payoff
+    // panel (computed from the solver's payoffs), not from the input box.
+    const pdButton = commaPage.getByRole('button', { name: 'Prisoners Dilemma', exact: true });
+    await pdButton.click();
+    const cell = matrix.nth(1); // B(1,1) = 3 in Prisoners Dilemma
+    await waitForInputValue(commaPage, matrixSelector, 1, '3', 5000);
+    const presetSelected = async () => ((await pdButton.getAttribute('class')) || '').includes('bg-accent-600');
+    const epPanel = commaPage.getByText('Expected-Payoff Functions', { exact: true }).first().locator('xpath=..');
+    const epSignature = async () => (await epPanel.locator('.katex').allTextContents()).join(' | ');
+    const settle = async (pred) => {
+      for (let i = 0; i < 30; i++) { if (await pred()) return true; await commaPage.waitForTimeout(100); }
+      return pred();
+    };
+
+    async function checkCommaRejected(label, commaInput, leadingDigit) {
+      const before = await cell.inputValue();
+      const gameBefore = await epSignature();
+      const presetBefore = await presetSelected();
+      record(`${label}: fixture guard — pre-edit value "${before}" differs from the typed leading digit ${leadingDigit} (a coincidental pass is impossible)`,
+        Number(before) !== leadingDigit);
+      await cell.click();
+      await cell.fill('');
+      await commaPage.keyboard.type(commaInput, { delay: 20 });
+      const midTyping = await cell.inputValue();
+      record(`${label}: the cell shows exactly what was typed (no live truncation while a comma is present)`,
+        midTyping === commaInput, `got "${midTyping}"`);
+      const hintDuringTyping = await payoffHint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintTextDuringTyping = hintDuringTyping ? await payoffHint.textContent().catch(() => null) : null;
+      record(`${label}: the hint appears with the exact guidance text while the field holds an ambiguous comma`,
+        hintDuringTyping && hintTextDuringTyping === HINT_TEXT, `visible=${hintDuringTyping} text=${JSON.stringify(hintTextDuringTyping)}`);
+      // The leading digit committed through the ordinary path before the comma
+      // arrived. The comma's arrival must UNDO that in the game, not merely
+      // hide it in the box: the Expected-Payoff formula must read exactly as
+      // it did before the edit began, while the cell still shows the comma.
+      const gameRestoredDuring = await settle(async () => (await epSignature()) === gameBefore);
+      record(`${label}: RED-DESKTOP-9/002 fix — the game's payoff is restored the moment the comma appears (Expected-Payoff formula identical to pre-edit)`,
+        gameRestoredDuring, `before=${JSON.stringify(gameBefore)} during=${JSON.stringify(await epSignature())}`);
+      const presetRestored = await settle(async () => (await presetSelected()) === presetBefore);
+      record(`${label}: the active preset is restored with it (Prisoners Dilemma ${presetBefore ? 'still selected' : 'still not selected'}, as before the edit)`, presetRestored);
+      await cell.blur();
+      await waitForInputValue(commaPage, matrixSelector, 1, before, 3000);
+      const afterBlur = await cell.inputValue();
+      record(`${label}: blur reverts the cell to its PRE-EDIT value, not the committed leading digit`,
+        afterBlur === before, `before="${before}" after="${afterBlur}"`);
+      record(`${label}: after blur the game's payoff still equals the pre-edit value`, (await epSignature()) === gameBefore);
+      const hintAfterBlur = await payoffHint.isVisible().catch(() => false);
+      record(`${label}: the hint is still visible after blur, explaining why the edit was rejected`, hintAfterBlur);
+    }
+
+    // Positive control: a genuine dotted decimal still commits normally, reaches
+    // the game, and clears the hint (the fix must not have made ALL edits inert,
+    // only comma-holding ones).
+    async function checkDotCommits(label, dotted) {
+      const gameBefore = await epSignature();
+      await cell.click();
+      await cell.fill('');
+      await commaPage.keyboard.type(dotted, { delay: 20 });
+      await cell.blur();
+      await waitForInputValue(commaPage, matrixSelector, 1, dotted, 3000);
+      const dotCommitted = await cell.inputValue();
+      record(`${label}: control — a dotted decimal ("${dotted}") still commits normally`, dotCommitted === dotted, `got "${dotCommitted}"`);
+      const gameMoved = await settle(async () => (await epSignature()) !== gameBefore);
+      record(`${label}: control — the committed decimal reaches the game (Expected-Payoff formula changed)`, gameMoved);
+      const hintClearedAfterValidEdit = !(await payoffHint.isVisible().catch(() => false));
+      record(`${label}: the hint clears once a valid (comma-free) edit is made`, hintClearedAfterValidEdit);
+    }
+
+    await checkCommaRejected('ASCII comma', '4,5', 4);
+    await checkDotCommits('ASCII comma', '7.5');
+    // Second pass with the U+FF0C FULLWIDTH COMMA glyph (CodeRabbit, this
+    // branch), from the committed 7.5 and with a different leading digit.
+    await checkCommaRejected('fullwidth comma (U+FF0C)', '２，５', 2);
+    await checkDotCommits('fullwidth comma (U+FF0C)', '6.25');
     await commaPage.close();
   });
 

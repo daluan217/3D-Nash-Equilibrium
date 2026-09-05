@@ -1527,6 +1527,13 @@ function testUserColorTerms() {
   assert(orchardResult.ok, 'the red\'s real orchard-grower draw must be accepted, nouns stripped');
   assert(!('actorA' in orchardScenario) && !('actorB' in orchardScenario),
     'the orchard-grower draw\'s non-verbatim noun must be stripped, not left in place');
+  // CodeRabbit (CLI, this branch): the assertion right after the FIRST strip
+  // (nonVerbatimActor, above) only proves the counter reaches 1 — a
+  // regression that increments once and then gets stuck would still pass
+  // that check. Asserting 2 here, after this SECOND independent strip,
+  // proves it is a genuine running counter, not a one-shot flag.
+  assert(getActorNounsStrippedCount() === 2,
+    'the strip-not-reject branch must count every occurrence, not just the first');
 
   const fullReportShape = { ...actorScenario, actorA: ['the warehouse manager'] };
   assert(validateScenario(fullReportShape, MATCHING_PENNIES).ok,

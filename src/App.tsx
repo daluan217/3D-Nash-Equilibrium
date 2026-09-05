@@ -853,6 +853,35 @@ export default function App() {
   // (handleLoadPreset / handleGenerateGame both reset it explicitly).
   const [payoffInputHint, setPayoffInputHint] = useState<{ field: keyof GamePayoffs; message: string } | null>(null);
 
+  /**
+   * RED-DESKTOP-9/002, second half. The comma guard in `updatePayoffField`
+   * refuses a string that CONTAINS a comma — but the user types one character
+   * at a time, so the comma-free PREFIX of "3,5" (the "3") has already gone
+   * through the ordinary branch and committed: payoff changed, preset flipped
+   * to "custom", run reset, plot redrawn — all before the comma ever appears.
+   * The first version of this fix reverted the DISPLAY to `payoffs[field]` on
+   * blur, which by then was that already-committed leading digit; its e2e
+   * check passed only because the fixture's cell happened to hold 3 already.
+   *
+   * So the pre-edit state is captured here, on FOCUS (before any keystroke of
+   * this edit session can run), and restored — payoff AND active preset — the
+   * moment the field turns ambiguous, then again on blur. What cannot be
+   * undone is a run the leading digit already reset; that is the ordinary
+   * consequence of typing a digit into the matrix, and it is visible.
+   */
+  const payoffFieldSnapshotRef = useRef<Partial<Record<keyof GamePayoffs, { value: number; preset: string }>>>({});
+  const handlePayoffFocus = (field: keyof GamePayoffs) => {
+    payoffFieldSnapshotRef.current[field] = { value: payoffs[field], preset: activePreset };
+  };
+  /** Put the GAME back to what it held when this cell was focused, if a comma-free prefix moved it. */
+  const restorePreEditPayoff = (field: keyof GamePayoffs) => {
+    const snap = payoffFieldSnapshotRef.current[field];
+    if (!snap || payoffs[field] === snap.value) return;
+    setPayoffs((prev: GamePayoffs) => ({ ...prev, [field]: snap.value }));
+    setActivePreset(snap.preset);
+    setInitialized(false);
+  };
+
   // Timer ref to reset empty/partial inputs to "0" after 2 seconds of inaction
   const inactiveTimersRef = useRef<Record<string, any>>({});
 
@@ -3693,6 +3722,10 @@ export default function App() {
     if (containsAmbiguousComma(valStr)) {
       setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
       setPayoffInputHint({ field, message: 'Use a dot for decimals, not a comma.' });
+      // The comma-free prefix typed before this comma has already committed;
+      // undo that now, not at blur — the plot and the solver must not spend the
+      // rest of the edit on a value the user never finished typing.
+      restorePreEditPayoff(field);
       return;
     }
     // Clear only a hint THIS field raised — an unrelated valid edit to a
@@ -3758,15 +3791,21 @@ export default function App() {
       clearTimeout(inactiveTimersRef.current[field]);
     }
 
-    // RED-DESKTOP-9/002: a comma-holding field never reached a committed
-    // value in the first place (updatePayoffField's own guard above), so
-    // blur reverts the DISPLAYED text back to the value the game still
-    // holds, rather than falling into commitPayoffInput's ordinary
-    // unparseable-input path (which commits 0 — correct for genuine
-    // garbage, but not what "reject the comma, leave the value alone" means
-    // here). The hint stays up until the user edits the field again.
+    // RED-DESKTOP-9/002: a comma-holding field never committed as typed, so
+    // blur reverts the DISPLAYED text to the value the cell held BEFORE this
+    // edit began — the focus-time snapshot, NOT `payoffs[field]`, which the
+    // comma-free leading digit may already have moved (see
+    // `payoffFieldSnapshotRef`) — rather than falling into
+    // commitPayoffInput's ordinary unparseable-input path (which commits 0:
+    // right for genuine garbage, wrong for "reject the comma, leave the value
+    // alone"). The game itself is re-asserted too, in case the change handler
+    // never saw the comma arrive one keystroke at a time (a single paste of
+    // "3,5" does reach it, but belt and braces costs nothing here). The hint
+    // stays up until the user edits the field again.
     if (containsAmbiguousComma(rawPayoffs[field])) {
-      setRawPayoffs((prev) => ({ ...prev, [field]: String(payoffs[field]) }));
+      const snap = payoffFieldSnapshotRef.current[field];
+      restorePreEditPayoff(field);
+      setRawPayoffs((prev) => ({ ...prev, [field]: String(snap ? snap.value : payoffs[field]) }));
       return;
     }
 
@@ -4277,6 +4316,7 @@ export default function App() {
                   value={rawPayoffs.a11}
                   onChange={(e) => updatePayoffField('a11', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a11')}
                   onBlur={() => handlePayoffBlur('a11')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4288,6 +4328,7 @@ export default function App() {
                   value={rawPayoffs.b11}
                   onChange={(e) => updatePayoffField('b11', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b11')}
                   onBlur={() => handlePayoffBlur('b11')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4300,6 +4341,7 @@ export default function App() {
                   value={rawPayoffs.a12}
                   onChange={(e) => updatePayoffField('a12', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a12')}
                   onBlur={() => handlePayoffBlur('a12')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4311,6 +4353,7 @@ export default function App() {
                   value={rawPayoffs.b12}
                   onChange={(e) => updatePayoffField('b12', e.target.value)}
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b12')}
                   onBlur={() => handlePayoffBlur('b12')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4326,6 +4369,7 @@ export default function App() {
                   value={rawPayoffs.a21}
                   onChange={(e) => updatePayoffField('a21', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a21')}
                   onBlur={() => handlePayoffBlur('a21')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4337,6 +4381,7 @@ export default function App() {
                   value={rawPayoffs.b21}
                   onChange={(e) => updatePayoffField('b21', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b21')}
                   onBlur={() => handlePayoffBlur('b21')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4349,6 +4394,7 @@ export default function App() {
                   value={rawPayoffs.a22}
                   onChange={(e) => updatePayoffField('a22', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
+                  onFocus={() => handlePayoffFocus('a22')}
                   onBlur={() => handlePayoffBlur('a22')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
@@ -4360,6 +4406,7 @@ export default function App() {
                   value={rawPayoffs.b22}
                   onChange={(e) => updatePayoffField('b22', e.target.value)}
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
+                  onFocus={() => handlePayoffFocus('b22')}
                   onBlur={() => handlePayoffBlur('b22')}
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
                 />
