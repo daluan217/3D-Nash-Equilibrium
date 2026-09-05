@@ -382,6 +382,9 @@ jobs:
         env:
           REGEN_TEST_PORT: '3160'
 
+      - name: Scenario fallback reaches the client before its 22-second timeout
+        run: node src/integration/scenario-request-deadline.test.mjs
+
       # RED-REGEN-7/001: two INDEPENDENT PATCH /api/games/:id requests (two
       # tabs/devices), each naming only the colour-term field it changed,
       # each naming the same real-world phrase in a different spelling
