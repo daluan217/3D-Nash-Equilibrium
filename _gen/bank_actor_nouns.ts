@@ -25,7 +25,7 @@
  */
 import 'dotenv/config';
 import { callProvider } from '../src/utils/providers';
-import { actorNounsOk } from '../src/utils/scenarioBank';
+import { actorNounsOk, scenarioIsColourable } from '../src/utils/scenarioBank';
 import { appendFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import type { BankEntry } from '../src/utils/scenarioBank';
 
@@ -203,6 +203,19 @@ const RETRY_FAILED = process.env.NOUNS_RETRY_FAILED === '1';
 const ONLY_NONOUN = process.env.NOUNS_ONLY_NONOUN === '1';
 const hasNoun = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
 
+/**
+ * RED-DESKTOP-9/001 targeted pass: re-attempt ONLY the rows that fail
+ * `scenarioIsColourable` (43 of 2,483 at the time this was added — a row
+ * whose own row/col labels the description never states verbatim AND which
+ * carries no actorA/actorB, so at least one player's half of the story
+ * renders with ZERO colour anywhere). A strict SUBSET of `ONLY_NONOUN`'s
+ * selection (colourability failure implies no usable noun, by definition —
+ * a row WITH a noun that clears `highlightWouldMatch` is colourable on that
+ * side already), so this flag targets the exact, smaller set the fix cares
+ * about rather than re-running the full 645-row no-noun sweep again.
+ */
+const ONLY_UNCOLOURABLE = process.env.NOUNS_ONLY_UNCOLOURABLE === '1';
+
 async function main() {
   const bank: BankEntry[] = JSON.parse(readFileSync(BANK_PATH, 'utf8'));
   const latestByIdx = new Map<number, RawRow>();
@@ -214,7 +227,17 @@ async function main() {
   if (!RESUME && !RETRY_FAILED) writeFileSync(OUT, '');
 
   let targets: Array<{ e: BankEntry; idx: number }>;
-  if (ONLY_NONOUN) {
+  if (ONLY_UNCOLOURABLE) {
+    targets = bank
+      .map((e, idx) => ({ e, idx }))
+      .filter(({ e }) => !scenarioIsColourable(e.s))
+      .filter(({ idx }) => {
+        if (RETRY_FAILED) return latestByIdx.get(idx)?.ok === false;
+        if (RESUME) return !latestByIdx.has(idx);
+        return true;
+      });
+    console.log(`uncolourable re-attempt: ${targets.length} rows (of ${bank.length} total; ${latestByIdx.size} already in ${OUT})`);
+  } else if (ONLY_NONOUN) {
     // The 645 rows whose MERGED bank entry currently carries no noun on either
     // player. A RESUME/RETRY_FAILED-loaded log narrows further so a re-run of
     // this same pass skips idxs already attempted (RESUME) or retries only the
