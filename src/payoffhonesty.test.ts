@@ -54,7 +54,7 @@ import {
 import { buildGroundingPayload } from './utils/report';
 import { validateReport } from './utils/nashValidator';
 import { neValues } from './components/equilibriumPanel';
-import { makeTraces, buildSurfaces } from './utils/plotting';
+import { makeTraces, buildSurfaces, SurfaceData } from './utils/plotting';
 
 let checks = 0;
 function ok(cond: unknown, msg: string): asserts cond {
@@ -1134,27 +1134,275 @@ function testContinuumCornerMarkersVisibleUniqueAndNamed() {
 
 testPayloadAgreesWithPanel();
 function testShortContinuumCollapsesToOneMarker() {
-  // RED-MATH-12/001 (director-fixed): a component shorter than 0.12 draws ONE 2x
-  // outline at its midpoint and no corner markers; a normal segment keeps its
-  // two corner outlines. The red's fixture: segment {x0:0,x1:0.0526,y0:0,y1:0}.
+  // RED-MATH-12/001 (director-fixed): a component shorter than SHORT_CONTINUUM
+  // draws ONE 2x outline at its midpoint and no corner markers; a normal
+  // segment keeps its two corner outlines. The red's fixture: segment
+  // {x0:0,x1:0.0526,y0:0,y1:0}.
+  //
+  // #130 shipped 0.12, a guess between the red's own two measured points
+  // (0.053 fused, 0.2 clearly legible) that was never itself checked against
+  // real render output. BLUE-CONTINUUM-SPEC's screen-space property test
+  // below found real, hand-verified fusion as far up as length 0.1429, so the
+  // threshold moved to 0.2 (the red's own directly-observed safe bound; the
+  // same sweep found zero violations at or above it). The two fixtures below
+  // (0.1905, just BELOW 0.2; 0.2105, just ABOVE) mutation-test the exact
+  // cutoff: reverting it to 0.12 makes the first one wrongly draw 3 markers.
   const SHORT: GamePayoffs = { a11: -5, a12: -8, a21: -3, a22: -8, b11: 9, b12: -9, b21: 1, b22: 2 };
   const LONG: GamePayoffs = { a11: 0, a12: 2, a21: 0, a22: 3, b11: -6, b12: 9, b21: 6, b22: -3 };
+  const JUST_BELOW_02: GamePayoffs = { a11: -9, a12: -5, a21: -9, a22: 9, b11: 7, b12: 3, b21: -9, b22: 8 };
+  const JUST_ABOVE_02: GamePayoffs = { a11: -6, a12: 3, a21: 9, a22: -1, b11: -6, b12: -6, b21: 4, b22: -7 };
   const markers = (g: GamePayoffs) => makeTraces(buildSurfaces(g), g, createInitialState(0.5, 0.5, g), 'both', computeAllNE(g), false, 'shrink')
     .filter((t: any) => t.legendgroup === 'continuumNE' && t.mode === 'markers') as any[];
-  const shortRects = equilibriumSet(SHORT).filter((r) => Math.abs(r.x1 - r.x0) > 1e-9 || Math.abs(r.y1 - r.y0) > 1e-9);
-  ok(shortRects.length === 1 && Math.hypot(shortRects[0].x1 - shortRects[0].x0, shortRects[0].y1 - shortRects[0].y0) < 0.12,
-    `fixture sanity: SHORT has one component shorter than 0.12 (got ${JSON.stringify(shortRects)})`);
+  const lenOf = (g: GamePayoffs) => {
+    const rects = equilibriumSet(g).filter((r) => Math.abs(r.x1 - r.x0) > 1e-9 || Math.abs(r.y1 - r.y0) > 1e-9);
+    ok(rects.length === 1, `fixture sanity: expected exactly one non-point component, got ${JSON.stringify(rects)}`);
+    return Math.hypot(rects[0].x1 - rects[0].x0, rects[0].y1 - rects[0].y0);
+  };
+  ok(lenOf(SHORT) < 0.2, `fixture sanity: SHORT has one component shorter than 0.2 (got length ${lenOf(SHORT)})`);
   const sm = markers(SHORT);
   ok(sm.length === 1, `a short component draws exactly one continuum marker (no corner outlines) — got ${sm.length}`);
   const lm = markers(LONG);
   ok(sm[0].marker.size >= Math.max(...lm.map((t) => t.marker.size)) - 1e-9,
     `the short component's single marker is as large as a corner outline (${sm[0].marker.size} vs ${Math.max(...lm.map((t) => t.marker.size))})`);
   ok(lm.length === 3, `a normal segment still draws midpoint + 2 corners — got ${lm.length}`);
-  console.log('✓ a short continuum component collapses to one enlarged marker; long ones keep their corners');
+
+  ok(lenOf(JUST_BELOW_02) < 0.2 && lenOf(JUST_BELOW_02) > 0.18,
+    `fixture sanity: JUST_BELOW_02 length must be in (0.18, 0.2), got ${lenOf(JUST_BELOW_02)}`);
+  ok(markers(JUST_BELOW_02).length === 1, `a component just below 0.2 must still collapse to one marker — got ${markers(JUST_BELOW_02).length}`);
+  ok(lenOf(JUST_ABOVE_02) >= 0.2 && lenOf(JUST_ABOVE_02) < 0.22,
+    `fixture sanity: JUST_ABOVE_02 length must be in [0.2, 0.22), got ${lenOf(JUST_ABOVE_02)}`);
+  ok(markers(JUST_ABOVE_02).length === 3, `a component just above 0.2 must keep its 2 corners — got ${markers(JUST_ABOVE_02).length}`);
+  console.log('✓ a short continuum component (< 0.2) collapses to one enlarged marker; long ones keep their corners');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5f. docs/CONTINUUM-RENDERING.md's screen-space clause, formalized: no two
+//     continuumNE glyphs DRAWN BY THE SAME 'segment' COMPONENT (corner-vs-
+//     corner, corner-vs-midpoint) may overlap on screen at the app's default
+//     camera. This is exactly the geometry SHORT_CONTINUUM (plotting.ts)
+//     targets (RED-MATH-12/001): marker SIZE is screen-space-fixed, a
+//     component's LENGTH is data-space, and a data-space threshold alone
+//     can't prove the two stay reconciled without projecting one into the
+//     other's terms — which is what this sweep found out the hard way: #130
+//     shipped SHORT_CONTINUUM=0.12 as an unchecked guess between the red's
+//     own two measured points (0.053 fused, 0.2 clearly legible); building
+//     this projection helper and sweeping it found REAL fusion — confirmed by
+//     hand in a real browser screenshot, same "nested flower" pattern as the
+//     original finding — as far up as length 0.1429. plotting.ts now uses 0.2
+//     instead (the red's own directly-observed safe bound); this sweep is the
+//     regression guard, mutation-tested by reverting that one constant.
+//
+// SCOPE: this projection is deliberately approximate (a standard lookAt +
+// pinhole-perspective camera, not a byte-for-byte reproduction of Plotly's
+// WebGL pipeline — that lives only in the real browser, e2e section 47 and
+// round9/review/vis_continuum_shot.mjs) and is validated ONLY for a single
+// 'segment' component's own corner/midpoint pairs (both differ along ONE
+// axis only — the other is pinned). Two independent, hand-verified findings
+// while building this test show it is NOT reliable beyond that scope, so
+// neither is gated here (see docs/CONTINUUM-RENDERING.md's "Known gaps"):
+//  - An 'area' component's 4 corners differ along BOTH axes at once (a true
+//    diagonal). On the full-square fixture (a11=a12=a21=a22, b-values forming
+//    a "diagonal" surface) this helper flagged a -2.6px false-ish reading
+//    driven by a diagonal x+y+z alignment with the view ray, NOT by the
+//    corners actually being close (they're a full domain-width apart) —
+//    excluded below via `kindOf(comps[0]) === 'segment'`.
+//  - A CROSS-component pair (two different components' own markers) shows
+//    the same diagonal-alignment failure mode: on the L-shape fixture
+//    (RED-MATH-11/003's own) this helper flagged the WRONG pair (two 21px
+//    corner markers, 1.0 data-units apart — false positive) while MISSING
+//    the pair a real screenshot shows is actually close (the two
+//    components' own 8.925px midpoint markers project ~1.5 CSS px apart —
+//    borderline but still legible as two diamonds, not one blob; confirmed
+//    by hand: build dist, load a11:-3,a12:4,a21:-3,a22:1,b11:1,b12:1,b21:6,
+//    b22:-2, screenshot `[data-tour="plot"]`, zoom the shared edge). Fixing
+//    either would need `makeTraces` to reason about the live camera, which
+//    it does not do anywhere today — too large a change to make "minimal"
+//    given a projection this test has twice shown to mis-rank diagonal
+//    pairs. RED-MATH-11/003's own EXACT-coincidence cross-component dedup
+//    (shared corners drawn once) is unaffected and stays covered by
+//    `testContinuumCornerMarkersVisibleUniqueAndNamed` above.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** plotting.ts's own default camera/aspect mode — if either changes, the
+ *  calibration below (see docs/CONTINUUM-RENDERING.md) goes stale silently
+ *  unless this guard catches it first. */
+function assertProjectionAssumptionsStillHold() {
+  const src = readFileSync('src/utils/plotting.ts', 'utf8');
+  ok(/camera:\s*\{\s*eye:\s*\{\s*x:\s*1\.6,\s*y:\s*-1\.6,\s*z:\s*1\.1\s*\}\s*\}/.test(src),
+    'plotting.ts\'s default camera.eye must still be (1.6,-1.6,1.1) — the projection helper below is calibrated to it');
+  ok(/aspectmode:\s*'cube'/.test(src),
+    'plotting.ts must still use aspectmode:\'cube\' (independent per-axis normalization) — the helper\'s z-normalization assumes this');
+}
+
+const CAM_EYE = [1.6, -1.6, 1.1];
+const CAM_UP = [0, 0, 1];
+function v3sub(a: number[], b: number[]): number[] { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function v3dot(a: number[], b: number[]): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function v3cross(a: number[], b: number[]): number[] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+function v3norm(a: number[]): number[] { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+const CAM_FWD = v3norm(v3sub([0, 0, 0], CAM_EYE));
+const CAM_RIGHT = v3norm(v3cross(CAM_FWD, CAM_UP));
+const CAM_UP2 = v3cross(CAM_RIGHT, CAM_FWD);
+// FOCAL and the 700x500 canonical viewport are the ONE free calibration knob,
+// chosen so every independently-found real fixture below (not hand-tuned to
+// pass) agrees with real reach evidence: RED-MATH-12/001's own 0.0526-long
+// fused geometry (forced through this same helper, since the shipped code no
+// longer draws it as 3 markers) projects heavily overlapping, and every
+// segment at or above the shipped SHORT_CONTINUUM=0.2 — independently
+// searched, not hand-picked — projects with a positive (non-overlapping) gap.
+const FOCAL = 3;
+const VIEW_W = 700;
+const VIEW_H = 500;
+
+/**
+ * Approximate screen position of a data point (x,y in [0,1]; z in the game's
+ * own payoff units) under the app's default camera. Standard lookAt+pinhole
+ * perspective over aspectmode:'cube' 's own per-axis-independent
+ * normalization: x,y already span [0,1]; z is centered/scaled by the SAME
+ * range `buildSurfaces` produces (what Plotly's zaxis autoranges over).
+ */
+function projectDefaultCamera(x: number, y: number, z: number, zLo: number, zHi: number): [number, number] {
+  const zSpan = (zHi - zLo) || 1e-9;
+  const world = [x - 0.5, y - 0.5, (z - (zLo + zHi) / 2) / zSpan];
+  const rel = v3sub(world, CAM_EYE);
+  const vx = v3dot(rel, CAM_RIGHT);
+  const vy = v3dot(rel, CAM_UP2);
+  const vz = v3dot(rel, CAM_FWD);
+  const sx = (vx / vz) * FOCAL;
+  const sy = (vy / vz) * FOCAL;
+  return [VIEW_W / 2 + sx * (VIEW_W / 2), VIEW_H / 2 - sy * (VIEW_H / 2)];
+}
+
+function zRangeOfSurface(surf: SurfaceData): [number, number] {
+  const all = ([] as number[]).concat(...surf.zA, ...surf.zB);
+  return [Math.min(...all), Math.max(...all)];
+}
+
+/**
+ * Worst (most negative) projected screen-space gap between any two
+ * continuumNE MARKER traces drawn by a game with EXACTLY ONE non-point
+ * component (see SCOPE above) — surface A and surface B (trackingMode
+ * 'both') checked separately, since they're unrelated 3D positions. +Infinity
+ * when fewer than 2 markers exist (the short-collapse path).
+ */
+function worstSingleComponentOverlapPx(traces: any[], zLo: number, zHi: number): number {
+  const markers = traces.filter((t: any) => t.legendgroup === 'continuumNE' && t.mode === 'markers');
+  let worst = Infinity;
+  const surfaces = markers.length && markers[0].x.length > 1 ? [0, 1] : [0];
+  for (const si of surfaces) {
+    const pts = markers.map((t: any) => ({ size: t.marker.size, px: projectDefaultCamera(t.x[si], t.y[si], t.z[si], zLo, zHi) }));
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        const d = Math.hypot(pts[i].px[0] - pts[j].px[0], pts[i].px[1] - pts[j].px[1]);
+        const gap = d - (pts[i].size / 2 + pts[j].size / 2);
+        if (gap < worst) worst = gap;
+      }
+    }
+  }
+  return worst;
+}
+
+const OVERLAP_TOLERANCE_PX = 1;
+
+function testContinuumMarkersDoNotOverlapOnScreen() {
+  assertProjectionAssumptionsStillHold();
+
+  // Sanity/negative control: the helper must actually be ABLE to detect
+  // fusion, or "0 violations" below would be meaningless (measure-before-
+  // shipping — this predicate must be shown to fire on a known-bad shape).
+  // RED-MATH-12/001's own fused geometry (0.0526 long), forced through this
+  // helper WITHOUT the code's isShort collapse (the shipped code refuses to
+  // draw 3 markers this close together — that's the fix being reproduced here
+  // in miniature).
+  const c1 = projectDefaultCamera(0, 0, -8, -9, 9);
+  const mid = projectDefaultCamera(0.0263, 0, -8, -9, 9);
+  const gapSanity = Math.hypot(c1[0] - mid[0], c1[1] - mid[1]) - (21 / 2 + 8.925 / 2);
+  ok(gapSanity < -5,
+    `sanity: the helper must flag RED-MATH-12/001's own fused geometry as heavily overlapping, got gap=${gapSanity.toFixed(2)}px (proves the check below is not vacuous)`);
+
+  // Boundary fixtures: each found by an INDEPENDENT search for a game whose
+  // equilibriumSet has exactly one 'segment' component near a target length
+  // (not hand-tuned to pass), spanning the shipped SHORT_CONTINUUM=0.2's own
+  // boundary — including 0.1429, the exact length this test proved unsafe
+  // under the OLD 0.12 threshold (a real, hand-verified-in-a-browser fusion);
+  // it must now collapse to one marker rather than needing a non-overlap
+  // proof at all.
+  const BOUNDARY_FIXTURES: [string, GamePayoffs, 1 | 3][] = [
+    ['segment length 0.125 (this EXACT game overlapped by -2.90px under the old 0.12 threshold — confirmed by hand in a real browser screenshot: the same "nested flower" fusion as RED-MATH-12/001\'s own finding; must now collapse)',
+      { a11: -1, a12: -7, a21: -3, a22: -7, b11: 6, b12: -1, b21: -9, b22: -8 }, 1],
+    ['segment length 0.1429 (the worst-length real violation found in the 300k sweep under the old 0.12 threshold, -1.23px; must now collapse)',
+      { a11: -6, a12: 1, a21: -7, a22: 7, b11: -4, b12: -4, b21: 4, b22: 2 }, 1],
+    ['segment length 0.1905 (just below 0.2 — collapses to 1 marker)',
+      { a11: -9, a12: -5, a21: -9, a22: 9, b11: 7, b12: 3, b21: -9, b22: 8 }, 1],
+    ['segment length 0.2105 (just above 0.2)',
+      { a11: -6, a12: 3, a21: 9, a22: -1, b11: -6, b12: -6, b21: 4, b22: -7 }, 3],
+    ['segment length 0.25', { a11: 0, a12: 3, a21: -5, a22: 3, b11: -1, b12: -7, b21: 3, b22: 5 }, 3],
+    ['segment length 0.35', { a11: -9, a12: 6, a21: -2, a22: -7, b11: -5, b12: -9, b21: -2, b22: -2 }, 3],
+  ];
+  for (const [label, g, expectMarkers] of BOUNDARY_FIXTURES) {
+    ok(hasContinuum(g), `fixture sanity: "${label}" must have a genuine continuum`);
+    const comps = equilibriumSet(g).filter((r) => kindOf(r) !== 'point');
+    ok(comps.length === 1 && kindOf(comps[0]) === 'segment',
+      `fixture sanity: "${label}" must have exactly one 'segment' component (in-scope for this check) — got ${JSON.stringify(comps)}`);
+    const surf = buildSurfaces(g);
+    const [zLo, zHi] = zRangeOfSurface(surf);
+    const st = createInitialState(0.5, 0.5, g);
+    const traces = makeTraces(surf, g, st, 'both', computeAllNE(g), false, 'shrink');
+    const markerCount = traces.filter((t: any) => t.legendgroup === 'continuumNE' && t.mode === 'markers').length;
+    // The DIRECT contract check: below 0.2 the component must collapse to its
+    // single enlarged marker (no corners to ever overlap); at/above it must
+    // keep drawing all 3 — this is what actually mutation-tests
+    // SHORT_CONTINUUM (revert 0.2 -> 0.12 and the first three rows flip to 3).
+    ok(markerCount === expectMarkers,
+      `"${label}": expected ${expectMarkers} continuumNE marker(s), got ${markerCount}`);
+    const worst = worstSingleComponentOverlapPx(traces, zLo, zHi);
+    ok(worst >= -OVERLAP_TOLERANCE_PX,
+      `"${label}": continuumNE markers overlap by ${(-worst).toFixed(2)}px on screen (tolerance ${OVERLAP_TOLERANCE_PX}px)`);
+  }
+
+  // Reach — the existing 300k int[-9,9] sweep (mulberry32 seed 9001), RESTRICTED
+  // to games whose continuum is exactly one 'segment' component (this check's
+  // validated scope — see SCOPE above): an 'area' component's corners differ
+  // along BOTH axes at once (a true diagonal), which SCOPE above shows this
+  // projection cannot rank reliably, and a game with ≥2 components is left to
+  // the existing exact-dedup coverage. Static plot at the default start point,
+  // no simulation run needed (testContinuumSettledPointAlwaysOnDrawnGlyph
+  // already covers the settled-point/data-space side of the contract).
+  const rng = mk(9001);
+  const N = 300000;
+  let singleComponentGames = 0;
+  let violations = 0;
+  let worstOverall = Infinity;
+  for (let i = 0; i < N; i++) {
+    const cell = () => Math.floor(rng() * 19) - 9;
+    const g: GamePayoffs = {
+      a11: cell(), a12: cell(), a21: cell(), a22: cell(),
+      b11: cell(), b12: cell(), b21: cell(), b22: cell(),
+    };
+    const comps = equilibriumSet(g).filter((r) => kindOf(r) !== 'point');
+    if (comps.length !== 1 || kindOf(comps[0]) !== 'segment') continue;
+    singleComponentGames++;
+    const surf = buildSurfaces(g);
+    const [zLo, zHi] = zRangeOfSurface(surf);
+    const st = createInitialState(0.5, 0.5, g);
+    const traces = makeTraces(surf, g, st, 'both', computeAllNE(g), false, 'shrink');
+    const worst = worstSingleComponentOverlapPx(traces, zLo, zHi);
+    if (worst < worstOverall) worstOverall = worst;
+    if (worst < -OVERLAP_TOLERANCE_PX) violations++;
+  }
+  ok(singleComponentGames > 30000, `corpus too small: only ${singleComponentGames} single-component continuum games found out of ${N}`);
+  ok(violations === 0,
+    `${violations}/${singleComponentGames} single-component continuum games draw overlapping continuumNE markers on screen (worst gap ${worstOverall.toFixed(2)}px)`);
+  console.log(`✓ within one continuum component, corner/midpoint markers never overlap on screen at the default camera: `
+    + `${N} games swept, ${singleComponentGames} single-component, ${BOUNDARY_FIXTURES.length} named boundary fixtures, `
+    + `0 violations (worst real gap ${worstOverall.toFixed(2)}px, tolerance ${OVERLAP_TOLERANCE_PX}px).`);
 }
 
 testContinuumCornerMarkersVisibleUniqueAndNamed();
 testShortContinuumCollapsesToOneMarker();
+testContinuumMarkersDoNotOverlapOnScreen();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();

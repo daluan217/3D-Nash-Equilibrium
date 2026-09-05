@@ -747,12 +747,20 @@ export function makeTraces(
     const mx = (r.x0 + r.x1) / 2;
     const my = (r.y0 + r.y1) / 2;
     // RED-MATH-12/001: marker size is screen-space, the component's length is
-    // data-space. On a SHORT component (2% of continuum games; the red's fixture
-    // is 0.053 long) the two 2x corner outlines and the midpoint marker fused
-    // into one blob. Below this length the component is drawn as ONE 2x outline
-    // at its midpoint (which then covers both corners and the sphere pinned to
-    // either) plus the dashed line; 0.2 was measured clearly legible, 0.053 not.
-    const SHORT_CONTINUUM = 0.12;
+    // data-space. On a SHORT component the two 2x corner outlines and the
+    // midpoint marker fuse into one blob. Below this length the component is
+    // drawn as ONE 2x outline at its midpoint (which then covers both corners
+    // and the sphere pinned to either) plus the dashed line.
+    // #130 shipped 0.12 as a conservative GUESS between the red's own two
+    // measured points (0.053 fused, 0.2 clearly legible) without checking
+    // anywhere in between. BLUE-CONTINUUM-SPEC's screen-space property test
+    // (payoffhonesty.test.ts, projecting corner/midpoint centers through the
+    // real default camera) found real, hand-verified-in-a-real-browser fusion
+    // as far up as length 0.1429 (screenshot: a segment at 0.125 renders as
+    // the SAME nested "flower" blob as the original 0.053 fixture) — 0.12 was
+    // never actually safe. 0.2 is the red's own directly-observed safe bound;
+    // the same sweep finds zero violations at or above it.
+    const SHORT_CONTINUUM = 0.2;
     const isShort = Math.hypot(r.x1 - r.x0, r.y1 - r.y0) < SHORT_CONTINUUM;
     const zAc = EA(mx, my, g);
     const zBc = EB(mx, my, g);
