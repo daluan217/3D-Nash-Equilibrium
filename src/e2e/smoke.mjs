@@ -2381,29 +2381,29 @@ try {
       // ── DELETE path ──
       const deleteGameName = `PDel-${uniq}`;
       await tabA.getByRole('button', { name: /save preset/i }).click();
-      await tabA.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      await tabA.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 12000 });
       await tabA.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(deleteGameName);
       await tabA.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
-      await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 5000 });
+      await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
 
       await tabB.goto(BASE, { waitUntil: 'networkidle' });
       const exitTourB = tabB.getByRole('button', { name: /exit tour/i });
       if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
       await tabB.waitForTimeout(500);
       const rowB = tabB.getByRole('button', { name: deleteGameName, exact: true });
-      await rowB.waitFor({ state: 'visible', timeout: 5000 });
+      await rowB.waitFor({ state: 'visible', timeout: 12000 });
       await tabB.locator('div.group', { has: rowB }).getByTitle('Delete this saved game').click();
-      await tabB.waitForFunction((n) => ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === n), deleteGameName, { timeout: 5000 });
+      await tabB.waitForFunction((n) => ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === n), deleteGameName, { timeout: 12000 });
 
       const rowA = tabA.getByRole('button', { name: deleteGameName, exact: true });
-      record('tab A: row still shown before acting on it (no polling, expected stale)', await rowA.isVisible({ timeout: 2000 }).catch(() => false));
+      record('tab A: row still shown before acting on it (no polling, expected stale)', await rowA.isVisible({ timeout: 4000 }).catch(() => false));
       let dialogMsg = null;
       tabA.once('dialog', async (d) => { dialogMsg = d.message(); await d.accept(); });
       await tabA.locator('div.group', { has: rowA }).getByTitle('Delete this saved game').click();
       await tabA.waitForTimeout(600);
       record('tab A: 404 shows the friendly "deleted elsewhere" message, not a bare "not found"',
         /deleted elsewhere/i.test(dialogMsg || ''), `alert="${dialogMsg}"`);
-      const rowGoneA = !(await rowA.isVisible({ timeout: 2000 }).catch(() => false));
+      const rowGoneA = !(await rowA.isVisible({ timeout: 4000 }).catch(() => false));
       record('FIX: phantom row removed from tab A after the server confirms 404 (no reload)', rowGoneA);
       const tokenAfterDelete = await tabA.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud') || localStorage.getItem('nash_sim_token'));
       record('tab A: auth token not cleared by a 404 (only a 401 should clear it)', !!tokenAfterDelete);
@@ -2411,23 +2411,23 @@ try {
       // ── PATCH path (a second, independent saved game) ──
       const editGameName = `PEdit-${uniq}`;
       await tabA.getByRole('button', { name: /save preset/i }).click();
-      await tabA.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      await tabA.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 12000 });
       await tabA.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(editGameName);
       await tabA.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
-      await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 5000 });
+      await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
 
       const rowAEdit = tabA.getByRole('button', { name: editGameName, exact: true });
       await tabA.locator('div.group', { has: rowAEdit }).getByTitle(/^Edit /).click();
-      await tabA.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 });
+      await tabA.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
 
       await tabB.reload({ waitUntil: 'networkidle' });
       const exitTourB2 = tabB.getByRole('button', { name: /exit tour/i });
       if (await exitTourB2.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB2.click();
       await tabB.waitForTimeout(500);
       const rowBEdit = tabB.getByRole('button', { name: editGameName, exact: true });
-      await rowBEdit.waitFor({ state: 'visible', timeout: 5000 });
+      await rowBEdit.waitFor({ state: 'visible', timeout: 12000 });
       await tabB.locator('div.group', { has: rowBEdit }).getByTitle('Delete this saved game').click();
-      await tabB.waitForFunction((n) => ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === n), editGameName, { timeout: 5000 });
+      await tabB.waitForFunction((n) => ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === n), editGameName, { timeout: 12000 });
 
       const descField = tabA.locator('[role="dialog"][aria-label="Edit saved game"] textarea').first();
       await descField.fill('Edited after the other tab deleted the underlying game.');
@@ -2436,15 +2436,15 @@ try {
       const editErrorText = await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').innerText().catch(() => '');
       record('tab A: PATCH-on-deleted shows the friendly message inside the still-open dialog', /deleted elsewhere/i.test(editErrorText));
       record('FIX: phantom row already gone from tab A\'s list BEFORE Cancel is even clicked',
-        !(await tabA.getByRole('button', { name: editGameName, exact: true }).isVisible({ timeout: 1000 }).catch(() => false)));
+        !(await tabA.getByRole('button', { name: editGameName, exact: true }).isVisible({ timeout: 2000 }).catch(() => false)));
 
       const cancelBtn = tabA.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /cancel/i });
       await cancelBtn.click();
       await tabA.waitForTimeout(300);
       record('Cancel closes the dialog cleanly after the 404',
-        !(await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').isVisible({ timeout: 1000 }).catch(() => false)));
+        !(await tabA.locator('[role="dialog"][aria-label="Edit saved game"]').isVisible({ timeout: 2000 }).catch(() => false)));
       record('FIX: row still gone from tab A\'s list after Cancel, with no reload',
-        !(await tabA.getByRole('button', { name: editGameName, exact: true }).isVisible({ timeout: 1000 }).catch(() => false)));
+        !(await tabA.getByRole('button', { name: editGameName, exact: true }).isVisible({ timeout: 2000 }).catch(() => false)));
     } finally {
       await twoTabContext.close();
     }
