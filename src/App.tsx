@@ -575,6 +575,12 @@ export default function App() {
   // Auth Modal States
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'verify' | 'forgot' | 'reset-password'>('login');
+  // Games saved on this device without an account, offered to the user who
+  // just signed in (RED-DESKTOP-11/001: the server used to move them into
+  // whichever account logged in next, unasked). null = nothing to offer.
+  const [localGamesOffer, setLocalGamesOffer] = useState<{ count: number; token: string } | null>(null);
+  const [localGamesBusy, setLocalGamesBusy] = useState(false);
+  const [localGamesError, setLocalGamesError] = useState('');
 
   // Save Game Modal States
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
@@ -819,6 +825,41 @@ export default function App() {
    * refreshed" is never just a local filter guessing at the truth — it is
    * grounded in a fresh server read every time.
    */
+  /** The user chose to move this device's no-account games into their account. */
+  const adoptLocalGames = async () => {
+    if (!localGamesOffer || localGamesBusy) return;
+    setLocalGamesBusy(true);
+    setLocalGamesError('');
+    // Bounded like the report request (RED-APP-6/003): a stalled connection
+    // must not leave the dialog's buttons disabled forever (CodeRabbit on #132).
+    const controller = new AbortController();
+    const { promise, clear } = fetchWithTimeout(getApiUrl('/api/games/adopt-local'), {
+      method: 'POST',
+      // The token travels explicitly: this runs right after sign-in, before the
+      // authToken state (and authHeaders()) is guaranteed to have caught up.
+      headers: { 'Authorization': `Bearer ${localGamesOffer.token}` },
+    }, controller);
+    try {
+      const res = await promise;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLocalGamesError(data.error || `The move failed (status ${res.status}). Your games are still on this device.`);
+        return;
+      }
+      const moved = typeof data.adopted === 'number' && Number.isInteger(data.adopted) ? data.adopted : 0;
+      setLogEntries(prev => [...prev, `✓ Moved ${moved} saved game${moved === 1 ? '' : 's'} from this device into your account.`]);
+      setLocalGamesOffer(null);
+      await refetchUserGames();
+    } catch (err) {
+      setLocalGamesError(err instanceof DOMException && err.name === 'AbortError'
+        ? 'The server did not answer in time. Your games are still on this device.'
+        : 'Connection error. Your games are still on this device.');
+    } finally {
+      clear();
+      setLocalGamesBusy(false);
+    }
+  };
+
   const refetchUserGames = useCallback(async () => {
     if (!canOwnGames) { gamesFetchSeqRef.current += 1; setUserCustomGames([]); return; }
     // Only the NEWEST request may write the list: a database-mode or owner
@@ -1163,6 +1204,8 @@ export default function App() {
   useModalTabTrap(isAuthModalOpen, authDialogRef);
   useModalTabTrap(isSaveModalOpen, saveDialogRef);
   useModalTabTrap(isEditModalOpen, editDialogRef);
+  const localGamesDialogRef = useRef<HTMLDivElement>(null);
+  useModalTabTrap(!!localGamesOffer, localGamesDialogRef);
 
   // Auto-scroll the logs browser to the bottom on new entries
   useEffect(() => {
@@ -2692,7 +2735,11 @@ export default function App() {
       // topmost layer: the dialog first, the tour only on a second press
       // with nothing else open. Do not stopPropagation when nothing here was
       // open — that Escape press must still reach the tour.
-      if (isFeedbackOpen) { closeFeedback(); e.stopPropagation(); }
+      // The local-games question sits above every other layer (z-[66]) and
+      // opens right after the Account dialog closes, so it is the topmost
+      // candidate; Escape = "leave them on this device", never mid-move.
+      if (localGamesOffer) { if (!localGamesBusy) setLocalGamesOffer(null); e.stopPropagation(); }
+      else if (isFeedbackOpen) { closeFeedback(); e.stopPropagation(); }
       else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); e.stopPropagation(); }
       else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; e.stopPropagation(); }
       // RED-APP-5 001, round 5: the Edit-saved-game dialog was missing from
@@ -2704,7 +2751,7 @@ export default function App() {
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isFeedbackOpen, isSaveModalOpen, isAuthModalOpen, isEditModalOpen]);
+  }, [isFeedbackOpen, isSaveModalOpen, isAuthModalOpen, isEditModalOpen, localGamesOffer, localGamesBusy]);
 
   /**
    * RED-APP-5 finding 004 (round 5): no `aria-live`/`role="status"`/
@@ -2805,6 +2852,14 @@ export default function App() {
           setAuthEmail('');
           setAuthPassword('');
           setLogEntries(prev => [...prev, `✓ Welcome back, @${data.user.username}! Connected to server database.`]);
+          // Desktop only: the server reports how many games were saved on this
+          // device without an account. Nothing moves until the user says so.
+          // Server JSON, not a typed field: accept only an integer count.
+          const localGames: unknown = data.localGames;
+          if (isElectron && typeof localGames === 'number' && Number.isInteger(localGames) && localGames > 0) {
+            setLocalGamesError('');
+            setLocalGamesOffer({ count: localGames, token: data.token });
+          }
         } else if (data.needVerification) {
           setAuthMode('verify');
           setAuthSuccess('Please complete email verification first.');
@@ -5899,6 +5954,56 @@ export default function App() {
           here, because changing the numbers silently invalidates the story
           written about them, which is the exact mismatch the scenario feature
           exists to prevent. Editing a matrix stays a save-as-new operation. */}
+      {localGamesOffer && (
+        <div
+          className="fixed inset-0 z-[66] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
+          onClick={() => { if (!localGamesBusy) setLocalGamesOffer(null); }}
+        >
+          <div
+            ref={localGamesDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Games saved on this device"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[calc(100dvh-2rem)] overflow-y-auto"
+          >
+            <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+              <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
+                <User className="w-4 h-4" />
+              </span>
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Games saved on this device</h3>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              {localGamesOffer.count === 1
+                ? 'One game was saved on this device without an account.'
+                : `${localGamesOffer.count} games were saved on this device without an account.`}
+              {' '}Move {localGamesOffer.count === 1 ? 'it' : 'them'} into your account, or leave {localGamesOffer.count === 1 ? 'it' : 'them'} here for
+              whoever uses this device without signing in.
+            </p>
+            {localGamesError && (
+              <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">{localGamesError}</p>
+            )}
+            <div className="flex flex-col sm:flex-row gap-2 sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setLocalGamesOffer(null)}
+                disabled={localGamesBusy}
+                className="px-4 py-2 text-sm font-semibold rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-50"
+              >
+                Leave {localGamesOffer.count === 1 ? 'it' : 'them'} on this device
+              </button>
+              <button
+                type="button"
+                onClick={adoptLocalGames}
+                disabled={localGamesBusy}
+                className="px-4 py-2 text-sm font-semibold rounded-lg bg-accent-600 hover:bg-accent-700 text-white cursor-pointer disabled:opacity-50"
+              >
+                {localGamesBusy ? 'Moving…' : `Move ${localGamesOffer.count === 1 ? 'it' : 'them'} into my account`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {isEditModalOpen && (
         <div
           // z-[65]: above the guided tour (z-[60]) — see the RED-APP-5 003 note

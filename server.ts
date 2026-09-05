@@ -2041,25 +2041,41 @@ function getGameOwner(req: express.Request): User | null {
   return getAuthUser(req) ?? ensureLocalOwner();
 }
 
+/** How many games on this device belong to the local owner (0 off the desktop). */
+function countLocalGames(db: DB): number {
+  if (!isDesktop()) return 0;
+  return db.games.filter((g) => g.userId === LOCAL_OWNER_ID).length;
+}
+
 /**
- * Sign-in ADOPTS whatever was saved locally.
+ * Move the local owner's games into a signed-in account — ONLY when that user
+ * asked for it (POST /api/games/adopt-local, offered by the client after a
+ * sign-in whose response reported `localGames > 0`).
  *
- * Daniel's call: a local owner who later signs in takes their games with them,
- * exactly as a signed-in user's games already follow them. Without this, using
- * the app before making an account would silently strand that work behind an
- * identity the user can no longer reach.
+ * Daniel's call stands: a local owner who later signs in can take their games
+ * with them, so work done before making an account is never stranded. What
+ * changed (RED-DESKTOP-11/001): the move used to run inside every successful
+ * login with no question asked, which on a shared machine handed one person's
+ * no-account games to whoever signed in next, brand-new accounts included.
+ * There is no identity behind a no-account save to check against, so the only
+ * honest gate is the user's own confirmation.
  *
- * Re-parenting rather than copying, so signing in twice cannot duplicate a
- * library.
+ * Re-parenting rather than copying, so asking twice cannot duplicate a library.
  */
-function adoptLocalGames(userId: string): number {
-  if (!isDesktop() || userId === LOCAL_OWNER_ID) return 0;
-  const db = loadDB();
-  const mine = db.games.filter((g) => g.userId === LOCAL_OWNER_ID);
-  if (!mine.length) return 0;
-  for (const g of mine) g.userId = userId;
-  saveDB(db);
-  return mine.length;
+function adoptLocalGames(db: DB, userId: string): { games: SavedGame[]; adopted: number } {
+  if (!isDesktop() || userId === LOCAL_OWNER_ID) return { games: db.games, adopted: 0 };
+  // A NEW array of NEW objects, never a mutation of the live rows: the route
+  // persists this candidate with saveDBOrFail, which commits it to inMemoryDb
+  // only on a CONFIRMED write. A failed or blocked write must leave the
+  // process serving exactly what db.json still says (CodeRabbit on #132; the
+  // same rule POST/PATCH/DELETE follow).
+  let adopted = 0;
+  const games = db.games.map((g) => {
+    if (g.userId !== LOCAL_OWNER_ID) return g;
+    adopted += 1;
+    return { ...g, userId };
+  });
+  return { games, adopted };
 }
 
 /**
@@ -3813,12 +3829,13 @@ async function startServer() {
       user.passwordHash = hashPassword(password);
       saveDB(db);
     }
-      // A local owner who signs in takes their games with them. Without this,
-      // anything saved before making an account would be stranded behind an
-      // identity the user can no longer reach.
-      const adopted = adoptLocalGames(user.id);
-      if (adopted) console.log(`[auth] adopted ${adopted} local game(s) into ${user.id}`);
-
+    // Signing in never moves games by itself. Until RED-DESKTOP-11/001 this
+    // called adoptLocalGames() unconditionally, so on a shared machine every
+    // game saved without an account went to whichever account logged in NEXT —
+    // a brand-new one included — silently and for good. The response now only
+    // says how many such games exist; the client asks the user, and
+    // POST /api/games/adopt-local moves them on their explicit say-so.
+    const localGames = countLocalGames(db);
 
     res.json({
       success: true,
@@ -3827,7 +3844,8 @@ async function startServer() {
         id: user.id,
         username: user.username,
         email: user.email
-      }
+      },
+      localGames
     });
   });
 
@@ -4284,6 +4302,29 @@ async function startServer() {
   }));
 
   // Delete a Custom Game
+  // Move the games saved on this device without an account into the signed-in
+  // account. Explicit and user-initiated (see adoptLocalGames). Desktop only:
+  // the hosted service has no local owner, so the route does not exist there.
+  app.post("/api/games/adopt-local", rateLimit("games-adopt", 10, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
+    if (!isDesktop()) {
+      return res.status(404).json({ error: "Not found." });
+    }
+    const user = getAuthUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Sign in to move the games saved on this device into an account." });
+    }
+    // Serialized with every other game write: the move reads and rewrites the
+    // whole games array, and a concurrent save must not be lost under it. The
+    // database is read INSIDE the queued function so it sees the last commit.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const { games, adopted } = adoptLocalGames(db, user.id);
+      if (adopted && !(await saveDBOrFail(games, res))) return; // 500 already sent; nothing changed in memory
+      if (adopted) console.log(`[games] ${user.id} moved ${adopted} local game(s) into their account`);
+      res.json({ success: true, adopted });
+    });
+  }));
+
   app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = getGameOwner(req);
     if (!user) {
