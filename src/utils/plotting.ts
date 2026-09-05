@@ -4,7 +4,7 @@
  */
 
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
-import { EA, EB, r3, equilibriumSet, kindOf } from './gameEngine';
+import { EA, EB, r3, equilibriumSet, kindOf, pointInRect } from './gameEngine';
 
 export interface SurfaceData {
   xs: number[];
@@ -571,9 +571,32 @@ export function makeTraces(
   if (trackingMode === 'B' || trackingMode === 'both') drawPaths(s.pathSegmentsB, s.phase1PtsB);
 
   // ── Nash Equilibrium markers ───────────────────────────────────────────────
+  // Computed once, up here, so BOTH the isolated-diamond loop below and the
+  // continuum-marker loop further down (which used to recompute the same
+  // `equilibriumSet(g).filter(...)`) share one list.
+  //
+  // RED-MATH-9/002: on 29,372/29,372 continuum games in a 200k sweep, at
+  // least one `computeAllNE` "pure"/"mixed" point lands INSIDE the same
+  // rectangle the continuum marker already covers (the full-square case —
+  // both players flat — is the sharpest example: 4 solid "Pure NE" diamonds
+  // at the corners of a face where every interior point is equally an
+  // equilibrium). That directly works against the continuum marker's own
+  // stated design intent (see its comment below): a solid, opaque diamond on
+  // top of the exact region the hollow marker exists to say "not a discrete
+  // finding" reintroduces the reading the hollow glyph was built to avoid.
+  // Skip drawing an isolated diamond for any point that is already a member
+  // of a continuum component — the SAME `continuumComponents`/`pointInRect`
+  // classification `splitEquilibriaByContinuum` uses (report.ts, App.tsx's
+  // bullet list) so the plot's markers and the panel's/payload's text can
+  // never disagree about which points are "stray" (get their own marker/
+  // bullet) versus "on the continuum" (represented only by the continuum
+  // marker/bullet).
+  const continuumRects = equilibriumSet(g).filter((r) => kindOf(r) !== 'point');
+  const onContinuum = (ne: NashEquilibrium) => continuumRects.some((r) => pointInRect(r, ne.x, ne.y));
   let pureShown = false;
   let mixedShown = false;
   allNE.forEach(ne => {
+    if (onContinuum(ne)) return;
     if (ne.type === 'pure') {
       if (trackingMode === 'both') {
         // In a symmetric game both surfaces pay the same at a pure NE, so the
@@ -709,7 +732,8 @@ export function makeTraces(
   // same colour as a Mixed NE marker but a distinct open symbol so it never
   // reads as an extra discrete equilibrium the solver found: it marks
   // "a continuum lives here," not a specific point.
-  const continuumRects = equilibriumSet(g).filter((r) => kindOf(r) !== 'point');
+  // `continuumRects` computed once, above (the isolated-diamond loop's
+  // `onContinuum` check reuses it too — RED-MATH-9/002).
   let continuumShown = false;
   continuumRects.forEach((r) => {
     const mx = (r.x0 + r.x1) / 2;
