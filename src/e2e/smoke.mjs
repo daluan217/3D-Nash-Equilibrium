@@ -2350,7 +2350,7 @@ try {
     await undoPage.close();
   });
 
-  // ══ 38. RED-REGEN-3/001 (director-reproduced) — a pre-existing colour-term
+  // ══ 43. RED-REGEN-3/001 (director-reproduced) — a pre-existing colour-term
   //      chip that string-matches a BRAND-NEW, SYMMETRIC option label (a real
   //      option BOTH players can pick, ~19% of the shipped bank) must render
   //      NEUTRAL, not repainted as one player's exclusively — in the regen
