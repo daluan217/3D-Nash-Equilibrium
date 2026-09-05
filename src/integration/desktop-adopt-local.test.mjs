@@ -59,8 +59,12 @@ async function boot(userData, thePort, { desktop }) {
   throw new Error(`server on ${thePort} never came up:\n${log.slice(-800)}`);
 }
 async function stop(srv) {
-  if (!srv) return;
-  await new Promise((resolve) => { srv.child.once('exit', resolve); srv.child.kill('SIGTERM'); setTimeout(() => srv.child.kill('SIGKILL'), 3000); });
+  if (!srv || srv.child.exitCode !== null) return; // never started, or already gone
+  await new Promise((resolve) => {
+    srv.child.once('exit', resolve);
+    if (!srv.child.kill('SIGTERM')) return resolve(); // already dead: no exit event will follow
+    setTimeout(() => { if (srv.child.exitCode === null) srv.child.kill('SIGKILL'); }, 3000).unref();
+  });
 }
 async function call(thePort, method, url, { body, token } = {}) {
   const headers = { 'Content-Type': 'application/json' };
