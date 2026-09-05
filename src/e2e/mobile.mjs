@@ -210,10 +210,11 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
 // snapped back to the pre-gesture pose. Plotly emits plotly_relayout for a
 // camera change only on mouse-up and wheel; a touch rotate moves the live GL
 // camera and emits nothing, so every record of the pose went stale and the
-// next Plotly.react (Resume here; also a report arriving, a matrix edit, a
-// theme switch) re-applied it. The fix corrects Plotly's record through a
-// relayout on touchend and before every react. Desktop has no touch, so only
-// a device profile can see this.
+// next CONSUMER of the record re-applied it — the idle spin's first frame
+// (deterministic), a Plotly.react whose layout camera differs, the tour's
+// glide. The fix corrects Plotly's record through a relayout on touchend and
+// before every react. Desktop has no touch, so only a device profile can see
+// this. All waits are polls on observable camera/app state (CI runners stall).
 {
   const ctx = await browser.newContext({ ...devices['Pixel 7'] });
   const page = await ctx.newPage();
@@ -224,15 +225,39 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
     return { live: r(el?._fullLayout?.scene?._scene?.getCamera?.()?.eye), recorded: r(el?._fullLayout?.scene?.camera?.eye) };
   }, PLOT);
   const dist = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : Infinity);
+  const zOf = (c) => (c && Number.isFinite(c.z) ? c.z : NaN);
+  const settle = async (pred, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await page.waitForTimeout(100); } return pred(); };
+  const isRunning = () => page.evaluate(() =>
+    [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
   await page.goto(BASE, { waitUntil: 'networkidle' });
   record('[touch camera] the guided tour can be dismissed', await dismissTour(page));
+  // A long-running game at the slowest speed, so the run is still going when
+  // the tap lands (the pinch block above does the same).
+  await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().tap().catch(() => {});
+  await page.evaluate(() => {
+    const el = [...document.querySelectorAll('input[type=range]')].find((e) => e.min === '1');
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(el, '1');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   await page.getByRole('button', { name: /^Run$/ }).tap();
-  await page.waitForTimeout(1500);
+  record('[touch camera] precondition: the run is going before the pause tap', await settle(isRunning, 8000));
   const plot = page.locator(`#${PLOT}`);
   const box = await plot.boundingBox();
   await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2); // a press on the plot pauses the run
+  record('[touch camera] precondition: the tap on the plot paused the run', await settle(async () => !(await isRunning()), 5000));
+  const spinBtn = page.getByRole('button', { name: /resume spinning/i });
+  await settle(async () => spinBtn.isVisible().catch(() => false), 5000);
+  // Pausing re-binds Plotly's input controller (rebindPlotInput: a dragmode
+  // relayout). A touchstart that lands inside that re-bind is never seen by
+  // the new controller and the whole gesture is ignored — measured: 0 of 8
+  // touchmoves rotated when the drag began right after the pause, 8 of 8
+  // after a 600 ms quiet period. Nothing observable marks the re-bind's end,
+  // so this one wait is a bounded quiet period, not a state poll.
   await page.waitForTimeout(600);
   const before = await cams();
+  record('[touch camera] precondition: the live scene camera is readable', !!before.live && !!before.recorded, JSON.stringify(before));
   // A one-finger rotate, delivered as touch events on Plotly's own canvas.
   const canvas = plot.locator('canvas').first();
   const cb = await canvas.boundingBox();
@@ -246,34 +271,43 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   await touch('touchstart', x0, y0);
   for (let i = 1; i <= 8; i++) { await touch('touchmove', x0 + i * 12, y0 + i * 4); await page.waitForTimeout(30); }
   await touch('touchend', x0 + 96, y0 + 32);
-  await page.waitForTimeout(500);
+  const moved = await settle(async () => dist(before.live, (await cams()).live) > 0.05, 3000);
+  const recordedCaughtUp = await settle(async () => { const c = await cams(); return dist(c.live, c.recorded) < 1e-6; }, 5000);
   const after = await cams();
-  record('[touch camera] precondition: the one-finger rotate moved the live camera', dist(before.live, after.live) > 0.05, JSON.stringify(after.live));
+  record('[touch camera] precondition: the one-finger rotate moved the live camera', moved, JSON.stringify(after.live));
+  record('[touch camera] precondition: the gesture changed the elevation, so a snap-back would be visible in eye.z',
+    Math.abs(zOf(after.live) - zOf(before.live)) > 0.3, `before.z=${zOf(before.live)} afterGesture.z=${zOf(after.live)}`);
   record('[touch camera] FIX: after the gesture Plotly\'s recorded camera equals the live camera (the touch rotate is recorded)',
-    dist(after.live, after.recorded) < 1e-6, JSON.stringify(after));
+    recordedCaughtUp, JSON.stringify(after));
   // The visible snap comes from the next CONSUMER of the recorded pose — the
   // idle spin's first frame is the deterministic one (it turns about z from
   // whatever pose it believes the camera has), so resume the spin first.
-  const spinBtn = page.getByRole('button', { name: /resume spinning/i });
   record('[touch camera] precondition: the idle spin is paused after the gesture (its Resume control is shown)', await spinBtn.isVisible().catch(() => false));
   await spinBtn.tap().catch(() => {});
-  await page.waitForTimeout(900);
+  const spunAround = await settle(async () => { const c = (await cams()).live; return !!c && Math.hypot(c.x - after.live.x, c.y - after.live.y) > 0.02; }, 5000);
   const spun = await cams();
+  record('[touch camera] precondition: the spin turned the camera about z', spunAround, JSON.stringify(spun.live));
   record('[touch camera] FIX: the idle spin continues from the rotated view (eye.z preserved), not from the stale pre-gesture pose',
-    Math.abs(spun.live.z - after.live.z) < 0.05 && Math.abs(spun.live.z - before.live.z) > 0.3,
-    `afterGesture.z=${after.live.z} afterSpin=${JSON.stringify(spun.live)} before.z=${before.live.z}`);
+    Math.abs(zOf(spun.live) - zOf(after.live)) < 0.05 && Math.abs(zOf(spun.live) - zOf(before.live)) > 0.3,
+    `afterGesture.z=${zOf(after.live)} afterSpin=${JSON.stringify(spun.live)} before.z=${zOf(before.live)}`);
   await page.getByRole('button', { name: /^(Resume|Run)$/ }).first().tap();
-  await page.waitForTimeout(2000);
+  record('[touch camera] precondition: Resume restarted the run', await settle(isRunning, 8000));
+  await settle(async () => false, 1200); // one full redraw cycle of the running sim
   const resumed = await cams();
   // The drag changed the camera's ELEVATION (eye.z); a snap-back restores the
   // pre-gesture z. The idle spin only turns about z, so z is the invariant to
   // check — the eye's radius is preserved by a turntable rotate and cannot
   // tell a kept view from a snapped one (mutation-tested: it passed the snap).
-  record('[touch camera] precondition: the gesture changed the elevation, so a snap-back would be visible in eye.z',
-    Math.abs(after.live.z - before.live.z) > 0.3, `before.z=${before.live.z} afterGesture.z=${after.live.z}`);
   record('[touch camera] FIX: Resume keeps the rotated view — eye.z stays at the post-gesture elevation, not back at the pre-gesture one',
-    Math.abs(resumed.live.z - after.live.z) < 0.05 && Math.abs(resumed.live.z - before.live.z) > 0.3,
+    Math.abs(zOf(resumed.live) - zOf(after.live)) < 0.05 && Math.abs(zOf(resumed.live) - zOf(before.live)) > 0.3,
     `before=${JSON.stringify(before.live)} afterGesture=${JSON.stringify(after.live)} afterResume=${JSON.stringify(resumed.live)}`);
+  // Reset View must still win over the live pose (CodeRabbit, #129).
+  const resetBtn = page.getByRole('button', { name: /reset view/i });
+  if (await resetBtn.isVisible().catch(() => false)) {
+    await resetBtn.tap();
+    const resetLanded = await settle(async () => { const c = (await cams()).live; return !!c && Math.abs(c.z - zOf(after.live)) > 0.3; }, 5000);
+    record('[touch camera] Reset View still resets a touch-rotated camera (the pre-react sync does not undo it)', resetLanded, JSON.stringify((await cams()).live));
+  }
   await ctx.close();
 }
 

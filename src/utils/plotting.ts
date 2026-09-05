@@ -173,6 +173,7 @@ export function makeTraces(
         type: 'scatter3d',
         mode: 'lines',
         name: '_',
+        hoverinfo: 'skip', // RED-MATH-11/002: decorative line, never a hover label
         showlegend: false,
         x: xA,
         y: yA,
@@ -187,6 +188,7 @@ export function makeTraces(
         type: 'scatter3d',
         mode: 'lines',
         name: '_',
+        hoverinfo: 'skip', // RED-MATH-11/002: decorative line, never a hover label
         showlegend: false,
         x: [c[0], c[0]],
         y: [c[1], c[1]],
@@ -540,7 +542,7 @@ export function makeTraces(
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: '_', showlegend: false, legendgroup: 'amoves',
+        name: '_', hoverinfo: 'skip', showlegend: false, legendgroup: 'amoves',
         x: xMerged.xs, y: xMerged.ys, z: xMerged.zs,
         line: { color: xMerged.colors, colorscale: [[0, 'rgb(245,184,184)'], [1, 'rgb(192,57,43)']], width: 4 }
       });
@@ -560,7 +562,7 @@ export function makeTraces(
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: '_', showlegend: false, legendgroup: 'bmoves',
+        name: '_', hoverinfo: 'skip', showlegend: false, legendgroup: 'bmoves',
         x: yMerged.xs, y: yMerged.ys, z: yMerged.zs,
         line: { color: yMerged.colors, colorscale: [[0, 'rgb(184,204,245)'], [1, 'rgb(26,82,118)']], width: 4 }
       });
@@ -637,6 +639,7 @@ export function makeTraces(
           type: 'scatter3d',
           mode: 'lines',
           name: '_',
+          hoverinfo: 'skip', // RED-MATH-11/002: decorative line, never a hover label
           showlegend: false,
           legendgroup: 'pureNE',
           x: lineX,
@@ -694,6 +697,7 @@ export function makeTraces(
           type: 'scatter3d',
           mode: 'lines',
           name: '_',
+          hoverinfo: 'skip', // RED-MATH-11/002: decorative line, never a hover label
           showlegend: false,
           legendgroup: 'mixedNE',
           x: lineX,
@@ -735,6 +739,10 @@ export function makeTraces(
   // `continuumRects` computed once, above (the isolated-diamond loop's
   // `onContinuum` check reuses it too — RED-MATH-9/002).
   let continuumShown = false;
+  // RED-MATH-11/003: corners are deduplicated ACROSS components — two segments
+  // meeting at a shared corner (an L-shaped equilibrium set) drew that corner
+  // twice, one marker per component.
+  const drawnCorners: [number, number][] = [];
   continuumRects.forEach((r) => {
     const mx = (r.x0 + r.x1) / 2;
     const my = (r.y0 + r.y1) / 2;
@@ -744,7 +752,7 @@ export function makeTraces(
     traces.push({
       type: 'scatter3d',
       mode: 'markers',
-      name: continuumShown ? '_' : 'Equilibrium continuum',
+      name: 'Equilibrium continuum',
       showlegend: !continuumShown,
       legendgroup: 'continuumNE',
       x: trackingMode === 'both' ? [mx, mx] : [mx],
@@ -779,8 +787,9 @@ export function makeTraces(
     const cornersRaw: [number, number][] = [[r.x0, r.y0], [r.x0, r.y1], [r.x1, r.y0], [r.x1, r.y1]];
     const corners: [number, number][] = [];
     cornersRaw.forEach(([cx, cy]) => {
-      if (!corners.some(([ex, ey]) => Math.abs(ex - cx) < 1e-9 && Math.abs(ey - cy) < 1e-9)) {
+      if (!drawnCorners.some(([ex, ey]) => Math.abs(ex - cx) < 1e-9 && Math.abs(ey - cy) < 1e-9)) {
         corners.push([cx, cy]);
+        drawnCorners.push([cx, cy]);
       }
     });
     corners.forEach(([ex, ey]) => {
@@ -790,14 +799,20 @@ export function makeTraces(
       traces.push({
         type: 'scatter3d',
         mode: 'markers',
-        name: '_',
+        // RED-MATH-11/002: a real name, so hover never shows a literal "_".
+        name: 'Equilibrium continuum',
         showlegend: false,
         legendgroup: 'continuumNE',
         x: trackingMode === 'both' ? [ex, ex] : [ex],
         y: trackingMode === 'both' ? [ey, ey] : [ey],
         z: trackingMode === 'both' ? [zAe, zBe] : [zValE],
+        // RED-MATH-11/001: the outline must PROTRUDE around the settled sphere
+        // that pins to this very corner (70% of converged continuum runs): the
+        // Pure/Mixed diamonds manage it at ~1.3x the sphere; a thin outline
+        // ring needs more, so 2x diamondSize (~2.6x the sphere; 1.35x still vanished behind the sphere sprite) — 0.85x hid
+        // it completely in both GL backends.
         marker: {
-          size: diamondSize * 0.85, color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
+          size: diamondSize * 2, color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
           line: { color: '#8E44AD', width: 2 },
         },
       });
@@ -821,6 +836,7 @@ export function makeTraces(
         type: 'scatter3d',
         mode: 'lines',
         name: '_',
+        hoverinfo: 'skip', // RED-MATH-11/002: decorative line, never a hover label
         showlegend: false,
         legendgroup: 'continuumNE',
         x: lx,
@@ -876,6 +892,14 @@ export function makeTraces(
     });
   }
 
+  // RED-MATH-11/002: '_' is the legend-dedupe name, never something to show a
+  // user. Any '_'-named trace that did not choose its own hover gets coordinates
+  // only (markers, surfaces) or no hover at all (decorative lines).
+  for (const t of traces as Array<{ name?: string; hoverinfo?: string; mode?: string; type?: string }>) {
+    if (t.name === '_' && t.hoverinfo === undefined) {
+      t.hoverinfo = t.mode === 'markers' || t.type === 'surface' ? 'x+y+z' : 'skip';
+    }
+  }
   return traces;
 }
 

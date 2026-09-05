@@ -1087,7 +1087,16 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         <div className={`w-px h-5 mx-0.5 ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`} />
         <button
           type="button"
-          onClick={() => { cameraRef.current = DEFAULT_CAMERA; setUiRevision(prev => prev + 1); }}
+          onClick={() => {
+            // Reset must move the LIVE scene camera as well as our ref: the
+            // pre-react sync reads the scene, so a ref-only reset would be
+            // overwritten by the rotated live pose (CodeRabbit, #129).
+            const Plotly = (window as any).Plotly;
+            const gd = document.getElementById(plotId) as any;
+            if (Plotly && gd) Plotly.relayout(gd, { 'scene.camera': DEFAULT_CAMERA });
+            cameraRef.current = DEFAULT_CAMERA;
+            setUiRevision(prev => prev + 1);
+          }}
           className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
             isDark
               ? 'text-slate-400 hover:bg-slate-800 hover:text-white border border-transparent'
