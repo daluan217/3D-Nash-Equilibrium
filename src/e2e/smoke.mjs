@@ -3326,7 +3326,96 @@ try {
     await lp.close();
   });
 
-  await executeSections();
+    // ── RED-DESKTOP-11/001: signing in on the desktop must not silently take
+  // another person's no-account games. The server used to re-parent every
+  // local-owner game to whichever account logged in NEXT (brand-new ones
+  // included). Now the user who just signed in is ASKED, and the move happens
+  // only through POST /api/games/adopt-local on their click. Reads state from
+  // the server's own lists and the request log, never from the dialog alone:
+  // a dialog that appears but still moves games unasked would fail here.
+  section('50', 'desktop sign-in offers, never silently moves, the no-account games on this device', 8, async () => {
+    const deskPort = String(Number(PORT) + 1001);
+    const deskBase = `http://127.0.0.1:${deskPort}`;
+    const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-adopt-'));
+    const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
+      cwd: deskData,
+      env: { ...process.env, NODE_ENV: 'production', PORT: deskPort, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: deskData },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    desk.stderr.on('data', () => {});
+    const deskCtx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36',
+    });
+    try {
+      let up = false;
+      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
+      // Person A saves without an account; person B has a brand-new account.
+      const gameName = `Strangers-${Date.now().toString(36)}`;
+      const saved = await (await fetch(deskBase + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: gameName, description: 'saved without an account', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 },
+          row1Label: 'Cooperate', row2Label: 'Defect', col1Label: 'Cooperate', col2Label: 'Defect' }) })).json();
+      record('precondition: the no-account save belongs to the local owner', saved?.game?.userId === 'local-owner', JSON.stringify(saved).slice(0, 120));
+      const email = `b${Date.now().toString(36)}@example.com`;
+      const reg = await fetch(deskBase + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `b${Date.now().toString(36)}`, email, password: 'TestPass123' }) });
+      record('precondition: a brand-new account exists on this device', reg.ok, `status ${reg.status}`);
+
+      const dp = await deskCtx.newPage();
+      const deskErrors = [];
+      dp.on('pageerror', (e) => deskErrors.push(String(e)));
+      dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
+      const adoptCalls = [];
+      dp.on('request', (r) => { if (r.url().includes('/api/games/adopt-local')) adoptCalls.push(r.method()); });
+      await dp.goto(deskBase, { waitUntil: 'networkidle' });
+      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
+      if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false); }
+      record('precondition: the guided tour is dismissed', tourGone);
+      record('before signing in, the no-account sidebar lists the local game',
+        await dp.getByRole('button', { name: gameName, exact: true }).waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
+
+      // B signs in through the real UI.
+      await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+      await dp.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+      await dp.getByPlaceholder(/example\.com or username/i).fill(email);
+      await dp.getByPlaceholder('••••••••').first().fill('TestPass123');
+      await dp.getByRole('button', { name: /^login$/i }).click();
+      const offer = dp.locator('[role="dialog"][aria-label="Games saved on this device"]');
+      record('FIX: after sign-in the app ASKS about the game saved on this device (dialog opens)',
+        await offer.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
+      record('the dialog states the count (one game)', /one game was saved on this device/i.test(await offer.innerText().catch(() => '')));
+      const token = await dp.evaluate(() => localStorage.getItem('nash_sim_token_local'));
+      record('precondition: the session token is stored', typeof token === 'string' && token.length > 0);
+      const mineBefore = await dp.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), token);
+      record("FIX: while the question is open, B's own library is EMPTY — nothing moved on sign-in",
+        Array.isArray(mineBefore) && mineBefore.length === 0, JSON.stringify(mineBefore).slice(0, 120));
+      const anonBefore = await dp.evaluate(async () => (await (await fetch('/api/games')).json()));
+      record("and A's game is still the local owner's", Array.isArray(anonBefore) && anonBefore.length === 1 && anonBefore[0].userId === 'local-owner', JSON.stringify(anonBefore.map((g) => g.userId)));
+      record('no adopt-local request has been sent before the click', adoptCalls.length === 0, JSON.stringify(adoptCalls));
+
+      // B chooses to move it.
+      await offer.getByRole('button', { name: /^move it into my account$/i }).click();
+      record('the dialog closes after the move', await offer.waitFor({ state: 'hidden', timeout: 10000 }).then(() => true).catch(() => false));
+      record('exactly one POST /api/games/adopt-local was sent, by the click', adoptCalls.length === 1 && adoptCalls[0] === 'POST', JSON.stringify(adoptCalls));
+      const mineAfter = await dp.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), token);
+      record("after the explicit move B's library holds the game, owned by B (not local-owner)",
+        Array.isArray(mineAfter) && mineAfter.length === 1 && mineAfter[0].name === gameName && mineAfter[0].userId !== 'local-owner', JSON.stringify(mineAfter.map((g) => [g.name, g.userId])).slice(0, 160));
+      const anonAfter = await dp.evaluate(async () => (await (await fetch('/api/games')).json()));
+      record('the no-account view no longer lists it', Array.isArray(anonAfter) && anonAfter.length === 0, JSON.stringify(anonAfter).slice(0, 80));
+      record("B's sidebar lists the moved game",
+        await dp.getByRole('button', { name: gameName, exact: true }).waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
+      record('the simulation log records the move', /Moved 1 saved game from this device/i.test(await dp.locator('body').innerText().catch(() => '')));
+      record('no console/page errors through sign-in and the move', deskErrors.length === 0, deskErrors.join(' | ').slice(0, 200));
+    } finally {
+      await deskCtx.close().catch(() => {});
+      if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
+      try { rmSync(deskData, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
+await executeSections();
 
 } catch (e) {
   // Capture the failure state BEFORE closing the browser — a click timeout
