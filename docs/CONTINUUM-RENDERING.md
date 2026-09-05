@@ -51,8 +51,11 @@ screen-space marker size, which needs *some* model of the camera. `plotting.ts`'
 `aspectmode: 'cube'` (each axis independently normalized — confirmed by reading the
 source, not assumed). `payoffhonesty.test.ts`'s `projectDefaultCamera` is a standard
 lookAt + pinhole-perspective projection over that same per-axis normalization: x, y
-already span `[0,1]`; z is centered/scaled by the game's own payoff-surface range (what
-Plotly's zaxis autoranges over). `FOCAL = 3` and a canonical 700×500 viewport are the
+already span `[0,1]`; z is centered/scaled by the game's own payoff-surface range, padded
+by the same ±0.3 `makeTraces`' own bounding-box lines add at the extrema (`zRangeOfSurface`
+— what Plotly's zaxis actually autoranges over, not just the bare surface grid;
+CodeRabbit caught this test undercounting it on PR #134). `FOCAL = 3` and a canonical
+700×500 viewport are the
 one free calibration knob, chosen so every independently-found real fixture agrees with
 real reach evidence (below).
 

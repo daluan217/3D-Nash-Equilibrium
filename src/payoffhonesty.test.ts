@@ -1276,8 +1276,12 @@ function projectDefaultCamera(x: number, y: number, z: number, zLo: number, zHi:
 }
 
 function zRangeOfSurface(surf: SurfaceData): [number, number] {
+  // makeTraces' own bounding-box lines sit at the payoff extrema ± 0.3
+  // (plotting.ts ~147-148) and are real traces Plotly's zaxis autoranges
+  // over too — matching that here keeps the z-normalization this helper uses
+  // from silently disagreeing with the real render (CodeRabbit, PR #134).
   const all = ([] as number[]).concat(...surf.zA, ...surf.zB);
-  return [Math.min(...all), Math.max(...all)];
+  return [Math.min(...all) - 0.3, Math.max(...all) + 0.3];
 }
 
 /**
