@@ -808,7 +808,7 @@ export default function App() {
         setLocalGamesError(data.error || `The move failed (status ${res.status}). Your games are still on this device.`);
         return;
       }
-      const moved = Number(data.adopted) || 0;
+      const moved = typeof data.adopted === 'number' && Number.isInteger(data.adopted) ? data.adopted : 0;
       setLogEntries(prev => [...prev, `✓ Moved ${moved} saved game${moved === 1 ? '' : 's'} from this device into your account.`]);
       setLocalGamesOffer(null);
       await refetchUserGames();
@@ -2796,8 +2796,9 @@ export default function App() {
           setLogEntries(prev => [...prev, `✓ Welcome back, @${data.user.username}! Connected to server database.`]);
           // Desktop only: the server reports how many games were saved on this
           // device without an account. Nothing moves until the user says so.
-          const localGames = Number(data.localGames);
-          if (isElectron && Number.isInteger(localGames) && localGames > 0) {
+          // Server JSON, not a typed field: accept only an integer count.
+          const localGames: unknown = data.localGames;
+          if (isElectron && typeof localGames === 'number' && Number.isInteger(localGames) && localGames > 0) {
             setLocalGamesError('');
             setLocalGamesOffer({ count: localGames, token: data.token });
           }
