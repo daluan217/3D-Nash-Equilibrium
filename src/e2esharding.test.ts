@@ -10,7 +10,7 @@ import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
-import { selectSmokeSections } from './e2e/selection.js';
+import { selectSmokeSections, SHARD_COUNT } from './e2e/selection.js';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -28,7 +28,7 @@ function workflowJob(name: string): string {
 }
 
 const definitions = [...smoke.matchAll(
-  /section\('([^']+)',\s*'([^']+)',\s*([1-4]),\s*async\s*\(\)\s*=>/g,
+  /section\('([^']+)',\s*'([^']+)',\s*(\d+),\s*async\s*\(\)\s*=>/g,
 )].map((match) => ({ id: match[1], name: match[2], shard: Number(match[3]) }));
 
 const expectedIds = [
@@ -42,17 +42,31 @@ assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-for (let shard = 1; shard <= 4; shard++) {
+assert.strictEqual(SHARD_COUNT, 12, 'the smoke suite is split into 12 CI shards (test.yml matrix must match)');
+for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   assert(definitions.some((definition) => definition.shard === shard),
     `shard ${shard} must own at least one section`);
+}
+for (const definition of definitions) {
+  assert(definition.shard >= 1 && definition.shard <= SHARD_COUNT, `section ${definition.id} names a shard outside 1..${SHARD_COUNT}`);
+}
+// Balance guard: no shard may carry more than a quarter of the sections (a
+// re-shuffle that piles work onto one shard is the 11-minute shard 1 the split
+// removed). This is deliberately a COUNT bound, not definitions.length /
+// SHARD_COUNT: shards are packed by measured duration, so one shard legitimately
+// holds a single 120 s section while another holds seven short ones.
+const MAX_SECTION_SHARE = 1 / 4;
+for (let shard = 1; shard <= SHARD_COUNT; shard++) {
+  const n = definitions.filter((d) => d.shard === shard).length;
+  assert(n <= Math.ceil(definitions.length * MAX_SECTION_SHARE), `shard ${shard} carries ${n} sections — rebalance by measured duration`);
 }
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
-const historicalShard1Ids = ['1', '5', '6', '14', '21', '23', '27', '33', '38', '42', '43'];
-assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SHARD: '1/4' }).selected.map(({ id }) => id),
+const historicalShard1Ids = ['36', '42'];
+assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SHARD: '1/12' }).selected.map(({ id }) => id),
   historicalShard1Ids,
-  'the CI shard selector must retain its historical section assignment');
+  'the CI shard selector must retain its measured-duration assignment (rebalanced to 12 shards 2026-09-05)');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
   'a local section selector must run exactly the requested H1 regressions');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '999' }), /unknown E2E_SECTION ID/,
@@ -61,7 +75,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/4', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/12', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
@@ -89,11 +103,12 @@ assert.match(workflow, /^\s{2}workflow_dispatch:\s*$/m,
   'Test must remain manually dispatchable');
 assert.match(workflow, /^\s{2}e2e_smoke:\s*$/m,
   'the workflow must retain the smoke matrix job');
-assert.match(workflow, /matrix:\s*\n\s*shard:\s*\[1, 2, 3, 4\]/,
-  'CI must fan smoke out across all four declared shards');
+const matrixList = Array.from({ length: SHARD_COUNT }, (_, i) => i + 1).join(', ');
+assert.match(workflow, new RegExp(`matrix:\\s*\\n\\s*shard:\\s*\\[${matrixList}\\]`),
+  `CI must fan smoke out across all ${SHARD_COUNT} declared shards`);
 assert.match(workflow, /fail-fast:\s*false/,
   'one failed shard must not cancel its siblings or their evidence');
-assert.match(workflow, /E2E_SHARD:\s*\$\{\{ matrix\.shard \}\}\/4/,
+assert.match(workflow, new RegExp(`E2E_SHARD:\\s*\\$\\{\\{ matrix\\.shard \\}\\}/${SHARD_COUNT}`),
   'each matrix child must pass its shard selector to smoke.mjs');
 assert.doesNotMatch(workflow, /elif\s+node\s+src\/e2e\/smoke\.mjs/,
   'CI must never restore the old whole-suite second attempt');
@@ -101,7 +116,7 @@ assert.match(workflow, /^\s{2}e2e:\s*\n\s*name:\s*e2e\s*$/m,
   'the exact branch-protection context `e2e` must remain present');
 assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface\]/,
   'the required e2e context must aggregate both smoke and AI-surface jobs');
-assert.match(workflow, /e2e_smoke_failure_shard-\$\{\{ matrix\.shard \}\}-of-4_section-\*-attempt-\*\.png/,
+assert.match(workflow, new RegExp(`e2e_smoke_failure_shard-\\$\\{\\{ matrix\\.shard \\}\\}-of-${SHARD_COUNT}_section-\\*-attempt-\\*\\.png`),
   'failure evidence must retain every section attempt and remain unique per matrix child');
 
 assert.match(workflow, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
@@ -156,4 +171,4 @@ for (const bad of [undefined, '', '0', '99', '22001', '5000ms', '1e3']) {
     `${JSON.stringify(bad)} must retain the shipping 22-second timeout`);
 }
 
-console.log(`✓ e2e sharding contract: ${definitions.length} named sections across 4 shards, required context preserved`);
+console.log(`✓ e2e sharding contract: ${definitions.length} named sections across ${SHARD_COUNT} shards, required context preserved`);
