@@ -102,6 +102,10 @@ function normTerm(t: string): string {
   return t
     .normalize('NFKC')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    // RED-REGEN-4/001: apostrophe typography is not canonical equivalence — a
+    // curly ’ (U+2019), ‘, ʼ or ′ is the same word to a reader as a straight ',
+    // so a chip and a label that differ only there must still collide.
+    .replace(/[\u2018\u2019\u02BC\u02B9\u2032]/g, "'")
     .trim()
     .toLowerCase();
 }
