@@ -2107,7 +2107,11 @@ export default function App() {
     if (!orig || want.row2Label !== orig.row2) editPatchBody.row2Label = want.row2Label;
     if (!orig || want.col1Label !== orig.col1) editPatchBody.col1Label = want.col1Label;
     if (!orig || want.col2Label !== orig.col2) editPatchBody.col2Label = want.col2Label;
-    if (!orig || !same(editTerms.a, orig.a) || !same(editTerms.b, orig.b)) { editPatchBody.colorTermsA = editTerms.a; editPatchBody.colorTermsB = editTerms.b; }
+    // Each colour-term array on its own: a tab that changed only B must not
+    // resend a stale A (CodeRabbit, #126); the server pairs a lone array
+    // against the stored other side.
+    if (!orig || !same(editTerms.a, orig.a)) editPatchBody.colorTermsA = editTerms.a;
+    if (!orig || !same(editTerms.b, orig.b)) editPatchBody.colorTermsB = editTerms.b;
     if (Object.keys(editPatchBody).length === 1) {
       // Nothing changed: no request, nothing to clobber, dialog just closes.
       setEditError('');

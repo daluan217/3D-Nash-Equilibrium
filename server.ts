@@ -4215,7 +4215,21 @@ async function startServer() {
       // value means "not supplied", but an edit that deliberately empties
       // the box must be able to remove the text.
       if (nextDescription || (allowClear && "description" in req.body)) updatedGame.description = nextDescription;
-      Object.assign(updatedGame, nextLabels, nextTerms);
+      Object.assign(updatedGame, nextLabels);
+      // Colour terms are paired against the STORED other side when only one
+      // array is sent (the Edit dialog sends only what changed, RED-APP-10/001),
+      // so a phrase can never end up owned by both players and a tab that
+      // changed only B never clobbers another tab's change to A.
+      const hasA = "colorTermsA" in (req.body ?? {});
+      const hasB = "colorTermsB" in (req.body ?? {});
+      if (hasA || hasB) {
+        const pair = cleanUserColorTermPair(
+          hasA ? req.body.colorTermsA : (game.colorTermsA ?? []),
+          hasB ? req.body.colorTermsB : (game.colorTermsB ?? []),
+        );
+        if (!hasA || pair.a.length > 0 || allowClear) updatedGame.colorTermsA = pair.a;
+        if (!hasB || pair.b.length > 0 || allowClear) updatedGame.colorTermsB = pair.b;
+      }
       // `users` is NOT part of this candidate — see saveDBAwaited's own
       // comment for why a users snapshot here would race a concurrent,
       // unserialized account write.

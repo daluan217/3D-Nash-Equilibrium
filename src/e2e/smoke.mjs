@@ -3221,6 +3221,30 @@ try {
       g?.row1Label === 'AlphaRow', `row1Label=${JSON.stringify(g?.row1Label)}`);
     record('precondition: the record still carries its name (only changed fields were sent)', g?.name === gameName, JSON.stringify(g?.name));
 
+    // Colour terms, one array per tab (CodeRabbit on #126): tab A files "edited"
+    // under Player A, tab B files "Description" under Player B, both save —
+    // both chips must be stored.
+    await openEdit(tabA);
+    await openEdit(tabB);
+    const chipIn = async (tab, word, player) => {
+      await tab.evaluate(({ w, sel }) => {
+        const ta = document.querySelector(sel);
+        const idx = ta.value.indexOf(w);
+        ta.focus();
+        ta.setSelectionRange(idx, idx + w.length);
+      }, { w: word, sel: '[role="dialog"][aria-label="Edit saved game"] textarea' });
+      await tab.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: player }).click();
+      await tab.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: /^save changes$/i }).click();
+      await tab.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Edit saved game"]'), null, { timeout: 12000 });
+    };
+    await chipIn(tabA, 'edited', 'Player A');
+    await chipIn(tabB, 'Description', 'Player B');
+    const stored2 = await tabA.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), token);
+    const g2 = (stored2 || []).find((x) => x.name === gameName);
+    record('FIX: tab A\'s Player-A chip survived tab B\'s later save of a Player-B chip (colour-term arrays are per field too)',
+      Array.isArray(g2?.colorTermsA) && g2.colorTermsA.includes('edited'), JSON.stringify(g2?.colorTermsA));
+    record('tab B\'s Player-B chip is stored as well', Array.isArray(g2?.colorTermsB) && g2.colorTermsB.includes('Description'), JSON.stringify(g2?.colorTermsB));
+
     // 003: Delete while offline must SAY something.
     await tabA.reload({ waitUntil: 'networkidle' });
     const exitTourA = tabA.getByRole('button', { name: /exit tour/i });
