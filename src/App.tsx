@@ -17,6 +17,9 @@ import {
   buildPolyStr,
   generateRandomGame,
   hasEquilibriumContinuum as computeHasEquilibriumContinuum,
+  splitEquilibriaByContinuum,
+  continuumSettledDescription,
+  fmtProb,
   resolveProfile,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
@@ -1221,9 +1224,22 @@ export default function App() {
   // Equilibrium CONTINUA. computeAllNE enumerates corners plus the interior
   // mixed point, which is the whole truth only when no player has a weak best
   // reply; with a payoff tie the equilibrium set is often a whole edge, and on
-  // ~3 of every 4 tie games the corner list alone under-reports it. These lines
-  // are additive — allNE, the simulation and the plot are untouched.
+  // ~3 of every 4 tie games the corner list alone under-reports it. `allNE`
+  // itself stays untouched — the simulation's best-response dynamics
+  // (doStep, precomputeThinHistory) must keep the full corner list — only the
+  // DISPLAY of it (this panel's bullet list, below, and the plot's markers in
+  // plotting.ts) is split so a point already covered by a continuum is never
+  // ALSO shown as its own separate "Pure/Mixed NE" (RED-MATH-9/002: on every
+  // continuum-having game in a 200k sweep, at least one corner computeAllNE
+  // lists sits inside the same rectangle the continuum marker already
+  // covers).
   const continua = useMemo(() => describeContinua(payoffs), [payoffs]);
+  // The subset of `allNE` NOT already covered by a continuum component — the
+  // only ones that deserve their own separate bullet/diamond. Reuses the
+  // SAME split `report.ts`'s grounding payload already uses (RED-MATH-8/001),
+  // so "which points are stray" can never be answered differently here than
+  // in the payload.
+  const strayNE = useMemo(() => splitEquilibriaByContinuum(payoffs).stray, [payoffs]);
 
   // ── Grounded LLM explanation ───────────────────────────────────────────────
   // On demand, never reactive: payoffs change on every slider drag, so fetching
@@ -1676,6 +1692,20 @@ export default function App() {
     [payoffs, simState]
   );
   const realisedConcept = resolved.concept;
+
+  // RED-MATH-9/001/CodeRabbit: whether the settled point (resolved.x/y) lies
+  // ON an equilibrium continuum — computed ONCE and shared by the aria-live
+  // announcement below AND the visible "Nash Equilibrium Reached" banner
+  // heading, so the two channels can never disagree about the same
+  // convergence. `realisedConcept` alone is NOT a reliable continuum signal:
+  // a continuum can settle exactly at a CORNER (both coordinates vertices,
+  // e.g. the full-flat-payoffs case where all 4 corners are also on the one
+  // continuum) — realisedConcept says 'pure' there, yet the point is still
+  // one of infinitely many, not a discrete finding.
+  const continuumDescAtSettled = useMemo(
+    () => continuumSettledDescription(payoffs, resolved.x, resolved.y),
+    [payoffs, resolved.x, resolved.y]
+  );
 
   // A finished run is STALE the moment the game or the turn order it ran under
   // changes. Gating the box here covers every control at once — the matrix
@@ -2552,12 +2582,25 @@ export default function App() {
     if (phase === 'running') setLiveStatus('Simulation running.');
     else if (phase === 'paused') setLiveStatus('Simulation paused.');
     else if (phase === 'converged') {
-      setLiveStatus(`${realisedConcept === 'mixed' ? 'Mixed' : 'Pure'} strategy Nash equilibrium reached.`);
+      // RED-MATH-9/001: this used to say "Pure"/"Mixed strategy Nash
+      // equilibrium reached" unconditionally — the ONLY channel a
+      // screen-reader user watching a run (rather than reading the static
+      // report panel afterward) gets, and it never mentioned that the
+      // settled point can be one of infinitely many on an equilibrium
+      // continuum (very often nothing but the run's own arbitrary start
+      // value). Shares `continuumDescAtSettled` (computed once, above) with
+      // the visible "Nash Equilibrium Reached" banner heading, so this
+      // announcement can never disagree with the panel's own continuum
+      // bullet OR with what a sighted user reads on screen at the same
+      // moment.
+      setLiveStatus(continuumDescAtSettled
+        ? `Settled on the equilibrium continuum at x=${fmtProb(resolved.x)}, y=${fmtProb(resolved.y)}: ${continuumDescAtSettled}`
+        : `${realisedConcept === 'mixed' ? 'Mixed' : 'Pure'} strategy Nash equilibrium reached.`);
     } else if (phase === 'settled') {
       setLiveStatus('Simulation settled — not a Nash equilibrium.');
     } else setLiveStatus('');
   }, [simState.running, simState.converged, simState.convergedIsNE, simState.stepCount,
-      runStale, nearestNE, realisedConcept]);
+      runStale, nearestNE, realisedConcept, payoffs, resolved.x, resolved.y, continuumDescAtSettled]);
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4816,19 +4859,32 @@ export default function App() {
               best-response path can settle where a player still gains by
               switching, and this box then announced a Nash equilibrium at a
               point with regret 18. Gate on the regret-oracle result. */}
-          {simState.converged && simState.convergedIsNE !== false && !runStale && nearestNE && (
-            <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${realisedConcept === 'mixed'
+          {simState.converged && simState.convergedIsNE !== false && !runStale && nearestNE && (() => {
+            // RED-MATH-9/001/CodeRabbit: the visible banner is the OTHER
+            // dynamic narration channel a sighted user reads the instant a
+            // run converges — same class as the sim log/aria-live wording
+            // above. `realisedConcept` alone can say 'pure' at a settled
+            // point that is STILL on a continuum (both coordinates land
+            // exactly on a corner that a continuum also covers), so this
+            // gates on the SAME `continuumDescAtSettled` the aria-live
+            // announcement uses, never a second, independent check.
+            const onContinuumBanner = !!continuumDescAtSettled;
+            const bannerIsMixedStyle = onContinuumBanner || realisedConcept === 'mixed';
+            return (
+            <div className={`p-5 rounded-2xl border flex flex-col gap-3 shadow-xs animate-fade-in ${bannerIsMixedStyle
                 ? 'bg-ne-mixed-50 dark:bg-ne-mixed-950/20 border-ne-mixed-200 dark:border-ne-mixed-800/60'
                 : 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60'
               }`}>
               <div className="flex items-center gap-2">
-                <span className={`p-1.5 rounded-lg ${realisedConcept === 'mixed' ? 'bg-ne-mixed-100 dark:bg-ne-mixed-900/60 text-ne-mixed-700 dark:text-ne-mixed-300' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+                <span className={`p-1.5 rounded-lg ${bannerIsMixedStyle ? 'bg-ne-mixed-100 dark:bg-ne-mixed-900/60 text-ne-mixed-700 dark:text-ne-mixed-300' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
                   }`}>
                   <Award className="w-5 h-5" />
                 </span>
-                <span className={`text-sm font-bold uppercase tracking-wider ${realisedConcept === 'mixed' ? 'text-ne-mixed-900 dark:text-ne-mixed-200' : 'text-emerald-900 dark:text-emerald-200'
+                <span className={`text-sm font-bold uppercase tracking-wider ${bannerIsMixedStyle ? 'text-ne-mixed-900 dark:text-ne-mixed-200' : 'text-emerald-900 dark:text-emerald-200'
                   }`}>
-                  {realisedConcept === 'mixed' ? 'Mixed' : 'Pure'} Strategy Nash Equilibrium Reached
+                  {onContinuumBanner
+                    ? 'Settled on the Equilibrium Continuum'
+                    : `${realisedConcept === 'mixed' ? 'Mixed' : 'Pure'} Strategy Nash Equilibrium Reached`}
                 </span>
               </div>
 
@@ -4929,7 +4985,8 @@ export default function App() {
                 )}
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* Game situation description box */}
           <div ref={reportPanelRef} className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300 h-fit">
@@ -4942,7 +4999,11 @@ export default function App() {
               <div data-tour="ne">
                 <strong className="text-slate-700 dark:text-slate-200">Calculated Nash Equilibria:</strong>
                 <ul className="list-disc pl-5 mt-1 text-slate-600 dark:text-slate-300 space-y-1">
-                  {allNE.map((ne, idx) => (
+                  {/* strayNE, not allNE (RED-MATH-9/002): a point already
+                      covered by a continuum bullet below gets no separate
+                      "Pure/Mixed NE" bullet of its own — it is no more
+                      special than any other point on that same component. */}
+                  {strayNE.map((ne, idx) => (
                     <li key={idx}>
                       {/* ColorCoded inside: nested spans recolor the Row/Col
                           and coordinate pieces while the outer class keeps
@@ -4961,7 +5022,7 @@ export default function App() {
                       <ColorCoded text={line} />
                     </li>
                   ))}
-                  {allNE.length === 0 && continua.length === 0 && (
+                  {strayNE.length === 0 && continua.length === 0 && (
                     <li className="text-rose-500 font-medium">No standard NE found in real dimensions.</li>
                   )}
                 </ul>

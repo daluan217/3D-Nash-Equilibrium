@@ -853,20 +853,25 @@ export function splitEquilibriaByContinuum(g: GamePayoffs): { onContinuum: NashE
 }
 
 /**
- * Plain-language description of the equilibrium COMPONENTS that the corner
- * model cannot express — the segments and areas returned by equilibriumSet.
- * Isolated points are already listed by computeAllNE, so they are skipped:
- * this exists to stop the report from silently under-reporting a continuum
- * (a whole edge is an equilibrium set on 3 of every 4 games with a payoff tie).
- * x = P(A plays Row 1), y = P(B plays Col 1), matching computeAllNE's labels.
+ * Plain-language description of ONE continuum component (a segment or area
+ * from equilibriumSet). Extracted from `describeContinua` (RED-MATH-9/001) so
+ * a caller who only has the ONE component a specific settled point landed on
+ * — `continuumSettledDescription`/`formatConvergenceLogLine` below, used by
+ * the sim log and the aria-live announcement — can quote the exact same
+ * wording `describeContinua` produces for that component, verbatim. Before
+ * this split those two callers would have had to reimplement the phrasing
+ * (and could drift from it); now there is exactly one place this sentence is
+ * built, so the log/aria-live text can never disagree with the panel's own
+ * continuum bullet for the same component.
+ *
+ * Use the SHARED formatter. This function carried its own copy, so every
+ * invariant won for `tieProse` and the solver label skipped it: pct(0.00049975)
+ * returned "0", and the line then claimed "x anywhere from 0 to 1" on a set
+ * that starts at 0.00049975 — at (0,1) regretB is 0.1, so the stated interval
+ * began at a NON-equilibrium. Found by an adversarial red team; 3.3% of random
+ * 3-dp matrices with a continuum print an interior coordinate as 0 or 1.
  */
-export function describeContinua(g: GamePayoffs): string[] {
-  // Use the SHARED formatter. This function carried its own copy, so every
-  // invariant won for `tieProse` and the solver label skipped it: pct(0.00049975)
-  // returned "0", and the line then claimed "x anywhere from 0 to 1" on a set
-  // that starts at 0.00049975 — at (0,1) regretB is 0.1, so the stated interval
-  // began at a NON-equilibrium. Found by an adversarial red team; 3.3% of random
-  // 3-dp matrices with a continuum print an interior coordinate as 0 or 1.
+function describeContinuumRect(r: Rect): string {
   const pct = fmtProb;
   // `fmtProb` may return a THRESHOLD phrase rather than a number, which reads
   // wrong after "=" ("y = less than 0.001"). Use a preposition in that form.
@@ -878,30 +883,86 @@ export function describeContinua(g: GamePayoffs): string[] {
   };
   const fixedRow = (x: number) => `Row ${x === 1 ? '1' : '2'}`;
   const fixedCol = (y: number) => `Col ${y === 1 ? '1' : '2'}`;
-  const out: string[] = [];
-  for (const r of equilibriumSet(g)) {
-    const kind = kindOf(r);
-    if (kind === 'point') continue;
-    if (kind === 'area') {
-      out.push('Every pair of mixtures in the whole [0, 1] × [0, 1] space is an equilibrium — both players are indifferent everywhere.');
-      continue;
-    }
-    const xFixed = r.x1 - r.x0 < NE_EPS;
-    if (xFixed) {
-      const aPart = r.x0 === 0 || r.x0 === 1 ? `A plays ${fixedRow(r.x0)}` : `A mixes at ${at('x', r.x0)}`;
-      const bPart = r.y0 === 0 && r.y1 === 1
-        ? 'B plays ANY mixture (y anywhere in [0, 1])'
-        : `B mixes with y anywhere from ${pct(r.y0)} to ${pct(r.y1)}`;
-      out.push(`A continuum of equilibria: ${aPart} while ${bPart}.`);
-    } else {
-      const bPart = r.y0 === 0 || r.y0 === 1 ? `B plays ${fixedCol(r.y0)}` : `B mixes at ${at('y', r.y0)}`;
-      const aPart = r.x0 === 0 && r.x1 === 1
-        ? 'A plays ANY mixture (x anywhere in [0, 1])'
-        : `A mixes with x anywhere from ${pct(r.x0)} to ${pct(r.x1)}`;
-      out.push(`A continuum of equilibria: ${bPart} while ${aPart}.`);
-    }
+  const kind = kindOf(r);
+  if (kind === 'area') {
+    return 'Every pair of mixtures in the whole [0, 1] × [0, 1] space is an equilibrium — both players are indifferent everywhere.';
   }
-  return out;
+  const xFixed = r.x1 - r.x0 < NE_EPS;
+  if (xFixed) {
+    const aPart = r.x0 === 0 || r.x0 === 1 ? `A plays ${fixedRow(r.x0)}` : `A mixes at ${at('x', r.x0)}`;
+    const bPart = r.y0 === 0 && r.y1 === 1
+      ? 'B plays ANY mixture (y anywhere in [0, 1])'
+      : `B mixes with y anywhere from ${pct(r.y0)} to ${pct(r.y1)}`;
+    return `A continuum of equilibria: ${aPart} while ${bPart}.`;
+  }
+  const bPart = r.y0 === 0 || r.y0 === 1 ? `B plays ${fixedCol(r.y0)}` : `B mixes at ${at('y', r.y0)}`;
+  const aPart = r.x0 === 0 && r.x1 === 1
+    ? 'A plays ANY mixture (x anywhere in [0, 1])'
+    : `A mixes with x anywhere from ${pct(r.x0)} to ${pct(r.x1)}`;
+  return `A continuum of equilibria: ${bPart} while ${aPart}.`;
+}
+
+/**
+ * Plain-language description of the equilibrium COMPONENTS that the corner
+ * model cannot express — the segments and areas returned by equilibriumSet.
+ * Isolated points are already listed by computeAllNE, so they are skipped:
+ * this exists to stop the report from silently under-reporting a continuum
+ * (a whole edge is an equilibrium set on 3 of every 4 games with a payoff tie).
+ * x = P(A plays Row 1), y = P(B plays Col 1), matching computeAllNE's labels.
+ */
+export function describeContinua(g: GamePayoffs): string[] {
+  return equilibriumSet(g).filter((r) => kindOf(r) !== 'point').map(describeContinuumRect);
+}
+
+/**
+ * RED-MATH-9/001: the ONE place left that assumed a converged run's settled
+ * point is a discrete, singled-out equilibrium — the simulation log's
+ * convergence line and App.tsx's aria-live announcement. #101/#105 unified
+ * the payload/panel/MenuDrawer/tieProse renderings on `hasEquilibriumContinuum`/
+ * `describeContinua`; those two DYNAMIC narration channels were never
+ * touched, so a run that settles ON a continuum (very often at nothing but
+ * the user's own arbitrary start coordinate — see the finding) still
+ * announced a definite "Pure NE: x=…, y=…" with no hint that every other
+ * point on the same component is an equally valid equilibrium.
+ *
+ * Returns the ONE continuum component's description (via the shared
+ * `describeContinuumRect`, so it is byte-identical to the panel's own bullet
+ * for that component) when (x, y) lies on a continuum, else null — the
+ * caller keeps its existing Pure/Mixed wording in the null case.
+ */
+export function continuumSettledDescription(g: GamePayoffs, x: number, y: number): string | null {
+  const r = continuumComponents(g).find((rect) => pointInRect(rect, x, y));
+  return r ? describeContinuumRect(r) : null;
+}
+
+/**
+ * The simulation log's / aria-live announcement's SHARED convergence-line
+ * formatter — a PURE function of the game and the settled coordinate, so
+ * `doStep`'s two convergence branches and App.tsx's aria-live effect can
+ * share the exact same wording instead of each inlining their own copy (the
+ * pre-fix shape: both branches hardcoded "Pure"/"Mixed NE: x=…" with no
+ * continuum check). `x`/`y`/`eA`/`eB` are the EXACT (unrounded) values — the
+ * one contract every renderer in this file follows (RED-MATH-6/001):
+ * `fmtProb`/`fmtPayoff` are applied here, never before the call.
+ */
+export function formatConvergenceLogLine(
+  g: GamePayoffs,
+  x: number,
+  y: number,
+  convergedIsNE: boolean,
+  eA: number,
+  eB: number,
+  regretMax: number
+): string {
+  const payoffTail = `E[A]=${fmtPayoff(eA)}  E[B]=${fmtPayoff(eB)}`;
+  if (!convergedIsNE) {
+    return `━━ Settled at x=${fmtProb(x)}, y=${fmtProb(y)} — NOT an equilibrium (a player still gains ${regretMax.toFixed(3)} by switching)  ${payoffTail}`;
+  }
+  const continuumDesc = continuumSettledDescription(g, x, y);
+  if (continuumDesc) {
+    return `━━ Settled on the equilibrium continuum at x=${fmtProb(x)}, y=${fmtProb(y)}: ${continuumDesc}  ${payoffTail}`;
+  }
+  return `━━ ${profileConcept(x, y) === 'pure' ? 'Pure' : 'Mixed'} NE: x=${fmtProb(x)}, y=${fmtProb(y)}  ${payoffTail}`;
 }
 
 // ── Random game generation ───────────────────────────────────────────────────
@@ -1745,24 +1806,33 @@ export function doStep(
     // point before the opponent ever responds.
     if (s.stepCount >= 2 && dx < 0.0003 && dy < 0.0003) {
       s.converged = true;
-      // fmtPayoff, not `.toFixed(3)` on an r3-pre-rounded value — see
-      // RED-MATH-6/001 and the identical fix in the per-step line above.
-      // Evaluated at the same (s.cx, s.cy) already used for the x=/y= wording
-      // below, so the headline's coordinates and payoffs describe one point.
-      const finalEA = EA(s.cx, s.cy, g);
-      const finalEB = EB(s.cx, s.cy, g);
       // STATIONARY IS NOT EQUILIBRIUM. Check the independent regret oracle
       // before using the words "Nash equilibrium": the path can go stationary
       // at a point a player would leave (regret 18 on the fixture in types.ts).
       const rq = Math.max(Math.abs(regretA(s.cx, s.cy, g)), Math.abs(regretB(s.cx, s.cy, g)));
       s.convergedIsNE = Math.abs(regretA(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'A')
         && Math.abs(regretB(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'B');
+      // CodeRabbit (round 9): the headline's coordinates/payoffs, and the
+      // continuum-membership check inside formatConvergenceLogLine, must use
+      // the EXACT (s.exactX/s.exactY), not the r3-rounded (s.cx/s.cy),
+      // coordinate. `pointInRect`'s tolerance (NE_EPS = 1e-9) is far tighter
+      // than r3's rounding error (up to 5e-4), so a point that is genuinely
+      // ON a continuum's boundary in the exact coordinate could round to
+      // just outside it and be silently misclassified as a stray point —
+      // the same "decide from exact, display from rounded" contract
+      // `resolveProfile`/the mixed branch below already follow.
+      // fmtPayoff, not `.toFixed(3)` on an r3-pre-rounded value — see
+      // RED-MATH-6/001 and the identical fix in the per-step line above.
+      const finalEA = EA(s.exactX, s.exactY, g);
+      const finalEB = EB(s.exactX, s.exactY, g);
       // The noun comes from WHERE IT LANDED, not from the fact that this is the
       // pure/shrink branch. This path can converge onto a continuum at a
-      // strictly interior probability, where "Pure NE" is simply false.
-      addLog(s.convergedIsNE
-        ? `━━ ${profileConcept(s.cx, s.cy) === 'pure' ? 'Pure' : 'Mixed'} NE: x=${fmtProb(s.cx)}, y=${fmtProb(s.cy)}  E[A]=${fmtPayoff(finalEA)}  E[B]=${fmtPayoff(finalEB)}`
-        : `━━ Settled at x=${fmtProb(s.cx)}, y=${fmtProb(s.cy)} — NOT an equilibrium (a player still gains ${rq.toFixed(3)} by switching)  E[A]=${fmtPayoff(finalEA)}  E[B]=${fmtPayoff(finalEB)}`);
+      // strictly interior probability, where "Pure NE" is simply false —
+      // and RED-MATH-9/001 found it can ALSO land, un-flagged, on a point
+      // that is one of infinitely many on a continuum component (very often
+      // nothing but the run's own arbitrary start value). Shared formatter
+      // so this line can never disagree with the panel's own continuum text.
+      addLog(formatConvergenceLogLine(g, s.exactX, s.exactY, s.convergedIsNE, finalEA, finalEB, rq));
       onConverged();
       return;
     }
@@ -1786,17 +1856,16 @@ export function doStep(
       const exact = computeMixedNE(g);
       const exX = exact ? exact.x : s.cx;
       const exY = exact ? exact.y : s.cy;
-      const lx = fmtProb(exX);
-      const ly = fmtProb(exY);
-      // fmtPayoff on the SAME exact point as lx/ly (RED-MATH-6/001): a value
-      // that merely rounds to zero must say so, and evaluating at exX/exY
-      // rather than s.cx/s.cy keeps the coordinate and payoff wording in
-      // this one line describing one point, not two.
-      const finalEA = fmtPayoff(EA(exX, exY, g));
-      const finalEB = fmtPayoff(EB(exX, exY, g));
-      addLog(s.convergedIsNE
-        ? `━━ Mixed NE: x=${lx}, y=${ly}  E[A]=${finalEA}  E[B]=${finalEB}`
-        : `━━ Settled at x=${lx}, y=${ly} — NOT an equilibrium (a player still gains ${rqm.toFixed(3)} by switching)  E[A]=${finalEA}  E[B]=${finalEB}`);
+      // fmtPayoff/fmtProb applied INSIDE formatConvergenceLogLine, on the SAME
+      // exact point (RED-MATH-6/001): a value that merely rounds to zero must
+      // say so, and evaluating at exX/exY rather than s.cx/s.cy keeps the
+      // coordinate and payoff wording in this one line describing one point,
+      // not two. Shared formatter — RED-MATH-9/001 — so this branch gets the
+      // same continuum check as the pure branch above, instead of
+      // unconditionally saying "Mixed NE".
+      const finalEA = EA(exX, exY, g);
+      const finalEB = EB(exX, exY, g);
+      addLog(formatConvergenceLogLine(g, exX, exY, s.convergedIsNE, finalEA, finalEB, rqm));
       onConverged();
       return;
     }
