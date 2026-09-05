@@ -31,6 +31,7 @@ import {
   commitStartCoordinate,
   parseNumericInput,
   containsAmbiguousComma,
+  numericInputProblem,
   commitStepSize,
   commitStepIndex,
   precomputeThinHistory,
@@ -122,6 +123,11 @@ import katex from 'katex';
  * can never drift apart again).
  */
 const clampLabelInput = (v: string) => clampGraphemeSafe(v, 40);
+/** Why a numeric field refused to commit — one message per cause (RED-DESKTOP-9/002, RED-APP-10/002). */
+const NUMERIC_INPUT_HINTS: Record<'comma' | 'not-one-number', string> = {
+  comma: 'Use a dot for decimals, not a comma.',
+  'not-one-number': 'One number per field.',
+};
 
 /**
  * RED-APP-8/002 + RED-APP-8/003: the `onChange`-based clamp above (#101's
@@ -1458,6 +1464,15 @@ export default function App() {
     if (existing && authToken) {
       const prefillName = (sc.name ?? existing.name).slice(0, 40);
       setEditGameId(existing.id);
+      editOriginalRef.current = {
+        name: existing.name ?? '', description: existing.description ?? '',
+        row1: existing.row1Label ?? '', row2: existing.row2Label ?? '', col1: existing.col1Label ?? '', col2: existing.col2Label ?? '',
+        a: existing.colorTermsA ?? [], b: existing.colorTermsB ?? [],
+      };
+      // The dialog's chips must be THIS game's — this path never reset them, so a
+      // previous dialog's chips could have been diffed and sent as an edit
+      // (CodeRabbit, #126).
+      setEditTerms({ a: existing.colorTermsA ?? [], b: existing.colorTermsB ?? [] });
       setEditName(prefillName);
       // This IS an auto-prefill (the report's invention, not the user's own
       // typing) — the name-replace baseline moves with it, same as any other
@@ -2039,8 +2054,22 @@ export default function App() {
    * description or an option label was to delete the game and save it again,
    * which loses the id every explanation is keyed to.
    */
+  /**
+   * The record as it was when the Edit dialog opened. RED-APP-10/001: the
+   * dialog used to PATCH every field, so two tabs editing DIFFERENT fields of
+   * the same game clobbered each other (last writer wins per RECORD). Sending
+   * only the fields that changed makes it last-writer-wins per FIELD, which is
+   * what two people editing two things expect. Same-field races stay
+   * last-writer-wins by design.
+   */
+  const editOriginalRef = useRef<{ name: string; description: string; row1: string; row2: string; col1: string; col2: string; a: string[]; b: string[] } | null>(null);
   const openEditGame = (game: any) => {
     setEditGameId(game.id);
+    editOriginalRef.current = {
+      name: game.name ?? '', description: game.description ?? '',
+      row1: game.row1Label ?? '', row2: game.row2Label ?? '', col1: game.col1Label ?? '', col2: game.col2Label ?? '',
+      a: game.colorTermsA ?? [], b: game.colorTermsB ?? [],
+    };
     setEditName(game.name ?? '');
     // The name on screen is the SAVED name, not user typing — Keep may
     // replace it (director's decision) as long as the user leaves it alone.
@@ -2064,30 +2093,37 @@ export default function App() {
     e.preventDefault();
     if (!editGameId || !canOwnGames) return;
     if (!cleanText(editName)) { setEditError('Please enter a game name.'); return; }
+    const orig = editOriginalRef.current;
+    const same = (x: readonly string[], y: readonly string[]) => x.length === y.length && x.every((v, i) => v === y[i]);
+    const editPatchBody: Record<string, unknown> = { allowClear: true };
+    const want = {
+      name: cleanText(editName), description: cleanText(editDesc),
+      row1Label: cleanText(editLabels.row1), row2Label: cleanText(editLabels.row2),
+      col1Label: cleanText(editLabels.col1), col2Label: cleanText(editLabels.col2),
+    };
+    if (!orig || want.name !== orig.name) editPatchBody.name = want.name;
+    if (!orig || want.description !== orig.description) editPatchBody.description = want.description;
+    if (!orig || want.row1Label !== orig.row1) editPatchBody.row1Label = want.row1Label;
+    if (!orig || want.row2Label !== orig.row2) editPatchBody.row2Label = want.row2Label;
+    if (!orig || want.col1Label !== orig.col1) editPatchBody.col1Label = want.col1Label;
+    if (!orig || want.col2Label !== orig.col2) editPatchBody.col2Label = want.col2Label;
+    if (!orig || !same(editTerms.a, orig.a) || !same(editTerms.b, orig.b)) { editPatchBody.colorTermsA = editTerms.a; editPatchBody.colorTermsB = editTerms.b; }
+    if (Object.keys(editPatchBody).length === 1) {
+      // Nothing changed: no request, nothing to clobber, dialog just closes.
+      setEditError('');
+      setIsEditModalOpen(false);
+      return;
+    }
     setEditError('');
     setEditLoading(true);
     try {
       const res = await fetch(getApiUrl(`/api/games/${editGameId}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({
-          // cleanText, not .trim() alone: RED-PUBLIC D — a bidi override or
-          // raw control character typed into any of these fields used to
-          // reach the saved record untouched (src/utils/textSafety.ts).
-          name: cleanText(editName),
-          description: cleanText(editDesc),
-          // Sent even when blank so CLEARING a label is possible. The server
-          // ignores empty strings on create, but an edit dialog that cannot
-          // remove a wrong label is only half an edit dialog — see the
-          // allowClear flag on the PATCH route.
-          row1Label: cleanText(editLabels.row1),
-          row2Label: cleanText(editLabels.row2),
-          col1Label: cleanText(editLabels.col1),
-          col2Label: cleanText(editLabels.col2),
-          colorTermsA: editTerms.a,
-          colorTermsB: editTerms.b,
-          allowClear: true,
-        }),
+        // Only the fields that CHANGED since the dialog opened (RED-APP-10/001);
+        // a cleared field is a change and goes out as '' under allowClear.
+        // cleanText, not .trim() alone: RED-PUBLIC D (src/utils/textSafety.ts).
+        body: JSON.stringify(editPatchBody),
       });
       const data = await res.json();
       if (res.ok) {
@@ -2186,8 +2222,10 @@ export default function App() {
         const data = await res.json();
         alert(data.error || 'Failed to delete game.');
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      // RED-APP-10/003: offline, the click used to do nothing visible at all.
+      // The alert IS the report (no console noise: Save/Edit report the same way).
+      alert('Network error. Failed to delete game. Check your connection and try again.');
     }
   };
 
@@ -3827,9 +3865,10 @@ export default function App() {
     // commits: no payoff change, no preset flip to "custom", no run reset.
     // The field is left exactly where it was, same as any other unparseable
     // text, and a hint says why.
-    if (containsAmbiguousComma(valStr)) {
+    const problem = numericInputProblem(valStr);
+    if (problem) {
       setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
-      setPayoffInputHint({ field, message: 'Use a dot for decimals, not a comma.' });
+      setPayoffInputHint({ field, message: NUMERIC_INPUT_HINTS[problem] });
       // The comma-free prefix typed before this comma has already committed;
       // undo that now, not at blur — the plot and the solver must not spend the
       // rest of the edit on a value the user never finished typing.
@@ -3910,7 +3949,7 @@ export default function App() {
     // never saw the comma arrive one keystroke at a time (a single paste of
     // "3,5" does reach it, but belt and braces costs nothing here). The hint
     // stays up until the user edits the field again.
-    if (containsAmbiguousComma(rawPayoffs[field])) {
+    if (numericInputProblem(rawPayoffs[field])) {
       const snap = payoffFieldSnapshotRef.current[field];
       restorePreEditPayoff(field);
       setRawPayoffs((prev) => ({ ...prev, [field]: String(snap ? snap.value : payoffs[field]) }));
@@ -4733,8 +4772,9 @@ export default function App() {
                   onChange={(e) => {
                     const v = e.target.value;
                     setShrinkStepRaw(v);
-                    if (containsAmbiguousComma(v)) {
-                      setStepInputHint('Use a dot for decimals, not a comma.');
+                    const stepProblem = numericInputProblem(v);
+                    if (stepProblem) {
+                      setStepInputHint(NUMERIC_INPUT_HINTS[stepProblem]);
                       const snap = stepFieldSnapshotRef.current;
                       if (snap !== null && snap !== shrinkStep) setShrinkStep(snap);
                       return;
@@ -4743,7 +4783,7 @@ export default function App() {
                     setShrinkStep(commitStepSize(v, shrinkStep));
                   }}
                   onBlur={() => {
-                    if (containsAmbiguousComma(shrinkStepRaw)) {
+                    if (numericInputProblem(shrinkStepRaw)) {
                       const snap = stepFieldSnapshotRef.current ?? shrinkStep;
                       setShrinkStep(snap);
                       setShrinkStepRaw(snap.toFixed(3));
