@@ -3606,6 +3606,178 @@ try {
     } finally { await ctx.close().catch(() => {}); }
   });
 
+  // ══ 60. RED-REGEN-8/002 + RED-APP-12/002: the 409 collision message tells
+  //      the user to "Reopen Edit" — but the dialog never refetched, so a
+  //      literal reopen showed the SAME stale chips (same 409, forever) and
+  //      discarded whatever the user had typed since. The fix refetches IN
+  //      PLACE on the 409: the other player's fresh chip is shown, the
+  //      user's own unsaved draft (description + own chip) is kept, and once
+  //      the user resolves the real collision (removes their own colliding
+  //      chip) the next Save succeeds. "Another device" is modeled as a
+  //      real PATCH from the SAME page's own fetch (a route-driven second
+  //      writer, per the brief) using the same login — real HTTP against
+  //      the real 409 guard, not a mocked response, and not a reload that
+  //      would destroy the very stale snapshot this section exists to test.
+  section('60', '409 collision recovery keeps the draft and shows the fresh chip', 8, async () => {
+    const p409 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    const uniq = await registerAndLogin(p409, 'e409');
+    const gameName = `Loop409-${uniq}`;
+    const origDesc = 'The wolf circles the pond while the hedge waits.';
+    await p409.getByRole('button', { name: /save preset/i }).click();
+    await p409.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 12000 });
+    await p409.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+    await p409.locator('[role="dialog"][aria-label="Save custom game"] textarea').fill(origDesc);
+    await p409.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+    await p409.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
+
+    const row = p409.locator('div.group', { has: p409.getByRole('button', { name: gameName, exact: true }) });
+    await row.getByTitle(/^Edit /).click();
+    const editDialog = p409.getByRole('dialog', { name: 'Edit saved game' });
+    await editDialog.waitFor({ state: 'visible', timeout: 12000 });
+    const descSel = '[role="dialog"][aria-label="Edit saved game"] textarea';
+    const draftDesc = `${origDesc} MY-UNIQUE-DRAFT-${uniq}`;
+    await p409.locator(descSel).fill(draftDesc);
+    await p409.evaluate(({ sel, word }) => {
+      const ta = document.querySelector(sel);
+      const idx = ta.value.indexOf(word);
+      ta.focus();
+      ta.setSelectionRange(idx, idx + word.length);
+    }, { sel: descSel, word: 'wolf' });
+    await editDialog.getByRole('button', { name: 'Player A' }).click();
+
+    // The "other device": a real PATCH via this same page's own fetch, using
+    // the same signed-in account's token — the SERVER never sees these two
+    // writes as anything but two independent requests, which is exactly the
+    // shape the 409 guard (RED-REGEN-7/001) exists to catch.
+    const otherWrite = await p409.evaluate(async () => {
+      const t = localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud');
+      const games = await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json();
+      return { token: t, games };
+    });
+    const targetGame = otherWrite.games.find((g) => g.name === gameName);
+    const otherPatch = await p409.evaluate(async ({ token, id }) => {
+      const res = await fetch(`/api/games/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ allowClear: true, colorTermsB: ['Wolf'] }),
+      });
+      return { status: res.status, body: await res.json() };
+    }, { token: otherWrite.token, id: targetGame.id });
+    record('precondition: "another device" claimed "Wolf" for Player B via a real PATCH',
+      otherPatch.status === 200, JSON.stringify(otherPatch));
+
+    const saveBtn = editDialog.getByRole('button', { name: /^save changes$/i });
+    await saveBtn.click();
+    await editDialog.getByText(/changed on another device or tab|another device changed/i)
+      .waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+    record('FIX: the dialog stays open after the 409 (never closed, never silently resolved)',
+      await editDialog.isVisible({ timeout: 2000 }).catch(() => false));
+    const errorText = await editDialog.innerText().catch(() => '');
+    record('FIX: the error names WHICH side changed and says the fresh chips are shown now',
+      /another device changed player b.?s? highlights/i.test(errorText) && /shown now/i.test(errorText) && /adjust and save again/i.test(errorText),
+      errorText.slice(0, 300));
+    record('FIX: the user\'s own unsaved draft description text is KEPT, not reverted',
+      await p409.locator(descSel).inputValue() === draftDesc, await p409.locator(descSel).inputValue());
+
+    const chipState = await p409.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+      const chips = [...(dlg?.querySelectorAll('button') ?? [])]
+        .filter((b) => b.hasAttribute('data-player'))
+        .map((b) => ({ player: b.getAttribute('data-player'), text: b.textContent?.trim() }));
+      return chips;
+    });
+    record('FIX: Player B\'s fresh "Wolf" chip is now shown (refetched, not left stale)',
+      chipState.some((c) => c.player === 'B' && /^wolf/i.test(c.text || '')), JSON.stringify(chipState));
+    record('FIX: the user\'s OWN Player A "wolf" chip is KEPT (never auto-dropped to resolve the collision)',
+      chipState.some((c) => c.player === 'A' && /^wolf/i.test(c.text || '')), JSON.stringify(chipState));
+
+    // Resolve the real collision the user is now shown, then Save again.
+    const ownChip = editDialog.locator('button[data-player="A"]', { hasText: /^wolf/i }).first();
+    await ownChip.click();
+    await saveBtn.click();
+    await editDialog.waitFor({ state: 'hidden', timeout: 12000 }).catch(() => {});
+    record('FIX: after removing the colliding own chip, Save Changes succeeds once (dialog closes, no more 409)',
+      !(await editDialog.isVisible({ timeout: 2000 }).catch(() => false)));
+
+    const finalState = await p409.evaluate(async ({ token, id }) =>
+      (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${token}` } })).json()).find((g) => g.id === id),
+    { token: otherWrite.token, id: targetGame.id });
+    record('the resolved save kept the user\'s own draft description and Player B\'s "Wolf" chip, with A empty',
+      finalState?.description === draftDesc
+        && Array.isArray(finalState?.colorTermsB) && finalState.colorTermsB.includes('Wolf')
+        && Array.isArray(finalState?.colorTermsA) && !finalState.colorTermsA.some((t) => /wolf/i.test(t)),
+      JSON.stringify(finalState));
+    await p409.close();
+  });
+
+  // ══ 61. RED-REGEN-8/001: an ASCII colour-term chip must not split a real
+  //      word that contains a non-ASCII letter ("se|ñor") — checked through
+  //      the REAL saved-game render (DescriptionEditor's own preview, which
+  //      runs the exact ColorCoded call the saved game uses), not a
+  //      reimplementation of the regex. A whole accented word as the chip
+  //      still highlights (positive control) so the fix is a real boundary
+  //      rule, not "never match anything non-ASCII".
+  section('61', 'accented word is never split by a colour-term chip boundary (real render)', 9, async () => {
+    const accPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    const uniq = await registerAndLogin(accPage, 'eacc');
+    const gameName = `Acc-${uniq}`;
+    const accDesc = 'El señor decide antes que el comprador.';
+    await accPage.getByRole('button', { name: /save preset/i }).click();
+    await accPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 12000 });
+    await accPage.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(gameName);
+    const descSel = '[role="dialog"][aria-label="Save custom game"] textarea';
+    await accPage.locator(descSel).fill(accDesc);
+    // An ordinary drag-selection landing on raw textarea offsets 3..5 —
+    // exactly RED-REGEN-8/001's own reproduction shape, nothing crafted.
+    await accPage.evaluate(({ sel, word }) => {
+      const ta = document.querySelector(sel);
+      const idx = ta.value.indexOf(word);
+      ta.focus();
+      ta.setSelectionRange(idx, idx + 2); // "se" of "señor"
+    }, { sel: descSel, word: 'señor' });
+    const saveDialog = accPage.getByRole('dialog', { name: 'Save custom game' });
+    await saveDialog.getByRole('button', { name: 'Player A' }).click();
+    await accPage.getByRole('button', { name: /^save game profile$/i }).click();
+    await accPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
+
+    const row = accPage.locator('div.group', { has: accPage.getByRole('button', { name: gameName, exact: true }) });
+    await row.getByTitle(/^Edit /).click();
+    await accPage.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
+    // The real saved-render preview (DescriptionEditor's own live preview
+    // paragraph, running the SAME ColorCoded call the saved game displays) —
+    // a model-derived rendering, not the raw textarea/input value.
+    const check1 = await accPage.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+      const p = dlg?.querySelector('p.mt-1\\.5.rounded-lg.bg-slate-50') ?? null;
+      return { found: !!p, html: p?.innerHTML || '', text: p?.textContent || '' };
+    });
+    record('precondition: the saved-render preview paragraph was located and still contains "señor" intact',
+      check1.found && /señor/.test(check1.text), JSON.stringify({ found: check1.found, text: check1.text }));
+    record('RED-REGEN-8/001: the chip "se" does NOT split "señor" into a coloured span + plain remainder (real render, post-save reload)',
+      !/<span[^>]*>se<\/span>\s*ñor/i.test(check1.html), check1.html);
+
+    // Positive control, same dialog: a chip that IS the whole accented word
+    // still highlights — proves the boundary rule can fail, not just pass.
+    const controlSel = '[role="dialog"][aria-label="Edit saved game"] textarea';
+    await accPage.locator(controlSel).fill("Il est très calme aujourd'hui.");
+    await accPage.evaluate(({ sel, word }) => {
+      const ta = document.querySelector(sel);
+      const idx = ta.value.indexOf(word);
+      ta.focus();
+      ta.setSelectionRange(idx, idx + word.length);
+    }, { sel: controlSel, word: 'très' });
+    await accPage.getByRole('dialog', { name: 'Edit saved game' }).getByRole('button', { name: 'Player B' }).click();
+    const check2 = await accPage.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+      const p = dlg?.querySelector('p.mt-1\\.5.rounded-lg.bg-slate-50') ?? null;
+      const spans = [...(p?.querySelectorAll('span') ?? [])].filter((s) => /très/i.test(s.textContent || ''));
+      return { found: !!p, spans: spans.map((s) => ({ text: s.textContent, cls: s.className })) };
+    });
+    record('positive control: a chip that IS the whole accented word ("très") still highlights (Player B colour)',
+      check2.found && check2.spans.some((s) => /text-player-b-ink/.test(s.cls)), JSON.stringify(check2));
+    await accPage.close();
+  });
+
 await executeSections();
 
 } catch (e) {
@@ -3658,6 +3830,13 @@ const EXPECTED_STATUS_NOISE = {
   // "phantom row removed") — same class of expected network-layer
   // diagnostic as §31/§33's mocked statuses above.
   '38': [404, 404],
+  // §60 (RED-REGEN-8/002 + RED-APP-12/002) deliberately triggers a REAL 409
+  // from the real server — the second, independent PATCH's own collision
+  // guard (RED-REGEN-7/001) — via Save Changes, exactly the behavior this
+  // section's own assertions verify (dialog stays open, fresh chip shown,
+  // draft kept). Same class of expected network-layer diagnostic as §38's
+  // real 404s above.
+  '60': [409],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),

@@ -130,11 +130,32 @@ whitespace-collapse step for a single glyph with no realistic path to it.
   writes the emptied side and returns 200 (unchanged; the client's own
   chip-picker keeps its two lists mutually exclusive already, so this shape
   is a same-request self-collision, not two independent tabs, and CodeRabbit
-  established this "explicit submission still wins" contract on its own). The
-  Edit dialog shows the 409's message and leaves the dialog open — the same
-  generic `else` branch every other non-200/404 status already falls into
-  (`src/App.tsx`, `handleEditGameSubmit`); there is no 409-specific UI branch
-  to regress independently.
+  established this "explicit submission still wins" contract on its own).
+
+- **Recovering from a 409 must actually work (RED-REGEN-8/002 +
+  RED-APP-12/002).** The server's message tells the user to "Reopen Edit to
+  see the latest" — that instruction is only honest if reopening Edit
+  actually shows something new. `handleEditGameSubmit`'s 409 branch
+  (`src/App.tsx`) refetches the game list **in place**, on the 409 itself
+  (never on a literal dialog close/reopen, which would read the same stale
+  cached row): for each colour-term side the user has **not** touched since
+  opening the dialog, if the fresh stored value differs from the dialog's
+  own baseline, that side's chips are adopted into the dialog AND the
+  baseline moves to the fresh value (so the next Save diffs against current
+  data); a side the user **has** typed into is left exactly as they left it
+  — both the visible chip and the diff baseline — so their own edit is still
+  sent as an explicit change on the next Save (same-field races stay
+  last-writer-wins, unchanged). The dialog is never closed by this branch,
+  and neither side is ever silently dropped to make the 409 go away: if the
+  user's own untouched side genuinely collided with the fresh other side,
+  both chips are shown at once (one may render neutral via the ownership
+  rule above) and the user must remove one themselves — the error message
+  says which player's highlights changed and that they are "shown now —
+  adjust and save again." Name/description/labels are not re-baselined by
+  this branch: the 409 guard is scoped to colour terms only, and those
+  fields have no cross-request collision guard of their own, so leaving
+  their baseline alone cannot clobber a concurrent change to them (nothing
+  is ever sent for a field the user did not type into, refetch or not).
 
 ## (c) RENDERING — `ColorCoded`
 

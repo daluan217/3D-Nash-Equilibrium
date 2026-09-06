@@ -860,8 +860,8 @@ export default function App() {
     }
   };
 
-  const refetchUserGames = useCallback(async () => {
-    if (!canOwnGames) { gamesFetchSeqRef.current += 1; setUserCustomGames([]); return; }
+  const refetchUserGames = useCallback(async (): Promise<any[] | undefined> => {
+    if (!canOwnGames) { gamesFetchSeqRef.current += 1; setUserCustomGames([]); return undefined; }
     // Only the NEWEST request may write the list: a database-mode or owner
     // switch re-fetches at once, and the earlier request's late response must
     // not overwrite the current list with the other database's rows
@@ -870,10 +870,15 @@ export default function App() {
     try {
       const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });
       const rows = res.ok ? await res.json() : [];
-      if (seq !== gamesFetchSeqRef.current) return;
+      if (seq !== gamesFetchSeqRef.current) return undefined;
       setUserCustomGames(rows);
+      // RED-REGEN-8/002: the 409 branch needs the FRESH row right away, not
+      // just whenever this state update is next read — returning it lets the
+      // caller build the dialog's new baseline from the same response.
+      return rows;
     } catch (err) {
       console.error('Error fetching custom games:', err);
+      return undefined;
     }
     // dbMode: a desktop database switch can keep the same token and base URL
     // while changing where /api/games resolves (CodeRabbit, #119).
@@ -2251,6 +2256,50 @@ export default function App() {
         if (activePreset === editGameId) handleLoadPreset('bos');
         void refetchUserGames();
         setEditError('This game was deleted elsewhere; the list has been refreshed.');
+      } else if (res.status === 409) {
+        // RED-REGEN-8/002 + RED-APP-12/002: a 409 means another tab/device's
+        // colour-term edit collided with this one. The server's own message
+        // says "Reopen Edit to see the latest" — but the dialog's list was
+        // never refetched, so a literal reopen showed the SAME stale chips
+        // (same 409, forever) and, if it went through `openEditGame` at all,
+        // stomped the user's own not-yet-saved description/labels/chips too.
+        // Refetch here, in place, and merge in ONLY the side(s) the user has
+        // not touched in THIS dialog session — never drop what they typed,
+        // never silently resolve the collision by picking a winner.
+        const rows = await refetchUserGames();
+        const fresh = rows?.find((g) => g.id === editGameId);
+        if (fresh && orig) {
+          const freshA: string[] = fresh.colorTermsA ?? [];
+          const freshB: string[] = fresh.colorTermsB ?? [];
+          const untouchedA = same(editTerms.a, orig.a);
+          const untouchedB = same(editTerms.b, orig.b);
+          const adoptedA = untouchedA && !same(freshA, orig.a);
+          const adoptedB = untouchedB && !same(freshB, orig.b);
+          if (adoptedA || adoptedB) {
+            setEditTerms((prev) => ({ a: adoptedA ? freshA : prev.a, b: adoptedB ? freshB : prev.b }));
+          }
+          // Re-baseline only the side(s) just adopted — a side the user HAS
+          // typed into keeps its OLD baseline, so the next Save still submits
+          // their own edit as an explicit change (same-field races stay
+          // last-writer-wins by design, matching the existing PATCH comment
+          // above). Name/description/labels are untouched here: the 409
+          // guard is scoped to colour terms (server.ts), and this dialog's
+          // per-field diff already leaves any field the user never typed
+          // into out of the next PATCH body regardless of this baseline.
+          editOriginalRef.current = {
+            ...orig,
+            a: adoptedA ? freshA : orig.a,
+            b: adoptedB ? freshB : orig.b,
+          };
+          const changed = [adoptedA && 'Player A', adoptedB && 'Player B'].filter(Boolean) as string[];
+          setEditError(
+            changed.length > 0
+              ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.`
+              : (data.error || 'Failed to update game.'),
+          );
+        } else {
+          setEditError(data.error || 'Failed to update game.');
+        }
       } else {
         // RED-APP-7/001: a validly-signed but EXPIRED token dies mid-session
         // (the tab stayed open past AUTH_TOKEN_TTL_MS) without React ever
@@ -2260,12 +2309,6 @@ export default function App() {
         // with the server's; the header flips to "Sign in" and the
         // `!authToken` branch on the error render above fires naturally.
         if (res.status === 401) updateAuthToken(null);
-        // RED-REGEN-7/001: a 409 here means another tab/device's colour-term
-        // edit collided with this one — this generic branch already does the
-        // right thing (show the server's message, leave the dialog OPEN so
-        // the user can reopen a fresh Edit and resolve it) with no special
-        // case needed; do not add a 409-specific branch that closes the
-        // dialog or drops the message.
         setEditError(data.error || 'Failed to update game.');
       }
     } catch {
