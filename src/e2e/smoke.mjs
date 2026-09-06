@@ -348,7 +348,9 @@ async function registerAndLogin(p, tag) {
     () => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')),
     null, { timeout: 20000 },
   );
-  await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 10000 }).catch(() => {});
+  // A successful login closes the Account dialog (App.tsx's login branch);
+  // a bounded wait that REJECTS keeps a stuck dialog from passing as signed in.
+  await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 10000 });
   return uniq;
 }
 
@@ -4827,6 +4829,16 @@ try {
     await p.keyboard.press('Escape');
     await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 5000 }).catch(() => {});
     record('control: the run is still going after the drawer closed', await running());
+    // The plot's OWN controls sit inside the wrapper (CodeRabbit on #153): a
+    // mouse press on Rotate, Pan or Reset View must not pause the run either.
+    // Mutation: drop the INTERACTIVE_CONTROL test in pressOnUnrelatedUi → all three fail.
+    for (const name of [/^rotate$/i, /^pan$/i, /reset view/i]) {
+      const ctl = p.locator('[data-tour="plot"]').getByRole('button', { name }).first();
+      // Scroll first: a viewport-coordinate press on an off-screen control lands on <html>, not the button.
+      await ctl.scrollIntoViewIfNeeded(); const cb = await ctl.boundingBox(); await p.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2);
+      let on = await running(); for (let i = 0; i < 5 && !on; i++) on = await running();
+      record(`FIX: a MOUSE press on the plot's own ${String(name)} control keeps the simulation running`, on, `running=${on}`);
+    }
     // A real press ON the plot still pauses (the detector was not simply disabled).
     const plot = p.locator('[data-tour="plot"]'); await plot.scrollIntoViewIfNeeded();
     const box = await plot.boundingBox(); await p.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
