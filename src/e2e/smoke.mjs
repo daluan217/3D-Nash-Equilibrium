@@ -5044,14 +5044,21 @@ try {
           record(`[${label}] precondition: a dead-space click (the dialog's own padding) focuses the panel itself, controls still enabled`,
             afterDeadSpace.onPanel, JSON.stringify(afterDeadSpace));
           await wp.keyboard.press('Shift+Tab');
-          // Poll to a SETTLED state (bounded ~300ms): onFocusOut's rAF
-          // recapture (a different actor, not this fix) needs a frame or two
-          // to run on some engines, and reading too early would just measure
-          // "hasn't happened yet" rather than the real end state.
+          // Poll to a SETTLED state (bounded ~2s, same shape as the Escape
+          // check below): onFocusOut's rAF recapture (a different actor, not
+          // this fix) needs a frame or two to run on some engines, and
+          // reading too early would just measure "hasn't happened yet" not
+          // the real end state. CodeRabbit CLI: a fixed 5×60ms loop that only
+          // reads the FINAL iteration is a fixed sleep wearing a poll's
+          // clothes — it fails under the mutation for TIMING (nothing yet
+          // settled at 300ms on a loaded runner), not for the defect. Break
+          // on success instead; under the mutation `last` never becomes
+          // true, so the loop still runs to its bound and correctly fails.
           let settledShiftTab = null;
-          for (let i = 0; i < 5; i++) {
-            await wp.waitForTimeout(60);
+          for (let i = 0; i < 20; i++) {
             settledShiftTab = await dialogFocusables();
+            if (settledShiftTab?.last === true) break;
+            await wp.waitForTimeout(100);
           }
           record(`[${label}] FIX: Shift+Tab after a dead-space click settles on the LAST focusable, not merely "somewhere inside" (OPUS-REVIEW-MODAL BLOCK 1) — distinguishes this fix from onFocusOut's own rAF recapture, which always targets the FIRST`,
             settledShiftTab?.last === true, JSON.stringify(settledShiftTab));
