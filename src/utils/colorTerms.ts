@@ -1,3 +1,4 @@
+import { clampGraphemeSafe } from './textSafety';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -212,7 +213,10 @@ export function cleanUserColorTerms(input: unknown): string[] {
     if (typeof raw !== 'string') continue;
     // Collapse internal whitespace too: a selection dragged across a line
     // break arrives with a newline that would never match the rendered text.
-    const t = raw.replace(/\s+/g, ' ').trim().slice(0, USER_TERM_MAX_LEN);
+    // RED-REGEN-10/003: clamp by grapheme, never by UTF-16 code unit — a
+    // `.slice(0, 60)` cut a ZWJ emoji sequence in half and stored the lone
+    // surrogate (same class as RED-APP-7/004, third call site).
+    const t = clampGraphemeSafe(raw.replace(/\s+/g, ' ').trim(), USER_TERM_MAX_LEN);
     if (t.length < 2) continue;
     const key = colorTermKey(t);
     if (key.length < 2) continue; // punctuation-only after folding: nothing to highlight

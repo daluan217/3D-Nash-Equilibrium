@@ -23,6 +23,8 @@
 import {
   colorTermKey,
   cleanUserColorTerms,
+  USER_TERM_MAX_LEN,
+  USER_TERMS_MAX,
   cleanUserColorTermPair,
   colorTermsFor,
   crossPlayerUserTerms,
@@ -618,6 +620,28 @@ if (failures > 0) {
   const branch = app.slice(app.indexOf("res.status === 409"), app.indexOf("res.status === 409") + 6000);
   check('App.tsx 409 branch names the colliding phrase via crossPlayerUserTerms on every 409 (first and retry)',
     /crossPlayerUserTerms\(/.test(branch) && /Not saved: \$\{collisionNote\}/.test(branch) && /highlighted for both players/.test(branch));
+}
+
+// PART 8 — RED-REGEN-10/002+003 (+001 as a UX note), director-reproduced.
+{
+  // 003: the length cap is grapheme-safe on the SHARED validator (server + client).
+  const fam = '👨\u200d👩\u200d👧\u200d👦';
+  const [capped] = cleanUserColorTerms([fam.repeat(9)]);
+  const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+  const parts = [...seg.segment(capped)].map((x) => x.segment);
+  check('cleanUserColorTerms caps by grapheme: every kept family emoji is intact (mutation: `.slice(0, USER_TERM_MAX_LEN)` → a lone surrogate tail)',
+    capped.length <= USER_TERM_MAX_LEN && parts.length > 0 && parts.every((g) => g === fam), JSON.stringify({ units: capped.length, graphemes: parts.length }));
+  check('cleanUserColorTerms never ends on a lone surrogate', !/[\ud800-\udfff]$/.test(capped) || /[\udc00-\udfff]$/.test(capped) && /[\ud800-\udbff][\udc00-\udfff]$/.test(capped));
+  // 002: the counter's denominator is the pooled room (per-side cap × 2).
+  const html = renderToStaticMarkup(React.createElement(DescriptionEditor, {
+    value: 'x', onChange: () => {}, termsA: ['aa', 'bb'], termsB: ['cc'], onTermsChange: () => {},
+  }));
+  check(`DescriptionEditor counter reads "(3/${USER_TERMS_MAX * 2})" — pooled numerator over pooled room (mutation: /USER_TERMS_MAX alone → "(24/12)" reachable)`,
+    html.includes(`(3/${USER_TERMS_MAX * 2})`), html.match(/\(\d+\/\d+\)/)?.[0] ?? 'no counter');
+  // 001: moving a phrase to the other player is announced (structural).
+  const editor = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  check('DescriptionEditor announces a chip that moved from the other player (movedFrom hint)',
+    /movedFrom/.test(editor) && /was highlighted for Player \$\{movedFrom\}; it now belongs to Player \$\{player\}/.test(editor));
 }
 
 console.log(`✓ colorterms.property.test.ts: ${cases} generated cases passed — ${ALL_FOLD_FAMILIES.reduce((n, f) => n + f.variants.length, 0)} `
