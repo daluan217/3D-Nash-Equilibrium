@@ -743,7 +743,11 @@ export function makeTraces(
   // meeting at a shared corner (an L-shaped equilibrium set) drew that corner
   // twice, one marker per component.
   const drawnCorners: [number, number][] = [];
-  continuumRects.forEach((r) => {
+  // RED-MATH-13/002: identifiable per-component `meta` so PlotlyView.tsx's
+  // camera-aware collapse can find and restyle exactly one component's
+  // corner/midpoint traces (Plotly.restyle by trace index) without a full
+  // Plotly.react rebuild on every relayout.
+  continuumRects.forEach((r, continuumComponentIndex) => {
     const mx = (r.x0 + r.x1) / 2;
     const my = (r.y0 + r.y1) / 2;
     // RED-MATH-12/001: marker size is screen-space, the component's length is
@@ -789,6 +793,7 @@ export function makeTraces(
         size: diamondSize * (isShort ? 2 : 0.85), color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
         line: { color: '#8E44AD', width: 2 },
       },
+      meta: { continuumComponentIndex, continuumRole: 'midpoint', continuumBaseSize: diamondSize * 0.85, continuumShortSize: diamondSize * 2 },
     });
     continuumShown = true;
 
@@ -842,6 +847,7 @@ export function makeTraces(
           size: diamondSize * 2, color: '#8E44AD', symbol: 'diamond-open', opacity: 0.95,
           line: { color: '#8E44AD', width: 2 },
         },
+        meta: { continuumComponentIndex, continuumRole: 'corner' },
       });
     });
 

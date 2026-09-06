@@ -7,7 +7,31 @@ import React, { useEffect, useRef, useState } from 'react';
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
 import { EA, EB, r3 } from '../utils/gameEngine';
+import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera } from '../utils/cameraProjection';
 import { Rotate3d, Move, RefreshCw } from 'lucide-react';
+
+/**
+ * RED-MATH-13/002: per-continuum-component trace bookkeeping, rebuilt every
+ * time `makeTraces` runs (alongside `traces` itself) so the camera-aware
+ * collapse below can restyle exactly the right trace indices without a full
+ * Plotly.react. A component with no corner trace indices was already
+ * collapsed by the STATIC (data-space, SHORT_CONTINUUM) rule in plotting.ts
+ * — nothing for the dynamic rule to do.
+ */
+interface ContinuumComponentMeta {
+  componentIndex: number;
+  midpointTraceIndex: number;
+  cornerTraceIndices: number[];
+  midpointBaseSize: number;
+  midpointShortSize: number;
+  cornerSize: number;
+  zLo: number;
+  zHi: number;
+  surfaces: Array<{
+    midpoint: { x: number; y: number; z: number };
+    corners: Array<{ x: number; y: number; z: number }>;
+  }>;
+}
 
 interface PlotlyViewProps {
   payoffs: GamePayoffs;
@@ -274,6 +298,18 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const pinchStartEye = useRef<{x: number; y: number; z: number} | null>(null);
   // Tracks the camera the user has rotated to so Plotly.react never overrides it
   const cameraRef = useRef<any>(DEFAULT_CAMERA);
+  /** RED-MATH-13/002: this render's continuum component bookkeeping (trace
+   *  indices + data-space points), and which components the DYNAMIC
+   *  camera-aware rule currently has collapsed — reset every time `traces`
+   *  is rebuilt (see the data effect below) so a stale decision from a
+   *  previous game/render can never suppress a needed restyle. */
+  const continuumMetaRef = useRef<ContinuumComponentMeta[]>([]);
+  const continuumCollapsedRef = useRef<Map<number, boolean>>(new Map());
+  /** The idle spin emits one relayout per animation frame (~33ms); the spin
+   *  fusing test only needs the decision to flip within roughly one visible
+   *  frame, so re-evaluating on every 10th of a second is plenty and keeps a
+   *  spin frame from paying for a restyle it does not need. */
+  const lastContinuumEvalRef = useRef(0);
   /**
    * Legend entries the USER switched off. Every simulation step rebuilds the
    * traces from scratch, and a fresh trace carries no `visible`, so a legend
@@ -720,6 +756,95 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     const isMobile = navigator.maxTouchPoints > 0 && window.innerWidth < 1400;
     const traces = makeTraces(surf, payoffs, simState, trackingMode, allNE, isMobile, stepMode);
 
+    // RED-MATH-13/002: index the continuum corner/midpoint traces plotting.ts
+    // tagged with `meta.continuumComponentIndex`, so the camera-aware
+    // collapse below can restyle by trace index after Plotly.react. A
+    // component whose corner traces plotting.ts never drew (the STATIC,
+    // data-space SHORT_CONTINUUM rule already collapsed it) is left out —
+    // there is nothing left for the dynamic rule to hide.
+    {
+      const [zLo, zHi] = zRangeOfSurface(surf);
+      const byComponent = new Map<number, { midpointIdx?: number; cornerIdxs: number[] }>();
+      traces.forEach((t: any, idx: number) => {
+        const m = t.meta;
+        if (!m || m.continuumComponentIndex === undefined) return;
+        let entry = byComponent.get(m.continuumComponentIndex);
+        if (!entry) { entry = { cornerIdxs: [] }; byComponent.set(m.continuumComponentIndex, entry); }
+        if (m.continuumRole === 'midpoint') entry.midpointIdx = idx;
+        else if (m.continuumRole === 'corner') entry.cornerIdxs.push(idx);
+      });
+      const contMeta: ContinuumComponentMeta[] = [];
+      byComponent.forEach((entry, componentIndex) => {
+        if (entry.midpointIdx === undefined || !entry.cornerIdxs.length) return;
+        const midTrace: any = traces[entry.midpointIdx];
+        const cornerTraces: any[] = entry.cornerIdxs.map((i) => traces[i]);
+        const numSurfaces = midTrace.x.length;
+        const surfaces: ContinuumComponentMeta['surfaces'] = [];
+        for (let si = 0; si < numSurfaces; si++) {
+          surfaces.push({
+            midpoint: { x: midTrace.x[si], y: midTrace.y[si], z: midTrace.z[si] },
+            corners: cornerTraces.map((ct) => ({ x: ct.x[si], y: ct.y[si], z: ct.z[si] })),
+          });
+        }
+        contMeta.push({
+          componentIndex,
+          midpointTraceIndex: entry.midpointIdx,
+          cornerTraceIndices: entry.cornerIdxs,
+          midpointBaseSize: midTrace.meta.continuumBaseSize,
+          midpointShortSize: midTrace.meta.continuumShortSize,
+          cornerSize: cornerTraces[0]?.marker?.size ?? 0,
+          zLo, zHi,
+          surfaces,
+        });
+      });
+      continuumMetaRef.current = contMeta;
+      // A fresh react always redraws corners at their STATIC (baseline)
+      // visibility, so "currently collapsed by the dynamic rule" resets to
+      // false for every component — a stale decision carried over from a
+      // previous game/render must never suppress a restyle this render
+      // actually needs (see applyContinuumCollapseAtCamera below).
+      continuumCollapsedRef.current = new Map();
+    }
+
+    /**
+     * RED-MATH-13/002: the non-overlap guarantee (docs/CONTINUUM-RENDERING.md
+     * clause 3) has to hold at every camera the app itself reaches, not just
+     * the default one the STATIC SHORT_CONTINUUM rule was validated at — the
+     * idle spin alone rotates past fusing angles within 1-2s of page load.
+     * Projects each component's own corner/midpoint centers through the
+     * CURRENT camera (the same helper the property-test sweep uses — one
+     * projection, not two that could quietly disagree) and, only when a
+     * component's decision actually FLIPS, restyles exactly its corner
+     * traces (visibility) and its midpoint trace (marker.size) — never a
+     * full Plotly.react, so this is safe to call on every relayout.
+     */
+    const applyContinuumCollapseAtCamera = (camera: any) => {
+      const metas = continuumMetaRef.current;
+      if (!metas.length) return;
+      const eye = camera?.eye;
+      if (!eye) return;
+      const PlotlyNow = (window as any).Plotly;
+      const gdNow = document.getElementById(plotId) as any;
+      if (!PlotlyNow || !gdNow) return;
+      const basis = cameraBasis([eye.x, eye.y, eye.z]);
+      const cornerIdx: number[] = [];
+      const cornerVis: boolean[] = [];
+      const midIdx: number[] = [];
+      const midSize: number[] = [];
+      for (const m of metas) {
+        const collapse = m.surfaces.some((s) =>
+          shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis));
+        const was = continuumCollapsedRef.current.get(m.componentIndex) ?? false;
+        if (collapse === was) continue;
+        continuumCollapsedRef.current.set(m.componentIndex, collapse);
+        for (const ci of m.cornerTraceIndices) { cornerIdx.push(ci); cornerVis.push(!collapse); }
+        midIdx.push(m.midpointTraceIndex);
+        midSize.push(collapse ? m.midpointShortSize : m.midpointBaseSize);
+      }
+      if (cornerIdx.length) PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);
+      if (midIdx.length) PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx);
+    };
+
     // 'legendonly' rather than dropping the traces: the legend entries stay put,
     // so the markers read as switched off and the legend does not reflow when
     // the tour turns them back on.
@@ -978,6 +1103,13 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       displayModeBar: false
     });
 
+    // RED-MATH-13/002: the camera this render's react just painted with may
+    // already be a fusing angle (a running simulation's per-step redraw, or
+    // the idle spin resuming on the same pose it left off at) — evaluate
+    // once immediately rather than waiting for the next relayout.
+    lastContinuumEvalRef.current = performance.now();
+    applyContinuumCollapseAtCamera(cameraRef.current);
+
     // Attach camera listener after Plotly has initialized the element's event system
     const el2 = document.getElementById(plotId) as any;
     if (el2 && typeof el2.on === 'function') {
@@ -1009,6 +1141,20 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         const live = readLiveCamera(plotId);
         if (!live) return;
         cameraRef.current = live;
+
+        // RED-MATH-13/002: re-evaluate the camera-aware continuum collapse
+        // on every relayout — this is what catches the idle spin drifting
+        // into a fusing angle. Throttled to ~100ms: the spin emits one
+        // relayout per animation frame (~33ms) and applyContinuumCollapseAt
+        // Camera itself only restyles when a component's decision flips, so
+        // the throttle just caps how often the (cheap) re-projection runs.
+        {
+          const nowTs = performance.now();
+          if (nowTs - lastContinuumEvalRef.current >= 100) {
+            lastContinuumEvalRef.current = nowTs;
+            applyContinuumCollapseAtCamera(live);
+          }
+        }
 
         /*
          * Correct Plotly's OWN memory of the camera, in place.
