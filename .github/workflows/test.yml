@@ -385,6 +385,19 @@ jobs:
       - name: Scenario fallback reaches the client before its 22-second timeout
         run: node src/integration/scenario-request-deadline.test.mjs
 
+      # BLUE-CANCEL-12: an abandoned scenario draw (client gone, or the
+      # ladder's own deadline already given up on it) must be CANCELLED, not
+      # left to keep making physical provider requests on its own — a 429
+      # storm used to cost 6 physical requests for 2 logical draws (the SDK's
+      # own retry, invisible to the ladder's budget), a client abort left a
+      # second request starting ~2s after nobody was listening, and a fallback
+      # already delivered to the user did not stop an orphaned retry ~1.4s
+      # later. See docs/SCENARIO-DEADLINES.md.
+      - name: Abandoned scenario draws are cancelled, not abandoned to retry
+        run: node src/integration/scenario-cancellation.test.mjs
+        env:
+          CANCELLATION_TEST_PORT: '4800'
+
       # RED-REGEN-7/001: two INDEPENDENT PATCH /api/games/:id requests (two
       # tabs/devices), each naming only the colour-term field it changed,
       # each naming the same real-world phrase in a different spelling

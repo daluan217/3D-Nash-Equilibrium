@@ -296,13 +296,45 @@ function withoutActorNouns(sc: SuggestedScenario): SuggestedScenario {
   return nounFree;
 }
 
+/**
+ * BLUE-CANCEL-12: an AbortSignal that fires when the CLIENT is gone before a
+ * response was ever sent — Express/Node fire `res`'s `close` event on both a
+ * normal completion AND a premature disconnect, so `writableEnded` is the
+ * discriminator (transport probe `disconnect-then-retry`: the client aborted
+ * at 500ms while the ladder's own budget was still ~19.5s away from caring).
+ */
+function clientGoneSignal(res: express.Response): AbortSignal {
+  const controller = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
+  return controller.signal;
+}
+
 async function inventScreenedScenario(
   payoffs: GamePayoffs,
   onDrop?: (reason: string) => void,
   avoid?: RegenAvoid,
   actorNouns = false,
+  /**
+   * BLUE-CANCEL-12: fires when the CLIENT is already gone (see
+   * `clientGoneSignal` below) — checked before every retry decision so no new
+   * provider request starts for a request nobody is waiting on any more.
+   */
+  clientSignal?: AbortSignal,
 ): Promise<{ scenario: SuggestedScenario | null; failure?: string; scenarioSource?: 'bank-fallback' }> {
   const requestDeadline = performance.now() + SCENARIO_REQUEST_BUDGET_MS;
+  // No draw starts with less than this left on the request clock. A model draw
+  // needs seconds (connect + first token alone is hundreds of ms), so a draw
+  // started with a few milliseconds left cannot succeed — it only costs one
+  // more physical provider request. That is exactly what CI kept catching
+  // (#139 run: first call stalls, budget expires at ~20 s, a SECOND call still
+  // starts at 20.54 s): the per-draw timer and the request clock disagree by a
+  // few ms, `remainingMs` reads as barely positive, and the retry goes out.
+  // Two seconds is far above that jitter and far below any budget a draw can
+  // actually use; the integration tests' 6 s budgets leave 4 s after their
+  // fractional rejection delay, so the documented retry still happens there.
+  const MIN_DRAW_MS = 2_000;
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
   const storyOk = (sc: SuggestedScenario): boolean => {
@@ -317,74 +349,98 @@ async function inventScreenedScenario(
       || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0;
   };
 
-  let usedTimeoutRetry = false;
-  let gateRerollsUsed = 0;
-  let exhaustionFailure = "validation-failed";
-  for (;;) {
-    const remainingMs = requestDeadline - performance.now();
-    if (remainingMs <= 0) { exhaustionFailure = 'timeout'; break; }
-    const draw = await drawWithDeadline(payoffs, avoid, actorNouns, remainingMs);
-    if (performance.now() >= requestDeadline) { exhaustionFailure = 'timeout'; break; }
-    if (!draw.scenario) {
-      // LOST: the draw never produced a scenario at all (timeout, provider
-      // error, unparseable output). Exactly one retry, same as before this
-      // setting existed — never governed by NASH_SCENARIO_REROLLS.
-      if (usedTimeoutRetry) { exhaustionFailure = draw.failure ?? "unparseable"; break; }
-      usedTimeoutRetry = true;
-      continue;
-    }
-    // A length overflow is a real model-output failure, not a reason to
-    // rewrite the story after generation.  If this guard is removed, the
-    // client preview can show unbounded text and `keepFill` later cuts the
-    // description mid-sentence (RED-CLOUD-8/001).
-    if (!scenarioOutputWithinDisplayLimits(draw.scenario)) {
-      onDrop?.('scenario-output-exceeds-display-limit');
+  // BLUE-CANCEL-12: one AbortController per ladder invocation, combined with
+  // the caller's own "client is gone" signal. `ownController.abort()` in the
+  // `finally` below kills whatever this loop is still walking away from (a
+  // draw that lost its race against the per-attempt deadline, still pending
+  // for real) so its SDK promise is CANCELLED rather than left to settle and
+  // retry on its own after this function has already answered — the exact
+  // shape of the 503-after-user-fallback / late-answer transport-probe
+  // findings (an abandoned draw's own retry firing ~1.4s after the response
+  // had gone out). `clientSignal` (checked separately below, not just via the
+  // combined `signal`) additionally stops the RETRY decisions themselves —
+  // ownController is not aborted until this function is done, so checking it
+  // mid-loop would never fire early; `clientSignal` is the one that can.
+  const ownController = new AbortController();
+  const signal = clientSignal ? AbortSignal.any([clientSignal, ownController.signal]) : ownController.signal;
+  try {
+    let usedTimeoutRetry = false;
+    let gateRerollsUsed = 0;
+    let exhaustionFailure = "validation-failed";
+    for (;;) {
+      if (clientSignal?.aborted) { exhaustionFailure = 'aborted'; break; }
+      const remainingMs = requestDeadline - performance.now();
+      if (remainingMs < MIN_DRAW_MS) { exhaustionFailure = 'timeout'; break; }
+      const draw = await drawWithDeadline(payoffs, avoid, actorNouns, remainingMs, signal);
+      if (clientSignal?.aborted) { exhaustionFailure = 'aborted'; break; }
+      if (requestDeadline - performance.now() < MIN_DRAW_MS) { exhaustionFailure = 'timeout'; break; }
+      if (!draw.scenario) {
+        // LOST: the draw never produced a scenario at all (timeout, provider
+        // error, unparseable output). Exactly one retry, same as before this
+        // setting existed — never governed by NASH_SCENARIO_REROLLS.
+        if (usedTimeoutRetry) { exhaustionFailure = draw.failure ?? "unparseable"; break; }
+        usedTimeoutRetry = true;
+        continue;
+      }
+      // A length overflow is a real model-output failure, not a reason to
+      // rewrite the story after generation.  If this guard is removed, the
+      // client preview can show unbounded text and `keepFill` later cuts the
+      // description mid-sentence (RED-CLOUD-8/001).
+      if (!scenarioOutputWithinDisplayLimits(draw.scenario)) {
+        onDrop?.('scenario-output-exceeds-display-limit');
+        if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
+          exhaustionFailure = "validation-failed";
+          break;
+        }
+        gateRerollsUsed++;
+        continue;
+      }
+      if (!gateOn || storyOk(draw.scenario)) {
+        return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
+      }
+      // GATE-DROPPED: a real draw came back and the screen rejected it. This
+      // is the only case the bounded reroll setting governs.
       if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
         exhaustionFailure = "validation-failed";
         break;
       }
       gateRerollsUsed++;
-      continue;
     }
-    if (!gateOn || storyOk(draw.scenario)) {
-      return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
-    }
-    // GATE-DROPPED: a real draw came back and the screen rejected it. This
-    // is the only case the bounded reroll setting governs.
-    if (gateRerollsUsed >= SCENARIO_REROLL_LIMIT) {
-      exhaustionFailure = "validation-failed";
-      break;
-    }
-    gateRerollsUsed++;
-  }
 
-  // The model side is exhausted (either failure shape above). One more,
-  // free, always-available attempt before this request goes without a story:
-  // see this function's own comment for why the bank is reachable and safe
-  // to use here, even on the hosted path.
-  const fallbackDomain = pickScenarioDomainExcluding(avoid?.domain);
-  // RED-CLOUD-7/001: this fallback call is reachable on the HOSTED path
-  // (no IS_ELECTRON gate — see this function's own doc comment above), where
-  // Cloud Run's single warm process (`--max-instances=1`, no `--min-instances`)
-  // can serve many unrelated users' requests over the life of one process.
-  // `bankSource.ts`'s `seen` Set is a module-global correctly scoped to ONE
-  // DESKTOP LAUNCH for the pre-existing primary bank draw — left unscoped
-  // here too, it would accumulate every unrelated user's fallback draw and
-  // eventually drift LATER requests onto a story 2+ stakes bands away from
-  // their own game (measured: far-band 24-41% after ~400 accumulated draws
-  // on one warm process, vs 0/500 properly scoped). A fresh, empty `Set`
-  // every hosted request closes that — this request's own ladder can still
-  // avoid ITS OWN repeats, since the set starts empty either way. On
-  // desktop, pass nothing so `bankScenario`/`bankScenarioAvoiding` keep
-  // using the per-launch singleton, exactly as before this fix.
-  const hostedFallbackSeen = process.env.IS_ELECTRON === "true" ? undefined : new Set<string>();
-  const fallback = avoid
-    ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
-    : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
-  if (fallback && scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || storyOk(fallback))) {
-    return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
+    // The model side is exhausted (either failure shape above). One more,
+    // free, always-available attempt before this request goes without a story:
+    // see this function's own comment for why the bank is reachable and safe
+    // to use here, even on the hosted path.
+    const fallbackDomain = pickScenarioDomainExcluding(avoid?.domain);
+    // RED-CLOUD-7/001: this fallback call is reachable on the HOSTED path
+    // (no IS_ELECTRON gate — see this function's own doc comment above), where
+    // Cloud Run's single warm process (`--max-instances=1`, no `--min-instances`)
+    // can serve many unrelated users' requests over the life of one process.
+    // `bankSource.ts`'s `seen` Set is a module-global correctly scoped to ONE
+    // DESKTOP LAUNCH for the pre-existing primary bank draw — left unscoped
+    // here too, it would accumulate every unrelated user's fallback draw and
+    // eventually drift LATER requests onto a story 2+ stakes bands away from
+    // their own game (measured: far-band 24-41% after ~400 accumulated draws
+    // on one warm process, vs 0/500 properly scoped). A fresh, empty `Set`
+    // every hosted request closes that — this request's own ladder can still
+    // avoid ITS OWN repeats, since the set starts empty either way. On
+    // desktop, pass nothing so `bankScenario`/`bankScenarioAvoiding` keep
+    // using the per-launch singleton, exactly as before this fix.
+    const hostedFallbackSeen = process.env.IS_ELECTRON === "true" ? undefined : new Set<string>();
+    const fallback = avoid
+      ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
+      : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
+    if (fallback && scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || storyOk(fallback))) {
+      return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
+    }
+    return { scenario: null, failure: exhaustionFailure };
+  } finally {
+    // Whatever the loop above is still walking away from (a draw that lost
+    // its race against the per-attempt deadline) is cancelled HERE, the
+    // instant this function has its answer — not abandoned to retry on its
+    // own after the caller has already sent a response.
+    ownController.abort();
   }
-  return { scenario: null, failure: exhaustionFailure };
 }
 
 /**
@@ -427,7 +483,17 @@ const SCENARIO_DEADLINE_MS = (() => {
   return Number.isInteger(raw) && raw >= 1 && raw <= 2147483647 ? raw : 20_000;
 })();
 
-async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false, remainingMs = SCENARIO_REQUEST_BUDGET_MS): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false, remainingMs = SCENARIO_REQUEST_BUDGET_MS, signal?: AbortSignal): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+  // CodeRabbit (PR #139, server.ts~486): a controller PER DRAW, combined with
+  // the ladder's shared signal, aborted in `finally` BEFORE this function's
+  // own promise resolves back to inventScreenedScenario's loop -- so this
+  // attempt cannot still be in flight when the loop decides whether to start
+  // a retry. Left to inventScreenedScenario's own `ownController.abort()`
+  // alone, a draw that lost its race against ITS OWN per-attempt deadline
+  // stayed active until the WHOLE ladder finished, so a retry could start a
+  // second physical request while the first was still running.
+  const attemptController = new AbortController();
+  const attemptSignal = signal ? AbortSignal.any([signal, attemptController.signal]) : attemptController.signal;
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<{ scenario: null; failure: string }>((resolve) => {
     timer = setTimeout(() => resolve({ scenario: null, failure: "timeout" }), Math.ceil(Math.min(SCENARIO_DEADLINE_MS, remainingMs)));
@@ -436,7 +502,7 @@ async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorN
   });
   try {
     return await Promise.race([
-      inventScenario(payoffs, avoid, actorNouns).catch((err) => {
+      inventScenario(payoffs, avoid, actorNouns, attemptSignal).catch((err) => {
         console.warn(`[report] scenario draw failed: ${err?.message ?? err}`);
         return { scenario: null, failure: "error" as const };
       }),
@@ -444,10 +510,14 @@ async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorN
     ]);
   } finally {
     clearTimeout(timer);
+    // Whichever side of the race won, this attempt is over: abort it so a
+    // still-in-flight physical request cannot overlap with the ladder's next
+    // decision. A no-op if the draw already settled on its own.
+    attemptController.abort();
   }
 }
 
-async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false, signal?: AbortSignal): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
   // On the desktop bank path only, bias the domain away from where the
   // CURRENT story came from (regen's `avoid.domain`, from `bankDomainFor`) so
   // a regenerate is not just non-identical but reads as a new setting too.
@@ -466,9 +536,9 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNou
   // reroll attempt against a schema that structurally cannot satisfy the
   // actor-noun validator, then fall through to bank-fallback or failure.
   if (!LOCAL_PROMPT || actorNouns) {
-    return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true, actorNouns });
+    return generateScenario(payoffs, { model: DEFAULT_MODEL, reasoning: REPORT_REASONING, domain, stakes: true, actorNouns, signal });
   }
-  const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT });
+  const r = await generateReport(payoffs, { model: DEFAULT_MODEL, systemPrompt: LOCAL_PROMPT, signal });
   return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
 }
 
@@ -2990,6 +3060,9 @@ async function startServer() {
             const drawn2 = await inventScreenedScenario(
               payoffs,
               (reason) => console.warn(`[report] rung-3 scenario dropped: ${reason}`),
+              undefined,
+              false,
+              clientGoneSignal(res),
             );
             invented = drawn2.scenario;
             inventedSource = drawn2.scenarioSource;
@@ -3086,6 +3159,9 @@ async function startServer() {
               const drawn = await inventScreenedScenario(
                 payoffs,
                 (reason) => console.warn(`[report] tie-path scenario dropped: ${reason}`),
+                undefined,
+                false,
+                clientGoneSignal(res),
               );
               invented = drawn.scenario;
               inventFailure = drawn.failure;
@@ -3183,6 +3259,9 @@ async function startServer() {
       const { scenario: invented, failure, scenarioSource } = await inventScreenedScenario(
         payoffs,
         (reason) => console.warn(`[report] scenarioOnly scenario dropped: ${reason}`),
+        undefined,
+        false,
+        clientGoneSignal(res),
       );
       return res.json({ scenario: invented, failure: invented ? null : (failure ?? "error"), scenarioSource });
     }
@@ -3346,7 +3425,11 @@ async function startServer() {
         report: null,
         validation: null,
         groundTruth,
-        fallbackReason: failure ?? "error",
+        // This branch's `generateReport` call never passes `signal` (dead
+        // code below the production-flags note above), so `failure` can never
+        // actually be 'aborted' here — narrowed only to satisfy the envelope's
+        // pre-existing fallbackReason union, unchanged by BLUE-CANCEL-12.
+        fallbackReason: (failure === "aborted" ? "error" : failure) ?? "error",
       };
       return res.json(envelope);
     }
@@ -3450,6 +3533,7 @@ async function startServer() {
       (reason) => console.warn(`[regen] scenario dropped: ${reason}`),
       avoid,
       true,
+      clientGoneSignal(res),
     );
     // Apply the same response clamp as any client-supplied scenario before the
     // preview sees it. This is what keeps bank and cloud nouns on one safe wire
