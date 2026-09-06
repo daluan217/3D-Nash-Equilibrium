@@ -4824,7 +4824,20 @@ try {
       const trackABtn = p.locator('label:has-text("Expected Payoff Surface Tracking")')
         .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
       await trackABtn.click({ timeout: 5000 }).catch(() => {});
-      await p.waitForTimeout(300);
+      // CodeRabbit (this branch): a swallowed click failure or a slow
+      // SwiftShader Plotly.react would leave trackingMode 'both' and z-stack
+      // every glyph (2 entries per continuum marker's x/y/z arrays instead of
+      // 1 — PlotlyView.tsx's own `numSurfaces = midTrace.x.length`), silently
+      // corrupting every blob count/span check below. E[A]/E[B] SURFACE
+      // traces always exist regardless of trackingMode (plotting.ts pushes
+      // both unconditionally) — the continuum MARKER trace's own array
+      // length is the real signal. Poll for it instead of trusting a fixed
+      // sleep.
+      const trackingIsA = await p.waitForFunction(() => {
+        const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+        return mid && mid.x?.length === 1 ? true : null;
+      }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+      record('precondition: tracking mode is Player A only (trackingMode \'both\' would z-stack duplicate glyphs and corrupt the pixel scan)', trackingIsA);
 
       const plot = p.locator('[data-tour="plot"]');
       const readEye = () => p.evaluate(() => {
@@ -5007,8 +5020,14 @@ try {
       // `_redscratch/e2e71_debug_crop.png`) never contaminates the count.
       // Predicted cluster (700x500, default eye): x:[350,402], y:[426,448].
       const controlBlobs = await countPurpleBlobs(shotControl, { x0: 290, y0: 366, x1: 462, y1: 498 });
-      record('CONTROL (700x500, default camera): the pixel scan finds >=3 separate continuum glyphs, none fused into one blob',
-        controlBlobs.blobs.length >= 3, JSON.stringify(controlBlobs));
+      // CodeRabbit (this branch): blob COUNT alone cannot tell 3 genuinely
+      // separate diamonds from 2 fused ones that each anti-alias-split into
+      // >1 connected component (spanOf's own comment) — the check must
+      // ALSO confirm the combined footprint spans more than one marker's
+      // own size, or it could pass while the fusion defect is present.
+      const spanControl = spanOf(controlBlobs.blobs);
+      record('CONTROL (700x500, default camera): the pixel scan finds >=3 separate continuum glyphs spanning well past one marker\'s own size',
+        controlBlobs.blobs.length >= 3 && spanControl > 40, JSON.stringify({ spanControl, ...controlBlobs }));
 
       // ── FIX (under-collapse, RED-MATH-15/001 az195): back to the narrow
       //    318x298 outer container (real plot div 276x256), RED's exact
@@ -5049,7 +5068,7 @@ try {
       // Two genuinely separate diamonds (uncollapsed) at this fixture's own
       // corner-to-corner distance span far more (RED's own measured real
       // gap: the two corners alone are ~60-70 CSS px apart at this camera).
-      record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan\'s combined purple footprint spans one marker\'s own size (<=35 CSS px), not two separate diamonds',
+      record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan\'s combined purple footprint spans one marker\'s own size (<=45 CSS px), not two separate diamonds',
         span195 <= 45, JSON.stringify({ span195, ...blobs195 }));
     } finally { await p.close().catch(() => {}); }
   });
