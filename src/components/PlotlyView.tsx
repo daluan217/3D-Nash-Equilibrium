@@ -29,9 +29,16 @@ import { Rotate3d, Move, RefreshCw } from 'lucide-react';
  * plot, or sits inside any dialog/overlay surface, is not a press on the plot.
  */
 const UNRELATED_UI = 'button, a[href], input, select, textarea, [role="dialog"], [data-modal-surface], header, nav';
+const INTERACTIVE_CONTROL = 'button, a[href], input, select, textarea';
 function pressOnUnrelatedUi(e: Event, container: HTMLElement): boolean {
   const t = e.target;
-  return t instanceof Element && !container.contains(t) && !!t.closest(UNRELATED_UI);
+  if (!(t instanceof Element)) return false;
+  // An interactive control is never "the picture", whether it sits outside
+  // the wrapper or INSIDE it (the plot's own Rotate / Pan / Reset View and
+  // Resume buttons live inside `containerRef`, so a containment test alone
+  // let each of them pause a running simulation — CodeRabbit on #153).
+  if (t.closest(INTERACTIVE_CONTROL)) return true;
+  return !container.contains(t) && !!t.closest(UNRELATED_UI);
 }
 
 interface ContinuumComponentMeta {

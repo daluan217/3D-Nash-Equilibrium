@@ -157,8 +157,16 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
     const e = document.getElementById(id)?._fullLayout?.scene?.camera?.eye;
     return e ? Math.hypot(e.x, e.y, e.z) : null;
   }, PLOT);
-  const isRunning = () => page.evaluate(() =>
-    [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+  // "Running" is simulation STATE (CodeRabbit on #153, never a button label): the current-position
+  // sphere's (x, y) in Plotly's resolved data moves within the window only when a step ran and was drawn.
+  // Polled to a deadline, never one fixed sample: "running" returns the moment the sphere moves;
+  // "not running" is only concluded after no movement for the whole window (CodeRabbit on #153).
+  const isRunning = async (ms = 2000) => {
+    const read = () => page.evaluate((id) => { const t = (document.getElementById(id)?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return t ? [t.x[0], t.y[0]] : null; }, PLOT);
+    const a = JSON.stringify(await read()); const t0 = Date.now();
+    while (Date.now() - t0 < ms) { await page.waitForTimeout(100); if (JSON.stringify(await read()) !== a) return true; }
+    return false;
+  };
 
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await dismissTour(page);
@@ -227,8 +235,16 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   const dist = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : Infinity);
   const zOf = (c) => (c && Number.isFinite(c.z) ? c.z : NaN);
   const settle = async (pred, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await page.waitForTimeout(100); } return pred(); };
-  const isRunning = () => page.evaluate(() =>
-    [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+  // "Running" is simulation STATE (CodeRabbit on #153, never a button label): the current-position
+  // sphere's (x, y) in Plotly's resolved data moves within the window only when a step ran and was drawn.
+  // Polled to a deadline, never one fixed sample: "running" returns the moment the sphere moves;
+  // "not running" is only concluded after no movement for the whole window (CodeRabbit on #153).
+  const isRunning = async (ms = 2000) => {
+    const read = () => page.evaluate((id) => { const t = (document.getElementById(id)?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return t ? [t.x[0], t.y[0]] : null; }, PLOT);
+    const a = JSON.stringify(await read()); const t0 = Date.now();
+    while (Date.now() - t0 < ms) { await page.waitForTimeout(100); if (JSON.stringify(await read()) !== a) return true; }
+    return false;
+  };
   // Simulation STATE, not a label: the current-position sphere's (x, y) in
   // Plotly's resolved data moves only when a step ran AND Plotly.react drew it.
   const spherePos = () => page.evaluate((id) => {
@@ -265,8 +281,9 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
     return null;
   });
   record('[touch camera] precondition: a hit-tested point on the plot (not under the header) exists', !!tapAt, JSON.stringify(tapAt));
-  await page.touchscreen.tap(tapAt.x, tapAt.y); // a press ON the plot pauses the run
-  record('[touch camera] precondition: the tap on the plot paused the run', await settle(async () => !(await isRunning()), 5000));
+  // No hit-tested point means the plot press was never exercised: the pause check must fail, not be skipped past.
+  if (tapAt) await page.touchscreen.tap(tapAt.x, tapAt.y); // a press ON the plot pauses the run
+  record('[touch camera] precondition: the tap on the plot paused the run', !!tapAt && await settle(async () => !(await isRunning()), 5000));
   const spinBtn = page.getByRole('button', { name: /resume spinning/i });
   await settle(async () => spinBtn.isVisible().catch(() => false), 5000);
   // Pausing re-binds Plotly's input controller (rebindPlotInput: a dragmode

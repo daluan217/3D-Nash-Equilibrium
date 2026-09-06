@@ -334,11 +334,23 @@ async function registerAndLogin(p, tag) {
   await pwFields.nth(0).fill('TestPass123');
   await pwFields.nth(1).fill('TestPass123');
   await p.getByRole('button', { name: /register account/i }).click();
-  await p.waitForTimeout(800);
+  // Wait on STATE, never on a fixed delay: the login form appears only once
+  // the register round-trip (a pbkdf2 hash) has returned, and the token lands
+  // in localStorage only once the login round-trip has. On a loaded CI runner
+  // (#153: every section ran ~3x slower than on main) a fixed 800 ms let the
+  // caller reload the page with the login still in flight — signed out, no
+  // "Save Preset" control, a 30 s locator timeout that looked like an app bug.
+  await p.getByPlaceholder(/example\.com or username/i).waitFor({ state: 'visible', timeout: 20000 });
   await p.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
   await p.getByPlaceholder('••••••••').first().fill('TestPass123');
   await p.getByRole('button', { name: /^login$/i }).click();
-  await p.waitForTimeout(800);
+  await p.waitForFunction(
+    () => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')),
+    null, { timeout: 20000 },
+  );
+  // A successful login closes the Account dialog (App.tsx's login branch);
+  // a bounded wait that REJECTS keeps a stuck dialog from passing as signed in.
+  await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 10000 });
   return uniq;
 }
 
@@ -5078,7 +5090,11 @@ try {
     // entry count grows between two reads), not from the Pause button's label
     // (CodeRabbit CLI on this branch).
     const logCount = () => p.evaluate(() => (document.querySelector('[data-tour="log"], [aria-label="Simulation log"]')?.textContent || document.body.textContent || '').length);
-    const running = async () => { const a = await logCount(); await p.waitForTimeout(600); return (await logCount()) > a; };
+    // "Running" is the app's own state (the Pause control is offered) confirmed by the log growing; "paused" is the
+    // app's own state (Run offered, Pause gone), each polled to a bounded deadline (CodeRabbit CLI on this branch).
+    const stateRunning = () => p.evaluate(() => { const names = [...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim().toLowerCase()); return names.includes('pause') && !names.includes('run'); });
+    const running = async () => { if (!(await stateRunning())) return false; const a = await logCount(); await p.waitForTimeout(600); return (await logCount()) > a; };
+    const waitPaused = async (ms = 5000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (!(await stateRunning())) return true; await p.waitForTimeout(100); } return false; };
     await p.getByRole('button', { name: /^run$/i }).click();
     let up = false; for (let i = 0; i < 30 && !up; i++) { up = await running(); if (!up) await p.waitForTimeout(100); }
     record('precondition: the simulation is running', up);
@@ -5092,11 +5108,29 @@ try {
     await p.keyboard.press('Escape');
     await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 5000 }).catch(() => {});
     record('control: the run is still going after the drawer closed', await running());
+    // The plot's OWN controls sit inside the wrapper (CodeRabbit on #153): a
+    // mouse press on Rotate, Pan or Reset View must not pause the run either.
+    // Mutation: drop the INTERACTIVE_CONTROL test in pressOnUnrelatedUi → all three fail.
+    for (const name of [/^rotate$/i, /^pan$/i, /reset view/i]) {
+      const ctl = p.locator('[data-tour="plot"]').getByRole('button', { name }).first();
+      // Scroll first: a viewport-coordinate press on an off-screen control lands on <html>, not the button.
+      await ctl.scrollIntoViewIfNeeded();
+      // The playback is finite: if an earlier press let it run to its end, start it again so the press is made mid-run.
+      if (!(await stateRunning())) { await p.getByRole('button', { name: /^run$/i }).click(); for (let i = 0; i < 30 && !(await stateRunning()); i++) await p.waitForTimeout(100); }
+      const cb = await ctl.boundingBox(); await p.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2);
+      // A press-pause is synchronous on mousedown, so the app still reporting "running" 300 ms later is the verdict.
+      // A playback that reached its END inside the window (the bar at 100%) was not paused by the press either.
+      await p.waitForTimeout(300); const verdict = await p.evaluate(() => { const names = [...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim().toLowerCase()); const bar = document.querySelector('.bg-accent-500.h-full'); return { running: names.includes('pause') && !names.includes('run'), progress: bar ? bar.style.width : null }; });
+      const on = verdict.running || verdict.progress === '100%';
+      record(`FIX: a MOUSE press on the plot's own ${String(name)} control keeps the simulation running`, on, JSON.stringify(verdict));
+    }
     // A real press ON the plot still pauses (the detector was not simply disabled).
     const plot = p.locator('[data-tour="plot"]'); await plot.scrollIntoViewIfNeeded();
-    const box = await plot.boundingBox(); await p.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-    let paused = !(await running()); for (let i = 0; i < 10 && !paused; i++) { await p.waitForTimeout(100); paused = !(await running()); }
-    record('control: a press on the plot itself still pauses the run', paused);
+    // Hit-test the press point: it must be the picture itself, never one of the plot's own controls.
+    const pt = await plot.evaluate((el) => { const r = el.getBoundingClientRect(); for (const [fx, fy] of [[0.5, 0.5], [0.35, 0.6], [0.5, 0.7], [0.3, 0.4]]) { const x = r.left + r.width * fx, y = r.top + r.height * fy; const hit = document.elementFromPoint(x, y); if (hit && el.contains(hit) && !hit.closest('button, a[href], input, select, textarea')) return { x, y, tag: hit.tagName }; } return null; });
+    record('precondition: a hit-tested point on the picture itself (not a control) exists', !!pt, JSON.stringify(pt));
+    if (pt) await p.mouse.click(pt.x, pt.y);
+    record('control: a press on the plot itself still pauses the run (the app reports paused within 5 s)', !!pt && await waitPaused());
     // (b) drag-select from inside the Account dialog's field to outside the panel
     await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     const dlg = p.locator('[role="dialog"][aria-label="Account"]'); await dlg.waitFor({ state: 'visible', timeout: 8000 });
