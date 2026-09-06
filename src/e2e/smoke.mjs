@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { chromium, devices } from 'playwright';
+import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
@@ -4793,6 +4793,352 @@ try {
     for (let i = 0; i < 10 && dlState.step === 2; i++) { await p.waitForTimeout(100); dlState = await readTour(); }
     record('FIX: keys typed inside the download dialog leave the tour on step 2 and the matrix unchanged', dlState.step === 2 && dlState.matrix === start.matrix, JSON.stringify(dlState));
     await p.close();
+  });
+
+  // ══ 70. RED-APP-14/002+005 (BLUE-MODAL-15). Part A: the local-games offer
+  //      (now a <ModalSurface>) with EVERY control disabled by a route-held
+  //      request — the Tab trap must not give up (Tab/Shift+Tab stay parked
+  //      on the panel), and once a failure re-enables the buttons, focus
+  //      must return to the first one. Mutation: revert useModalTabTrap's
+  //      empty-focusables branch to a bare `return` → Tab escapes past the
+  //      panel here. Part B: opener tracking on chromium (control) AND
+  //      webkit — a real mouse press on a saved-game row's Edit button
+  //      (inside SavedGamesList's tabIndex={-1} focus landmark), Escape,
+  //      focus must return to the Edit button, not the landmark. Guarded by
+  //      webkit's availability (playwright's webkit browser may not be
+  //      installed in every environment).
+  section('70', 'the Tab trap never gives up when every control is disabled; opener tracking survives WebKit on a saved-game row', 8, async () => {
+    // ── Part A: desktop-shape server, no account, one local game ──────────
+    const deskPort = String(Number(PORT) + 1002);
+    const deskBase = `http://127.0.0.1:${deskPort}`;
+    const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-trap-'));
+    const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
+      cwd: deskData,
+      env: { ...process.env, NODE_ENV: 'production', PORT: deskPort, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: deskData },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    desk.stderr.on('data', () => {});
+    const deskCtx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36',
+    });
+    try {
+      let up = false;
+      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      record('precondition: the desktop-shaped server for section 70 is up', up);
+      await fetch(deskBase + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `Trap-${Date.now().toString(36)}`, description: 'no-account game', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
+      const email = `t${Date.now().toString(36)}@example.com`;
+      await fetch(deskBase + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `t${Date.now().toString(36)}`, email, password: 'TestPass123' }) });
+
+      const dp = await deskCtx.newPage();
+      await dp.goto(deskBase, { waitUntil: 'networkidle' });
+      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+      await dp.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+      await dp.getByPlaceholder(/example\.com or username/i).fill(email);
+      await dp.getByPlaceholder('••••••••').first().fill('TestPass123');
+      await dp.getByRole('button', { name: /^login$/i }).click();
+      const offer = dp.locator('[role="dialog"][aria-label="Games saved on this device"]');
+      record('precondition: the local-games offer opened after sign-in', await offer.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
+      const moveBtn = offer.getByRole('button', { name: /^move it into my account$/i });
+
+      // Hold the adopt request open on a controllable gate (never a fixed
+      // sleep racing the assertion — same pattern as e2e 68's Delete gate).
+      let releaseAdopt;
+      const adoptGate = new Promise((resolve) => { releaseAdopt = resolve; });
+      let failAdopt = false;
+      await dp.route('**/api/games/adopt-local', async (route) => {
+        await adoptGate;
+        if (failAdopt) return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Could not save your changes. Please try again.' }) });
+        return route.continue();
+      });
+      await moveBtn.focus();
+      await moveBtn.click();
+      // Poll until the disabled-blur has run and the trap has parked focus.
+      let panelState = null;
+      for (let i = 0; i < 30; i++) {
+        panelState = await dp.evaluate(() => {
+          const panel = document.querySelector('[role="dialog"][aria-label="Games saved on this device"]');
+          const a = document.activeElement;
+          const buttons = panel ? [...panel.querySelectorAll('button')].map((b) => ({ text: b.textContent?.trim(), disabled: b.disabled })) : [];
+          return { onPanel: !!panel && a === panel, activeTag: a?.tagName, buttons };
+        });
+        if (panelState.onPanel) break;
+        await dp.waitForTimeout(100);
+      }
+      record('precondition: both offer buttons are disabled mid-request', panelState?.buttons?.every((b) => b.disabled), JSON.stringify(panelState?.buttons));
+      record('FIX: with every control disabled, focus parks on the panel itself rather than <body> (RED-APP-14/002)', panelState?.onPanel === true, JSON.stringify(panelState));
+      await dp.keyboard.press('Tab');
+      let afterTab = await dp.evaluate(() => document.activeElement === document.querySelector('[role="dialog"][aria-label="Games saved on this device"]'));
+      record('FIX: Tab is swallowed — focus stays on the panel, never escapes to a control behind the backdrop', afterTab);
+      await dp.keyboard.press('Shift+Tab');
+      afterTab = await dp.evaluate(() => document.activeElement === document.querySelector('[role="dialog"][aria-label="Games saved on this device"]'));
+      record('FIX: Shift+Tab is swallowed too', afterTab);
+      record('precondition: the offer is still the only open dialog (no second surface reached)',
+        await dp.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => d.getAttribute('aria-label'))).then((l) => l.length === 1 && l[0] === 'Games saved on this device'));
+
+      // Fail the request so the offer stays open with both buttons re-enabled.
+      failAdopt = true;
+      releaseAdopt();
+      let reenabled = null;
+      for (let i = 0; i < 50; i++) {
+        reenabled = await dp.evaluate(() => {
+          const panel = document.querySelector('[role="dialog"][aria-label="Games saved on this device"]');
+          const move = [...(panel?.querySelectorAll('button') ?? [])].find((b) => /move it into my account/i.test(b.textContent || ''));
+          return { moveDisabled: move?.disabled, active: document.activeElement === move ? 'move' : (document.activeElement === panel ? 'panel' : document.activeElement?.tagName) };
+        });
+        if (reenabled.moveDisabled === false) break;
+        await dp.waitForTimeout(100);
+      }
+      record('precondition: the failed request re-enabled both buttons', reenabled?.moveDisabled === false, JSON.stringify(reenabled));
+      // CodeRabbit CLI: asserting focus landed on `leaveBtn` BY NAME couples
+      // this check to markup order (it happens to be first today), not to
+      // the actual contract — "the FIRST enabled focusable, whichever it
+      // is." Derive that control the same way ModalSurface.tsx's own
+      // getModalFocusables() does, and compare THAT with document
+      // .activeElement, so a reordering of the two buttons cannot make this
+      // check assert the wrong thing for the right reason (or vice versa).
+      let focusReturned = false;
+      for (let i = 0; i < 30 && !focusReturned; i++) {
+        focusReturned = await dp.evaluate(() => {
+          const panel = document.querySelector('[role="dialog"][aria-label="Games saved on this device"]');
+          if (!panel) return false;
+          const focusables = Array.from(panel.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'))
+            .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+          return focusables.length > 0 && document.activeElement === focusables[0];
+        }).catch(() => false);
+        if (!focusReturned) await dp.waitForTimeout(100);
+      }
+      record('FIX: once controls re-enable, focus returns to the FIRST one (RED-APP-14/002)', focusReturned, JSON.stringify(reenabled));
+      await dp.unroute('**/api/games/adopt-local');
+      await dp.close();
+    } finally {
+      await deskCtx.close().catch(() => {});
+      if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
+      try { rmSync(deskData, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+
+    // ── Part B: chromium (control) + webkit — opener tracking survives
+    // WebKit focusing SavedGamesList's tabIndex={-1} landmark instead of the
+    // clicked Edit button (RED-APP-14/005). Guarded by webkit's availability.
+    // Own context (never the shared `page`) so its signed-in session cannot
+    // contaminate any other section that reuses that page.
+    const seedCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const seedPage = trackPage(await seedCtx.newPage());
+    const uniq = await registerAndLogin(seedPage, 'e70');
+    const token = await seedPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+    const gameName = `Opener70-${uniq}`;
+    await seedPage.evaluate(async ([n, t]) => fetch('/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+      body: JSON.stringify({ name: n, description: 'opener tracking check', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) }), [gameName, token]);
+    await seedCtx.close().catch(() => {});
+
+    let webkitAvailable = true;
+    let webkitBrowser = null;
+    try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
+    try {
+      for (const [label, engineCtx] of [
+        ['chromium (control)', await browser.newContext({ viewport: { width: 1280, height: 900 } })],
+        ...(webkitAvailable ? [['webkit', await webkitBrowser.newContext({ viewport: { width: 1280, height: 900 } })]] : []),
+      ]) {
+        const wp = trackPage(await engineCtx.newPage());
+        // Robust tour dismissal (section 50's idiom): a plain try/catch on the
+        // click left the tour open often enough on some engines to sit ON TOP
+        // of the row a moment later — the click landed on the tour overlay,
+        // not the button, and the dialog silently never opened.
+        const dismissTour = async () => {
+          try { await wp.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+          let gone = await wp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
+          if (!gone) { await wp.keyboard.press('Escape'); gone = await wp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false); }
+          return gone;
+        };
+        await wp.goto(BASE, { waitUntil: 'networkidle' });
+        await dismissTour();
+        await wp.evaluate((t) => localStorage.setItem('nash_sim_token_local', t), token);
+        await wp.reload({ waitUntil: 'networkidle' });
+        record(`[${label}] precondition: the guided tour is dismissed`, await dismissTour());
+        const row = wp.locator('[data-saved-game]', { hasText: gameName }).first();
+        await row.waitFor({ state: 'visible', timeout: 10000 });
+        const editBtn = row.getByTitle(/^Edit /);
+        await editBtn.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+        // Pointer/touch probe rule (COMMON.md): confirm the hit-test, not just
+        // the viewport bounds — an overlay/still-settling layout can report a
+        // valid in-viewport boundingBox while elementFromPoint lands on
+        // something else entirely. Poll rather than a single measurement.
+        let bb = null; let cx = 0; let cy = 0; let hit = { tag: null, inButton: false };
+        for (let i = 0; i < 30; i++) {
+          bb = await editBtn.boundingBox();
+          if (bb) {
+            cx = bb.x + bb.width / 2; cy = bb.y + bb.height / 2;
+            hit = await wp.evaluate(([x, y]) => {
+              const el = document.elementFromPoint(x, y);
+              return { tag: el?.tagName, inButton: !!el?.closest('button')?.getAttribute('title')?.match(/^Edit /) };
+            }, [cx, cy]);
+          }
+          if (bb && bb.y >= 0 && bb.y + bb.height <= 900 && hit.inButton) break;
+          await wp.waitForTimeout(100);
+        }
+        record(`[${label}] precondition: the Edit button is in the viewport and is the real hit-test target`,
+          !!bb && bb.y >= 0 && bb.y + bb.height <= 900 && hit.inButton, JSON.stringify({ bb, hit }));
+        // A REAL mouse press (not .click()'s default, which can differ by
+        // engine internally) — matches the director's own harness exactly.
+        await wp.mouse.move(cx, cy);
+        await wp.mouse.down();
+        await wp.mouse.up();
+        const dlg = wp.locator('[role="dialog"][aria-label="Edit saved game"]');
+        const opened = await dlg.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+        record(`[${label}] precondition: a real mouse press on the row's Edit button opens the Edit dialog`, opened);
+        if (opened) {
+          await wp.keyboard.press('Escape');
+          await dlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+          let where = null;
+          for (let i = 0; i < 20; i++) {
+            where = await wp.evaluate(() => { const a = document.activeElement; return { title: a?.getAttribute('title'), landmark: a?.getAttribute('data-focus-fallback') }; });
+            if (where.title && /^Edit /.test(where.title)) break;
+            await wp.waitForTimeout(100);
+          }
+          record(`[${label}] FIX: Escape from the Edit dialog returns focus to the row's Edit button, not the landmark (RED-APP-14/005)`,
+            !!where.title && /^Edit /.test(where.title), JSON.stringify(where));
+
+          // OPUS-REVIEW-MODAL BLOCK 1: `tabIndex={-1}` on the panel (added so
+          // the Tab trap can park focus there when every control is disabled,
+          // RED-APP-14/002) makes it MOUSE-focusable — a plain click on the
+          // dialog's own dead space (its padding, its heading) with every
+          // control still ENABLED focuses the panel itself, and
+          // `Node.contains()` returning true for the node itself used to let
+          // that fall through the trap's boundary check with no
+          // preventDefault(), so backward Tab navigation walked out of the
+          // `aria-modal` dialog on Chromium/Firefox (RED-APP-5/002's exact
+          // shape). Mutation (OPUS-REVIEW-MODAL2 FBM-1): drop the
+          // `|| document.activeElement === container` disjunct in
+          // ModalSurface.tsx's onKey → the Shift+Tab check below fails, on
+          // every engine, ONLY if it reads a SETTLED state and checks
+          // identity against the LAST focusable specifically — a plain
+          // "still inside the dialog" read is not enough on WebKit: pre-fix,
+          // WebKit escapes to <body> (not a background control), which is
+          // exactly the state `onFocusOut`'s rAF recapture is built to catch,
+          // and that recapture always lands on the FIRST focusable, not the
+          // last — a same-tick "inside?" read would show it escaping, but a
+          // read 100+ ms later would show it back inside for the WRONG
+          // reason and pass the mutation. Checking for `last` specifically
+          // fails on every engine under the mutation (unfixed Chromium/
+          // Firefox settle outside — not `last`; unfixed WebKit settles back
+          // inside but on `first`, via the recapture — not `last`) and
+          // passes on every engine once fixed.
+          await editBtn.click({ force: true });
+          await dlg.waitFor({ state: 'visible', timeout: 8000 });
+          const panelBox = await dlg.boundingBox();
+          const dialogFocusables = () => wp.evaluate(() => {
+            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+            if (!d) return { last: false, inDialog: false, tag: document.activeElement?.tagName };
+            const focusables = Array.from(d.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'))
+              .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+            return { last: focusables.length > 0 && document.activeElement === focusables[focusables.length - 1], inDialog: d.contains(document.activeElement), tag: document.activeElement?.tagName };
+          });
+          await wp.mouse.click(panelBox.x + panelBox.width / 2, panelBox.y + 10);
+          const afterDeadSpace = await wp.evaluate(() => {
+            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+            return { onPanel: document.activeElement === d, inDialog: !!d?.contains(document.activeElement) };
+          });
+          record(`[${label}] precondition: a dead-space click (the dialog's own padding) focuses the panel itself, controls still enabled`,
+            afterDeadSpace.onPanel, JSON.stringify(afterDeadSpace));
+          await wp.keyboard.press('Shift+Tab');
+          // Poll to a SETTLED state (bounded ~2s, same shape as the Escape
+          // check below): onFocusOut's rAF recapture (a different actor, not
+          // this fix) needs a frame or two to run on some engines, and
+          // reading too early would just measure "hasn't happened yet" not
+          // the real end state. CodeRabbit CLI: a fixed 5×60ms loop that only
+          // reads the FINAL iteration is a fixed sleep wearing a poll's
+          // clothes — it fails under the mutation for TIMING (nothing yet
+          // settled at 300ms on a loaded runner), not for the defect. Break
+          // on success instead; under the mutation `last` never becomes
+          // true, so the loop still runs to its bound and correctly fails.
+          let settledShiftTab = null;
+          for (let i = 0; i < 20; i++) {
+            settledShiftTab = await dialogFocusables();
+            if (settledShiftTab?.last === true) break;
+            await wp.waitForTimeout(100);
+          }
+          record(`[${label}] FIX: Shift+Tab after a dead-space click settles on the LAST focusable, not merely "somewhere inside" (OPUS-REVIEW-MODAL BLOCK 1) — distinguishes this fix from onFocusOut's own rAF recapture, which always targets the FIRST`,
+            settledShiftTab?.last === true, JSON.stringify(settledShiftTab));
+          // Forward Tab too. NOT mutation-discriminating (OPUS-REVIEW-MODAL2
+          // FBM-1): forward sequential navigation from a tabindex="-1"
+          // container already enters that container's own descendants,
+          // landing on `first`, identically with or without this fix — the
+          // defect this fix closes was backward navigation only. Kept as a
+          // plain regression guard (it must stay true), not as a mutation
+          // check.
+          await wp.mouse.click(panelBox.x + panelBox.width / 2, panelBox.y + 10);
+          await wp.keyboard.press('Tab');
+          const afterTab = await dialogFocusables();
+          record(`[${label}] regression guard (not mutation-discriminating — see comment above): forward Tab after a dead-space click still lands on the FIRST focusable`,
+            afterTab.inDialog, JSON.stringify(afterTab));
+          await wp.keyboard.press('Escape');
+          await dlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+        }
+        await wp.close();
+        await engineCtx.close();
+      }
+    } finally {
+      if (webkitBrowser) await webkitBrowser.close().catch(() => {});
+    }
+    if (!webkitAvailable) record('webkit unavailable in this environment — chromium control ran, webkit case skipped', true, 'guarded per brief');
+
+    // ── Part C: OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2 — the expanded log must
+    // still open scrolled to the NEWEST lines, not the top. `mountLogRegion`'s
+    // ref callback (App.tsx) now sets `scrollTop = scrollHeight` in the same
+    // place it already fixed the analogous focus-timing bug. A short
+    // viewport forces overflow with just a few Step clicks, avoiding a slow
+    // run-to-convergence (a real simulation reaching "Converged" can stop
+    // producing log lines well before the region actually overflows).
+    // Mutation: drop the `el.scrollTop = el.scrollHeight;` line → this fails.
+    {
+      const scrollCtx = await browser.newContext({ viewport: { width: 900, height: 300 } });
+      const lp = trackPage(await scrollCtx.newPage());
+      await lp.goto(BASE, { waitUntil: 'networkidle' });
+      try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      const stepBtn = lp.getByRole('button', { name: /^step$/i });
+      for (let i = 0; i < 5; i++) await stepBtn.click({ force: true }).catch(() => {});
+      await lp.locator('button[title*="Expand"]').first().click();
+      await lp.waitForSelector('[role="dialog"][aria-label="Simulation log"]', { timeout: 8000 });
+      const scrollInfo = await lp.evaluate(() => {
+        const region = document.querySelector('[role="dialog"][aria-label="Simulation log"] [role="region"]');
+        return { scrollTop: region?.scrollTop, scrollHeight: region?.scrollHeight, clientHeight: region?.clientHeight };
+      });
+      record('precondition: the log region overflows (more content than fits in the short viewport)',
+        typeof scrollInfo.scrollHeight === 'number' && scrollInfo.scrollHeight > scrollInfo.clientHeight, JSON.stringify(scrollInfo));
+      record('FIX: the expanded log opens scrolled to the NEWEST lines, not the top (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)',
+        scrollInfo.scrollTop >= scrollInfo.scrollHeight - scrollInfo.clientHeight - 5, JSON.stringify(scrollInfo));
+
+      // CodeRabbit CLI: mountLogRegion's own el.focus() on the log region (a
+      // REAL control, tabIndex={0}) overwrites opener-tracking's
+      // lastInteractedControl with itself — the trap's own container already
+      // contains it, so `opener` resolved to null and Escape used to return
+      // focus to [data-focus-home], not the Expand log button. Mutation: drop
+      // the expand-log ModalSurface's fallbackSelector prop → this fails.
+      // OPUS-REVIEW-MODAL2 FBM-2: `focusAfterDialog` runs in a PASSIVE effect
+      // cleanup, which can race installOpenerTracking's own focusout rAF
+      // fallback (a different actor) — a single unpolled read is a flake
+      // risk even though the scheduler ordering happens to favor it today.
+      // Poll like the sibling assertion a few sections up (smoke.mjs, the
+      // Edit-dialog Escape check) instead of reading once.
+      await lp.keyboard.press('Escape');
+      await lp.waitForSelector('[role="dialog"][aria-label="Simulation log"]', { state: 'hidden', timeout: 8000 });
+      let afterEscape = null;
+      for (let i = 0; i < 20; i++) {
+        afterEscape = await lp.evaluate(() => {
+          const a = document.activeElement;
+          return { tag: a?.tagName, ariaLabel: a?.getAttribute('aria-label') };
+        });
+        if (afterEscape.ariaLabel === 'Expand simulation log') break;
+        await lp.waitForTimeout(100);
+      }
+      record('FIX: Escape from the expanded log returns focus to the Expand log button, not [data-focus-home] (CodeRabbit CLI)',
+        afterEscape.ariaLabel === 'Expand simulation log', JSON.stringify(afterEscape));
+      await lp.close();
+      await scrollCtx.close();
+    }
   });
 
   // ── BLUE-MATH-15 (RED-MATH-15/001): camera-aware continuum collapse at a

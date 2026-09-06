@@ -3,9 +3,14 @@
  * single-active-modal registry, used by Account/Save/Edit/Feedback AND the
  * workspace drawer. Fixes RED-APP-13/002 (focus escapes an open dialog on a
  * 401), /003 (drawer Delete has no in-flight state) and /004 (drawer has no
- * role/trap). The real DOM behavior is section 66's job (src/e2e/smoke.mjs);
- * these are the decidable structural facts a regression could not silently
- * undo without also breaking one of these.
+ * role/trap). round15 (BLUE-MODAL-15): the local-games offer and the
+ * expand-log overlay join the same primitive (RED-APP-14/002+004); the Tab
+ * trap never gives up when every control is disabled (RED-APP-14/002); the
+ * drawer's own Danger Zone fetches clear a dead token (RED-APP-14/003);
+ * opener tracking survives WebKit's focus-the-landmark behavior
+ * (RED-APP-14/005). The real DOM behavior is sections 66/67/70's job
+ * (src/e2e/smoke.mjs); these are the decidable structural facts a regression
+ * could not silently undo without also breaking one of those.
  *
  *   npx tsx src/modalsurface.test.ts
  */
@@ -31,22 +36,21 @@ const drawer = stripComments(readFileSync('src/components/MenuDrawer.tsx', 'utf8
 const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.tsx', 'utf8'));
 
 // ── Structural: every converted dialog renders through <ModalSurface> ──────
+// round15 (RED-APP-14/002+004): the local-games offer and the expand-log
+// overlay join the four round14 surfaces — EVERY role=dialog/fixed-inset
+// overlay in App.tsx now goes through the shared primitive, so App.tsx must
+// have ZERO hand-rolled role="dialog" left (a new bare overlay fails this).
 {
-  const surfaceIds = ['account', 'edit-saved-game', 'save-preset', 'feedback'];
+  const surfaceIds = ['account', 'edit-saved-game', 'save-preset', 'feedback', 'local-games-offer', 'expand-log'];
   for (const id of surfaceIds) {
     ok(new RegExp(`<ModalSurface[\\s\\S]{0,200}?id="${id}"`).test(app),
       `App.tsx must render the "${id}" dialog through <ModalSurface id="${id}">`);
   }
-  // The four converted dialogs no longer hand-roll role="dialog" themselves —
-  // ModalSurface owns it. App.tsx's only REMAINING literal role="dialog"
-  // attributes belong to the two surfaces this round deliberately left alone
-  // (the expand-log overlay and the local-games-offer dialog, both out of
-  // scope per round14/STRUCTURAL.md) — exactly 2, never more.
   const roleDialogAttrs = app.match(/\brole="dialog"/g) ?? [];
-  ok(roleDialogAttrs.length === 2,
-    `App.tsx must have exactly 2 hand-rolled role="dialog" left (expand-log, local-games-offer); found ${roleDialogAttrs.length}`);
-  ok(app.includes('aria-label="Simulation log"') && app.includes('aria-label="Games saved on this device"'),
-    'the 2 remaining hand-rolled dialogs must still be the expand-log overlay and the local-games offer, not a re-added converted one');
+  ok(roleDialogAttrs.length === 0,
+    `App.tsx must have ZERO hand-rolled role="dialog" left — every overlay renders through <ModalSurface> (round15); found ${roleDialogAttrs.length}`);
+  ok(app.includes('ariaLabel="Simulation log"') && app.includes('ariaLabel="Games saved on this device"'),
+    'the local-games offer and the expand-log overlay must keep their aria labels (now the ariaLabel prop) through the <ModalSurface> conversion');
 }
 
 // The drawer has ZERO hand-rolled role="dialog" — it goes through
@@ -122,6 +126,36 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
   ModalRegistry.close('tour');
   ok(ModalRegistry.isAnyOpen() === false, 'closing every open id must leave the registry empty');
   ModalRegistry._resetForTests();
+
+  // RED-APP-14/004 (round15): a surface refused at open time must retry the
+  // moment the stack changes — this is what lets a caller "sequence, never
+  // stack" two surfaces with NO coordination between them (the local-games
+  // offer and a resumed Save dialog racing to open from the same sign-in).
+  // Mutation: drop `notifyStackChanged()` from `open`/`close` and the second
+  // `subscribe` callback below never fires — this fails.
+  ModalRegistry.open('offer', false);
+  ok(ModalRegistry.isRegistered('offer'), 'isRegistered must report a currently-open id');
+  ok(!ModalRegistry.isRegistered('save-preset'), 'isRegistered must not report an id that never opened');
+  let retried = false;
+  const unsubscribe = ModalRegistry.subscribe(() => {
+    if (!ModalRegistry.isRegistered('save-preset') && ModalRegistry.canOpen('save-preset')) {
+      ModalRegistry.open('save-preset', false);
+      retried = true;
+    }
+  });
+  ok(ModalRegistry.canOpen('save-preset') === false, 'save-preset must be refused while offer is open (precondition)');
+  ModalRegistry.close('offer');
+  ok(retried && ModalRegistry.isRegistered('save-preset'),
+    'closing the blocker must let a subscribed, refused surface register itself — sequenced, never stacked');
+  unsubscribe();
+  ModalRegistry._resetForTests();
+  // Isolating: unsubscribe must actually stop future notifications.
+  let firedAfterUnsubscribe = false;
+  const u2 = ModalRegistry.subscribe(() => { firedAfterUnsubscribe = true; });
+  u2();
+  ModalRegistry.open('x', false);
+  ok(!firedAfterUnsubscribe, 'a listener must not fire after its own unsubscribe() has been called');
+  ModalRegistry._resetForTests();
 }
 
 // ── The drawer threads deletingGameIds into its own Delete button ──────────
@@ -189,7 +223,11 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
         `${file}: the keydown listener "${handlerName}" handles ${JSON.stringify(keysHandled)} without consulting ModalRegistry.isAnyOpen() (RED-APP-14/001)`);
     }
   }
-  ok(listeners >= 3, `expected at least the 3 known global keydown listeners outside ModalSurface, found ${listeners}`);
+  // round15: App.tsx's own hand-rolled expand-log and local-games-offer
+  // keydown listeners are GONE — both surfaces now go through ModalSurface's
+  // shared Escape/Tab handling, leaving only Walkthrough.tsx's own tour
+  // listener outside this file.
+  ok(listeners >= 1, `expected at least Walkthrough's own keydown listener outside ModalSurface, found ${listeners}`);
   // Fixture: an inline unguarded listener must be caught by the same regex.
   const inlineFixture = "useEffect(() => {\n  window.addEventListener('keydown', (e) => { if (e.key === 'ArrowRight') next(); });\n}, [next]);";
   const fm = [...inlineFixture.matchAll(listenerRe)];
@@ -216,6 +254,145 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
   ok(/onPointerDown=\{\(e\) => \{ pointerDownOnOverlayRef\.current = e\.target === e\.currentTarget; \}\}/.test(surface)
     && /if \(e\.target === e\.currentTarget && pointerDownOnOverlayRef\.current\) onClose\(\)/.test(surface),
     'ModalSurface: the centered overlay closes only when the pointer went down on the backdrop itself (RED-APP-14/007)');
+}
+
+// RED-APP-14/002 (round15): the Tab trap must never give up when every
+// control inside a dialog is disabled — it must park focus on the panel
+// itself (`tabIndex={-1}`) and swallow Tab/Shift+Tab, then hand focus back
+// to the first control once one re-enables. Structural (the real DOM
+// behavior is e2e section 70's job): mutation-tested by hand — reverting
+// the `onKey` branch to a bare `return` (its round14 shape) fails the first
+// check below; dropping the MutationObserver fails the third.
+{
+  ok(/if \(focusables\.length === 0\) \{\s*\n[\s\S]{0,300}?e\.preventDefault\(\);\s*\n[\s\S]{0,120}?container\.focus\(\);/.test(modalSurfaceSrc),
+    'useModalTabTrap\'s onKey must preventDefault() and park focus on the panel when focusables.length === 0, not bare `return` (RED-APP-14/002)');
+  ok(/\(focusables\[0\] \?\? container\)\.focus\(\)/.test(modalSurfaceSrc),
+    'the open-time focus effect and the onFocusOut recapture must both fall back to the panel itself, never a silent no-op on an empty focusables list (RED-APP-14/002)');
+  ok(/new MutationObserver\(/.test(modalSurfaceSrc) && /attributeFilter:\s*\[['"]disabled['"]\]/.test(modalSurfaceSrc),
+    'useModalTabTrap must watch for controls re-enabling (a MutationObserver on the `disabled` attribute) and return focus to the first one (RED-APP-14/002)');
+  ok((modalSurfaceSrc.match(/tabIndex=\{-1\}/g) ?? []).length >= 2,
+    'both ModalSurface panel layouts (centered + drawer) must set tabIndex={-1} so the panel itself is a valid focus-park target');
+}
+
+// RED-APP-14/005 (round15): opener tracking must survive WebKit focusing a
+// `tabIndex={-1}` landmark instead of the clicked button — `focusin` must be
+// filtered to real controls, and pointerdown/keydown (which WebKit still
+// fires on the real control) are the sources of record. Mutation: widen
+// REAL_CONTROL_SELECTOR back to `[tabindex]` (dropping `:not([tabindex="-1"])`)
+// and this fails; drop the `.matches(REAL_CONTROL_SELECTOR)` filter on
+// `focusin` and this also fails.
+{
+  ok(/REAL_CONTROL_SELECTOR\s*=\s*'[^']*\[tabindex\]:not\(\[tabindex="-1"\]\)/.test(modalSurfaceSrc),
+    'REAL_CONTROL_SELECTOR must exclude tabIndex={-1} containers (RED-APP-14/005)');
+  ok(/addEventListener\('focusin',[\s\S]{0,200}?\.matches\(REAL_CONTROL_SELECTOR\)/.test(modalSurfaceSrc),
+    'the focusin listener must only record a target that matches REAL_CONTROL_SELECTOR — never a landmark (RED-APP-14/005)');
+  ok(/addEventListener\('pointerdown',[\s\S]{0,200}?closest\?\.\(REAL_CONTROL_SELECTOR\)/.test(modalSurfaceSrc),
+    'the pointerdown listener must record the closest REAL_CONTROL_SELECTOR match');
+  ok(/addEventListener\('keydown',[\s\S]{0,200}?closest\?\.\(REAL_CONTROL_SELECTOR\)/.test(modalSurfaceSrc),
+    'a keydown listener must also record the opener, for keyboard activation (Enter/Space) with no prior focusin (RED-APP-14/005)');
+}
+
+// RED-APP-14/003 (round15): every authenticated (`Authorization: Bearer`)
+// fetch in src/components must clear a dead token on 401 through ONE shared
+// helper — not a re-implementation per call site. Enumerated so a NEW
+// authenticated fetch in src/components that skips the helper fails CI.
+// Mutation: delete the `clearTokenIfExpired(res);` call from either Danger
+// Zone handler in MenuDrawer.tsx and this fails for that site.
+{
+  const walkComponents = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+    const p = `${dir}/${f}`;
+    return statSync(p).isDirectory() ? walkComponents(p) : (/\.tsx?$/.test(f) && !/\.test\./.test(f) ? [p] : []);
+  });
+  let authedFetchSites = 0;
+  for (const file of walkComponents('src/components')) {
+    const src = readFileSync(file, 'utf8');
+    // Every occurrence of the Authorization header; the enclosing function is
+    // the text back to the nearest `const ... = async` / `const ... = (` before it.
+    for (const m of src.matchAll(/'Authorization':\s*`Bearer/g)) {
+      authedFetchSites++;
+      const fnStart = Math.max(src.lastIndexOf('const handle', m.index), src.lastIndexOf('async (', m.index), src.lastIndexOf('async function', m.index));
+      const bodyEnd = src.indexOf('\n  };', m.index) > 0 ? src.indexOf('\n  };', m.index) : m.index + 2000;
+      const body = src.slice(fnStart >= 0 ? fnStart : 0, bodyEnd);
+      ok(/clearTokenIfExpired\(res\)/.test(body),
+        `${file}: an authenticated fetch's response handling must clear a dead token through clearTokenIfExpired(res), not its own check (RED-APP-14/003)`);
+    }
+  }
+  ok(authedFetchSites >= 2, `expected at least MenuDrawer.tsx's 2 Danger Zone fetch sites, found ${authedFetchSites}`);
+  ok(/const clearTokenIfExpired = \(res: Response\) => \{ if \(res\.status === 401\) updateAuthToken\(null\); \};/.test(drawer),
+    'MenuDrawer.tsx must define exactly one clearTokenIfExpired helper backed by the updateAuthToken prop');
+  ok(/updateAuthToken:\s*\(token: string \| null\) => void;/.test(drawer),
+    'MenuDrawerProps must declare updateAuthToken so the drawer never re-implements its own token store');
+  ok(/<MenuDrawer[\s\S]{0,400}updateAuthToken=\{updateAuthToken\}/.test(app),
+    'App.tsx must pass its own updateAuthToken down to <MenuDrawer>');
+}
+
+// RED-APP-4 (round15 regression guard): the expand-log dialog must still
+// focus the LOG REGION on open, not <ModalSurface>'s default (the first
+// focusable — the Collapse button). Measured directly (not inferred): an
+// inline arrow-function ref stays a NEW function every render and re-steals
+// focus on every log line while the dialog is open; a `[logExpanded]`-keyed
+// useEffect fires in `<ModalSurface>`'s FIRST commit (before it renders
+// anything — `active` starts false), while the ref only exists after its
+// SECOND commit — both were tried by hand and both landed focus on the
+// Collapse button instead (screenshots/focus dumps in REPORT.md).
+//
+// OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2: the SAME two-commit-mount timing
+// broke the pre-existing auto-scroll-to-newest effect (its `logsExpandedRef
+// .current` was null on the commit its `[logExpanded]` dependency actually
+// changed) — the log opened scrolled to the TOP, not the newest lines. Fixed
+// in the SAME ref callback that already solved this ordering problem for
+// focus; the callback is renamed `mountLogRegion` to reflect doing both.
+{
+  ok(/const mountLogRegion = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) \{\s*\n\s*el\.scrollTop = el\.scrollHeight;\s*\n\s*el\.focus\(\);\s*\n\s*\}\s*\n\s*\}, \[\]\);/.test(app),
+    'App.tsx must focus AND scroll-to-bottom the log region via the SAME stable (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)');
+  ok(/ref=\{mountLogRegion\}/.test(app),
+    'the log region\'s own div must use the stable mountLogRegion ref callback');
+  ok(!/autoFocus/.test((app.match(/aria-label="Simulation log"[\s\S]{0,400}/) ?? [''])[0]),
+    'the log region must not rely on autoFocus — it is inert on a non-form element (React only special-cases button/input/select/textarea)');
+}
+
+// OPUS-REVIEW-MODAL BLOCK 1 (regression from the round15 fix): `tabIndex={-1}`
+// on the panel (added for RED-APP-14/002's focus-parking) makes it MOUSE-
+// focusable — a plain click on the dialog's own dead space (padding, a
+// heading) with every control still ENABLED focuses the panel itself.
+// `Node.contains()` returns true for the node itself, so the old
+// `!container.contains(document.activeElement)` boundary check never fired
+// for `activeElement === container`, and Shift+Tab fell through to the
+// browser's own backward navigation — escaping the dialog on Chromium and
+// Firefox (RED-APP-5/002's exact shape, reintroduced). Mutation: drop the
+// `|| document.activeElement === container` disjunct and this fails.
+{
+  ok(/if \(!container\.contains\(document\.activeElement\) \|\| document\.activeElement === container\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*\(e\.shiftKey \? last : first\)\.focus\(\);\s*\n\s*return;\s*\n\s*\}/.test(modalSurfaceSrc),
+    'the Tab-trap boundary check must also treat activeElement === container (the panel itself, mouse-focusable via tabIndex={-1}) as "at the edge" (OPUS-REVIEW-MODAL BLOCK 1)');
+}
+
+// CodeRabbit CLI (round15 review): `mountLogRegion`'s own `el.focus()` on the
+// log region (tabIndex={0}, a REAL control) fires a real `focusin` in the
+// SAME commit that mounts it — before useModalTabTrap's effect ever reads
+// `lastInteractedControl` — overwriting the correctly-recorded "Expand log"
+// button (its own pointerdown, moments earlier) with the log region itself,
+// which the trap's container already contains. `opener` then resolves to
+// null and focus fell back to `[data-focus-home]` instead of the actual
+// opener. Measured directly against the built dist (a throwaway script,
+// removed, never committed): DEFECT before this fix, PASS after. Mutation:
+// remove the `fallbackSelector` prop from the expand-log ModalSurface and
+// this fails.
+{
+  ok(/ariaLabel="Simulation log"[\s\S]{0,400}?fallbackSelector='\[aria-label="Expand simulation log"\]'/.test(app),
+    'the expand-log <ModalSurface> must declare a fallbackSelector naming its one real opener (the Expand log button) — mountLogRegion\'s own focus() clobbers opener-tracking\'s lastInteractedControl, so focusAfterDialog\'s opener param resolves to null');
+  // OPUS-REVIEW-MODAL2 NOTE 3: the fallbackSelector literal and the button's
+  // actual aria-label are two independently-typed strings that must agree —
+  // nothing else checks that pairing. `app.includes(...)` alone would be a
+  // SELF-REFERENTIAL check: the fallbackSelector string itself is
+  // `'[aria-label="Expand simulation log"]'`, which already contains the
+  // exact substring being searched for, so the check would pass even with
+  // the button's own attribute renamed (verified by hand — it did). The
+  // negative lookbehind excludes that `[...]` occurrence, requiring a SECOND,
+  // real JSX-attribute occurrence. Mutation: rename only the button's own
+  // aria-label (App.tsx:4126), leaving the fallbackSelector string
+  // untouched → this fails; the naive `includes` form does not.
+  ok(/(?:^|[^[])aria-label="Expand simulation log"/.test(app),
+    'App.tsx must still have a button with aria-label="Expand simulation log" as a REAL JSX attribute (not just inside the fallbackSelector string) — the expand-log fallbackSelector names this exact string, and nothing else checks that the two agree (OPUS-REVIEW-MODAL2 NOTE 3)');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

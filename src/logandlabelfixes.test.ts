@@ -57,8 +57,15 @@ function openingTagAt(src: string, refIdx: number): string {
   ok(/role="region"/.test(compactTag), 'the compact log container must carry role="region" (a bare div does not support an accessible name)');
   ok(/aria-label="Simulation log"/.test(compactTag), 'the compact log container must carry an aria-label');
 
-  const expandedIdx = app.indexOf('ref={logsExpandedRef}');
-  ok(expandedIdx > 0, 'the expanded log container (logsExpandedRef) must be found');
+  // round15 (BLUE-MODAL-15 / OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2): the
+  // expanded log container's ref moved from the bare `logsExpandedRef`
+  // object to a stable `mountLogRegion` callback (`useCallback`, empty deps)
+  // that ALSO sets `logsExpandedRef.current` — needed so the callback can
+  // focus AND scroll-to-bottom the node the moment it mounts, before
+  // <ModalSurface>'s own open-time-focus effect ever runs (see App.tsx's own
+  // comment above `mountLogRegion` for why a plain ref/effect could not).
+  const expandedIdx = app.indexOf('ref={mountLogRegion}');
+  ok(expandedIdx > 0, 'the expanded log container (mountLogRegion) must be found');
   const expandedTag = openingTagAt(app, expandedIdx);
   ok(/tabIndex=\{0\}/.test(expandedTag), `the expanded log container's OWN opening tag must carry tabIndex={0}, got: ${JSON.stringify(expandedTag)}`);
   ok(/role="region"/.test(expandedTag), 'the expanded log container must carry role="region"');

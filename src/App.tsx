@@ -286,8 +286,8 @@ export function payoffsEqual(a: GamePayoffs, b: GamePayoffs): boolean {
 
 // useModalTabTrap/firstVisible/focusAfterDialog/getModalFocusables moved to
 // components/ModalSurface.tsx (round14 structural pass) — imported above.
-// localGamesOffer (out of this round's scope) still calls useModalTabTrap
-// directly; every other dialog now goes through <ModalSurface>.
+// round15 (BLUE-MODAL-15): the local-games offer and the expand-log overlay
+// now go through <ModalSurface> too — every dialog in the app does.
 
 /**
  * RED-APP-6/003: `fetch(getApiUrl('/api/report'), ...)` had no `signal`
@@ -1098,19 +1098,14 @@ export default function App() {
   // the auto-scroll would silently follow the wrong one.
   const logsExpandedRef = useRef<HTMLDivElement>(null);
   const [logExpanded, setLogExpanded] = useState(false);
-  /** The dialog's own outer element — the boundary the Tab trap searches for
-   *  focusable descendants inside. */
-  const logDialogRef = useRef<HTMLDivElement>(null);
-  /** The "Expand log" button, as a fallback opener to restore focus to on
-   *  close if `document.activeElement` was not it for some reason (e.g. the
-   *  dialog was opened programmatically rather than by a real click/Enter). */
+  /** The "Expand log" button — <ModalSurface>'s opener-tracking already
+   *  restores focus here on close via a real click/Enter; kept as the JSX
+   *  ref target, not read by any effect any more. */
   const expandLogButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Account, Save, Edit and Feedback each render through <ModalSurface> now
-  // (round14 structural pass) — it owns the ref, the Tab trap and Escape.
-  // localGamesOffer is out of this round's scope and keeps its own trap.
-  const localGamesDialogRef = useRef<HTMLDivElement>(null);
-  useModalTabTrap(!!localGamesOffer, localGamesDialogRef, '[data-focus-fallback="account"] button, [data-focus-fallback="account"]');
+  // Account, Save, Edit, Feedback, the drawer, the local-games offer and the
+  // expand-log overlay all render through <ModalSurface> now (round14+15
+  // structural pass) — it owns the ref, the Tab trap, Escape and the registry.
   // RED-APP-12/001: signing in (or out) swaps the header's account controls —
   // the Sign-In button a dialog had just handed focus back to is unmounted, and
   // the browser drops focus to <body> without firing any event (the "focus
@@ -1135,67 +1130,48 @@ export default function App() {
     }
   }, [logEntries, logExpanded]);
 
-  /**
-   * Focus management for the expanded-log dialog (RED-APP-4, CodeRabbit
-   * finding on PR #90): opening it left focus on the "Expand log" button
-   * underneath the overlay, so a keyboard user's next Tab walked the REST OF
-   * THE PAGE (hidden behind the backdrop) before ever reaching the dialog —
-   * and nothing ever moved focus back when it closed. WAI-ARIA APG's modal
-   * dialog pattern: move focus INTO the dialog on open, trap Tab/Shift+Tab
-   * within it while open, restore focus to the opener on close.
-   *
-   * The cleanup function (not a second effect) does the restore: it runs
-   * exactly when `logExpanded` flips back to false — right before the
-   * early-return body for that render — which is precisely "the moment the
-   * dialog closes," not sooner and not later.
-   */
-  useEffect(() => {
-    if (!logExpanded) return;
-    const opener = (document.activeElement as HTMLElement | null) ?? expandLogButtonRef.current;
-    // The log region itself, not the collapse button — a keyboard user
-    // arriving here wants to read/scroll the log immediately.
-    logsExpandedRef.current?.focus();
-    return () => { opener?.focus(); };
-  }, [logExpanded]);
-
-  // Escape closes the expanded log (matching the other modals in the app);
-  // Tab/Shift+Tab is trapped to the dialog's own focusable elements so
-  // focus can never leave it onto the page underneath while it is open.
-  useEffect(() => {
-    if (!logExpanded) return;
-    const onKey = (e: KeyboardEvent) => {
-      // RED-APP-6/002 (re-broken, RED-APP-7/003): stop the keydown from also
-      // reaching Walkthrough.tsx's own independent `window`-level Escape
-      // listener — without this, one Escape press while this dialog is open
-      // over the tour closes BOTH this dialog AND the tour (resetting its
-      // step to 0). `document` fires before `window` in the bubble phase, so
-      // stopping it here is enough — but ONLY if this listener is actually
-      // registered on `document`. It was registered on `window` (the same
-      // target as Walkthrough's own listener), which makes
-      // `stopPropagation()` a no-op against a sibling listener on the same
-      // target (that needs `stopImmediatePropagation`, not used here) — the
-      // comment above described the fix this code never implemented.
-      if (e.key === 'Escape') { setLogExpanded(false); e.stopPropagation(); return; }
-      if (e.key !== 'Tab') return;
-      const container = logDialogRef.current;
-      if (!container) return;
-      const focusables = Array.from(
-        container.querySelectorAll<HTMLElement>('button, [tabindex]:not([tabindex="-1"])'),
-      ).filter((el) => !el.hasAttribute('disabled'));
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [logExpanded]);
+  // RED-APP-4 / RED-APP-6/002 / RED-APP-7/003 (round15: converted to
+  // <ModalSurface id="expand-log">): the Tab trap, Escape (stopping it from
+  // also reaching Walkthrough.tsx's own independent `window`-level listener),
+  // and focus-return to the opener on close are now ALL <ModalSurface>'s job
+  // — see docs/MODAL-SURFACE.md. Open-time focus is NOT: ModalSurface's own
+  // default (first focusable — the Collapse button) is a plain DIV effect
+  // measured to WIN over a JS-set `autoFocus` prop on a non-form element (a
+  // `<div>` does not get React's or the browser's native autofocus behavior
+  // — that is form-element-only), so this dialog keeps its own override.
+  // NOT a `[logExpanded]`-keyed effect: `<ModalSurface>` mounts in TWO
+  // commits (it renders nothing until its OWN registration layout effect
+  // flips `active` true), so an effect keyed on `logExpanded` fires in the
+  // FIRST commit, before this ref even exists (`logsExpandedRef.current` is
+  // still null then) — measured directly (a mutation, effectively). The
+  // STABLE ref callback below (`useCallback`, empty deps — an inline arrow
+  // here would be a NEW function every render and re-focus/re-scroll the log
+  // region on every log line while the dialog stays open, stealing focus and
+  // fighting a scroll position the user set themselves) fires the moment the
+  // node actually mounts (in the SECOND commit's commit phase, strictly
+  // before any passive effect of that commit runs), so ModalSurface's own
+  // open-time-focus effect finds focus already inside the dialog and
+  // correctly no-ops — the same mechanism Feedback's `autoFocus` textarea
+  // relies on, just triggered by ref attachment instead of the (form-
+  // element-only) `autoFocus` prop.
+  //
+  // OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2: the pre-existing auto-scroll effect
+  // a few lines up (`[logEntries, logExpanded]`) sets `logsExpandedRef
+  // .current.scrollTop` — but that ref is populated by THIS callback, on the
+  // SAME two-commit-mount timing that broke the old focus effect. On open
+  // that effect's `logExpanded` dependency changes in the FIRST commit,
+  // before this ref exists, so it silently no-ops there and never re-runs
+  // (nothing else in its deps changes) — the log opened at the TOP, not
+  // scrolled to the newest lines. Scrolling here, in the same callback that
+  // already solved this exact ordering problem for focus, closes it for
+  // real.
+  const mountLogRegion = useCallback((el: HTMLDivElement | null) => {
+    logsExpandedRef.current = el;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      el.focus();
+    }
+  }, []);
 
   // ── Simulation-log placement ───────────────────────────────────────────────
   // The log lives in the right column with an explicit height so its bottom lines
@@ -2731,28 +2707,11 @@ export default function App() {
     }
   };
 
-  // Close the local-games offer on Escape. Feedback/Save/Auth/Edit/the
-  // drawer each own their Escape handling now via <ModalSurface> (round14);
-  // this dialog is out of scope and keeps its previous, standalone behavior.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      // RED-APP-6/002: Walkthrough.tsx has its own independent `window`-level
-      // Escape listener that unconditionally closes the tour AND resets its
-      // step to 0. `document` (this listener) fires before `window` in the
-      // bubble phase, so stopping propagation HERE, but only when this
-      // dialog actually closed, means one Escape closes only the topmost
-      // layer: the dialog first, the tour only on a second press with
-      // nothing else open. Do not stopPropagation when nothing here was open
-      // — that Escape press must still reach the tour.
-      // The local-games question sits above every other layer (z-[66]) and
-      // opens right after the Account dialog closes, so it is the topmost
-      // candidate; Escape = "leave them on this device", never mid-move.
-      if (localGamesOffer) { if (!localGamesBusy) setLocalGamesOffer(null); e.stopPropagation(); }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [localGamesOffer, localGamesBusy]);
+  // round15: the local-games offer renders through <ModalSurface> now (see
+  // below) — Escape, its stopPropagation against Walkthrough.tsx's own
+  // `window`-level listener, the Tab trap and the registry are its job.
+  // `onClose` below still gates the close on `!localGamesBusy`, same as this
+  // effect used to: "leave them on this device" is never fired mid-move.
 
   /**
    * RED-APP-5 finding 004 (round 5): no `aria-live`/`role="status"`/
@@ -4186,21 +4145,36 @@ export default function App() {
   // Fills most of the viewport over a blurred backdrop. The backdrop closes on
   // click; the dialog stops propagation so selecting log text does not dismiss
   // it — the whole point of expanding is to read and copy from it.
+  // round15 (BLUE-MODAL-15): converted to <ModalSurface> — Escape (and its
+  // stopPropagation against Walkthrough.tsx), the Tab trap and the registry
+  // are now shared, not a hand-rolled copy (RED-APP-4/RED-APP-6/002/
+  // RED-APP-7/003). Open-time focus on the LOG REGION (not the Collapse
+  // button ModalSurface would default to) is the explicit effect above,
+  // keyed on `logExpanded` — a `<div>`'s `autoFocus` prop is inert (React
+  // only special-cases button/input/select/textarea, and a JS-inserted node
+  // gets no native autofocus either), so it cannot win that race the way
+  // Feedback's own `autoFocus` textarea does.
   const expandedLogOverlay = logExpanded && (
-    <div
-      // z-[65]: above the guided tour's z-[60] — see the RED-APP-5 003 note
-      // on the Auth dialog below for why.
-      className="fixed inset-0 z-[65] flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md"
-      onClick={() => setLogExpanded(false)}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Simulation log"
+    <ModalSurface
+      id="expand-log"
+      open={true}
+      onClose={() => setLogExpanded(false)}
+      ariaLabel="Simulation log"
+      // CodeRabbit CLI: `mountLogRegion`'s own `el.focus()` on the log region
+      // (tabIndex={0}, a REAL control per REAL_CONTROL_SELECTOR) fires a real
+      // `focusin` during the SAME commit that mounts it — before
+      // useModalTabTrap's effect ever reads `lastInteractedControl` — so it
+      // overwrites the correctly-recorded "Expand log" button (captured on
+      // its own pointerdown moments earlier) with the log region itself,
+      // which the trap's own container already contains. `opener` then
+      // resolves to null and focus fell back to `[data-focus-home]` instead
+      // of the button that actually opened this dialog. There is only ever
+      // one opener for this dialog, so a fixed fallback is exact, not a
+      // guess.
+      fallbackSelector='[aria-label="Expand simulation log"]'
+      overlayClassName="fixed inset-0 z-[65] flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md select-none"
+      panelClassName="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
     >
-      <div
-        ref={logDialogRef}
-        className="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
             <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
@@ -4220,7 +4194,7 @@ export default function App() {
           </button>
         </div>
         <div
-          ref={logsExpandedRef}
+          ref={mountLogRegion}
           tabIndex={0}
           role="region"
           aria-label="Simulation log"
@@ -4228,8 +4202,7 @@ export default function App() {
         >
           {logLines}
         </div>
-      </div>
-    </div>
+    </ModalSurface>
   );
 
   return (
@@ -5891,18 +5864,21 @@ export default function App() {
           written about them, which is the exact mismatch the scenario feature
           exists to prevent. Editing a matrix stays a save-as-new operation. */}
       {localGamesOffer && (
-        <div
-          className="fixed inset-0 z-[66] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
-          onClick={() => { if (!localGamesBusy) setLocalGamesOffer(null); }}
+        // round15 (RED-APP-14/002+004): was a hand-rolled overlay outside
+        // ModalRegistry — the trap gave up when both buttons were disabled
+        // mid-request, and a resumed Save/Edit dialog could register and
+        // stack on top of this one instead of waiting its turn. Converting
+        // to <ModalSurface> gives it the shared trap (never gives up) and
+        // the registry's queueing (a surface refused while this is open
+        // opens itself the instant this one closes — see ModalSurface.tsx).
+        <ModalSurface
+          id="local-games-offer"
+          open={true}
+          onClose={() => { if (!localGamesBusy) setLocalGamesOffer(null); }}
+          ariaLabel="Games saved on this device"
+          fallbackSelector='[data-focus-fallback="account"] button, [data-focus-fallback="account"]'
+          panelClassName="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[calc(100dvh-2rem)] overflow-y-auto"
         >
-          <div
-            ref={localGamesDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Games saved on this device"
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[calc(100dvh-2rem)] overflow-y-auto"
-          >
             <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
               <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                 <User className="w-4 h-4" />
@@ -5937,8 +5913,7 @@ export default function App() {
                 {localGamesBusy ? 'Moving…' : `Move ${localGamesOffer.count === 1 ? 'it' : 'them'} into my account`}
               </button>
             </div>
-          </div>
-        </div>
+        </ModalSurface>
       )}
       <ModalSurface
         id="edit-saved-game"
@@ -6478,6 +6453,7 @@ export default function App() {
         onClose={() => setIsMenuOpen(false)}
         user={user}
         authToken={authToken}
+        updateAuthToken={updateAuthToken}
         canOwnGames={canOwnGames}
         userCustomGames={userCustomGames}
         deletingGameIds={deletingGameIds}
