@@ -2,17 +2,47 @@
  * Pure smoke-section selection shared by the runner and its contract test.
  * CI uses E2E_SHARD; E2E_SECTION is a local-only surgical rerun aid.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
 /**
- * How many CI shards the smoke suite is split into. 12 (4 -> 8 -> 12 on
- * 2026-09-05): every shard job must finish in under five minutes. A job costs
- * ~75 s of fixed overhead (checkout, dist artifact, browsers, server boot) plus
- * its sections, and the longest single section is ~120 s, so 12 shards packed
- * by MEASURED duration (greedy longest-first) hold every shard to ~140 s of
- * sections: ~3m40s nominal, under five minutes even at +30% timing variance.
- * A new section goes into the lightest shard; re-measure from the CI logs
- * (SECTION-PASS lines carry the ms) before moving anything else.
+ * How many CI shards the smoke suite is split into (test.yml's matrix must
+ * match — e2esharding.test.ts pins both). Sections are packed into shards by
+ * MEASURED duration (shard-timings.json, longest-first): a job pays ~75 s of
+ * fixed overhead (checkout, dist, browsers, server boot) and must finish under
+ * 300 s, so every shard holds at most 225 s of sections. 16 shards stopped
+ * fitting on 2026-09-06 (4,040 s of sections; shards 6/7/8 at 390 s); 20 gives
+ * a 202 s mean with the longest section (66 → split into 66/66b) under 200 s.
  */
-export const SHARD_COUNT = 16;
+export const SHARD_COUNT = 20;
+
+const here = dirname(fileURLToPath(import.meta.url));
+export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));
+export const SECTION_BUDGET_MS = SHARD_TIMINGS._ceiling_ms - SHARD_TIMINGS._overhead_ms;
+
+export function measuredMs(id, timings = SHARD_TIMINGS) {
+  const v = timings[String(id)];
+  return typeof v === 'number' ? v : timings._default;
+}
+
+/**
+ * Deterministic longest-processing-time packing: sections sorted by measured
+ * duration (desc, then id) each go to the currently lightest shard. Returns
+ * the definitions with `.shard` set plus the per-shard totals, so the runner,
+ * the contract test and the timings script all see one assignment.
+ */
+export function assignShards(definitions, timings = SHARD_TIMINGS, count = SHARD_COUNT) {
+  const totals = Array.from({ length: count }, () => 0);
+  const ordered = [...definitions].sort((a, b) => measuredMs(b.id, timings) - measuredMs(a.id, timings) || String(a.id).localeCompare(String(b.id)));
+  for (const definition of ordered) {
+    let lightest = 0;
+    for (let i = 1; i < count; i++) if (totals[i] < totals[lightest]) lightest = i;
+    definition.shard = lightest + 1;
+    totals[lightest] += measuredMs(definition.id, timings);
+  }
+  return { definitions, totals };
+}
 
 export function selectSmokeSections(definitions, env = process.env) {
   const readConfigured = (name) => {
@@ -48,6 +78,7 @@ export function selectSmokeSections(definitions, env = process.env) {
     ids = new Set(parsed);
   }
 
+  assignShards(definitions);
   const selected = ids
     ? definitions.filter((definition) => ids.has(definition.id))
     : shard

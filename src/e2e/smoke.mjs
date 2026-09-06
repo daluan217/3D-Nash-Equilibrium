@@ -31,8 +31,11 @@ function record(name, pass, detail) {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
 
-function section(id, name, shard, run) {
-  sections.push({ id: String(id), name, shard, run });
+// Shards are not named here: selection.js packs sections into shards from the
+// MEASURED durations in shard-timings.json (longest-first), so a new section
+// lands in the lightest shard and no one places it by hand.
+function section(id, name, run) {
+  sections.push({ id: String(id), name, run });
 }
 
 // ── boot the production server (unless one is already listening) ────────────
@@ -394,7 +397,7 @@ const REGEN_STORY_SYMMETRIC = {
 try {
   // ══ 1. cold load (guards: build integrity — a broken bundle was once the
   //      only failure mode CI could not see, because nothing built or ran it)
-  section('1', 'cold load', 12, async () => {
+  section('1', 'cold load', async () => {
     await gotoHome();
     record('page loads with the app title',
       (await page.title()).includes('Nash Equilibrium'),
@@ -402,7 +405,7 @@ try {
   });
 
   // ══ 2. API + deterministic report path (no key → computed ground truth)
-  section('2', 'deterministic report API', 12, async () => {
+  section('2', 'deterministic report API', async () => {
     const r = await fetch(`${BASE}/api/report`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -416,7 +419,7 @@ try {
   });
 
   // ══ 3. pasted typographic minus (round 14: silently became 0 on the live site)
-  section('3', 'typographic minus input', 4, async () => {
+  section('3', 'typographic minus input', async () => {
     const cell = $.matrix.nth(0);
     await cell.click();
     await cell.fill('');
@@ -430,7 +433,7 @@ try {
   });
 
   // ══ 4. start point of 0 (round 14: log said Start (0.217) over a box reading 0)
-  section('4', 'zero start point', 1, async () => {
+  section('4', 'zero start point', async () => {
     await $.x0.fill('0'); await $.x0.blur(); await page.waitForTimeout(200);
     await $.step.click();
     // poll, don't sleep: on CI's SwiftShader runner the step can take seconds
@@ -445,7 +448,7 @@ try {
 
   // ══ 5. THE TAB WEDGE (round 15: one Step click at step-size 0.001 wedged the
   //      tab permanently, live on the public site)
-  section('5', 'tab-wedge fixture', 15, async () => {
+  section('5', 'tab-wedge fixture', async () => {
     const vals = [7, -7, -6, -4, -7, 1, 0, -6];
     for (let i = 0; i < 8; i++) { await $.matrix.nth(i).fill(String(vals[i])); await $.matrix.nth(i).blur(); }
     await page.waitForTimeout(300);
@@ -471,7 +474,7 @@ try {
   });
 
   // ══ 6. a preset runs to convergence (guards the solver + run loop + UI wiring)
-  section('6', 'mixed convergence', 10, async () => {
+  section('6', 'mixed convergence', async () => {
     await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
     await page.waitForTimeout(500);
     await setSpeed(10); await page.waitForTimeout(300);
@@ -509,7 +512,7 @@ try {
   //       "x = P(A plays Row 1), y = P(B plays Col 1)" via MathTex on every
   //       game, preset or not — a body-wide check would fail on the FIXED
   //       code too and the check would be measuring the wrong thing.
-  section('6b', 'standard preset stories', 12, async () => {
+  section('6b', 'standard preset stories', async () => {
     const ROWCOL = /\b(row|col(?:umn)?)\s*\d\b/i;
     // Each preset's own row1Label (headerMarker) AND a distinct phrase that
     // only appears in that preset's PROSE (narrativeMarker) — two separate
@@ -591,7 +594,7 @@ try {
 
   // ══ 7. regret mode converges and names what it did (round 14 wording defect;
   //      guards the mixed-NE realization branch)
-  section('7', 'regret convergence wording', 13, async () => {
+  section('7', 'regret convergence wording', async () => {
     // This used to inherit Penalty Kick from §6b. Every section must carry
     // its own fixture now that shards can start here and retries can run it
     // alone.
@@ -610,7 +613,7 @@ try {
   });
 
   // ══ 8. switching mover clears the run (round 14: stale run under new rules)
-  section('8', 'mover switch clears run', 11, async () => {
+  section('8', 'mover switch clears run', async () => {
     await $.run.click();
     await page.waitForSelector('text=Converged', { timeout: 240000 });
     const before = await page.locator('text=Converged').count();
@@ -624,7 +627,7 @@ try {
 
   // ══ 9. the report surface, end to end, on the no-key path (guards the
   //      report UI + its agreement with the solver-computed equilibria)
-  section('9', 'deterministic report UI', 14, async () => {
+  section('9', 'deterministic report UI', async () => {
     await $.reset.click();
     const vals = [-9, 3, 0, 5, 5, 0, 1, 1];
     for (let i = 0; i < 8; i++) { await $.matrix.nth(i).fill(String(vals[i])); await $.matrix.nth(i).blur(); }
@@ -641,7 +644,7 @@ try {
   // ══ 10. matrix edit after a jump clears the run (round 14: "Search Game,
   //      Run to 49/49, Go to step 0, edit b22" left a STALE certified run on
   //      the new game)
-  section('10', 'matrix edit clears jumped run', 15, async () => {
+  section('10', 'matrix edit clears jumped run', async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Search Game' }).first().click();
@@ -664,7 +667,7 @@ try {
   // ══ 11. the PURE settlement branch (check 6 exercises the mixed one; BoS
   //      settles at a corner — the wording and the realised payoff here are
   //      their own code path, one a red team falsified with a wrong number)
-  section('11', 'pure settlement wording', 8, async () => {
+  section('11', 'pure settlement wording', async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Battle of the Sexes' }).first().click();
@@ -679,7 +682,7 @@ try {
 
   // ══ 12. theme round-trip (the light/dark pairing convention — a panel left
   //      dark "by omission" in light mode is this repo's classic regression)
-  section('12', 'theme round trip', 9, async () => {
+  section('12', 'theme round trip', async () => {
     const before = await page.evaluate(() => document.documentElement.classList.contains('dark'));
     await page.locator('[aria-label="Toggle dark mode"]').first().click();
     await page.waitForTimeout(300);
@@ -699,7 +702,7 @@ try {
 
   // ══ 13. Reset returns the app to a fresh state (guards the default-game
   //      restore path after two presets, a manual matrix, and a report)
-  section('13', 'reset clears run', 9, async () => {
+  section('13', 'reset clears run', async () => {
     await $.reset.click();
     await page.waitForTimeout(300);
     await page.getByRole('button', { name: 'Battle of the Sexes' }).first().click();
@@ -746,7 +749,7 @@ try {
   //      reachable at all: the plot must remain rotatable and zoomable. If
   //      direct manipulation breaks, the camera code above is moot and this
   //      fails loudly.
-  section('14', 'plot rotate and zoom', 11, async () => {
+  section('14', 'plot rotate and zoom', async () => {
     await $.reset.click();
     await page.locator('#plotly-3d-market-simulation').scrollIntoViewIfNeeded();
     const sceneReady = await waitForScene();
@@ -801,7 +804,7 @@ try {
   //      camera from node misses it and "the view did not move" passes against
   //      the bug (three such attempts did). Sample it INSIDE the react call
   //      instead: that is where the stale pose is observable.
-  section('15', 'camera stability on resume', 10, async () => {
+  section('15', 'camera stability on resume', async () => {
     const view = page.viewportSize();
     // Wide enough that the plot and the Run button are both on screen — if
     // Playwright has to scroll to reach Run, the plot moves and the comparison
@@ -884,7 +887,7 @@ try {
   //      as a `wheel` event with ctrlKey set. A plain wheel over the scene
   //      zooms the camera too. Both are reaching into the picture, so both
   //      pause, exactly as a press does.
-  section('16', 'zoom pauses simulation', 13, async () => {
+  section('16', 'zoom pauses simulation', async () => {
     await $.reset.click();
     await page.waitForTimeout(400);
     await page.getByRole('button', { name: 'Spy vs. Analyst' }).first().click();
@@ -933,7 +936,7 @@ try {
   //
   //      A SEPARATE page at a fixed 320px viewport, since the shared page
   //      above never resizes this narrow.
-  section('17', '320px label wrapping', 9, async () => {
+  section('17', '320px label wrapping', async () => {
     const narrowPage = await newTrackedPage({ viewport: { width: 320, height: 900 } });
     await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
     const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
@@ -1004,7 +1007,7 @@ try {
   //      A SEPARATE page (not the shared one above) because the preference
   //      must be readable from the very first render, and setting it mid-way
   //      through this suite would contaminate every later check.
-  section('18', 'reduced-motion idle spin', 12, async () => {
+  section('18', 'reduced-motion idle spin', async () => {
     const rmPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     const eye = () => rmPage.evaluate(() => {
       const el = document.getElementById('plotly-3d-market-simulation');
@@ -1078,7 +1081,7 @@ try {
   //      A SEPARATE page (not the shared one above), since this leaves the
   //      dialog open/closed and moves focus around — state later checks in
   //      this suite do not expect.
-  section('19', 'expanded log focus', 16, async () => {
+  section('19', 'expanded log focus', async () => {
     const focusPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await focusPage.goto(BASE, { waitUntil: 'networkidle' });
     const focusExitTour = focusPage.getByRole('button', { name: /exit tour/i });
@@ -1154,7 +1157,7 @@ try {
   //        Enter press against Feedback, whose own leak point is <body>, so
   //        it STILL could not discriminate. Mutation-verified against
   //        BOTH dialogs before shipping — see the finding's blue-note.)
-  section('20', 'modal focus traps', 10, async () => {
+  section('20', 'modal focus traps', async () => {
     const trapPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
     const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
@@ -1257,7 +1260,7 @@ try {
   //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 — settles at
   //      (0,1) with regret ~18 for A under the app's own defaults
   //      (firstMover A, shrink mode, step 0.1, x0=y0=0.217).
-  section('21', 'settled live-region wording', 4, async () => {
+  section('21', 'settled live-region wording', async () => {
     const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
     const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
@@ -1319,7 +1322,7 @@ try {
   //      Escape handlers now stopPropagation when they actually close
   //      something, so the same keypress can never also reach the tour's
   //      listener and reset its step to 0.
-  section('22', 'Escape closes topmost layer', 12, async () => {
+  section('22', 'Escape closes topmost layer', async () => {
     const escPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await escPage.goto(BASE, { waitUntil: 'networkidle' });
     // Tour auto-opens on a fresh anonymous load — do NOT exit it here.
@@ -1383,7 +1386,7 @@ try {
   //      REPORT_FETCH_TIMEOUT_MS (22s normally; 5s in CI's throwaway e2e
   //      artifact) — real wall-clock time, since the defect class is
   //      specifically "nothing ever forces recovery".
-  section('23', 'stalled report timeout wording', 4, async () => {
+  section('23', 'stalled report timeout wording', async () => {
     const hangPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let intercepted = false;
     await hangPage.route('**/api/report', async (route) => {
@@ -1454,7 +1457,7 @@ try {
   //      forcing the grid — and the page — past the viewport instead of
   //      wrapping or shrinking. Fixed with minmax(0, 1fr) on both tracks,
   //      matching what the per-cell payoff-pair grid already did correctly.
-  section('24', 'long-label 320px reflow', 12, async () => {
+  section('24', 'long-label 320px reflow', async () => {
     const overflowPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
     const oExitTour = overflowPage.getByRole('button', { name: /exit tour/i });
@@ -1543,7 +1546,7 @@ try {
   //      `/api/report` response is fully replaced with a synthetic but
   //      `envelopeIsTrustworthy()`-satisfying ('template' source) envelope
   //      carrying a crafted 72-character name.
-  section('25', 'suggested-name clamp', 8, async () => {
+  section('25', 'suggested-name clamp', async () => {
     const clampPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await clampPage.route('**/api/report', async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -1612,7 +1615,7 @@ try {
   //      unmocked /api/health has no `capabilities.scenarioRegen` at all).
   //      No route mock in this section on purpose — it must be true against
   //      the ACTUAL running server, not a stand-in for one.
-  section('26', 'scenario regeneration hidden', 3, async () => {
+  section('26', 'scenario regeneration hidden', async () => {
     const offPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     // CodeRabbit finding: a FIXED sleep before asserting "absent" can pass
     // for the wrong reason on a stalled CI runner (the button is absent
@@ -1639,7 +1642,7 @@ try {
   // ══ 27. FEATURE-REGEN — Save dialog: Discard preserves typed edits
   //      (RED-APP-4 class), then Keep replaces desc/labels but leaves a
   //      user-TYPED name untouched (director's amended name rule).
-  section('27', 'save-dialog regenerate semantics', 14, async () => {
+  section('27', 'save-dialog regenerate semantics', async () => {
     const savePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let regenCalls = 0;
     await mockRegenOn(savePage, async (route) => {
@@ -1718,7 +1721,7 @@ try {
   //      preserve/add/never-reassign behaviour as pure-function fixtures,
   //      and src/integration/scenario-regen.test.mjs section 10 covers it
   //      end-to-end through the real REST API.
-  section('28', 'edit-dialog regenerate semantics', 13, async () => {
+  section('28', 'edit-dialog regenerate semantics', async () => {
     const editPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(editPage, async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_B }) });
@@ -1811,7 +1814,7 @@ try {
 
   // ══ 29. FEATURE-REGEN — double-click issues exactly one request, and
   //      focus/aria-live behave (a11y).
-  section('29', 'regenerate double-click guard', 16, async () => {
+  section('29', 'regenerate double-click guard', async () => {
     const dblPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let hits = 0;
     await mockRegenOn(dblPage, async (route) => {
@@ -1884,7 +1887,7 @@ try {
   //      handleRegenerateScenario uses the SAME fetchWithTimeout default as
   //      /api/report, see §23's sibling check), because the defect class this
   //      guards is "nothing ever forces recovery".
-  section('30', 'regenerate timeout wording', 7, async () => {
+  section('30', 'regenerate timeout wording', async () => {
     const toPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let toIntercepted = false;
     await mockRegenOn(toPage, async (route) => {
@@ -1927,7 +1930,7 @@ try {
   // ══ 31. FEATURE-REGEN — a 429 from the shared rate-limit bucket shows the
   //      server's own wording, and the button recovers immediately (no stuck
   //      "Regenerating…").
-  section('31', 'regenerate 429 wording', 6, async () => {
+  section('31', 'regenerate 429 wording', async () => {
     const rlPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(rlPage, async (route) => {
       await route.fulfill({
@@ -1960,7 +1963,7 @@ try {
 
   // ══ 32. FEATURE-REGEN — cross-dialog staleness: Edit A's slow response
   //      must never land on Edit B.
-  section('32', 'cross-dialog regeneration staleness', 16, async () => {
+  section('32', 'cross-dialog regeneration staleness', async () => {
     const stalePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(stalePage, async (route) => {
       await new Promise((r) => setTimeout(r, 3000));
@@ -2055,7 +2058,7 @@ try {
   //      the 401 with a route interception (byte-identical downstream code
   //      path to a real TTL expiry — `res.status === 401` is all the client
   //      reads) rather than waiting out AUTH_TOKEN_TTL_MS.
-  section('33', 'expired-auth tour guard', 11, async () => {
+  section('33', 'expired-auth tour guard', async () => {
     const tourPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(tourPage, 'e2e8tourreopen');
     record('control: a signed-in load does not auto-open the tour',
@@ -2138,7 +2141,7 @@ try {
   //      app's own JS ever runs, modeling "the browser already has no quota
   //      left" rather than something the app itself did — same technique
   //      the director's own repro used.
-  section('34', 'storage-quota error boundary', 7, async () => {
+  section('34', 'storage-quota error boundary', async () => {
     const quotaPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await quotaPage.addInitScript(() => {
       const real = window.localStorage.setItem.bind(window.localStorage);
@@ -2195,7 +2198,7 @@ try {
   //      by scrolling a genuine scrollable ANCESTOR into view (the dialog
   //      itself, post-fix) — there is no such ancestor pre-fix, so the click
   //      times out instead of silently "succeeding" through some shortcut.
-  section('35', 'short-viewport dialogs', 14, async () => {
+  section('35', 'short-viewport dialogs', async () => {
     const shortPage = await newTrackedPage({ viewport: { width: 320, height: 256 } });
     // NOTE: no page-wide setDefaultTimeout override here — the two
     // reachability clicks below already pass their own explicit
@@ -2299,7 +2302,7 @@ try {
   //      isComposing:true) per keystroke, matching how
   //      @testing-library/user-event drives React's own composition
   //      detection (which reads exactly `e.nativeEvent.isComposing`).
-  section('36', 'IME-safe label clamp', 1, async () => {
+  section('36', 'IME-safe label clamp', async () => {
     const imePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(imePage, 'e2e8ime');
     await imePage.getByRole('button', { name: /save preset/i }).click();
@@ -2357,7 +2360,7 @@ try {
   //      events) past the 40-unit budget, then presses Undo repeatedly and
   //      confirms the value actually changes at least once (the pre-fix
   //      behaviour: 50 presses, zero change, ever).
-  section('37', 'label-clamp undo', 9, async () => {
+  section('37', 'label-clamp undo', async () => {
     const undoPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(undoPage, 'e2e8undo');
     await undoPage.getByRole('button', { name: /save preset/i }).click();
@@ -2408,7 +2411,7 @@ try {
   //      assertions above can't leak into it): Edit dialog open in A, delete
   //      in B, submit in A -> dialog shows the error, row is already gone
   //      underneath, and Cancel closes cleanly (no reload needed either).
-  section('38', 'phantom saved-game row after a 404', 3, async () => {
+  section('38', 'phantom saved-game row after a 404', async () => {
     const twoTabContext = await browser.newContext();
     const tabA = trackPage(await twoTabContext.newPage());
     const tabB = trackPage(await twoTabContext.newPage());
@@ -2497,7 +2500,7 @@ try {
   //      connection precisely. The client-minted clientRequestId is the same
   //      on the retry, so the server must recognize it and return the
   //      original row rather than creating a second one.
-  section('39', 'network-flap save does not duplicate', 9, async () => {
+  section('39', 'network-flap save does not duplicate', async () => {
     const flapPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const flapConsoleErrors = [];
     flapPage.on('console', (m) => { if (m.type() === 'error') flapConsoleErrors.push(m.text()); });
@@ -2582,7 +2585,7 @@ try {
   //      lands EXACTLY at the budget must appear intact; one unit further
   //      over budget must be rejected outright, leaving the pre-existing
   //      text unchanged and never a dangling ZWJ/surrogate.
-  section('40', 'Name/Description grapheme-safe paste clamp', 8, async () => {
+  section('40', 'Name/Description grapheme-safe paste clamp', async () => {
     const familyEmoji = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'; // 👨‍👩‍👧‍👦, 11 UTF-16 units
     const endsUgly = (s) => /\u{200D}$/u.test(s) || /[\uD800-\uDBFF]$/.test(s);
 
@@ -2684,7 +2687,7 @@ try {
   //      `sticky top-0` survives untouched. Plus the red's own page.pdf()
   //      smoke: a real PDF, non-empty, no exception, run mid-simulation
   //      exactly as the red's probe6b did.
-  section('41', 'print stylesheet', 15, async () => {
+  section('41', 'print stylesheet', async () => {
     const printPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const exitTour = printPage.getByRole('button', { name: /exit tour/i });
     await printPage.goto(BASE, { waitUntil: 'networkidle' });
@@ -2739,7 +2742,7 @@ try {
   //      "3" with no error, no border, no toast, and the solver silently used
   //      3. Post-fix, the cell must keep its PREVIOUS value and a hint must
   //      say why, the same treatment any other unparseable text gets.
-  section('42', 'comma-decimal payoff input rejected', 1, async () => {
+  section('42', 'comma-decimal payoff input rejected', async () => {
     // A DEDICATED page: this section's id (42) is not a primaryPageSection
     // (id <= 16), so the harness never calls gotoHome() for it when it is
     // selected on its own (E2E_SECTION=42) -- the shared `page` may still be
@@ -2860,7 +2863,7 @@ try {
   //      Real DOM, real ColorCoded render, real chip-picker UI, real
   //      save/PATCH/GET round trip; `/api/scenario/regenerate` mocked exactly
   //      like every other regen section (the flag-off server, untouched).
-  section('43', 'symmetric-label chip collision renders neutral', 16, async () => {
+  section('43', 'symmetric-label chip collision renders neutral', async () => {
     const symPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await mockRegenOn(symPage, async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_SYMMETRIC }) });
@@ -3033,7 +3036,7 @@ try {
   //      must return to its focus-time value — the comma-free prefix ("5" of
   //      "5,5") commits (clamped to 0.999) before the comma exists. The value
   //      in force is read from the SLIDER (bound to shrinkStep), not the box.
-  section('44', 'comma in the step-size box rejected, value restored', 5, async () => {
+  section('44', 'comma in the step-size box rejected, value restored', async () => {
     const stepPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await stepPage.goto(BASE, { waitUntil: 'networkidle' });
     try { await stepPage.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
@@ -3114,7 +3117,7 @@ try {
   //      OWN desktop-shaped server (IS_ELECTRON=true, empty user-data, no
   //      credentials) and drives the whole CRUD cycle from an Electron-UA page
   //      that never signs in.
-  section('45', 'desktop local owner: save, list, edit, delete without an account', 8, async () => {
+  section('45', 'desktop local owner: save, list, edit, delete without an account', async () => {
     const deskPort = String(Number(PORT) + 1000);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-desk-'));
@@ -3235,7 +3238,7 @@ try {
   //      same game clobbered each other (20/20 at the API). It now sends only
   //      the fields that changed. 003: Delete while offline used to do nothing
   //      visible at all.
-  section('46', 'concurrent edits of different fields both survive; offline delete says so', 7, async () => {
+  section('46', 'concurrent edits of different fields both survive; offline delete says so', async () => {
     // One context, two tabs: the second tab must share the first tab's login.
     const twoTab = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const tabA = trackPage(await twoTab.newPage());
@@ -3327,7 +3330,7 @@ try {
   //      The click handler now records the hidden group and the redraw re-applies
   //      it. Checked on the continuum group (the brief's case) after a real
   //      simState-driven redraw (the sphere moved in Plotly's resolved data).
-  section('47', 'a legend toggle survives the next simulation redraw', 3, async () => {
+  section('47', 'a legend toggle survives the next simulation redraw', async () => {
     const lp = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await lp.goto(BASE, { waitUntil: 'networkidle' });
     try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
@@ -3378,7 +3381,7 @@ try {
   // only through POST /api/games/adopt-local on their click. Reads state from
   // the server's own lists and the request log, never from the dialog alone:
   // a dialog that appears but still moves games unasked would fail here.
-  section('50', 'desktop sign-in offers, never silently moves, the no-account games on this device', 5, async () => {
+  section('50', 'desktop sign-in offers, never silently moves, the no-account games on this device', async () => {
     const deskPort = String(Number(PORT) + 1001);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-adopt-'));
@@ -3498,7 +3501,7 @@ try {
   // starts on its canvas) and visualViewport.scale stays 1 on the ORIGINAL
   // code. Kept as the guard for that property. Every pointer/touch section
   // must scroll its target into view and assert it (see the precondition).
-  section('51', 'pinch drifting off the plot never becomes a native page zoom', 5, async () => {
+  section('51', 'pinch drifting off the plot never becomes a native page zoom', async () => {
     const ctx = await browser.newContext({ ...devices['Pixel 7'] });
     try {
       const p = await ctx.newPage();
@@ -3548,7 +3551,7 @@ try {
   // a drag; the second gesture "worked" only because pausing reflowed the
   // page. With the plot in view the ORIGINAL code rotates on the first drag,
   // mouse and touch alike. Kept as the guard for that property.
-  section('52', 'the first drag on a running simulation rotates the camera', 15, async () => {
+  section('52', 'the first drag on a running simulation rotates the camera', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
       const p = await ctx.newPage();
@@ -3593,7 +3596,7 @@ try {
   // while offline sends ONE request and shows ONE alert. Counts network
   // requests and dialog events, not the button's state. Mutation that fails
   // it: remove the deletingGamesRef check — two DELETEs, two alerts.
-  section('53', 'a double-click on Delete while offline sends one request and one alert', 7, async () => {
+  section('53', 'a double-click on Delete while offline sends one request and one alert', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
       const p = await ctx.newPage();
@@ -3640,7 +3643,7 @@ try {
   // dialog returns focus to Save Preset. Reads document.activeElement.
   // Mutation that fails it: drop the opener.focus() in useModalTabTrap's
   // cleanup — activeElement is <body> on every path.
-  section('54', 'closing a dialog returns focus to the control that opened it', 11, async () => {
+  section('54', 'closing a dialog returns focus to the control that opened it', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
       const p = await ctx.newPage();
@@ -3686,7 +3689,7 @@ try {
   // the Account dialog closes; (b) deleting a row removes the focused Delete
   // button. Reads document.activeElement. Mutations: drop the fallback in
   // focusAfterDialog → (a) lands on BODY; drop focusAfterRowRemoved → (b) does.
-  section('56', 'a closed dialog whose opener vanished still hands focus to a landmark', 14, async () => {
+  section('56', 'a closed dialog whose opener vanished still hands focus to a landmark', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
       const p = await ctx.newPage();
@@ -3774,7 +3777,7 @@ try {
   // pointer or touch input reached the page. Below 500 px of height the header
   // is static and scrolls away. Control: at 1280x900 it stays sticky.
   // Mutation: remove the `[@media(max-height:500px)]:!static` class → fails.
-  section('57', 'a header taller than a tiny viewport is not sticky, so the page stays reachable', 13, async () => {
+  section('57', 'a header taller than a tiny viewport is not sticky, so the page stays reachable', async () => {
     const tiny = await browser.newContext({ viewport: { width: 320, height: 200 } });
     const normal = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
@@ -3809,7 +3812,7 @@ try {
   //      writer, per the brief) using the same login — real HTTP against
   //      the real 409 guard, not a mocked response, and not a reload that
   //      would destroy the very stale snapshot this section exists to test.
-  section('60', '409 collision recovery keeps the draft and shows the fresh chip', 6, async () => {
+  section('60', '409 collision recovery keeps the draft and shows the fresh chip', async () => {
     const p409 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const uniq = await registerAndLogin(p409, 'e409');
     const gameName = `Loop409-${uniq}`;
@@ -3936,7 +3939,7 @@ try {
   //      reimplementation of the regex. A whole accented word as the chip
   //      still highlights (positive control) so the fix is a real boundary
   //      rule, not "never match anything non-ASCII".
-  section('61', 'accented word is never split by a colour-term chip boundary (real render)', 10, async () => {
+  section('61', 'accented word is never split by a colour-term chip boundary (real render)', async () => {
     const accPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const uniq = await registerAndLogin(accPage, 'eacc');
     const gameName = `Acc-${uniq}`;
@@ -4014,7 +4017,7 @@ try {
   //      (`_fullData`, tagged with plotting.ts's meta.continuumComponentIndex/
   //      continuumRole), never a screenshot, so this can assert exactly what
   //      the dynamic (camera-aware) collapse decided.
-  section('62', 'continuum non-overlap holds after the camera-aware collapse (idle-spin fusing angle)', 2, async () => {
+  section('62', 'continuum non-overlap holds after the camera-aware collapse (idle-spin fusing angle)', async () => {
     const p = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     try {
       await p.goto(BASE, { waitUntil: 'networkidle' });
@@ -4244,28 +4247,29 @@ try {
   // real event — never a fixed sleep. The mutation each check would catch is
   // named in its own comment; two are independently re-verified by hand
   // (recorded in BLUE-MODAL-14's REPORT.md), not merely asserted here.
-  section('66', 'ModalSurface: single-active-modal registry and Tab traps for the four dialogs', 6, async () => {
-    // Shared: `presses` Tab presses, asserting focus never leaves `dialogSelector`.
-    // Mutation: drop ModalSurface's Tab-trap keydown listener — the FIRST
-    // press already lands outside and this returns { stayed: false, atPress: 1 }.
-    const sweepStaysInside = async (p, containerSelector, presses) => {
-      // `distinct` counts the different controls focus visited: a handler that
-      // swallowed every Tab would keep focus inside on ONE control and must not
-      // pass as a trap (CodeRabbit on #149) — callers assert distinct >= 2.
-      const visited = new Set();
-      for (let i = 0; i < presses; i++) {
-        await p.keyboard.press('Tab');
-        const state = await p.evaluate((sel) => {
-          const c = document.querySelector(sel); const a = document.activeElement;
-          const idx = c ? Array.from(c.querySelectorAll('*')).indexOf(a) : -1;
-          return { inside: !!c && c.contains(a), key: `${a?.tagName}#${idx}` };
-        }, containerSelector);
-        if (!state.inside) return { stayed: false, atPress: i + 1, distinct: visited.size };
-        visited.add(state.key);
-      }
-      return { stayed: true, distinct: visited.size };
-    };
+  // Shared by 66/66b (and re-declared locally by 67/70 with the same body).
+  // Shared: `presses` Tab presses, asserting focus never leaves `dialogSelector`.
+  // Mutation: drop ModalSurface's Tab-trap keydown listener — the FIRST
+  // press already lands outside and this returns { stayed: false, atPress: 1 }.
+  const sweepStaysInside = async (p, containerSelector, presses) => {
+    // `distinct` counts the different controls focus visited: a handler that
+    // swallowed every Tab would keep focus inside on ONE control and must not
+    // pass as a trap (CodeRabbit on #149) — callers assert distinct >= 2.
+    const visited = new Set();
+    for (let i = 0; i < presses; i++) {
+      await p.keyboard.press('Tab');
+      const state = await p.evaluate((sel) => {
+        const c = document.querySelector(sel); const a = document.activeElement;
+        const idx = c ? Array.from(c.querySelectorAll('*')).indexOf(a) : -1;
+        return { inside: !!c && c.contains(a), key: `${a?.tagName}#${idx}` };
+      }, containerSelector);
+      if (!state.inside) return { stayed: false, atPress: i + 1, distinct: visited.size };
+      visited.add(state.key);
+    }
+    return { stayed: true, distinct: visited.size };
+  };
 
+  section('66', 'ModalSurface: single-active-modal registry and Tab traps for the four dialogs', async () => {
     // ── Part A: Feedback + Account — open, 60 Tabs stay inside, Escape
     // closes and returns focus to the button that opened it. Neither
     // dialog needs an account, so both run on one fresh page.
@@ -4320,6 +4324,11 @@ try {
       await p.close();
     }
 
+  });
+
+  // ── 66b. Part B of 66, its own section: 66 alone ran 275 s in CI (section time), over the
+  //       300 s job ceiling with the ~75 s fixed overhead; a job holds ≤ 225 s of sections.
+  section('66b', 'ModalSurface: Save + Edit dialogs — own Tab trap, Escape return, and the 401-mid-submit shape', async () => {
     // ── Part B: Save + Edit — each dialog's own Tab trap/Escape-return
     // (same shape as Part A), THEN the 401-mid-submit shape RED-APP-13/002
     // actually reproduced: dialog stays open, focus stays INSIDE it (not on
@@ -4414,6 +4423,15 @@ try {
       // backdrop — CodeRabbit CLI: a count of 1 alone would pass that shape).
       record(`${surfaceName} dialog + 401: Enter does not stack a second dialog on top`,
         dialogsAfterEnter.length <= 1 && dialogsAfterEnter.every((l) => l === label), JSON.stringify(dialogsAfterEnter));
+      // The 401 signed the page out and its [user] effect refetches the games; closing the page mid-flight
+      // logs 'Failed to fetch' as a console error (a teardown artefact, not a defect) — let the request settle first.
+      await p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      // The 401 signed the page out and its [user] effect refetches the games; closing the page mid-flight
+      // logs 'Failed to fetch' as a console error (a teardown artefact, not a defect) — let the request settle first.
+      await p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      // The 401 signed the page out and its [user] effect refetches the games; closing the page mid-flight
+      // logs 'Failed to fetch' as a console error (a teardown artefact, not a defect) — let the request settle first.
+      await p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
       await p.close();
     }
 
@@ -4422,7 +4440,7 @@ try {
   // ── 67. The drawer half of the ModalSurface contract — split out of 66
   //       because 66 alone took 218 s in CI and no shard job may exceed
   //       5 minutes (Daniel). Same helper, same mutations as 66's comments.
-  section('67', 'ModalSurface: drawer role, Tab trap, in-flight delete, and nothing stacks over the open drawer', 2, async () => {
+  section('67', 'ModalSurface: drawer role, Tab trap, in-flight delete, and nothing stacks over the open drawer', async () => {
     const sweepStaysInside = async (p, containerSelector, presses) => {
       // `distinct` counts the different controls focus visited: a handler that
       // swallowed every Tab would keep focus inside on ONE control and must not
@@ -4557,7 +4575,7 @@ try {
   //      shape) → the name/count agreement check fails; drop `deletingGameIds`
   //      from the drawer's call site (RED-APP-13/003 shape) → the cross-surface
   //      disabled/aria-busy check fails.
-  section('68', 'one SavedGamesList: the sidebar and the drawer agree on names, count, in-flight Delete and empty state', 7, async () => {
+  section('68', 'one SavedGamesList: the sidebar and the drawer agree on names, count, in-flight Delete and empty state', async () => {
     // ── Part A: desktop local-owner server (reuses section 45's boot). ──
     const deskPort = String(Number(PORT) + 1000);
     const deskBase = `http://127.0.0.1:${deskPort}`;
@@ -4745,7 +4763,7 @@ try {
   //      dialog open, one ArrowRight still advances the tour.
   //      Mutation: drop Walkthrough's ModalRegistry/insideOtherDialog bail → the
   //      "tour step unchanged" check fails (step 1 → 5).
-  section('69', 'keys typed inside an open dialog never reach the guided tour', 16, async () => {
+  section('69', 'keys typed inside an open dialog never reach the guided tour', async () => {
     const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
     const tourSel = '[role="dialog"][aria-label="Guided tour"]';
@@ -4807,7 +4825,7 @@ try {
   //      focus must return to the Edit button, not the landmark. Guarded by
   //      webkit's availability (playwright's webkit browser may not be
   //      installed in every environment).
-  section('70', 'the Tab trap never gives up when every control is disabled; opener tracking survives WebKit on a saved-game row', 8, async () => {
+  section('70', 'the Tab trap never gives up when every control is disabled; opener tracking survives WebKit on a saved-game row', async () => {
     // ── Part A: desktop-shape server, no account, one local game ──────────
     const deskPort = String(Number(PORT) + 1002);
     const deskBase = `http://127.0.0.1:${deskPort}`;
@@ -5152,7 +5170,7 @@ try {
   //    fitted 3.1 was tried and reverted (OPUS-REVIEW-MATH FBM-2: it was
   //    fitted to a self-consistency sweep, not real-pixel evidence, and
   //    the ONE static-sweep game it "fixed" is excepted by name instead).
-  section('71', 'camera-aware continuum collapse agrees with real rendered pixels at a narrow live viewport', 16, async () => {
+  section('71', 'camera-aware continuum collapse agrees with real rendered pixels at a narrow live viewport', async () => {
     // `reducedMotion: 'reduce'` (App.tsx's idle spin already respects this,
     // per section 18) means the idle spin never starts on this page at all —
     // no competing per-frame `Plotly.relayout` to race against `setEyeVerified`
@@ -5488,7 +5506,7 @@ try {
   //      dialog field with a drag that overshoots the panel must not dismiss
   //      the dialog. Mutations: drop pressOnUnrelatedUi → (a) fails; overlay
   //      onClick back to plain onClose → (b) fails.
-  section('74', 'a press on UI that merely overlaps the plot keeps the run going; a drag out of a dialog keeps it open', 5, async () => {
+  section('74', 'a press on UI that merely overlaps the plot keeps the run going; a drag out of a dialog keeps it open', async () => {
     const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
     try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
@@ -5618,10 +5636,11 @@ const EXPECTED_STATUS_NOISE = {
   // unresolved collision — a second real 409, the exact response whose
   // client-side message the section now asserts.
   '60': [409, 409],
-  // §66 (BLUE-MODAL-14, RED-APP-13/002 shape) deliberately mocks a 401 on
-  // both the Save dialog's POST and the Edit dialog's PATCH, one each — the
-  // exact behavior the section's own focus-stays-inside assertions verify.
-  '66': [401, 401],
+  // §66b (BLUE-MODAL-14, RED-APP-13/002 shape; Part B of the former §66)
+  // deliberately mocks a 401 on both the Save dialog's POST and the Edit
+  // dialog's PATCH, one each — the exact behavior the section's own
+  // focus-stays-inside assertions verify.
+  '66b': [401, 401],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),

@@ -10,7 +10,7 @@ import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
-import { selectSmokeSections, SHARD_COUNT } from './e2e/selection.js';
+import { selectSmokeSections, assignShards, measuredMs, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -27,52 +27,68 @@ function workflowJob(name: string): string {
   return workflow.slice(start, end);
 }
 
-const definitions = [...smoke.matchAll(
-  /section\('([^']+)',\s*'([^']+)',\s*(\d+),\s*async\s*\(\)\s*=>/g,
-)].map((match) => ({ id: match[1], name: match[2], shard: Number(match[3]) }));
+const definitions: { id: string; name: string; shard?: number }[] = [...smoke.matchAll(
+  /section\('([^']+)',\s*'([^']+)',\s*async\s*\(\)\s*=>/g,
+)].map((match) => ({ id: match[1], name: match[2] }));
+assert(!/section\('[^']+',\s*'[^']*',\s*\d+,\s*async/.test(smoke),
+  'sections no longer name a shard by hand — selection.js packs them from shard-timings.json');
 
 const expectedIds = [
   '1', '2', '3', '4', '5', '6', '6b', '7', '8', '9', '10', '11', '12',
   '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23',
   '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
   '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '50',
-  '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '67', '68', '69', '70', '71', '74',
+  '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 16, 'the smoke suite is split into 16 CI shards (test.yml matrix must match)');
-for (let shard = 1; shard <= SHARD_COUNT; shard++) {
-  assert(definitions.some((definition) => definition.shard === shard),
-    `shard ${shard} must own at least one section`);
+assert.strictEqual(SHARD_COUNT, 20, 'the smoke suite is split into 20 CI shards (test.yml matrix must match)');
+
+// ── Packing by measured duration ─────────────────────────────────────────────
+// Every section needs a MEASURED entry: an unmeasured one is packed at _default
+// and fails here until someone runs scripts/shard-timings-from-run.mjs (or adds
+// a local measurement) — the point is that no section is placed by guess.
+for (const { id } of definitions) {
+  assert(typeof SHARD_TIMINGS[id] === 'number',
+    `section ${id} has no entry in src/e2e/shard-timings.json — measure it (SECTION-PASS ms) and add it`);
 }
-for (const definition of definitions) {
-  assert(definition.shard >= 1 && definition.shard <= SHARD_COUNT, `section ${definition.id} names a shard outside 1..${SHARD_COUNT}`);
+for (const id of Object.keys(SHARD_TIMINGS).filter((k) => !k.startsWith('_'))) {
+  assert(definitions.some((d) => d.id === id), `shard-timings.json names section ${id}, which no longer exists — remove it`);
 }
-// Balance guard: no shard may carry more than a quarter of the sections (a
-// re-shuffle that piles work onto one shard is the 11-minute shard 1 the split
-// removed). This is deliberately a COUNT bound, not definitions.length /
-// SHARD_COUNT: shards are packed by measured duration, so one shard legitimately
-// holds a single 120 s section while another holds seven short ones.
-const MAX_SECTION_SHARE = 1 / 4;
+const { totals } = assignShards(definitions);
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
-  const n = definitions.filter((d) => d.shard === shard).length;
-  assert(n <= Math.ceil(definitions.length * MAX_SECTION_SHARE), `shard ${shard} carries ${n} sections — rebalance by measured duration`);
+  assert(definitions.some((definition) => definition.shard === shard), `shard ${shard} must own at least one section`);
+  assert(totals[shard - 1] <= SECTION_BUDGET_MS,
+    `shard ${shard} packs ${Math.round(totals[shard - 1] / 1000)} s of measured sections, over the ${SECTION_BUDGET_MS / 1000} s budget `
+    + `(300 s job ceiling minus ~75 s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
+}
+for (const { id } of definitions) {
+  assert(measuredMs(id) <= SECTION_BUDGET_MS,
+    `section ${id} alone measures ${Math.round(measuredMs(id) / 1000)} s — over the per-job budget; split it (as 66 → 66/66b)`);
+}
+// Deterministic: the runner in CI and this test must agree on the assignment.
+const again = assignShards(definitions.map(({ id, name }) => ({ id, name })));
+assert.deepStrictEqual(again.definitions.map((d) => d.shard), definitions.map((d) => d.shard), 'shard assignment must be deterministic');
+// Known positives: the budget guard fires on an over-long section and on an over-packed table.
+{
+  const fake = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 300000, a: 260000, b: 1000 };
+  const packed = assignShards([{ id: 'a' }, { id: 'b' }], fake, 2);
+  assert(Math.max(...packed.totals) > SECTION_BUDGET_MS, 'a 260 s section must exceed the 225 s budget (known positive)');
+  const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`s${i}`, 120000]));
+  const over = assignShards(Object.keys(many).map((id) => ({ id })), { ...fake, ...many }, 20);
+  assert(Math.max(...over.totals) > SECTION_BUDGET_MS, 'forty 120 s sections cannot fit 20 shards under budget (known positive)');
+  assert(assignShards([{ id: 'zz' }], fake, 1).totals[0] === 90000, 'an unmeasured section packs at _default');
 }
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
-// Drift guard, not a freeze: the sections measured into shard 1 must still be
-// selected for it (a section silently moving shards would change every CI
-// timing assumption), while NEW sections may join any shard.
-const historicalShard1Ids = ['36', '42'];
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/16' }).selected.map(({ id }) => id);
-for (const id of historicalShard1Ids) {
-  assert(shard1Now.includes(id),
-    `the CI shard selector must retain section ${id} in shard 1 (measured-duration assignment of 2026-09-05); shard 1 now selects ${JSON.stringify(shard1Now)}`);
-}
+// A shard selector returns exactly the packed assignment's members.
+const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/20' }).selected.map(({ id }) => id);
+assert.deepStrictEqual(shard1Now, definitions.filter((d) => d.shard === 1).map(({ id }) => id),
+  'E2E_SHARD must select exactly the sections the packing assigned to that shard');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
   'a local section selector must run exactly the requested H1 regressions');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '999' }), /unknown E2E_SECTION ID/,
@@ -81,7 +97,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/16', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/20', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');

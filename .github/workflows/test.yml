@@ -415,7 +415,7 @@ jobs:
           COLORTERMS_RACE_PORT: '3182'
 
   e2e_smoke:
-    name: e2e smoke (${{ matrix.shard }}/16)
+    name: e2e smoke (${{ matrix.shard }}/20)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: build
@@ -424,7 +424,7 @@ jobs:
       # GitHub's "Re-run failed jobs" then re-runs only the failed matrix child.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - uses: actions/checkout@v5
 
@@ -463,7 +463,7 @@ jobs:
             echo "smoke_outcome=pass" >> "$GITHUB_OUTPUT"
           fi
         env:
-          E2E_SHARD: ${{ matrix.shard }}/16
+          E2E_SHARD: ${{ matrix.shard }}/20
           E2E_PORT: 309${{ matrix.shard }}
           E2E_BASE: http://localhost:309${{ matrix.shard }}
 
@@ -475,8 +475,8 @@ jobs:
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-16_section-*-attempt-*.png
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-16_section-*-attempt-*.html
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-20_section-*-attempt-*.png
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-20_section-*-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log
           retention-days: 7
           if-no-files-found: ignore
