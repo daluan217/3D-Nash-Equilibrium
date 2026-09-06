@@ -4843,7 +4843,6 @@ try {
       const offer = dp.locator('[role="dialog"][aria-label="Games saved on this device"]');
       record('precondition: the local-games offer opened after sign-in', await offer.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
       const moveBtn = offer.getByRole('button', { name: /^move it into my account$/i });
-      const leaveBtn = offer.getByRole('button', { name: /^leave it on this device$/i });
 
       // Hold the adopt request open on a controllable gate (never a fixed
       // sleep racing the assertion — same pattern as e2e 68's Delete gate).
@@ -4894,9 +4893,22 @@ try {
         await dp.waitForTimeout(100);
       }
       record('precondition: the failed request re-enabled both buttons', reenabled?.moveDisabled === false, JSON.stringify(reenabled));
+      // CodeRabbit CLI: asserting focus landed on `leaveBtn` BY NAME couples
+      // this check to markup order (it happens to be first today), not to
+      // the actual contract — "the FIRST enabled focusable, whichever it
+      // is." Derive that control the same way ModalSurface.tsx's own
+      // getModalFocusables() does, and compare THAT with document
+      // .activeElement, so a reordering of the two buttons cannot make this
+      // check assert the wrong thing for the right reason (or vice versa).
       let focusReturned = false;
       for (let i = 0; i < 30 && !focusReturned; i++) {
-        focusReturned = await leaveBtn.evaluate((el) => document.activeElement === el).catch(() => false);
+        focusReturned = await dp.evaluate(() => {
+          const panel = document.querySelector('[role="dialog"][aria-label="Games saved on this device"]');
+          if (!panel) return false;
+          const focusables = Array.from(panel.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'))
+            .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+          return focusables.length > 0 && document.activeElement === focusables[0];
+        }).catch(() => false);
         if (!focusReturned) await dp.waitForTimeout(100);
       }
       record('FIX: once controls re-enable, focus returns to the FIRST one (RED-APP-14/002)', focusReturned, JSON.stringify(reenabled));
