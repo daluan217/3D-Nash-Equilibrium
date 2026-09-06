@@ -4432,6 +4432,7 @@ export default function App() {
                     saveRequestIdRef.current = null;
                     setIsSaveModalOpen(true);
                   }}
+                  data-focus-fallback="save-preset"
                   className="inline-flex items-center gap-1 text-xs font-bold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-950/40 hover:bg-accent-100 dark:hover:bg-accent-900/50 border border-accent-200/50 dark:border-accent-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
                 >
                   <Plus className="w-3 h-3" /> Save Preset
@@ -6573,6 +6574,7 @@ export default function App() {
         data-print="hide"
         onClick={openFeedback}
         title="Send feedback"
+        data-focus-fallback="feedback"
         className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-accent-600 hover:bg-accent-700 text-white text-xs font-semibold shadow-lg shadow-accent-600/20 transition-all cursor-pointer select-none"
       >
         <MessageSquare className="w-4 h-4" />

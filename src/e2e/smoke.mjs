@@ -4232,7 +4232,7 @@ try {
   // real event — never a fixed sleep. The mutation each check would catch is
   // named in its own comment; two are independently re-verified by hand
   // (recorded in BLUE-MODAL-14's REPORT.md), not merely asserted here.
-  section('66', 'ModalSurface: single-active-modal registry, drawer trap and in-flight delete', 12, async () => {
+  section('66', 'ModalSurface: single-active-modal registry, drawer trap and in-flight delete', 6, async () => {
     // Shared: `presses` Tab presses, asserting focus never leaves `dialogSelector`.
     // Mutation: drop ModalSurface's Tab-trap keydown listener — the FIRST
     // press already lands outside and this returns { stayed: false, atPress: 1 }.
@@ -4389,8 +4389,13 @@ try {
         focusInfo401.dialogs.includes(label) && focusInfo401.inDialog, JSON.stringify(focusInfo401));
       await p.keyboard.press('Enter');
       await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-      const dialogCountAfterEnter = await p.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
-      record(`${surfaceName} dialog + 401: Enter does not stack a second dialog on top`, dialogCountAfterEnter <= 1, `found ${dialogCountAfterEnter}`);
+      const dialogsAfterEnter = await p.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => d.getAttribute('aria-label')));
+      // <= 1 for the reason in the comment above; additionally the ONE that
+      // may remain must be THIS surface, never a different dialog that
+      // replaced it (Account, opened from a header control under the
+      // backdrop — CodeRabbit CLI: a count of 1 alone would pass that shape).
+      record(`${surfaceName} dialog + 401: Enter does not stack a second dialog on top`,
+        dialogsAfterEnter.length <= 1 && dialogsAfterEnter.every((l) => l === label), JSON.stringify(dialogsAfterEnter));
       await p.close();
     }
 
