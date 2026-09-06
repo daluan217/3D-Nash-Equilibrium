@@ -631,6 +631,9 @@ if (failures > 0) {
   const parts = [...seg.segment(capped)].map((x) => x.segment);
   check('cleanUserColorTerms caps by grapheme: every kept family emoji is intact (mutation: `.slice(0, USER_TERM_MAX_LEN)` → a lone surrogate tail)',
     capped.length <= USER_TERM_MAX_LEN && parts.length > 0 && parts.every((g) => g === fam), JSON.stringify({ units: capped.length, graphemes: parts.length }));
+  const bigCluster = 'e' + '\u0301'.repeat(80); // one grapheme, 81 code units: cannot be clamped whole
+  check('cleanUserColorTerms REJECTS a single cluster longer than the cap instead of storing part of it (CodeRabbit CLI)',
+    cleanUserColorTerms([bigCluster]).length === 0, JSON.stringify(cleanUserColorTerms([bigCluster])));
   check('cleanUserColorTerms never ends on a lone surrogate', !/[\ud800-\udfff]$/.test(capped) || /[\udc00-\udfff]$/.test(capped) && /[\ud800-\udbff][\udc00-\udfff]$/.test(capped));
   // 002: the counter's denominator is the pooled room (per-side cap × 2).
   const html = renderToStaticMarkup(React.createElement(DescriptionEditor, {
