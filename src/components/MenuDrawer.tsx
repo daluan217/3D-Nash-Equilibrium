@@ -9,6 +9,7 @@ import { PRESETS, splitEquilibriaByContinuum, describeContinua, fmtPayoff, EA, E
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { savedGameColorTerms } from '../utils/colorTerms';
+import { ModalSurface } from './ModalSurface';
 import {
   X,
   HelpCircle,
@@ -41,6 +42,10 @@ interface MenuDrawerProps {
    */
   canOwnGames: boolean;
   userCustomGames: any[];
+  /** RED-APP-13/003: game ids with a DELETE in flight (App's shared
+   *  `deletingGamesRef` guard) — the sidebar's own row already reads this to
+   *  show disabled/aria-busy; the drawer's row now does too. */
+  deletingGameIds: string[];
   /** `rowEl` is the card being removed, so focus can stay inside the drawer afterwards. */
   onDeleteCustomGame: (id: string, rowEl?: HTMLElement | null) => void;
   onLoadPreset: (key: string) => void;
@@ -62,6 +67,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   authToken,
   canOwnGames,
   userCustomGames,
+  deletingGameIds,
   onDeleteCustomGame,
   onLoadPreset,
   activePreset,
@@ -202,29 +208,21 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     }
   };
 
-  // Close the drawer on Escape. stopPropagation so the SAME keypress cannot
-  // also reach Walkthrough.tsx's independent window-level Escape listener
-  // and close the guided tour too (RED-APP-6/002) — document fires before
-  // window in the bubble phase.
-  React.useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') { onClose(); e.stopPropagation(); } };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
-
+  // RED-APP-13/004 (round14): the dialog role, aria-modal, the Tab trap, Escape
+  // and the single-active-modal registry are now <ModalSurface>'s job (it
+  // owns the panel div below, ref included) — this component no longer
+  // hand-rolls any of that.
   return (
-    <div className="fixed inset-0 z-50 flex justify-end select-none">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-slate-900/40 dark:bg-black/50 backdrop-blur-xs transition-opacity cursor-pointer duration-300"
-        onClick={onClose}
-      />
-
-      {/* Slideout sliding panel */}
-      <div className={`relative w-full max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full flex flex-col shadow-2xl z-10 animate-drawer-in`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    <ModalSurface
+      id="drawer"
+      open={isOpen}
+      onClose={onClose}
+      ariaLabel="Simulator Workspace Center"
+      layout="drawer"
+      fallbackSelector='[data-focus-fallback="drawer-games"] button, [data-focus-fallback="drawer-games"]'
+      panelClassName="relative w-full max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full flex flex-col shadow-2xl z-10 animate-drawer-in"
+      panelStyle={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+    >
         {/* Panel Header */}
         <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
           <div className="flex items-center gap-2">
@@ -757,7 +755,11 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                   )}
                                   <button
                                     onClick={(e) => onDeleteCustomGame(game.id, (e.currentTarget as HTMLElement).closest('[data-drawer-game]') as HTMLElement | null)}
-                                    className="p-1 px-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/25 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer"
+                                    // RED-APP-13/003: same in-flight state as the sidebar's own Delete
+                                    // button, threaded from the same `deletingGameIds`.
+                                    disabled={deletingGameIds.includes(game.id)}
+                                    aria-busy={deletingGameIds.includes(game.id) || undefined}
+                                    className="p-1 px-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/25 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
                                     title="Delete custom layout"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
@@ -1104,7 +1106,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </ModalSurface>
   );
 };
