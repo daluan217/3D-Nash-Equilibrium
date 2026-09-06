@@ -276,6 +276,7 @@ export function ModalSurface({
   layout = 'centered', panelClassName, panelStyle, overlayClassName, children,
 }: ModalSurfaceProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const pointerDownOnOverlayRef = useRef(false);
   // Registration happens in a layout effect so a refused surface never
   // paints (RED-APP-13/002+004: two dialogs stacked at once) — the extra
   // render this costs is synchronous, before the browser gets to show
@@ -316,7 +317,16 @@ export function ModalSurface({
     );
   }
   return (
-    <div data-modal-surface={id} className={overlayClassName ?? OVERLAY_CLASS} onClick={onClose}>
+    <div
+      data-modal-surface={id}
+      className={overlayClassName ?? OVERLAY_CLASS}
+      // RED-APP-14/007: a drag that STARTS inside the panel (selecting text in
+      // a field) and ends over the backdrop fires `click` on the overlay — the
+      // common ancestor — which used to dismiss the dialog and lose the typed
+      // text. Close only when the pointer went DOWN on the backdrop itself.
+      onPointerDown={(e) => { pointerDownOnOverlayRef.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && pointerDownOnOverlayRef.current) onClose(); pointerDownOnOverlayRef.current = false; }}
+    >
       <div
         ref={panelRef}
         role="dialog"

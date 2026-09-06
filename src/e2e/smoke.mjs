@@ -334,11 +334,23 @@ async function registerAndLogin(p, tag) {
   await pwFields.nth(0).fill('TestPass123');
   await pwFields.nth(1).fill('TestPass123');
   await p.getByRole('button', { name: /register account/i }).click();
-  await p.waitForTimeout(800);
+  // Wait on STATE, never on a fixed delay: the login form appears only once
+  // the register round-trip (a pbkdf2 hash) has returned, and the token lands
+  // in localStorage only once the login round-trip has. On a loaded CI runner
+  // (#153: every section ran ~3x slower than on main) a fixed 800 ms let the
+  // caller reload the page with the login still in flight — signed out, no
+  // "Save Preset" control, a 30 s locator timeout that looked like an app bug.
+  await p.getByPlaceholder(/example\.com or username/i).waitFor({ state: 'visible', timeout: 20000 });
   await p.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
   await p.getByPlaceholder('••••••••').first().fill('TestPass123');
   await p.getByRole('button', { name: /^login$/i }).click();
-  await p.waitForTimeout(800);
+  await p.waitForFunction(
+    () => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')),
+    null, { timeout: 20000 },
+  );
+  // A successful login closes the Account dialog (App.tsx's login branch);
+  // a bounded wait that REJECTS keeps a stuck dialog from passing as signed in.
+  await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 10000 });
   return uniq;
 }
 
@@ -5093,6 +5105,82 @@ try {
       record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
         blobs195.blobs.length >= 1 && span195 <= 45, JSON.stringify({ span195, ...blobs195 }));
     } finally { await p.close().catch(() => {}); }
+  });
+
+  // ══ 74. RED-APP-14/006 + /007 (director-reproduced). (a) Pressing a header
+  //      control whose centre overlaps the plot's rectangle must NOT pause a
+  //      running simulation (the detector tested a rectangle, never the real
+  //      target); keyboard activation is the control. (b) Selecting text in a
+  //      dialog field with a drag that overshoots the panel must not dismiss
+  //      the dialog. Mutations: drop pressOnUnrelatedUi → (a) fails; overlay
+  //      onClick back to plain onClose → (b) fails.
+  section('74', 'a press on UI that merely overlaps the plot keeps the run going; a drag out of a dialog keeps it open', 5, async () => {
+    const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+    const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
+    const vals = [-12, 12, 8, -8, 2, -2, 0, 0]; // Penalty Kick: cycles, never converges on its own
+    for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
+    const speed = p.locator('input[type="range"]').first(); await speed.focus(); for (let i = 0; i < 12; i++) await p.keyboard.press('ArrowLeft');
+    await p.evaluate(() => window.scrollTo(0, 0));
+    // "Running" is read from the simulation's own state progressing (the log
+    // entry count grows between two reads), not from the Pause button's label
+    // (CodeRabbit CLI on this branch).
+    const logCount = () => p.evaluate(() => (document.querySelector('[data-tour="log"], [aria-label="Simulation log"]')?.textContent || document.body.textContent || '').length);
+    // "Running" is the app's own state (the Pause control is offered) confirmed by the log growing; "paused" is the
+    // app's own state (Run offered, Pause gone), each polled to a bounded deadline (CodeRabbit CLI on this branch).
+    const stateRunning = () => p.evaluate(() => { const names = [...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim().toLowerCase()); return names.includes('pause') && !names.includes('run'); });
+    const running = async () => { if (!(await stateRunning())) return false; const a = await logCount(); await p.waitForTimeout(600); return (await logCount()) > a; };
+    const waitPaused = async (ms = 5000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (!(await stateRunning())) return true; await p.waitForTimeout(100); } return false; };
+    await p.getByRole('button', { name: /^run$/i }).click();
+    let up = false; for (let i = 0; i < 30 && !up; i++) { up = await running(); if (!up) await p.waitForTimeout(100); }
+    record('precondition: the simulation is running', up);
+    const btn = p.getByRole('button', { name: /open workspace menu/i }).first();
+    const geo = await btn.evaluate((b) => { const bb = b.getBoundingClientRect(); const r = document.querySelector('[data-tour="plot"]').getBoundingClientRect(); const x = bb.left + bb.width / 2, y = bb.top + bb.height / 2; const hit = document.elementFromPoint(x, y); return { x, y, insidePlotRect: x > r.left && x < r.right && y > r.top && y < r.bottom, hitIsButton: !!hit && (hit === b || b.contains(hit)) }; });
+    record('precondition: the header menu button overlaps the plot rectangle and is the hit-test target at its centre', geo.insidePlotRect && geo.hitIsButton, JSON.stringify(geo));
+    await p.mouse.click(geo.x, geo.y);
+    await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 5000 });
+    let still = await running(); for (let i = 0; i < 5 && still; i++) { await p.waitForTimeout(200); still = await running(); }
+    record('FIX: a MOUSE press on that button keeps the simulation running', still, `running=${still}`);
+    await p.keyboard.press('Escape');
+    await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 5000 }).catch(() => {});
+    record('control: the run is still going after the drawer closed', await running());
+    // The plot's OWN controls sit inside the wrapper (CodeRabbit on #153): a
+    // mouse press on Rotate, Pan or Reset View must not pause the run either.
+    // Mutation: drop the INTERACTIVE_CONTROL test in pressOnUnrelatedUi → all three fail.
+    for (const name of [/^rotate$/i, /^pan$/i, /reset view/i]) {
+      const ctl = p.locator('[data-tour="plot"]').getByRole('button', { name }).first();
+      // Scroll first: a viewport-coordinate press on an off-screen control lands on <html>, not the button.
+      await ctl.scrollIntoViewIfNeeded();
+      // The playback is finite: if an earlier press let it run to its end, start it again so the press is made mid-run.
+      if (!(await stateRunning())) { await p.getByRole('button', { name: /^run$/i }).click(); for (let i = 0; i < 30 && !(await stateRunning()); i++) await p.waitForTimeout(100); }
+      const cb = await ctl.boundingBox(); await p.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2);
+      // A press-pause is synchronous on mousedown, so the app still reporting "running" 300 ms later is the verdict.
+      // A playback that reached its END inside the window (the bar at 100%) was not paused by the press either.
+      await p.waitForTimeout(300); const verdict = await p.evaluate(() => { const names = [...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim().toLowerCase()); const bar = document.querySelector('.bg-accent-500.h-full'); return { running: names.includes('pause') && !names.includes('run'), progress: bar ? bar.style.width : null }; });
+      const on = verdict.running || verdict.progress === '100%';
+      record(`FIX: a MOUSE press on the plot's own ${String(name)} control keeps the simulation running`, on, JSON.stringify(verdict));
+    }
+    // A real press ON the plot still pauses (the detector was not simply disabled).
+    const plot = p.locator('[data-tour="plot"]'); await plot.scrollIntoViewIfNeeded();
+    // Hit-test the press point: it must be the picture itself, never one of the plot's own controls.
+    const pt = await plot.evaluate((el) => { const r = el.getBoundingClientRect(); for (const [fx, fy] of [[0.5, 0.5], [0.35, 0.6], [0.5, 0.7], [0.3, 0.4]]) { const x = r.left + r.width * fx, y = r.top + r.height * fy; const hit = document.elementFromPoint(x, y); if (hit && el.contains(hit) && !hit.closest('button, a[href], input, select, textarea')) return { x, y, tag: hit.tagName }; } return null; });
+    record('precondition: a hit-tested point on the picture itself (not a control) exists', !!pt, JSON.stringify(pt));
+    if (pt) await p.mouse.click(pt.x, pt.y);
+    record('control: a press on the plot itself still pauses the run (the app reports paused within 5 s)', !!pt && await waitPaused());
+    // (b) drag-select from inside the Account dialog's field to outside the panel
+    await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    const dlg = p.locator('[role="dialog"][aria-label="Account"]'); await dlg.waitFor({ state: 'visible', timeout: 8000 });
+    const field = p.getByPlaceholder(/example\.com or username/i); await field.fill('drag me');
+    const fb = await field.boundingBox(); const db = await dlg.boundingBox();
+    await p.mouse.move(fb.x + 10, fb.y + fb.height / 2); await p.mouse.down();
+    await p.mouse.move(db.x + db.width + 120, fb.y + fb.height / 2, { steps: 8 }); await p.mouse.up();
+    await p.waitForTimeout(300);
+    record('FIX: a drag that starts in the field and ends on the backdrop leaves the dialog open with its text', await dlg.isVisible() && (await field.inputValue()) === 'drag me');
+    const ob = db; await p.mouse.click(ob.x + ob.width + 150, ob.y + ob.height / 2);
+    await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 5000 }).catch(() => {});
+    record('control: a plain click on the backdrop still closes the dialog', !(await dlg.isVisible().catch(() => false)));
+    await p.close();
   });
 
 await executeSections();
