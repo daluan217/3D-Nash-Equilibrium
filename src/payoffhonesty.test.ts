@@ -1405,7 +1405,60 @@ function testContinuumMarkersDoNotOverlapOnScreen() {
 }
 
 testContinuumCornerMarkersVisibleUniqueAndNamed();
+// ════════════════════════════════════════════════════════════════════════════
+// 5e'. The cutoff is a contract on the EXACT length and is relabel-invariant
+//      (2026-09-05 handback, director-reproduced): A=[[1,0],[0,4]],
+//      B=[[0,0],[1,0]] has the component x=1, y∈[4/5,1], exact length 1/5,
+//      computed as 0.19999999999999996 → the renderer collapsed it to ONE
+//      marker, while the column-swapped equivalent (y∈[0,1/5], computed as
+//      exactly 0.2) drew THREE. Clause 4 says "at or above 0.2 keeps its
+//      corners", and no relabelling of a game may change which branch it
+//      takes. Mutation that fails this test: compare without the 1e-9
+//      tolerance (`< SHORT_CONTINUUM`) — ORIGINAL and the row/player
+//      relabellings that land on the 0.1999… side drop back to one marker.
+function testShortContinuumCutoffIsExactAndRelabelInvariant() {
+  const ORIGINAL: GamePayoffs = { a11: 1, a12: 0, a21: 0, a22: 4, b11: 0, b12: 0, b21: 1, b22: 0 };
+  const swapColumns = (g: GamePayoffs): GamePayoffs =>
+    ({ a11: g.a12, a12: g.a11, a21: g.a22, a22: g.a21, b11: g.b12, b12: g.b11, b21: g.b22, b22: g.b21 });
+  const swapRows = (g: GamePayoffs): GamePayoffs =>
+    ({ a11: g.a21, a12: g.a22, a21: g.a11, a22: g.a12, b11: g.b21, b12: g.b22, b21: g.b11, b22: g.b12 });
+  // Swap the players: the new row player is the old column player, so the new
+  // A is the old B transposed and the new B is the old A transposed.
+  const swapPlayers = (g: GamePayoffs): GamePayoffs =>
+    ({ a11: g.b11, a12: g.b21, a21: g.b12, a22: g.b22, b11: g.a11, b12: g.a21, b21: g.a12, b22: g.a22 });
+  const ABOVE: GamePayoffs = { ...ORIGINAL, a22: 3.8 };  // length 5/24 ≈ 0.2083
+  const BELOW: GamePayoffs = { ...ORIGINAL, a22: 5 };    // length 1/6 ≈ 0.1667
+  const markers = (g: GamePayoffs, isMobile: boolean) =>
+    makeTraces(buildSurfaces(g), g, createInitialState(0.5, 0.5, g), 'both', computeAllNE(g), isMobile, 'shrink')
+      .filter((t: any) => t.legendgroup === 'continuumNE' && t.mode === 'markers') as any[];
+  const lenOf = (g: GamePayoffs) => {
+    const rects = equilibriumSet(g).filter((r) => Math.abs(r.x1 - r.x0) > 1e-9 || Math.abs(r.y1 - r.y0) > 1e-9);
+    ok(rects.length === 1, `fixture sanity: expected exactly one non-point component, got ${JSON.stringify(rects)}`);
+    return Math.hypot(rects[0].x1 - rects[0].x0, rects[0].y1 - rects[0].y0);
+  };
+  const variants: Array<[string, GamePayoffs]> = [
+    ['original', ORIGINAL], ['column-swap', swapColumns(ORIGINAL)], ['row-swap', swapRows(ORIGINAL)],
+    ['row+column-swap', swapRows(swapColumns(ORIGINAL))], ['player-swap', swapPlayers(ORIGINAL)],
+    ['player+column-swap', swapColumns(swapPlayers(ORIGINAL))],
+  ];
+  let sawFloatingShortfall = false;
+  for (const [name, g] of variants) {
+    const len = lenOf(g);
+    ok(Math.abs(len - 0.2) < 1e-9, `fixture sanity: ${name} has exact length 1/5 (got ${len})`);
+    if (len < 0.2) sawFloatingShortfall = true;
+    for (const isMobile of [false, true]) {
+      const n = markers(g, isMobile).length;
+      ok(n === 3, `a component of EXACT length 0.2 keeps corners + midpoint (${name}, isMobile=${isMobile}) — got ${n} marker(s)`);
+    }
+  }
+  ok(sawFloatingShortfall, 'fixture sanity: at least one relabelling computes the length as 0.1999… (the floating error this test exists for)');
+  ok(lenOf(ABOVE) > 0.2 && markers(ABOVE, false).length === 3, `above the cutoff keeps its corners — got ${markers(ABOVE, false).length}`);
+  ok(lenOf(BELOW) < 0.2 - 1e-6 && markers(BELOW, false).length === 1, `below the cutoff collapses to one marker — got ${markers(BELOW, false).length}`);
+  console.log('✓ the 0.2 cutoff is exact (1e-9 tolerance) and relabel-invariant: six relabellings of a length-1/5 component all keep corners, on both size sets');
+}
+
 testShortContinuumCollapsesToOneMarker();
+testShortContinuumCutoffIsExactAndRelabelInvariant();
 testContinuumMarkersDoNotOverlapOnScreen();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();

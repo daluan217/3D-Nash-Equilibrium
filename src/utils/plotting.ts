@@ -761,7 +761,18 @@ export function makeTraces(
     // never actually safe. 0.2 is the red's own directly-observed safe bound;
     // the same sweep finds zero violations at or above it.
     const SHORT_CONTINUUM = 0.2;
-    const isShort = Math.hypot(r.x1 - r.x0, r.y1 - r.y0) < SHORT_CONTINUUM;
+    // Compared with a tolerance, not exactly (2026-09-05 handback, independent
+    // director reproduction): A=[[1,0],[0,4]], B=[[0,0],[1,0]] has a component
+    // x=1, y∈[4/5,1] of EXACT length 1/5, which floating subtraction yields as
+    // 0.19999999999999996 — one collapsed marker — while the column-relabelled
+    // equivalent game (component y∈[0,1/5], computed as exactly 0.2) drew
+    // corners + midpoint. The contract (docs/CONTINUUM-RENDERING.md, clause 4)
+    // is "at or above 0.2 keeps its corners", and an equivalent game must never
+    // change branch through its representation; 1e-9 is far above the
+    // rounding error of any payoff arithmetic here and far below any length
+    // difference a viewer could perceive.
+    const SHORT_CONTINUUM_EPS = 1e-9;
+    const isShort = Math.hypot(r.x1 - r.x0, r.y1 - r.y0) < SHORT_CONTINUUM - SHORT_CONTINUUM_EPS;
     const zAc = EA(mx, my, g);
     const zBc = EB(mx, my, g);
     const zVal = trackingMode === 'B' ? zBc : zAc;
