@@ -102,3 +102,16 @@ network delay or event-loop stalls. This suite establishes behavior under
 transport failures, not model story quality or a measured frequency of slow
 responses in production. Fresh cloud quality sampling must still use the
 production model with no reasoning override.
+
+**How often this path is actually reached, measured:** RED-CLOUD-11/002
+(2026-09-05, main 3f699f4, real Azure Foundry calls, production model/no-
+reasoning pins) pooled 105 direct `generateScenario()` draws and found 4
+(3.8%) running 58-79s before failing on `max-tokens` — cleanly bimodal, with
+every other draw finishing under 10s and none landing between 10 and 20s.
+That is the population the cancellation work above protects: roughly 1 in
+26 real scenario draws used to leave an upstream provider call running,
+unobserved, for an extra 40-60+ seconds after this deadline fired and the
+bank fallback had already reached the user — now aborted instead. The same
+report separately measured 18 real draws through the actual deadline-wrapped
+HTTP path (`/api/scenario/regenerate`) all completing in 3.5-7.1s, consistent
+with the 20s deadline sitting comfortably inside the fast mode.
