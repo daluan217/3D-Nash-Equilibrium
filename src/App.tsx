@@ -344,9 +344,60 @@ function installOpenerTracking(): void {
     const control = (e.target as HTMLElement | null)?.closest?.('button, [href], input, select, textarea, [tabindex]');
     if (control instanceof HTMLElement) lastInteractedControl = control;
   }, true);
+  // RED-APP-12/001: a focused control that is REMOVED from the DOM (the header's
+  // Sign-In button when the signed-in controls replace it moments after the
+  // Account dialog closed; a row's Delete button once its row is gone) leaves
+  // focus on <body>. Chromium reports the removal as a `focusout` with no
+  // relatedTarget (measured in the trace that found this); once the commit
+  // that removed the element is over, if focus really is on <body> and the
+  // element really is gone, hand focus to the landmark it belonged to, else to
+  // the page's focus home.
+  document.addEventListener('focusout', (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement) || e.relatedTarget) return;
+    const landmark = el.closest('[data-focus-fallback]')?.getAttribute('data-focus-fallback') ?? null;
+    requestAnimationFrame(() => {
+      if (el.isConnected || document.activeElement !== document.body) return;
+      const target = (landmark ? firstVisible(`[data-focus-fallback="${landmark}"] button, [data-focus-fallback="${landmark}"]`) : null)
+        ?? firstVisible('[data-focus-home]');
+      target?.focus();
+    });
+  }, true);
 }
 
-function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElement | null>) {
+/** First visible, enabled element matching `selector` (or null). */
+function firstVisible(selector: string): HTMLElement | null {
+  for (const el of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+    if (el.hasAttribute('disabled')) continue;
+    // Only something that can actually take focus: a landmark container
+    // without tabindex matched here once and `.focus()` on it did nothing,
+    // leaving focus on <body> (measured while fixing RED-APP-12/001).
+    if (!el.matches('button, [href], input, select, textarea, [tabindex]')) continue;
+    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue; // display:none / hidden branch of a responsive pair
+    return el;
+  }
+  return null;
+}
+
+/**
+ * Where focus goes when a dialog closes and its opener is gone (RED-APP-12/001:
+ * the header's Sign-In button is replaced by the signed-in controls the moment
+ * a sign-in succeeds; an Edit button vanishes when its row is deleted; the
+ * desktop adopt dialog's opener — the Login button — unmounts with the Account
+ * dialog). `fallback` is a selector for the dialog's own landmark; the final
+ * resort is the page's focus home (`[data-focus-home]`), never <body>.
+ */
+function focusAfterDialog(opener: HTMLElement | null, fallback?: string): void {
+  const active = document.activeElement;
+  const focusLost = !active || active === document.body || !document.contains(active);
+  if (!focusLost) return; // something else (another dialog) already took focus on purpose
+  const target = (opener && opener.isConnected && (opener.offsetParent !== null || getComputedStyle(opener).position === 'fixed'))
+    ? opener
+    : (fallback ? firstVisible(fallback) : null) ?? firstVisible('[data-focus-home]');
+  target?.focus();
+}
+
+function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElement | null>, fallback?: string) {
   // Tracking must exist BEFORE the click that opens the dialog, so it is
   // installed on mount, not on open.
   useEffect(() => { installOpenerTracking(); }, []);
@@ -391,11 +442,9 @@ function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElemen
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
-      const active = document.activeElement;
-      const focusLost = !active || active === document.body || !document.contains(active);
-      if (opener && opener.isConnected && focusLost) opener.focus();
+      focusAfterDialog(opener, fallback);
     };
-  }, [open, containerRef]);
+  }, [open, containerRef, fallback]);
 }
 
 /**
@@ -1222,12 +1271,21 @@ export default function App() {
   const authDialogRef = useRef<HTMLDivElement>(null);
   const saveDialogRef = useRef<HTMLDivElement>(null);
   const editDialogRef = useRef<HTMLDivElement>(null);
-  useModalTabTrap(isFeedbackOpen, feedbackDialogRef);
-  useModalTabTrap(isAuthModalOpen, authDialogRef);
-  useModalTabTrap(isSaveModalOpen, saveDialogRef);
-  useModalTabTrap(isEditModalOpen, editDialogRef);
+  useModalTabTrap(isFeedbackOpen, feedbackDialogRef, '[data-focus-fallback="feedback"]');
+  useModalTabTrap(isAuthModalOpen, authDialogRef, '[data-focus-fallback="account"] button, [data-focus-fallback="account"]');
+  useModalTabTrap(isSaveModalOpen, saveDialogRef, '[data-focus-fallback="save-preset"]');
+  useModalTabTrap(isEditModalOpen, editDialogRef, '[data-focus-fallback="saved-games"]');
   const localGamesDialogRef = useRef<HTMLDivElement>(null);
-  useModalTabTrap(!!localGamesOffer, localGamesDialogRef);
+  useModalTabTrap(!!localGamesOffer, localGamesDialogRef, '[data-focus-fallback="account"] button, [data-focus-fallback="account"]');
+  // RED-APP-12/001: signing in (or out) swaps the header's account controls —
+  // the Sign-In button a dialog had just handed focus back to is unmounted, and
+  // the browser drops focus to <body> without firing any event (the "focus
+  // fixup" rule). After the swap, if focus was lost and the control the user
+  // last touched is gone, hand it to the new account controls.
+  useEffect(() => {
+    if (document.activeElement !== document.body) return;
+    firstVisible('[data-focus-fallback="account"] button, [data-focus-fallback="account"]')?.focus();
+  }, [user]);
 
   // Auto-scroll the logs browser to the bottom on new entries
   useEffect(() => {
@@ -2349,7 +2407,25 @@ export default function App() {
   // alerts; the ref decides synchronously, the state disables the button.
   const deletingGamesRef = useRef<Set<string>>(new Set());
   const [deletingGameIds, setDeletingGameIds] = useState<string[]>([]);
-  const handleDeleteGame = async (gameId: string) => {
+  /**
+   * RED-APP-12/001(e): deleting a row removed the focused Delete button and
+   * left keyboard focus on <body>. Focus moves to the neighbouring row's first
+   * control, else the list's own landmark.
+   */
+  const focusAfterRowRemoved = (rowEl: HTMLElement | null) => {
+    const neighbour = (rowEl?.nextElementSibling ?? rowEl?.previousElementSibling) as HTMLElement | null;
+    // The landmark the row lived in (the sidebar list, or the menu drawer's
+    // list — CodeRabbit on #141: a drawer deletion must not hand focus to
+    // the page underneath the still-open drawer), read before it is gone.
+    const landmark = rowEl?.closest('[data-focus-fallback]')?.getAttribute('data-focus-fallback') ?? 'saved-games';
+    requestAnimationFrame(() => {
+      const target = (neighbour && neighbour.isConnected ? neighbour.querySelector<HTMLElement>('button') : null)
+        ?? firstVisible(`[data-focus-fallback="${landmark}"] button, [data-focus-fallback="${landmark}"]`)
+        ?? firstVisible('[data-focus-home]');
+      target?.focus();
+    });
+  };
+  const handleDeleteGame = async (gameId: string, rowEl: HTMLElement | null = null) => {
     if (!canOwnGames) return;
     if (deletingGamesRef.current.has(gameId)) return;
     deletingGamesRef.current.add(gameId);
@@ -2365,6 +2441,7 @@ export default function App() {
           handleLoadPreset('bos');
         }
         setLogEntries(prev => [...prev, `🗑 Deleted custom game.`]);
+        focusAfterRowRemoved(rowEl);
       } else if (res.status === 404) {
         // RED-APP-9/001: clicking Delete on a game someone else already
         // deleted used to re-alert "Game not found." forever — the row was
@@ -2377,6 +2454,7 @@ export default function App() {
           handleLoadPreset('bos');
         }
         void refetchUserGames();
+        focusAfterRowRemoved(rowEl);
         alert('This game was deleted elsewhere; the list has been refreshed.');
       } else {
         // RED-APP-7/001: same dead-token cleanup as Save/Edit — an expired
@@ -4310,7 +4388,12 @@ export default function App() {
           behavior is untouched. */}
       <header
         data-print="static"
-        className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle${tourOpen ? ' [@media(max-height:560px)]:!static' : ''}`}
+        // RED-APP-12/003: at 320x200 (a 400% zoom) the header is taller than the
+        // viewport; sticky, it covered every pixel and no pointer or touch input
+        // reached the page at any scroll position. Below 500 px of height it is
+        // static, so ordinary scrolling moves it out of the way (the tour
+        // already needed the same below 560).
+        className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-subtle [@media(max-height:500px)]:!static${tourOpen ? ' [@media(max-height:560px)]:!static' : ''}`}
         style={isElectron ? { WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
       >
         {/* Vertical space for macOS traffic-light buttons — title sits below them, no horizontal offset needed */}
@@ -4327,7 +4410,7 @@ export default function App() {
               >
                 <Compass className="w-5.5 h-5.5" />
               </span>
-              <h1 className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+              <h1 data-focus-home tabIndex={-1} className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
                 Nash Equilibrium Simulator
               </h1>
             </div>
@@ -4369,13 +4452,14 @@ export default function App() {
                 <Menu className="w-4 h-4" />
               </button>
               {user ? (
-                <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
+                <div data-focus-fallback="account" className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[100px]" title={user.email}>@{user.username}</span>
                   <button onClick={handleLogout} className="text-xs font-medium text-slate-400 hover:text-danger-500 hover:bg-danger-50/50 dark:hover:bg-danger-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">Log out</button>
                 </div>
               ) : (
                 <button
+                  data-focus-fallback="account"
                   onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
                   className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                 >
@@ -4411,13 +4495,14 @@ export default function App() {
                 <Menu className="w-4 h-4" />
               </button>
               {user ? (
-                <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
+                <div data-focus-fallback="account" className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 pl-2.5 pr-1 py-1 rounded-xl">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[120px]" title={user.email}>@{user.username}</span>
                   <button onClick={handleLogout} className="text-xs font-medium text-slate-400 dark:text-slate-400 hover:text-danger-500 hover:bg-danger-50/50 dark:hover:bg-danger-950/50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer">Log out</button>
                 </div>
               ) : (
                 <button
+                  data-focus-fallback="account"
                   onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
                   className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                 >
@@ -4520,7 +4605,7 @@ export default function App() {
                 No saved custom games. Adapt payoffs and click <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to persist your first game!
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1">
+              <div data-focus-fallback="saved-games" tabIndex={-1} aria-label="Saved games" className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 rounded-xl">
                 {userCustomGames.map((game) => {
                   const isSelected = activePreset === game.id;
                   return (
@@ -4555,7 +4640,7 @@ export default function App() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleDeleteGame(game.id);
+                          handleDeleteGame(game.id, (e.currentTarget as HTMLElement).closest('.group') as HTMLElement | null);
                         }}
                         disabled={deletingGameIds.includes(game.id)}
                         aria-busy={deletingGameIds.includes(game.id) || undefined}
