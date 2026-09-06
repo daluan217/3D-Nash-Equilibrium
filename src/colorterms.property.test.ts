@@ -540,6 +540,14 @@ for (const c of BOUNDARY_MUST_MATCH) {
   check('(boundary) Latin control: "se" never splits "señor"', !isHighlighted(rendered('El señor llegó.', ['se'])));
   check('(boundary) Latin control: "wolf" never matches inside "wolves"', !isHighlighted(rendered('The wolves circle the pond.', ['wolf'])));
   check('(boundary) Cyrillic control (space-delimited): "вол" never matches inside "волк"', !isHighlighted(rendered('Серый волк бежит.', ['вол'])));
+  // Mixed scripts (CodeRabbit on #148): a change of writing system IS a word
+  // boundary — no word is spelled across two scripts — so a Latin chip next to
+  // Thai/Hangul letters matches ("wolf와": a Korean particle attached to a Latin
+  // noun is the ordinary shape), while a same-script neighbour still blocks it.
+  check('(boundary) mixed: "wolf" between Thai letters ("ชาวนาwolfและ") highlights — the script change is the boundary', isHighlighted(rendered('ชาวนาwolfและ', ['wolf'])));
+  check('(boundary) mixed: "wolf" with a Hangul particle attached ("wolf와") highlights', isHighlighted(rendered('wolf와 상인이 만났다', ['wolf'])));
+  check('(boundary) mixed control: "wolf" after Hangul but inside "wolves" ("상인wolves") does NOT match', !isHighlighted(rendered('상인wolves', ['wolf'])));
+  check('(boundary) mixed control: "wolf" glued to Cyrillic letters ("Серыйwolf") does NOT match (both space-delimited)', !isHighlighted(rendered('Серыйwolf', ['wolf'])));
 }
 {
   // A CJK chip with real neighbours on both sides in the SAME script also
