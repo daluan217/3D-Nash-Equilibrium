@@ -310,6 +310,13 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    *  frame, so re-evaluating on every 10th of a second is plenty and keeps a
    *  spin frame from paying for a restyle it does not need. */
   const lastContinuumEvalRef = useRef(0);
+  /** CodeRabbit (this branch): a plain leading-edge throttle drops the LAST
+   *  event of a burst if it lands inside the 100ms window — harmless for the
+   *  idle spin (more relayouts keep coming), but a one-shot settle (Reset
+   *  View, the end of a drag) could then leave a stale hide/show decision
+   *  indefinitely. Holds the pending trailing-evaluation timer so it can be
+   *  re-armed (only the latest camera matters) and cancelled on cleanup. */
+  const trailingContinuumEvalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Legend entries the USER switched off. Every simulation step rebuilds the
    * traces from scratch, and a fresh trace carries no `visible`, so a legend
@@ -317,6 +324,82 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    * click handler records the group; the redraw re-applies it.
    */
   const userHiddenGroupsRef = useRef<Set<string>>(new Set());
+
+  /**
+   * RED-MATH-13/002: the non-overlap guarantee (docs/CONTINUUM-RENDERING.md
+   * clause 3) has to hold at every camera the app itself reaches, not just
+   * the default one the STATIC SHORT_CONTINUUM rule was validated at — the
+   * idle spin alone rotates past fusing angles within 1-2s of page load.
+   * Projects each component's own corner/midpoint centers through the
+   * CURRENT camera (the same helper the property-test sweep uses — one
+   * projection, not two that could quietly disagree) and, only when a
+   * component's decision actually FLIPS, restyles exactly its corner
+   * traces (visibility) and its midpoint trace (marker.size) — never a
+   * full Plotly.react, so this is safe to call on every relayout.
+   *
+   * Hoisted to the component body (CodeRabbit, this branch) rather than
+   * defined inside the data-rebuild effect: it touches only REFS (always
+   * current regardless of which render's closure created it) and `plotId`
+   * (constant), so it is safe to call from the resize effect and the
+   * legend-click handler too, not just the relayout listener that used to
+   * be its only caller.
+   */
+  const applyContinuumCollapseAtCamera = (camera: any) => {
+    const metas = continuumMetaRef.current;
+    if (!metas.length) return;
+    const eye = camera?.eye;
+    if (!eye) return;
+    const PlotlyNow = (window as any).Plotly;
+    const gdNow = document.getElementById(plotId) as any;
+    if (!PlotlyNow || !gdNow) return;
+    // CodeRabbit (this branch): a fixed `fwd = normalize(0-eye)` ignored a
+    // nonzero live `center` (some tour poses, e.g. cornerRow1Col1/interior,
+    // use one), and `up` was always the default — both now flow through.
+    const center = camera?.center ?? { x: 0, y: 0, z: 0 };
+    const up = camera?.up ?? { x: 0, y: 0, z: 1 };
+    const basis = cameraBasis([eye.x, eye.y, eye.z], [center.x, center.y, center.z], [up.x, up.y, up.z]);
+    // CodeRabbit (this branch): marker SIZE is fixed CSS px, but the
+    // projected GAP between two points scales with the container's actual
+    // pixel size — the STATIC test's fixed 700x500 canonical viewport
+    // under-predicts real fusion risk on a narrower live container (e.g.
+    // mobile) and over-predicts it on a wider one. Read the plot's OWN
+    // current rendered size instead of assuming the canonical one; the
+    // canonical viewport stays the STATIC threshold's calibration (untouched
+    // default in cameraProjection.ts), used only if the live rect is
+    // unavailable (e.g. a detached node mid-teardown).
+    const rect = typeof gdNow.getBoundingClientRect === 'function' ? gdNow.getBoundingClientRect() : null;
+    const viewport = rect && rect.width > 0 && rect.height > 0 ? { w: rect.width, h: rect.height } : undefined;
+    // CodeRabbit (this branch): un-collapsing must restore the corner
+    // traces' BASELINE visibility, not force `true` unconditionally — the
+    // user may have hidden the whole 'continuumNE' legend group
+    // (userHiddenGroupsRef, set as 'legendonly' on every trace in that
+    // group by the trace-rebuild effect above). Forcing `true` here would
+    // silently re-show corners the user just switched off.
+    const baselineVisible: boolean | 'legendonly' = userHiddenGroupsRef.current.has('continuumNE') ? 'legendonly' : true;
+    const cornerIdx: number[] = [];
+    const cornerVis: (boolean | 'legendonly')[] = [];
+    const midIdx: number[] = [];
+    const midSize: number[] = [];
+    for (const m of metas) {
+      const collapse = m.surfaces.some((s) =>
+        shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis, viewport));
+      const was = continuumCollapsedRef.current.get(m.componentIndex) ?? false;
+      if (collapse === was) continue;
+      continuumCollapsedRef.current.set(m.componentIndex, collapse);
+      // 'legendonly' rather than a bare `false` when collapsing (CodeRabbit,
+      // this branch): using the SAME value Plotly's own legend-visibility
+      // state machine uses means a corner this rule hides reads as
+      // indistinguishable from a legend-hidden one, so the legend-click
+      // handler's own restyle (which now owns the WHOLE continuumNE toggle,
+      // see below) never has to reconcile two different "off" values.
+      for (const ci of m.cornerTraceIndices) { cornerIdx.push(ci); cornerVis.push(collapse ? 'legendonly' : baselineVisible); }
+      midIdx.push(m.midpointTraceIndex);
+      midSize.push(collapse ? m.midpointShortSize : m.midpointBaseSize);
+    }
+    if (cornerIdx.length) PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);
+    if (midIdx.length) PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx);
+  };
+
   /** Spin paused because the visitor took the wheel. Mirrored in a ref so the
    *  animation loop can read it without being torn down and rebuilt. */
   const [spinPaused, setSpinPaused] = useState(false);
@@ -408,6 +491,13 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       timer = setTimeout(() => {
         if (Plotly && document.getElementById(plotId)) {
           Plotly.Plots.resize(plotId);
+          // CodeRabbit (this branch): the camera-aware continuum collapse
+          // reads the plot's LIVE container size (not a fixed canonical
+          // one) precisely so it agrees with what a resize just changed —
+          // re-evaluate at the (unchanged) current camera now that the
+          // resize has actually applied, so a decision made at the OLD size
+          // is never left stale after the container settles at a new one.
+          applyContinuumCollapseAtCamera(cameraRef.current);
         }
       }, 150);
     });
@@ -806,52 +896,6 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       continuumCollapsedRef.current = new Map();
     }
 
-    /**
-     * RED-MATH-13/002: the non-overlap guarantee (docs/CONTINUUM-RENDERING.md
-     * clause 3) has to hold at every camera the app itself reaches, not just
-     * the default one the STATIC SHORT_CONTINUUM rule was validated at — the
-     * idle spin alone rotates past fusing angles within 1-2s of page load.
-     * Projects each component's own corner/midpoint centers through the
-     * CURRENT camera (the same helper the property-test sweep uses — one
-     * projection, not two that could quietly disagree) and, only when a
-     * component's decision actually FLIPS, restyles exactly its corner
-     * traces (visibility) and its midpoint trace (marker.size) — never a
-     * full Plotly.react, so this is safe to call on every relayout.
-     */
-    const applyContinuumCollapseAtCamera = (camera: any) => {
-      const metas = continuumMetaRef.current;
-      if (!metas.length) return;
-      const eye = camera?.eye;
-      if (!eye) return;
-      const PlotlyNow = (window as any).Plotly;
-      const gdNow = document.getElementById(plotId) as any;
-      if (!PlotlyNow || !gdNow) return;
-      const basis = cameraBasis([eye.x, eye.y, eye.z]);
-      // CodeRabbit (this branch): un-collapsing must restore the corner
-      // traces' BASELINE visibility, not force `true` unconditionally — the
-      // user may have hidden the whole 'continuumNE' legend group
-      // (userHiddenGroupsRef, set as 'legendonly' on every trace in that
-      // group by the trace-rebuild effect above). Forcing `true` here would
-      // silently re-show corners the user just switched off.
-      const baselineVisible: boolean | 'legendonly' = userHiddenGroupsRef.current.has('continuumNE') ? 'legendonly' : true;
-      const cornerIdx: number[] = [];
-      const cornerVis: (boolean | 'legendonly')[] = [];
-      const midIdx: number[] = [];
-      const midSize: number[] = [];
-      for (const m of metas) {
-        const collapse = m.surfaces.some((s) =>
-          shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis));
-        const was = continuumCollapsedRef.current.get(m.componentIndex) ?? false;
-        if (collapse === was) continue;
-        continuumCollapsedRef.current.set(m.componentIndex, collapse);
-        for (const ci of m.cornerTraceIndices) { cornerIdx.push(ci); cornerVis.push(collapse ? false : baselineVisible); }
-        midIdx.push(m.midpointTraceIndex);
-        midSize.push(collapse ? m.midpointShortSize : m.midpointBaseSize);
-      }
-      if (cornerIdx.length) PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);
-      if (midIdx.length) PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx);
-    };
-
     // 'legendonly' rather than dropping the traces: the legend entries stay put,
     // so the markers read as switched off and the legend does not reflow when
     // the tour turns them back on.
@@ -1158,8 +1202,29 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         {
           const nowTs = performance.now();
           if (nowTs - lastContinuumEvalRef.current >= 100) {
+            if (trailingContinuumEvalTimerRef.current) {
+              clearTimeout(trailingContinuumEvalTimerRef.current);
+              trailingContinuumEvalTimerRef.current = null;
+            }
             lastContinuumEvalRef.current = nowTs;
             applyContinuumCollapseAtCamera(live);
+          } else {
+            // CodeRabbit (this branch): a plain throttle silently drops an
+            // event landing inside the window — fine for the idle spin
+            // (another relayout follows within ~33ms), but a ONE-SHOT settle
+            // (Reset View, the end of a drag) that happens to land here would
+            // otherwise never get evaluated at all. Schedule a trailing
+            // evaluation at the throttle boundary for the LATEST camera
+            // (`cameraRef.current`, not the possibly-stale `live` this
+            // particular event carried — a later event before the timer
+            // fires re-arms it with the newer pose instead of stacking timers).
+            if (trailingContinuumEvalTimerRef.current) clearTimeout(trailingContinuumEvalTimerRef.current);
+            const delay = Math.max(0, 100 - (nowTs - lastContinuumEvalRef.current));
+            trailingContinuumEvalTimerRef.current = setTimeout(() => {
+              trailingContinuumEvalTimerRef.current = null;
+              lastContinuumEvalRef.current = performance.now();
+              applyContinuumCollapseAtCamera(cameraRef.current);
+            }, delay);
           }
         }
 
@@ -1201,6 +1266,54 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       el2.on('plotly_legendclick', (ev: any) => {
         const clicked = ev?.data?.[ev.curveNumber];
         const grp = clicked?.legendgroup;
+        if (grp === 'continuumNE') {
+          // CodeRabbit (this branch): Plotly's own default `groupclick:
+          // 'togglegroup'` behavior restores EVERY trace in this group —
+          // including a component's corner traces the DYNAMIC rule had
+          // hidden at a fusing camera — with no knowledge of
+          // continuumCollapsedRef, leaving corners visibly fused until some
+          // LATER camera event happens to correct it. Two things had to be
+          // fixed together, both found by instrumenting a real click:
+          // (1) `ev.data[ev.curveNumber].visible` — what the rest of this
+          //     handler uses for `cur`/`nextVisible` — measurably DISAGREES
+          //     with `document.getElementById(plotId).data`'s own live
+          //     value for the SAME clicked trace at click time (Plotly
+          //     appears to snapshot/derive it differently for a grouped
+          //     legend entry). Direction must come from the LIVE dom data,
+          //     not `ev.data`.
+          // (2) A first attempt reapplied the collapse via
+          //     `setTimeout(..., 0)` AFTER letting Plotly's own toggle run —
+          //     but Plotly's own internal restyle for the toggle is
+          //     asynchronous too, and RACES our reapply: the reapply's
+          //     restyle landed BEFORE Plotly's own toggle-to-'legendonly'
+          //     pass, and Plotly's pass then EXCLUDED those already-touched
+          //     traces entirely, permanently desyncing them from the group.
+          // Fixed by becoming the ONLY writer: suppress Plotly's own
+          // default (`return false` below) and restyle the WHOLE group
+          // ourselves, direction decided from the live DOM — hide:
+          // everything to 'legendonly' uniformly (matches what a
+          // still-fusing collapse already uses, so no future toggle ever
+          // has to distinguish the two); show: everything to visible first
+          // (what the user asked for), then immediately re-run the
+          // camera-aware decision, which re-hides only the corners of a
+          // component that is STILL fusing at the CURRENT camera —
+          // synchronous, no timer, no race.
+          const gdNow = document.getElementById(plotId) as any;
+          const groupTraces: any[] = (gdNow?.data ?? []).filter((t: any) => t.legendgroup === 'continuumNE');
+          const groupIdx: number[] = [];
+          (gdNow?.data ?? []).forEach((t: any, i: number) => { if (t.legendgroup === 'continuumNE') groupIdx.push(i); });
+          const anyCurrentlyShown = groupTraces.some((t) => t.visible === undefined || t.visible === true);
+          if (anyCurrentlyShown) {
+            userHiddenGroupsRef.current.add('continuumNE');
+            (window as any).Plotly?.restyle(plotId, { visible: 'legendonly' }, groupIdx);
+          } else {
+            userHiddenGroupsRef.current.delete('continuumNE');
+            continuumCollapsedRef.current = new Map();
+            (window as any).Plotly?.restyle(plotId, { visible: true }, groupIdx);
+            applyContinuumCollapseAtCamera(cameraRef.current);
+          }
+          return false; // we handled the WHOLE continuumNE toggle ourselves
+        }
         const cur = clicked?.visible;
         const nextVisible = (cur === undefined || cur === true) ? 'legendonly' : true;
         // Record the user's choice by group (or name for ungrouped entries) so
@@ -1220,6 +1333,19 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         return false; // suppress Plotly's single-trace default
       });
     }
+
+    // CodeRabbit (this branch): cancel a pending trailing continuum-collapse
+    // evaluation before this effect's next run (or unmount) — the timer
+    // reads refs only, so leaving it would not misbehave, but a rebuild
+    // that already re-evaluates via the immediate post-react call above
+    // makes an old one redundant, and unmount should not leave ANY timer
+    // outstanding.
+    return () => {
+      if (trailingContinuumEvalTimerRef.current) {
+        clearTimeout(trailingContinuumEvalTimerRef.current);
+        trailingContinuumEvalTimerRef.current = null;
+      }
+    };
   }, [payoffs, simState, trackingMode, allNE, isDark, uiRevision, stepMode, tourPoints, hiddenTraces]);
 
   // Handle dragMode changes separately to preserve camera orientation

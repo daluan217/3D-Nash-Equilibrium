@@ -1565,9 +1565,53 @@ function testShortContinuumCutoffIsExactAndRelabelInvariant() {
   console.log('✓ the 0.2 cutoff is exact (1e-9 tolerance) and relabel-invariant: six relabellings of a length-1/5 component all keep corners, on both size sets');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 5h. RED-MATH-13/002, CodeRabbit follow-up (PlotlyView.tsx#L829 thread):
+//     `cameraBasis`'s `fwd` must point at the camera's ACTUAL `center`, not
+//     always the scene origin. Some tour poses (PlotlyView.tsx's TOUR_POSES
+//     — `cornerRow1Col1`, `interior`) use a nonzero `center`; a collapse
+//     decision taken at one of those, ignoring it, could disagree with what
+//     is actually rendered.
+// ════════════════════════════════════════════════════════════════════════════
+function testCameraBasisRespectsNonzeroCenter() {
+  const EYE = [1.15, 1.15, 0.72]; // PlotlyView.tsx's cornerRow1Col1 pose
+  const CENTER = [0.3, 0.3, 0];   // same pose's own center
+
+  // Sanity: the OLD (center-ignored) behavior — cameraBasis(EYE) with the
+  // default center [0,0,0] — looks at the ORIGIN.
+  const oldBasis = cameraBasis(EYE);
+  const toOrigin = [-EYE[0], -EYE[1], -EYE[2]];
+  const toOriginMag = Math.hypot(...toOrigin) || 1;
+  const oldFwdDotOrigin = (oldBasis.fwd[0] * toOrigin[0] + oldBasis.fwd[1] * toOrigin[1] + oldBasis.fwd[2] * toOrigin[2]) / toOriginMag;
+  ok(oldFwdDotOrigin > 1 - 1e-9, `sanity: cameraBasis(eye) with no center defaults to looking at the origin (dot=${oldFwdDotOrigin})`);
+
+  // FIX: cameraBasis(EYE, CENTER) must look AT that center instead.
+  const newBasis = cameraBasis(EYE, CENTER);
+  const toCenter = [CENTER[0] - EYE[0], CENTER[1] - EYE[1], CENTER[2] - EYE[2]];
+  const toCenterMag = Math.hypot(...toCenter) || 1;
+  const newFwdDotCenter = (newBasis.fwd[0] * toCenter[0] + newBasis.fwd[1] * toCenter[1] + newBasis.fwd[2] * toCenter[2]) / toCenterMag;
+  ok(newFwdDotCenter > 1 - 1e-9, `cameraBasis(eye, center) must look AT the given center, not the origin (dot=${newFwdDotCenter})`);
+
+  // Proves the fix actually changes the answer, not a silent no-op.
+  const fwdDelta = Math.hypot(
+    oldBasis.fwd[0] - newBasis.fwd[0], oldBasis.fwd[1] - newBasis.fwd[1], oldBasis.fwd[2] - newBasis.fwd[2]);
+  ok(fwdDelta > 0.05, `cameraBasis's fwd must differ once a nonzero center is given (delta=${fwdDelta.toFixed(4)}) — otherwise center is silently ignored`);
+
+  // Concrete numeric impact: project the SAME data point under both bases —
+  // a real screen-position difference, not just an abstract vector one.
+  const pOld = projectPoint(0.5, 0.5, 0, -1, 1, oldBasis);
+  const pNew = projectPoint(0.5, 0.5, 0, -1, 1, newBasis);
+  const screenDelta = Math.hypot(pOld[0] - pNew[0], pOld[1] - pNew[1]);
+  ok(screenDelta > 5,
+    `ignoring a tour pose's nonzero center used to project a point ${screenDelta.toFixed(1)}px away from where the correct (center-aware) basis puts it`);
+  console.log(`✓ cameraBasis respects a nonzero camera center (RED-MATH-13/002 CodeRabbit follow-up): `
+    + `fwd delta=${fwdDelta.toFixed(3)}, projected screen delta=${screenDelta.toFixed(1)}px at the cornerRow1Col1 tour pose`);
+}
+
 testShortContinuumCollapsesToOneMarker();
 testShortContinuumCutoffIsExactAndRelabelInvariant();
 testContinuumMarkersDoNotOverlapOnScreen();
+testCameraBasisRespectsNonzeroCenter();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();

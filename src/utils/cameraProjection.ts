@@ -35,6 +35,18 @@ export const FOCAL = 3;
 export const VIEW_W = 700;
 export const VIEW_H = 500;
 
+/** A projection's target pixel dimensions. The STATIC test/threshold below
+ *  is calibrated to the fixed `{VIEW_W, VIEW_H}` canonical viewport (see
+ *  "Screen-space, in detail") and must never change. The RUNTIME dynamic
+ *  collapse (PlotlyView.tsx) passes the LIVE plot container's own rendered
+ *  size instead (CodeRabbit, this branch: marker `size` is fixed CSS px,
+ *  but the projected GAP between two points scales with container width —
+ *  a fixed 700x500 assumption under-predicts real fusion risk on a
+ *  narrower-than-700px container, e.g. mobile, and over-predicts it on a
+ *  wider one). */
+export interface Viewport { w: number; h: number; }
+export const DEFAULT_VIEWPORT: Viewport = { w: VIEW_W, h: VIEW_H };
+
 /** Screen-space separation, in px, at or below which two continuumNE glyphs
  *  read as touching/fused rather than two distinct diamonds (clause 3's X). */
 export const OVERLAP_TOLERANCE_PX = 1;
@@ -61,12 +73,24 @@ export interface CameraBasis {
 }
 
 /** Derive the lookAt basis (forward/right/up) for an arbitrary eye vector,
- *  looking at the scene origin — the same construction Plotly's own
- *  turntable camera uses. Any camera the app reaches (idle spin, Reset View,
- *  the tour's moveCamera poses, a user drag) is just a different `eye`. */
-export function cameraBasis(eye: readonly number[] = DEFAULT_EYE, up: readonly number[] = CAM_UP): CameraBasis {
+ *  looking at `center` (default the scene origin — the idle spin never
+ *  changes `scene.camera.center` off origin, so this default matches its
+ *  own motion exactly) — the same construction Plotly's own turntable
+ *  camera uses. Any camera the app reaches (idle spin, Reset View, the
+ *  tour's moveCamera poses — SOME of which use a nonzero `center`, e.g.
+ *  `cornerRow1Col1`/`interior` — a user drag) is just a different `eye`/
+ *  `center`/`up`. CodeRabbit (this branch): a fixed `fwd = normalize(0-eye)`
+ *  silently ignored a nonzero live `center`, so a collapse decision taken
+ *  mid-tour on one of those close-up poses could disagree with what is
+ *  actually rendered (the camera is not really looking at the origin then). */
+export function cameraBasis(
+  eye: readonly number[] = DEFAULT_EYE,
+  center: readonly number[] = [0, 0, 0],
+  up: readonly number[] = CAM_UP,
+): CameraBasis {
   const e: [number, number, number] = [eye[0], eye[1], eye[2]];
-  const fwd = v3norm(v3sub([0, 0, 0], e));
+  const c: [number, number, number] = [center[0], center[1], center[2]];
+  const fwd = v3norm(v3sub(c, e));
   let crossVec = v3cross(fwd, up);
   // CodeRabbit (this branch): a camera looking straight down/up the `up`
   // axis makes `fwd` parallel to `up`, so cross(fwd, up) is ~0 — naively
@@ -97,6 +121,7 @@ export function projectPoint(
   x: number, y: number, z: number,
   zLo: number, zHi: number,
   basis: CameraBasis = DEFAULT_CAMERA_BASIS,
+  viewport: Viewport = DEFAULT_VIEWPORT,
 ): [number, number] {
   const zSpan = (zHi - zLo) || 1e-9;
   const world: [number, number, number] = [x - 0.5, y - 0.5, (z - (zLo + zHi) / 2) / zSpan];
@@ -114,7 +139,7 @@ export function projectPoint(
   if (vz <= 0) return [NaN, NaN];
   const sx = (vx / vz) * FOCAL;
   const sy = (vy / vz) * FOCAL;
-  return [VIEW_W / 2 + sx * (VIEW_W / 2), VIEW_H / 2 - sy * (VIEW_H / 2)];
+  return [viewport.w / 2 + sx * (viewport.w / 2), viewport.h / 2 - sy * (viewport.h / 2)];
 }
 
 /** z-normalization range for a built surface: the payoff extrema padded by
@@ -135,9 +160,10 @@ export function worstPairGapPx(
   points: Array<{ x: number; y: number; z: number; size: number }>,
   zLo: number, zHi: number,
   basis: CameraBasis = DEFAULT_CAMERA_BASIS,
+  viewport: Viewport = DEFAULT_VIEWPORT,
 ): number {
   let worst = Infinity;
-  const proj = points.map((p) => ({ px: projectPoint(p.x, p.y, p.z, zLo, zHi, basis), size: p.size }));
+  const proj = points.map((p) => ({ px: projectPoint(p.x, p.y, p.z, zLo, zHi, basis, viewport), size: p.size }));
   for (let i = 0; i < proj.length; i++) {
     for (let j = i + 1; j < proj.length; j++) {
       const d = Math.hypot(proj[i].px[0] - proj[j].px[0], proj[i].px[1] - proj[j].px[1]);
@@ -166,11 +192,12 @@ export function shouldCollapseComponentAtCamera(
   cornerSize: number,
   zLo: number, zHi: number,
   basis: CameraBasis = DEFAULT_CAMERA_BASIS,
+  viewport: Viewport = DEFAULT_VIEWPORT,
 ): boolean {
   if (!corners.length) return false;
   const points = [
     { ...midpoint, size: midpointSize },
     ...corners.map((c) => ({ ...c, size: cornerSize })),
   ];
-  return worstPairGapPx(points, zLo, zHi, basis) < -OVERLAP_TOLERANCE_PX;
+  return worstPairGapPx(points, zLo, zHi, basis, viewport) < -OVERLAP_TOLERANCE_PX;
 }
