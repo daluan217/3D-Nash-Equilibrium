@@ -4751,7 +4751,7 @@ try {
     await email.click(); await email.type('abc');
     record('precondition: the caret is inside the Account dialog while the tour is open',
       await p.evaluate(() => !!document.activeElement?.closest('[role="dialog"][aria-label="Account"]')));
-    for (let k = 0; k < 4; k++) { await p.keyboard.press('ArrowRight'); await p.waitForTimeout(150); }
+    for (let k = 0; k < 4; k++) await p.keyboard.press('ArrowRight');
     await p.keyboard.press('Enter');
     // Poll: the tour must STILL be on step 1 after the keys had every chance to land.
     let settled = await readTour();
