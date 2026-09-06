@@ -3628,8 +3628,10 @@ try {
       await p.getByPlaceholder('••••••••').first().fill('TestPass123');
       await p.getByRole('button', { name: /^login$/i }).click();
       await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 8000 });
-      for (let i = 0; i < 20 && (await p.evaluate(() => document.activeElement === document.body)); i++) await p.waitForTimeout(100);
-      const afterLogin = await p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inAccount: !!a?.closest?.('[data-focus-fallback="account"]'), text: (a?.textContent || '').trim().slice(0, 30) }; });
+      // Poll for the DESIRED state (focus inside the account landmark), not merely "not body".
+      const readFocus = () => p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inAccount: !!(a && a.isConnected && a.closest?.('[data-focus-fallback="account"]')), text: (a?.textContent || '').trim().slice(0, 30) }; });
+      let afterLogin = await readFocus();
+      for (let i = 0; i < 30 && !afterLogin.inAccount; i++) { await p.waitForTimeout(100); afterLogin = await readFocus(); }
       record('FIX: after signing in (the Sign-In opener is gone) focus is on the header account controls, not <body>', afterLogin.tag !== 'BODY' && afterLogin.inAccount, JSON.stringify(afterLogin));
       // (b) keyboard Delete of the first of two rows → focus lands on the remaining row (or the list landmark)
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
@@ -3644,8 +3646,9 @@ try {
       record('precondition: the Delete button holds focus before the key press', await delA.evaluate((el) => document.activeElement === el));
       await p.keyboard.press('Enter');
       await p.getByRole('button', { name: `Del-A-${uniq}`, exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
-      for (let i = 0; i < 20 && (await p.evaluate(() => document.activeElement === document.body)); i++) await p.waitForTimeout(100);
-      const afterDelete = await p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inList: !!a?.closest?.('[data-focus-fallback="saved-games"]'), text: (a?.textContent || a?.getAttribute('title') || '').trim().slice(0, 30) }; });
+      const readListFocus = () => p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inList: !!(a && a.isConnected && a.closest?.('[data-focus-fallback="saved-games"]')), text: (a?.textContent || a?.getAttribute('title') || '').trim().slice(0, 30) }; });
+      let afterDelete = await readListFocus();
+      for (let i = 0; i < 30 && !afterDelete.inList; i++) { await p.waitForTimeout(100); afterDelete = await readListFocus(); }
       record('FIX: after a keyboard Delete removes the focused row, focus is inside the saved-games list (neighbour row or the list itself), not <body>', afterDelete.tag !== 'BODY' && afterDelete.inList, JSON.stringify(afterDelete));
     } finally { await ctx.close().catch(() => {}); }
   });
