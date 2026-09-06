@@ -43,7 +43,7 @@ assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 12, 'the smoke suite is split into 12 CI shards (test.yml matrix must match)');
+assert.strictEqual(SHARD_COUNT, 16, 'the smoke suite is split into 16 CI shards (test.yml matrix must match)');
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   assert(definitions.some((definition) => definition.shard === shard),
     `shard ${shard} must own at least one section`);
@@ -68,7 +68,7 @@ assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definition
 // selected for it (a section silently moving shards would change every CI
 // timing assumption), while NEW sections may join any shard.
 const historicalShard1Ids = ['36', '42'];
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/12' }).selected.map(({ id }) => id);
+const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/16' }).selected.map(({ id }) => id);
 for (const id of historicalShard1Ids) {
   assert(shard1Now.includes(id),
     `the CI shard selector must retain section ${id} in shard 1 (measured-duration assignment of 2026-09-05); shard 1 now selects ${JSON.stringify(shard1Now)}`);
@@ -81,7 +81,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/12', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/16', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
