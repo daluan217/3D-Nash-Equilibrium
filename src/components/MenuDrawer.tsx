@@ -32,7 +32,8 @@ interface MenuDrawerProps {
   user: { id: string; username: string; email: string } | null;
   authToken: string | null;
   userCustomGames: any[];
-  onDeleteCustomGame: (id: string) => void;
+  /** `rowEl` is the card being removed, so focus can stay inside the drawer afterwards. */
+  onDeleteCustomGame: (id: string, rowEl?: HTMLElement | null) => void;
   onLoadPreset: (key: string) => void;
   activePreset: string;
   isDark: boolean;
@@ -709,7 +710,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 </div>
 
                 {user && formattedCustomGames.length > 0 ? (
-                  <div className="grid grid-cols-1 gap-4">
+                  <div data-focus-fallback="drawer-games" tabIndex={-1} aria-label="Saved custom games" className="grid grid-cols-1 gap-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 rounded-xl">
                     {formattedCustomGames.map((game) => {
                       // RED-MATH-7/001: same continuum-awareness as the
                       // standard-presets list above. RED-MATH-9/002: `.stray`
@@ -719,7 +720,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                       const isSelected = activePreset === game.id;
 
                       return (
-                        <div
+                        <div data-drawer-game
                           key={game.id}
                           className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${isSelected
                               ? 'bg-accent-50/15 dark:bg-accent-950/10 border-accent-400 dark:border-accent-800 shadow-md ring-1 ring-accent-400/20'
@@ -745,7 +746,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                                     </span>
                                   )}
                                   <button
-                                    onClick={() => onDeleteCustomGame(game.id)}
+                                    onClick={(e) => onDeleteCustomGame(game.id, (e.currentTarget as HTMLElement).closest('[data-drawer-game]') as HTMLElement | null)}
                                     className="p-1 px-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/25 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer"
                                     title="Delete custom layout"
                                   >
@@ -807,7 +808,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     })}
                   </div>
                 ) : (
-                  <div className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                  /* The focus landmark stays MOUNTED in the empty state: when the
+                     drawer deletes its last saved game the list above unmounts,
+                     and App's focus restoration must still find a
+                     `drawer-games` fallback inside the open drawer instead of
+                     falling through to the page beneath it (CodeRabbit on #141). */
+                  <div data-focus-fallback="drawer-games" tabIndex={-1} aria-label="Saved custom games" className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400">
                     {user ? (
                       <p>
                         No saved custom game presets. Customize payoffs in the main board and click{' '}

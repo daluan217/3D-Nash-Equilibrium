@@ -3635,6 +3635,123 @@ try {
     } finally { await ctx.close().catch(() => {}); }
   });
 
+  // ── RED-APP-12/001: when a dialog's opener is gone at close time, focus goes
+  // to the dialog's landmark, never <body>. Two ordinary triggers: (a) signing
+  // in replaces the header's Sign-In button with the signed-in controls while
+  // the Account dialog closes; (b) deleting a row removes the focused Delete
+  // button. Reads document.activeElement. Mutations: drop the fallback in
+  // focusAfterDialog → (a) lands on BODY; drop focusAfterRowRemoved → (b) does.
+  section('56', 'a closed dialog whose opener vanished still hands focus to a landmark', 4, async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      const uniq = `foc2${Date.now()}`;
+      const reg = await fetch(BASE + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: uniq, email: `${uniq}@example.com`, password: 'TestPass123' }) });
+      record('precondition: an account exists', reg.ok, `status ${reg.status}`);
+      const signIn = p.getByRole('button', { name: /sign in.*sign up/i }).first();
+      await signIn.focus(); await signIn.click();
+      await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+      await p.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
+      await p.getByPlaceholder('••••••••').first().fill('TestPass123');
+      await p.getByRole('button', { name: /^login$/i }).click();
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 8000 });
+      // Poll for the DESIRED state (focus inside the account landmark), not merely "not body".
+      const readFocus = () => p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inAccount: !!(a && a.isConnected && a.closest?.('[data-focus-fallback="account"]')), text: (a?.textContent || '').trim().slice(0, 30) }; });
+      let afterLogin = await readFocus();
+      for (let i = 0; i < 30 && !afterLogin.inAccount; i++) { await p.waitForTimeout(100); afterLogin = await readFocus(); }
+      record('FIX: after signing in (the Sign-In opener is gone) focus is on the header account controls, not <body>', afterLogin.tag !== 'BODY' && afterLogin.inAccount, JSON.stringify(afterLogin));
+      // (b) keyboard Delete of the first of two rows → focus lands on the remaining row (or the list landmark)
+      const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+      for (const n of ['Del-A', 'Del-B']) await fetch(BASE + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: `${n}-${uniq}`, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
+      await p.reload({ waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      const rowA = p.locator('div.group', { has: p.getByRole('button', { name: `Del-A-${uniq}`, exact: true }) });
+      await rowA.waitFor({ state: 'visible', timeout: 10000 });
+      const delA = rowA.getByTitle('Delete this saved game');
+      p.once('dialog', async (d) => { await d.accept(); });
+      await delA.focus();
+      record('precondition: the Delete button holds focus before the key press', await delA.evaluate((el) => document.activeElement === el));
+      await p.keyboard.press('Enter');
+      await p.getByRole('button', { name: `Del-A-${uniq}`, exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
+      const readListFocus = () => p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inList: !!(a && a.isConnected && a.closest?.('[data-focus-fallback="saved-games"]')), text: (a?.textContent || a?.getAttribute('title') || '').trim().slice(0, 30) }; });
+      let afterDelete = await readListFocus();
+      for (let i = 0; i < 30 && !afterDelete.inList; i++) { await p.waitForTimeout(100); afterDelete = await readListFocus(); }
+      record('FIX: after a keyboard Delete removes the focused row, focus is inside the saved-games list (neighbour row or the list itself), not <body>', afterDelete.tag !== 'BODY' && afterDelete.inList, JSON.stringify(afterDelete));
+      // (c) the same deletion from the workspace menu drawer keeps focus INSIDE
+      // the drawer (CodeRabbit on #141). Mutation: pass no row from the drawer's
+      // Delete button → focus falls to the page under the drawer.
+      for (const n of ['Del-C', 'Del-D']) await fetch(BASE + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: `${n}-${uniq}`, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
+      await p.reload({ waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+      // The saved games live under the drawer's Library tab.
+      await p.getByRole('button', { name: /library/i }).first().click();
+      const drawerList = p.locator('[data-focus-fallback="drawer-games"]');
+      await drawerList.waitFor({ state: 'visible', timeout: 8000 });
+      const card = drawerList.locator('[data-drawer-game]', { hasText: `Del-C-${uniq}` });
+      const delC = card.getByTitle('Delete custom layout');
+      await delC.scrollIntoViewIfNeeded(); await delC.focus();
+      p.once('dialog', async (d) => { await d.accept(); });
+      await p.keyboard.press('Enter');
+      await card.waitFor({ state: 'hidden', timeout: 8000 });
+      const readDrawerFocus = () => p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inDrawer: !!(a && a.isConnected && a.closest?.('[data-focus-fallback="drawer-games"]')), text: (a?.textContent || a?.getAttribute('title') || '').trim().slice(0, 30) }; });
+      let afterDrawer = await readDrawerFocus();
+      for (let i = 0; i < 30 && !afterDrawer.inDrawer; i++) { await p.waitForTimeout(100); afterDrawer = await readDrawerFocus(); }
+      record('FIX: deleting from the menu drawer keeps focus inside the drawer\'s list, not on the page beneath', afterDrawer.inDrawer, JSON.stringify(afterDrawer));
+      // (d) deleting the drawer's LAST game unmounts the list itself; the
+      // empty-state card must still carry the `drawer-games` landmark so focus
+      // stays inside the open drawer (CodeRabbit on #141, second thread).
+      // Mutation: drop data-focus-fallback from the empty-state card → focus
+      // falls to the page heading under the drawer and the check fails.
+      const remaining = await drawerList.locator('[data-drawer-game]').count();
+      record('precondition: more than one saved game is left in the drawer before the final deletions', remaining >= 2, `remaining=${remaining}`);
+      for (let k = 0; k < remaining; k++) {
+        const nextCard = drawerList.locator('[data-drawer-game]').first();
+        const nextDel = nextCard.getByTitle('Delete custom layout');
+        await nextDel.scrollIntoViewIfNeeded(); await nextDel.focus();
+        p.once('dialog', async (d) => { await d.accept(); });
+        await p.keyboard.press('Enter');
+        await p.waitForFunction((n) => document.querySelectorAll('[data-drawer-game]').length === n, remaining - k - 1, { timeout: 8000 });
+      }
+      let afterLast = await readDrawerFocus();
+      for (let i = 0; i < 30 && !afterLast.inDrawer; i++) { await p.waitForTimeout(100); afterLast = await readDrawerFocus(); }
+      // "Open" is read from the drawer's own text, not from the landmark under test.
+      const drawerStillOpen = await p.evaluate(() => /Custom User Profiles \(0\)/.test(document.body.textContent || '') && document.querySelectorAll('[data-drawer-game]').length === 0);
+      record('precondition: the drawer is still open and its list is empty', drawerStillOpen);
+      record('FIX: after deleting the LAST saved game from the drawer, focus is on the drawer\'s empty-state landmark, not the page beneath', afterLast.inDrawer && afterLast.tag !== 'BODY', JSON.stringify(afterLast));
+    } finally { await ctx.close().catch(() => {}); }
+  });
+
+  // ── RED-APP-12/003: at 320x200 (a 400% zoom) the sticky header is taller
+  // than the viewport and covered every pixel at every scroll position, so no
+  // pointer or touch input reached the page. Below 500 px of height the header
+  // is static and scrolls away. Control: at 1280x900 it stays sticky.
+  // Mutation: remove the `[@media(max-height:500px)]:!static` class → fails.
+  section('57', 'a header taller than a tiny viewport is not sticky, so the page stays reachable', 3, async () => {
+    const tiny = await browser.newContext({ viewport: { width: 320, height: 200 } });
+    const normal = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await tiny.newPage();
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await p.keyboard.press('Escape').catch(() => {});
+      const hdr = await p.evaluate(() => { const h = document.querySelector('header'); return h ? { position: getComputedStyle(h).position, height: Math.round(h.getBoundingClientRect().height) } : null; });
+      record('precondition: at 320x200 the header is taller than the viewport', !!hdr && hdr.height >= 200, JSON.stringify(hdr));
+      record('FIX: the header is not sticky at this height', hdr?.position === 'static', JSON.stringify(hdr));
+      await p.mouse.wheel(0, 3000);
+      for (let i = 0; i < 20 && (await p.evaluate(() => window.scrollY)) < 50; i++) await p.waitForTimeout(50);
+      const hit = await p.evaluate(() => { const el = document.elementFromPoint(160, 100); const h = document.querySelector('header'); return { tag: el?.tagName ?? null, inHeader: !!(el && h && h.contains(el)), scrollY: Math.round(window.scrollY) }; });
+      record('FIX: after scrolling, the point at the centre of the viewport is NOT inside the header (the page is reachable)', hit.tag !== null && !hit.inHeader, JSON.stringify(hit));
+      const q = await normal.newPage();
+      await q.goto(BASE, { waitUntil: 'networkidle' });
+      try { await q.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      const pos = await q.evaluate(() => getComputedStyle(document.querySelector('header')).position);
+      record('control: at 1280x900 the header stays sticky', pos === 'sticky', pos);
+    } finally { await tiny.close().catch(() => {}); await normal.close().catch(() => {}); }
+  });
+
   // ══ 60. RED-REGEN-8/002 + RED-APP-12/002: the 409 collision message tells
   //      the user to "Reopen Edit" — but the dialog never refetched, so a
   //      literal reopen showed the SAME stale chips (same 409, forever) and
