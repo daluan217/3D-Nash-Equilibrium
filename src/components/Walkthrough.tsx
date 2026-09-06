@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, X } from 'lucide-react';
+import { ModalRegistry } from './ModalSurface';
 
 export interface TourStep {
   /** Value of the `data-tour` attribute on the element to point at. */
@@ -205,7 +206,16 @@ export function Walkthrough({
 
   useEffect(() => {
     if (!open) return;
+    // RED-APP-14/001: this window-level listener used to fire for keys typed
+    // INSIDE an open dialog (Enter/arrows in a Save or Account field advanced
+    // the tour and its onEnter replaced the matrix under the dialog — a
+    // Save then stored payoffs the user never saw). No key reaches the tour
+    // while any ModalSurface is registered open, or while the key was typed
+    // inside any other dialog (the overlays that do not use ModalSurface).
+    const insideOtherDialog = (t: EventTarget | Element | null) =>
+      t instanceof Element && !!t.closest('[role="dialog"]:not([aria-label="Guided tour"])');
     const onKey = (e: KeyboardEvent) => {
+      if (ModalRegistry.isAnyOpen() || insideOtherDialog(e.target) || insideOtherDialog(document.activeElement)) return;
       if (e.key === 'Escape') close();
       else if (e.key === 'ArrowRight' || e.key === 'Enter') setI((n) => Math.min(n + 1, steps.length - 1));
       else if (e.key === 'ArrowLeft') setI((n) => Math.max(n - 1, 0));
