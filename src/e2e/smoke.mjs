@@ -5074,16 +5074,33 @@ try {
         el.style.setProperty('min-width', '318px', 'important');
         el.style.setProperty('flex', 'none', 'important');
       });
-      // CodeRabbit (this branch): same class as the CONTROL path's own
-      // `controlResized` poll above — a fixed sleep can screenshot stale
-      // (still-wide) geometry on a slow CI runner, failing the blob scan for
-      // a reason unrelated to the collapse decision. Poll the live plot div
-      // width down to ~276 (318 minus the outer container's own padding)
-      // instead of trusting a sleep alone.
+      // CodeRabbit (this branch): the CSS bounding-rect check above can pass
+      // BEFORE the 150ms ResizeObserver debounce actually calls Plotly's own
+      // `Plots.resize` — the DOM box shrinks on layout, but the rendered
+      // WebGL scene can still lag one frame behind. Poll the REAL rendered
+      // scene geometry, `glplot.shape`, not just the CSS box.
+      //
+      // Verified live before using it (`_redscratch/check_plots_path.mjs`):
+      // the reviewer's suggested `gd._fullLayout._plots.scene.glplot.shape`
+      // does not exist in this Plotly build (`_fullLayout._plots` is an
+      // empty object here) — the real path is
+      // `_fullLayout.scene._scene.glplot.shape`, matching the same
+      // introspection this branch's own root-cause investigation already
+      // used. Also verified: `glplot.shape` is in DEVICE px scaled by
+      // `glplot.pixelRatio` — a Plotly-internal supersampling factor,
+      // independent of `window.devicePixelRatio` (measured 2 here even
+      // though `devicePixelRatio` itself is 1), so a bare hardcoded
+      // `[276, 246]` target would never match in an environment where that
+      // factor differs. Normalize by `pixelRatio` before comparing to the
+      // expected CSS-space size (276 wide, 256 minus `margin.t`:10 tall —
+      // the same NOTE-1 fix this branch already made to PlotlyView.tsx).
       const narrowResized = await p.waitForFunction(() => {
         const gd = document.getElementById('plotly-3d-market-simulation');
-        const r = gd?.getBoundingClientRect();
-        return r && Math.abs(r.width - 276) < 24 ? true : null;
+        const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+        if (!glplot?.shape || !glplot.pixelRatio) return null;
+        const cssW = glplot.shape[0] / glplot.pixelRatio;
+        const cssH = glplot.shape[1] / glplot.pixelRatio;
+        return Math.abs(cssW - 276) < 8 && Math.abs(cssH - 246) < 8 ? true : null;
       }, null, { timeout: 10000 }).then(() => true).catch(() => false);
       record('precondition: the plot resized to the narrow 318x298 size before the az195 pixel scan', narrowResized);
       // Re-hide: a container resize's ResizeObserver-driven redraw path can
