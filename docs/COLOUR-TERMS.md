@@ -54,8 +54,8 @@ operations matters (RED-REGEN-6/001: a glyph fold placed *after* `.normalize
    quote mark already folded to `"`/`'` plus `« »`, and every ASCII/CJK/
    fullwidth bracket pair (`() [] {} 「」『』〈〉《》【】〔〕（）［］｛｝`).
 6. **Case-folded** (`.toLowerCase()`).
-7. **A leading indefinite/definite article** (`a `, `an `, `the `) **stripped,
-   last** (RED-CLOUD-11/001): a regenerated actor noun and an existing chip
+7. **A leading indefinite/definite article** (`a`, `an`, `the`, each followed
+   by whitespace) **stripped, last** (RED-CLOUD-11/001): a regenerated actor noun and an existing chip
    naming the *same* character but introduced with a different article — "a
    landowner" vs "the landowner" — are, to a reader, one phrase, and the model
    itself writes the same referent both ways within one description

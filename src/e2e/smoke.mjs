@@ -3753,8 +3753,12 @@ try {
     });
     record('precondition: the saved-render preview paragraph was located and still contains "señor" intact',
       check1.found && /señor/.test(check1.text), JSON.stringify({ found: check1.found, text: check1.text }));
+    // CodeRabbit (this review): gated on check1.found — an un-located preview
+    // has an empty check1.html, and the split pattern below trivially fails
+    // to match an empty string, which would otherwise pass this check even
+    // though nothing was actually verified.
     record('RED-REGEN-8/001: the chip "se" does NOT split "señor" into a coloured span + plain remainder (real render, post-save reload)',
-      !/<span[^>]*>se<\/span>\s*ñor/i.test(check1.html), check1.html);
+      check1.found && !/<span[^>]*>se<\/span>\s*ñor/i.test(check1.html), check1.html);
 
     // Positive control, same dialog: a chip that IS the whole accented word
     // still highlights — proves the boundary rule can fail, not just pass.

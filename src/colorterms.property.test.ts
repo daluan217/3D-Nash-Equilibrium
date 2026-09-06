@@ -524,6 +524,23 @@ for (const c of BOUNDARY_MUST_MATCH) {
   check('(boundary) CJK/Katakana: "タワー" inside "東京タワーは" still highlights', isHighlighted(html), html);
 }
 
+// COMBINING MARKS (CodeRabbit, this PR): an NFD-normalized "café" is the
+// base letters "cafe" followed by a SEPARATE combining-mark code point
+// (U+0301, COMBINING ACUTE ACCENT) — a chip matching only the base letters
+// must not match (it would leave the accent rendered outside the coloured
+// span, splitting the same grapheme this fix exists to keep whole); a chip
+// that IS the full NFD grapheme (base + combining mark) must still match.
+{
+  const nfdCafe = 'cafe' + '́'; // "café", NFD form: 5 UTF-16 code units
+  const text = `The ${nfdCafe} is closed today.`;
+  const htmlBaseOnly = rendered(text, ['cafe']);
+  check('(boundary) NFD combining mark: chip "cafe" (base letters only) must NOT match "café" (NFD, base + combining accent)',
+    !isHighlighted(htmlBaseOnly), htmlBaseOnly);
+  const htmlFullGrapheme = rendered(text, [nfdCafe]);
+  check('(boundary) NFD combining mark: chip = the FULL NFD grapheme ("cafe" + combining accent) still highlights',
+    isHighlighted(htmlFullGrapheme), htmlFullGrapheme);
+}
+
 if (failures > 0) {
   console.error(`✗ colorterms.property.test.ts: ${failures}/${cases} checks failed`);
   process.exit(1);

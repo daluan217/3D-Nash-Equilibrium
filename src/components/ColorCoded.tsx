@@ -94,9 +94,15 @@ export function ColorCoded({ text, aTerms = [], bTerms = [] }: { text: string; a
       // real boundary there would make a CJK chip nearly unmatchable inside
       // real prose, so those scripts are carved back OUT of the "word" class
       // for boundary purposes only (docs/COLOUR-TERMS.md §(c) CJK decision).
+      // `\p{M}` (combining marks, CodeRabbit on this PR): an NFD-normalized
+      // "café" is "cafe" + COMBINING ACUTE ACCENT — without `\p{M}` here, a
+      // chip matching exactly the base letters ("cafe") would pass the RIGHT
+      // boundary check (a combining mark is not `\p{L}`) and leave the accent
+      // rendered outside the coloured span, splitting the same grapheme this
+      // fix exists to keep whole.
       const CJK = '\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}';
-      const left = `(?:(?<![\\p{L}\\p{N}_])|(?<=[${CJK}]))`;
-      const right = `(?:(?![\\p{L}\\p{N}_])|(?=[${CJK}]))`;
+      const left = `(?:(?<![\\p{L}\\p{N}\\p{M}_])|(?<=[${CJK}]))`;
+      const right = `(?:(?![\\p{L}\\p{N}\\p{M}_])|(?=[${CJK}]))`;
       const termRe = new RegExp(`${left}(?:${entries.map((e) => esc(e.t)).join('|')})${right}`, 'giu');
       out = applyRule(out, termRe, (hit) => entries.find((e) => e.t.toLowerCase() === hit.toLowerCase())?.cls);
     }
