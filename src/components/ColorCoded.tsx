@@ -100,7 +100,7 @@ export function ColorCoded({ text, aTerms = [], bTerms = [] }: { text: string; a
       // boundary check (a combining mark is not `\p{L}`) and leave the accent
       // rendered outside the coloured span, splitting the same grapheme this
       // fix exists to keep whole.
-      const CJK = '\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}';
+      const CJK = '\\p{Script=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}';
       const left = `(?:(?<![\\p{L}\\p{N}\\p{M}_])|(?<=[${CJK}]))`;
       const right = `(?:(?![\\p{L}\\p{N}\\p{M}_])|(?=[${CJK}]))`;
       const termRe = new RegExp(`${left}(?:${entries.map((e) => esc(e.t)).join('|')})${right}`, 'giu');

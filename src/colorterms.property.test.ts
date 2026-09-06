@@ -516,6 +516,11 @@ for (const c of BOUNDARY_MUST_MATCH) {
 {
   const html = rendered('彼は日本語を話す。', ['日本']);
   check('(boundary) CJK: "日本" inside "日本語" still highlights (decided, documented behaviour)', isHighlighted(html), html);
+  // Katakana compounds use the long-vowel mark ー (U+30FC, Script=Common but
+  // Script_Extensions=Katakana): with Script=Katakana alone the mark counted as a
+  // letter and "パ" no longer matched inside "スーパー" (CodeRabbit on #142).
+  const htmlKana = rendered('駅前のスーパーで会う。', ['パ']);
+  check('(boundary) CJK: "パ" inside "スーパー" (long-vowel mark ー) still highlights like other kana', isHighlighted(htmlKana), htmlKana);
 }
 {
   // A CJK chip with real neighbours on both sides in the SAME script also
