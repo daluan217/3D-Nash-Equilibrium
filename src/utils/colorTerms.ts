@@ -246,6 +246,19 @@ export function cleanUserColorTermPair(
 }
 
 /**
+ * RED-REGEN-9/001: the phrases the user has filed on BOTH players — the exact
+ * case `cleanUserColorTermPair` resolves A-wins. Returned as B's spellings
+ * (the side that loses), in B's order, so the Edit dialog's 409 message can
+ * name them and a neutral chip can explain WHY it is neutral (a cross-player
+ * chip collision, not the option-label rule). This is the one place that
+ * knows the collision; the tooltip and the message both read it.
+ */
+export function crossPlayerUserTerms(termsA: readonly string[], termsB: readonly string[]): string[] {
+  const ownedByA = new Set(cleanUserColorTerms(termsA).map(colorTermKey));
+  return cleanUserColorTerms(termsB).filter((t) => ownedByA.has(colorTermKey(t)));
+}
+
+/**
  * Merge the app's automatic terms with the user's explicit ones.
  *
  * An explicit assignment WINS: if the user marked "Row 1" for player B, the

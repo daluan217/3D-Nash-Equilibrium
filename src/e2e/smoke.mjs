@@ -3870,6 +3870,34 @@ try {
     record('FIX: the user\'s OWN Player A "wolf" chip is KEPT (never auto-dropped to resolve the collision)',
       chipState.some((c) => c.player === 'A' && /^wolf/i.test(c.text || '')), JSON.stringify(chipState));
 
+    // RED-REGEN-9/001 (director-reproduced): the adoption itself created a
+    // chip-vs-chip collision (A's own "wolf" vs the adopted B "Wolf"). The
+    // suppressed B chip's tooltip must name THAT cause (not the label rule),
+    // the 409 message must name the colliding phrase, and a SECOND Save on the
+    // same unresolved state must keep that diagnosis instead of falling back
+    // to the server's generic "Reopen Edit" advice. Mutations: hardcode the
+    // label tooltip → check 1 fails; drop the collision note from the 409
+    // branch → checks 2 and 3 fail.
+    const bChip = await p409.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+      const b = [...(dlg?.querySelectorAll('button[data-player="B"]') ?? [])].find((x) => /^wolf/i.test(x.textContent || ''));
+      return b ? { suppressed: b.getAttribute('data-suppressed'), cause: b.getAttribute('data-suppressed-cause'), title: b.getAttribute('title') } : null;
+    });
+    record('RED-REGEN-9/001: the adopted Player B chip is neutral BECAUSE of the cross-player collision, and its tooltip says so (never "option label")',
+      !!bChip && bChip.suppressed === 'true' && bChip.cause === 'cross-player' && /also a Player A highlight/i.test(bChip.title || '') && !/option label/i.test(bChip.title || ''),
+      JSON.stringify(bChip));
+    record('RED-REGEN-9/001: the first 409 message names the phrase now highlighted for both players',
+      /"Wolf" is highlighted for both players/i.test(errorText), errorText.slice(0, 300));
+    const [secondResp] = await Promise.all([
+      p409.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().includes('/api/games/'), { timeout: 10000 }).catch(() => null),
+      saveBtn.click(),
+    ]);
+    record('precondition: the second Save on the unresolved collision is refused by the server (409 again)', secondResp?.status() === 409, String(secondResp?.status()));
+    await editDialog.getByText(/^Not saved:/i).waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    const secondText = await editDialog.innerText().catch(() => '');
+    record('RED-REGEN-9/001: the second 409 keeps the specific diagnosis ("Not saved: … highlighted for both players"), never the generic "Reopen Edit" advice',
+      /Not saved: "Wolf" is highlighted for both players/i.test(secondText) && !/Reopen Edit/i.test(secondText), secondText.slice(0, 300));
+
     // Resolve the real collision the user is now shown, then Save again.
     const ownChip = editDialog.locator('button[data-player="A"]', { hasText: /^wolf/i }).first();
     await ownChip.click();
@@ -4249,8 +4277,10 @@ const EXPECTED_STATUS_NOISE = {
   // guard (RED-REGEN-7/001) — via Save Changes, exactly the behavior this
   // section's own assertions verify (dialog stays open, fresh chip shown,
   // draft kept). Same class of expected network-layer diagnostic as §38's
-  // real 404s above.
-  '60': [409],
+  // real 404s above. RED-REGEN-9/001 added a SECOND Save on the same
+  // unresolved collision — a second real 409, the exact response whose
+  // client-side message the section now asserts.
+  '60': [409, 409],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),

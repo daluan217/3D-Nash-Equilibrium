@@ -167,7 +167,13 @@ whitespace-collapse step for a single glyph with no realistic path to it.
   — both the visible chip and the diff baseline — so their own edit is still
   sent as an explicit change on the next Save (same-field races stay
   last-writer-wins, unchanged). The dialog is never closed by this branch,
-  and neither side is ever silently dropped to make the 409 go away: if the
+  and neither side is ever silently dropped to make the 409 go away. When the
+  adoption itself creates a chip-vs-chip collision with the user's own chip
+  (RED-REGEN-9/001), the neutral chip's tooltip names that cause (not the
+  option-label rule) and EVERY 409 while the collision stands — the first and
+  any retry that adopts nothing new — names the colliding phrase and how to
+  resolve it (`crossPlayerUserTerms`), never the server's generic "Reopen
+  Edit" line. Also: if the
   user's own untouched side genuinely collided with the fresh other side,
   both chips are shown at once (one may render neutral via the ownership
   rule above) and the user must remove one themselves — the error message
@@ -215,7 +221,15 @@ highlights). Non-CJK scripts get the opposite fix (a real boundary is now
 enforced) because they *do* use spaces, so the old ASCII-only gap was pure
 regression there with no such trade-off. Pinned by
 `src/colorterms.property.test.ts`'s "(boundary)" checks (PART 6) so a future
-"fix" cannot flip the CJK decision silently.
+"fix" cannot flip the CJK decision silently. **Extended (RED-REGEN-9/002):**
+the class is defined by the writing system, not by "CJK" — Thai, Lao, Khmer
+and Myanmar also write without inter-word spaces, and Hangul attaches case
+particles to nouns with no space ("농부와"), so all five join the
+no-boundary class (`Script_Extensions=` each, like kana). Every
+space-delimited script keeps the real Unicode boundary. The same PART 6
+checks pin Thai prose, a particle-attached Hangul noun, and the Latin
+controls (an accented word never splits; a prefix of a longer word never
+matches).
 
 ## (d) Deliberately out of scope
 
