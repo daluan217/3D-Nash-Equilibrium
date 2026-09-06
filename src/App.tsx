@@ -2359,8 +2359,15 @@ export default function App() {
           const untouchedB = same(nowTerms.b, orig.b);
           const adoptedA = untouchedA && !same(freshA, orig.a);
           const adoptedB = untouchedB && !same(freshB, orig.b);
+          // The terms as the dialog will hold them after this continuation:
+          // adopted sides take the fresh value, the rest stay as they are NOW.
+          const afterA = adoptedA ? freshA : nowTerms.a;
+          const afterB = adoptedB ? freshB : nowTerms.b;
           if (adoptedA || adoptedB) {
             setEditTerms((prev) => ({ a: adoptedA ? freshA : prev.a, b: adoptedB ? freshB : prev.b }));
+            // Keep the mirror current before React re-renders (CodeRabbit CLI):
+            // nothing below may read a pre-adoption snapshot.
+            editTermsRef.current = { a: afterA, b: afterB };
           }
           // Re-baseline only the side(s) just adopted — a side the user HAS
           // typed into keeps its OLD baseline, so the next Save still submits
@@ -2383,7 +2390,7 @@ export default function App() {
           // to fall back to the server's generic "Reopen Edit" advice, which
           // RED-REGEN-8/002 already proved unhelpful. Name the colliding
           // phrase on every 409 while it is still there.
-          const colliding = crossPlayerUserTerms(adoptedA ? freshA : nowTerms.a, adoptedB ? freshB : nowTerms.b);
+          const colliding = crossPlayerUserTerms(afterA, afterB);
           const collisionNote = colliding.length > 0
             ? `${colliding.map((t) => `"${t}"`).join(', ')} ${colliding.length === 1 ? 'is' : 'are'} highlighted for both players; one phrase can belong to only one player, so remove it from Player A or Player B, then save again.`
             : '';
