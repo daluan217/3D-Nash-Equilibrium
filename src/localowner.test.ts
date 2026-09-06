@@ -86,8 +86,8 @@ check('adoption re-parents rather than copies, on a fresh array of fresh objects
   /db\.games\.map\(/.test(adoptSrc) && /\{ \.\.\.g, userId \}/.test(adoptSrc)
   && !/\.push\(/.test(adoptSrc) && !/g\.userId = userId/.test(adoptSrc));
 // And the route persists that candidate, never the live array.
-check('the adopt-local route commits the candidate through saveDBOrFail',
-  /adopt-local[\s\S]{0,900}const \{ games, adopted \} = adoptLocalGames\(db, user\.id\);[\s\S]{0,160}saveDBOrFail\(games, res\)/.test(server));
+check('the adopt-local route commits the candidate through a confirmed write and answers a failure with its own message',
+  /adopt-local[\s\S]{0,900}const \{ games, adopted \} = adoptLocalGames\(db, user\.id\);[\s\S]{0,1200}saveDBAwaited\(games\)[\s\S]{0,600}still saved on this device/.test(server));
 
 /* ------------------------------------------------------ known positives */
 const MUST_FLAG: Array<[string, string]> = [

@@ -12,7 +12,7 @@
  * Exit 0 only if every check passes and the browser logged no console errors.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
@@ -3365,7 +3365,10 @@ try {
       const dp = await deskCtx.newPage();
       const deskErrors = [];
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
-      dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
+      // The two induced 500s below legitimately log "Failed to load resource";
+      // only errors outside that window count.
+      let expectingFailure = false;
+      dp.on('console', (m) => { if (m.type() === 'error' && !(expectingFailure && /status of 500/.test(m.text()))) deskErrors.push(m.text()); });
       const adoptCalls = [];
       dp.on('request', (r) => { if (r.url().includes('/api/games/adopt-local')) adoptCalls.push(r.method()); });
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
@@ -3395,10 +3398,34 @@ try {
       record("and A's game is still the local owner's", Array.isArray(anonBefore) && anonBefore.length === 1 && anonBefore[0].userId === 'local-owner', JSON.stringify(anonBefore.map((g) => g.userId)));
       record('no adopt-local request has been sent before the click', adoptCalls.length === 0, JSON.stringify(adoptCalls));
 
+      // RED-DESKTOP-12/001: the device refuses the write → the dialog must say
+      // the games are still on this device (server message), stay open, and
+      // let the retry succeed. Mutation: generic saveDBOrFail message → fails.
+      const moveBtn = offer.getByRole('button', { name: /^move it into my account$/i });
+      expectingFailure = true;
+      chmodSync(deskData, 0o500);
+      try {
+        await moveBtn.click();
+        const alertBox = offer.locator('[role="alert"]');
+        record('a refused write shows an error in the dialog', await alertBox.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false));
+        const refusedText = await alertBox.innerText().catch(() => '');
+        record('FIX: the refusal says the games are still on this device', /still (saved )?on this device/i.test(refusedText), refusedText.slice(0, 160));
+        record('the dialog stays open with Move usable again', (await offer.isVisible()) && !(await moveBtn.isDisabled()));
+      } finally { chmodSync(deskData, 0o755); }
+      // Client-side guarantee, independent of the server's wording (mutation:
+      // drop the appended reassurance in adoptLocalGames → this check fails).
+      await dp.route('**/api/games/adopt-local', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Could not save your changes. Please try again.' }) }), { times: 1 });
+      await moveBtn.click();
+      const genericText = await offer.locator('[role="alert"]').innerText().catch(() => '');
+      for (let i = 0; i < 30 && !/still on this device/i.test(await offer.locator('[role="alert"]').innerText().catch(() => '')); i++) await dp.waitForTimeout(100);
+      record('FIX: even a generic server error is completed with "still on this device" by the client', /still on this device/i.test(await offer.locator('[role="alert"]').innerText().catch(() => '')), genericText.slice(0, 120));
+      adoptCalls.length = 0;
+      expectingFailure = false;
+
       // B chooses to move it.
-      await offer.getByRole('button', { name: /^move it into my account$/i }).click();
+      await moveBtn.click();
       record('the dialog closes after the move', await offer.waitFor({ state: 'hidden', timeout: 10000 }).then(() => true).catch(() => false));
-      record('exactly one POST /api/games/adopt-local was sent, by the click', adoptCalls.length === 1 && adoptCalls[0] === 'POST', JSON.stringify(adoptCalls));
+      record('exactly one POST /api/games/adopt-local was sent by the final click', adoptCalls.length === 1 && adoptCalls[0] === 'POST', JSON.stringify(adoptCalls));
       const mineAfter = await dp.evaluate(async (t) => (await (await fetch('/api/games', { headers: { Authorization: `Bearer ${t}` } })).json()), token);
       record("after the explicit move B's library holds the game, owned by B (not local-owner)",
         Array.isArray(mineAfter) && mineAfter.length === 1 && mineAfter[0].name === gameName && mineAfter[0].userId !== 'local-owner', JSON.stringify(mineAfter.map((g) => [g.name, g.userId])).slice(0, 160));
