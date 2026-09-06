@@ -4160,6 +4160,18 @@ export default function App() {
       open={true}
       onClose={() => setLogExpanded(false)}
       ariaLabel="Simulation log"
+      // CodeRabbit CLI: `mountLogRegion`'s own `el.focus()` on the log region
+      // (tabIndex={0}, a REAL control per REAL_CONTROL_SELECTOR) fires a real
+      // `focusin` during the SAME commit that mounts it — before
+      // useModalTabTrap's effect ever reads `lastInteractedControl` — so it
+      // overwrites the correctly-recorded "Expand log" button (captured on
+      // its own pointerdown moments earlier) with the log region itself,
+      // which the trap's own container already contains. `opener` then
+      // resolves to null and focus fell back to `[data-focus-home]` instead
+      // of the button that actually opened this dialog. There is only ever
+      // one opener for this dialog, so a fixed fallback is exact, not a
+      // guess.
+      fallbackSelector='[aria-label="Expand simulation log"]'
       overlayClassName="fixed inset-0 z-[65] flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md select-none"
       panelClassName="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
     >

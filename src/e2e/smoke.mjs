@@ -5065,6 +5065,21 @@ try {
         typeof scrollInfo.scrollHeight === 'number' && scrollInfo.scrollHeight > scrollInfo.clientHeight, JSON.stringify(scrollInfo));
       record('FIX: the expanded log opens scrolled to the NEWEST lines, not the top (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)',
         scrollInfo.scrollTop >= scrollInfo.scrollHeight - scrollInfo.clientHeight - 5, JSON.stringify(scrollInfo));
+
+      // CodeRabbit CLI: mountLogRegion's own el.focus() on the log region (a
+      // REAL control, tabIndex={0}) overwrites opener-tracking's
+      // lastInteractedControl with itself — the trap's own container already
+      // contains it, so `opener` resolved to null and Escape used to return
+      // focus to [data-focus-home], not the Expand log button. Mutation: drop
+      // the expand-log ModalSurface's fallbackSelector prop → this fails.
+      await lp.keyboard.press('Escape');
+      await lp.waitForSelector('[role="dialog"][aria-label="Simulation log"]', { state: 'hidden', timeout: 8000 });
+      const afterEscape = await lp.evaluate(() => {
+        const a = document.activeElement;
+        return { tag: a?.tagName, ariaLabel: a?.getAttribute('aria-label') };
+      });
+      record('FIX: Escape from the expanded log returns focus to the Expand log button, not [data-focus-home] (CodeRabbit CLI)',
+        afterEscape.ariaLabel === 'Expand simulation log', JSON.stringify(afterEscape));
       await lp.close();
       await scrollCtx.close();
     }

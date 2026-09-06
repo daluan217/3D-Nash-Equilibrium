@@ -103,6 +103,17 @@ a caller that hand-rolls `role="dialog"` anywhere in the app.
   Fixed by filtering `focusin` to real controls (never a bare
   `tabIndex={-1}` match) and adding a `keydown` tracker alongside
   `pointerdown`, so WebKit and Chromium now agree.
+- **CodeRabbit CLI (self-inflicted by the FIX-BEFORE-MERGE 2 fix above)**:
+  `mountLogRegion`'s own `el.focus()` on the log region — a REAL control
+  (`tabIndex={0}`), not a `tabIndex={-1}` landmark — fires a real `focusin`
+  in the SAME commit that mounts it, before `useModalTabTrap`'s effect ever
+  reads `lastInteractedControl`. That overwrites the correctly-recorded
+  opener (the "Expand log" button, from its own `pointerdown` moments
+  earlier) with the log region itself, which the trap's container already
+  contains — `opener` then resolves to `null` and Escape returned focus to
+  `[data-focus-home]` instead of the button. Fixed with an explicit
+  `fallbackSelector` naming the one real opener directly (there is only ever
+  one for this dialog, so a fixed selector is exact, not a guess).
 
 ## Known gaps (OPUS-REVIEW-MODAL, round15)
 

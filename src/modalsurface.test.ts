@@ -366,4 +366,20 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     'the Tab-trap boundary check must also treat activeElement === container (the panel itself, mouse-focusable via tabIndex={-1}) as "at the edge" (OPUS-REVIEW-MODAL BLOCK 1)');
 }
 
+// CodeRabbit CLI (round15 review): `mountLogRegion`'s own `el.focus()` on the
+// log region (tabIndex={0}, a REAL control) fires a real `focusin` in the
+// SAME commit that mounts it — before useModalTabTrap's effect ever reads
+// `lastInteractedControl` — overwriting the correctly-recorded "Expand log"
+// button (its own pointerdown, moments earlier) with the log region itself,
+// which the trap's container already contains. `opener` then resolves to
+// null and focus fell back to `[data-focus-home]` instead of the actual
+// opener. Measured directly against the built dist (a throwaway script,
+// removed, never committed): DEFECT before this fix, PASS after. Mutation:
+// remove the `fallbackSelector` prop from the expand-log ModalSurface and
+// this fails.
+{
+  ok(/ariaLabel="Simulation log"[\s\S]{0,400}?fallbackSelector='\[aria-label="Expand simulation log"\]'/.test(app),
+    'the expand-log <ModalSurface> must declare a fallbackSelector naming its one real opener (the Expand log button) — mountLogRegion\'s own focus() clobbers opener-tracking\'s lastInteractedControl, so focusAfterDialog\'s opener param resolves to null');
+}
+
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
