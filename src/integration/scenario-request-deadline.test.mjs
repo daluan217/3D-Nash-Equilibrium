@@ -272,7 +272,14 @@ await test('scenario request deadlines and controls', { timeout: 60_000, concurr
       const { json, calls, elapsed } = await post('/api/scenario/regenerate', { payoffs: GAME });
       assert.equal(json.scenarioSource, 'bank-fallback');
       assert.ok(json.scenario?.description);
-      assert.equal(calls, 2, 'the rejected first response must actually have triggered one retry');
+      // The ladder's documented contract is 1 draw + up to NASH_SCENARIO_REROLLS
+      // (default 2) gate-drop rerolls: under runner jitter the hung reroll's own
+      // per-draw deadline can expire inside the remaining budget and a third
+      // physical call starts (main run 34003427662: expected 2, actual 3). The
+      // property this subtest guards is the CLOCK — asserted just below — not
+      // the exact call count; the count must only prove a retry happened and
+      // stay within the documented ceiling.
+      assert.ok(calls >= 2 && calls <= 3, `the rejected first response must have triggered a retry, and never more than the documented 1 + 2 rerolls (calls=${calls})`);
       // Distinguishing threshold, not a generic ceiling: a retry that got a
       // FRESH budget instead of the shared remainder would push this past
       // RETRY_CLOCK_CEILING_MS (see the comment above this subtest).
