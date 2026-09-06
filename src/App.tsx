@@ -1145,17 +1145,32 @@ export default function App() {
   // FIRST commit, before this ref even exists (`logsExpandedRef.current` is
   // still null then) — measured directly (a mutation, effectively). The
   // STABLE ref callback below (`useCallback`, empty deps — an inline arrow
-  // here would be a NEW function every render and re-focus the log region on
-  // every log line while the dialog stays open, stealing focus from wherever
-  // the user actually is) fires the moment the node actually mounts (in the
-  // SECOND commit's commit phase, strictly before any passive effect of that
-  // commit runs), so ModalSurface's own open-time-focus effect finds focus
-  // already inside the dialog and correctly no-ops — the same mechanism
-  // Feedback's `autoFocus` textarea relies on, just triggered by ref
-  // attachment instead of the (form-element-only) `autoFocus` prop.
-  const focusLogRegionOnMount = useCallback((el: HTMLDivElement | null) => {
+  // here would be a NEW function every render and re-focus/re-scroll the log
+  // region on every log line while the dialog stays open, stealing focus and
+  // fighting a scroll position the user set themselves) fires the moment the
+  // node actually mounts (in the SECOND commit's commit phase, strictly
+  // before any passive effect of that commit runs), so ModalSurface's own
+  // open-time-focus effect finds focus already inside the dialog and
+  // correctly no-ops — the same mechanism Feedback's `autoFocus` textarea
+  // relies on, just triggered by ref attachment instead of the (form-
+  // element-only) `autoFocus` prop.
+  //
+  // OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2: the pre-existing auto-scroll effect
+  // a few lines up (`[logEntries, logExpanded]`) sets `logsExpandedRef
+  // .current.scrollTop` — but that ref is populated by THIS callback, on the
+  // SAME two-commit-mount timing that broke the old focus effect. On open
+  // that effect's `logExpanded` dependency changes in the FIRST commit,
+  // before this ref exists, so it silently no-ops there and never re-runs
+  // (nothing else in its deps changes) — the log opened at the TOP, not
+  // scrolled to the newest lines. Scrolling here, in the same callback that
+  // already solved this exact ordering problem for focus, closes it for
+  // real.
+  const mountLogRegion = useCallback((el: HTMLDivElement | null) => {
     logsExpandedRef.current = el;
-    if (el) el.focus();
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      el.focus();
+    }
   }, []);
 
   // ── Simulation-log placement ───────────────────────────────────────────────
@@ -4167,7 +4182,7 @@ export default function App() {
           </button>
         </div>
         <div
-          ref={focusLogRegionOnMount}
+          ref={mountLogRegion}
           tabIndex={0}
           role="region"
           aria-label="Simulation log"

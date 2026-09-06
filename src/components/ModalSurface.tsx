@@ -189,8 +189,17 @@ export function useModalTabTrap(open: boolean, containerRef: RefObject<HTMLEleme
       // this finding reproduced: N tabs in, focus lands past `last` on a
       // background element) — not just the two boundary elements, so a
       // focus that has already escaped is pulled back in rather than only
-      // preventing the NEXT escape.
-      if (!container.contains(document.activeElement)) {
+      // preventing the NEXT escape. OPUS-REVIEW-MODAL BLOCK 1: `Node.contains()`
+      // returns true for the node ITSELF, so `document.activeElement ===
+      // container` (the panel — now mouse-focusable via `tabIndex={-1}`; a
+      // plain click on the dialog's own dead space, e.g. its padding or
+      // heading, focuses it with every control still enabled) used to fall
+      // through all three branches below with no `preventDefault()`, letting
+      // the browser's own backward Tab navigation walk out of the dialog on
+      // Chromium and Firefox (RED-APP-5/002's exact shape). Treat the panel
+      // itself as "at the edge" too: Tab/Shift+Tab from it go to first/last,
+      // same as focus already outside.
+      if (!container.contains(document.activeElement) || document.activeElement === container) {
         e.preventDefault();
         (e.shiftKey ? last : first).focus();
         return;

@@ -4976,6 +4976,49 @@ try {
           }
           record(`[${label}] FIX: Escape from the Edit dialog returns focus to the row's Edit button, not the landmark (RED-APP-14/005)`,
             !!where.title && /^Edit /.test(where.title), JSON.stringify(where));
+
+          // OPUS-REVIEW-MODAL BLOCK 1: `tabIndex={-1}` on the panel (added so
+          // the Tab trap can park focus there when every control is disabled,
+          // RED-APP-14/002) makes it MOUSE-focusable — a plain click on the
+          // dialog's own dead space (its padding, its heading) with every
+          // control still ENABLED focuses the panel itself, and
+          // `Node.contains()` returning true for the node itself used to let
+          // that fall through the trap's boundary check with no
+          // preventDefault(), so backward (and, less severely, forward) Tab
+          // navigation walked out of the `aria-modal` dialog on Chromium/
+          // Firefox (RED-APP-5/002's exact shape). Mutation: drop the
+          // `|| document.activeElement === container` disjunct in
+          // ModalSurface.tsx's onKey → both checks below fail.
+          await editBtn.click({ force: true });
+          await dlg.waitFor({ state: 'visible', timeout: 8000 });
+          const panelBox = await dlg.boundingBox();
+          await wp.mouse.click(panelBox.x + panelBox.width / 2, panelBox.y + 10);
+          const afterDeadSpace = await wp.evaluate(() => {
+            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+            return { onPanel: document.activeElement === d, inDialog: !!d?.contains(document.activeElement) };
+          });
+          record(`[${label}] precondition: a dead-space click (the dialog's own padding) focuses the panel itself, controls still enabled`,
+            afterDeadSpace.onPanel, JSON.stringify(afterDeadSpace));
+          await wp.keyboard.press('Shift+Tab');
+          const afterShiftTab = await wp.evaluate(() => {
+            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+            return { inDialog: !!d && d.contains(document.activeElement), tag: document.activeElement?.tagName };
+          });
+          record(`[${label}] FIX: Shift+Tab after a dead-space click stays inside the dialog (OPUS-REVIEW-MODAL BLOCK 1)`,
+            afterShiftTab.inDialog, JSON.stringify(afterShiftTab));
+          // Forward Tab too — the same fall-through affects it, just less
+          // severely (it lands on whatever follows the overlay in document
+          // order rather than a control the user can act on unnoticed).
+          await wp.mouse.click(panelBox.x + panelBox.width / 2, panelBox.y + 10);
+          await wp.keyboard.press('Tab');
+          const afterTab = await wp.evaluate(() => {
+            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+            return { inDialog: !!d && d.contains(document.activeElement), tag: document.activeElement?.tagName };
+          });
+          record(`[${label}] FIX: forward Tab after a dead-space click stays inside the dialog too`,
+            afterTab.inDialog, JSON.stringify(afterTab));
+          await wp.keyboard.press('Escape');
+          await dlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
         }
         await wp.close();
         await engineCtx.close();
@@ -4984,6 +5027,35 @@ try {
       if (webkitBrowser) await webkitBrowser.close().catch(() => {});
     }
     if (!webkitAvailable) record('webkit unavailable in this environment — chromium control ran, webkit case skipped', true, 'guarded per brief');
+
+    // ── Part C: OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2 — the expanded log must
+    // still open scrolled to the NEWEST lines, not the top. `mountLogRegion`'s
+    // ref callback (App.tsx) now sets `scrollTop = scrollHeight` in the same
+    // place it already fixed the analogous focus-timing bug. A short
+    // viewport forces overflow with just a few Step clicks, avoiding a slow
+    // run-to-convergence (a real simulation reaching "Converged" can stop
+    // producing log lines well before the region actually overflows).
+    // Mutation: drop the `el.scrollTop = el.scrollHeight;` line → this fails.
+    {
+      const scrollCtx = await browser.newContext({ viewport: { width: 900, height: 300 } });
+      const lp = trackPage(await scrollCtx.newPage());
+      await lp.goto(BASE, { waitUntil: 'networkidle' });
+      try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      const stepBtn = lp.getByRole('button', { name: /^step$/i });
+      for (let i = 0; i < 5; i++) await stepBtn.click({ force: true }).catch(() => {});
+      await lp.locator('button[title*="Expand"]').first().click();
+      await lp.waitForSelector('[role="dialog"][aria-label="Simulation log"]', { timeout: 8000 });
+      const scrollInfo = await lp.evaluate(() => {
+        const region = document.querySelector('[role="dialog"][aria-label="Simulation log"] [role="region"]');
+        return { scrollTop: region?.scrollTop, scrollHeight: region?.scrollHeight, clientHeight: region?.clientHeight };
+      });
+      record('precondition: the log region overflows (more content than fits in the short viewport)',
+        typeof scrollInfo.scrollHeight === 'number' && scrollInfo.scrollHeight > scrollInfo.clientHeight, JSON.stringify(scrollInfo));
+      record('FIX: the expanded log opens scrolled to the NEWEST lines, not the top (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)',
+        scrollInfo.scrollTop >= scrollInfo.scrollHeight - scrollInfo.clientHeight - 5, JSON.stringify(scrollInfo));
+      await lp.close();
+      await scrollCtx.close();
+    }
   });
 
   // ══ 74. RED-APP-14/006 + /007 (director-reproduced). (a) Pressing a header

@@ -331,13 +331,35 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
 // anything — `active` starts false), while the ref only exists after its
 // SECOND commit — both were tried by hand and both landed focus on the
 // Collapse button instead (screenshots/focus dumps in REPORT.md).
+//
+// OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2: the SAME two-commit-mount timing
+// broke the pre-existing auto-scroll-to-newest effect (its `logsExpandedRef
+// .current` was null on the commit its `[logExpanded]` dependency actually
+// changed) — the log opened scrolled to the TOP, not the newest lines. Fixed
+// in the SAME ref callback that already solved this ordering problem for
+// focus; the callback is renamed `mountLogRegion` to reflect doing both.
 {
-  ok(/const focusLogRegionOnMount = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) el\.focus\(\);\s*\n\s*\}, \[\]\);/.test(app),
-    'App.tsx must focus the log region via a STABLE (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect');
-  ok(/ref=\{focusLogRegionOnMount\}/.test(app),
-    'the log region\'s own div must use the stable focusLogRegionOnMount ref callback');
+  ok(/const mountLogRegion = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) \{\s*\n\s*el\.scrollTop = el\.scrollHeight;\s*\n\s*el\.focus\(\);\s*\n\s*\}\s*\n\s*\}, \[\]\);/.test(app),
+    'App.tsx must focus AND scroll-to-bottom the log region via the SAME stable (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)');
+  ok(/ref=\{mountLogRegion\}/.test(app),
+    'the log region\'s own div must use the stable mountLogRegion ref callback');
   ok(!/autoFocus/.test((app.match(/aria-label="Simulation log"[\s\S]{0,400}/) ?? [''])[0]),
     'the log region must not rely on autoFocus — it is inert on a non-form element (React only special-cases button/input/select/textarea)');
+}
+
+// OPUS-REVIEW-MODAL BLOCK 1 (regression from the round15 fix): `tabIndex={-1}`
+// on the panel (added for RED-APP-14/002's focus-parking) makes it MOUSE-
+// focusable — a plain click on the dialog's own dead space (padding, a
+// heading) with every control still ENABLED focuses the panel itself.
+// `Node.contains()` returns true for the node itself, so the old
+// `!container.contains(document.activeElement)` boundary check never fired
+// for `activeElement === container`, and Shift+Tab fell through to the
+// browser's own backward navigation — escaping the dialog on Chromium and
+// Firefox (RED-APP-5/002's exact shape, reintroduced). Mutation: drop the
+// `|| document.activeElement === container` disjunct and this fails.
+{
+  ok(/if \(!container\.contains\(document\.activeElement\) \|\| document\.activeElement === container\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*\(e\.shiftKey \? last : first\)\.focus\(\);\s*\n\s*return;\s*\n\s*\}/.test(modalSurfaceSrc),
+    'the Tab-trap boundary check must also treat activeElement === container (the panel itself, mouse-focusable via tabIndex={-1}) as "at the edge" (OPUS-REVIEW-MODAL BLOCK 1)');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
