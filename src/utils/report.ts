@@ -482,6 +482,11 @@ export async function generateScenario(
      * scenario-regenerate route; full reports intentionally omit it.
      */
     actorNouns?: boolean;
+    /**
+     * BLUE-CANCEL-12: propagated straight into `callProvider` — see
+     * `ProviderRequest.signal` in providers.ts for the contract.
+     */
+    signal?: AbortSignal;
   } = {},
 ): Promise<GenerateScenarioResult> {
   // `domain` steers WHICH setting the invention uses, and nothing else.
@@ -530,6 +535,7 @@ export async function generateScenario(
     userPrompt: buildGroundingPayload(g),
     reasoning: opts.reasoning,
     extraBody: opts.extraBody,
+    signal: opts.signal,
     schema: opts.actorNouns ? SCENARIO_SCHEMA_WITH_ACTORS : SCENARIO_SCHEMA,
     // 2048 was sized for a NON-reasoning call: the scenario body is ~200 tokens,
     // so it looked generous. Reasoning tokens bill against this same budget, and
@@ -864,6 +870,11 @@ export async function generateReport(
      * trading the tail latency that originally picked this model.
      */
     reasoning?: ReasoningEffort;
+    /**
+     * BLUE-CANCEL-12: propagated straight into `callProvider` — see
+     * `ProviderRequest.signal` in providers.ts for the contract.
+     */
+    signal?: AbortSignal;
   } = {},
 ): Promise<GenerateResult> {
   const model = opts.model || DEFAULT_MODEL;
@@ -922,6 +933,7 @@ export async function generateReport(
     systemPrompt,
     userPrompt: buildGroundingPayload(g, opts.scenario),
     reasoning,
+    signal: opts.signal,
     schema: REPORT_SCHEMA,
     // Roomy on purpose: current models think by default, and thinking tokens
     // count against this budget on every provider. Too tight a cap makes the
