@@ -66,12 +66,21 @@ jobs:
           REQUIRED: unit build e2e integration container mobile
         run: |
           set -euo pipefail
-          head=$(git rev-parse --verify -q HEAD^2 || true)
-          if [ -z "$head" ]; then
-            echo "::error::${GITHUB_SHA} is not a merge commit — only PR merges deploy (use workflow_dispatch for a known-good sha)"
+          # GitHub's own record of which merged PR produced this commit — a
+          # hand-made two-parent commit that reuses an old green sha as its
+          # second parent has no such record and stops here (CodeRabbit, #156).
+          pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq "[.[] | select(.merged_at != null and .base.ref == \"main\" and .merge_commit_sha == \"${GITHUB_SHA}\")] | first")
+          if [ -z "$pr_json" ] || [ "$pr_json" = "null" ]; then
+            echo "::error::${GITHUB_SHA} is not the merge commit of a merged pull request into main — only PR merges deploy (use workflow_dispatch for a known-good sha)"
             exit 1
           fi
-          echo "merged PR head: $head"
+          head=$(printf '%s' "$pr_json" | jq -r '.head.sha')
+          echo "merged PR #$(printf '%s' "$pr_json" | jq -r '.number'), head: $head"
+          parent2=$(git rev-parse --verify -q HEAD^2 || true)
+          if [ "$parent2" != "$head" ]; then
+            echo "::error::second parent $parent2 is not the PR head $head"; exit 1
+          fi
           runs=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[] | "\(.name) \(.conclusion // .status)"')
           echo "$runs"
           missing=0
@@ -116,8 +125,20 @@ jobs:
             --region "$REGION" --project d-nash-equilibrium --sha "$sha" --format='value(metadata.build.id)')
           echo "build id: $build_id"
           echo "BUILD_ID=$build_id" >> "$GITHUB_ENV"
+          echo "DEPLOYED_SHA=$sha" >> "$GITHUB_ENV"
+          printf '%s\n' "$sha" > deployed-sha.txt
         # gh is preinstalled on ubuntu-latest; token only needed for the fallback
         continue-on-error: false
+
+      # Live smoke (workflow_run on this workflow) verifies THIS sha, which on a
+      # workflow_dispatch with inputs.sha is not the run's head_sha (CodeRabbit,
+      # #156) — hand it over as an artifact rather than letting the smoke guess.
+      - name: Record the deployed sha for Live smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployed-sha
+          path: deployed-sha.txt
+          retention-days: 7
 
       # Wait for the deploy to FINISH, so this workflow's conclusion means
       # "the new revision is serving" and Live smoke (which fires on it) starts

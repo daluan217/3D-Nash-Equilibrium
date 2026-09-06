@@ -47,9 +47,28 @@ jobs:
       # against the bundle from a different commit — the version mismatch would
       # read as a stale deploy. On the nightly/dispatch runs there is no
       # workflow_run event, so the fallback is the right ref for a monitor.
+      # The sha Deploy site actually deployed (its artifact) — on a dispatch
+      # with an explicit sha this is NOT the run's head_sha. Nightly/dispatch
+      # monitor runs have no upstream run and fall back to github.sha.
+      - name: Read the deployed sha from the Deploy site run
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          name: deployed-sha
+          path: deployed-sha
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - id: sha
+        name: Resolve the ref to verify
+        env:
+          FALLBACK: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -s deployed-sha/deployed-sha.txt ]; then sha=$(tr -d '[:space:]' < deployed-sha/deployed-sha.txt); else sha="$FALLBACK"; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"; echo "verifying $sha"
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.sha.outputs.sha }}
           persist-credentials: false
 
       - name: Read the repo version (informational comparison)

@@ -50,6 +50,8 @@ const read = (f: string) => readFileSync(WF + f, 'utf8');
  */
 function unpinnedCheckout(yaml: string): boolean {
   if (!/^\s*workflow_run:/m.test(yaml)) return false;
+  // A checkout pinned to the sha the upstream run RECORDED (deployed-sha artifact → steps.sha) is pinned too.
+  if (/name: deployed-sha[\s\S]*ref: \$\{\{ steps\.sha\.outputs\.sha \}\}/.test(yaml)) return false;
   // Each checkout step, plus whatever `with:` block is indented under it.
   for (const m of yaml.matchAll(/^(\s*)-\s*uses:\s*actions\/checkout@[^\s]+\s*$([\s\S]*?)(?=^\1-\s|^\S|(?![\s\S]))/gm)) {
     const withBlock = m[2] ?? '';
@@ -104,14 +106,18 @@ if (!/github\.event\.workflow_run\.event\s*==\s*'workflow_run'/.test(desktop)) {
  */
 const deploy = read('deploy-site.yml');
 const test = read('test.yml');
-if (/^\s*push:\s*\n\s*branches:\s*\[[^\]]*\bmain\b/m.test(test)) {
-  fail('test.yml must not run on push to main — the PR run already tested this tree; the deploy gate is deploy-site.yml');
+// ANY push trigger (filtered, block-sequence or bare) would rerun the suite on main.
+const testOn = test.slice(test.indexOf('\non:'), test.search(/\n(?:jobs|env|concurrency|permissions):/));
+if (/^\s{2}push:/m.test(testOn)) {
+  fail('test.yml must not carry a push trigger at all — the PR run already tested this tree; the deploy gate is deploy-site.yml');
 }
 if (!/^on:\s*\n(?:.*\n)*?\s*push:\s*\n\s*branches:\s*\[\s*['"]?main['"]?\s*\]/m.test(deploy)) {
   fail('deploy-site.yml must be triggered by push to main (branches: [main])');
 }
 for (const [clause, why] of [
-  [/rev-parse --verify -q HEAD\^2/, 'the merged PR head (HEAD^2) is what carries the checks — a non-merge push must be refused'],
+  [/commits\/\$\{GITHUB_SHA\}\/pulls/, 'the gate must ask GitHub which merged PR produced this commit (a hand-made two-parent commit has no record)'],
+  [/merged_at != null and \.base\.ref == \\"main\\" and \.merge_commit_sha == \\"\$\{GITHUB_SHA\}\\"/, 'the PR must be merged, into main, and its merge commit must be exactly this sha'],
+  [/rev-parse --verify -q HEAD\^2/, 'the second parent must be the PR head the checks were reported on'],
   [/check-runs/, 'the gate reads the PR head\'s check runs from the API'],
   [/REQUIRED: unit build e2e integration container mobile/, 'the six required contexts of branch protection, by name'],
   [/gcloud builds describe .* --format='value\(status\)'/, 'Deploy site must wait for the Cloud Build to finish so Live smoke fires against a deployed site'],
@@ -123,8 +129,14 @@ const smoke = read('live-smoke.yml');
 if (!/workflows:\s*\[\s*['"]?Deploy site['"]?\s*\]/.test(smoke)) {
   fail('live-smoke.yml must trigger on "Deploy site" — there is no Test run on main to chain from');
 }
-if (/download-artifact/.test(smoke)) {
+if (/name: dist\s*\n/.test(smoke) && /download-artifact/.test(smoke) && /name: dist\b/.test(smoke.slice(smoke.indexOf('download-artifact')))) {
   fail('live-smoke.yml must build the bundle for the pinned ref itself; there is no Test artifact on main any more');
+}
+if (!/name: deployed-sha/.test(smoke) || !/ref: \$\{\{ steps\.sha\.outputs\.sha \}\}/.test(smoke)) {
+  fail('live-smoke.yml must check out the sha Deploy site recorded (deployed-sha artifact), not the run head — a dispatch with inputs.sha deploys a different commit');
+}
+if (!/name: deployed-sha/.test(deploy) || !/printf '%s\\n' "\$sha" > deployed-sha\.txt/.test(deploy)) {
+  fail('deploy-site.yml must record the effective deployed sha as the deployed-sha artifact for Live smoke');
 }
 
 /* ---------------------------------------------------------------- check 4
