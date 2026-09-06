@@ -53,6 +53,9 @@ const TEST_SCENARIO_BUDGET_MS = Number(process.env.SCENARIO_DEADLINE_TEST_BUDGET
  */
 const CLIENT_MARGIN_MULTIPLIER = 5;
 const TEST_CLIENT_TIMEOUT_MS = TEST_SCENARIO_BUDGET_MS * CLIENT_MARGIN_MULTIPLIER;
+function clientTimeoutFor(budgetMs) {
+  return budgetMs * CLIENT_MARGIN_MULTIPLIER;
+}
 const GAME = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 2, b12: 0, b21: 0, b22: 3 };
 const TIE = { ...GAME, a21: 3 };
 const STORY = {
@@ -63,7 +66,7 @@ const STORY = {
 };
 const REJECTED = { ...STORY, description: 'As an AI, I need clean JSON.' };
 
-async function withServer(offset, providerReply, run) {
+async function withServer(offset, providerReply, run, budgetMs = TEST_SCENARIO_BUDGET_MS) {
   const scratch = mkdtempSync(path.join(tmpdir(), 'nash-request-deadline-'));
   const timers = new Set();
   let calls = 0;
@@ -108,7 +111,7 @@ async function withServer(offset, providerReply, run) {
         // The whole point of this hardening: a tiny, CI-fast ladder budget
         // instead of the real ~20s one. See this file's header comment and
         // server.ts's SCENARIO_REQUEST_BUDGET_MS.
-        NASH_SCENARIO_REQUEST_BUDGET_MS: String(TEST_SCENARIO_BUDGET_MS),
+        NASH_SCENARIO_REQUEST_BUDGET_MS: String(budgetMs),
         AZURE_FOUNDRY_ENDPOINT: `http://127.0.0.1:${provider.address().port}/v1`,
         AZURE_FOUNDRY_API_KEY: 'loopback-test-only',
       },
@@ -135,7 +138,7 @@ async function withServer(offset, providerReply, run) {
       const start = performance.now();
       const response = await fetch(`${base}${route}`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body), signal: AbortSignal.timeout(TEST_CLIENT_TIMEOUT_MS),
+        body: JSON.stringify(body), signal: AbortSignal.timeout(clientTimeoutFor(budgetMs)),
       });
       const json = await response.json();
       assert.equal(response.status, 200);
@@ -183,6 +186,27 @@ await test('scenario request deadlines and controls', { timeout: 60_000, concurr
       assert.equal(calls, 1, 'exhausted request budget must not launch a second provider call');
     }),
   ));
+  /**
+   * CodeRabbit (blue12-deadline-timing review): the original ceiling here
+   * (elapsed < TEST_CLIENT_TIMEOUT_MS, a 5x-budget margin) could never fail
+   * even if a "reset the clock" regression came back — a reset-clock draw2
+   * only costs one extra DELAY's worth of time (the shared-clock and
+   * reset-clock totals are both a small multiple of the budget, nowhere
+   * near the 5x ceiling meant to absorb CI jitter). This subtest needs its
+   * own dedicated, larger budget and a ceiling that actually sits BETWEEN
+   * the two possible totals, not a generic multiple of it.
+   *
+   * With budget B and delay D = 0.4*B: shared-clock total ≈ D + (B-D) = B;
+   * reset-clock total ≈ D + B = 1.4*B (a resetting retry gets a FRESH full
+   * budget instead of the B-D remainder). RETRY_CLOCK_CEILING_MS sits at
+   * 1.2*B — comfortably above the shared-clock total (B + real overhead)
+   * and comfortably below the reset-clock total (1.4*B + the same
+   * overhead), verified against both a correct and a deliberately mutated
+   * (clock-reset) server.ts — see HARNESS-LOG.md.
+   */
+  const RETRY_TEST_BUDGET_MS = TEST_SCENARIO_BUDGET_MS * 2;
+  const RETRY_DELAY_MS = Math.round(RETRY_TEST_BUDGET_MS * 0.4);
+  const RETRY_CLOCK_CEILING_MS = Math.round(RETRY_TEST_BUDGET_MS * 1.2);
   stalledCases.push(t.test('a delayed gate rejection cannot restart the request clock',
     // The delay is a FRACTION of the configured budget (not a fixed ms
     // count) so the rejected reply always lands comfortably before the
@@ -190,16 +214,16 @@ await test('scenario request deadlines and controls', { timeout: 60_000, concurr
     // exhaust -- the property under test ("retries cannot reset the
     // clock") only means something if some of the original budget is
     // actually still at stake when the retry starts.
-    () => withServer(5, (call) => call === 1 ? { story: REJECTED, delay: Math.round(TEST_SCENARIO_BUDGET_MS * 0.3) } : null, async (post) => {
+    () => withServer(5, (call) => call === 1 ? { story: REJECTED, delay: RETRY_DELAY_MS } : null, async (post) => {
       const { json, calls, elapsed } = await post('/api/scenario/regenerate', { payoffs: GAME });
       assert.equal(json.scenarioSource, 'bank-fallback');
       assert.ok(json.scenario?.description);
       assert.equal(calls, 2, 'the rejected first response must actually have triggered one retry');
-      // The total must still fit inside ONE budget (plus CI margin): if the
-      // retry got a FRESH budget instead of the remainder, this would run
-      // closer to 2x TEST_SCENARIO_BUDGET_MS.
-      assert.ok(elapsed < TEST_CLIENT_TIMEOUT_MS, `response took ${elapsed}ms (budget ${TEST_SCENARIO_BUDGET_MS}ms x${CLIENT_MARGIN_MULTIPLIER} margin)`);
-    })));
+      // Distinguishing threshold, not a generic ceiling: a retry that got a
+      // FRESH budget instead of the shared remainder would push this past
+      // RETRY_CLOCK_CEILING_MS (see the comment above this subtest).
+      assert.ok(elapsed < RETRY_CLOCK_CEILING_MS, `response took ${elapsed}ms (budget ${RETRY_TEST_BUDGET_MS}ms, delay ${RETRY_DELAY_MS}ms, ceiling ${RETRY_CLOCK_CEILING_MS}ms) -- the retry may have gotten a fresh budget instead of the remainder`);
+    }, RETRY_TEST_BUDGET_MS)));
   await Promise.all(stalledCases);
   await t.test('fast valid model response and fast rejected-then-valid reroll still work', () =>
     withServer(4, (call) => ({ story: call === 2 ? REJECTED : STORY }), async (post) => {
