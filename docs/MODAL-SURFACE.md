@@ -144,7 +144,7 @@ a caller that hand-rolls `role="dialog"` anywhere in the app.
   loosely); Save and Edit's own 401-mid-submit reproduction; the drawer's
   role/aria-modal, Tab containment, Escape, and in-flight Delete; Feedback
   unreachable by keyboard while the drawer is open.
-- `src/e2e/smoke.mjs` section 70 (round15, shard 12, ~107s internal / ~140s
+- `src/e2e/smoke.mjs` section 70 (round15, shard 8, ~107s internal / ~140s
   wall including server boot): Part A — the local-games offer with every
   control disabled by a route-delayed request: Tab is swallowed, focus stays
   parked, and returns to the first control once a failure re-enables both

@@ -4795,7 +4795,7 @@ try {
   //      focus must return to the Edit button, not the landmark. Guarded by
   //      webkit's availability (playwright's webkit browser may not be
   //      installed in every environment).
-  section('70', 'the Tab trap never gives up when every control is disabled; opener tracking survives WebKit on a saved-game row', 12, async () => {
+  section('70', 'the Tab trap never gives up when every control is disabled; opener tracking survives WebKit on a saved-game row', 8, async () => {
     // ── Part A: desktop-shape server, no account, one local game ──────────
     const deskPort = String(Number(PORT) + 1002);
     const deskBase = `http://127.0.0.1:${deskPort}`;
