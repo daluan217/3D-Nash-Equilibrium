@@ -4765,6 +4765,21 @@ try {
     let after = await readTour();
     for (let i = 0; i < 20 && after.step !== 2; i++) { await p.waitForTimeout(100); after = await readTour(); }
     record('control: with no dialog open, one ArrowRight advances the tour to step 2', after.step === 2, JSON.stringify(after));
+    // Second path (CodeRabbit on #151): a dialog that does NOT use ModalSurface
+    // (the desktop download modal) — the `insideOtherDialog` bail must hold
+    // on its own, since the registry knows nothing about it.
+    await p.getByRole('button', { name: /get desktop app/i }).first().click();
+    const dl = p.locator('[role="dialog"]:not([aria-label="Guided tour"])').first();
+    await dl.waitFor({ state: 'visible', timeout: 8000 });
+    const dlLabel = await dl.getAttribute('aria-label');
+    const focusable = dl.locator('button, a[href], input').first(); await focusable.focus();
+    record('precondition: focus is inside a non-ModalSurface dialog while the tour is open',
+      await p.evaluate(() => !!document.activeElement?.closest('[role="dialog"]:not([aria-label="Guided tour"])')), String(dlLabel));
+    for (let k = 0; k < 3; k++) await p.keyboard.press('ArrowRight');
+    await p.keyboard.press('Enter');
+    let dlState = await readTour();
+    for (let i = 0; i < 10 && dlState.step === 2; i++) { await p.waitForTimeout(100); dlState = await readTour(); }
+    record('FIX: keys typed inside the download dialog leave the tour on step 2 and the matrix unchanged', dlState.step === 2 && dlState.matrix === start.matrix, JSON.stringify(dlState));
     await p.close();
   });
 

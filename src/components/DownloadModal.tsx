@@ -4,6 +4,7 @@
  */
 
 import React, { useState } from 'react';
+import { ModalSurface } from './ModalSurface';
 import {
   X,
   Download,
@@ -43,16 +44,9 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const [errorKind, setErrorKind] = useState<'not-built' | 'unavailable' | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
-  // Close on Escape. stopPropagation so the SAME keypress cannot also reach
-  // Walkthrough.tsx's independent window-level Escape listener and close the
-  // guided tour too (RED-APP-6/002) — document fires before window in the
-  // bubble phase.
-  React.useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') { onClose(); e.stopPropagation(); } };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
+  // Escape, backdrop click, the Tab trap, focus return and the single-active-
+  // modal registry all come from ModalSurface (RED-APP-14/001: this overlay
+  // had no role="dialog", so keys typed here reached the guided tour).
 
   if (!isOpen) return null;
 
@@ -118,15 +112,14 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
   const buildCommands = `npm run build && npm run electron:dist`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 py-8 selection:bg-accent-500/30 selection:text-accent-900 dark:selection:text-accent-100">
-      {/* Backdrop */}
-      <div 
-        className="fixed inset-0 bg-slate-900/60 dark:bg-black/75 backdrop-blur-xs transition-opacity duration-300 cursor-pointer"
-        onClick={onClose}
-      />
-
-      {/* Modal Card */}
-      <div className="relative w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-modal-in">
+    <ModalSurface
+      id="download"
+      open={isOpen}
+      onClose={onClose}
+      ariaLabel="Get the desktop app"
+      overlayClassName="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 py-8 bg-slate-900/60 dark:bg-black/75 backdrop-blur-xs cursor-pointer selection:bg-accent-500/30 selection:text-accent-900 dark:selection:text-accent-100"
+      panelClassName="relative w-full max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-modal-in cursor-auto"
+    >
         
         {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
@@ -347,7 +340,6 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
           </button>
         </div>
 
-      </div>
-    </div>
+    </ModalSurface>
   );
 };
