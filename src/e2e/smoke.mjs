@@ -4783,6 +4783,56 @@ try {
     await p.close();
   });
 
+  // ══ 74. RED-APP-14/006 + /007 (director-reproduced). (a) Pressing a header
+  //      control whose centre overlaps the plot's rectangle must NOT pause a
+  //      running simulation (the detector tested a rectangle, never the real
+  //      target); keyboard activation is the control. (b) Selecting text in a
+  //      dialog field with a drag that overshoots the panel must not dismiss
+  //      the dialog. Mutations: drop pressOnUnrelatedUi → (a) fails; overlay
+  //      onClick back to plain onClose → (b) fails.
+  section('74', 'a press on UI that merely overlaps the plot keeps the run going; a drag out of a dialog keeps it open', 5, async () => {
+    const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+    const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
+    const vals = [-12, 12, 8, -8, 2, -2, 0, 0]; // Penalty Kick: cycles, never converges on its own
+    for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
+    const speed = p.locator('input[type="range"]').first(); await speed.focus(); for (let i = 0; i < 12; i++) await p.keyboard.press('ArrowLeft');
+    await p.evaluate(() => window.scrollTo(0, 0));
+    const running = () => p.evaluate(() => !![...document.querySelectorAll('button')].find((b) => /^\s*pause\s*$/i.test(b.textContent || '')));
+    await p.getByRole('button', { name: /^run$/i }).click();
+    let up = false; for (let i = 0; i < 30 && !up; i++) { up = await running(); if (!up) await p.waitForTimeout(100); }
+    record('precondition: the simulation is running', up);
+    const btn = p.getByRole('button', { name: /open workspace menu/i }).first();
+    const geo = await btn.evaluate((b) => { const bb = b.getBoundingClientRect(); const r = document.querySelector('[data-tour="plot"]').getBoundingClientRect(); const x = bb.left + bb.width / 2, y = bb.top + bb.height / 2; const hit = document.elementFromPoint(x, y); return { x, y, insidePlotRect: x > r.left && x < r.right && y > r.top && y < r.bottom, hitIsButton: !!hit && (hit === b || b.contains(hit)) }; });
+    record('precondition: the header menu button overlaps the plot rectangle and is the hit-test target at its centre', geo.insidePlotRect && geo.hitIsButton, JSON.stringify(geo));
+    await p.mouse.click(geo.x, geo.y);
+    await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 5000 });
+    let still = await running(); for (let i = 0; i < 5 && still; i++) { await p.waitForTimeout(200); still = await running(); }
+    record('FIX: a MOUSE press on that button keeps the simulation running', still, `running=${still}`);
+    await p.keyboard.press('Escape');
+    await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 5000 }).catch(() => {});
+    record('control: the run is still going after the drawer closed', await running());
+    // A real press ON the plot still pauses (the detector was not simply disabled).
+    const plot = p.locator('[data-tour="plot"]'); await plot.scrollIntoViewIfNeeded();
+    const box = await plot.boundingBox(); await p.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    let paused = !(await running()); for (let i = 0; i < 10 && !paused; i++) { await p.waitForTimeout(100); paused = !(await running()); }
+    record('control: a press on the plot itself still pauses the run', paused);
+    // (b) drag-select from inside the Account dialog's field to outside the panel
+    await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    const dlg = p.locator('[role="dialog"][aria-label="Account"]'); await dlg.waitFor({ state: 'visible', timeout: 8000 });
+    const field = p.getByPlaceholder(/example\.com or username/i); await field.fill('drag me');
+    const fb = await field.boundingBox(); const db = await dlg.boundingBox();
+    await p.mouse.move(fb.x + 10, fb.y + fb.height / 2); await p.mouse.down();
+    await p.mouse.move(db.x + db.width + 120, fb.y + fb.height / 2, { steps: 8 }); await p.mouse.up();
+    await p.waitForTimeout(300);
+    record('FIX: a drag that starts in the field and ends on the backdrop leaves the dialog open with its text', await dlg.isVisible() && (await field.inputValue()) === 'drag me');
+    const ob = db; await p.mouse.click(ob.x + ob.width + 150, ob.y + ob.height / 2);
+    await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 5000 }).catch(() => {});
+    record('control: a plain click on the backdrop still closes the dialog', !(await dlg.isVisible().catch(() => false)));
+    await p.close();
+  });
+
 await executeSections();
 
 } catch (e) {
