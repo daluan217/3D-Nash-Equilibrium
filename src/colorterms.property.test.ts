@@ -112,6 +112,18 @@ const CANONICAL_VARIANTS: Variant[] = [
 const CASE_VARIANTS: Variant[] = [
   { family: 'case', glyph: 'SCREAMING CASE', make: (s) => s.toUpperCase() },
 ];
+// RED-CLOUD-11/001: a regenerated actor noun and an existing chip naming the
+// SAME character but introduced with a different leading article ("a
+// landowner" vs "the landowner") must collide for EXCLUSIVITY purposes — the
+// model itself writes the same referent both ways (indefinite, then definite)
+// within one description. Works on any word, like case/invisible/whitespace
+// above, so it is NOT added to NEEDS_OWN_BASE.
+const ARTICLE_VARIANTS: Variant[] = [
+  { family: 'article', glyph: 'leading "a "', make: (s) => `a ${s}` },
+  { family: 'article', glyph: 'leading "an "', make: (s) => `an ${s}` },
+  { family: 'article', glyph: 'leading "the "', make: (s) => `the ${s}` },
+  { family: 'article', glyph: 'leading "The " (capitalized)', make: (s) => `The ${s}` },
+];
 const ALL_FOLD_FAMILIES: Array<{ base: string; variants: Variant[] }> = [
   { base: APOSTROPHE_BASE, variants: APOSTROPHE_VARIANTS },
   { base: DASH_BASE, variants: DASH_VARIANTS },
@@ -119,6 +131,7 @@ const ALL_FOLD_FAMILIES: Array<{ base: string; variants: Variant[] }> = [
   { base: WHITESPACE_BASE, variants: WHITESPACE_VARIANTS },
   { base: CANONICAL_BASE, variants: CANONICAL_VARIANTS },
   { base: 'Cooperate', variants: CASE_VARIANTS },
+  { base: 'Landowner', variants: ARTICLE_VARIANTS },
 ];
 
 // EDGE-STRIP class: wrapping a bare phrase in these must fold to the SAME key
@@ -147,6 +160,9 @@ const NEGATIVE_PAIRS: Array<[string, string, string]> = [
   ['+50', '50', 'leading plus carries meaning'],
   ['$50', '50', 'currency sign carries meaning'],
   ['Co-op', 'Coop', 'an inner dash is not punctuation to strip'],
+  ['another chance', 'a chance', '"another" is not the article "an" + a word (no space after "an")'],
+  ['a-frame', 'frame', 'a hyphen right after "a" blocks the article fold (no whitespace follows)'],
+  ['a landowner', 'a farmer', 'the SAME article on two DIFFERENT nouns must still be different phrases'],
   ['Wolf', 'Rabbit', 'unrelated words'],
   ['(Cooperate)', 'Retreat', 'unrelated words, one merely bracketed'],
   ["Farmer's", "Farmers", 'the apostrophe is part of the word’s spelling, not edge punctuation'],
@@ -321,6 +337,41 @@ for (const { base, variants } of ALL_FOLD_FAMILIES) {
   const asym: ScenarioLabels = { row1: 'Advertise', row2: 'Hold back', col1: 'Match', col2: 'Ignore' };
   const nonLabel = regenPreviewColorTerms(asym, [], [], ['the hedge'], []);
   check('negative control: a chip matching NO label is never neutralized', nonLabel.a.includes('the hedge'), JSON.stringify(nonLabel));
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// RED-CLOUD-11/001, exact hand-read reproduction: the finding's own draw 17
+// (main 3f699f4) — a regenerated actor noun ("a landowner") for Player A
+// colliding with an EXISTING Player B chip ("the landowner") from the
+// PREVIOUS story, differing only by leading article. Before the article fold
+// this slipped `regenKeptColorTerms`'s cross-player guard entirely (both
+// chips got stored, per the finding's own trace: kept.a included "a
+// landowner" AND kept.b kept "the landowner"). Reproduced directly, not just
+// through the generic family sweep above, so this exact case is pinned by
+// name.
+// ═════════════════════════════════════════════════════════════════════════
+{
+  const existingA = ['the surveyor'];
+  const existingB = ['the landowner'];
+  const newActorA = ['a landowner'];
+  const newActorB = ['a hedge-layer'];
+  const kept = regenKeptColorTerms(newActorA, newActorB, existingA, existingB);
+  check('RED-CLOUD-11/001: "a landowner" (new, Player A) colliding with the EXISTING "the landowner" (Player B) is never added to A',
+    !kept.a.some((t) => colorTermKey(t) === colorTermKey('a landowner')), JSON.stringify(kept));
+  check('RED-CLOUD-11/001: Player B keeps its existing "the landowner" chip unchanged',
+    kept.b.includes('the landowner'), JSON.stringify(kept));
+  check('RED-CLOUD-11/001: Player A keeps its own unrelated existing chip ("the surveyor")',
+    kept.a.includes('the surveyor'), JSON.stringify(kept));
+  check('RED-CLOUD-11/001: Player B\'s genuinely NEW, non-colliding actor noun ("a hedge-layer") is still added',
+    kept.b.includes('a hedge-layer'), JSON.stringify(kept));
+  // Rendering-side control: the fold above must NEVER reach ColorCoded's own
+  // literal match — a chip stored as "the landowner" still colours only the
+  // literal text "the landowner", never a bare "landowner" occurring without
+  // its article (docs/COLOUR-TERMS.md — rendering never uses colorTermKey).
+  const renderPlain = rendered('The landowner agrees, and a landowner nearby does not.', [], ['the landowner']);
+  const spansB = [...renderPlain.matchAll(/<span[^>]*>([^<]*)<\/span>/g)].map((m) => m[1]);
+  check('RED-CLOUD-11/001 rendering control: "the landowner" chip colours ONLY its own literal text, never the bare "landowner" (no article) elsewhere in the same sentence',
+    spansB.length === 1 && spansB[0] === 'The landowner', JSON.stringify({ renderPlain, spansB }));
 }
 
 // ═════════════════════════════════════════════════════════════════════════

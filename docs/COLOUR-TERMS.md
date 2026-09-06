@@ -53,7 +53,18 @@ operations matters (RED-REGEN-6/001: a glyph fold placed *after* `.normalize
    ? … ‥` and their CJK/fullwidth counterparts (`。 、 ， ； ： ！ ？ ¡ ¿`), every
    quote mark already folded to `"`/`'` plus `« »`, and every ASCII/CJK/
    fullwidth bracket pair (`() [] {} 「」『』〈〉《》【】〔〕（）［］｛｝`).
-6. **Case-folded** (`.toLowerCase()`), last.
+6. **Case-folded** (`.toLowerCase()`).
+7. **A leading indefinite/definite article** (`a `, `an `, `the `) **stripped,
+   last** (RED-CLOUD-11/001): a regenerated actor noun and an existing chip
+   naming the *same* character but introduced with a different article — "a
+   landowner" vs "the landowner" — are, to a reader, one phrase, and the model
+   itself writes the same referent both ways within one description
+   (indefinite, then definite, on a later co-reference). Only a **leading**
+   article immediately followed by more text is stripped: `"another chance"`
+   (no space after "an"), `"a-frame"` (no space after "a"), and a bare `"a"`/
+   `"the"` with nothing left to fold onto are all left alone. Two different
+   nouns sharing the same article (`"a landowner"` vs `"a farmer"`) are of
+   course still different phrases — only the article itself folds away.
 
 **Never folds, never trims** — these carry meaning, not decoration: `%`, `#`,
 `&`, `$`, `+`, digits, a leading `-` (sign, not punctuation), and any
@@ -61,6 +72,16 @@ dash/apostrophe **inside** a word (an inner hyphen is not edge punctuation:
 `"Co-op"` and `"Coop"` are different phrases). A phrase that is *entirely*
 punctuation after every fold above (e.g. `"..."`) keys to the empty string and
 is refused by `cleanUserColorTerms` (nothing left to highlight).
+
+**The article fold is EXCLUSIVITY-only, never rendering.** `ColorCoded` never
+uses `colorTermKey` (§(c) below) — it matches the chip's own literal, stored
+spelling — so a chip stored as `"the landowner"` still colours only that exact
+literal text; it is never repainted onto a bare `"landowner"` or an `"a
+landowner"` occurring elsewhere in the same sentence. The fold only changes
+whether two *different* stored spellings are treated as the same phrase for
+ownership/collision purposes (`cleanUserColorTerms`'s dedup,
+`cleanUserColorTermPair`'s cross-player exclusivity, `regenKeptColorTerms`'s
+new-actor-noun-vs-existing-chip guard, the server's PATCH pairing).
 
 **Documented gap, out of scope** (found by `src/colorterms.property.test.ts`,
 zero measured real-world reach): `cleanUserColorTerms` collapses internal
