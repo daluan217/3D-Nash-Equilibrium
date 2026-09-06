@@ -21,6 +21,7 @@ on:
   workflow_run:
     workflows: ['Live smoke']
     types: [completed]
+    branches: [main]   # see deploy-site.yml — filters noise, the `if:` gates
   workflow_dispatch:
 
 # Only one release build at a time; newer pushes cancel in-flight ones.

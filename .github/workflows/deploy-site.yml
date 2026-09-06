@@ -25,6 +25,12 @@ on:
   workflow_run:
     workflows: ['Test']
     types: [completed]
+    # Only Test runs whose head branch is main. Without this filter every
+    # pull-request run of Test (and every failed one) fired this workflow,
+    # which then evaluated its `if:` and reported "skipped" — three phantom
+    # rows per PR push in the Actions list. The job-level `if:` below remains
+    # the actual gate (conclusion == success); this only stops the noise.
+    branches: [main]
   workflow_dispatch:
     inputs:
       sha:

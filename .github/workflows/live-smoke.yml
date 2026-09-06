@@ -18,6 +18,10 @@ on:
   workflow_run:
     workflows: ['Test']
     types: [completed]
+    # main only — a PR's Test run must not spawn a skipped Live smoke row (and
+    # a skipped Live smoke would in turn spawn a skipped DMG row). The
+    # job-level `if:` stays the gate; this filter is about noise.
+    branches: [main]
   schedule:
     - cron: '41 3 * * *'
   workflow_dispatch:
