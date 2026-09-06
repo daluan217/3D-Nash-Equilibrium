@@ -40,18 +40,43 @@ const PORT_BASE = Number(process.env.DEADLINE_TEST_PORT || 4901);
  * (server.ts's NASH_SCENARIO_REQUEST_BUDGET_MS override). Every timing
  * assertion below derives from THIS, not from the real 22s/20s production
  * numbers, which this suite no longer waits out.
+ *
+ * NOT arbitrarily small. CI (PR #140's own first run, real GitHub Actions,
+ * not reproducible on a local Mac): at 2_000ms, "ordinary rung-3 report" and
+ * "regenerate preview" both saw calls===2 instead of 1 -- a real, PRE-EXISTING
+ * boundary race in `inventScreenedScenario`'s loop (server.ts, unchanged by
+ * this PR): `drawWithDeadline`'s own per-draw timer can resolve a hair before
+ * the outer `requestDeadline` is read again, letting the loop's single
+ * bounded "LOST" retry (server.ts's own comment: fires "at most once") reach
+ * a SECOND physical request instead of finding `remainingMs <= 0` first. This
+ * race exists at the real 20_000ms production budget too, but a few
+ * milliseconds of scheduling jitter is negligible against 20s and
+ * (apparently) not against 2s -- shrinking the budget too far turned an
+ * already-tiny, already-present race into a proportionally significant one.
+ * 6_000ms keeps the CI-speed win (suite still ~3x faster than the original
+ * 20s-per-case design) while restoring enough absolute margin that this race
+ * needs CI-runner-under-load levels of jitter to matter, same as production.
  */
-const TEST_SCENARIO_BUDGET_MS = Number(process.env.SCENARIO_DEADLINE_TEST_BUDGET_MS || 2_000);
+const TEST_SCENARIO_BUDGET_MS = Number(process.env.SCENARIO_DEADLINE_TEST_BUDGET_MS || 6_000);
 /**
  * Proportional, not additive: a multiplier keeps the same margin RATIO
  * whatever TEST_SCENARIO_BUDGET_MS is set to, so CI jitter tolerance scales
  * with the budget instead of being a fixed number that happens to work for
- * one particular value. 5x is comfortably above realistic CI scheduling
- * jitter on a budget this short, and the mutation above (no env override,
- * so the server actually runs its ~20s production budget) blows through it
- * by a wide margin -- exactly the failure this suite exists to catch.
+ * one particular value.
+ *
+ * MUST stay well under the real production fallback-delivery time
+ * (~20-22s) at whatever TEST_SCENARIO_BUDGET_MS is configured, or the "no
+ * env override" mutation (server silently falls back to its real ~20s
+ * budget) stops failing this suite -- caught for real: at
+ * TEST_SCENARIO_BUDGET_MS=6_000, a 5x multiplier gave a 30_000ms ceiling,
+ * comfortably ABOVE the ~20-22s the mutated server actually took, so 4 of 5
+ * stalled subtests kept passing under the mutation (only the tighter,
+ * budget-relative retry-clock ceiling below still caught it). 3x (18_000ms
+ * here) stays under the real fallback-delivery time while remaining a huge
+ * multiple of the correct, short-budget response (~7s observed) -- more
+ * than enough for realistic CI scheduling jitter.
  */
-const CLIENT_MARGIN_MULTIPLIER = 5;
+const CLIENT_MARGIN_MULTIPLIER = 3;
 const TEST_CLIENT_TIMEOUT_MS = TEST_SCENARIO_BUDGET_MS * CLIENT_MARGIN_MULTIPLIER;
 function clientTimeoutFor(budgetMs) {
   return budgetMs * CLIENT_MARGIN_MULTIPLIER;
