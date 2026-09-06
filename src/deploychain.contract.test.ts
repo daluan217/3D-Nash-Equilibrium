@@ -111,11 +111,49 @@ for (const clause of [
   }
 }
 
+/* ---------------------------------------------------------------- check 4
+ * Every workflow_run trigger in the chain filters to main at the TRIGGER, not
+ * only in the job `if:`. Without `branches: [main]` each pull-request run of
+ * Test fired Deploy site and Live smoke, whose skipped Live smoke fired the
+ * DMG build — three "skipped" rows per PR push that read as failures in the
+ * Actions list (Daniel, 2026-09-06). The `if:` clauses above stay the gate;
+ * the filter is what keeps the list honest.
+ */
+function workflowRunFiltersToMain(yaml: string): boolean {
+  const lines = yaml.split('\n');
+  const at = lines.findIndex((l) => /^\s*workflow_run:\s*$/.test(l));
+  if (at < 0) return false;
+  const indent = lines[at].match(/^\s*/)![0].length;
+  // The block is exactly the lines indented DEEPER than the `workflow_run:` key
+  // (comments and blanks pass through). It ends at the first sibling key —
+  // so a `push:` trigger's own `branches: [main]` beside it cannot satisfy
+  // this check (CodeRabbit CLI on the first draft).
+  const block: string[] = [];
+  for (const l of lines.slice(at + 1)) {
+    if (/^\s*$/.test(l) || /^\s*#/.test(l)) continue;
+    if (l.match(/^\s*/)![0].length <= indent) break;
+    block.push(l);
+  }
+  return block.some((l) => /^\s*branches:\s*\[\s*['"]?main['"]?\s*\]/.test(l));
+}
+for (const f of ['deploy-site.yml', 'live-smoke.yml', 'release-desktop.yml']) {
+  if (!workflowRunFiltersToMain(read(f))) {
+    fail(`${f}: its workflow_run trigger must carry branches: [main] — otherwise every PR run of the `
+      + 'upstream workflow spawns a skipped run of this one.');
+  }
+}
+
 /* ------------------------------------------------------- known positives
  * Each check above must actually fire. These are the mutations that matter:
  * the exact shape the real files had before this contract existed.
  */
 const MUST_FLAG: Array<[string, () => boolean]> = [
+  ['workflow_run trigger without a branches filter', () => !workflowRunFiltersToMain(
+    'on:\n  workflow_run:\n    workflows: [Test]\n    types: [completed]\n  workflow_dispatch:\njobs:\n  a:\n    steps:\n      - run: true\n')],
+  ['workflow_run trigger without a filter, next to a push trigger that HAS branches: [main]', () => !workflowRunFiltersToMain(
+    'on:\n  workflow_run:\n    workflows: [Test]\n    types: [completed]\n  push:\n    branches: [main]\njobs:\n  a:\n    steps:\n      - run: true\n')],
+  ['workflow_run trigger filtered to a branch other than main', () => !workflowRunFiltersToMain(
+    'on:\n  workflow_run:\n    workflows: [Test]\n    branches: [release]\njobs:\n  a:\n    steps:\n      - run: true\n')],
   // The bare checkout CodeRabbit caught on this very PR.
   ['unpinned checkout', () => unpinnedCheckout(
     'on:\n  workflow_run:\n    workflows: [Test]\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v5\n',
@@ -142,6 +180,6 @@ if (unpinnedCheckout('on:\n  push:\n    branches: [main]\njobs:\n  a:\n    steps
 }
 
 console.log(
-  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on green Test@main, `
+  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on green Test@main, workflow_run triggers filtered to main, `
   + `${MUST_FLAG.length} known-positive fixtures flagged, 2 controls clean`,
 );
