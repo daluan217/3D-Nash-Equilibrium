@@ -22,7 +22,7 @@
  *   node src/integration/desktop-adopt-local.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -130,6 +130,30 @@ try {
     JSON.stringify(names(listD)));
   record("B's library is untouched by D's sign-in", names(await call(port, 'GET', '/api/games', { token: tokenB })).join() === 'A-private');
   record('server log never reports an adoption at login', !/\[auth\] adopted/.test(desk.log()), desk.log().split('\n').filter((l) => /adopt/i.test(l)).join(' | ').slice(0, 200));
+
+  // RED-DESKTOP-12/001: when the device refuses the write, the refusal must say
+  // the games are STILL on the device (not a generic "could not save"), leave
+  // db.json and memory untouched, and let a retry succeed once writable.
+  // Mutation: send saveDBOrFail's generic message instead → check 2 fails.
+  const anonC = await call(port, 'POST', '/api/games', { body: game('E-private') });
+  const credF = { username: 'personF', email: 'personf@example.com', password: 'Passw0rd123' };
+  await call(port, 'POST', '/api/auth/register', { body: credF });
+  const tokenF = (await call(port, 'POST', '/api/auth/login', { body: { email: credF.email, password: credF.password } })).json?.token;
+  const dbPath = path.join(deskData, 'db.json');
+  const dbBefore = readFileSync(dbPath, 'utf8');
+  chmodSync(deskData, 0o500);
+  let refused;
+  try { refused = await call(port, 'POST', '/api/games/adopt-local', { token: tokenF }); } finally { chmodSync(deskData, 0o755); }
+  record('a refused write answers 500', anonC.status === 200 && refused.status === 500, `status ${refused.status}`);
+  record('FIX: the refusal says the games are still saved on this device and names the move',
+    /still saved on this device/i.test(refused.json?.error ?? '') && /move/i.test(refused.json?.error ?? ''), JSON.stringify(refused.json));
+  record('db.json is byte-identical after the refused move', readFileSync(dbPath, 'utf8') === dbBefore);
+  record("memory agrees with disk: F's list is empty and the game is still the local owner's",
+    Array.isArray((await call(port, 'GET', '/api/games', { token: tokenF })).json) && (await call(port, 'GET', '/api/games', { token: tokenF })).json.length === 0
+    && names(await call(port, 'GET', '/api/games')).includes('E-private'));
+  const localBefore = (await call(port, 'GET', '/api/games')).json?.length ?? -1;
+  const retry = await call(port, 'POST', '/api/games/adopt-local', { token: tokenF });
+  record('the retry after restoring permissions moves exactly the local games', retry.status === 200 && localBefore > 0 && retry.json?.adopted === localBefore, `local before=${localBefore} ${JSON.stringify(retry.json)}`);
 
   // Hosted shape: no local owner, so the route does not exist.
   host = await boot(hostData, basePort + 1, { desktop: false });
