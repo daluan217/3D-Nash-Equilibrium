@@ -322,4 +322,22 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     'App.tsx must pass its own updateAuthToken down to <MenuDrawer>');
 }
 
+// RED-APP-4 (round15 regression guard): the expand-log dialog must still
+// focus the LOG REGION on open, not <ModalSurface>'s default (the first
+// focusable — the Collapse button). Measured directly (not inferred): an
+// inline arrow-function ref stays a NEW function every render and re-steals
+// focus on every log line while the dialog is open; a `[logExpanded]`-keyed
+// useEffect fires in `<ModalSurface>`'s FIRST commit (before it renders
+// anything — `active` starts false), while the ref only exists after its
+// SECOND commit — both were tried by hand and both landed focus on the
+// Collapse button instead (screenshots/focus dumps in REPORT.md).
+{
+  ok(/const focusLogRegionOnMount = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) el\.focus\(\);\s*\n\s*\}, \[\]\);/.test(app),
+    'App.tsx must focus the log region via a STABLE (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect');
+  ok(/ref=\{focusLogRegionOnMount\}/.test(app),
+    'the log region\'s own div must use the stable focusLogRegionOnMount ref callback');
+  ok(!/autoFocus/.test((app.match(/aria-label="Simulation log"[\s\S]{0,400}/) ?? [''])[0]),
+    'the log region must not rely on autoFocus — it is inert on a non-form element (React only special-cases button/input/select/textarea)');
+}
+
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

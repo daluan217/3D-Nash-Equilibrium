@@ -1131,12 +1131,32 @@ export default function App() {
   }, [logEntries, logExpanded]);
 
   // RED-APP-4 / RED-APP-6/002 / RED-APP-7/003 (round15: converted to
-  // <ModalSurface id="expand-log">): focus-into-dialog on open, the Tab trap,
-  // Escape (stopping it from also reaching Walkthrough.tsx's own independent
-  // `window`-level listener), and focus-return to the opener on close are now
-  // ALL <ModalSurface>'s job — see docs/MODAL-SURFACE.md. `logsExpandedRef`
-  // keeps its `autoFocus` below so the log region (not the Collapse button)
-  // is still what open-time focus lands on, same as before.
+  // <ModalSurface id="expand-log">): the Tab trap, Escape (stopping it from
+  // also reaching Walkthrough.tsx's own independent `window`-level listener),
+  // and focus-return to the opener on close are now ALL <ModalSurface>'s job
+  // — see docs/MODAL-SURFACE.md. Open-time focus is NOT: ModalSurface's own
+  // default (first focusable — the Collapse button) is a plain DIV effect
+  // measured to WIN over a JS-set `autoFocus` prop on a non-form element (a
+  // `<div>` does not get React's or the browser's native autofocus behavior
+  // — that is form-element-only), so this dialog keeps its own override.
+  // NOT a `[logExpanded]`-keyed effect: `<ModalSurface>` mounts in TWO
+  // commits (it renders nothing until its OWN registration layout effect
+  // flips `active` true), so an effect keyed on `logExpanded` fires in the
+  // FIRST commit, before this ref even exists (`logsExpandedRef.current` is
+  // still null then) — measured directly (a mutation, effectively). The
+  // STABLE ref callback below (`useCallback`, empty deps — an inline arrow
+  // here would be a NEW function every render and re-focus the log region on
+  // every log line while the dialog stays open, stealing focus from wherever
+  // the user actually is) fires the moment the node actually mounts (in the
+  // SECOND commit's commit phase, strictly before any passive effect of that
+  // commit runs), so ModalSurface's own open-time-focus effect finds focus
+  // already inside the dialog and correctly no-ops — the same mechanism
+  // Feedback's `autoFocus` textarea relies on, just triggered by ref
+  // attachment instead of the (form-element-only) `autoFocus` prop.
+  const focusLogRegionOnMount = useCallback((el: HTMLDivElement | null) => {
+    logsExpandedRef.current = el;
+    if (el) el.focus();
+  }, []);
 
   // ── Simulation-log placement ───────────────────────────────────────────────
   // The log lives in the right column with an explicit height so its bottom lines
@@ -4113,12 +4133,12 @@ export default function App() {
   // round15 (BLUE-MODAL-15): converted to <ModalSurface> — Escape (and its
   // stopPropagation against Walkthrough.tsx), the Tab trap and the registry
   // are now shared, not a hand-rolled copy (RED-APP-4/RED-APP-6/002/
-  // RED-APP-7/003). `autoFocus` on the log region below reproduces the old
-  // "focus the log, not the Collapse button" open-time behavior: it commits
-  // in the same phase as ModalSurface's own open-time-focus effect, which
-  // (per that effect's own comment) is a no-op once focus is already inside
-  // the dialog — the same pattern the Feedback dialog's `autoFocus` textarea
-  // already relies on.
+  // RED-APP-7/003). Open-time focus on the LOG REGION (not the Collapse
+  // button ModalSurface would default to) is the explicit effect above,
+  // keyed on `logExpanded` — a `<div>`'s `autoFocus` prop is inert (React
+  // only special-cases button/input/select/textarea, and a JS-inserted node
+  // gets no native autofocus either), so it cannot win that race the way
+  // Feedback's own `autoFocus` textarea does.
   const expandedLogOverlay = logExpanded && (
     <ModalSurface
       id="expand-log"
@@ -4147,8 +4167,7 @@ export default function App() {
           </button>
         </div>
         <div
-          ref={logsExpandedRef}
-          autoFocus
+          ref={focusLogRegionOnMount}
           tabIndex={0}
           role="region"
           aria-label="Simulation log"
