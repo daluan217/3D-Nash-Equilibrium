@@ -265,7 +265,7 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
     return null;
   });
   record('[touch camera] precondition: a hit-tested point on the plot (not under the header) exists', !!tapAt, JSON.stringify(tapAt));
-  await page.touchscreen.tap(tapAt.x, tapAt.y); // a press ON the plot pauses the run
+  if (tapAt) await page.touchscreen.tap(tapAt.x, tapAt.y); // a press ON the plot pauses the run
   record('[touch camera] precondition: the tap on the plot paused the run', await settle(async () => !(await isRunning()), 5000));
   const spinBtn = page.getByRole('button', { name: /resume spinning/i });
   await settle(async () => spinBtn.isVisible().catch(() => false), 5000);
