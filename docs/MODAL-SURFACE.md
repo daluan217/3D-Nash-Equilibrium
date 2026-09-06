@@ -104,6 +104,20 @@ a caller that hand-rolls `role="dialog"` anywhere in the app.
   `tabIndex={-1}` match) and adding a `keydown` tracker alongside
   `pointerdown`, so WebKit and Chromium now agree.
 
+## Known gaps (OPUS-REVIEW-MODAL, round15)
+
+- The re-enable `MutationObserver` (RED-APP-14/002) only watches the `disabled`
+  attribute. A future dialog that re-enables a control by remounting it, or via
+  `aria-disabled`/`hidden`/`inert`/`display:none` instead of toggling
+  `disabled`, would strand focus parked on the panel — every current call site
+  toggles `disabled`, so this is a gap, not a defect today.
+- In development, `<StrictMode>` (`src/main.tsx`) double-invokes layout
+  effects on mount (create → destroy → create). The simulated destroy calls
+  `ModalRegistry.close(id)`, which can let a *queued* surface grab the slot in
+  that gap before the remounting surface re-registers — dev-only (production
+  does not double-invoke), but worth knowing before chasing a "wrong dialog
+  opened" report that only reproduces in `npm run dev`.
+
 ## Evidence
 
 - `src/modalsurface.test.ts`: structural checks (every `role="dialog"` /
@@ -119,8 +133,10 @@ a caller that hand-rolls `role="dialog"` anywhere in the app.
   the drawer's `disabled` prop, `canOpen()` forced `true`, renaming a
   `ModalSurface` id, reverting the Tab trap's empty-focusables branch to a
   bare `return`, widening `REAL_CONTROL_SELECTOR` back to `[tabindex]`,
-  deleting a `clearTokenIfExpired` call site, dropping `notifyStackChanged`)
-  each fail the check they should.
+  deleting a `clearTokenIfExpired` call site, dropping `notifyStackChanged`,
+  dropping the `|| document.activeElement === container` disjunct
+  (OPUS-REVIEW-MODAL BLOCK 1), and reverting `mountLogRegion` to focus-only
+  (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)) each fail the check they should.
 - `src/e2e/smoke.mjs` section 66 (shard 6) / 67 (shard 2): for each of
   Account/Save/Edit/Feedback/the drawer, 60 Tab presses stay inside and
   Escape returns focus to the opener (Feedback's own `autoFocus` races
@@ -128,14 +144,21 @@ a caller that hand-rolls `role="dialog"` anywhere in the app.
   loosely); Save and Edit's own 401-mid-submit reproduction; the drawer's
   role/aria-modal, Tab containment, Escape, and in-flight Delete; Feedback
   unreachable by keyboard while the drawer is open.
-- `src/e2e/smoke.mjs` section 70 (round15): the local-games offer with
-  every control disabled by a route-delayed request — Tab is swallowed,
-  focus stays parked, and returns to the first control once a failure
-  re-enables both buttons; the same Escape-returns-focus-to-opener check
-  on a saved-game row's Edit button, run on BOTH chromium and webkit
-  (guarded by webkit's availability).
+- `src/e2e/smoke.mjs` section 70 (round15, shard 12, ~107s internal / ~140s
+  wall including server boot): Part A — the local-games offer with every
+  control disabled by a route-delayed request: Tab is swallowed, focus stays
+  parked, and returns to the first control once a failure re-enables both
+  buttons. Part B — the Escape-returns-focus-to-opener check on a saved-game
+  row's Edit button, run on BOTH chromium and webkit (guarded by webkit's
+  availability), PLUS a dead-space click on the reopened Edit dialog followed
+  by both Shift+Tab and forward Tab, staying inside on both engines
+  (OPUS-REVIEW-MODAL BLOCK 1). Part C — the expanded log opens scrolled to
+  the newest lines under a forced-overflow short viewport (OPUS-REVIEW-MODAL
+  FIX-BEFORE-MERGE 2).
 - `round13/notes/DIRECTOR/repro-app13.mjs` (round13's independent harness
   for 002/003/004): 6 FAIL on main `bc546d0` → all PASS from round14.
 - `round14/notes/DIRECTOR/repro-app14-003.mjs` and `repro-app14-005.mjs`
   (round15's independent harnesses, the latter on playwright webkit): both
   FAIL on main `118818d`/`0f3388f` → PASS on this branch.
+- `_gen/repro-modal15-block1.mjs` (OPUS-REVIEW-MODAL's independent harness
+  for BLOCK 1): DEFECT on this branch's own `8fbc534` → PASS after the fix.
