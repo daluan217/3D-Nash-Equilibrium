@@ -4237,15 +4237,21 @@ try {
     // Mutation: drop ModalSurface's Tab-trap keydown listener — the FIRST
     // press already lands outside and this returns { stayed: false, atPress: 1 }.
     const sweepStaysInside = async (p, containerSelector, presses) => {
+      // `distinct` counts the different controls focus visited: a handler that
+      // swallowed every Tab would keep focus inside on ONE control and must not
+      // pass as a trap (CodeRabbit on #149) — callers assert distinct >= 2.
+      const visited = new Set();
       for (let i = 0; i < presses; i++) {
         await p.keyboard.press('Tab');
-        const inside = await p.evaluate((sel) => {
-          const c = document.querySelector(sel);
-          return !!c && c.contains(document.activeElement);
+        const state = await p.evaluate((sel) => {
+          const c = document.querySelector(sel); const a = document.activeElement;
+          const idx = c ? Array.from(c.querySelectorAll('*')).indexOf(a) : -1;
+          return { inside: !!c && c.contains(a), key: `${a?.tagName}#${idx}` };
         }, containerSelector);
-        if (!inside) return { stayed: false, atPress: i + 1 };
+        if (!state.inside) return { stayed: false, atPress: i + 1, distinct: visited.size };
+        visited.add(state.key);
       }
-      return { stayed: true };
+      return { stayed: true, distinct: visited.size };
     };
 
     // ── Part A: Feedback + Account — open, 60 Tabs stay inside, Escape
@@ -4277,7 +4283,7 @@ try {
         await openerLoc.click();
         await p.waitForSelector(`[role="dialog"][aria-label="${label}"]`, { timeout: 8000 });
         const sweep = await sweepStaysInside(p, `[role="dialog"][aria-label="${label}"]`, 60);
-        record(`${label} dialog: 60 Tab presses stay inside (RED-APP-13/004 shape)`, sweep.stayed, JSON.stringify(sweep));
+        record(`${label} dialog: 60 Tab presses stay inside AND cycle through its controls (RED-APP-13/004 shape)`, sweep.stayed && sweep.distinct >= 2, JSON.stringify(sweep));
         await p.keyboard.press('Escape');
         await p.waitForFunction((l) => !document.querySelector(`[role="dialog"][aria-label="${l}"]`), label, { timeout: 8000 }).catch(() => {});
         record(`${label} dialog: Escape closes it`,
@@ -4345,7 +4351,7 @@ try {
       await opener.click();
       await p.waitForSelector(dialogSel, { timeout: 8000 });
       const sweep = await sweepStaysInside(p, dialogSel, 60);
-      record(`${surfaceName} dialog: 60 Tab presses stay inside`, sweep.stayed, JSON.stringify(sweep));
+      record(`${surfaceName} dialog: 60 Tab presses stay inside AND cycle through its controls`, sweep.stayed && sweep.distinct >= 2, JSON.stringify(sweep));
       await p.keyboard.press('Escape');
       await p.waitForFunction((s) => !document.querySelector(s), dialogSel, { timeout: 8000 }).catch(() => {});
       record(`${surfaceName} dialog: Escape closes it`, !(await p.locator(dialogSel).isVisible().catch(() => false)));
@@ -4406,15 +4412,21 @@ try {
   //       5 minutes (Daniel). Same helper, same mutations as 66's comments.
   section('67', 'ModalSurface: drawer role, Tab trap, in-flight delete, and nothing stacks over the open drawer', 2, async () => {
     const sweepStaysInside = async (p, containerSelector, presses) => {
+      // `distinct` counts the different controls focus visited: a handler that
+      // swallowed every Tab would keep focus inside on ONE control and must not
+      // pass as a trap (CodeRabbit on #149) — callers assert distinct >= 2.
+      const visited = new Set();
       for (let i = 0; i < presses; i++) {
         await p.keyboard.press('Tab');
-        const inside = await p.evaluate((sel) => {
-          const c = document.querySelector(sel);
-          return !!c && c.contains(document.activeElement);
+        const state = await p.evaluate((sel) => {
+          const c = document.querySelector(sel); const a = document.activeElement;
+          const idx = c ? Array.from(c.querySelectorAll('*')).indexOf(a) : -1;
+          return { inside: !!c && c.contains(a), key: `${a?.tagName}#${idx}` };
         }, containerSelector);
-        if (!inside) return { stayed: false, atPress: i + 1 };
+        if (!state.inside) return { stayed: false, atPress: i + 1, distinct: visited.size };
+        visited.add(state.key);
       }
-      return { stayed: true };
+      return { stayed: true, distinct: visited.size };
     };
 
     // ── Part C: the workspace drawer — role="dialog"/aria-modal, 60 Tabs
@@ -4449,7 +4461,7 @@ try {
         drawerSemantics.hasDialogRole && drawerSemantics.ariaModal === 'true', JSON.stringify(drawerSemantics));
       await closeMenuBtn.focus();
       const drawerSweep = await sweepStaysInside(p, '[role="dialog"][aria-label="Simulator Workspace Center"]', 60);
-      record('drawer: 60 Tab presses stay inside the panel (RED-APP-13/004)', drawerSweep.stayed, JSON.stringify(drawerSweep));
+      record('drawer: 60 Tab presses stay inside the panel AND cycle through its controls (RED-APP-13/004)', drawerSweep.stayed && drawerSweep.distinct >= 2, JSON.stringify(drawerSweep));
       await p.keyboard.press('Escape');
       await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {});
       record('drawer: Escape closes it', !(await closeMenuBtn.isVisible().catch(() => false)));
