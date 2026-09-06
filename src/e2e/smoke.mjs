@@ -3634,9 +3634,19 @@ try {
       const fillMatrix = async (vals) => {
         for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
       };
+      // CodeRabbit (this branch): a fixed sleep after typing a new fixture
+      // races the redraw on a slow CI runner. Poll for the SPECIFIC new
+      // component's own midpoint coordinate instead of a flat wait, so the
+      // checks below never read stale (pre-edit) trace data.
+      const waitForContinuumMidpointAt = (x, y, tol = 1e-6) => p.waitForFunction(({ x, y, tol }) => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+        return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - x) < tol && Math.abs((t.y?.[0] ?? NaN) - y) < tol) ? true : null;
+      }, { x, y, tol }, { timeout: 20000 }).then(() => true).catch(() => false);
+
       await fillMatrix([0, 0, 1, 0, 4, 0, 0, 1]); // a11,b11,a12,b12,a21,b21,a22,b22
-      await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene, null, { timeout: 20000 }).catch(() => {});
-      await p.waitForTimeout(400);
+      // Component x=1, y in [0,0.2] -> midpoint (1, 0.1).
+      const fixture1Ready = await waitForContinuumMidpointAt(1, 0.1);
+      record('precondition: the fixture\'s continuum midpoint (1, 0.1) is drawn before reading trace state', fixture1Ready);
 
       // Pointer/touch probe precondition (round12/COMMON.md): the press that
       // pauses the idle spin must actually land on the plot.
@@ -3718,7 +3728,9 @@ try {
       // segment whose length rounds to 1.0 — a11:-2,a12:-2,a21:-2,a22:-2,
       // b11:-2,b12:-1,b21:-2,b22:-1 -> component y=0, x in [0,1]).
       await fillMatrix([-2, -2, -2, -1, -2, -2, -2, -1]); // a11,b11,a12,b12,a21,b21,a22,b22
-      await p.waitForTimeout(400);
+      // Component y=0, x in [0,1] -> midpoint (0.5, 0).
+      const controlReady = await waitForContinuumMidpointAt(0.5, 0);
+      record('precondition: the control fixture\'s continuum midpoint (0.5, 0) is drawn before reading trace state', controlReady);
       const fullAtDefault = await readContinuum();
       record('control: a full-length segment keeps corners visible at the default camera',
         fullAtDefault.filter((t) => t.role === 'corner').length === 2 && fullAtDefault.filter((t) => t.role === 'corner').every((t) => t.visible === true),
@@ -3728,11 +3740,18 @@ try {
         const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
         return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01 ? true : null;
       }, FUSING_EYE, { timeout: 5000 }).catch(() => {});
-      await p.waitForTimeout(300);
-      const fullAtFusing = await readContinuum();
-      record('control: the SAME full-length segment keeps corners visible at the SAME fusing eye (the dynamic rule does not over-hide)',
-        fullAtFusing.filter((t) => t.role === 'corner').length === 2 && fullAtFusing.filter((t) => t.role === 'corner').every((t) => t.visible === true),
-        JSON.stringify(fullAtFusing));
+      // CodeRabbit (this branch): "corners stay visible" can pass by
+      // coincidence if it is read before the relayout handler's ~100ms
+      // throttle window has even had a chance to run once. Sample several
+      // times across a bounded window instead of one timed read, so a
+      // late-arriving (but still wrong) hide would be caught too.
+      const fullFusingSamples = [];
+      for (let i = 0; i < 5; i++) { fullFusingSamples.push(await readContinuum()); await p.waitForTimeout(80); }
+      const fullAtFusing = fullFusingSamples[fullFusingSamples.length - 1];
+      const everySampleKeptCorners = fullFusingSamples.every((s) =>
+        s.filter((t) => t.role === 'corner').length === 2 && s.filter((t) => t.role === 'corner').every((t) => t.visible === true));
+      record('control: the SAME full-length segment keeps corners visible at the SAME fusing eye throughout a 400ms sampling window (the dynamic rule does not over-hide)',
+        everySampleKeptCorners, JSON.stringify(fullFusingSamples));
     } finally { await p.close().catch(() => {}); }
   });
 

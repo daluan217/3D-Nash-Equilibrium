@@ -67,7 +67,19 @@ export interface CameraBasis {
 export function cameraBasis(eye: readonly number[] = DEFAULT_EYE, up: readonly number[] = CAM_UP): CameraBasis {
   const e: [number, number, number] = [eye[0], eye[1], eye[2]];
   const fwd = v3norm(v3sub([0, 0, 0], e));
-  const right = v3norm(v3cross(fwd, up));
+  let crossVec = v3cross(fwd, up);
+  // CodeRabbit (this branch): a camera looking straight down/up the `up`
+  // axis makes `fwd` parallel to `up`, so cross(fwd, up) is ~0 — naively
+  // normalizing that (v3norm's `|| 1` guard only catches EXACTLY zero)
+  // yields a right/up pair that silently projects every point onto the SAME
+  // screen position, manufacturing a FALSE "everything overlaps" reading
+  // rather than a real one. Falls back to a different reference axis to get
+  // a valid (if arbitrarily rolled) perpendicular basis instead.
+  if (Math.hypot(crossVec[0], crossVec[1], crossVec[2]) < 1e-6) {
+    const altUp: [number, number, number] = Math.abs(fwd[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    crossVec = v3cross(fwd, altUp);
+  }
+  const right = v3norm(crossVec);
   const up2 = v3cross(right, fwd);
   return { eye: e, fwd, right, up: up2 };
 }
@@ -92,6 +104,14 @@ export function projectPoint(
   const vx = v3dot(rel, basis.right);
   const vy = v3dot(rel, basis.up);
   const vz = v3dot(rel, basis.fwd);
+  // CodeRabbit (this branch): a point at or behind the camera plane (vz<=0)
+  // would flip sign or blow up through the perspective divide, manufacturing
+  // a spurious screen position. NaN drops safely out of every
+  // worstPairGapPx comparison below (NaN < x is always false in JS), so a
+  // pair involving it is silently excluded rather than treated as evidence
+  // either way — never a false collapse, never a missed one from a bad
+  // divide.
+  if (vz <= 0) return [NaN, NaN];
   const sx = (vx / vz) * FOCAL;
   const sy = (vy / vz) * FOCAL;
   return [VIEW_W / 2 + sx * (VIEW_W / 2), VIEW_H / 2 - sy * (VIEW_H / 2)];

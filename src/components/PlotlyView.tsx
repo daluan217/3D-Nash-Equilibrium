@@ -827,8 +827,15 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       const gdNow = document.getElementById(plotId) as any;
       if (!PlotlyNow || !gdNow) return;
       const basis = cameraBasis([eye.x, eye.y, eye.z]);
+      // CodeRabbit (this branch): un-collapsing must restore the corner
+      // traces' BASELINE visibility, not force `true` unconditionally — the
+      // user may have hidden the whole 'continuumNE' legend group
+      // (userHiddenGroupsRef, set as 'legendonly' on every trace in that
+      // group by the trace-rebuild effect above). Forcing `true` here would
+      // silently re-show corners the user just switched off.
+      const baselineVisible: boolean | 'legendonly' = userHiddenGroupsRef.current.has('continuumNE') ? 'legendonly' : true;
       const cornerIdx: number[] = [];
-      const cornerVis: boolean[] = [];
+      const cornerVis: (boolean | 'legendonly')[] = [];
       const midIdx: number[] = [];
       const midSize: number[] = [];
       for (const m of metas) {
@@ -837,7 +844,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         const was = continuumCollapsedRef.current.get(m.componentIndex) ?? false;
         if (collapse === was) continue;
         continuumCollapsedRef.current.set(m.componentIndex, collapse);
-        for (const ci of m.cornerTraceIndices) { cornerIdx.push(ci); cornerVis.push(!collapse); }
+        for (const ci of m.cornerTraceIndices) { cornerIdx.push(ci); cornerVis.push(collapse ? false : baselineVisible); }
         midIdx.push(m.midpointTraceIndex);
         midSize.push(collapse ? m.midpointShortSize : m.midpointBaseSize);
       }
