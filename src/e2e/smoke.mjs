@@ -5074,7 +5074,18 @@ try {
         el.style.setProperty('min-width', '318px', 'important');
         el.style.setProperty('flex', 'none', 'important');
       });
-      await p.waitForTimeout(500);
+      // CodeRabbit (this branch): same class as the CONTROL path's own
+      // `controlResized` poll above — a fixed sleep can screenshot stale
+      // (still-wide) geometry on a slow CI runner, failing the blob scan for
+      // a reason unrelated to the collapse decision. Poll the live plot div
+      // width down to ~276 (318 minus the outer container's own padding)
+      // instead of trusting a sleep alone.
+      const narrowResized = await p.waitForFunction(() => {
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        const r = gd?.getBoundingClientRect();
+        return r && Math.abs(r.width - 276) < 24 ? true : null;
+      }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+      record('precondition: the plot resized to the narrow 318x298 size before the az195 pixel scan', narrowResized);
       // Re-hide: a container resize's ResizeObserver-driven redraw path can
       // restore default trace visibility, undoing the earlier restyle.
       await hideContamination();
