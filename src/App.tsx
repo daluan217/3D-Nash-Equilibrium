@@ -47,6 +47,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
+import { ModalSurface, ModalRegistry, useModalTabTrap, firstVisible } from './components/ModalSurface';
 import {
   Play,
   Pause,
@@ -283,169 +284,10 @@ export function payoffsEqual(a: GamePayoffs, b: GamePayoffs): boolean {
       && a.b11 === b.b11 && a.b12 === b.b12 && a.b21 === b.b21 && a.b22 === b.b22;
 }
 
-/**
- * WAI-ARIA APG "Tab is confined to the dialog while it is open" — the same
- * rule #90 already implemented once, inline, for the expand-log dialog
- * (`logDialogRef`, see the "Escape closes the expanded log" effect above).
- *
- * RED-APP-5 finding 002 (round 5): the app's other four `role="dialog"
- * aria-modal="true"` surfaces (Feedback, Auth, Save, Edit) had NO trap at
- * all, so repeatedly pressing Tab walked focus off the dialog and onto the
- * page behind the backdrop — concretely, onto the floating "Feedback"
- * button, where an Enter press opened a SECOND `aria-modal="true"` dialog on
- * top of the still-open first one. `aria-modal="true"` exists specifically
- * to promise assistive tech that the rest of the document is inert while a
- * modal is open; a real Tab trap is what makes that promise true, not just
- * declared.
- *
- * Deliberately does NOT also handle Escape: the four dialogs above already
- * share one central "close whichever foreground modal is open on Escape"
- * effect (see `isFeedbackOpen`/`isSaveModalOpen`/`isAuthModalOpen`/
- * `isEditModalOpen` there); duplicating Escape handling here would race that
- * effect's `document`-level listener against this hook's own, in an
- * unspecified DOM order, for no gain.
- *
- * DOES move initial focus into the dialog on open (CodeRabbit review on PR
- * #91, after the RED-APP-5/002 fix above shipped): only Feedback sets its
- * own `autoFocus` field; Auth, Save and Edit have none, so on those three
- * focus was left stranded on the background opener until the user's FIRST
- * Tab press — no signal at all that a modal had opened, for a screen reader
- * or for someone tabbing who has not yet reached the dialog. Fixed by
- * focusing the first enabled control ONLY when focus is not ALREADY inside
- * the dialog: React commits an element's `autoFocus` during the SAME commit
- * phase as this effect's dependency change, strictly before this PASSIVE
- * effect runs, so by the time this checks `document.activeElement`,
- * Feedback's textarea is already focused and this is a no-op for it — the
- * existing in-dialog autofocus behavior is unchanged, exactly what
- * CodeRabbit asked for. Does not restore focus on close (unmeasured,
- * narrower than this finding).
- */
-function getModalFocusables(container: HTMLElement): HTMLElement[] {
-  return Array.from(
-    container.querySelectorAll<HTMLElement>('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'),
-  ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
-}
-
-/**
- * The control the user last focused or pressed, so a dialog can hand focus
- * back to what opened it. `focusin` covers keyboard users; `pointerdown`
- * covers browsers (Safari, Firefox on macOS) where clicking a button does
- * not focus it. Installed once, lazily, by the first dialog that opens.
- */
-let lastInteractedControl: HTMLElement | null = null;
-let openerTrackingInstalled = false;
-function installOpenerTracking(): void {
-  if (openerTrackingInstalled || typeof document === 'undefined') return;
-  openerTrackingInstalled = true;
-  document.addEventListener('focusin', (e) => {
-    if (e.target instanceof HTMLElement && e.target !== document.body) lastInteractedControl = e.target;
-  }, true);
-  document.addEventListener('pointerdown', (e) => {
-    const control = (e.target as HTMLElement | null)?.closest?.('button, [href], input, select, textarea, [tabindex]');
-    if (control instanceof HTMLElement) lastInteractedControl = control;
-  }, true);
-  // RED-APP-12/001: a focused control that is REMOVED from the DOM (the header's
-  // Sign-In button when the signed-in controls replace it moments after the
-  // Account dialog closed; a row's Delete button once its row is gone) leaves
-  // focus on <body>. Chromium reports the removal as a `focusout` with no
-  // relatedTarget (measured in the trace that found this); once the commit
-  // that removed the element is over, if focus really is on <body> and the
-  // element really is gone, hand focus to the landmark it belonged to, else to
-  // the page's focus home.
-  document.addEventListener('focusout', (e) => {
-    const el = e.target;
-    if (!(el instanceof HTMLElement) || e.relatedTarget) return;
-    const landmark = el.closest('[data-focus-fallback]')?.getAttribute('data-focus-fallback') ?? null;
-    requestAnimationFrame(() => {
-      if (el.isConnected || document.activeElement !== document.body) return;
-      const target = (landmark ? firstVisible(`[data-focus-fallback="${landmark}"] button, [data-focus-fallback="${landmark}"]`) : null)
-        ?? firstVisible('[data-focus-home]');
-      target?.focus();
-    });
-  }, true);
-}
-
-/** First visible, enabled element matching `selector` (or null). */
-function firstVisible(selector: string): HTMLElement | null {
-  for (const el of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
-    if (el.hasAttribute('disabled')) continue;
-    // Only something that can actually take focus: a landmark container
-    // without tabindex matched here once and `.focus()` on it did nothing,
-    // leaving focus on <body> (measured while fixing RED-APP-12/001).
-    if (!el.matches('button, [href], input, select, textarea, [tabindex]')) continue;
-    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue; // display:none / hidden branch of a responsive pair
-    return el;
-  }
-  return null;
-}
-
-/**
- * Where focus goes when a dialog closes and its opener is gone (RED-APP-12/001:
- * the header's Sign-In button is replaced by the signed-in controls the moment
- * a sign-in succeeds; an Edit button vanishes when its row is deleted; the
- * desktop adopt dialog's opener — the Login button — unmounts with the Account
- * dialog). `fallback` is a selector for the dialog's own landmark; the final
- * resort is the page's focus home (`[data-focus-home]`), never <body>.
- */
-function focusAfterDialog(opener: HTMLElement | null, fallback?: string): void {
-  const active = document.activeElement;
-  const focusLost = !active || active === document.body || !document.contains(active);
-  if (!focusLost) return; // something else (another dialog) already took focus on purpose
-  const target = (opener && opener.isConnected && (opener.offsetParent !== null || getComputedStyle(opener).position === 'fixed'))
-    ? opener
-    : (fallback ? firstVisible(fallback) : null) ?? firstVisible('[data-focus-home]');
-  target?.focus();
-}
-
-function useModalTabTrap(open: boolean, containerRef: React.RefObject<HTMLElement | null>, fallback?: string) {
-  // Tracking must exist BEFORE the click that opens the dialog, so it is
-  // installed on mount, not on open.
-  useEffect(() => { installOpenerTracking(); }, []);
-  useEffect(() => {
-    if (!open) return;
-    const container = containerRef.current;
-    // RED-APP-11/004: every close path (Escape, Cancel, a successful Save)
-    // dropped focus to <body> — a keyboard user was thrown back to the top
-    // of the page. Remember what opened the dialog and, on close, return
-    // focus there if it still exists and nothing else has claimed focus.
-    const opener = lastInteractedControl && container && !container.contains(lastInteractedControl)
-      ? lastInteractedControl : null;
-    if (container && !container.contains(document.activeElement)) {
-      getModalFocusables(container)[0]?.focus();
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab') return;
-      const container = containerRef.current;
-      if (!container) return;
-      const focusables = getModalFocusables(container);
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      // Also catches focus already OUTSIDE the container (the exact leak
-      // this finding reproduced: N tabs in, focus lands past `last` on a
-      // background element) — not just the two boundary elements, so a
-      // focus that has already escaped is pulled back in rather than only
-      // preventing the NEXT escape.
-      if (!container.contains(document.activeElement)) {
-        e.preventDefault();
-        (e.shiftKey ? last : first).focus();
-        return;
-      }
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      focusAfterDialog(opener, fallback);
-    };
-  }, [open, containerRef, fallback]);
-}
+// useModalTabTrap/firstVisible/focusAfterDialog/getModalFocusables moved to
+// components/ModalSurface.tsx (round14 structural pass) — imported above.
+// localGamesOffer (out of this round's scope) still calls useModalTabTrap
+// directly; every other dialog now goes through <ModalSurface>.
 
 /**
  * RED-APP-6/003: `fetch(getApiUrl('/api/report'), ...)` had no `signal`
@@ -1264,17 +1106,9 @@ export default function App() {
    *  dialog was opened programmatically rather than by a real click/Enter). */
   const expandLogButtonRef = useRef<HTMLButtonElement>(null);
 
-  // RED-APP-5 finding 002 (round 5): the four dialogs below had no Tab trap
-  // at all — see `useModalTabTrap`'s own docstring for the mechanism and why
-  // Escape is deliberately NOT handled here.
-  const feedbackDialogRef = useRef<HTMLDivElement>(null);
-  const authDialogRef = useRef<HTMLDivElement>(null);
-  const saveDialogRef = useRef<HTMLDivElement>(null);
-  const editDialogRef = useRef<HTMLDivElement>(null);
-  useModalTabTrap(isFeedbackOpen, feedbackDialogRef, '[data-focus-fallback="feedback"]');
-  useModalTabTrap(isAuthModalOpen, authDialogRef, '[data-focus-fallback="account"] button, [data-focus-fallback="account"]');
-  useModalTabTrap(isSaveModalOpen, saveDialogRef, '[data-focus-fallback="save-preset"]');
-  useModalTabTrap(isEditModalOpen, editDialogRef, '[data-focus-fallback="saved-games"]');
+  // Account, Save, Edit and Feedback each render through <ModalSurface> now
+  // (round14 structural pass) — it owns the ref, the Tab trap and Escape.
+  // localGamesOffer is out of this round's scope and keeps its own trap.
   const localGamesDialogRef = useRef<HTMLDivElement>(null);
   useModalTabTrap(!!localGamesOffer, localGamesDialogRef, '[data-focus-fallback="account"] button, [data-focus-fallback="account"]');
   // RED-APP-12/001: signing in (or out) swaps the header's account controls —
@@ -1282,7 +1116,14 @@ export default function App() {
   // the browser drops focus to <body> without firing any event (the "focus
   // fixup" rule). After the swap, if focus was lost and the control the user
   // last touched is gone, hand it to the new account controls.
+  // RED-APP-13/002 (round14): guarded by the registry — this effect is only
+  // for the HEADER's own Sign-In<->Log-out swap, but it used to fire (and
+  // steal focus) on every `user` change even while Save/Edit's OWN 401
+  // branch cleared the token with their dialog still open, landing focus on
+  // a header control hidden under that dialog's backdrop. No-op while any
+  // ModalSurface is registered open.
   useEffect(() => {
+    if (ModalRegistry.isAnyOpen()) return;
     if (document.activeElement !== document.body) return;
     firstVisible('[data-focus-fallback="account"] button, [data-focus-fallback="account"]')?.focus();
   }, [user]);
@@ -2890,35 +2731,28 @@ export default function App() {
     }
   };
 
-  // Close whichever foreground modal is open on Escape
+  // Close the local-games offer on Escape. Feedback/Save/Auth/Edit/the
+  // drawer each own their Escape handling now via <ModalSurface> (round14);
+  // this dialog is out of scope and keeps its previous, standalone behavior.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       // RED-APP-6/002: Walkthrough.tsx has its own independent `window`-level
       // Escape listener that unconditionally closes the tour AND resets its
       // step to 0. `document` (this listener) fires before `window` in the
-      // bubble phase, so stopping propagation HERE, but only when a modal in
-      // this chain actually closed, means one Escape closes only the
-      // topmost layer: the dialog first, the tour only on a second press
-      // with nothing else open. Do not stopPropagation when nothing here was
-      // open — that Escape press must still reach the tour.
+      // bubble phase, so stopping propagation HERE, but only when this
+      // dialog actually closed, means one Escape closes only the topmost
+      // layer: the dialog first, the tour only on a second press with
+      // nothing else open. Do not stopPropagation when nothing here was open
+      // — that Escape press must still reach the tour.
       // The local-games question sits above every other layer (z-[66]) and
       // opens right after the Account dialog closes, so it is the topmost
       // candidate; Escape = "leave them on this device", never mid-move.
       if (localGamesOffer) { if (!localGamesBusy) setLocalGamesOffer(null); e.stopPropagation(); }
-      else if (isFeedbackOpen) { closeFeedback(); e.stopPropagation(); }
-      else if (isSaveModalOpen) { setIsSaveModalOpen(false); setSaveError(''); e.stopPropagation(); }
-      else if (isAuthModalOpen) { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; e.stopPropagation(); }
-      // RED-APP-5 001, round 5: the Edit-saved-game dialog was missing from
-      // both this chain and the deps array below, so Escape did nothing while
-      // it was open — every other modal in the app (and #90's expand-log
-      // dialog) closes on Escape; Edit was simply never added to the list.
-      // Same close side-effects as its own "✕" button and its backdrop click.
-      else if (isEditModalOpen) { setIsEditModalOpen(false); setEditError(''); e.stopPropagation(); }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isFeedbackOpen, isSaveModalOpen, isAuthModalOpen, isEditModalOpen, localGamesOffer, localGamesBusy]);
+  }, [localGamesOffer, localGamesBusy]);
 
   /**
    * RED-APP-5 finding 004 (round 5): no `aria-live`/`role="status"`/
@@ -4598,6 +4432,7 @@ export default function App() {
                     saveRequestIdRef.current = null;
                     setIsSaveModalOpen(true);
                   }}
+                  data-focus-fallback="save-preset"
                   className="inline-flex items-center gap-1 text-xs font-bold text-accent-600 dark:text-accent-400 bg-accent-50 dark:bg-accent-950/40 hover:bg-accent-100 dark:hover:bg-accent-900/50 border border-accent-200/50 dark:border-accent-800/60 px-2.5 py-1 rounded-lg transition-all cursor-pointer"
                 >
                   <Plus className="w-3 h-3" /> Save Preset
@@ -5802,38 +5637,15 @@ export default function App() {
 
       <Walkthrough steps={tourSteps} open={tourOpen} onClose={closeTour} />
 
-      {isAuthModalOpen && (
-        <div
-          // RED-APP-5 finding 003 (round 5): the guided tour is deliberately
-          // NON-modal (Walkthrough.tsx's own comment) and click-through, so
-          // a visitor can open Sign In from behind it mid-tour — the Sign In
-          // button stays clickable throughout. But at the OLD z-50 this
-          // dialog painted BELOW the tour's z-[60] callout card, which could
-          // visually and functionally cover the Login button (a real,
-          // timed, non-forced Playwright click on it timed out;
-          // `elementFromPoint` at the button's center returned the tour
-          // card's own <h3>, not the button). A deliberately-opened dialog
-          // must always win the click, so this and the other three dialogs
-          // below (plus the expand-log overlay above) render at z-[65] —
-          // above the tour, not by making the tour modal. The tour itself
-          // is untouched: still non-modal, still click-through, still
-          // visible around a foreground dialog's backdrop.
-          className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
-          onClick={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; }}
-        >
-          <div
-            ref={authDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Account"
-            onClick={(e) => e.stopPropagation()}
-            // RED-APP-8/005: matches the Save/Edit dialogs' own height cap —
-            // without it, at a short viewport (e.g. 320x200, what 400% zoom
-            // on an ordinary screen produces) this fixed-position dialog can
-            // render taller than the viewport with no scroll path (page
-            // scroll has zero effect on a `position:fixed` element), making
-            // Login/Sign Up permanently unreachable.
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
+      {/* RED-APP-5/003: dialogs render above the guided tour (z-[65] vs its
+          z-[60]) — ModalSurface's own OVERLAY_CLASS, unchanged here. */}
+      <ModalSurface
+        id="account"
+        open={isAuthModalOpen}
+        onClose={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; }}
+        ariaLabel="Account"
+        fallbackSelector='[data-focus-fallback="account"] button, [data-focus-fallback="account"]'
+      >
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
@@ -6118,9 +5930,7 @@ export default function App() {
                 </span>
               )}
             </div>
-          </div>
-        </div>
-      )}
+      </ModalSurface>
 
       {/* ── Save Custom Game Modal ── */}
       {/* Edit an already-saved game: name, description, option names.
@@ -6178,20 +5988,13 @@ export default function App() {
           </div>
         </div>
       )}
-      {isEditModalOpen && (
-        <div
-          // z-[65]: above the guided tour (z-[60]) — see the RED-APP-5 003 note
-          // on the Auth dialog above.
-          className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
-          onClick={() => { setIsEditModalOpen(false); setEditError(''); }}
-        >
-          <div
-            ref={editDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Edit saved game"
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
+      <ModalSurface
+        id="edit-saved-game"
+        open={isEditModalOpen}
+        onClose={() => { setIsEditModalOpen(false); setEditError(''); }}
+        ariaLabel="Edit saved game"
+        fallbackSelector='[data-focus-fallback="saved-games"]'
+      >
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-accent-500" />
@@ -6420,24 +6223,15 @@ export default function App() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+      </ModalSurface>
 
-      {isSaveModalOpen && (
-        <div
-          // z-[65]: above the guided tour (z-[60]) — see the RED-APP-5 003 note
-          // on the Auth dialog above.
-          className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
-          onClick={() => { setIsSaveModalOpen(false); setSaveError(''); }}
-        >
-          <div
-            ref={saveDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Save custom game"
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
+      <ModalSurface
+        id="save-preset"
+        open={isSaveModalOpen}
+        onClose={() => { setIsSaveModalOpen(false); setSaveError(''); }}
+        ariaLabel="Save custom game"
+        fallbackSelector='[data-focus-fallback="save-preset"]'
+      >
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
@@ -6724,9 +6518,7 @@ export default function App() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+      </ModalSurface>
 
       {/* Slideout workspace center menu drawer */}
       <MenuDrawer
@@ -6736,6 +6528,7 @@ export default function App() {
         authToken={authToken}
         canOwnGames={canOwnGames}
         userCustomGames={userCustomGames}
+        deletingGameIds={deletingGameIds}
         onDeleteCustomGame={handleDeleteGame}
         onLoadPreset={handleLoadPreset}
         activePreset={activePreset}
@@ -6781,6 +6574,7 @@ export default function App() {
         data-print="hide"
         onClick={openFeedback}
         title="Send feedback"
+        data-focus-fallback="feedback"
         className="fixed bottom-4 left-4 z-40 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-accent-600 hover:bg-accent-700 text-white text-xs font-semibold shadow-lg shadow-accent-600/20 transition-all cursor-pointer select-none"
       >
         <MessageSquare className="w-4 h-4" />
@@ -6788,23 +6582,13 @@ export default function App() {
       </button>
       )}
 
-      {isFeedbackOpen && (
-        <div
-          // z-[65]: above the guided tour (z-[60]) — see the RED-APP-5 003 note
-          // on the Auth dialog above.
-          className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none"
-          onClick={closeFeedback}
-        >
-          <div
-            ref={feedbackDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Send feedback"
-            onClick={(e) => e.stopPropagation()}
-            // RED-APP-8/005: same height cap as the Account dialog above,
-            // for the same reason — this dialog was the other one of the
-            // app's four full-size dialogs missing it.
-            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 p-6 flex flex-col gap-4 shadow-xl animate-modal-in max-h-[90vh] overflow-y-auto">
+      <ModalSurface
+        id="feedback"
+        open={isFeedbackOpen}
+        onClose={closeFeedback}
+        ariaLabel="Send feedback"
+        fallbackSelector='[data-focus-fallback="feedback"]'
+      >
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
@@ -6918,9 +6702,7 @@ export default function App() {
                 </form>
               </>
             )}
-          </div>
-        </div>
-      )}
+      </ModalSurface>
     </div>
   );
 }
