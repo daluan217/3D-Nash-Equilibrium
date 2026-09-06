@@ -334,11 +334,21 @@ async function registerAndLogin(p, tag) {
   await pwFields.nth(0).fill('TestPass123');
   await pwFields.nth(1).fill('TestPass123');
   await p.getByRole('button', { name: /register account/i }).click();
-  await p.waitForTimeout(800);
+  // Wait on STATE, never on a fixed delay: the login form appears only once
+  // the register round-trip (a pbkdf2 hash) has returned, and the token lands
+  // in localStorage only once the login round-trip has. On a loaded CI runner
+  // (#153: every section ran ~3x slower than on main) a fixed 800 ms let the
+  // caller reload the page with the login still in flight — signed out, no
+  // "Save Preset" control, a 30 s locator timeout that looked like an app bug.
+  await p.getByPlaceholder(/example\.com or username/i).waitFor({ state: 'visible', timeout: 20000 });
   await p.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
   await p.getByPlaceholder('••••••••').first().fill('TestPass123');
   await p.getByRole('button', { name: /^login$/i }).click();
-  await p.waitForTimeout(800);
+  await p.waitForFunction(
+    () => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')),
+    null, { timeout: 20000 },
+  );
+  await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 10000 }).catch(() => {});
   return uniq;
 }
 
