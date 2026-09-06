@@ -391,7 +391,16 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // default in cameraProjection.ts), used only if the live rect is
     // unavailable (e.g. a detached node mid-teardown).
     const rect = typeof gdNow.getBoundingClientRect === 'function' ? gdNow.getBoundingClientRect() : null;
-    const viewport = rect && rect.width > 0 && rect.height > 0 ? { w: rect.width, h: rect.height } : undefined;
+    // OPUS-REVIEW-MATH NOTE-1: the plot DIV's own rect is NOT the gl3d
+    // canvas's actual rendered size — plotting.ts's `margin.t: 10` reserves
+    // 10px at the top of the SVG/WebGL area for every subplot, so the real
+    // scene is `rect.height - margin.t` tall (confirmed live: a 276x256 div
+    // renders a 276x246 `glplot.shape`). Read the live margin rather than
+    // hardcoding 10, so a future margin change stays correct for free.
+    const marginTop = Number(gdNow._fullLayout?.margin?.t) || 0;
+    const viewport = rect && rect.width > 0 && rect.height > marginTop
+      ? { w: rect.width, h: rect.height - marginTop }
+      : undefined;
     // CodeRabbit (this branch): un-collapsing must restore the corner
     // traces' BASELINE visibility, not force `true` unconditionally — the
     // user may have hidden the whole 'continuumNE' legend group
