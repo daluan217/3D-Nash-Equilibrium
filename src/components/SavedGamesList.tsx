@@ -136,8 +136,10 @@ export const SavedGamesList: React.FC<SavedGamesListProps> = ({
           : 'bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400'}
       >
         <p>
+          {/* CodeRabbit on #150: "Save payoffs" named no real control — the
+              actual button (both surfaces) is "Save Preset". */}
           No saved custom game presets. Customize payoffs in the main board and click{' '}
-          <strong className="text-accent-600 dark:text-accent-400">Save payoffs</strong> to record your own scenarios!
+          <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to record your own scenarios!
         </p>
       </div>
     );
