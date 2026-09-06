@@ -25,6 +25,7 @@ import {
   cleanUserColorTerms,
   cleanUserColorTermPair,
   colorTermsFor,
+  crossPlayerUserTerms,
   mergeDescriptionTerms,
   regenKeptColorTerms,
   regenPreviewColorTerms,
@@ -35,6 +36,7 @@ import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ColorCoded } from './components/ColorCoded';
+import { DescriptionEditor } from './components/DescriptionEditor';
 
 let failures = 0;
 let cases = 0;
@@ -523,6 +525,24 @@ for (const c of BOUNDARY_MUST_MATCH) {
   check('(boundary) CJK: "パー" inside "スーパー" (preceded by the long-vowel mark ー) highlights like other kana; mutation: Script= instead of Script_Extensions= → plain', isHighlighted(htmlKana), htmlKana);
 }
 {
+  // RED-REGEN-9/002 (director-reproduced): the no-boundary class is the
+  // WRITING SYSTEM — Thai (no spaces at all) and Hangul with an attached
+  // particle (the ordinary Korean sentence) regressed to never matching
+  // after #142. Mutation: drop Thai/Hangul from ColorCoded's carve-out → the
+  // three MUST-MATCH checks fail; the Latin controls must keep failing to
+  // match (a "fix" that just removes the boundary would pass the first three
+  // and break the controls).
+  check('(boundary) Thai: "ชาวนา" inside continuous Thai prose highlights', isHighlighted(rendered('ชาวนาและพ่อค้าตกลงกันเรื่องราคาข้าว', ['ชาวนา'])));
+  check('(boundary) Thai: "ชาวนา" before a real period highlights', isHighlighted(rendered('ทุกคนรู้จักชาวนา.', ['ชาวนา'])));
+  check('(boundary) Hangul: "농부" with the particle 와 attached ("농부와") highlights', isHighlighted(rendered('농부와 상인이 계약서에 서명했다.', ['농부'])));
+  check('(boundary) Hangul: bare "농부" before a comma still highlights', isHighlighted(rendered('농부, 상인, 그리고 변호사가 만났다.', ['농부'])));
+  check('(boundary) Lao: "ຊາວນາ" inside Lao prose highlights', isHighlighted(rendered('ຊາວນາແລະພໍ່ຄ້າຕົກລົງກັນ', ['ຊາວນາ'])));
+  check('(boundary) Latin control: "se" never splits "señor"', !isHighlighted(rendered('El señor llegó.', ['se'])));
+  check('(boundary) Latin control: "wolf" never matches inside "wolves"', !isHighlighted(rendered('The wolves circle the pond.', ['wolf'])));
+  check('(boundary) Cyrillic control (space-delimited): "вол" never matches inside "волк"', !isHighlighted(rendered('Серый волк бежит.', ['вол'])));
+  cases += 8;
+}
+{
   // A CJK chip with real neighbours on both sides in the SAME script also
   // works (not just adjacent to the one deliberately-exempted example).
   const html = rendered('東京タワーは高い。', ['タワー']);
@@ -550,6 +570,50 @@ if (failures > 0) {
   console.error(`✗ colorterms.property.test.ts: ${failures}/${cases} checks failed`);
   process.exit(1);
 }
+// PART 7 — RED-REGEN-9/001: a B chip that goes neutral because the SAME
+// phrase is filed on A in this dialog must say so (cross-player cause), and
+// the helper both the tooltip and the Edit dialog's 409 message read must
+// name exactly the losing spellings. Rendered through the REAL
+// DescriptionEditor (server-side), read from the real chip attributes.
+{
+  const cross = crossPlayerUserTerms(['wolf', 'Hedge'], ['Wolf', 'pond', 'HEDGE']);
+  check('crossPlayerUserTerms names B\'s losing spellings, in B\'s order', cross.join('|') === 'Wolf|HEDGE', cross.join('|'));
+  check('crossPlayerUserTerms is empty when the sides are disjoint', crossPlayerUserTerms(['wolf'], ['pond']).length === 0);
+  check('crossPlayerUserTerms folds a leading article, the same rule the server\'s 409 guard applies (RED-APP-13/001: "a wolf" vs "wolf")',
+    crossPlayerUserTerms(['wolf'], ['a wolf']).join('|') === 'a wolf' && crossPlayerUserTerms(['the Wolf'], ['wolf']).join('|') === 'wolf');
+  check('crossPlayerUserTerms never reports A (A wins the tie)', !crossPlayerUserTerms(['wolf'], ['Wolf']).includes('wolf'));
+  const render = (termsA: string[], termsB: string[], labelA: string[] = []) => renderToStaticMarkup(
+    React.createElement(DescriptionEditor, {
+      value: 'The wolf circles the pond while the hedge waits.',
+      onChange: () => {},
+      termsA, termsB,
+      onTermsChange: () => {},
+      labelA,
+    }),
+  );
+  const chipAttrs = (html: string, player: 'A' | 'B') => {
+    const m = html.match(new RegExp(`<button[^>]*data-player="${player}"[^>]*>`));
+    if (!m) return null;
+    const attr = (n: string) => (m[0].match(new RegExp(`${n}="([^"]*)"`)) ?? [])[1] ?? null;
+    return { suppressed: attr('data-suppressed'), cause: attr('data-suppressed-cause'), title: attr('title') };
+  };
+  const collided = chipAttrs(render(['wolf'], ['Wolf']), 'B');
+  check('DescriptionEditor: the B chip colliding with A\'s own chip is neutral with the cross-player cause and wording',
+    !!collided && collided.suppressed === 'true' && collided.cause === 'cross-player'
+      && /also a Player A highlight/.test(collided.title ?? '') && !/option label/.test(collided.title ?? ''), JSON.stringify(collided));
+  const labelCase = chipAttrs(render([], ['Cooperate'], ['Cooperate']), 'B');
+  check('DescriptionEditor: a B chip naming A\'s option label keeps the label wording (control)',
+    !!labelCase && labelCase.suppressed === 'true' && labelCase.cause === 'label' && /option label/.test(labelCase.title ?? ''), JSON.stringify(labelCase));
+  const winner = chipAttrs(render(['wolf'], ['Wolf']), 'A');
+  check('DescriptionEditor: the A chip that wins the tie is not suppressed', !!winner && winner.suppressed === null, JSON.stringify(winner));
+  // The Edit dialog's 409 branch must read the same helper (structural).
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const branch = app.slice(app.indexOf("res.status === 409"), app.indexOf("res.status === 409") + 6000);
+  check('App.tsx 409 branch names the colliding phrase via crossPlayerUserTerms on every 409 (first and retry)',
+    /crossPlayerUserTerms\(/.test(branch) && /Not saved: \$\{collisionNote\}/.test(branch) && /highlighted for both players/.test(branch));
+  cases += 8;
+}
+
 console.log(`✓ colorterms.property.test.ts: ${cases} generated cases passed — ${ALL_FOLD_FAMILIES.reduce((n, f) => n + f.variants.length, 0)} `
   + `glyph variants across ${ALL_FOLD_FAMILIES.length} fold families, ${EDGE_STRIP_WRAPS.length} edge-strip wraps, `
   + `${NEGATIVE_PAIRS.length} negative pairs, ${ownershipCases} ownership x surface sweeps, ${N_RANDOM - randomSkippedGaps} random-sampled draws `

@@ -9,6 +9,7 @@ import {
   colorTermKey,
   cleanUserColorTerms,
   cleanUserColorTermPair,
+  crossPlayerUserTerms,
   mergeDescriptionTerms,
   USER_TERMS_MAX,
   USER_TERM_MAX_LEN,
@@ -122,8 +123,13 @@ export function DescriptionEditor({
   // suppressed for A even though the key is "rendered" somewhere (CodeRabbit).
   const renderedA = new Set(merged.a.map(colorTermKey));
   const renderedB = new Set(merged.b.map(colorTermKey));
+  // RED-REGEN-9/001: a B chip can also go neutral because the SAME phrase is
+  // filed on A in this very dialog (a 409 adoption creates exactly that
+  // shape) — a different cause from the label rule, so it gets its own words.
+  const crossPlayerKeys = new Set(crossPlayerUserTerms(termsA, termsB).map(colorTermKey));
   const chip = (term: string, player: 'A' | 'B') => {
     const suppressed = !(player === 'A' ? renderedA : renderedB).has(colorTermKey(term));
+    const crossPlayer = suppressed && player === 'B' && crossPlayerKeys.has(colorTermKey(term));
     const colour = player === 'A'
       ? 'border-player-a-300 dark:border-player-a-800 text-player-a-ink dark:text-player-a-ink-dark hover:bg-player-a-50 dark:hover:bg-player-a-900/30'
       : 'border-player-b-300 dark:border-player-b-800 text-player-b-ink dark:text-player-b-ink-dark hover:bg-player-b-50 dark:hover:bg-player-b-900/30';
@@ -135,8 +141,11 @@ export function DescriptionEditor({
         onClick={() => remove(term)}
         data-player={player}
         data-suppressed={suppressed ? 'true' : undefined}
+        data-suppressed-cause={suppressed ? (crossPlayer ? 'cross-player' : 'label') : undefined}
         title={suppressed
-          ? `Not highlighted: "${term}" names an option label that is not exclusively this player's (shared by both, or the other player's), so it stays neutral. Remove to drop the chip.`
+          ? (crossPlayer
+            ? `Not highlighted: "${term}" is also a Player A highlight in this dialog, and one phrase can belong to only one player. Remove it here or from Player A.`
+            : `Not highlighted: "${term}" names an option label that is not exclusively this player's (shared by both, or the other player's), so it stays neutral. Remove to drop the chip.`)
           : 'Remove this highlight'}
         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${suppressed ? neutral : colour}`}
       >

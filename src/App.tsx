@@ -90,7 +90,7 @@ import {
 
 import { MenuDrawer } from './components/MenuDrawer';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import {
   regenKeyEquals,
@@ -2376,10 +2376,23 @@ export default function App() {
             b: adoptedB ? freshB : orig.b,
           };
           const changed = [adoptedA && 'Player A', adoptedB && 'Player B'].filter(Boolean) as string[];
+          // RED-REGEN-9/001: the adoption itself can create a chip-vs-chip
+          // collision with the user's OWN chip (A "wolf" vs adopted B
+          // "Wolf"), and the server keeps refusing (409) until one of them
+          // goes — but a SECOND Save adopts nothing new, so the message used
+          // to fall back to the server's generic "Reopen Edit" advice, which
+          // RED-REGEN-8/002 already proved unhelpful. Name the colliding
+          // phrase on every 409 while it is still there.
+          const colliding = crossPlayerUserTerms(adoptedA ? freshA : nowTerms.a, adoptedB ? freshB : nowTerms.b);
+          const collisionNote = colliding.length > 0
+            ? `${colliding.map((t) => `"${t}"`).join(', ')} ${colliding.length === 1 ? 'is' : 'are'} highlighted for both players; one phrase can belong to only one player, so remove it from Player A or Player B, then save again.`
+            : '';
           setEditError(
             changed.length > 0
-              ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.`
-              : (data.error || 'Failed to update game.'),
+              ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.${collisionNote ? ` ${collisionNote}` : ''}`
+              : collisionNote
+                ? `Not saved: ${collisionNote}`
+                : (data.error || 'Failed to update game.'),
           );
         } else {
           setEditError(data.error || 'Failed to update game.');
