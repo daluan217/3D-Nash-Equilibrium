@@ -374,8 +374,10 @@ function extractDivBlock(src: string, startMarker: string): string {
     ['Edit', 'isEditModalOpen', 'editDialogRef'],
   ];
   for (const [name, openVar, refVar] of wiring) {
-    ok(new RegExp(`useModalTabTrap\\(${openVar}, ${refVar}\\)`).test(app),
-      `${name} dialog must call useModalTabTrap(${openVar}, ${refVar})`);
+    // RED-APP-12/001 added an optional third argument (the dialog's focus
+    // landmark selector); the pairing of open-state and ref is what matters.
+    ok(new RegExp(`useModalTabTrap\\(${openVar}, ${refVar}(?:, [^)]*)?\\)`).test(app),
+      `${name} dialog must call useModalTabTrap(${openVar}, ${refVar}[, landmark])`);
   }
   // No two dialogs may share a ref — each hook call needs the RIGHT
   // container to search for focusables in, or the trap would confine Tab to
