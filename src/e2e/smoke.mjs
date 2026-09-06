@@ -3606,6 +3606,136 @@ try {
     } finally { await ctx.close().catch(() => {}); }
   });
 
+  // ══ 62. RED-MATH-13/002 — docs/CONTINUUM-RENDERING.md clause 3's non-overlap
+  //      guarantee must hold at every camera the app itself reaches, not just
+  //      the default one the static SHORT_CONTINUUM rule was validated at.
+  //      The idle spin (on by default whenever the sim is not running) drifts
+  //      the camera within 1-2s of page load, and at some azimuths a
+  //      near-threshold segment's corner/midpoint markers fuse even though
+  //      they are clear at the default eye. Fixture: A=[[0,1],[4,0]],
+  //      B=[[0,0],[0,1]] -> continuum x=1, y in [0,0.2] (length EXACTLY 0.2,
+  //      the static rule's own directly-observed safe bound -- keeps corners
+  //      at the default camera). Reads Plotly's OWN resolved trace data
+  //      (`_fullData`, tagged with plotting.ts's meta.continuumComponentIndex/
+  //      continuumRole), never a screenshot, so this can assert exactly what
+  //      the dynamic (camera-aware) collapse decided.
+  section('62', 'continuum non-overlap holds after the camera-aware collapse (idle-spin fusing angle)', 8, async () => {
+    const p = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
+    try {
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+      const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
+      await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+
+      // DOM order is a11,b11,a12,b12,a21,b21,a22,b22 (App.tsx's interleaved
+      // per-cell layout — confirmed against the payoff input onChange wiring,
+      // matches round9/review/vis_continuum_shot.mjs's own comment).
+      const fillMatrix = async (vals) => {
+        for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
+      };
+      await fillMatrix([0, 0, 1, 0, 4, 0, 0, 1]); // a11,b11,a12,b12,a21,b21,a22,b22
+      await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene, null, { timeout: 20000 }).catch(() => {});
+      await p.waitForTimeout(400);
+
+      // Pointer/touch probe precondition (round12/COMMON.md): the press that
+      // pauses the idle spin must actually land on the plot.
+      const plot = p.locator('[data-tour="plot"]');
+      await plot.scrollIntoViewIfNeeded();
+      const vh = await p.evaluate(() => window.innerHeight);
+      const box = await plot.boundingBox();
+      const inViewport = !!box && box.y >= 0 && box.y + box.height <= vh;
+      const cx = box ? box.x + box.width / 2 : -1, cy = box ? box.y + box.height / 2 : -1;
+      const hitTag = await p.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName ?? null, { x: cx, y: cy });
+      record('precondition: the press target is in-viewport and elementFromPoint is the plot CANVAS',
+        inViewport && hitTag === 'CANVAS', JSON.stringify({ box, vh, hitTag }));
+
+      await p.mouse.click(cx, cy); // pause the idle spin (a hit-tested press)
+      await p.waitForTimeout(300);
+
+      // Reads `.data` (the input array `Plotly.restyle` mutates in place),
+      // NOT `._fullData`: confirmed empirically that this Plotly build drops
+      // a trace from `_fullData` entirely once `visible:false` (unlike a
+      // `legendonly` trace, which section 47 reads off `_fullData` — that
+      // stays present there). `.data` still carries every trace plus the
+      // restyled `visible`/`marker.size`.
+      const readContinuum = () => p.evaluate(() => (document.querySelector('.js-plotly-plot')?.data ?? [])
+        .filter((t) => t.meta && t.meta.continuumComponentIndex !== undefined)
+        .map((t) => ({ role: t.meta.continuumRole, visible: t.visible === undefined ? true : t.visible, size: t.marker?.size })));
+      const setEye = (eye) => p.evaluate((e) => {
+        window.Plotly.relayout(document.getElementById('plotly-3d-market-simulation'), { 'scene.camera.eye': e });
+      }, eye);
+      const readEye = () => p.evaluate(() => {
+        const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        return e ? { x: e.x, y: e.y, z: e.z } : null;
+      });
+      const eyeDist = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : Infinity);
+      const DEFAULT_EYE = { x: 1.6, y: -1.6, z: 1.1 };
+      // Independently scanned (per-0.1°-azimuth) for THIS EXACT fixture using
+      // cameraProjection.ts's own worstPairGapPx: worst gap -2.63px here, well
+      // past the 1px tolerance. RED-MATH-13/002's own sampled angles were
+      // found on a DIFFERENT fixture and do not transfer — fusion depends on
+      // the segment's own data-space geometry, not azimuth alone.
+      const FUSING_EYE = { x: 0.3031761289426962, y: 2.242339009792971, z: 1.1 };
+
+      const atDefault = await readContinuum();
+      const cornersAtDefault = atDefault.filter((t) => t.role === 'corner');
+      record('at the default camera: the STATIC rule keeps this length-exactly-0.2 component\'s corners visible',
+        cornersAtDefault.length === 2 && cornersAtDefault.every((t) => t.visible === true), JSON.stringify(atDefault));
+
+      await setEye(FUSING_EYE);
+      const movedToFusing = await p.waitForFunction((want) => {
+        const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01 ? true : null;
+      }, FUSING_EYE, { timeout: 5000 }).then(() => true).catch(() => false);
+      record('precondition: the camera actually moved to the independently-scanned fusing eye', movedToFusing, JSON.stringify(await readEye()));
+      // The relayout handler throttles re-evaluation to ~100ms.
+      const collapsedAtFusing = await p.waitForFunction(() => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+        return ts.length > 0 && ts.every((t) => t.visible === false) ? true : null;
+      }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+      const atFusing = await readContinuum();
+      record('FIX (RED-MATH-13/002): at the fusing camera, the dynamic rule hides this component\'s corner traces',
+        collapsedAtFusing, JSON.stringify(atFusing));
+      const midAtDefault = atDefault.find((t) => t.role === 'midpoint');
+      const midAtFusing = atFusing.find((t) => t.role === 'midpoint');
+      record('FIX: the midpoint marker enlarges to the static collapse\'s own size when the dynamic rule fires',
+        !!midAtFusing && !!midAtDefault && midAtFusing.size > midAtDefault.size, JSON.stringify({ midAtDefault, midAtFusing }));
+
+      await setEye(DEFAULT_EYE);
+      const movedBack = await p.waitForFunction((want) => {
+        const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01 ? true : null;
+      }, DEFAULT_EYE, { timeout: 5000 }).then(() => true).catch(() => false);
+      const restoredAtDefault = await p.waitForFunction(() => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+        return ts.length > 0 && ts.every((t) => t.visible === true) ? true : null;
+      }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+      record('back at the default camera: corners are visible again', movedBack && restoredAtDefault, JSON.stringify(await readContinuum()));
+
+      // Control: a full-length (1.0) segment keeps its corners at BOTH the
+      // default AND the same fusing eye (found by an independent search for a
+      // segment whose length rounds to 1.0 — a11:-2,a12:-2,a21:-2,a22:-2,
+      // b11:-2,b12:-1,b21:-2,b22:-1 -> component y=0, x in [0,1]).
+      await fillMatrix([-2, -2, -2, -1, -2, -2, -2, -1]); // a11,b11,a12,b12,a21,b21,a22,b22
+      await p.waitForTimeout(400);
+      const fullAtDefault = await readContinuum();
+      record('control: a full-length segment keeps corners visible at the default camera',
+        fullAtDefault.filter((t) => t.role === 'corner').length === 2 && fullAtDefault.filter((t) => t.role === 'corner').every((t) => t.visible === true),
+        JSON.stringify(fullAtDefault));
+      await setEye(FUSING_EYE);
+      await p.waitForFunction((want) => {
+        const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01 ? true : null;
+      }, FUSING_EYE, { timeout: 5000 }).catch(() => {});
+      await p.waitForTimeout(300);
+      const fullAtFusing = await readContinuum();
+      record('control: the SAME full-length segment keeps corners visible at the SAME fusing eye (the dynamic rule does not over-hide)',
+        fullAtFusing.filter((t) => t.role === 'corner').length === 2 && fullAtFusing.filter((t) => t.role === 'corner').every((t) => t.visible === true),
+        JSON.stringify(fullAtFusing));
+    } finally { await p.close().catch(() => {}); }
+  });
+
 await executeSections();
 
 } catch (e) {
