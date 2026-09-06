@@ -626,10 +626,21 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   const appSrc = readFileSync('src/App.tsx', 'utf8');
   ok(/<SavedGamesList[\s\S]{0,600}variant="sidebar"/.test(appSrc),
     'App must render SavedGamesList with variant="sidebar"');
+  // OPUS-REVIEW-LIST N3 (round14 review of #150): all three branches emit
+  // the IDENTICAL `data-focus-fallback={landmark}` token (it's keyed by a
+  // variable, not a literal per branch), so a bare nearest-preceding-match
+  // is not automatically "the drawer's" landmark by the text alone — it is
+  // correct here only because "No saved custom game presets." is the
+  // drawer-only half of the `variant === 'sidebar' ? ... : ...` ternary
+  // inside THIS SAME div, with no other landmark occurrence between the
+  // two (checked explicitly below, not just a distance bound).
   const emptyStateIdx = savedGamesListSrc.indexOf('No saved custom game presets.');
   const emptyLandmarkIdx = savedGamesListSrc.lastIndexOf('data-focus-fallback={landmark}', emptyStateIdx);
-  ok(emptyStateIdx > 0 && emptyLandmarkIdx > 0 && emptyStateIdx - emptyLandmarkIdx < 900,
+  const between = savedGamesListSrc.slice(emptyLandmarkIdx + 1, emptyStateIdx);
+  ok(emptyStateIdx > 0 && emptyLandmarkIdx > 0 && emptyStateIdx - emptyLandmarkIdx < 1400,
     'the empty-state card itself (the one that says "No saved custom game presets.") must carry the drawer-games landmark');
+  ok(!/data-focus-fallback=/.test(between),
+    'no OTHER data-focus-fallback occurrence must sit between this landmark and "No saved custom game presets." — otherwise the nearest-match above could be pinning the WRONG branch\'s landmark');
 }
 
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

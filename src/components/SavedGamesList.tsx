@@ -27,7 +27,7 @@ import { splitEquilibriaByContinuum, describeContinua, fmtPayoff, EA, EB } from 
 import { savedGameColorTerms } from '../utils/colorTerms';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
-import { Pencil, Trash2, LogIn } from 'lucide-react';
+import { Pencil, Trash2, LogIn, CheckCircle2 } from 'lucide-react';
 
 /** A saved game, shaped for display. `raw` is the untouched server record —
  *  `onEdit` hands it straight to App's `openEditGame`, which reads fields
@@ -106,21 +106,31 @@ export const SavedGamesList: React.FC<SavedGamesListProps> = ({
       <div
         data-focus-fallback={landmark}
         tabIndex={-1}
-        aria-label="Saved custom games"
+        aria-label={variant === 'sidebar' ? 'Saved games' : 'Saved custom games'}
         className={variant === 'sidebar'
           ? 'text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-950/30 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 text-center focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400'
           : 'bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400'}
       >
-        {/* Copy is identical in both variants — this is the invariant a
-            `variant` prop must not leak into: RED-DESKTOP-13/001 was two
-            surfaces disagreeing about who owns games, not just one of them
-            saying so wrong. */}
-        <div className="space-y-2">
-          <p>You must be signed in to view and save custom game profiles.</p>
-          <button onClick={onSignIn} className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-all">
-            <LogIn className="w-3 h-3" /> Sign In / Sign Up
-          </button>
-        </div>
+        {/* Copy is PER-VARIANT here on purpose (OPUS-REVIEW-LIST F4, round14
+            director review of #150): the sidebar's inline-link tone and the
+            drawer's fuller "must sign in" card are existing public-product
+            copy, not a decision this refactor gets to make — only the
+            landmark/gating MECHANISM is the invariant, never the wording. */}
+        {variant === 'sidebar' ? (
+          <>
+            <span>Want to name and save custom presets? </span>
+            <button onClick={onSignIn} className="tap-24 font-bold text-accent-600 dark:text-accent-400 hover:underline cursor-pointer">
+              Sign in here
+            </button>
+          </>
+        ) : (
+          <div className="space-y-2">
+            <p>You must be signed in to view and save custom game profiles.</p>
+            <button onClick={onSignIn} className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-all">
+              <LogIn className="w-3 h-3" /> Sign In / Sign Up
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -130,17 +140,22 @@ export const SavedGamesList: React.FC<SavedGamesListProps> = ({
       <div
         data-focus-fallback={landmark}
         tabIndex={-1}
-        aria-label="Saved custom games"
+        aria-label={variant === 'sidebar' ? 'Saved games' : 'Saved custom games'}
         className={variant === 'sidebar'
           ? 'text-xs text-muted dark:text-muted-dark bg-slate-50/70 dark:bg-slate-950/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-4 text-center focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400'
           : 'bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400'}
       >
-        <p>
-          {/* CodeRabbit on #150: "Save payoffs" named no real control — the
-              actual button (both surfaces) is "Save Preset". */}
-          No saved custom game presets. Customize payoffs in the main board and click{' '}
-          <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to record your own scenarios!
-        </p>
+        {variant === 'sidebar' ? (
+          <>No saved custom games. Adapt payoffs and click <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to persist your first game!</>
+        ) : (
+          <p>
+            {/* CodeRabbit on #150: "Save payoffs" named no real control —
+                the actual button is "Save Preset". Fixed independent of the
+                per-variant copy revert above; this was a real accuracy bug. */}
+            No saved custom game presets. Customize payoffs in the main board and click{' '}
+            <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to record your own scenarios!
+          </p>
+        )}
       </div>
     );
   }
@@ -149,7 +164,7 @@ export const SavedGamesList: React.FC<SavedGamesListProps> = ({
     <div
       data-focus-fallback={landmark}
       tabIndex={-1}
-      aria-label="Saved custom games"
+      aria-label={variant === 'sidebar' ? 'Saved games' : 'Saved custom games'}
       className={variant === 'sidebar'
         ? 'grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 rounded-xl'
         : 'grid grid-cols-1 gap-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 rounded-xl'}
@@ -254,7 +269,8 @@ export const SavedGamesList: React.FC<SavedGamesListProps> = ({
                   <ColorCoded text={game.desc} aTerms={game.terms.a} bTerms={game.terms.b} />
                 </p>
                 <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-2.5 border border-slate-100 dark:border-slate-800/85">
-                  <div className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wide mb-1">
+                  <div className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                     Computed Nash Equilibria:
                   </div>
                   <ul className="text-xs text-slate-600 dark:text-slate-300 pl-4 list-disc space-y-0.5">

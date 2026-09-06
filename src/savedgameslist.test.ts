@@ -2,9 +2,11 @@
  * BLUE-LIST-14 (round14): ONE SavedGamesList, two call sites. This is the
  * unit half of the invariant — App.tsx and MenuDrawer.tsx cannot grow their
  * own inline saved-game row again without this test noticing, and both
- * `variant`s must behave identically (row count, the focus landmark, the
- * in-flight Delete state, and the empty-state copy) for the SAME props —
- * only classes/layout may differ.
+ * `variant`s must behave identically on the MECHANISMS (row count, the focus
+ * landmark, which row's Delete is in flight) for the SAME props. Per
+ * OPUS-REVIEW-LIST F4 (round14 director review of #150), empty-state COPY
+ * is deliberately per-variant product text, not part of the invariant — only
+ * the landmark/gating mechanism is checked to be the same shape.
  *
  *   npx tsx src/savedgameslist.test.ts
  */
@@ -24,21 +26,31 @@ const app = readFileSync('src/App.tsx', 'utf8');
 const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
 const list = readFileSync('src/components/SavedGamesList.tsx', 'utf8');
 
+// The REAL predicate each "no inline row markup" check below applies —
+// pulled out so the mutation fixture can run the SAME code, not a
+// reimplementation of it (OPUS-REVIEW-LIST F2).
+const hasInlineRowMarkup = (src: string, title: string): boolean => src.includes(title);
+
 // ── STRUCTURAL: the two Delete-button titles (locators for e2e 45/53/56/60)
 // exist EXACTLY ONCE each, and both live in SavedGamesList.tsx — never in
 // the call sites. A row re-inlined into App.tsx or MenuDrawer.tsx (the exact
 // shape of the original RED-DESKTOP-13/001 + RED-APP-13/003 duplication)
 // would show up here as a second occurrence outside this file. ──
 for (const title of ['Delete this saved game', 'Delete custom layout']) {
-  ok(!app.includes(title), `App.tsx must not contain the "${title}" title literal (row markup belongs to SavedGamesList)`);
-  ok(!drawer.includes(title), `MenuDrawer.tsx must not contain the "${title}" title literal (row markup belongs to SavedGamesList)`);
-  ok(list.includes(title), `SavedGamesList.tsx must contain the "${title}" title literal (it is the only owner)`);
+  ok(!hasInlineRowMarkup(app, title), `App.tsx must not contain the "${title}" title literal (row markup belongs to SavedGamesList)`);
+  ok(!hasInlineRowMarkup(drawer, title), `MenuDrawer.tsx must not contain the "${title}" title literal (row markup belongs to SavedGamesList)`);
+  ok(hasInlineRowMarkup(list, title), `SavedGamesList.tsx must contain the "${title}" title literal (it is the only owner)`);
 }
-// MUTATION FIXTURE — sanity: a title literal reintroduced into App.tsx MUST
-// be caught by the same check above, not just theoretically.
+// MUTATION FIXTURE — sanity: reintroducing a title literal into App.tsx MUST
+// be caught by the REAL predicate above (OPUS-REVIEW-LIST F2: the previous
+// fixture only proved `.includes()` works on a string it had just built —
+// it never called `hasInlineRowMarkup`, so it could not have failed).
 {
   const mutatedApp = app + '\n<button title="Delete this saved game" />';
-  ok(mutatedApp.includes('Delete this saved game'), 'fixture sanity: a reintroduced title literal is detectable by .includes()');
+  ok(hasInlineRowMarkup(mutatedApp, 'Delete this saved game'),
+    'fixture sanity: the REAL hasInlineRowMarkup predicate flags a reintroduced title literal in App.tsx');
+  ok(!hasInlineRowMarkup(app, 'Delete this saved game'),
+    'fixture precondition: the UNMUTATED App.tsx must not already trip the same predicate');
 }
 
 // ── STRUCTURAL: both call sites render THROUGH SavedGamesList and share the
@@ -58,7 +70,8 @@ ok(/formatSavedGames\(/.test(drawer), 'MenuDrawer.tsx must call the shared forma
   ok(formatted[0].raw === raw[0], 'formatSavedGames must keep the RAW record (for onEdit) untouched, not a copy');
 }
 
-// ── BEHAVIOURAL (react-dom/server): same props, both variants agree. ──
+// ── BEHAVIOURAL (react-dom/server): same props, both variants agree on the
+// MECHANISM (row count, landmark, which row is in flight). ──
 const payoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
 const games: SavedGameListItem[] = [
   { id: 'g1', name: 'Alpha', desc: 'first game', payoffs, terms: { a: [], b: [] }, raw: { id: 'g1' } },
@@ -91,34 +104,56 @@ ok(countOccurrences(sidebarHtml, 'data-focus-fallback="saved-games"') === 1, 'si
 ok(countOccurrences(drawerHtml, 'data-focus-fallback="drawer-games"') === 1, 'drawer must carry exactly one drawer-games landmark');
 ok(sidebarHtml.includes('tabindex="-1"') && drawerHtml.includes('tabindex="-1"'), 'both variants\' landmark must be a tabIndex={-1} fallback target');
 
-// Same in-flight Delete state: exactly one disabled + one aria-busy="true",
-// both on g2 (the id in deletingGameIds), in BOTH variants.
+// Same in-flight Delete state, tied to the SPECIFIC row (g2, "Beta") that is
+// in deletingGameIds — not just "exactly one disabled control somewhere"
+// (OPUS-REVIEW-LIST N4: a coincidental count match would not prove WHICH
+// control it landed on). Split the rendered rows in DOM order (g1, g2, g3)
+// and check disabled/aria-busy sit on g2's segment only.
+const rowSegments = (html: string): string[] => {
+  const parts = html.split('data-saved-game="true"');
+  ok(parts.length === 4, `expected 3 rows (4 split parts) in the rendered list, got ${parts.length - 1} rows`);
+  return parts.slice(1); // parts[0] is everything before the first row
+};
 for (const [name, html] of [['sidebar', sidebarHtml], ['drawer', drawerHtml]] as const) {
-  ok(countOccurrences(html, 'aria-busy="true"') === 1, `${name}: exactly one row must carry aria-busy="true" (found ${countOccurrences(html, 'aria-busy="true"')})`);
-  ok(countOccurrences(html, 'disabled=""') === 1, `${name}: exactly one control must carry disabled="" (found ${countOccurrences(html, 'disabled=""')})`);
+  const [rowG1, rowG2, rowG3] = rowSegments(html);
+  ok(rowG2.includes('disabled=""') && rowG2.includes('aria-busy="true"'),
+    `${name}: g2's ("Beta", the deleting id) row must carry disabled+aria-busy`);
+  ok(!rowG1.includes('disabled=""') && !rowG1.includes('aria-busy="true"'),
+    `${name}: g1's ("Alpha") row must NOT carry disabled/aria-busy`);
+  // g3's segment runs to the end of the string (it is the LAST row, so
+  // nothing follows it to split on) — its own row content is well within
+  // the first 600 chars for both variants' markup.
+  ok(!rowG3.slice(0, 600).includes('disabled=""'),
+    `${name}: g3's ("Gamma") row must NOT carry disabled`);
 }
 
-// Same empty-state copy for canOwnGames === true (0 games) and === false —
-// stripped of tags, the rendered TEXT must be byte-identical between variants;
-// only the surrounding classes may differ.
+// ── Empty-state / not-owner copy: per-variant PRODUCT TEXT (OPUS-REVIEW-LIST
+// F4) — the invariant is the landmark mechanism, never the wording. Each
+// variant's own existing copy is pinned so a future refactor cannot silently
+// re-harmonize it, and the load-bearing e2e-45 substrings are pinned too. ──
 const stripTags = (html: string) => html.replace(/<[^>]+>/g, '').trim();
-const ownerEmptyText = { sidebar: stripTags(render('sidebar', { games: [] })), drawer: stripTags(render('drawer', { games: [] })) };
-ok(ownerEmptyText.sidebar.length > 0 && ownerEmptyText.sidebar === ownerEmptyText.drawer,
-  `owner-empty-state copy must be identical between variants: sidebar=${JSON.stringify(ownerEmptyText.sidebar)} drawer=${JSON.stringify(ownerEmptyText.drawer)}`);
-ok(/No saved custom game presets/i.test(ownerEmptyText.sidebar), 'owner-empty-state copy must still say "No saved custom game presets" (e2e section 45 regex)');
 
-const notOwnerText = {
-  sidebar: stripTags(render('sidebar', { games: [], canOwnGames: false })),
-  drawer: stripTags(render('drawer', { games: [], canOwnGames: false })),
-};
-ok(notOwnerText.sidebar.length > 0 && notOwnerText.sidebar === notOwnerText.drawer,
-  `not-owner-state copy must be identical between variants: sidebar=${JSON.stringify(notOwnerText.sidebar)} drawer=${JSON.stringify(notOwnerText.drawer)}`);
-ok(!/must be signed in to view and save/i.test(ownerEmptyText.sidebar) && !/must be signed in to view and save/i.test(ownerEmptyText.drawer),
+const ownerEmptySidebar = stripTags(render('sidebar', { games: [] }));
+const ownerEmptyDrawer = stripTags(render('drawer', { games: [] }));
+ok(/No saved custom games\. Adapt payoffs and click\s*Save Preset\s*to persist your first game!/.test(ownerEmptySidebar),
+  `sidebar owner-empty copy must keep its own original wording, got ${JSON.stringify(ownerEmptySidebar)}`);
+ok(/No saved custom game presets\. Customize payoffs in the main board and click\s*Save Preset\s*to record your own scenarios!/.test(ownerEmptyDrawer),
+  `drawer owner-empty copy must keep its own wording, with the CodeRabbit-fixed "Save Preset" (not "Save payoffs"), got ${JSON.stringify(ownerEmptyDrawer)}`);
+ok(!/must be signed in to view and save/i.test(ownerEmptySidebar) && !/must be signed in to view and save/i.test(ownerEmptyDrawer),
   'the owner-empty state (canOwnGames=true) must NOT show the sign-in copy in either variant (e2e section 45)');
 
-// MUTATION FIXTURE — sanity: two DIFFERENT strings must not accidentally
-// satisfy the equality check above (i.e. the check is not vacuously true).
-ok(stripTags('<p>A</p>') !== stripTags('<p>B</p>'), 'fixture sanity: the stripTags equality check can distinguish two different texts');
+const notOwnerSidebar = stripTags(render('sidebar', { games: [], canOwnGames: false }));
+const notOwnerDrawer = stripTags(render('drawer', { games: [], canOwnGames: false }));
+ok(/Want to name and save custom presets\?\s*Sign in here/.test(notOwnerSidebar),
+  `sidebar not-owner copy must keep its own original inline-link wording, got ${JSON.stringify(notOwnerSidebar)}`);
+ok(/You must be signed in to view and save custom game profiles\./.test(notOwnerDrawer) && /Sign In \/ Sign Up/.test(notOwnerDrawer),
+  `drawer not-owner copy must keep its own wording, got ${JSON.stringify(notOwnerDrawer)}`);
+
+// MUTATION FIXTURE — sanity: the sidebar's not-owner copy pin actually
+// distinguishes the real render from the drawer's (proves the regex above
+// is not accidentally satisfied by either variant's text).
+ok(!/Want to name and save custom presets\?\s*Sign in here/.test(notOwnerDrawer),
+  'fixture sanity: the sidebar-specific not-owner copy pin does NOT match the drawer\'s own render');
 
 if (checks < 20) { console.error(`✗ savedgameslist: suspiciously few checks ran (${checks})`); process.exit(1); }
-console.log(`✓ savedgameslist: ${checks} checks passed — one row-rendering component, both variants agree on row count, landmark, in-flight Delete and empty-state copy`);
+console.log(`✓ savedgameslist: ${checks} checks passed — one row-rendering component, both variants agree on row count, landmark and which row's Delete is in flight; empty-state copy stays per-variant product text`);

@@ -4619,7 +4619,10 @@ try {
         await deleteGate;
         await route.continue();
       });
-      const sidebarRowA = dp.locator('[data-saved-game]', { has: dp.getByRole('button', { name: nameA, exact: true }) });
+      // Scoped to the sidebar's OWN landmark (OPUS-REVIEW-LIST N2): an
+      // unscoped `[data-saved-game]` also matches drawer rows whenever the
+      // drawer happens to be open, which this section's later steps do.
+      const sidebarRowA = dp.locator('[data-focus-fallback="saved-games"] [data-saved-game]', { has: dp.getByRole('button', { name: nameA, exact: true }) });
       await sidebarRowA.getByTitle('Delete this saved game').click();
       await openLibrary(dp);
       const drawerRowA = dp.locator('[data-drawer-game]', { hasText: nameA });
@@ -4642,10 +4645,12 @@ try {
       record('the deleted game is gone from the sidebar too (same delete, both surfaces)',
         await dp.getByRole('button', { name: nameA, exact: true }).isVisible().catch(() => false) === false);
 
-      // ── Empty state agrees too: delete the LAST game via the DRAWER this
-      // time, and check both surfaces show the identical copy (unit test
-      // savedgameslist.test.ts proves this at the SSR level; this proves it
-      // in the real, rendered app). ──
+      // ── Empty state: the LANDMARK MECHANISM agrees on both surfaces (kept
+      // mounted, tabIndex=-1) after deleting the last game via the DRAWER —
+      // the COPY itself is deliberately per-variant product text
+      // (OPUS-REVIEW-LIST F4), pinned per-surface here rather than compared
+      // for equality (unit test savedgameslist.test.ts proves the same split
+      // at the SSR level). ──
       await openLibrary(dp);
       const drawerRowB = dp.locator('[data-drawer-game]', { hasText: nameB });
       await drawerRowB.getByTitle('Delete custom layout').click();
@@ -4654,7 +4659,7 @@ try {
         const lm = document.querySelector('[data-focus-fallback="drawer-games"]');
         return { present: !!lm, tabIndex: lm?.getAttribute('tabindex'), text: (lm?.textContent || '').trim() };
       });
-      record('FIX: the drawer\'s empty-state landmark is present (kept mounted) after the last delete',
+      record('FIX: the drawer\'s empty-state landmark is present (kept mounted) after the last delete, with the drawer\'s own copy',
         drawerEmpty.present && drawerEmpty.tabIndex === '-1' && /No saved custom game presets/i.test(drawerEmpty.text), JSON.stringify(drawerEmpty));
       await dp.keyboard.press('Escape');
       await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
@@ -4662,8 +4667,8 @@ try {
         const lm = document.querySelector('[data-focus-fallback="saved-games"]');
         return { present: !!lm, tabIndex: lm?.getAttribute('tabindex'), text: (lm?.textContent || '').trim() };
       });
-      record('FIX: the sidebar\'s empty state is present with the SAME copy as the drawer\'s',
-        sidebarEmpty.present && sidebarEmpty.tabIndex === '-1' && sidebarEmpty.text === drawerEmpty.text, JSON.stringify({ sidebarEmpty, drawerEmpty }));
+      record('FIX: the sidebar\'s empty state is present (same landmark mechanism), with the sidebar\'s OWN copy',
+        sidebarEmpty.present && sidebarEmpty.tabIndex === '-1' && /No saved custom games\. Adapt payoffs/i.test(sidebarEmpty.text), JSON.stringify(sidebarEmpty));
     } finally {
       await deskCtx.close().catch(() => {});
       if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }

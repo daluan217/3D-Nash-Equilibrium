@@ -150,13 +150,32 @@ for (const [name, src] of MUST_FLAG) {
     /<SavedGamesList[\s\S]{0,400}canOwnGames=\{canOwnGames\}/.test(app));
 }
 
-// MUTATION FIXTURE — a gate keyed on `user` instead of `canOwnGames` must be
-// caught, whichever file it appears in. Named so a future edit that "just
-// renames the variable" cannot pass by accident.
+// MUTATION FIXTURE — the REAL predicates above (not a reimplementation of
+// them) run against realistic regressions. OPUS-REVIEW-LIST F2 on #150: the
+// previous fixture applied `/\buser\b/g` to `'if (!user) {'` — a regex
+// neither real check above uses. The real JSX-gate regex requires `{`
+// immediately before `!user`, which `if (!user) {` does not have (that `(`
+// is not `{`), so the old fixture could not have caught what it claimed to.
 {
-  const mutatedList = 'export const SavedGamesList = () => {\n  if (!user) {\n    return null;\n  }\n};\n';
-  const gates = mutatedList.match(/\buser\b/g) ?? [];
-  check('fixture sanity: a `user`-gated SavedGamesList body IS flagged by the `user` reference check', gates.length > 0);
+  // (a) The JSX-gate regex line 129 actually uses, run against the DRAWER
+  // region's historical shape (a regression back to `{!user && (...)}`).
+  const jsxGateRegex = /\{!?user\b[^}]*(?:&&|\?)/;
+  const regressedDrawerRegion = 'Custom User Profiles ({n})\n{!user && (\n  <span>Log in to persist</span>\n)}\n<SavedGamesList canOwnGames={canOwnGames} />';
+  check('fixture sanity: the REAL JSX-gate regex (line 129) flags a regressed {!user && ...} block',
+    jsxGateRegex.test(regressedDrawerRegion));
+  const currentDrawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const currentLo = currentDrawer.indexOf('Custom User Profiles (');
+  const currentHi = currentDrawer.indexOf('TAB 3: ACCOUNT');
+  const currentRegion = currentDrawer.slice(currentLo - 400, currentHi);
+  check('fixture precondition: the CURRENT drawer region does not already trip the same regex', !jsxGateRegex.test(currentRegion));
+
+  // (b) The if-statement gate regex line 131 actually uses, run against a
+  // regressed SavedGamesList body where `canOwnGames` was replaced by
+  // `user` — the positive check must go from true to FALSE, exactly what a
+  // revert-the-fix mutation test demands.
+  const regressedIfGate = 'if (!user) {\n  return null;\n}';
+  check('fixture sanity: the REAL "gates on canOwnGames" check (line 131) goes FALSE against a regressed if (!user) body',
+    !/if \(!canOwnGames\) \{/.test(regressedIfGate));
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
