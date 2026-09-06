@@ -843,7 +843,11 @@ export default function App() {
       const res = await promise;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setLocalGamesError(data.error || `The move failed (status ${res.status}). Your games are still on this device.`);
+        // Whatever the server said, the user must hear that nothing was lost
+        // (RED-DESKTOP-12/001: a generic server message reached the dialog
+        // verbatim and the reassurance below was never shown).
+        const said = typeof data.error === 'string' && data.error.trim() ? data.error.trim() : `The move failed (status ${res.status}).`;
+        setLocalGamesError(/still (saved )?on this device/i.test(said) ? said : `${said} Your games are still on this device.`);
         return;
       }
       const moved = typeof data.adopted === 'number' && Number.isInteger(data.adopted) ? data.adopted : 0;
