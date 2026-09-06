@@ -22,10 +22,9 @@ import type { CSSProperties, ReactNode, RefObject } from 'react';
  * declared.
  *
  * `useModalTabTrap` itself deliberately does NOT handle Escape — `ModalSurface`
- * below does, per-instance, once a surface is registered active. (App.tsx's
- * `localGamesOffer` dialog is the one caller that still uses this hook
- * directly, outside `ModalSurface`, round14 being out of scope for it; its
- * own central Escape chain is unchanged.)
+ * below does, per-instance, once a surface is registered active. (round15:
+ * every caller, including the local-games offer and the expand-log overlay,
+ * now goes through `ModalSurface` — see docs/MODAL-SURFACE.md.)
  *
  * DOES move initial focus into the dialog on open (CodeRabbit review on PR
  * #91, after the RED-APP-5/002 fix above shipped): only Feedback sets its
@@ -48,11 +47,29 @@ export function getModalFocusables(container: HTMLElement): HTMLElement[] {
   ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
 }
 
+/** A real interactive control — never a `tabIndex={-1}` container used only
+ *  as a focus-parking landmark or panel (see RED-APP-14/005 below). */
+const REAL_CONTROL_SELECTOR = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 /**
  * The control the user last focused or pressed, so a dialog can hand focus
- * back to what opened it. `focusin` covers keyboard users; `pointerdown`
- * covers browsers (Safari, Firefox on macOS) where clicking a button does
- * not focus it. Installed once, lazily, by the first dialog that opens.
+ * back to what opened it. `pointerdown`/`keydown` are the sources of record
+ * for a real user interaction; `focusin` only ever CONFIRMS the same thing
+ * for pure keyboard Tab-navigation (moving into a control with no press) and
+ * is filtered to real controls so it can never clobber a correct value with
+ * a landmark. Installed once, lazily, by the first dialog that opens.
+ *
+ * RED-APP-14/005: WebKit does not focus a clicked `<button>` — it focuses
+ * the nearest MOUSE-FOCUSABLE ANCESTOR instead, which for a row inside
+ * `SavedGamesList`'s `[data-focus-fallback]` wrapper (kept mounted with
+ * `tabIndex={-1}`, BLUE-LIST-14) is that wrapper, not the button the user
+ * actually pressed. The `focusin` this produces used to win (it fires AFTER
+ * `pointerdown`) and overwrite the correct value with the wrapper, so
+ * `focusAfterDialog` returned focus to the landmark instead of the button on
+ * every engine but Chromium. Filtering `focusin` to `REAL_CONTROL_SELECTOR`
+ * (never a bare `[tabindex="-1"]` match) removes the clobber; `pointerdown`
+ * and `keydown` (mouse press and keyboard activation, respectively) are
+ * exactly the events WebKit still fires on the real control itself.
  */
 let lastInteractedControl: HTMLElement | null = null;
 let openerTrackingInstalled = false;
@@ -60,10 +77,14 @@ function installOpenerTracking(): void {
   if (openerTrackingInstalled || typeof document === 'undefined') return;
   openerTrackingInstalled = true;
   document.addEventListener('focusin', (e) => {
-    if (e.target instanceof HTMLElement && e.target !== document.body) lastInteractedControl = e.target;
+    if (e.target instanceof HTMLElement && e.target !== document.body && e.target.matches(REAL_CONTROL_SELECTOR)) lastInteractedControl = e.target;
   }, true);
   document.addEventListener('pointerdown', (e) => {
-    const control = (e.target as HTMLElement | null)?.closest?.('button, [href], input, select, textarea, [tabindex]');
+    const control = (e.target as HTMLElement | null)?.closest?.(REAL_CONTROL_SELECTOR);
+    if (control instanceof HTMLElement) lastInteractedControl = control;
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    const control = (e.target as HTMLElement | null)?.closest?.(REAL_CONTROL_SELECTOR);
     if (control instanceof HTMLElement) lastInteractedControl = control;
   }, true);
   // RED-APP-12/001: a focused control that is REMOVED from the DOM (the header's
@@ -140,14 +161,28 @@ export function useModalTabTrap(open: boolean, containerRef: RefObject<HTMLEleme
     const opener = lastInteractedControl && container && !container.contains(lastInteractedControl)
       ? lastInteractedControl : null;
     if (container && !container.contains(document.activeElement)) {
-      getModalFocusables(container)[0]?.focus();
+      const focusables = getModalFocusables(container);
+      // RED-APP-14/002: every control disabled at open time parks focus on
+      // the panel itself rather than doing nothing (kept symmetric with the
+      // mid-dialog case below, even though today's callers always have at
+      // least one control enabled when they first open).
+      (focusables[0] ?? container).focus();
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
       const container = containerRef.current;
       if (!container) return;
       const focusables = getModalFocusables(container);
-      if (focusables.length === 0) return;
+      if (focusables.length === 0) {
+        // RED-APP-14/002: every control is disabled (a request mid-flight
+        // disabled the whole dialog). The trap used to give up here — `return`
+        // let the browser's own Tab traversal continue onto the page behind
+        // the backdrop. Swallow the key and keep focus parked on the panel
+        // (`tabIndex={-1}`, never in the natural Tab order) instead.
+        e.preventDefault();
+        if (document.activeElement !== container) container.focus();
+        return;
+      }
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
       // Also catches focus already OUTSIDE the container (the exact leak
@@ -188,13 +223,31 @@ export function useModalTabTrap(open: boolean, containerRef: RefObject<HTMLEleme
         const container = containerRef.current;
         if (!container || container.contains(document.activeElement)) return;
         if (document.activeElement !== document.body) return;
-        getModalFocusables(container)[0]?.focus();
+        // RED-APP-14/002: previously `?.focus()` on an undefined [0] (every
+        // control disabled) was a silent no-op — focus stayed abandoned on
+        // <body>. Park on the panel itself instead, same as `onKey` above.
+        const focusables = getModalFocusables(container);
+        (focusables[0] ?? container).focus();
       });
     };
     container?.addEventListener('focusout', onFocusOut);
+    // RED-APP-14/002: once every control was disabled and focus parked on the
+    // panel, nothing previously noticed controls becoming re-enabled again
+    // (e.g. a failed in-flight request that leaves the dialog open for a
+    // retry). Watch for that and hand focus to the first control the moment
+    // it is enabled — but only while focus is still exactly where THIS trap
+    // parked it, never stealing focus the user has since moved elsewhere.
+    const reenableObserver = new MutationObserver(() => {
+      const c = containerRef.current;
+      if (!c || document.activeElement !== c) return;
+      const focusables = getModalFocusables(c);
+      if (focusables.length > 0) focusables[0].focus();
+    });
+    if (container) reenableObserver.observe(container, { attributes: true, subtree: true, attributeFilter: ['disabled'] });
     return () => {
       window.removeEventListener('keydown', onKey);
       container?.removeEventListener('focusout', onFocusOut);
+      reenableObserver.disconnect();
       focusAfterDialog(opener, fallback);
     };
   }, [open, containerRef, fallback]);
@@ -210,9 +263,21 @@ export function useModalTabTrap(open: boolean, containerRef: RefObject<HTMLEleme
  * than patched per finding. `allowsStack` is the one declared exception
  * (reserved for the guided tour, which does not use this registry today —
  * no caller in this file currently passes `allowsStack: true`).
+ *
+ * RED-APP-14/004 (round15): a surface refused at open time used to stay
+ * refused FOREVER, even after the blocker closed — `ModalSurface`'s own
+ * registration effect keyed only on `[open, id, allowsStack]`, none of which
+ * change when some OTHER surface's registration changes. `subscribe` lets a
+ * refused-but-still-`open` surface retry the moment the stack changes, so
+ * two surfaces racing to open in the same commit (the local-games offer and
+ * a resumed Save dialog, both triggered by the same sign-in) settle into
+ * "the one that registered first shows now; the other opens the instant the
+ * first closes" — sequenced, never stacked — with no caller-side coordination.
  */
 interface ModalRegistryEntry { id: string; allowsStack: boolean }
 let modalStack: ModalRegistryEntry[] = [];
+let stackListeners: Set<() => void> = new Set();
+function notifyStackChanged(): void { for (const listener of stackListeners) listener(); }
 export const ModalRegistry = {
   /** True if `id` may become (or remain) the active surface: nothing else is
    *  open, or every OTHER currently-open entry declares `allowsStack`. */
@@ -220,10 +285,10 @@ export const ModalRegistry = {
     return modalStack.every((e) => e.id === id || e.allowsStack);
   },
   open(id: string, allowsStack: boolean): void {
-    if (!modalStack.some((e) => e.id === id)) modalStack = [...modalStack, { id, allowsStack }];
+    if (!modalStack.some((e) => e.id === id)) { modalStack = [...modalStack, { id, allowsStack }]; notifyStackChanged(); }
   },
   close(id: string): void {
-    if (modalStack.some((e) => e.id === id)) modalStack = modalStack.filter((e) => e.id !== id);
+    if (modalStack.some((e) => e.id === id)) { modalStack = modalStack.filter((e) => e.id !== id); notifyStackChanged(); }
   },
   /** True while at least one surface (other than `excludeId`) is open — the
    *  guard App's global focus effects check before acting (RED-APP-13/002):
@@ -232,9 +297,18 @@ export const ModalRegistry = {
   isAnyOpen(excludeId?: string): boolean {
     return modalStack.some((e) => e.id !== excludeId);
   },
+  isRegistered(id: string): boolean {
+    return modalStack.some((e) => e.id === id);
+  },
   depth(): number { return modalStack.length; },
+  /** Called whenever the stack changes (an open or a close) for ANY id — a
+   *  refused surface uses this to retry, not to be told who moved. */
+  subscribe(listener: () => void): () => void {
+    stackListeners.add(listener);
+    return () => stackListeners.delete(listener);
+  },
   /** Test-only: clear all registrations between cases. */
-  _resetForTests(): void { modalStack = []; },
+  _resetForTests(): void { modalStack = []; stackListeners = new Set(); },
 };
 
 const OVERLAY_CLASS = 'fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs select-none';
@@ -284,10 +358,19 @@ export function ModalSurface({
   const [active, setActive] = useState(false);
   useLayoutEffect(() => {
     if (!open) { setActive(false); return; }
-    const canOpen = ModalRegistry.canOpen(id);
-    setActive(canOpen);
-    if (canOpen) ModalRegistry.open(id, allowsStack);
-    return () => ModalRegistry.close(id);
+    // RED-APP-14/004: try now, and again every time the stack changes while
+    // this surface is still `open` but not yet registered — the queueing
+    // that lets "close the blocker, then open" happen with no caller-side
+    // sequencing (see the registry doc above).
+    const tryRegister = () => {
+      if (ModalRegistry.isRegistered(id)) return;
+      const canOpen = ModalRegistry.canOpen(id);
+      setActive(canOpen);
+      if (canOpen) ModalRegistry.open(id, allowsStack);
+    };
+    tryRegister();
+    const unsubscribe = ModalRegistry.subscribe(tryRegister);
+    return () => { unsubscribe(); ModalRegistry.close(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, id, allowsStack]);
 
@@ -310,7 +393,7 @@ export function ModalSurface({
     return (
       <div data-modal-surface={id} className={overlayClassName ?? DRAWER_OVERLAY_CLASS}>
         <div className={DRAWER_BACKDROP_CLASS} onClick={onClose} />
-        <div ref={panelRef} role="dialog" aria-modal="true" aria-label={ariaLabel} className={panelClassName} style={panelStyle}>
+        <div ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={ariaLabel} className={panelClassName} style={panelStyle}>
           {children}
         </div>
       </div>
@@ -329,6 +412,7 @@ export function ModalSurface({
     >
       <div
         ref={panelRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel}

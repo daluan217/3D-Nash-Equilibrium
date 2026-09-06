@@ -322,25 +322,25 @@ function extractModalSurfaceBlock(src: string, id: string): string {
 // through the ONE shared `<ModalSurface>` implementation (src/modalsurface
 // .test.ts covers its registry/mutation testing) — so "a new dialog forgot
 // to be added to the list" is no longer a reachable shape: there is no list.
-// What remains decidable here: Edit's own `onClose` still carries the SAME
-// side-effects its "✕" button and backdrop always used (the actual per-
-// dialog behavior this finding cared about), and the local-games-offer
-// dialog (still hand-rolled, out of round14's scope) still has its own
-// stopPropagation() guard against the tour-cascade defect (RED-APP-6/002).
+// round15 (BLUE-MODAL-15): the local-games offer joins the same primitive —
+// its Escape/stopPropagation-against-the-tour guard (RED-APP-6/002) is now
+// ModalSurface's, not a hand-rolled copy. What remains decidable here: Edit's
+// and the offer's own `onClose` still carry the SAME side-effects their "✕"
+// button/backdrop always used (the actual per-dialog behavior this finding
+// cared about).
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const editBlock = extractModalSurfaceBlock(app, 'edit-saved-game');
   ok(/onClose=\{\(\) => \{ setIsEditModalOpen\(false\); setEditError\(''\); \}\}/.test(editBlock),
     `Edit's <ModalSurface onClose> must close the SAME way its own "✕" button and backdrop do, got: ${JSON.stringify(editBlock.slice(0, 300))}`);
 
-  // The one dialog NOT converted this round still needs its own explicit
-  // Escape handling with stopPropagation (RED-APP-6/002) — it does not
-  // inherit ModalSurface's.
-  const localGamesIdx = app.indexOf('aria-label="Games saved on this device"');
-  ok(localGamesIdx > 0, 'the local-games-offer dialog must still be found (out of round14 scope, unconverted)');
-  const escapeChainIdx = app.indexOf('localGamesOffer) { if (!localGamesBusy) setLocalGamesOffer(null); e.stopPropagation(); }');
-  ok(escapeChainIdx > 0,
-    'the local-games-offer dialog must still close on Escape with e.stopPropagation() (RED-APP-6/002)');
+  // The local-games offer's onClose must still refuse to close mid-request
+  // (RED-APP-12's "never mid-move" rule) — ModalSurface's shared Escape
+  // handler always stopPropagation()s while active regardless of what onClose
+  // itself decides, so the busy guard belongs in onClose, not around it.
+  const offerBlock = extractModalSurfaceBlock(app, 'local-games-offer');
+  ok(/onClose=\{\(\) => \{ if \(!localGamesBusy\) setLocalGamesOffer\(null\); \}\}/.test(offerBlock),
+    `the local-games-offer <ModalSurface onClose> must refuse to close while localGamesBusy, got: ${JSON.stringify(offerBlock.slice(0, 300))}`);
 
   // MUTATION / NEGATIVE FIXTURE — a hand-maintained chain missing a branch
   // (the ORIGINAL shape of this finding), to prove the check above is not
@@ -424,8 +424,11 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   ok(/if\s*\(container\s*&&\s*!container\.contains\(document\.activeElement\)\)/.test(hookBody),
     `useModalTabTrap must only move focus when it is not ALREADY inside the dialog — `
     + `otherwise Feedback's own autoFocus would be fought over, got: ${JSON.stringify(hookBody.slice(0, 400))}`);
-  ok(/getModalFocusables\(container\)\[0\]\?\.focus\(\)/.test(hookBody),
-    'useModalTabTrap must focus the FIRST focusable element, not e.g. the last or the container itself');
+  // round15 (RED-APP-14/002): falls back to the panel itself only when
+  // focusables is EMPTY (`focusables[0] ?? container`) — still the first
+  // real control whenever one exists, never the last or an arbitrary one.
+  ok(/const focusables = getModalFocusables\(container\);\s*\n[\s\S]{0,200}?\(focusables\[0\] \?\? container\)\.focus\(\);/.test(hookBody),
+    'useModalTabTrap must focus the FIRST focusable element (falling back to the panel only when none exist), not e.g. the last');
   // The mount-focus branch must run BEFORE the Tab keydown listener is
   // registered — placed after it would only take effect on the dialog's
   // SECOND open (React effect ordering), silently missing the first.
@@ -469,27 +472,23 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   ok(tourTagLine !== undefined && !tourTagLine.includes('aria-modal'),
     `THE FIX MUST NOT make the tour modal — it must stay click-through, per its own docstring, got: ${JSON.stringify(tourTagLine)}`);
 
-  // "Simulation log" appears THREE times (the inline non-modal region, this
-  // dialog's OWN aria-label, and the region reused INSIDE the expanded
-  // dialog) — the `aria-modal="true"` immediately before it picks out the
-  // dialog's own tag uniquely. This one dialog is still hand-rolled in
-  // App.tsx (out of round14's scope).
-  for (const label of ['aria-modal="true"\n      aria-label="Simulation log"']) {
-    const idx = app.indexOf(label);
-    ok(idx > 0, `dialog ${label} must be found`);
-    // Search back to the START of this dialog's backdrop div (its own
-    // "fixed inset-0" className), not a fixed character window — the
-    // RED-APP-5 003 comment above the className varies in length per dialog.
-    const backdropIdx = app.lastIndexOf('fixed inset-0', idx);
-    ok(backdropIdx > 0 && idx - backdropIdx < 600,
-      `dialog ${label}'s own backdrop div must be found nearby, got distance ${idx - backdropIdx}`);
-    const nearby = app.slice(backdropIdx, idx);
+  // round15: the expand-log dialog is now <ModalSurface ariaLabel="Simulation
+  // log" overlayClassName="...">, so its own z-index lives in its
+  // `overlayClassName` prop string in App.tsx (a custom one — a different
+  // backdrop-blur/padding than the shared four-dialog default — not the
+  // ModalSurface OVERLAY_CLASS constant checked generically below).
+  {
+    const idx = app.indexOf('ariaLabel="Simulation log"');
+    ok(idx > 0, 'the expand-log dialog\'s ariaLabel must be found');
+    const propsStart = app.lastIndexOf('<ModalSurface', idx);
+    ok(propsStart > 0 && idx - propsStart < 300, 'the <ModalSurface> opening the expand-log dialog was not found nearby');
+    const closeTagEnd = app.indexOf('>', app.indexOf('overlayClassName=', idx)) + 1;
+    const nearby = app.slice(propsStart, closeTagEnd);
     const zMatch = nearby.match(/z-\[(\d+)\]/) || nearby.match(/z-(\d+)\b/);
-    ok(zMatch !== null, `dialog ${label} must carry a z-index class, got: ${JSON.stringify(nearby)}`);
+    ok(zMatch !== null, `the expand-log dialog must carry a z-index class, got: ${JSON.stringify(nearby)}`);
     const dialogZ = Number(zMatch![1]);
     ok(dialogZ > tourZ,
-      `THE FIX: dialog ${label} (z-${dialogZ}) must paint ABOVE the tour (z-${tourZ}), or the tour can `
-      + `cover it again`);
+      `THE FIX: the expand-log dialog (z-${dialogZ}) must paint ABOVE the tour (z-${tourZ}), or the tour can cover it again`);
   }
 
   // round14: Account/Save/Edit/Feedback no longer carry their OWN z-index

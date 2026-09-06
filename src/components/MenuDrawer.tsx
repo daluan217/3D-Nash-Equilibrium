@@ -31,6 +31,10 @@ interface MenuDrawerProps {
   onClose: () => void;
   user: { id: string; username: string; email: string } | null;
   authToken: string | null;
+  /** RED-APP-14/003: the drawer's own Danger Zone requests (delete-request,
+   *  delete-confirm) must clear a dead token exactly like App.tsx's
+   *  save/edit/delete paths — same setter, not a re-implementation. */
+  updateAuthToken: (token: string | null) => void;
   /**
    * RED-DESKTOP-13/001: whether THIS device can own saved games — a signed-in
    * account OR the desktop app's local owner (no account). The Library tab
@@ -67,6 +71,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   onClose,
   user,
   authToken,
+  updateAuthToken,
   canOwnGames,
   userCustomGames,
   deletingGameIds,
@@ -122,6 +127,17 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   // so the two surfaces can't grow different descriptions/color terms again.
   const formattedCustomGames = useMemo(() => formatSavedGames(userCustomGames), [userCustomGames]);
 
+  /**
+   * RED-APP-14/003: an expired token dies mid-session same as anywhere else
+   * in the app (App.tsx's save/edit/delete paths, RED-APP-7/001) — but these
+   * two Danger Zone requests were the one place that kept it, so the header
+   * still read "Log out", the account panel still showed the registered
+   * email, and the same "Invalid or expired session" error repeated forever
+   * with no way out. The ONE call site every authenticated fetch in this
+   * file runs through, so a new one can't grow its own 401 handling.
+   */
+  const clearTokenIfExpired = (res: Response) => { if (res.status === 401) updateAuthToken(null); };
+
   // Handle deletion request (API call to dispatch email)
   const handleDeleteRequest = async () => {
     if (!authToken) return;
@@ -135,7 +151,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           'Content-Type': 'application/json',
         },
       });
-      
+
       let data;
       try {
         data = await res.json();
@@ -144,6 +160,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       }
 
       if (!res.ok) {
+        clearTokenIfExpired(res);
         throw new Error(data.error || 'Failed to initialize deletion request.');
       }
       setDeleteStep('inputCode');
@@ -170,7 +187,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         },
         body: JSON.stringify({ code: deleteCode }),
       });
-      
+
       let data;
       try {
         data = await res.json();
@@ -179,6 +196,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       }
 
       if (!res.ok) {
+        clearTokenIfExpired(res);
         throw new Error(data.error || 'Incorrect security verification code.');
       }
       setDeleteStep('success');
