@@ -57,7 +57,20 @@ const PORT_BASE = Number(process.env.DEADLINE_TEST_PORT || 4901);
  * 20s-per-case design) while restoring enough absolute margin that this race
  * needs CI-runner-under-load levels of jitter to matter, same as production.
  */
-const TEST_SCENARIO_BUDGET_MS = Number(process.env.SCENARIO_DEADLINE_TEST_BUDGET_MS || 6_000);
+// Bounded so the derived client ceiling (CLIENT_MARGIN_MULTIPLIER x budget) always
+// stays BELOW the server's 20_000 ms production default: a budget large enough to
+// push the ceiling past 20 s would let a build that ignores the knob pass every
+// timing subtest (CodeRabbit on #140). An invalid override fails loudly rather
+// than silently testing the wrong number.
+const TEST_SCENARIO_BUDGET_MS = (() => {
+  const raw = process.env.SCENARIO_DEADLINE_TEST_BUDGET_MS;
+  if (raw === undefined || raw === '') return 6_000;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1_000 || n * 3 >= 20_000) {
+    throw new Error(`SCENARIO_DEADLINE_TEST_BUDGET_MS must be an integer in [1000, 6666] (got ${JSON.stringify(raw)}): the client ceiling (3x) must stay below the 20 s production budget`);
+  }
+  return n;
+})();
 /**
  * Proportional, not additive: a multiplier keeps the same margin RATIO
  * whatever TEST_SCENARIO_BUDGET_MS is set to, so CI jitter tolerance scales
