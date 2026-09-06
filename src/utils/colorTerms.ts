@@ -209,7 +209,10 @@ export const USER_TERMS_MAX = 12;
 /** True when `s` has a grapheme boundary exactly at `at` — i.e. slicing there keeps every cluster whole. */
 function graphemeBrokenAt(s: string, at: number): boolean {
   const SegmenterCtor: typeof Intl.Segmenter | undefined = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
-  if (typeof SegmenterCtor !== 'function') return /[\ud800-\udbff]$/.test(s.slice(0, at)); // no Segmenter: only a split surrogate is detectable
+  // No Segmenter: a combining or ZWJ sequence cannot be verified whole, so every
+  // truncation is treated as a broken cluster (the term is rejected, never
+  // stored in part) — CodeRabbit on #152.
+  if (typeof SegmenterCtor !== 'function') return at < s.length;
   let pos = 0;
   for (const { segment } of new SegmenterCtor(undefined, { granularity: 'grapheme' }).segment(s)) {
     if (pos === at) return false;

@@ -222,7 +222,7 @@ export function DescriptionEditor({
       </div>
 
       {hint && (
-        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">{hint}</p>
+        <p role="status" aria-live="polite" className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">{hint}</p>
       )}
 
       {(termsA.length > 0 || termsB.length > 0) && (
