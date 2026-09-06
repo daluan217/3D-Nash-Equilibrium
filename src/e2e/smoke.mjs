@@ -4645,16 +4645,45 @@ try {
       record('the deleted game is gone from the sidebar too (same delete, both surfaces)',
         await dp.getByRole('button', { name: nameA, exact: true }).isVisible().catch(() => false) === false);
 
-      // ── Empty state: the LANDMARK MECHANISM agrees on both surfaces (kept
-      // mounted, tabIndex=-1) after deleting the last game via the DRAWER —
-      // the COPY itself is deliberately per-variant product text
-      // (OPUS-REVIEW-LIST F4), pinned per-surface here rather than compared
-      // for equality (unit test savedgameslist.test.ts proves the same split
-      // at the SSR level). ──
+      // ── Cross-surface in-flight Delete, the OTHER direction (CodeRabbit on
+      // #150: the drawer-origin case was untested — a regression that only
+      // threads deletingGameIds into the SIDEBAR, never the drawer's own
+      // call, could still pass the check above). Same controllable gate,
+      // delete started from the DRAWER this time; the SIDEBAR's row for the
+      // same game must read disabled/aria-busy while it is held open. ──
       await openLibrary(dp);
       const drawerRowB = dp.locator('[data-drawer-game]', { hasText: nameB });
+      let releaseDeleteB;
+      const deleteGateB = new Promise((resolve) => { releaseDeleteB = resolve; });
+      await dp.route('**/api/games/**', async (route) => {
+        if (route.request().method() !== 'DELETE') return route.continue();
+        await deleteGateB;
+        await route.continue();
+      });
       await drawerRowB.getByTitle('Delete custom layout').click();
-      await drawerRowB.waitFor({ state: 'detached', timeout: 8000 });
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+      const sidebarRowB = dp.locator('[data-focus-fallback="saved-games"] [data-saved-game]', { has: dp.getByRole('button', { name: nameB, exact: true }) });
+      const delSidebarB = sidebarRowB.getByTitle('Delete this saved game');
+      let inFlightB = { disabled: false, busy: null };
+      for (let i = 0; i < 50 && !(inFlightB.disabled === true && inFlightB.busy === 'true'); i++) {
+        inFlightB = await delSidebarB.evaluate((el) => ({ disabled: el.disabled, busy: el.getAttribute('aria-busy') }));
+        if (!(inFlightB.disabled === true && inFlightB.busy === 'true')) await dp.waitForTimeout(100);
+      }
+      record('FIX: mid-delete STARTED FROM THE DRAWER, the SIDEBAR\'s row for the same game is already disabled/aria-busy',
+        inFlightB.disabled === true && inFlightB.busy === 'true', JSON.stringify(inFlightB));
+      releaseDeleteB();
+      await sidebarRowB.waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
+      await dp.unroute('**/api/games/**');
+      record('the deleted game is gone from the sidebar too (delete started from the drawer)', await sidebarRowB.count() === 0);
+
+      // ── Empty state: the LANDMARK MECHANISM agrees on both surfaces (kept
+      // mounted, tabIndex=-1) after deleting the last game — the COPY itself
+      // is deliberately per-variant product text (OPUS-REVIEW-LIST F4),
+      // pinned per-surface here rather than compared for equality (unit test
+      // savedgameslist.test.ts proves the same split at the SSR level). ──
+      await openLibrary(dp);
+      await dp.waitForFunction(() => document.querySelectorAll('[data-drawer-game]').length === 0, null, { timeout: 8000 }).catch(() => {});
       const drawerEmpty = await dp.evaluate(() => {
         const lm = document.querySelector('[data-focus-fallback="drawer-games"]');
         return { present: !!lm, tabIndex: lm?.getAttribute('tabindex'), text: (lm?.textContent || '').trim() };
