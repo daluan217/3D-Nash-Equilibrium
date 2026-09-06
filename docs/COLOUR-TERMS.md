@@ -53,7 +53,18 @@ operations matters (RED-REGEN-6/001: a glyph fold placed *after* `.normalize
    ? … ‥` and their CJK/fullwidth counterparts (`。 、 ， ； ： ！ ？ ¡ ¿`), every
    quote mark already folded to `"`/`'` plus `« »`, and every ASCII/CJK/
    fullwidth bracket pair (`() [] {} 「」『』〈〉《》【】〔〕（）［］｛｝`).
-6. **Case-folded** (`.toLowerCase()`), last.
+6. **Case-folded** (`.toLowerCase()`).
+7. **A leading indefinite/definite article** (`a`, `an`, `the`, each followed
+   by whitespace) **stripped, last** (RED-CLOUD-11/001): a regenerated actor noun and an existing chip
+   naming the *same* character but introduced with a different article — "a
+   landowner" vs "the landowner" — are, to a reader, one phrase, and the model
+   itself writes the same referent both ways within one description
+   (indefinite, then definite, on a later co-reference). Only a **leading**
+   article immediately followed by more text is stripped: `"another chance"`
+   (no space after "an"), `"a-frame"` (no space after "a"), and a bare `"a"`/
+   `"the"` with nothing left to fold onto are all left alone. Two different
+   nouns sharing the same article (`"a landowner"` vs `"a farmer"`) are of
+   course still different phrases — only the article itself folds away.
 
 **Never folds, never trims** — these carry meaning, not decoration: `%`, `#`,
 `&`, `$`, `+`, digits, a leading `-` (sign, not punctuation), and any
@@ -61,6 +72,16 @@ dash/apostrophe **inside** a word (an inner hyphen is not edge punctuation:
 `"Co-op"` and `"Coop"` are different phrases). A phrase that is *entirely*
 punctuation after every fold above (e.g. `"..."`) keys to the empty string and
 is refused by `cleanUserColorTerms` (nothing left to highlight).
+
+**The article fold is EXCLUSIVITY-only, never rendering.** `ColorCoded` never
+uses `colorTermKey` (§(c) below) — it matches the chip's own literal, stored
+spelling — so a chip stored as `"the landowner"` still colours only that exact
+literal text; it is never repainted onto a bare `"landowner"` or an `"a
+landowner"` occurring elsewhere in the same sentence. The fold only changes
+whether two *different* stored spellings are treated as the same phrase for
+ownership/collision purposes (`cleanUserColorTerms`'s dedup,
+`cleanUserColorTermPair`'s cross-player exclusivity, `regenKeptColorTerms`'s
+new-actor-noun-vs-existing-chip guard, the server's PATCH pairing).
 
 **Documented gap, out of scope** (found by `src/colorterms.property.test.ts`,
 zero measured real-world reach): `cleanUserColorTerms` collapses internal
@@ -130,11 +151,32 @@ whitespace-collapse step for a single glyph with no realistic path to it.
   writes the emptied side and returns 200 (unchanged; the client's own
   chip-picker keeps its two lists mutually exclusive already, so this shape
   is a same-request self-collision, not two independent tabs, and CodeRabbit
-  established this "explicit submission still wins" contract on its own). The
-  Edit dialog shows the 409's message and leaves the dialog open — the same
-  generic `else` branch every other non-200/404 status already falls into
-  (`src/App.tsx`, `handleEditGameSubmit`); there is no 409-specific UI branch
-  to regress independently.
+  established this "explicit submission still wins" contract on its own).
+
+- **Recovering from a 409 must actually work (RED-REGEN-8/002 +
+  RED-APP-12/002).** The server's message tells the user to "Reopen Edit to
+  see the latest" — that instruction is only honest if reopening Edit
+  actually shows something new. `handleEditGameSubmit`'s 409 branch
+  (`src/App.tsx`) refetches the game list **in place**, on the 409 itself
+  (never on a literal dialog close/reopen, which would read the same stale
+  cached row): for each colour-term side the user has **not** touched since
+  opening the dialog, if the fresh stored value differs from the dialog's
+  own baseline, that side's chips are adopted into the dialog AND the
+  baseline moves to the fresh value (so the next Save diffs against current
+  data); a side the user **has** typed into is left exactly as they left it
+  — both the visible chip and the diff baseline — so their own edit is still
+  sent as an explicit change on the next Save (same-field races stay
+  last-writer-wins, unchanged). The dialog is never closed by this branch,
+  and neither side is ever silently dropped to make the 409 go away: if the
+  user's own untouched side genuinely collided with the fresh other side,
+  both chips are shown at once (one may render neutral via the ownership
+  rule above) and the user must remove one themselves — the error message
+  says which player's highlights changed and that they are "shown now —
+  adjust and save again." Name/description/labels are not re-baselined by
+  this branch: the 409 guard is scoped to colour terms only, and those
+  fields have no cross-request collision guard of their own, so leaving
+  their baseline alone cannot clobber a concurrent change to them (nothing
+  is ever sent for a field the user did not type into, refetch or not).
 
 ## (c) RENDERING — `ColorCoded`
 
@@ -150,6 +192,30 @@ chip. This is safe *because* every list `ColorCoded` is ever handed
 *same* literal occurrence differently can't coexist on opposite sides. If
 `ColorCoded` is ever handed a term list from anywhere else, this invariant
 must be re-established there first.
+
+**The boundary itself (RED-REGEN-8/001).** A chip matches only where BOTH
+neighbouring characters are non-letter/non-digit/non-underscore in the
+**Unicode** sense (`\p{L}`, `\p{N}`, `_`), not ASCII `\w` — the old ASCII-only
+lookaround treated the join between an ASCII letter and an *adjacent
+non-ASCII letter* as a word boundary, silently splitting one real word
+("se|ñor", "tr|ès", "gå|rd", "Wal|öl") and painting half of it. A chip that
+IS an accented/Cyrillic/Greek word ("très", "пример", "θεωρία") still matches
+as a whole; an ASCII prefix/suffix of a longer non-ASCII word no longer does.
+
+**CJK/kana decision, made explicitly (not assumed):** Han, Hiragana, and
+Katakana characters are carved back OUT of the "letter" class for boundary
+purposes only, even though they satisfy `\p{L}`. Those scripts write with no
+spaces between words at all, so requiring a real Unicode word boundary around
+them would make a CJK colour-term chip nearly unmatchable inside ordinary
+prose ("日本" could never highlight inside "日本語" since every neighbour is
+also a CJK letter) — a strictly worse outcome for CJK users than today's
+behaviour. **Kept as-is:** a chip may still match mid-compound in CJK/kana
+text ("日本" inside "日本語" highlights; "タワー" inside "東京タワーは"
+highlights). Non-CJK scripts get the opposite fix (a real boundary is now
+enforced) because they *do* use spaces, so the old ASCII-only gap was pure
+regression there with no such trade-off. Pinned by
+`src/colorterms.property.test.ts`'s "(boundary)" checks (PART 6) so a future
+"fix" cannot flip the CJK decision silently.
 
 ## (d) Deliberately out of scope
 
