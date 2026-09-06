@@ -120,9 +120,21 @@ for (const clause of [
  * the filter is what keeps the list honest.
  */
 function workflowRunFiltersToMain(yaml: string): boolean {
-  const block = yaml.match(/^\s*workflow_run:\n((?:[ \t]+.*\n|[ \t]*#.*\n)*)/m);
-  if (!block) return false;
-  return /^\s*branches:\s*\[\s*['"]?main['"]?\s*\]/m.test(block[1]);
+  const lines = yaml.split('\n');
+  const at = lines.findIndex((l) => /^\s*workflow_run:\s*$/.test(l));
+  if (at < 0) return false;
+  const indent = lines[at].match(/^\s*/)![0].length;
+  // The block is exactly the lines indented DEEPER than the `workflow_run:` key
+  // (comments and blanks pass through). It ends at the first sibling key —
+  // so a `push:` trigger's own `branches: [main]` beside it cannot satisfy
+  // this check (CodeRabbit CLI on the first draft).
+  const block: string[] = [];
+  for (const l of lines.slice(at + 1)) {
+    if (/^\s*$/.test(l) || /^\s*#/.test(l)) continue;
+    if (l.match(/^\s*/)![0].length <= indent) break;
+    block.push(l);
+  }
+  return block.some((l) => /^\s*branches:\s*\[\s*['"]?main['"]?\s*\]/.test(l));
 }
 for (const f of ['deploy-site.yml', 'live-smoke.yml', 'release-desktop.yml']) {
   if (!workflowRunFiltersToMain(read(f))) {
@@ -138,6 +150,8 @@ for (const f of ['deploy-site.yml', 'live-smoke.yml', 'release-desktop.yml']) {
 const MUST_FLAG: Array<[string, () => boolean]> = [
   ['workflow_run trigger without a branches filter', () => !workflowRunFiltersToMain(
     'on:\n  workflow_run:\n    workflows: [Test]\n    types: [completed]\n  workflow_dispatch:\njobs:\n  a:\n    steps:\n      - run: true\n')],
+  ['workflow_run trigger without a filter, next to a push trigger that HAS branches: [main]', () => !workflowRunFiltersToMain(
+    'on:\n  workflow_run:\n    workflows: [Test]\n    types: [completed]\n  push:\n    branches: [main]\njobs:\n  a:\n    steps:\n      - run: true\n')],
   ['workflow_run trigger filtered to a branch other than main', () => !workflowRunFiltersToMain(
     'on:\n  workflow_run:\n    workflows: [Test]\n    branches: [release]\njobs:\n  a:\n    steps:\n      - run: true\n')],
   // The bare checkout CodeRabbit caught on this very PR.
