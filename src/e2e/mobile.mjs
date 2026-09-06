@@ -159,9 +159,13 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   }, PLOT);
   // "Running" is simulation STATE (CodeRabbit on #153, never a button label): the current-position
   // sphere's (x, y) in Plotly's resolved data moves within the window only when a step ran and was drawn.
-  const isRunning = async () => {
+  // Polled to a deadline, never one fixed sample: "running" returns the moment the sphere moves;
+  // "not running" is only concluded after no movement for the whole window (CodeRabbit on #153).
+  const isRunning = async (ms = 2000) => {
     const read = () => page.evaluate((id) => { const t = (document.getElementById(id)?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return t ? [t.x[0], t.y[0]] : null; }, PLOT);
-    const a = JSON.stringify(await read()); await page.waitForTimeout(500); return JSON.stringify(await read()) !== a;
+    const a = JSON.stringify(await read()); const t0 = Date.now();
+    while (Date.now() - t0 < ms) { await page.waitForTimeout(100); if (JSON.stringify(await read()) !== a) return true; }
+    return false;
   };
 
   await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -233,9 +237,13 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   const settle = async (pred, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await page.waitForTimeout(100); } return pred(); };
   // "Running" is simulation STATE (CodeRabbit on #153, never a button label): the current-position
   // sphere's (x, y) in Plotly's resolved data moves within the window only when a step ran and was drawn.
-  const isRunning = async () => {
+  // Polled to a deadline, never one fixed sample: "running" returns the moment the sphere moves;
+  // "not running" is only concluded after no movement for the whole window (CodeRabbit on #153).
+  const isRunning = async (ms = 2000) => {
     const read = () => page.evaluate((id) => { const t = (document.getElementById(id)?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return t ? [t.x[0], t.y[0]] : null; }, PLOT);
-    const a = JSON.stringify(await read()); await page.waitForTimeout(500); return JSON.stringify(await read()) !== a;
+    const a = JSON.stringify(await read()); const t0 = Date.now();
+    while (Date.now() - t0 < ms) { await page.waitForTimeout(100); if (JSON.stringify(await read()) !== a) return true; }
+    return false;
   };
   // Simulation STATE, not a label: the current-position sphere's (x, y) in
   // Plotly's resolved data moves only when a step ran AND Plotly.react drew it.
