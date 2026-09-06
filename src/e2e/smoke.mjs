@@ -3180,12 +3180,14 @@ try {
       await dp.getByRole('button', { name: /library/i }).first().click();
       const drawerCards = dp.locator('[data-drawer-game]', { hasText: name });
       const drawerListed = await drawerCards.first().waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
-      const drawerText = await dp.evaluate(() => { const t = document.body.textContent || ''; const m = t.match(/Custom User Profiles \((\d+)\)/); return { count: m ? Number(m[1]) : null, mustSignIn: /must be signed in to view and save/i.test(t), lockHint: /Log in to persist custom profiles/i.test(t) }; });
+      // Read the drawer's own custom-games section (the landmark's parent block), not the whole body.
+      const drawerText = await dp.evaluate(() => { const lm = document.querySelector('[data-focus-fallback="drawer-games"]'); const sect = lm?.parentElement; const t = sect?.textContent || ''; const m = t.match(/Custom User Profiles \((\d+)\)/); return { sectionFound: !!sect, count: m ? Number(m[1]) : null, mustSignIn: /must be signed in to view and save/i.test(t), lockHint: /Log in to persist custom profiles/i.test(t) }; });
       record('precondition: the drawer header counts the one saved game', drawerText.count === 1, JSON.stringify(drawerText));
       record('FIX: the drawer\'s Library tab lists the game saved without an account', drawerListed, JSON.stringify(drawerText));
       record('FIX: the drawer does not tell the local owner to sign in (no "must be signed in", no "Log in to persist")', !drawerText.mustSignIn && !drawerText.lockHint, JSON.stringify(drawerText));
       await dp.keyboard.press('Escape');
-      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+      record('the drawer closes on Escape before the Delete step',
+        await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).then(() => true).catch(() => false));
 
       // ── Delete ──
       dp.once('dialog', async (d) => { await d.accept(); });
