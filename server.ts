@@ -324,6 +324,17 @@ async function inventScreenedScenario(
   clientSignal?: AbortSignal,
 ): Promise<{ scenario: SuggestedScenario | null; failure?: string; scenarioSource?: 'bank-fallback' }> {
   const requestDeadline = performance.now() + SCENARIO_REQUEST_BUDGET_MS;
+  // No draw starts with less than this left on the request clock. A model draw
+  // needs seconds (connect + first token alone is hundreds of ms), so a draw
+  // started with a few milliseconds left cannot succeed — it only costs one
+  // more physical provider request. That is exactly what CI kept catching
+  // (#139 run: first call stalls, budget expires at ~20 s, a SECOND call still
+  // starts at 20.54 s): the per-draw timer and the request clock disagree by a
+  // few ms, `remainingMs` reads as barely positive, and the retry goes out.
+  // Two seconds is far above that jitter and far below any budget a draw can
+  // actually use; the integration tests' 6 s budgets leave 4 s after their
+  // fractional rejection delay, so the documented retry still happens there.
+  const MIN_DRAW_MS = 2_000;
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
   const storyOk = (sc: SuggestedScenario): boolean => {
@@ -359,10 +370,10 @@ async function inventScreenedScenario(
     for (;;) {
       if (clientSignal?.aborted) { exhaustionFailure = 'aborted'; break; }
       const remainingMs = requestDeadline - performance.now();
-      if (remainingMs <= 0) { exhaustionFailure = 'timeout'; break; }
+      if (remainingMs < MIN_DRAW_MS) { exhaustionFailure = 'timeout'; break; }
       const draw = await drawWithDeadline(payoffs, avoid, actorNouns, remainingMs, signal);
       if (clientSignal?.aborted) { exhaustionFailure = 'aborted'; break; }
-      if (performance.now() >= requestDeadline) { exhaustionFailure = 'timeout'; break; }
+      if (requestDeadline - performance.now() < MIN_DRAW_MS) { exhaustionFailure = 'timeout'; break; }
       if (!draw.scenario) {
         // LOST: the draw never produced a scenario at all (timeout, provider
         // error, unparseable output). Exactly one retry, same as before this

@@ -115,3 +115,13 @@ bank fallback had already reached the user — now aborted instead. The same
 report separately measured 18 real draws through the actual deadline-wrapped
 HTTP path (`/api/scenario/regenerate`) all completing in 3.5-7.1s, consistent
 with the 20s deadline sitting comfortably inside the fast mode.
+
+## Minimum remaining budget before a draw starts
+
+No model draw starts with less than `MIN_DRAW_MS` (2 s, `inventScreenedScenario` in
+`server.ts`) left on the request clock. A draw needs seconds; one started with a few
+milliseconds left cannot succeed and only costs a physical provider request. This closes the
+boundary race CI kept catching on #139 (first call stalls, budget expires at ~20 s, a second
+call still starts at 20.54 s because the per-draw timer and the request clock disagree by a
+few ms). The documented retry still happens whenever the remaining budget is real: the
+integration tests' 6 s budgets leave ~4 s after their fractional rejection delay.
