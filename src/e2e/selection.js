@@ -27,6 +27,27 @@ export function measuredMs(id, timings = SHARD_TIMINGS) {
 }
 
 /**
+ * A timings table is usable only if it names EVERY registered section with a
+ * measured number and no section exceeds the per-job section budget. Used by
+ * the refresh script (refuse to write a bad table — e.g. a pre-split run that
+ * still reports 66 at 275 s and knows nothing of 66b) and by the contract
+ * test on the checked-in table. Returns the list of problems, empty when ok.
+ */
+export function validateTimings(sectionIds, timings = SHARD_TIMINGS) {
+  const problems = [];
+  const budget = timings._ceiling_ms - timings._overhead_ms;
+  for (const id of sectionIds) {
+    const v = timings[String(id)];
+    if (typeof v !== 'number') problems.push(`section ${id} has no measured entry`);
+    else if (v > budget) problems.push(`section ${id} measures ${Math.round(v / 1000)} s, over the ${budget / 1000} s per-job section budget — split it`);
+  }
+  for (const id of Object.keys(timings).filter((k) => !k.startsWith('_'))) {
+    if (!sectionIds.map(String).includes(id)) problems.push(`timings name section ${id}, which is not registered`);
+  }
+  return problems;
+}
+
+/**
  * Deterministic longest-processing-time packing: sections sorted by measured
  * duration (desc, then id) each go to the currently lightest shard. Returns
  * the definitions with `.shard` set plus the per-shard totals, so the runner,

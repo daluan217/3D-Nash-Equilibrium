@@ -10,7 +10,7 @@ import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
-import { selectSmokeSections, assignShards, measuredMs, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
+import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -81,7 +81,14 @@ assert.deepStrictEqual(again.definitions.map((d) => d.shard), definitions.map((d
   const over = assignShards(Object.keys(many).map((id) => ({ id })), { ...fake, ...many }, 20);
   assert(Math.max(...over.totals) > SECTION_BUDGET_MS, 'forty 120 s sections cannot fit 20 shards under budget (known positive)');
   assert(assignShards([{ id: 'zz' }], fake, 1).totals[0] === 90000, 'an unmeasured section packs at _default');
+  // validateTimings (shared with scripts/shard-timings-from-run.mjs) rejects the two bad-table shapes
+  // CodeRabbit named on #157: a pre-split run's table (66 at 275 s, no 66b) and an incomplete one.
+  assert.deepStrictEqual(validateTimings(['66', '66b'], { ...fake, '66': 275000 }).length, 2,
+    'a table with 66 over budget and 66b missing must report both problems');
+  assert.deepStrictEqual(validateTimings(['1'], { ...fake, '1': 1000, '2': 1000 }), ['timings name section 2, which is not registered']);
+  assert.deepStrictEqual(validateTimings(['1'], { ...fake, '1': 1000 }), [], 'a complete, in-budget table is accepted');
 }
+assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'the checked-in timings table must be complete and in budget');
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
