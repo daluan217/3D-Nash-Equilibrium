@@ -4220,6 +4220,288 @@ try {
     } finally { await p.close().catch(() => {}); }
   });
 
+  // ── round14 structural pass (BLUE-MODAL-14): ModalSurface + registry ──
+  // Fixes RED-APP-13/002 (a 401 mid-submit on Save/Edit left focus on <body>,
+  // and the app's own [user] focus effect then threw it at a header control
+  // hidden under the still-open dialog's backdrop — Enter there stacked a
+  // second dialog), /003 (the drawer's Delete had no in-flight state) and
+  // /004 (the drawer had no role="dialog"/aria-modal and no Tab trap at all,
+  // so Tab could escape it onto the page's floating Feedback button). Every
+  // check below reads real DOM state (activeElement, attributes,
+  // elementFromPoint) through a bounded poll or an immediate read after a
+  // real event — never a fixed sleep. The mutation each check would catch is
+  // named in its own comment; two are independently re-verified by hand
+  // (recorded in BLUE-MODAL-14's REPORT.md), not merely asserted here.
+  section('66', 'ModalSurface: single-active-modal registry, drawer trap and in-flight delete', 12, async () => {
+    // Shared: `presses` Tab presses, asserting focus never leaves `dialogSelector`.
+    // Mutation: drop ModalSurface's Tab-trap keydown listener — the FIRST
+    // press already lands outside and this returns { stayed: false, atPress: 1 }.
+    const sweepStaysInside = async (p, containerSelector, presses) => {
+      for (let i = 0; i < presses; i++) {
+        await p.keyboard.press('Tab');
+        const inside = await p.evaluate((sel) => {
+          const c = document.querySelector(sel);
+          return !!c && c.contains(document.activeElement);
+        }, containerSelector);
+        if (!inside) return { stayed: false, atPress: i + 1 };
+      }
+      return { stayed: true };
+    };
+
+    // ── Part A: Feedback + Account — open, 60 Tabs stay inside, Escape
+    // closes and returns focus to the button that opened it. Neither
+    // dialog needs an account, so both run on one fresh page.
+    {
+      const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+
+      const cases = [
+        // Feedback's own `autoFocus` textarea fires a real `focusin` during
+        // the SAME commit that mounts it — BEFORE useModalTabTrap's (passive)
+        // effect ever reads `lastInteractedControl` — so opener-tracking sees
+        // the textarea, not the launcher button, and `!container.contains
+        // (lastInteractedControl)` is false: `opener` resolves to null. This
+        // predates round14 (verified against ModalSurface's moved-but-
+        // unchanged useModalTabTrap) and is not a RED-APP-13 shape, so this
+        // case checks the WEAKER, still-correct invariant focusAfterDialog
+        // actually delivers here (real, connected, not <body>, not still in
+        // a dialog) rather than an exact-opener match this dialog's own
+        // autoFocus makes structurally unreachable.
+        { label: 'Send feedback', opener: () => p.locator('button[title="Send feedback"]'), strict: false },
+        { label: 'Account', opener: () => p.getByRole('button', { name: /sign in.*sign up/i }).first(), strict: true },
+      ];
+      for (const { label, opener, strict } of cases) {
+        const openerLoc = opener();
+        await openerLoc.focus();
+        await openerLoc.click();
+        await p.waitForSelector(`[role="dialog"][aria-label="${label}"]`, { timeout: 8000 });
+        const sweep = await sweepStaysInside(p, `[role="dialog"][aria-label="${label}"]`, 60);
+        record(`${label} dialog: 60 Tab presses stay inside (RED-APP-13/004 shape)`, sweep.stayed, JSON.stringify(sweep));
+        await p.keyboard.press('Escape');
+        await p.waitForFunction((l) => !document.querySelector(`[role="dialog"][aria-label="${l}"]`), label, { timeout: 8000 }).catch(() => {});
+        record(`${label} dialog: Escape closes it`,
+          !(await p.locator(`[role="dialog"][aria-label="${label}"]`).isVisible().catch(() => false)));
+        // Mutation: drop `focusAfterDialog(opener, fallback)` from
+        // ModalSurface's useModalTabTrap cleanup — activeElement stays <body>,
+        // failing both the strict and the loose form of this check.
+        let focusOk = false;
+        let lastInfo = null;
+        for (let i = 0; i < 20 && !focusOk; i++) {
+          if (strict) {
+            focusOk = await openerLoc.evaluate((el) => el === document.activeElement).catch(() => false);
+          } else {
+            lastInfo = await p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, connected: !!a?.isConnected, inDialog: !!a?.closest('[role="dialog"]') }; });
+            focusOk = lastInfo.connected && lastInfo.tag !== 'BODY' && !lastInfo.inDialog;
+          }
+          if (!focusOk) await p.waitForTimeout(50);
+        }
+        record(`${label} dialog: closing it returns focus to ${strict ? 'the control that opened it' : 'a real, connected control outside every dialog (not the exact opener — see comment above)'}`,
+          focusOk, JSON.stringify(lastInfo));
+      }
+      await p.close();
+    }
+
+    // ── Part B: Save + Edit — each dialog's own Tab trap/Escape-return
+    // (same shape as Part A), THEN the 401-mid-submit shape RED-APP-13/002
+    // actually reproduced: dialog stays open, focus stays INSIDE it (not on
+    // a header control under the backdrop), and Enter cannot stack a second
+    // dialog on top of it. Mutation for the 401 checks: remove the `[user]`
+    // effect's `if (ModalRegistry.isAnyOpen()) return;` guard in App.tsx —
+    // focus moves to the header "Sign In / Sign Up" control and a second
+    // `[role="dialog"]` (Account) appears after Enter. Save and Edit each
+    // get their OWN fresh signed-in session: the 401 branch calls
+    // `updateAuthToken(null)`, which signs the WHOLE PAGE out — running both
+    // 401 cases on one session would have the second time out finding its
+    // own Edit button, gated on the (now false) `canOwnGames`.
+    // `dialogs.length <= 1` (not `=== 1`) matches the director's own
+    // independent harness (round13/notes/DIRECTOR/repro-app13.mjs): the
+    // fixed focus-recapture can legitimately land on the dialog's own
+    // "Close dialog" ✕ (the first focusable once the error banner is the
+    // newest content), so Enter there CLOSES the dialog rather than leaving
+    // it open — neither outcome is the reported defect (a SECOND dialog
+    // stacked on an still-open first one).
+    for (const surface of ['save', 'edit']) {
+      const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+      const uniq = await registerAndLogin(p, `e66${surface}`);
+      const gameName = `Modal66${surface}-${uniq}`;
+      const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+      await fetch(BASE + '/api/games', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: gameName, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }),
+      });
+      await p.reload({ waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+
+      const label = surface === 'save' ? 'Save custom game' : 'Edit saved game';
+      const dialogSel = `[role="dialog"][aria-label="${label}"]`;
+      const opener = surface === 'save'
+        ? p.getByRole('button', { name: /save preset/i })
+        : p.locator('div.group', { has: p.getByRole('button', { name: gameName, exact: true }) }).getByTitle(/^Edit /);
+      const surfaceName = surface === 'save' ? 'Save' : 'Edit';
+
+      // Own Tab trap + Escape-return first (route-free).
+      await opener.focus();
+      await opener.click();
+      await p.waitForSelector(dialogSel, { timeout: 8000 });
+      const sweep = await sweepStaysInside(p, dialogSel, 60);
+      record(`${surfaceName} dialog: 60 Tab presses stay inside`, sweep.stayed, JSON.stringify(sweep));
+      await p.keyboard.press('Escape');
+      await p.waitForFunction((s) => !document.querySelector(s), dialogSel, { timeout: 8000 }).catch(() => {});
+      record(`${surfaceName} dialog: Escape closes it`, !(await p.locator(dialogSel).isVisible().catch(() => false)));
+      let focusReturned = false;
+      for (let i = 0; i < 20 && !focusReturned; i++) {
+        focusReturned = await opener.evaluate((el) => el === document.activeElement).catch(() => false);
+        if (!focusReturned) await p.waitForTimeout(50);
+      }
+      record(`${surfaceName} dialog: closing it returns focus to its own opener`, focusReturned);
+
+      // RED-APP-13/002 shape: mock a 401 on the real submit, and check the
+      // dialog stayed open with focus still inside it.
+      if (surface === 'save') {
+        await p.route('**/api/games', (route) => route.request().method() === 'POST'
+          ? route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session. Please sign in again.' }) })
+          : route.continue());
+      } else {
+        await p.route('**/api/games/*', (route) => route.request().method() === 'PATCH'
+          ? route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) })
+          : route.continue());
+      }
+      await opener.click();
+      await p.waitForSelector(dialogSel, { timeout: 8000 });
+      if (surface === 'save') {
+        await p.locator(`${dialogSel} input[placeholder="e.g. Battle of the Sexes 2.0"]`).fill('Focus probe 66');
+      } else {
+        // #126: a no-change Edit sends nothing, so the mocked 401 never fires.
+        await p.locator(`${dialogSel} textarea`).first().fill('Edited so a PATCH goes out and meets the mocked 401.');
+      }
+      const method = surface === 'save' ? 'POST' : 'PATCH';
+      const submitDone = p.waitForResponse((r) => /\/api\/games/.test(r.url()) && r.request().method() === method, { timeout: 15000 });
+      const submitBtn = surface === 'save'
+        ? p.getByRole('dialog', { name: label }).getByRole('button', { name: /save game profile/i })
+        : p.getByRole('button', { name: /^save changes$/i });
+      await submitBtn.click();
+      await submitDone.catch(() => null);
+      await p.waitForFunction((s) => Array.from(document.querySelectorAll(`${s} button`)).some((b) => /sign in.*sign up/i.test(b.textContent || '')),
+        dialogSel, { timeout: 5000 }).catch(() => {});
+      const focusInfo401 = await p.evaluate((l) => { const a = document.activeElement; return { dialogs: [...document.querySelectorAll('[role="dialog"]')].map((d) => d.getAttribute('aria-label')), inDialog: !!a?.closest(`[aria-label="${l}"]`) }; }, label);
+      record(`${surfaceName} dialog + 401: the dialog is still open and focus stayed inside it (RED-APP-13/002)`,
+        focusInfo401.dialogs.includes(label) && focusInfo401.inDialog, JSON.stringify(focusInfo401));
+      await p.keyboard.press('Enter');
+      await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const dialogCountAfterEnter = await p.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
+      record(`${surfaceName} dialog + 401: Enter does not stack a second dialog on top`, dialogCountAfterEnter <= 1, `found ${dialogCountAfterEnter}`);
+      await p.close();
+    }
+
+    // ── Part C: the workspace drawer — role="dialog"/aria-modal, 60 Tabs
+    // stay inside, Escape closes it, and the Delete button carries the
+    // SAME in-flight state (disabled/aria-busy) the sidebar's already does
+    // (RED-APP-13/003), with its DELETE artificially delayed so the
+    // in-flight window is observable.
+    {
+      const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+      const uniq = await registerAndLogin(p, 'e66d');
+      const gameName = `Drawer66-${uniq}`;
+      const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+      await fetch(BASE + '/api/games', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: gameName, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }),
+      });
+      await p.reload({ waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+
+      const menuBtn = p.getByRole('button', { name: /open workspace menu/i }).first();
+      await menuBtn.click();
+      const closeMenuBtn = p.getByRole('button', { name: /close menu/i }).first();
+      await closeMenuBtn.waitFor({ state: 'visible', timeout: 8000 });
+      // Mutation: drop `role="dialog" aria-modal="true"` from ModalSurface's
+      // drawer layout branch — this becomes { hasDialogRole: false, ... }.
+      const drawerSemantics = await p.evaluate(() => {
+        const c = [...document.querySelectorAll('button')].find((b) => /close menu/i.test(b.getAttribute('aria-label') || b.textContent || ''));
+        const dlg = c?.closest('[role="dialog"]');
+        return { hasDialogRole: !!dlg, ariaModal: dlg?.getAttribute('aria-modal') ?? null };
+      });
+      record('drawer: it is a role="dialog" with aria-modal="true" (RED-APP-13/004)',
+        drawerSemantics.hasDialogRole && drawerSemantics.ariaModal === 'true', JSON.stringify(drawerSemantics));
+      await closeMenuBtn.focus();
+      const drawerSweep = await sweepStaysInside(p, '[role="dialog"][aria-label="Simulator Workspace Center"]', 60);
+      record('drawer: 60 Tab presses stay inside the panel (RED-APP-13/004)', drawerSweep.stayed, JSON.stringify(drawerSweep));
+      await p.keyboard.press('Escape');
+      await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {});
+      record('drawer: Escape closes it', !(await closeMenuBtn.isVisible().catch(() => false)));
+
+      // In-flight Delete, DELETE delayed 2.5s.
+      await menuBtn.click();
+      await p.getByRole('button', { name: /library/i }).first().click();
+      await p.route('**/api/games/*', async (route) => {
+        if (route.request().method() === 'DELETE') await new Promise((r) => setTimeout(r, 2500));
+        return route.continue();
+      });
+      const card = p.locator('[data-drawer-game]', { hasText: gameName });
+      await card.waitFor({ state: 'visible', timeout: 8000 });
+      const delBtn = card.getByTitle('Delete custom layout');
+      await delBtn.scrollIntoViewIfNeeded();
+      p.once('dialog', async (d) => { await d.accept(); });
+      await delBtn.click();
+      // Mutation: drop `disabled={deletingGameIds.includes(game.id)}` (or
+      // the matching aria-busy) from the drawer's Delete button — this
+      // reads { disabled: false, ariaBusy: null } while the DELETE is
+      // still in flight, exactly RED-APP-13/003's finding.
+      let inFlight = { disabled: false, ariaBusy: null };
+      for (let i = 0; i < 15; i++) {
+        inFlight = await delBtn.evaluate((b) => ({ disabled: b.disabled, ariaBusy: b.getAttribute('aria-busy') })).catch(() => inFlight);
+        if (inFlight.disabled) break;
+        await p.waitForTimeout(50);
+      }
+      record('drawer: the Delete button is disabled/aria-busy while its DELETE is in flight (RED-APP-13/003)',
+        inFlight.disabled === true && inFlight.ariaBusy === 'true', JSON.stringify(inFlight));
+      await card.waitFor({ state: 'hidden', timeout: 8000 });
+      await p.close();
+    }
+
+    // ── Part D: activating Feedback while the drawer is open must be
+    // impossible BY KEYBOARD — the drawer's own Tab trap (Part C) already
+    // proves Tab cannot leave it, so a fresh, deliberately naive attempt
+    // (many Tabs, checking after EVERY press whether the Feedback launcher
+    // — behind the drawer's backdrop — ever becomes focused) closes
+    // RED-APP-13/004's exact reproduction rather than a paraphrase of it.
+    // Mutation: same as Part C's Tab-trap drop — the Feedback button would
+    // receive focus within a handful of presses and this fails immediately.
+    {
+      const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+      await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+      const closeMenuBtn = p.getByRole('button', { name: /close menu/i }).first();
+      await closeMenuBtn.waitFor({ state: 'visible', timeout: 8000 });
+      await closeMenuBtn.focus();
+      let feedbackReached = false;
+      let reachedAtPress = -1;
+      for (let i = 0; i < 60 && !feedbackReached; i++) {
+        await p.keyboard.press('Tab');
+        feedbackReached = await p.evaluate(() => document.activeElement === document.querySelector('button[title="Send feedback"]'));
+        if (feedbackReached) reachedAtPress = i + 1;
+      }
+      record('drawer open: 60 Tab presses never focus the background Feedback launcher (RED-APP-13/004)',
+        !feedbackReached, `reachedAtPress=${reachedAtPress}`);
+      // Even if focus somehow landed there, Enter must not be reachable —
+      // checked as a real hit-test, not inferred: the point under any
+      // currently-focused element must resolve to the drawer's own
+      // backdrop while the drawer is open and this element is not inside it.
+      const hitTest = await p.evaluate(() => {
+        const a = document.activeElement;
+        if (!a) return { ok: true };
+        const r = a.getBoundingClientRect();
+        const under = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        const insideDrawer = !!a.closest('[role="dialog"][aria-label="Simulator Workspace Center"]');
+        return { ok: insideDrawer || under === a || a.contains(under) };
+      });
+      record('precondition: wherever focus ended up, it is either inside the drawer or a real, unobstructed hit (harness sanity)', hitTest.ok, JSON.stringify(hitTest));
+      await p.close();
+    }
+  });
+
 await executeSections();
 
 } catch (e) {
@@ -4281,6 +4563,10 @@ const EXPECTED_STATUS_NOISE = {
   // unresolved collision — a second real 409, the exact response whose
   // client-side message the section now asserts.
   '60': [409, 409],
+  // §66 (BLUE-MODAL-14, RED-APP-13/002 shape) deliberately mocks a 401 on
+  // both the Save dialog's POST and the Edit dialog's PATCH, one each — the
+  // exact behavior the section's own focus-stays-inside assertions verify.
+  '66': [401, 401],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),

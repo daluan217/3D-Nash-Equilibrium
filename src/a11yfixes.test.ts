@@ -58,6 +58,26 @@ function extractDivBlock(src: string, startMarker: string): string {
   return src.slice(start, endIdx);
 }
 
+/**
+ * round14: Account/Save/Edit/Feedback moved from a hand-rolled backdrop+panel
+ * div (which `extractDivBlock` used to scope into) to `<ModalSurface id="...">
+ * ...children...</ModalSurface>`. No `<ModalSurface>` nests inside another, so
+ * a plain string search for the matching `</ModalSurface>` (unlike
+ * `extractDivBlock`'s div-depth counting, needed only because `<div>` DOES
+ * nest) is sufficient and exact.
+ */
+function extractModalSurfaceBlock(src: string, id: string): string {
+  const idMarker = `id="${id}"`;
+  const idIdx = src.indexOf(idMarker);
+  assert(idIdx > 0, `<ModalSurface id="${id}"> not found`);
+  const tagStart = src.lastIndexOf('<ModalSurface', idIdx);
+  assert(tagStart > 0 && idIdx - tagStart < 300, `the <ModalSurface> opening this id="${id}"> was not found nearby`);
+  const openTagEnd = src.indexOf('>', idIdx) + 1;
+  const closeIdx = src.indexOf('</ModalSurface>', openTagEnd);
+  assert(closeIdx > 0, `no matching </ModalSurface> found for id="${id}"`);
+  return src.slice(tagStart, closeIdx + '</ModalSurface>'.length);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FINDING 005 (axe CRITICAL "label" rule, 13 nodes): the 8 payoff-matrix
 // inputs, x0/y0, the step-size box + slider, and the Loop Speed slider had no
@@ -284,55 +304,39 @@ function extractDivBlock(src: string, startMarker: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RED-APP-5 finding 001 (round 5): the "Edit saved game" dialog
-// (`isEditModalOpen`) was missing from BOTH the "close whichever foreground
-// modal is open on Escape" effect's condition chain AND its dependency array
-// — every other modal (Feedback, Save, Auth, and #90's expand-log dialog)
-// closes on Escape; Edit was simply never added to the list, so pressing
-// Escape while it was open did nothing. Playwright-verified before this fix
-// (`probe_edit_escape.mjs`, in RED-APP-5's worktree): Edit dialog stayed
-// visible after Escape while the Save modal control closed correctly in the
-// same run.
+// RED-APP-5 finding 001 (round 5): the "Edit saved game" dialog was once
+// missing from a hand-maintained "close whichever foreground modal is open
+// on Escape" condition chain + dependency array — every other modal closed
+// on Escape; Edit was simply never added to the list.
+//
+// round14 structural pass (BLUE-MODAL-14): that per-dialog chain is GONE.
+// Every dialog (Account/Save/Edit/Feedback/the drawer) now closes on Escape
+// through the ONE shared `<ModalSurface>` implementation (src/modalsurface
+// .test.ts covers its registry/mutation testing) — so "a new dialog forgot
+// to be added to the list" is no longer a reachable shape: there is no list.
+// What remains decidable here: Edit's own `onClose` still carries the SAME
+// side-effects its "✕" button and backdrop always used (the actual per-
+// dialog behavior this finding cared about), and the local-games-offer
+// dialog (still hand-rolled, out of round14's scope) still has its own
+// stopPropagation() guard against the tour-cascade defect (RED-APP-6/002).
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const start = app.indexOf('Close whichever foreground modal is open on Escape');
-  ok(start > 0, 'the Escape-close effect must be found by its own comment');
-  const end = app.indexOf('}, [', start) + 400;
-  const block = app.slice(start, end);
-  // A slice that silently went empty (or picked up the wrong effect) would
-  // pass every assertion below vacuously.
-  ok(block.includes('onKeyDown') && block.includes("e.key !== 'Escape'"),
-    'the slice under test must actually be the Escape-close effect');
+  const editBlock = extractModalSurfaceBlock(app, 'edit-saved-game');
+  ok(/onClose=\{\(\) => \{ setIsEditModalOpen\(false\); setEditError\(''\); \}\}/.test(editBlock),
+    `Edit's <ModalSurface onClose> must close the SAME way its own "✕" button and backdrop do, got: ${JSON.stringify(editBlock.slice(0, 300))}`);
 
-  // RED-APP-6/002: this branch now also calls `e.stopPropagation()` (so the
-  // same Escape press cannot also reach Walkthrough.tsx's tour listener).
-  // CodeRabbit finding (this branch): the `?` made that call OPTIONAL, so
-  // this assertion would still pass if a future edit dropped
-  // stopPropagation() again and reopened the tour-cascade defect -- require
-  // it, not merely tolerate it.
-  ok(/else if \(isEditModalOpen\)\s*\{\s*setIsEditModalOpen\(false\);\s*setEditError\(''\);\s*(?:e\.stopPropagation\(\);\s*)\}/.test(block),
-    `THE FIX: isEditModalOpen must be in the condition chain with the SAME close side-effects `
-    + `its own "✕" button and backdrop use, AND call e.stopPropagation() (RED-APP-6/002), `
-    + `got: ${JSON.stringify(block)}`);
+  // The one dialog NOT converted this round still needs its own explicit
+  // Escape handling with stopPropagation (RED-APP-6/002) — it does not
+  // inherit ModalSurface's.
+  const localGamesIdx = app.indexOf('aria-label="Games saved on this device"');
+  ok(localGamesIdx > 0, 'the local-games-offer dialog must still be found (out of round14 scope, unconverted)');
+  const escapeChainIdx = app.indexOf('localGamesOffer) { if (!localGamesBusy) setLocalGamesOffer(null); e.stopPropagation(); }');
+  ok(escapeChainIdx > 0,
+    'the local-games-offer dialog must still close on Escape with e.stopPropagation() (RED-APP-6/002)');
 
-  // The dependency array (the second `}, [...]);` after the comment) must
-  // list isEditModalOpen too, or React would keep calling a stale closure
-  // that never sees the dialog open — the classic "added to the branch but
-  // not the deps" half of this exact defect class.
-  const depsMatch = block.match(/\}, \[([^\]]*)\]\);/);
-  ok(depsMatch !== null, 'the effect\'s dependency array must be found');
-  const deps = (depsMatch![1] || '').split(',').map((s) => s.trim());
-  ok(deps.includes('isEditModalOpen'),
-    `isEditModalOpen must be in the Escape effect's dependency array, got [${deps.join(', ')}]`);
-  // And the pre-existing three modals must still be there — this fix adds a
-  // branch, it does not replace the others.
-  for (const dep of ['isFeedbackOpen', 'isSaveModalOpen', 'isAuthModalOpen']) {
-    ok(deps.includes(dep), `${dep} must still be in the Escape effect's dependency array`);
-  }
-
-  // MUTATION / NEGATIVE FIXTURE — the defect itself, verbatim. If this
-  // pattern could not tell the pre-fix effect apart from the fixed one, the
-  // checks above would be worthless.
+  // MUTATION / NEGATIVE FIXTURE — a hand-maintained chain missing a branch
+  // (the ORIGINAL shape of this finding), to prove the check above is not
+  // vacuously true against any string.
   const preFix = `  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
@@ -343,96 +347,70 @@ function extractDivBlock(src: string, startMarker: string): string {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [isFeedbackOpen, isSaveModalOpen, isAuthModalOpen]);`;
-  ok(!/isEditModalOpen/.test(preFix),
-    'the pre-fix fixture text must not accidentally already mention isEditModalOpen (fixture sanity check)');
+  ok(!/onClose=\{\(\) => \{ setIsEditModalOpen\(false\); setEditError\(''\); \}\}/.test(preFix),
+    'the pre-fix fixture text must not accidentally already carry the fixed onClose wiring (fixture sanity check)');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RED-APP-5 finding 002 (round 5): four of the five `role="dialog"
-// aria-modal="true"` surfaces (Feedback, Auth, Save, Edit) had no Tab trap
-// at all — only the expand-log dialog (#90) did. Repeatedly pressing Tab
-// walked focus onto the page behind the backdrop and could open a SECOND
-// aria-modal dialog on top of the still-open first one
-// (`probe_nested_collision.mjs`, RED-APP-5's worktree). Fixed with a shared
-// `useModalTabTrap` hook wired to all four. This is the DECIDABLE half — the
-// e2e Playwright regression (src/e2e/smoke.mjs section 20) is the real
-// behavioral proof, exercised against the Feedback dialog.
+// aria-modal="true"` surfaces (Feedback, Auth, Save, Edit) had no Tab trap at
+// all. Fixed with a shared `useModalTabTrap` hook wired to all four —
+// separately, at four call sites, each with its own ref.
+//
+// round14 structural pass (BLUE-MODAL-14): those four call sites are GONE.
+// `useModalTabTrap` moved to src/components/ModalSurface.tsx and is now
+// called from exactly ONE place — inside `ModalSurface` itself — so "one of
+// four copy-pasted wirings got the wrong ref" is no longer a reachable
+// shape: there is one hook call, and every converted dialog (Account, Save,
+// Edit, Feedback, and the drawer) shares it by construction. That structural
+// fact (every one of them renders through `<ModalSurface>`) is what
+// src/modalsurface.test.ts checks, with its own mutation tests. This block
+// now checks the hook itself still exists, in its new home, called exactly
+// once — the shape a regression back to "one wiring per dialog" would break.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  ok(/function useModalTabTrap\(/.test(app), 'the shared useModalTabTrap hook must exist');
-  const hookIdx = app.indexOf('function useModalTabTrap(');
-  ok(hookIdx > 0 && hookIdx < app.indexOf('export default function App()'),
-    'useModalTabTrap must be a module-level hook, defined before the App component');
+  const modalSurfaceSrc = readFileSync('src/components/ModalSurface.tsx', 'utf8');
+  ok(/export function useModalTabTrap\(/.test(modalSurfaceSrc),
+    'the shared useModalTabTrap hook must exist in components/ModalSurface.tsx');
+  const callSites = modalSurfaceSrc.match(/\buseModalTabTrap\(/g) ?? [];
+  ok(callSites.length === 2,
+    `useModalTabTrap must be defined once and CALLED once, from ModalSurface itself — found ${callSites.length} occurrences (expected the definition + one call)`);
+  ok(!/function useModalTabTrap\(/.test(app),
+    'App.tsx must not redefine its own copy of useModalTabTrap — it imports the one from ModalSurface');
 
-  // Each of the four dialogs: the hook is called with that dialog's OWN
-  // open-state and its OWN ref (not, say, all four wired to the same ref by
-  // a copy-paste slip — a mistake this exact pairing check would catch).
-  const wiring: Array<[string, string, string]> = [
-    ['Feedback', 'isFeedbackOpen', 'feedbackDialogRef'],
-    ['Auth', 'isAuthModalOpen', 'authDialogRef'],
-    ['Save', 'isSaveModalOpen', 'saveDialogRef'],
-    ['Edit', 'isEditModalOpen', 'editDialogRef'],
-  ];
-  for (const [name, openVar, refVar] of wiring) {
-    // RED-APP-12/001 added an optional third argument (the dialog's focus
-    // landmark selector); the pairing of open-state and ref is what matters.
-    ok(new RegExp(`useModalTabTrap\\(${openVar}, ${refVar}(?:, [^)]*)?\\)`).test(app),
-      `${name} dialog must call useModalTabTrap(${openVar}, ${refVar}[, landmark])`);
-  }
-  // No two dialogs may share a ref — each hook call needs the RIGHT
-  // container to search for focusables in, or the trap would confine Tab to
-  // the wrong (possibly unmounted) dialog.
-  const refNames = wiring.map(([, , r]) => r);
-  ok(new Set(refNames).size === refNames.length,
-    `each dialog must have its own distinct ref, got [${refNames.join(', ')}]`);
-
-  // Each dialog's `role="dialog"` element must actually carry the matching
-  // ref attribute — calling the hook with a ref nothing attaches to would
-  // leave `containerRef.current` null forever and the hook a no-op.
-  const dialogBlocks: Array<[string, string, string]> = [
-    ['Feedback', 'aria-label="Send feedback"', 'feedbackDialogRef'],
-    ['Auth', 'aria-label="Account"', 'authDialogRef'],
-    ['Save', 'aria-label="Save custom game"', 'saveDialogRef'],
-    ['Edit', 'aria-label="Edit saved game"', 'editDialogRef'],
-  ];
-  for (const [name, label, refVar] of dialogBlocks) {
-    const labelIdx = app.indexOf(label);
-    ok(labelIdx > 0, `the ${name} dialog (${label}) must be found`);
-    // The ref attaches to the SAME element as role="dialog"/the aria-label —
-    // look in a tight window just before the label, not the whole file.
-    const nearby = app.slice(Math.max(0, labelIdx - 200), labelIdx);
-    ok(nearby.includes(`ref={${refVar}}`),
-      `the ${name} dialog element must carry ref={${refVar}}, got: ${JSON.stringify(nearby)}`);
-  }
-
-  // MUTATION / NEGATIVE FIXTURE — the pre-fix Feedback dialog, verbatim (no
-  // ref, and useModalTabTrap not called for it). Proves the checks above can
-  // tell the fixed wiring apart from the defect.
-  const preFixFeedbackDialog = `<div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Send feedback"
-            onClick={(e) => e.stopPropagation()}`;
-  ok(!preFixFeedbackDialog.includes('ref={feedbackDialogRef}'),
-    'the pre-fix fixture text must not accidentally already carry the ref (fixture sanity check)');
+  // MUTATION / NEGATIVE FIXTURE — the pre-round14 shape (four separate call
+  // sites, one per dialog), to prove the count-based check above is not
+  // vacuously true against any file.
+  const preFixWiring = `useModalTabTrap(isFeedbackOpen, feedbackDialogRef, '[data-focus-fallback="feedback"]');
+  useModalTabTrap(isAuthModalOpen, authDialogRef, '[data-focus-fallback="account"] button, [data-focus-fallback="account"]');
+  useModalTabTrap(isSaveModalOpen, saveDialogRef, '[data-focus-fallback="save-preset"]');
+  useModalTabTrap(isEditModalOpen, editDialogRef, '[data-focus-fallback="saved-games"]');`;
+  const preFixCallSites = preFixWiring.match(/\buseModalTabTrap\(/g) ?? [];
+  ok(preFixCallSites.length === 4,
+    'fixture sanity: the pre-round14 fixture must show four separate call sites, not the fixed shape');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CodeRabbit review on PR #91, App.tsx:223 (Major, after RED-APP-5/002
-// shipped above): `useModalTabTrap` deliberately did not set initial focus,
-// and only Feedback has its own `autoFocus` field — Auth, Save and Edit left
-// focus stranded on the background opener until the user's first Tab press.
-// Fixed by moving focus to the first enabled control inside the hook itself,
-// gated on `!container.contains(document.activeElement)` so a dialog with
-// its OWN autoFocus (Feedback) is unaffected. This is the decidable half —
-// the real behavioral proof is `src/e2e/smoke.mjs` section 20 (checks the
-// Auth dialog, which has no autoFocus field of its own, so it is the one
-// case that actually exercises this).
+// CodeRabbit review on PR #91 (Major, after RED-APP-5/002 shipped above):
+// `useModalTabTrap` deliberately did not set initial focus, and only
+// Feedback has its own `autoFocus` field — Auth, Save and Edit left focus
+// stranded on the background opener until the user's first Tab press. Fixed
+// by moving focus to the first enabled control inside the hook itself, gated
+// on `!container.contains(document.activeElement)` so a dialog with its OWN
+// autoFocus (Feedback) is unaffected. round14: the hook itself lives in
+// components/ModalSurface.tsx now (see the block above) — same code, moved.
+// This is the decidable half — the real behavioral proof is
+// `src/e2e/smoke.mjs` section 20/66 (checks the Auth dialog, which has no
+// autoFocus field of its own, so it is the one case that actually exercises
+// this).
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const hookIdx = app.indexOf('function useModalTabTrap(');
+  const modalSurfaceSrc = readFileSync('src/components/ModalSurface.tsx', 'utf8');
+  const hookIdx = modalSurfaceSrc.indexOf('export function useModalTabTrap(');
   ok(hookIdx > 0, 'useModalTabTrap must exist (checked above; re-anchoring here)');
-  const hookBody = app.slice(hookIdx, app.indexOf('\n}', app.indexOf('window.addEventListener', hookIdx)));
+  const hookEnd = modalSurfaceSrc.indexOf('round14 structural pass (STRUCTURAL.md): a module-level stack', hookIdx);
+  ok(hookEnd > hookIdx, 'could not find the end of useModalTabTrap (the next doc comment after it)');
+  const hookBody = modalSurfaceSrc.slice(hookIdx, hookEnd);
   ok(hookBody.includes('getModalFocusables'),
     'useModalTabTrap must use a shared focusables helper (not re-derive its own query for the mount-focus branch)');
   ok(/if\s*\(container\s*&&\s*!container\.contains\(document\.activeElement\)\)/.test(hookBody),
@@ -483,14 +461,12 @@ function extractDivBlock(src: string, startMarker: string): string {
   ok(tourTagLine !== undefined && !tourTagLine.includes('aria-modal'),
     `THE FIX MUST NOT make the tour modal — it must stay click-through, per its own docstring, got: ${JSON.stringify(tourTagLine)}`);
 
-  for (const label of ['aria-label="Send feedback"', 'aria-label="Account"',
-                        'aria-label="Save custom game"', 'aria-label="Edit saved game"',
-                        // "Simulation log" appears THREE times (the inline
-                        // non-modal region, this dialog's OWN aria-label, and
-                        // the region reused INSIDE the expanded dialog) — the
-                        // `aria-modal="true"` immediately before it picks out
-                        // the dialog's own tag uniquely.
-                        'aria-modal="true"\n      aria-label="Simulation log"']) {
+  // "Simulation log" appears THREE times (the inline non-modal region, this
+  // dialog's OWN aria-label, and the region reused INSIDE the expanded
+  // dialog) — the `aria-modal="true"` immediately before it picks out the
+  // dialog's own tag uniquely. This one dialog is still hand-rolled in
+  // App.tsx (out of round14's scope).
+  for (const label of ['aria-modal="true"\n      aria-label="Simulation log"']) {
     const idx = app.indexOf(label);
     ok(idx > 0, `dialog ${label} must be found`);
     // Search back to the START of this dialog's backdrop div (its own
@@ -507,6 +483,17 @@ function extractDivBlock(src: string, startMarker: string): string {
       `THE FIX: dialog ${label} (z-${dialogZ}) must paint ABOVE the tour (z-${tourZ}), or the tour can `
       + `cover it again`);
   }
+
+  // round14: Account/Save/Edit/Feedback no longer carry their OWN z-index
+  // class in App.tsx — they share ModalSurface's ONE overlay constant. Check
+  // that shared constant instead of four separate (and now nonexistent)
+  // per-dialog class strings; every converted dialog inherits whatever it says.
+  const modalSurfaceSrc = readFileSync('src/components/ModalSurface.tsx', 'utf8');
+  const overlayMatch = modalSurfaceSrc.match(/OVERLAY_CLASS = '[^']*z-\[(\d+)\]/);
+  ok(overlayMatch !== null, "ModalSurface's OVERLAY_CLASS must carry a z-[N] class");
+  const surfaceZ = Number(overlayMatch![1]);
+  ok(surfaceZ > tourZ,
+    `THE FIX must still hold: ModalSurface's shared overlay (z-${surfaceZ}) must paint ABOVE the tour (z-${tourZ})`);
 
   // MUTATION / NEGATIVE FIXTURE — the pre-fix Auth dialog's className,
   // verbatim (z-50, below the tour's z-[60]).
@@ -566,8 +553,11 @@ function extractDivBlock(src: string, startMarker: string): string {
 // same pattern the tab-trap checks above use for these two dialogs.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const editDialog = extractDivBlock(app, 'aria-label="Edit saved game"');
-  const saveDialog = extractDivBlock(app, 'aria-label="Save custom game"');
+  // round14: these two moved from a hand-rolled div (which extractDivBlock
+  // scoped into) to <ModalSurface id="...">...</ModalSurface> — see that
+  // helper's own doc comment for why the extraction differs.
+  const editDialog = extractModalSurfaceBlock(app, 'edit-saved-game');
+  const saveDialog = extractModalSurfaceBlock(app, 'save-preset');
   // CodeRabbit finding (this branch): the two ok() calls below used to be
   // INDEPENDENT — one asserting the live-region markup exists ANYWHERE in
   // the dialog block, the other that the literal text "regen.note" appears

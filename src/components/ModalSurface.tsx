@@ -169,8 +169,32 @@ export function useModalTabTrap(open: boolean, containerRef: RefObject<HTMLEleme
       }
     };
     window.addEventListener('keydown', onKey);
+    // RED-APP-13/002 (round14): a control INSIDE the dialog that becomes
+    // `disabled` while it holds focus (e.g. a submit button during its own
+    // in-flight request) is blurred straight to <body> by the browser — no
+    // keydown involved, so `onKey` above never runs. Previously the app's
+    // global `[user]` focus effect "caught" this by accident and threw focus
+    // at a HEADER control hidden under this dialog's own backdrop (002's
+    // reproduction); now that effect no-ops while a surface is open, so
+    // without this, focus would simply be abandoned on <body>, still wrong.
+    // Bring it back into THIS dialog — never to a landmark elsewhere — as
+    // long as the dialog is still open and nothing else has since claimed
+    // focus on purpose (another registered surface, or a real Tab escape
+    // already handled above).
+    const onFocusOut = (e: FocusEvent) => {
+      const current = containerRef.current;
+      if (!current || !(e.target instanceof Node) || !current.contains(e.target)) return;
+      requestAnimationFrame(() => {
+        const container = containerRef.current;
+        if (!container || container.contains(document.activeElement)) return;
+        if (document.activeElement !== document.body) return;
+        getModalFocusables(container)[0]?.focus();
+      });
+    };
+    container?.addEventListener('focusout', onFocusOut);
     return () => {
       window.removeEventListener('keydown', onKey);
+      container?.removeEventListener('focusout', onFocusOut);
       focusAfterDialog(opener, fallback);
     };
   }, [open, containerRef, fallback]);
