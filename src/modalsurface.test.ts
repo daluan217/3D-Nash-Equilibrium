@@ -199,4 +199,23 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     'Walkthrough\'s key listener must bail when any ModalSurface is open OR the key was typed inside another dialog');
 }
 
+// RED-APP-14/006 + /007 (director-reproduced): the plot's document-capture
+// press detectors must reject presses whose real target is interactive UI or
+// a dialog/overlay that merely overlaps the plot rectangle; the centered
+// overlay closes only when the pointer went DOWN on the backdrop.
+{
+  const plot = readFileSync('src/components/PlotlyView.tsx', 'utf8');
+  const guards = plot.match(/pressOnUnrelatedUi\(e, container\)\) return;/g) ?? [];
+  ok(guards.length >= 3, `PlotlyView: expected the 3 document-capture detectors (pause, spin take-over, activity) to call pressOnUnrelatedUi, found ${guards.length}`);
+  ok(/\[role="dialog"\], \[data-modal-surface\], header/.test(plot), 'PlotlyView: the unrelated-UI selector must cover dialogs, ModalSurface overlays and the header');
+  // CodeRabbit on #153: the plot's OWN Rotate / Pan / Reset View buttons sit inside the wrapper, so an
+  // interactive control must be rejected regardless of containment (e2e 74 presses each one mid-run).
+  ok(/if \(t\.closest\(INTERACTIVE_CONTROL\)\) return true;/.test(plot) && /INTERACTIVE_CONTROL = 'button, a\[href\], input, select, textarea'/.test(plot),
+    'PlotlyView: pressOnUnrelatedUi must reject any interactive control before the containment test');
+  const surface = readFileSync('src/components/ModalSurface.tsx', 'utf8');
+  ok(/onPointerDown=\{\(e\) => \{ pointerDownOnOverlayRef\.current = e\.target === e\.currentTarget; \}\}/.test(surface)
+    && /if \(e\.target === e\.currentTarget && pointerDownOnOverlayRef\.current\) onClose\(\)/.test(surface),
+    'ModalSurface: the centered overlay closes only when the pointer went down on the backdrop itself (RED-APP-14/007)');
+}
+
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

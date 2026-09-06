@@ -18,6 +18,29 @@ import { Rotate3d, Move, RefreshCw } from 'lucide-react';
  * collapsed by the STATIC (data-space, SHORT_CONTINUUM) rule in plotting.ts
  * — nothing for the dynamic rule to do.
  */
+/**
+ * RED-APP-14/006: the document-capture detectors below decide "the visitor
+ * reached into the picture" by the plot's RECTANGLE, on purpose (the tour's
+ * transparent overlay sits between the pointer and the plot, so a
+ * `contains(e.target)` test alone would miss a real press). The rectangle
+ * alone, though, also matched presses on a drawer tab, a dialog button or a
+ * header control that merely OVERLAPS the plot — and silently paused a
+ * running simulation. A press whose real target is interactive UI outside the
+ * plot, or sits inside any dialog/overlay surface, is not a press on the plot.
+ */
+const UNRELATED_UI = 'button, a[href], input, select, textarea, [role="dialog"], [data-modal-surface], header, nav';
+const INTERACTIVE_CONTROL = 'button, a[href], input, select, textarea';
+function pressOnUnrelatedUi(e: Event, container: HTMLElement): boolean {
+  const t = e.target;
+  if (!(t instanceof Element)) return false;
+  // An interactive control is never "the picture", whether it sits outside
+  // the wrapper or INSIDE it (the plot's own Rotate / Pan / Reset View and
+  // Resume buttons live inside `containerRef`, so a containment test alone
+  // let each of them pause a running simulation — CodeRabbit on #153).
+  if (t.closest(INTERACTIVE_CONTROL)) return true;
+  return !container.contains(t) && !!t.closest(UNRELATED_UI);
+}
+
 interface ContinuumComponentMeta {
   componentIndex: number;
   midpointTraceIndex: number;
@@ -536,6 +559,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       const x = pt.touches?.[0]?.clientX ?? pt.clientX;
       const y = pt.touches?.[0]?.clientY ?? pt.clientY;
       if (typeof x !== 'number' || typeof y !== 'number') return;
+      if (pressOnUnrelatedUi(e, container)) return; // RED-APP-14/006
       const r = container.getBoundingClientRect();
       if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
       onGraphPressRef.current();
@@ -710,6 +734,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
     };
     const takeOver = (e: Event) => {
+      if (pressOnUnrelatedUi(e, container)) return; // RED-APP-14/006
       // Once only. Re-issuing the relayout on every later press reapplied the
       // camera Plotly had stored at that moment, so a second click after
       // rotating snapped the view back to where the first click left it. After
@@ -735,6 +760,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
      * the visitor is still looking.
      */
     const noteActivity = (e: Event) => {
+      if (pressOnUnrelatedUi(e, container)) return; // RED-APP-14/006
       const pt = e as MouseEvent & { touches?: TouchList };
       const x = pt.touches?.[0]?.clientX ?? pt.clientX;
       const y = pt.touches?.[0]?.clientY ?? pt.clientY;
