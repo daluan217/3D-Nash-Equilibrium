@@ -78,6 +78,13 @@ its own physical-request count is now accurate. `inventScreenedScenario`
 combined signal is threaded through every draw, the ladder refuses to start a
 new one once the client is gone, and aborts whatever it is still waiting on
 the instant it has an answer to give (success, bank fallback, or exhaustion).
+`drawWithDeadline` additionally owns its OWN per-draw `AbortController`
+(combined with the signal above), aborted in its own `finally` — so a draw
+that loses its race against ITS OWN per-attempt deadline is cancelled the
+instant that happens, not left running until the whole ladder's `finally`
+(which only fires once every retry is exhausted): a retry could otherwise
+start a second physical request while the previous, timed-out one was still
+connected (CodeRabbit, PR #139).
 
 ### Evidence
 
@@ -85,14 +92,24 @@ the instant it has an answer to give (success, bank fallback, or exhaustion).
 shipping-bundle/loopback-provider setup as the suite above, asserting the
 PHYSICAL request count for: a client abort mid-flight (expect 1, not 2), a
 late response arriving after the fallback was already sent (expect 1, not 2),
-and a 429 storm (expect 2 — one per logical draw — not 6), plus two fast
-controls that must keep working (a valid draw, and a rejected-then-valid
-reroll). It also asserts every outgoing request body carries the pinned
-`REPORT_MODEL` and no `reasoning_effort`. Reverting providers.ts/report.ts/
-server.ts to their pre-fix state (939b3be^) fails exactly the three named
-cancellation checks while both controls stay green
-(`round12/notes/BLUE-CANCEL-12/cancellation-mutation.log`) — the isolating
-mutation this suite is checked against. It is part of both
+a retry that must not start while the previous draw is still connected
+(a forced two-draw retry via a short `NASH_SCENARIO_TIMEOUT_MS`, asserting the
+first draw's connection actually closes before the second's request arrives —
+not just that nothing extra was counted), and a 429 storm (expect 2 — one per
+logical draw — not 6), plus two fast controls that must keep working (a valid
+draw, and a rejected-then-valid reroll). The two delayed cases additionally
+record each provider connection's premature-close time (`res`'s `close` event,
+gated on `!res.writableEnded` — a `req`-based check was tried first and found
+to fire unconditionally on any ordinary request, a vacuous instrument) and
+assert it precedes the provider's own delayed reply. It also asserts every
+outgoing request body carries the pinned `REPORT_MODEL` and no
+`reasoning_effort`. Reverting providers.ts/report.ts/server.ts to their
+pre-fix state (939b3be^) fails exactly the three originally-named cancellation
+checks while both controls stay green
+(`round12/notes/BLUE-CANCEL-12/cancellation-mutation.log`); reverting only the
+per-draw `AbortController` in `drawWithDeadline` fails exactly the
+retry-overlap check, isolated from the rest
+(`round12/notes/BLUE-CANCEL-12/HARNESS-LOG.md`). It is part of both
 `npm run test:integration` and the CI integration job.
 
 ## Limits and follow-up

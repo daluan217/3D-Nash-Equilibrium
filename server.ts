@@ -484,6 +484,16 @@ const SCENARIO_DEADLINE_MS = (() => {
 })();
 
 async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNouns = false, remainingMs = SCENARIO_REQUEST_BUDGET_MS, signal?: AbortSignal): Promise<{ scenario: SuggestedScenario | null; failure?: string }> {
+  // CodeRabbit (PR #139, server.ts~486): a controller PER DRAW, combined with
+  // the ladder's shared signal, aborted in `finally` BEFORE this function's
+  // own promise resolves back to inventScreenedScenario's loop -- so this
+  // attempt cannot still be in flight when the loop decides whether to start
+  // a retry. Left to inventScreenedScenario's own `ownController.abort()`
+  // alone, a draw that lost its race against ITS OWN per-attempt deadline
+  // stayed active until the WHOLE ladder finished, so a retry could start a
+  // second physical request while the first was still running.
+  const attemptController = new AbortController();
+  const attemptSignal = signal ? AbortSignal.any([signal, attemptController.signal]) : attemptController.signal;
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<{ scenario: null; failure: string }>((resolve) => {
     timer = setTimeout(() => resolve({ scenario: null, failure: "timeout" }), Math.ceil(Math.min(SCENARIO_DEADLINE_MS, remainingMs)));
@@ -492,7 +502,7 @@ async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorN
   });
   try {
     return await Promise.race([
-      inventScenario(payoffs, avoid, actorNouns, signal).catch((err) => {
+      inventScenario(payoffs, avoid, actorNouns, attemptSignal).catch((err) => {
         console.warn(`[report] scenario draw failed: ${err?.message ?? err}`);
         return { scenario: null, failure: "error" as const };
       }),
@@ -500,6 +510,10 @@ async function drawWithDeadline(payoffs: GamePayoffs, avoid?: RegenAvoid, actorN
     ]);
   } finally {
     clearTimeout(timer);
+    // Whichever side of the race won, this attempt is over: abort it so a
+    // still-in-flight physical request cannot overlap with the ladder's next
+    // decision. A no-op if the draw already settled on its own.
+    attemptController.abort();
   }
 }
 

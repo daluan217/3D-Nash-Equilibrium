@@ -43,22 +43,52 @@ const GOOD = {
  * brief: REPORT_MODEL=gpt-5.6-luna, no reasoning override anywhere on this
  * path.
  */
-async function withServer(offset, providerReply, run) {
+async function withServer(offset, providerReply, run, extraEnv = {}) {
   const scratch = mkdtempSync(path.join(tmpdir(), 'nash-cancellation-'));
   const timers = new Set();
   const events = [];
   const provider = createServer((req, res) => {
     let raw = '';
+    // CodeRabbit (PR #139, scenario-cancellation.test.mjs~148): events.length
+    // alone proves no SECOND request started; it does not prove the FIRST
+    // one's connection was actually cancelled rather than merely ignored.
+    // `closedAt` records a PREMATURE close (the client tore the connection
+    // down before we ever answered) and `sentAt` records when this handler's
+    // own scheduled reply would fire regardless of the socket's state (the
+    // `setTimeout` below runs whether or not the connection is still alive).
+    // The two delayed cases assert closedAt < sentAt: proof the client side
+    // actually cancelled the connection before the provider's own delayed
+    // answer, not just that nothing extra was counted.
+    //
+    // MUST be `res`'s 'close', not `req`'s: verified with a minimal Node http
+    // probe (round12/notes/BLUE-CANCEL-12/) that `req.on('close')` fires the
+    // instant the REQUEST BODY finishes reading — 1ms after 'end', on an
+    // ORDINARY request that gets a real response 2 SECONDS later — making a
+    // req-based check pass unconditionally regardless of any real
+    // cancellation (an instrument that cannot fail for the reason it
+    // claims). `res.on('close')`, discriminated by `res.writableEnded`
+    // (exactly `clientGoneSignal`'s own pattern in server.ts), correctly
+    // fired at ~2003ms for that same ordinary case (after the real response)
+    // and at ~496ms for a genuine client abort at 500ms (writableEnded still
+    // false) — the same probe, both cases.
+    const event = { call: 0 };
+    let responded = false;
+    res.on('close', () => {
+      if (!responded && !res.writableEnded) event.closedAt = Math.round(performance.now() - events.start);
+    });
     req.on('data', (chunk) => { raw += chunk; });
     req.on('end', () => {
       const body = JSON.parse(raw);
       assert.equal(body.model, 'gpt-5.6-luna', 'production model pin');
       assert.equal(body.reasoning_effort, undefined, 'no reasoning override on this path');
-      const call = events.length + 1;
-      events.push({ call, ms: Math.round(performance.now() - events.start) });
-      const answer = providerReply(call);
+      event.call = events.length + 1;
+      event.ms = Math.round(performance.now() - events.start);
+      events.push(event);
+      const answer = providerReply(event.call);
       if (!answer) return; // connection accepted, never answered — the orphan case
       const send = () => {
+        responded = true;
+        event.sentAt = Math.round(performance.now() - events.start);
         res.writeHead(answer.status || 200, { 'content-type': 'application/json', ...answer.headers });
         res.end(JSON.stringify(answer.body ?? GOOD));
       };
@@ -91,6 +121,7 @@ async function withServer(offset, providerReply, run) {
         NASH_SCENARIO_REGEN: '1', NASH_DIRECTION_CHECKS: '1',
         AZURE_FOUNDRY_ENDPOINT: `http://127.0.0.1:${provider.address().port}/v1`,
         AZURE_FOUNDRY_API_KEY: 'loopback-test-only',
+        ...extraEnv,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -146,6 +177,10 @@ await test('scenario cancellation: abandoned draws stop making physical requests
       // an abort at ms:500-ish) — this window would have caught it.
       await sleep(3500);
       assert.equal(events.length, 1, `expected exactly 1 physical request, got ${events.length}: ${JSON.stringify(events)}`);
+      const [first] = events;
+      assert.ok(first.closedAt !== undefined, `provider connection for call 1 never closed early: ${JSON.stringify(first)}`);
+      assert.ok(first.sentAt !== undefined, `provider's own delayed reply never fired: ${JSON.stringify(first)}`);
+      assert.ok(first.closedAt < first.sentAt, `the connection must close BEFORE the delayed reply, not just go uncounted: ${JSON.stringify(first)}`);
     }));
 
   await t.test('a late response after the fallback was already sent starts no further request', () =>
@@ -165,7 +200,49 @@ await test('scenario cancellation: abandoned draws stop making physical requests
       // already gone out) — this window would have caught it.
       await sleep(3500);
       assert.equal(events.length, 1, `expected exactly 1 physical request, got ${events.length}: ${JSON.stringify(events)}`);
+      const [first] = events;
+      assert.ok(first.closedAt !== undefined, `provider connection for call 1 never closed early: ${JSON.stringify(first)}`);
+      assert.ok(first.sentAt !== undefined, `provider's own delayed reply never fired: ${JSON.stringify(first)}`);
+      assert.ok(first.closedAt < first.sentAt, `the connection must close BEFORE the delayed reply, not just go uncounted: ${JSON.stringify(first)}`);
     }));
+
+  /**
+   * CodeRabbit (PR #139, server.ts~486): `drawWithDeadline` only resolved the
+   * `Promise.race`; the timed-out draw's own physical request stayed active
+   * until `inventScreenedScenario`'s `ownController.abort()` ran in `finally`
+   * -- which only fires once the WHOLE ladder is done. So a genuine RETRY
+   * (a second draw) could start while the FIRST, already-timed-out draw's
+   * connection was still open. Neither of the two tests above exercises
+   * this: both are single-draw-then-exhaust (no retry ever starts), so the
+   * pre-existing `ownController` alone already closed them adequately --
+   * verified by reverting server.ts's per-attempt fix and rerunning both:
+   * unchanged (round12/notes/BLUE-CANCEL-12/HARNESS-LOG.md). This case forces
+   * a genuine two-draw retry: NASH_SCENARIO_TIMEOUT_MS is set short (2s) so a
+   * hung draw times out with real budget slack left (the default ~20s
+   * overall budget is untouched), so the ladder's one bounded "LOST" retry
+   * actually starts a SECOND physical request while the FIRST is still
+   * hanging.
+   */
+  await t.test('a retry does not start while the previous draw is still connected', () =>
+    withServer(5, () => null, async (base, events) => {
+      const response = await fetch(`${base}/api/scenario/regenerate`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ payoffs: GAME }), signal: AbortSignal.timeout(22_000),
+      });
+      const json = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(json.scenarioSource, 'bank-fallback');
+      assert.equal(events.length, 2, `expected exactly 2 physical requests (the bounded LOST retry), got ${events.length}: ${JSON.stringify(events)}`);
+      const [draw1, draw2] = events;
+      assert.ok(draw1.closedAt !== undefined, `draw1's connection never closed early: ${JSON.stringify(events)}`);
+      // The actual property under test: draw1 must be CLOSED before draw2's
+      // request even arrives at the provider -- not merely closed EVENTUALLY.
+      // Reverting the server.ts~486 fix makes this fail for real: draw1 stays
+      // open (closedAt lands together with draw2's, at the ladder's own final
+      // ownController.abort()) well AFTER draw2 already started -- see
+      // HARNESS-LOG.md for the exact before/after numbers.
+      assert.ok(draw1.closedAt < draw2.ms, `draw1 (closed at ${draw1.closedAt}ms) must close before draw2 starts (at ${draw2.ms}ms) -- they overlapped: ${JSON.stringify(events)}`);
+    }, { NASH_SCENARIO_TIMEOUT_MS: '2000' }));
 
   await t.test('a 429 storm costs one physical request per logical draw, not the SDK retry multiplier', () =>
     withServer(2, () => ({ status: 429, headers: { 'retry-after': '0' }, body: { error: { message: 'local controlled limit' } } }), async (base, events) => {
