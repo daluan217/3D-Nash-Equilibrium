@@ -2396,7 +2396,7 @@ try {
   //      assertions above can't leak into it): Edit dialog open in A, delete
   //      in B, submit in A -> dialog shows the error, row is already gone
   //      underneath, and Cancel closes cleanly (no reload needed either).
-  section('38', 'phantom saved-game row after a 404', 6, async () => {
+  section('38', 'phantom saved-game row after a 404', 3, async () => {
     const twoTabContext = await browser.newContext();
     const tabA = trackPage(await twoTabContext.newPage());
     const tabB = trackPage(await twoTabContext.newPage());
@@ -4232,7 +4232,7 @@ try {
   // real event — never a fixed sleep. The mutation each check would catch is
   // named in its own comment; two are independently re-verified by hand
   // (recorded in BLUE-MODAL-14's REPORT.md), not merely asserted here.
-  section('66', 'ModalSurface: single-active-modal registry, drawer trap and in-flight delete', 6, async () => {
+  section('66', 'ModalSurface: single-active-modal registry and Tab traps for the four dialogs', 6, async () => {
     // Shared: `presses` Tab presses, asserting focus never leaves `dialogSelector`.
     // Mutation: drop ModalSurface's Tab-trap keydown listener — the FIRST
     // press already lands outside and this returns { stayed: false, atPress: 1 }.
@@ -4398,6 +4398,24 @@ try {
         dialogsAfterEnter.length <= 1 && dialogsAfterEnter.every((l) => l === label), JSON.stringify(dialogsAfterEnter));
       await p.close();
     }
+
+  });
+
+  // ── 67. The drawer half of the ModalSurface contract — split out of 66
+  //       because 66 alone took 218 s in CI and no shard job may exceed
+  //       5 minutes (Daniel). Same helper, same mutations as 66's comments.
+  section('67', 'ModalSurface: drawer role, Tab trap, in-flight delete, and nothing stacks over the open drawer', 2, async () => {
+    const sweepStaysInside = async (p, containerSelector, presses) => {
+      for (let i = 0; i < presses; i++) {
+        await p.keyboard.press('Tab');
+        const inside = await p.evaluate((sel) => {
+          const c = document.querySelector(sel);
+          return !!c && c.contains(document.activeElement);
+        }, containerSelector);
+        if (!inside) return { stayed: false, atPress: i + 1 };
+      }
+      return { stayed: true };
+    };
 
     // ── Part C: the workspace drawer — role="dialog"/aria-modal, 60 Tabs
     // stay inside, Escape closes it, and the Delete button carries the
