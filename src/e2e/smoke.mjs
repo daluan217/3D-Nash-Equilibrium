@@ -3170,6 +3170,25 @@ try {
       record('the edit reached the local database (GET shows the new description)',
         Array.isArray(stored) && stored.length === 1 && stored[0].description === 'Edited on the desktop without an account.', JSON.stringify(stored.map?.((g) => g.description)));
 
+      // ── The drawer's Library tab (RED-DESKTOP-13/001, director-reproduced) ──
+      // The second surface for the same list: it used to gate on a signed-in
+      // `user`, so the no-account desktop user saw the count, zero cards and
+      // "You must be signed in to view and save custom game profiles".
+      // Mutation: gate MenuDrawer's list on `user` again → the "lists the game" check
+      // fails (verified); gate its copy on `user` → the "does not tell … to sign in" check fails.
+      await dp.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await dp.getByRole('button', { name: /library/i }).first().click();
+      const drawerCards = dp.locator('[data-drawer-game]', { hasText: name });
+      const drawerListed = await drawerCards.first().waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+      // Read the drawer's own custom-games section (the landmark's parent block), not the whole body.
+      const drawerText = await dp.evaluate(() => { const lm = document.querySelector('[data-focus-fallback="drawer-games"]'); const sect = lm?.parentElement; const t = sect?.textContent || ''; const m = t.match(/Custom User Profiles \((\d+)\)/); return { sectionFound: !!sect, count: m ? Number(m[1]) : null, mustSignIn: /must be signed in to view and save/i.test(t), lockHint: /Log in to persist custom profiles/i.test(t) }; });
+      record('precondition: the drawer header counts the one saved game', drawerText.count === 1, JSON.stringify(drawerText));
+      record('FIX: the drawer\'s Library tab lists the game saved without an account', drawerListed, JSON.stringify(drawerText));
+      record('FIX: the drawer does not tell the local owner to sign in (no "must be signed in", no "Log in to persist")', !drawerText.mustSignIn && !drawerText.lockHint, JSON.stringify(drawerText));
+      await dp.keyboard.press('Escape');
+      record('the drawer closes on Escape before the Delete step',
+        await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).then(() => true).catch(() => false));
+
       // ── Delete ──
       dp.once('dialog', async (d) => { await d.accept(); });
       await dp.locator('div.group', { has: dp.getByRole('button', { name, exact: true }) }).getByTitle('Delete this saved game').click();
@@ -3177,6 +3196,20 @@ try {
         await dp.getByRole('button', { name, exact: true }).waitFor({ state: 'hidden', timeout: 8000 }).then(() => true).catch(() => false));
       const after = await dp.evaluate(async () => (await (await fetch('/api/games')).json()));
       record('the local database is empty again after the delete', Array.isArray(after) && after.length === 0, JSON.stringify(after));
+      // Empty-library branch (CodeRabbit on #146): with zero games the local
+      // owner must see the save guidance, never the sign-in prompt or lock hint.
+      await dp.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await dp.getByRole('button', { name: /library/i }).first().click();
+      const emptyLib = await dp.waitForFunction(() => {
+        const lm = document.querySelector('[data-focus-fallback="drawer-games"]');
+        const t = lm?.parentElement?.textContent || '';
+        return /Custom User Profiles \(0\)/.test(t) && /No saved custom game presets/i.test(t)
+          ? { mustSignIn: /must be signed in to view and save/i.test(t), lockHint: /Log in to persist custom profiles/i.test(t) }
+          : null;
+      }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null);
+      record('FIX: an EMPTY local-owner library shows the save guidance ("No saved custom game presets"), not the sign-in prompt or lock hint',
+        !!emptyLib && !emptyLib.mustSignIn && !emptyLib.lockHint, JSON.stringify(emptyLib));
+      await dp.keyboard.press('Escape');
       record('no console/page errors through the desktop CRUD cycle', deskErrors.length === 0, deskErrors.join(' | ').slice(0, 200));
     } finally {
       await deskCtx.close().catch(() => {});

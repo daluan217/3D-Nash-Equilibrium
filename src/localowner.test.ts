@@ -112,5 +112,23 @@ for (const [name, src] of MUST_FLAG) {
   check('the correct shape is not flagged', !bad);
 }
 
+// RED-DESKTOP-13/001 (director-reproduced): the SECOND surface for the saved-
+// games list — the menu drawer's Library tab — must gate on the same ownership
+// predicate as the sidebar (`canOwnGames`: token OR desktop local owner), never
+// on a signed-in `user` alone. Every `user`-keyed gate in that tab told the
+// no-account desktop user to sign in while hiding all of their games.
+{
+  const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const lo = drawer.indexOf('Custom User Profiles (');
+  const hi = drawer.indexOf('TAB 3: ACCOUNT');
+  check('MenuDrawer: the Library tab region is found', lo > 0 && hi > lo);
+  const region = drawer.slice(lo - 400, hi);
+  const userGates = region.match(/\{!?user\b[^}]*(?:&&|\?)/g) ?? [];
+  check(`MenuDrawer Library tab has no user-keyed gate on the saved-games list (found ${userGates.length}: ${userGates.join(' | ').slice(0, 120)})`, userGates.length === 0);
+  check('MenuDrawer Library tab gates the list, the lock hint and the empty-state copy on canOwnGames',
+    /\{!canOwnGames &&/.test(region) && /\{canOwnGames && formattedCustomGames\.length > 0 \?/.test(region) && /\{canOwnGames \? \(/.test(region));
+  check('App passes canOwnGames to MenuDrawer', /<MenuDrawer[\s\S]{0,400}canOwnGames=\{canOwnGames\}/.test(readFileSync('src/App.tsx', 'utf8')));
+}
+
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
 console.log(`✓ local owner: ${sites.length} resolver sites — game routes fall back to the device owner, account deletion and /auth/me keep the strict check, provisioning and adoption are desktop-only, adoption re-parents`);
