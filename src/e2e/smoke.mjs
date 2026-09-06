@@ -4783,6 +4783,277 @@ try {
     await p.close();
   });
 
+  // ── BLUE-MATH-15 (RED-MATH-15/001): camera-aware continuum collapse at a
+  //    genuinely narrow LIVE viewport, verified against REAL RENDERED PIXELS
+  //    (never the module's own `visible`/`marker.size` state — that would
+  //    test the module against itself). Root cause: cameraProjection.ts's
+  //    `projectPoint` scaled x by `viewport.w/2` instead of `viewport.h/2`
+  //    (Plotly's real gl3d camera has a FIXED vertical FOV — confirmed
+  //    against the live `glplot.fovy`/`cameraParams` — so `w` cancels out
+  //    of the horizontal term algebraically). Fixed; FOCAL re-tuned
+  //    3 -> 3.1 to keep the existing 700x500 sweeps at 0 violations.
+  section('71', 'camera-aware continuum collapse agrees with real rendered pixels at a narrow live viewport', 16, async () => {
+    // `reducedMotion: 'reduce'` (App.tsx's idle spin already respects this,
+    // per section 18) means the idle spin never starts on this page at all —
+    // no competing per-frame `Plotly.relayout` to race against `setEyeVerified`
+    // below, unlike a hit-tested pause click (flaky under repeated retries on
+    // a slow SwiftShader CI runner: confirmed empirically, BLUE-MATH-15).
+    const p = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
+    try {
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+      const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
+      await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+      const fillMatrix = async (vals) => {
+        for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
+      };
+      const waitForContinuumMidpointAt = (x, y, tol = 1e-6) => p.waitForFunction(({ x, y, tol }) => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+        return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - x) < tol && Math.abs((t.y?.[0] ?? NaN) - y) < tol) ? true : null;
+      }, { x, y, tol }, { timeout: 20000 }).then(() => true).catch(() => false);
+
+      // RED-MATH-15/001's own len0.2000 fixture (exactly SHORT_CONTINUUM's
+      // own boundary length): a11,b11,a12,b12,a21,b21,a22,b22 DOM order.
+      await fillMatrix([0, 0, 1, 0, 4, 0, 0, 1]);
+      const ready = await waitForContinuumMidpointAt(1, 0.1);
+      record('precondition: the fixture\'s continuum midpoint (1, 0.1) is drawn before reading trace state', ready);
+
+      // Force trackingMode 'A' (RED's own harness: 'both' doubles every
+      // glyph into 2 z-stacked copies, which would corrupt the pixel scan).
+      const trackABtn = p.locator('label:has-text("Expected Payoff Surface Tracking")')
+        .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+      await trackABtn.click({ timeout: 5000 }).catch(() => {});
+      await p.waitForTimeout(300);
+
+      const plot = p.locator('[data-tour="plot"]');
+      const readEye = () => p.evaluate(() => {
+        const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        return e ? { x: e.x, y: e.y, z: e.z } : null;
+      });
+      // No idle spin to race (reducedMotion above) — one relayout, then
+      // confirm the live scene actually reflects the requested eye.
+      const setEyeVerified = async (eye) => {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await p.evaluate((e) => window.Plotly.relayout(document.getElementById('plotly-3d-market-simulation'), { 'scene.camera': { eye: e, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), eye);
+          await p.waitForTimeout(300);
+          const e1 = await readEye();
+          if (e1 && Math.hypot(e1.x - eye.x, e1.y - eye.y, e1.z - eye.z) < 0.02) return { ok: true, eye: e1 };
+        }
+        return { ok: false, eye: await readEye() };
+      };
+
+      // RED-MATH-15/001's own `eyeAt(deg) = (r*cos, r*sin, 1.1)`, r=hypot(1.6,1.6)
+      // — NOT this file's `rotatedEye` (see the payoffhonesty.test.ts comment
+      // on the SAME confusion): a different parametrization of the same circle.
+      const redEyeAt = (deg) => {
+        const r = Math.hypot(1.6, 1.6);
+        const rad = (deg * Math.PI) / 180;
+        return { x: r * Math.cos(rad), y: r * Math.sin(rad), z: 1.1 };
+      };
+
+      // Force the plot container to RED's exact 318x298 outer size — the
+      // real plot DIV (what PlotlyView.tsx actually reads) ends up ~21px/
+      // side smaller (276x256) because of the container's own `p-2 md:p-4`
+      // padding; that is what the module and this check both use.
+      await p.evaluate(() => {
+        const el = document.querySelector('[data-tour="plot"]');
+        el.style.setProperty('width', '318px', 'important');
+        el.style.setProperty('height', '298px', 'important');
+        el.style.setProperty('max-width', '318px', 'important');
+        el.style.setProperty('min-width', '318px', 'important');
+        el.style.setProperty('flex', 'none', 'important');
+      });
+      await p.waitForTimeout(900);
+
+      // Pure connected-components pixel scan for the continuum's own purple
+      // (#8E44AD) — done entirely IN-PAGE (an offscreen <canvas> + getImageData
+      // on the SAME screenshot bytes Playwright captures), so this never reads
+      // the module's own trace state, only what was actually drawn.
+      const countPurpleBlobs = async (pngBuffer, cropCss) => {
+        const b64 = pngBuffer.toString('base64');
+        return p.evaluate(async ({ b64, cropCss }) => {
+          const img = new Image();
+          await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+          const dsf = window.devicePixelRatio || 1;
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width; canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const x0 = cropCss ? Math.max(0, Math.round(cropCss.x0 * dsf)) : 0;
+          const y0 = cropCss ? Math.max(0, Math.round(cropCss.y0 * dsf)) : 0;
+          const x1 = cropCss ? Math.min(img.width, Math.round(cropCss.x1 * dsf)) : img.width;
+          const y1 = cropCss ? Math.min(img.height, Math.round(cropCss.y1 * dsf)) : img.height;
+          const w = x1 - x0, h = y1 - y0;
+          if (w <= 0 || h <= 0) return { blobs: [], w: 0, h: 0 };
+          const { data } = ctx.getImageData(x0, y0, w, h);
+          const target = [142, 68, 173]; // #8E44AD, src/utils/plotting.ts's continuum marker color
+          const tol2 = 40 * 40;
+          const mask = new Uint8Array(w * h);
+          for (let i = 0; i < w * h; i++) {
+            const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+            if (a < 100) continue;
+            const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+            if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+          }
+          const visited = new Uint8Array(w * h);
+          const blobs = [];
+          const minPixels = 15 * dsf * dsf;
+          for (let i = 0; i < w * h; i++) {
+            if (!mask[i] || visited[i]) continue;
+            const stack = [i]; visited[i] = 1; let count = 0;
+            let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+            while (stack.length) {
+              const cur = stack.pop(); count++;
+              const cx = cur % w, cy = (cur / w) | 0;
+              if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+              if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+              const neighbors = [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]];
+              for (const [nx, ny] of neighbors) {
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                const ni = ny * w + nx;
+                if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+              }
+            }
+            if (count >= minPixels) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf, cx: (minx + maxx) / 2 / dsf, cy: (miny + maxy) / 2 / dsf });
+          }
+          return { blobs, w, h, dsf };
+        }, { b64, cropCss });
+      };
+      // Both continuum markers (corner AND midpoint) are hollow 'diamond-open'
+      // outlines (src/utils/plotting.ts) — a single such outline, viewed at a
+      // steep/foreshortened angle, can anti-alias into >1 connected-component
+      // (a thin, near-edge-on stroke breaking at its narrowest point). Blob
+      // COUNT alone is therefore not a reliable "how many markers" signal;
+      // the SPATIAL EXTENT of the union of all found blobs is: N genuinely
+      // separate diamonds span roughly N*markerSize CSS px, one (possibly
+      // split) diamond spans about one markerSize. `spanOf` returns the
+      // bounding-box diagonal of every blob's own bounding box, union'd.
+      const spanOf = (blobs) => {
+        if (!blobs.length) return 0;
+        const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
+        const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+        return Math.hypot(maxx - minx, maxy - miny);
+      };
+
+      // Hide the legend, the "Starting Point"/"Current position" markers
+      // (same purple-adjacent semi-transparent grey/red/blue, confirmed by
+      // hand to blend close enough to #8E44AD over this background to
+      // register as a false blob), and the continuumNE dashed CONNECTING
+      // LINE (own trace, `mode:'lines'`, same #8E44AD — plotting.ts draws it
+      // between the corner positions regardless of the dynamic collapse,
+      // which only restyles the MARKER traces; RED's own harness
+      // (evidence/sweep2.mjs's forceGroundtruthVisible) hides this same
+      // line for exactly this reason). This section is isolating MARKER
+      // geometry specifically — the line's own "always on a drawn glyph"
+      // guarantee (clause 1) is covered elsewhere
+      // (testContinuumSettledPointAlwaysOnDrawnGlyph). Never re-run per
+      // camera move, only once traces exist (restyle-by-index survives a
+      // container resize).
+      const hideContamination = () => p.evaluate(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        window.Plotly.relayout(gd, { showlegend: false });
+        const idx = [];
+        (gd.data ?? []).forEach((t, i) => {
+          if (/^(Starting Point|Current position)/.test(t.name ?? '')) idx.push(i);
+          if (t.legendgroup === 'continuumNE' && t.mode === 'lines') idx.push(i);
+        });
+        if (idx.length) window.Plotly.restyle(gd, { visible: false }, idx);
+        // The fixed bottom-left "Send feedback" launcher (App.tsx) is
+        // `position:fixed` (viewport-relative, not page-flow), so whether it
+        // visually overlaps the (resized, scrolled) plot container's own
+        // screenshot region depends on scroll position — found by hand: it
+        // was the actual source of a spurious 3rd blob in this check's own
+        // first draft, its `bg-accent-600` fill close enough to #8E44AD to
+        // register as a false continuum glyph. A direct `style.display`
+        // write is not enough — React re-renders this button (e.g. on hover/
+        // focus state elsewhere) and resets any inline style React itself
+        // does not manage. An injected <style> tag survives React's own
+        // reconciliation.
+        if (!document.getElementById('e2e-hide-feedback-btn')) {
+          const style = document.createElement('style');
+          style.id = 'e2e-hide-feedback-btn';
+          style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+          document.head.appendChild(style);
+        }
+      });
+      await hideContamination();
+      await p.waitForTimeout(250);
+
+      // ── Control: len0.2000 at the CANONICAL 700x500 viewport, default
+      //    camera — must show 3 legible, non-touching glyphs (2 corners +
+      //    midpoint), matching the existing (unchanged-by-this-fix) static
+      //    sweep's own 0-violations guarantee.
+      await p.evaluate(() => {
+        const el = document.querySelector('[data-tour="plot"]');
+        el.style.setProperty('width', '700px', 'important');
+        el.style.setProperty('height', '500px', 'important');
+        el.style.setProperty('max-width', '700px', 'important');
+        el.style.setProperty('min-width', '700px', 'important');
+        el.style.setProperty('flex', 'none', 'important');
+      });
+      const DEFAULT_EYE = { x: 1.6, y: -1.6, z: 1.1 };
+      const stableDefault = await setEyeVerified(DEFAULT_EYE);
+      record('precondition: the camera settled at the default eye (700x500 control)', stableDefault.ok, JSON.stringify(stableDefault));
+      const shotControl = await plot.screenshot();
+      // Localization ONLY (never the verdict, per RED-MATH-15/001's own
+      // methodology): the fixture's own 3 data points, projected through
+      // this SAME camera by cameraProjection.ts's real `projectPoint`,
+      // computed once by hand for this exact fixture/camera and pasted
+      // here (generously padded) — this is NOT a re-derivation of the
+      // collapse decision, only where to crop before scanning, so the
+      // payoff SURFACE's own red/blue gradient (which passes through a
+      // purple-ish hue right where the two colors meet, confirmed by eye —
+      // `_redscratch/e2e71_debug_crop.png`) never contaminates the count.
+      // Predicted cluster (700x500, default eye): x:[350,402], y:[426,448].
+      const controlBlobs = await countPurpleBlobs(shotControl, { x0: 290, y0: 366, x1: 462, y1: 498 });
+      record('CONTROL (700x500, default camera): the pixel scan finds >=3 separate continuum glyphs, none fused into one blob',
+        controlBlobs.blobs.length >= 3, JSON.stringify(controlBlobs));
+
+      // ── FIX (under-collapse, RED-MATH-15/001 az195): back to the narrow
+      //    318x298 outer container (real plot div 276x256), RED's exact
+      //    eye. Ground truth (RED's own hand-verified screenshot): the two
+      //    corner diamonds visibly CROSS in an "X" — genuinely fused. The
+      //    module must now hide the corners and enlarge the midpoint, so
+      //    the pixel scan sees exactly ONE blob (the enlarged midpoint),
+      //    never two overlapping diamond outlines.
+      await p.evaluate(() => {
+        const el = document.querySelector('[data-tour="plot"]');
+        el.style.setProperty('width', '318px', 'important');
+        el.style.setProperty('height', '298px', 'important');
+        el.style.setProperty('max-width', '318px', 'important');
+        el.style.setProperty('min-width', '318px', 'important');
+        el.style.setProperty('flex', 'none', 'important');
+      });
+      await p.waitForTimeout(500);
+      // Re-hide: a container resize's ResizeObserver-driven redraw path can
+      // restore default trace visibility, undoing the earlier restyle.
+      await hideContamination();
+      await p.waitForTimeout(250);
+      const stable195 = await setEyeVerified(redEyeAt(195));
+      record('precondition: the camera settled at RED-MATH-15/001\'s exact az195 eye (318x298)', stable195.ok, JSON.stringify(stable195));
+      const collapsedAt195 = await p.waitForFunction(() => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+        return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
+      }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+      record('precondition: the module actually decided to collapse at az195 (else the pixel check below is vacuous)', collapsedAt195);
+      const shot195 = await plot.screenshot();
+      // Predicted cluster (276x256 real plot div, az195): x:[194,221],
+      // y:[134,136] — generously padded (the linear projection's own
+      // residual approximation error, ~5-30px depending on camera, is
+      // exactly why this pad is generous, not tight).
+      const blobs195 = await countPurpleBlobs(shot195, { x0: 114, y0: 60, x1: 301, y1: 190 });
+      const span195 = spanOf(blobs195.blobs);
+      // A single (possibly antialiasing-split) enlarged midpoint diamond
+      // (diamondSize*2 = 21 CSS px) spans at most its own diagonal, ~30px.
+      // Two genuinely separate diamonds (uncollapsed) at this fixture's own
+      // corner-to-corner distance span far more (RED's own measured real
+      // gap: the two corners alone are ~60-70 CSS px apart at this camera).
+      record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan\'s combined purple footprint spans one marker\'s own size (<=35 CSS px), not two separate diamonds',
+        span195 <= 45, JSON.stringify({ span195, ...blobs195 }));
+    } finally { await p.close().catch(() => {}); }
+  });
+
 await executeSections();
 
 } catch (e) {

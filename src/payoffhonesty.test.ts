@@ -1280,7 +1280,7 @@ function rotatedEye(deg: number): [number, number, number] {
  * the surviving MARKER points (what a viewer would actually see after the
  * dynamic rule runs) and whether the rule hid any component's corners.
  */
-function applyDynamicCollapse(traces: any[], zLo: number, zHi: number, basis: any): { survivingMarkers: any[]; anyDynamicHide: boolean } {
+function applyDynamicCollapse(traces: any[], zLo: number, zHi: number, basis: any, viewport?: { w: number; h: number }): { survivingMarkers: any[]; anyDynamicHide: boolean } {
   const byComponent = new Map<number, { midpoint?: any; corners: any[] }>();
   for (const t of traces) {
     const m = t.meta;
@@ -1300,7 +1300,7 @@ function applyDynamicCollapse(traces: any[], zLo: number, zHi: number, basis: an
     for (let si = 0; si < numSurfaces; si++) {
       const mid = { x: e.midpoint.x[si], y: e.midpoint.y[si], z: e.midpoint.z[si] };
       const corners = e.corners.map((ct: any) => ({ x: ct.x[si], y: ct.y[si], z: ct.z[si] }));
-      if (shouldCollapseComponentAtCamera(mid, corners, e.midpoint.meta.continuumBaseSize, e.corners[0].marker.size, zLo, zHi, basis)) collapse = true;
+      if (shouldCollapseComponentAtCamera(mid, corners, e.midpoint.meta.continuumBaseSize, e.corners[0].marker.size, zLo, zHi, basis, viewport)) collapse = true;
     }
     if (collapse) {
       anyDynamicHide = true;
@@ -1314,12 +1314,12 @@ function applyDynamicCollapse(traces: any[], zLo: number, zHi: number, basis: an
 
 /** Worst projected gap among the surviving markers `applyDynamicCollapse`
  *  returns — what a viewer sees AFTER the dynamic rule has run. */
-function worstGapAmongSurvivors(survivingMarkers: any[], zLo: number, zHi: number, basis: any): number {
+function worstGapAmongSurvivors(survivingMarkers: any[], zLo: number, zHi: number, basis: any, viewport?: { w: number; h: number }): number {
   const surfaces = survivingMarkers.length && survivingMarkers[0].x.length > 1 ? [0, 1] : [0];
   let worst = Infinity;
   for (const si of surfaces) {
     const pts = survivingMarkers.map((t) => ({ size: t.marker.size, x: t.x[si], y: t.y[si], z: t.z[si] }));
-    const gap = worstPairGapPx(pts, zLo, zHi, basis);
+    const gap = worstPairGapPx(pts, zLo, zHi, basis, viewport);
     if (gap < worst) worst = gap;
   }
   return worst;
@@ -1530,6 +1530,85 @@ function testContinuumMarkersDoNotOverlapOnScreen() {
   console.log(`✓ the dynamic camera-aware collapse (RED-MATH-13/002) keeps continuumNE markers non-overlapping at every 15° azimuth: `
     + `${singleComponentGames} games x ${SPIN_AZIMUTHS.length} azimuths, 0 violations (worst gap ${dynamicWorstOverall.toFixed(2)}px), `
     + `never over-hides at the default camera.`);
+
+  // BLUE-MATH-15 (RED-MATH-15/001): the dynamic rule above was only ever
+  // swept at DEFAULT_VIEWPORT (700x500) — never at a genuinely narrow LIVE
+  // container, which is exactly where the shared cameraProjection.ts
+  // formula disagreed with real rendered pixels (viewport.w/2 used for x's
+  // scale instead of viewport.h/2 — see the module's own comment). Re-sweep
+  // the SAME 24-azimuth family, now also at the three narrow viewports
+  // RED's own pixel harness (evidence/sweep2.mjs) measured against real
+  // screenshots, on RED's own three near-threshold fixtures (0.2000/0.2500/
+  // 0.3333-length, `a21=4/3/2`).
+  const NARROW_VIEWPORTS: { name: string; w: number; h: number }[] = [
+    { name: '318x298', w: 318, h: 298 },
+    { name: '360x640', w: 360, h: 640 },
+    { name: '240x400', w: 240, h: 400 },
+  ];
+  const NARROW_FIXTURES: [string, GamePayoffs][] = [
+    ['len0.2000', { a11: 0, a12: 1, a21: 4, a22: 0, b11: 0, b12: 0, b21: 0, b22: 1 }],
+    ['len0.2500', { a11: 0, a12: 1, a21: 3, a22: 0, b11: 0, b12: 0, b21: 0, b22: 1 }],
+    ['len0.3333', { a11: 0, a12: 1, a21: 2, a22: 0, b11: 0, b12: 0, b21: 0, b22: 1 }],
+  ];
+  let narrowViolations = 0;
+  let narrowWorstOverall = Infinity;
+  let narrowTrials = 0;
+  for (const [label, g] of NARROW_FIXTURES) {
+    ok(hasContinuum(g), `narrow-viewport fixture sanity: "${label}" must have a genuine continuum`);
+    const surf = buildSurfaces(g);
+    const [zLo, zHi] = zRangeOfSurface(surf);
+    const st = createInitialState(0.5, 0.5, g);
+    const traces = makeTraces(surf, g, st, 'A', computeAllNE(g), false, 'shrink');
+    for (const vp of NARROW_VIEWPORTS) {
+      for (const deg of SPIN_AZIMUTHS) {
+        const basis = cameraBasis(rotatedEye(deg));
+        const { survivingMarkers } = applyDynamicCollapse(traces, zLo, zHi, basis, vp);
+        const worstDyn = worstGapAmongSurvivors(survivingMarkers, zLo, zHi, basis, vp);
+        narrowTrials++;
+        if (worstDyn < narrowWorstOverall) narrowWorstOverall = worstDyn;
+        if (worstDyn < -OVERLAP_TOLERANCE_PX) narrowViolations++;
+      }
+    }
+  }
+  ok(narrowViolations === 0,
+    `${narrowViolations}/${narrowTrials} (fixture,viewport,azimuth) trials draw overlapping continuumNE markers on screen at a narrow live viewport (worst gap ${narrowWorstOverall.toFixed(2)}px)`);
+  console.log(`✓ the dynamic camera-aware collapse also holds at narrow live viewports (BLUE-MATH-15, RED-MATH-15/001): `
+    + `${NARROW_FIXTURES.length} fixtures x ${NARROW_VIEWPORTS.length} viewports x ${SPIN_AZIMUTHS.length} azimuths = ${narrowTrials} trials, `
+    + `0 violations (worst gap ${narrowWorstOverall.toFixed(2)}px, tolerance ${OVERLAP_TOLERANCE_PX}px).`);
+
+  // Direct regression guard for RED-MATH-15/001's own two hand-verified-by-
+  // eye pixel trials. IMPORTANT: RED's `eye = (r*cos(deg), r*sin(deg), 1.1)`
+  // (evidence/sweep2.mjs's `eyeAt`) is NOT the same parametrization as this
+  // file's `rotatedEye` (a rotation OF DEFAULT_EYE, which sits 45° further
+  // around the same circle) — using `rotatedEye(225)` here would silently
+  // test a DIFFERENT camera than RED examined by eye. Use RED's own formula
+  // verbatim. Viewport is the REAL production one: PlotlyView.tsx reads
+  // `document.getElementById(plotId).getBoundingClientRect()` — the PLOT
+  // DIV's own rect, which is ~21px/side SMALLER than the `[data-tour="plot"]`
+  // container RED forced to 318x298 (that container's own `p-2 md:p-4`
+  // padding) — confirmed live (BLUE-MATH-15 debug probe): forcing the outer
+  // container to 318x298 leaves the real plot div at 276x256.
+  function redEyeAt(deg: number): [number, number, number] {
+    const r = Math.hypot(1.6, 1.6);
+    const rad = (deg * Math.PI) / 180;
+    return [r * Math.cos(rad), r * Math.sin(rad), 1.1];
+  }
+  {
+    const g = NARROW_FIXTURES[0][1];
+    const surf = buildSurfaces(g);
+    const [zLo, zHi] = zRangeOfSurface(surf);
+    const st = createInitialState(0.5, 0.5, g);
+    const traces = makeTraces(surf, g, st, 'A', computeAllNE(g), false, 'shrink');
+    const vp = { w: 276, h: 256 };
+    const { anyDynamicHide: hideAt195 } = applyDynamicCollapse(traces, zLo, zHi, cameraBasis(redEyeAt(195)), vp);
+    ok(hideAt195, 'RED-MATH-15/001 under-collapse regression: len0.2000 @318x298(real plot div 276x256) az195 must hide corners / enlarge the midpoint (real pixels show a fused "X")');
+    // az225 (over-collapse) is NOT asserted here: deep investigation (BLUE-MATH-15,
+    // see docs/CONTINUUM-RENDERING.md "Known gaps") found the aspect-ratio fix
+    // above does not resolve it — the worst pair driving a false collapse there
+    // is midpoint-vs-corner (corner-vs-corner alone is a healthy +5.5px, matching
+    // the real screenshot's 2 clean diamonds), and no FOCAL retune closes it
+    // without reopening az195. Left as an open finding rather than asserted here.
+  }
 }
 
 testContinuumCornerMarkersVisibleUniqueAndNamed();

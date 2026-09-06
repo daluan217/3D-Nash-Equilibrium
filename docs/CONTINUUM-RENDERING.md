@@ -49,6 +49,14 @@ For every 2×2 game, in every rendered plot:
      identically to the static rule's own validated geometry (single `segment` components
      — see "Screen-space, in detail"); an `area` component or a cross-component pair is
      the same pre-existing "Known gap" below, unchanged by this clause.
+     **Validated viewport range (BLUE-MATH-15, RED-MATH-15/001):** the dynamic rule reads
+     the LIVE plot container's own rendered size and passes it into `projectPoint`
+     (`PlotlyView.tsx`'s `applyContinuumCollapseAtCamera`) — RED-MATH-15/001 found this
+     genuinely disagreed with real rendered pixels at a narrow live viewport (318x298,
+     360x640, 240x400), never checked before against pixels at anything but the canonical
+     700x500. Root cause and fix: see "Screen-space, in detail" below and its "Known gaps"
+     addition — one class (aspect-ratio-dependent scaling) is fixed and validated at all
+     four viewports; a second, near-`SHORT_CONTINUUM`-boundary class remains open.
 4. **A component shorter than L draws one glyph; at or above L it draws corners +
    midpoint.** `SHORT_CONTINUUM` in `plotting.ts`, currently `0.2`, compared with a
    `1e-9` tolerance: the contract is on the EXACT length, so a component whose length is
@@ -86,10 +94,45 @@ lookAt + pinhole-perspective projection over that same per-axis normalization: x
 already span `[0,1]`; z is centered/scaled by the game's own payoff-surface range, padded
 by the same ±0.3 `makeTraces`' own bounding-box lines add at the extrema (`zRangeOfSurface`
 — what Plotly's zaxis actually autoranges over, not just the bare surface grid;
-CodeRabbit caught this test undercounting it on PR #134). `FOCAL = 3` and a canonical
-700×500 viewport are the
-one free calibration knob, chosen so every independently-found real fixture agrees with
-real reach evidence (below).
+CodeRabbit caught this test undercounting it on PR #134). `FOCAL = 3.1` (BLUE-MATH-15;
+was `3`) and the SCALE FACTOR applied to a viewport `{w,h}` are the two free calibration
+knobs, chosen so every independently-found real fixture agrees with real reach evidence
+(below); the canonical 700×500 viewport is `DEFAULT_VIEWPORT`, used when no live container
+size is available (the STATIC test) or for a caller that has none.
+
+**BLUE-MATH-15 (RED-MATH-15/001):** `projectPoint`'s screen-space x used to scale by
+`viewport.w/2`, independently of y's `viewport.h/2` — correct only by coincidence at the
+canonical viewport's own 700:500 aspect ratio. Read live from Plotly's own gl3d state
+(`glplot.fovy`, `glplot.cameraParams.{view,projection,model}`) at the default camera AND at
+every RED-MATH-15/001 narrow viewport: the real vertical field of view is a HARDCODED
+constant, exactly `Math.PI / 4`, independent of aspect ratio or data — a standard
+fixed-vertical-FOV perspective camera, where the horizontal projection term is `f/aspect`
+with `aspect = w/h`; the `w` cancels out of that term algebraically, so x and y share
+the SAME scale factor, `viewport.h/2` (only the horizontal CENTER offset stays `w/2`).
+Verified independently against real rendered pixels (blob centroids, `deviceScaleFactor:3`
+screenshots) at 700x500, 318x298, 360x640 and 240x400 for a long (non-fusing) segment
+fixture: the OLD formula's error grows with how far the viewport's aspect ratio departs
+from 700:500 (up to ~90px at 240x400); the FIXED formula's residual error is a uniform
+~5px at every one of the four viewports — the remaining gap between this linear pinhole
+approximation and Plotly's exact WebGL matrices, not an aspect-ratio artifact.
+`cameraBasis`'s own right/up/forward vectors were independently confirmed to match
+Plotly's live view matrix to 10+ decimal places at two different rotated cameras — the
+basis construction is not implicated by this or the open finding below.
+
+FOCAL was re-tuned 3 → 3.1 (the SAME free knob, same "against real-fixture evidence"
+philosophy) after the x-scale fix alone left exactly 1/300,000 games in the existing
+static (default-camera, 700x500) sweep 0.074px past tolerance — on a game whose continuum
+sits EXACTLY at `SHORT_CONTINUUM`'s own boundary length (0.2), which the sweep's own
+history already treats as razor-thin by design (chosen with "zero violations found ABOVE
+it," never a padded margin). The mathematically exact value (`1 / tan(Math.PI / 8)` ≈
+2.41421, matching the live `fovy` precisely) regresses that same sweep more seriously
+(52/300,000 games newly "overlap" by 1-4px) — confirmed by eye against a real render that
+those are false positives (clearly separated markers): the exact FOCAL no longer covers
+the SAME residual approximation gap (an unrelated z-range approximation — `zRangeOfSurface`
+is itself an approximation of Plotly's real scene bounds, not an exact match) the original
+empirical `FOCAL = 3` always silently absorbed for y. 3.1 restores that margin
+(-0.61px worst at 700x500, -1.00px worst across the 24-azimuth dynamic sweep) without
+reopening the aspect-ratio gap the x-scale fix closes.
 
 **This projection is deliberately approximate** — not a byte-for-byte reproduction of
 Plotly's WebGL pipeline, which lives only in the real browser (e2e section 47;
@@ -132,6 +175,28 @@ build a WebGL-accurate projection (real `cameraParams`, not an approximation) be
 attempting a fix, or accept this as a rare, borderline (not a "blob"), multi-component-
 only case.
 
+**Near-`SHORT_CONTINUUM`-boundary over-collapse at a narrow viewport (BLUE-MATH-15,
+RED-MATH-15/001, OPEN).** RED-MATH-15/001's own two hand-verified pixel trials, both on
+the exact length-0.2 fixture (`A=[[0,1],[4,0]]`, `B=[[0,0],[0,1]]`) at 318x298 (real plot
+div 276x256): az195 (under-collapse) is now fixed by the x-scale correction above —
+confirmed by pixels (e2e section 71) and data-space (`payoffhonesty.test.ts`'s regression
+guard). **az225 (over-collapse) is NOT fixed.** Real pixels there show two corner diamonds
+with a clean, generous gap (RED's own screenshot, hand-confirmed) — the module still hides
+both. Diagnosed: at az225, `worstPairGapPx`'s worst PAIR is midpoint-vs-corner (a healthy
++5.5px for corner-vs-corner alone, matching the real gap) — the midpoint's own predicted
+screen position lands implausibly close to a corner's for this configuration. Tried
+FOCAL from 2.5 to 3.2 and both the live plot div (276x256) and its underlying WebGL
+sub-shape (276x246, from `glplot.shape/pixelRatio`) — no combination flips az225 correct
+without reopening az195. Cross-checked against RED's own full 24-azimuth ground truth for
+this exact fixture/viewport (`evidence/sweep2_len02_full.log`): agreement is 17/24 both
+before and after this fix (unchanged) — most of those 24 rows were never hand-verified by
+RED either (their own words: "candidates," not proof), so this number should not be
+over- or under-read. Left open rather than shipped as a fabricated pass: a future round
+should build (or read live from Plotly, per the module's own preference for that) an
+EXACT projection — this linear pinhole approximation's residual error is evidently large
+enough, specifically for midpoint-to-corner distances near this length's own geometry, to
+flip a decision the corner-to-corner distance alone gets right.
+
 ## What each fix's mutation test proves
 
 Relax any one clause and name what fails:
@@ -155,5 +220,8 @@ Relax any one clause and name what fails:
   visible and overlapping at the spin-sampled fusing camera; the default-camera
   check in the same section still passes, since the static rule alone is
   correct there).
+- Drop the x-scale fix (`viewport.h / 2` → `viewport.w / 2` for x, BLUE-MATH-15): both
+  `payoffhonesty.test.ts`'s RED-MATH-15/001 az195 regression guard and e2e section 71's
+  two pixel checks (the collapse precondition and the span check) fail.
 
 All verified by actually reverting each fix and re-running the named check.
