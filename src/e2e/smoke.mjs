@@ -3677,6 +3677,27 @@ try {
       let afterDelete = await readListFocus();
       for (let i = 0; i < 30 && !afterDelete.inList; i++) { await p.waitForTimeout(100); afterDelete = await readListFocus(); }
       record('FIX: after a keyboard Delete removes the focused row, focus is inside the saved-games list (neighbour row or the list itself), not <body>', afterDelete.tag !== 'BODY' && afterDelete.inList, JSON.stringify(afterDelete));
+      // (c) the same deletion from the workspace menu drawer keeps focus INSIDE
+      // the drawer (CodeRabbit on #141). Mutation: pass no row from the drawer's
+      // Delete button → focus falls to the page under the drawer.
+      for (const n of ['Del-C', 'Del-D']) await fetch(BASE + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: `${n}-${uniq}`, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
+      await p.reload({ waitUntil: 'networkidle' });
+      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+      // The saved games live under the drawer's Library tab.
+      await p.getByRole('button', { name: /library/i }).first().click();
+      const drawerList = p.locator('[data-focus-fallback="drawer-games"]');
+      await drawerList.waitFor({ state: 'visible', timeout: 8000 });
+      const card = drawerList.locator('[data-drawer-game]', { hasText: `Del-C-${uniq}` });
+      const delC = card.getByTitle('Delete custom layout');
+      await delC.scrollIntoViewIfNeeded(); await delC.focus();
+      p.once('dialog', async (d) => { await d.accept(); });
+      await p.keyboard.press('Enter');
+      await card.waitFor({ state: 'hidden', timeout: 8000 });
+      const readDrawerFocus = () => p.evaluate(() => { const a = document.activeElement; return { tag: a?.tagName, inDrawer: !!(a && a.isConnected && a.closest?.('[data-focus-fallback="drawer-games"]')), text: (a?.textContent || a?.getAttribute('title') || '').trim().slice(0, 30) }; });
+      let afterDrawer = await readDrawerFocus();
+      for (let i = 0; i < 30 && !afterDrawer.inDrawer; i++) { await p.waitForTimeout(100); afterDrawer = await readDrawerFocus(); }
+      record('FIX: deleting from the menu drawer keeps focus inside the drawer\'s list, not on the page beneath', afterDrawer.inDrawer, JSON.stringify(afterDrawer));
     } finally { await ctx.close().catch(() => {}); }
   });
 

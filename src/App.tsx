@@ -2349,9 +2349,14 @@ export default function App() {
    */
   const focusAfterRowRemoved = (rowEl: HTMLElement | null) => {
     const neighbour = (rowEl?.nextElementSibling ?? rowEl?.previousElementSibling) as HTMLElement | null;
+    // The landmark the row lived in (the sidebar list, or the menu drawer's
+    // list — CodeRabbit on #141: a drawer deletion must not hand focus to
+    // the page underneath the still-open drawer), read before it is gone.
+    const landmark = rowEl?.closest('[data-focus-fallback]')?.getAttribute('data-focus-fallback') ?? 'saved-games';
     requestAnimationFrame(() => {
       const target = (neighbour && neighbour.isConnected ? neighbour.querySelector<HTMLElement>('button') : null)
-        ?? firstVisible('[data-focus-fallback="saved-games"]') ?? firstVisible('[data-focus-home]');
+        ?? firstVisible(`[data-focus-fallback="${landmark}"] button, [data-focus-fallback="${landmark}"]`)
+        ?? firstVisible('[data-focus-home]');
       target?.focus();
     });
   };
