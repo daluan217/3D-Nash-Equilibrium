@@ -4790,8 +4790,10 @@ try {
   //    `projectPoint` scaled x by `viewport.w/2` instead of `viewport.h/2`
   //    (Plotly's real gl3d camera has a FIXED vertical FOV — confirmed
   //    against the live `glplot.fovy`/`cameraParams` — so `w` cancels out
-  //    of the horizontal term algebraically). Fixed; FOCAL re-tuned
-  //    3 -> 3.1 to keep the existing 700x500 sweeps at 0 violations.
+  //    of the horizontal term algebraically). Fixed; FOCAL stays 3.0 — a
+  //    fitted 3.1 was tried and reverted (OPUS-REVIEW-MATH FBM-2: it was
+  //    fitted to a self-consistency sweep, not real-pixel evidence, and
+  //    the ONE static-sweep game it "fixed" is excepted by name instead).
   section('71', 'camera-aware continuum collapse agrees with real rendered pixels at a narrow live viewport', 16, async () => {
     // `reducedMotion: 'reduce'` (App.tsx's idle spin already respects this,
     // per section 18) means the idle spin never starts on this page at all —
@@ -5005,6 +5007,22 @@ try {
         el.style.setProperty('min-width', '700px', 'important');
         el.style.setProperty('flex', 'none', 'important');
       });
+      // CodeRabbit (this branch): PlotlyView.tsx debounces its ResizeObserver
+      // (150ms) and the gl3d Plots.resize itself costs ~100ms+ — a stalled
+      // SwiftShader CI runner could screenshot the OLD (narrow) container
+      // size, invalidating the 700x500-derived crop below for a reason
+      // unrelated to the collapse decision. Poll the live gl3d size instead
+      // of trusting setEyeVerified's own sleep to have covered it too. The
+      // plot DIV itself is narrower than the outer `[data-tour="plot"]`
+      // container it's nested in (that container's own `p-2 md:p-4`
+      // padding, ~21px/side — confirmed live: forcing the outer container
+      // to 700 leaves the plot div at 658).
+      const controlResized = await p.waitForFunction(() => {
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        const r = gd?.getBoundingClientRect();
+        return r && Math.abs(r.width - 658) < 24 ? true : null;
+      }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+      record('precondition: the plot resized to the canonical 700x500 control size before the pixel scan', controlResized);
       const DEFAULT_EYE = { x: 1.6, y: -1.6, z: 1.1 };
       const stableDefault = await setEyeVerified(DEFAULT_EYE);
       record('precondition: the camera settled at the default eye (700x500 control)', stableDefault.ok, JSON.stringify(stableDefault));

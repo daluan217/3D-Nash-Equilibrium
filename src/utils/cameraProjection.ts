@@ -35,8 +35,9 @@ export const DEFAULT_EYE: [number, number, number] = [1.6, -1.6, 1.1];
 // horizontal term algebraically, so x and y share ONE scale factor). FOCAL
 // stays 3 (OPUS-REVIEW-MATH FBM-2, 2026-09-06): a fitted 3.1 was tried and
 // reverted — against RED-MATH-15/001's own 24 real-pixel rows (embedded in
-// payoffhonesty.test.ts's REAL_PIXEL_GROUND_TRUTH), F=3.0 and F=3.1 score
-// identically (17/24), while F=3.0 leaves the widest margin on the 700x500
+// payoffhonesty.test.ts's REAL_PIXEL_GROUND_TRUTH, evaluated at the REAL
+// runtime viewport 276x246), F=3.0 and F=3.1 both score 18/24, while F=3.0
+// leaves the widest margin on the 700x500
 // static sweep (only ONE game excepted below, vs re-tuning the knob to
 // paper over it) and errs toward collapsing MORE often, the safer direction
 // (raising FOCAL trades toward under-collapse — the exact defect class
