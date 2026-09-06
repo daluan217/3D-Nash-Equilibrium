@@ -3170,6 +3170,23 @@ try {
       record('the edit reached the local database (GET shows the new description)',
         Array.isArray(stored) && stored.length === 1 && stored[0].description === 'Edited on the desktop without an account.', JSON.stringify(stored.map?.((g) => g.description)));
 
+      // ── The drawer's Library tab (RED-DESKTOP-13/001, director-reproduced) ──
+      // The second surface for the same list: it used to gate on a signed-in
+      // `user`, so the no-account desktop user saw the count, zero cards and
+      // "You must be signed in to view and save custom game profiles".
+      // Mutation: gate MenuDrawer's list on `user` again → the "lists the game" check
+      // fails (verified); gate its copy on `user` → the "does not tell … to sign in" check fails.
+      await dp.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await dp.getByRole('button', { name: /library/i }).first().click();
+      const drawerCards = dp.locator('[data-drawer-game]', { hasText: name });
+      const drawerListed = await drawerCards.first().waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+      const drawerText = await dp.evaluate(() => { const t = document.body.textContent || ''; const m = t.match(/Custom User Profiles \((\d+)\)/); return { count: m ? Number(m[1]) : null, mustSignIn: /must be signed in to view and save/i.test(t), lockHint: /Log in to persist custom profiles/i.test(t) }; });
+      record('precondition: the drawer header counts the one saved game', drawerText.count === 1, JSON.stringify(drawerText));
+      record('FIX: the drawer\'s Library tab lists the game saved without an account', drawerListed, JSON.stringify(drawerText));
+      record('FIX: the drawer does not tell the local owner to sign in (no "must be signed in", no "Log in to persist")', !drawerText.mustSignIn && !drawerText.lockHint, JSON.stringify(drawerText));
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+
       // ── Delete ──
       dp.once('dialog', async (d) => { await d.accept(); });
       await dp.locator('div.group', { has: dp.getByRole('button', { name, exact: true }) }).getByTitle('Delete this saved game').click();

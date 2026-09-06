@@ -31,6 +31,15 @@ interface MenuDrawerProps {
   onClose: () => void;
   user: { id: string; username: string; email: string } | null;
   authToken: string | null;
+  /**
+   * RED-DESKTOP-13/001: whether THIS device can own saved games — a signed-in
+   * account OR the desktop app's local owner (no account). The Library tab
+   * used to gate its whole list on `user`, so every no-account desktop user
+   * saw "Custom User Profiles (N)" above "You must be signed in…" with zero
+   * of their N games listed, while the sidebar showed all of them. Same
+   * predicate as the sidebar (App's `canOwnGames`).
+   */
+  canOwnGames: boolean;
   userCustomGames: any[];
   /** `rowEl` is the card being removed, so focus can stay inside the drawer afterwards. */
   onDeleteCustomGame: (id: string, rowEl?: HTMLElement | null) => void;
@@ -51,6 +60,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   onClose,
   user,
   authToken,
+  canOwnGames,
   userCustomGames,
   onDeleteCustomGame,
   onLoadPreset,
@@ -702,14 +712,14 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
               <div className="border-t border-slate-100 dark:border-slate-800 pt-6">
                 <div className="text-xs font-bold uppercase tracking-wider text-muted dark:text-muted-dark mb-3.5 flex items-center justify-between">
                   <span>Custom User Profiles ({formattedCustomGames.length})</span>
-                  {!user && (
+                  {!canOwnGames && (
                     <span className="text-xs text-accent-500 normal-case font-medium">
                       🔒 Log in to persist custom profiles
                     </span>
                   )}
                 </div>
 
-                {user && formattedCustomGames.length > 0 ? (
+                {canOwnGames && formattedCustomGames.length > 0 ? (
                   <div data-focus-fallback="drawer-games" tabIndex={-1} aria-label="Saved custom games" className="grid grid-cols-1 gap-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 rounded-xl">
                     {formattedCustomGames.map((game) => {
                       // RED-MATH-7/001: same continuum-awareness as the
@@ -814,7 +824,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                      `drawer-games` fallback inside the open drawer instead of
                      falling through to the page beneath it (CodeRabbit on #141). */
                   <div data-focus-fallback="drawer-games" tabIndex={-1} aria-label="Saved custom games" className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400">
-                    {user ? (
+                    {canOwnGames ? (
                       <p>
                         No saved custom game presets. Customize payoffs in the main board and click{' '}
                         <strong className="text-accent-600 dark:text-accent-400">Save payoffs</strong> to record your own scenarios!
