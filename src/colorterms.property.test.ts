@@ -519,8 +519,8 @@ for (const c of BOUNDARY_MUST_MATCH) {
   // Katakana compounds use the long-vowel mark ー (U+30FC, Script=Common but
   // Script_Extensions=Katakana): with Script=Katakana alone the mark counted as a
   // letter and "パ" no longer matched inside "スーパー" (CodeRabbit on #142).
-  const htmlKana = rendered('駅前のスーパーで会う。', ['パ']);
-  check('(boundary) CJK: "パ" inside "スーパー" (long-vowel mark ー) still highlights like other kana', isHighlighted(htmlKana), htmlKana);
+  const htmlKana = rendered('駅前のスーパーで会う。', ['パー']);
+  check('(boundary) CJK: "パー" inside "スーパー" (preceded by the long-vowel mark ー) highlights like other kana; mutation: Script= instead of Script_Extensions= → plain', isHighlighted(htmlKana), htmlKana);
 }
 {
   // A CJK chip with real neighbours on both sides in the SAME script also
