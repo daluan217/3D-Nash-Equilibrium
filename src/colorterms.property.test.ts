@@ -32,6 +32,9 @@ import {
   type ScenarioLabels,
 } from './utils/colorTerms';
 import { readFileSync } from 'node:fs';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ColorCoded } from './components/ColorCoded';
 
 let failures = 0;
 let cases = 0;
@@ -109,6 +112,18 @@ const CANONICAL_VARIANTS: Variant[] = [
 const CASE_VARIANTS: Variant[] = [
   { family: 'case', glyph: 'SCREAMING CASE', make: (s) => s.toUpperCase() },
 ];
+// RED-CLOUD-11/001: a regenerated actor noun and an existing chip naming the
+// SAME character but introduced with a different leading article ("a
+// landowner" vs "the landowner") must collide for EXCLUSIVITY purposes — the
+// model itself writes the same referent both ways (indefinite, then definite)
+// within one description. Works on any word, like case/invisible/whitespace
+// above, so it is NOT added to NEEDS_OWN_BASE.
+const ARTICLE_VARIANTS: Variant[] = [
+  { family: 'article', glyph: 'leading "a "', make: (s) => `a ${s}` },
+  { family: 'article', glyph: 'leading "an "', make: (s) => `an ${s}` },
+  { family: 'article', glyph: 'leading "the "', make: (s) => `the ${s}` },
+  { family: 'article', glyph: 'leading "The " (capitalized)', make: (s) => `The ${s}` },
+];
 const ALL_FOLD_FAMILIES: Array<{ base: string; variants: Variant[] }> = [
   { base: APOSTROPHE_BASE, variants: APOSTROPHE_VARIANTS },
   { base: DASH_BASE, variants: DASH_VARIANTS },
@@ -116,6 +131,7 @@ const ALL_FOLD_FAMILIES: Array<{ base: string; variants: Variant[] }> = [
   { base: WHITESPACE_BASE, variants: WHITESPACE_VARIANTS },
   { base: CANONICAL_BASE, variants: CANONICAL_VARIANTS },
   { base: 'Cooperate', variants: CASE_VARIANTS },
+  { base: 'Landowner', variants: ARTICLE_VARIANTS },
 ];
 
 // EDGE-STRIP class: wrapping a bare phrase in these must fold to the SAME key
@@ -144,6 +160,9 @@ const NEGATIVE_PAIRS: Array<[string, string, string]> = [
   ['+50', '50', 'leading plus carries meaning'],
   ['$50', '50', 'currency sign carries meaning'],
   ['Co-op', 'Coop', 'an inner dash is not punctuation to strip'],
+  ['another chance', 'a chance', '"another" is not the article "an" + a word (no space after "an")'],
+  ['a-frame', 'frame', 'a hyphen right after "a" blocks the article fold (no whitespace follows)'],
+  ['a landowner', 'a farmer', 'the SAME article on two DIFFERENT nouns must still be different phrases'],
   ['Wolf', 'Rabbit', 'unrelated words'],
   ['(Cooperate)', 'Retreat', 'unrelated words, one merely bracketed'],
   ["Farmer's", "Farmers", 'the apostrophe is part of the word’s spelling, not edge punctuation'],
@@ -321,6 +340,41 @@ for (const { base, variants } of ALL_FOLD_FAMILIES) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// RED-CLOUD-11/001, exact hand-read reproduction: the finding's own draw 17
+// (main 3f699f4) — a regenerated actor noun ("a landowner") for Player A
+// colliding with an EXISTING Player B chip ("the landowner") from the
+// PREVIOUS story, differing only by leading article. Before the article fold
+// this slipped `regenKeptColorTerms`'s cross-player guard entirely (both
+// chips got stored, per the finding's own trace: kept.a included "a
+// landowner" AND kept.b kept "the landowner"). Reproduced directly, not just
+// through the generic family sweep above, so this exact case is pinned by
+// name.
+// ═════════════════════════════════════════════════════════════════════════
+{
+  const existingA = ['the surveyor'];
+  const existingB = ['the landowner'];
+  const newActorA = ['a landowner'];
+  const newActorB = ['a hedge-layer'];
+  const kept = regenKeptColorTerms(newActorA, newActorB, existingA, existingB);
+  check('RED-CLOUD-11/001: "a landowner" (new, Player A) colliding with the EXISTING "the landowner" (Player B) is never added to A',
+    !kept.a.some((t) => colorTermKey(t) === colorTermKey('a landowner')), JSON.stringify(kept));
+  check('RED-CLOUD-11/001: Player B keeps its existing "the landowner" chip unchanged',
+    kept.b.includes('the landowner'), JSON.stringify(kept));
+  check('RED-CLOUD-11/001: Player A keeps its own unrelated existing chip ("the surveyor")',
+    kept.a.includes('the surveyor'), JSON.stringify(kept));
+  check('RED-CLOUD-11/001: Player B\'s genuinely NEW, non-colliding actor noun ("a hedge-layer") is still added',
+    kept.b.includes('a hedge-layer'), JSON.stringify(kept));
+  // Rendering-side control: the fold above must NEVER reach ColorCoded's own
+  // literal match — a chip stored as "the landowner" still colours only the
+  // literal text "the landowner", never a bare "landowner" occurring without
+  // its article (docs/COLOUR-TERMS.md — rendering never uses colorTermKey).
+  const renderPlain = rendered('The landowner agrees, and a landowner nearby does not.', [], ['the landowner']);
+  const spansB = [...renderPlain.matchAll(/<span[^>]*>([^<]*)<\/span>/g)].map((m) => m[1]);
+  check('RED-CLOUD-11/001 rendering control: "the landowner" chip colours ONLY its own literal text, never the bare "landowner" (no article) elsewhere in the same sentence',
+    spansB.length === 1 && spansB[0] === 'The landowner', JSON.stringify({ renderPlain, spansB }));
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 // PART 4 — VOLUME PAD: the same ownership x surface sweep repeated over a
 // seeded random sample of (family, variant, ownership-case) draws, so the
 // suite's total exceeds 5,000 cases the way a real fuzz sweep would rather
@@ -397,6 +451,99 @@ for (let i = 0; i < N_RANDOM; i++) {
   check('RED-REGEN-7/001: no status-handling branch after the success case may close the Edit dialog '
     + '(a 409 falls into the generic branch here; closing it would drop the collision message unseen)',
     !/setIsEditModalOpen\(false\)/.test(errRegion), errRegion.slice(0, 300));
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// PART 6 — RED-REGEN-8/001: ColorCoded's OWN boundary regex (never routed
+// through colorTermKey, §(c)) must be Unicode-letter-aware so an ASCII chip
+// adjacent to a non-ASCII letter does not match mid-word, while CJK/kana
+// script (no spaces between words at all) keeps matching mid-compound — a
+// DECIDED, documented exception (docs/COLOUR-TERMS.md §(c)), not an
+// oversight. Calls the real exported `ColorCoded` via `renderToStaticMarkup`
+// — real React rendering, not a reimplementation of the regex.
+// ═════════════════════════════════════════════════════════════════════════
+function rendered(text: string, aTerms: string[] = [], bTerms: string[] = []): string {
+  return renderToStaticMarkup(React.createElement(ColorCoded, { text, aTerms, bTerms }));
+}
+function isHighlighted(html: string): boolean { return /<span/.test(html); }
+
+// MUST-NOT-MATCH: an ASCII (or shorter accented) chip whose match would end
+// mid-word against an adjacent non-ASCII letter, across several scripts —
+// the exact class RED-REGEN-8/001 found (not just the one Latin example).
+const BOUNDARY_MUST_NOT_MATCH: Array<{ name: string; text: string; term: string }> = [
+  { name: 'Latin (Portuguese): "cora" before ç in "coração"', text: 'O coração decide.', term: 'cora' },
+  { name: 'Latin (French): "tr" before è in "très"', text: 'Il est très calme.', term: 'tr' },
+  { name: 'Latin (Swedish): "rd" after å in "gård"', text: 'En gård i skogen.', term: 'rd' },
+  { name: 'Latin (Spanish): "se" before ñ in "señor"', text: 'El señor decide.', term: 'se' },
+  { name: 'Latin (German): "Wal" before ö in "Walöl"', text: 'Der Anbieter verkauft Walöl heute.', term: 'Wal' },
+  { name: 'Cyrillic: "при" before мер in "пример"', text: 'Вот пример игры.', term: 'при' },
+  { name: 'Greek: "θε" before ωρ in "θεωρία"', text: 'Η θεωρία λέει.', term: 'θε' },
+  { name: 'digit boundary: "item" before "_2" (underscore+digit are word chars)', text: 'Choose item_2 now.', term: 'item' },
+  { name: 'underscore boundary: "foo" adjacent to "_bar"', text: 'Pick foo_bar please.', term: 'foo' },
+];
+for (const c of BOUNDARY_MUST_NOT_MATCH) {
+  const html = rendered(c.text, [c.term]);
+  check(`(boundary) ${c.name}: must NOT highlight (inside one word)`, !isHighlighted(html), html);
+}
+
+// MUST-MATCH: the whole accented/non-Latin word, and an ASCII chip with a
+// genuine ASCII-only word boundary on both sides (positive controls proving
+// the check above can fail, and that the fix is not simply "never match").
+const BOUNDARY_MUST_MATCH: Array<{ name: string; text: string; term: string }> = [
+  { name: 'whole accented word: "très"', text: 'Il est très calme.', term: 'très' },
+  { name: 'whole Cyrillic word: "пример"', text: 'Вот пример игры.', term: 'пример' },
+  { name: 'whole Greek word: "θεωρία"', text: 'Η θεωρία λέει.', term: 'θεωρία' },
+  { name: 'ASCII control: "se" as its own word', text: 'El comprador se decide rapido.', term: 'se' },
+  { name: 'digit-adjacent whole word still matches when the WORD itself, not a prefix, is the chip', text: 'Choose item_2 now.', term: 'item_2' },
+];
+for (const c of BOUNDARY_MUST_MATCH) {
+  const html = rendered(c.text, [c.term]);
+  check(`(boundary) ${c.name}: must highlight`, isHighlighted(html), html);
+}
+
+// NEGATIVE CONTROL: the ASCII-neighbour case must NOT match either (proves
+// the defect is specifically "adjacent to a NON-ASCII letter", not "any
+// adjacent letter" — RED-REGEN-8/001's own falsifier, reproduced here).
+{
+  const html = rendered('A tree grows.', ['tr']);
+  check('(boundary) negative control: ASCII "tr" inside "tree" stays plain (both agree)', !isHighlighted(html), html);
+}
+
+// CJK DECISION, documented in docs/COLOUR-TERMS.md §(c): Han/Hiragana/
+// Katakana carry no inter-word spaces, so a chip may still match mid-run —
+// kept, not changed, and pinned here so a future "fix" cannot flip it
+// silently.
+{
+  const html = rendered('彼は日本語を話す。', ['日本']);
+  check('(boundary) CJK: "日本" inside "日本語" still highlights (decided, documented behaviour)', isHighlighted(html), html);
+  // Katakana compounds use the long-vowel mark ー (U+30FC, Script=Common but
+  // Script_Extensions=Katakana): with Script=Katakana alone the mark counted as a
+  // letter and "パ" no longer matched inside "スーパー" (CodeRabbit on #142).
+  const htmlKana = rendered('駅前のスーパーで会う。', ['パー']);
+  check('(boundary) CJK: "パー" inside "スーパー" (preceded by the long-vowel mark ー) highlights like other kana; mutation: Script= instead of Script_Extensions= → plain', isHighlighted(htmlKana), htmlKana);
+}
+{
+  // A CJK chip with real neighbours on both sides in the SAME script also
+  // works (not just adjacent to the one deliberately-exempted example).
+  const html = rendered('東京タワーは高い。', ['タワー']);
+  check('(boundary) CJK/Katakana: "タワー" inside "東京タワーは" still highlights', isHighlighted(html), html);
+}
+
+// COMBINING MARKS (CodeRabbit, this PR): an NFD-normalized "café" is the
+// base letters "cafe" followed by a SEPARATE combining-mark code point
+// (U+0301, COMBINING ACUTE ACCENT) — a chip matching only the base letters
+// must not match (it would leave the accent rendered outside the coloured
+// span, splitting the same grapheme this fix exists to keep whole); a chip
+// that IS the full NFD grapheme (base + combining mark) must still match.
+{
+  const nfdCafe = 'cafe' + '́'; // "café", NFD form: 5 UTF-16 code units
+  const text = `The ${nfdCafe} is closed today.`;
+  const htmlBaseOnly = rendered(text, ['cafe']);
+  check('(boundary) NFD combining mark: chip "cafe" (base letters only) must NOT match "café" (NFD, base + combining accent)',
+    !isHighlighted(htmlBaseOnly), htmlBaseOnly);
+  const htmlFullGrapheme = rendered(text, [nfdCafe]);
+  check('(boundary) NFD combining mark: chip = the FULL NFD grapheme ("cafe" + combining accent) still highlights',
+    isHighlighted(htmlFullGrapheme), htmlFullGrapheme);
 }
 
 if (failures > 0) {
