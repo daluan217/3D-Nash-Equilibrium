@@ -840,6 +840,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   useEffect(() => {
     const Plotly = (window as any).Plotly;
     if (!Plotly || !containerRef.current) return;
+    // CodeRabbit (this branch): guards the post-react collapse evaluation
+    // below against running after THIS effect has been invalidated (a
+    // later render's cleanup already fired) — set true in that cleanup.
+    let cancelled = false;
 
     // Build the surfaces and coordinates
     const surf = buildSurfaces(payoffs);
@@ -1152,14 +1156,22 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     Plotly.react(plotId, traces, layout, {
       responsive: true,
       displayModeBar: false
+    }).then(() => {
+      // CodeRabbit (this branch): `Plotly.react` returns a promise; the
+      // collapse evaluation now runs after it resolves (not immediately
+      // after the call returns), and the `cancelled` guard drops it if a
+      // LATER render's cleanup already fired before this one resolved —
+      // never restyle traces belonging to a react call this effect has
+      // since superseded.
+      if (cancelled) return;
+      // RED-MATH-13/002: the camera this render's react just painted with
+      // may already be a fusing angle (a running simulation's per-step
+      // redraw, or the idle spin resuming on the same pose it left off at)
+      // — evaluate once immediately rather than waiting for the next
+      // relayout.
+      lastContinuumEvalRef.current = performance.now();
+      applyContinuumCollapseAtCamera(cameraRef.current);
     });
-
-    // RED-MATH-13/002: the camera this render's react just painted with may
-    // already be a fusing angle (a running simulation's per-step redraw, or
-    // the idle spin resuming on the same pose it left off at) — evaluate
-    // once immediately rather than waiting for the next relayout.
-    lastContinuumEvalRef.current = performance.now();
-    applyContinuumCollapseAtCamera(cameraRef.current);
 
     // Attach camera listener after Plotly has initialized the element's event system
     const el2 = document.getElementById(plotId) as any;
@@ -1341,6 +1353,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // makes an old one redundant, and unmount should not leave ANY timer
     // outstanding.
     return () => {
+      cancelled = true;
       if (trailingContinuumEvalTimerRef.current) {
         clearTimeout(trailingContinuumEvalTimerRef.current);
         trailingContinuumEvalTimerRef.current = null;
