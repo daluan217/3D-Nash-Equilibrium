@@ -6734,6 +6734,7 @@ export default function App() {
         onClose={() => setIsMenuOpen(false)}
         user={user}
         authToken={authToken}
+        canOwnGames={canOwnGames}
         userCustomGames={userCustomGames}
         onDeleteCustomGame={handleDeleteGame}
         onLoadPreset={handleLoadPreset}

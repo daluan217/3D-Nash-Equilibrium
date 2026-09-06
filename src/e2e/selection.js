@@ -12,7 +12,7 @@
  * A new section goes into the lightest shard; re-measure from the CI logs
  * (SECTION-PASS lines carry the ms) before moving anything else.
  */
-export const SHARD_COUNT = 12;
+export const SHARD_COUNT = 16;
 
 export function selectSmokeSections(definitions, env = process.env) {
   const readConfigured = (name) => {
