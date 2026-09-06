@@ -8,13 +8,12 @@ import { GamePayoffs, PresetGame } from '../types';
 import { PRESETS, splitEquilibriaByContinuum, describeContinua, fmtPayoff, EA, EB } from '../utils/gameEngine';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
-import { savedGameColorTerms } from '../utils/colorTerms';
 import { ModalSurface } from './ModalSurface';
+import { SavedGamesList, formatSavedGames } from './SavedGamesList';
 import {
   X,
   HelpCircle,
   BookOpen,
-  Trash2,
   LogIn,
   Sliders,
   AlertTriangle,
@@ -48,6 +47,9 @@ interface MenuDrawerProps {
   deletingGameIds: string[];
   /** `rowEl` is the card being removed, so focus can stay inside the drawer afterwards. */
   onDeleteCustomGame: (id: string, rowEl?: HTMLElement | null) => void;
+  /** BLUE-LIST-14: the drawer's row now offers Edit too (App's `openEditGame`),
+   *  same as the sidebar's identical control on identical data. */
+  onEditCustomGame: (game: any) => void;
   onLoadPreset: (key: string) => void;
   activePreset: string;
   isDark: boolean;
@@ -69,6 +71,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   userCustomGames,
   deletingGameIds,
   onDeleteCustomGame,
+  onEditCustomGame,
   onLoadPreset,
   activePreset,
   isDark,
@@ -114,24 +117,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       });
   }, []);
 
-  // Format custom games for visual list listing
-  const formattedCustomGames = useMemo(() => {
-    return userCustomGames.map((g) => ({
-      id: g.id,
-      name: g.name,
-      desc: g.description,
-      payoffs: g.payoffs as GamePayoffs,
-      // Derived, not assembled. This card renders the same sentence the main
-      // panel does, so it has to ask the same question of the same module —
-      // the comment that used to sit here claimed the card got "the same
-      // player coloring its description enjoys in the main panel" while the
-      // two lines under it built a narrower list by hand: no structural
-      // Row/Col terms, no `dropAmbiguous` (so a symmetric game's shared option
-      // name was painted as A's), and no `colorTermsA`/`colorTermsB`, which
-      // made every highlight the user placed by hand vanish on this surface.
-      terms: savedGameColorTerms(g),
-    }));
-  }, [userCustomGames]);
+  // BLUE-LIST-14: the ONE mapping from raw saved-game records to display
+  // shape (src/components/SavedGamesList.tsx), shared with App.tsx's sidebar
+  // so the two surfaces can't grow different descriptions/color terms again.
+  const formattedCustomGames = useMemo(() => formatSavedGames(userCustomGames), [userCustomGames]);
 
   // Handle deletion request (API call to dispatch email)
   const handleDeleteRequest = async () => {
@@ -706,7 +695,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 </div>
               </div>
 
-              {/* Custom Games Saved Segment */}
+              {/* Custom Games Saved Segment. Row markup, the landmark, the
+                  in-flight Delete and the empty-state copy all live in
+                  SavedGamesList (BLUE-LIST-14) — this header (the count +
+                  lock hint) is the only drawer-specific chrome left here. */}
               <div className="border-t border-slate-100 dark:border-slate-800 pt-6">
                 <div className="text-xs font-bold uppercase tracking-wider text-muted dark:text-muted-dark mb-3.5 flex items-center justify-between">
                   <span>Custom User Profiles ({formattedCustomGames.length})</span>
@@ -716,137 +708,18 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </span>
                   )}
                 </div>
-
-                {canOwnGames && formattedCustomGames.length > 0 ? (
-                  <div data-focus-fallback="drawer-games" tabIndex={-1} aria-label="Saved custom games" className="grid grid-cols-1 gap-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 rounded-xl">
-                    {formattedCustomGames.map((game) => {
-                      // RED-MATH-7/001: same continuum-awareness as the
-                      // standard-presets list above. RED-MATH-9/002: `.stray`
-                      // only, same reasoning as the standard-presets list.
-                      const eqList = splitEquilibriaByContinuum(game.payoffs).stray;
-                      const continua = describeContinua(game.payoffs);
-                      const isSelected = activePreset === game.id;
-
-                      return (
-                        <div data-drawer-game
-                          key={game.id}
-                          className={`border rounded-2xl p-4 flex flex-col sm:flex-row gap-4 transition-all duration-200 ${isSelected
-                              ? 'bg-accent-50/15 dark:bg-accent-950/10 border-accent-400 dark:border-accent-800 shadow-md ring-1 ring-accent-400/20'
-                              : 'bg-white dark:bg-slate-950/30 border-slate-100 dark:border-slate-800/80 hover:border-slate-200 dark:hover:border-slate-700 shadow-sm'
-                            }`}
-                        >
-                          {/* Miniature */}
-                          <div className="flex justify-center items-center">
-                            <GameGraphMiniature payoffs={game.payoffs} isDark={isDark} />
-                          </div>
-
-                          {/* Detail Content */}
-                          <div className="flex-1 flex flex-col justify-between">
-                            <div>
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="font-bold text-slate-800 dark:text-slate-100 text-xs sm:text-sm truncate max-w-[180px]">
-                                  {game.name}
-                                </span>
-                                <div className="flex items-center gap-1.5">
-                                  {isSelected && (
-                                    <span className="text-xs font-bold px-1.5 py-0.5 rounded-full bg-accent-50 dark:bg-accent-950/60 text-accent-600 dark:text-accent-400 border border-accent-200 dark:border-accent-900">
-                                      Active
-                                    </span>
-                                  )}
-                                  <button
-                                    onClick={(e) => onDeleteCustomGame(game.id, (e.currentTarget as HTMLElement).closest('[data-drawer-game]') as HTMLElement | null)}
-                                    // RED-APP-13/003: same in-flight state as the sidebar's own Delete
-                                    // button, threaded from the same `deletingGameIds`.
-                                    disabled={deletingGameIds.includes(game.id)}
-                                    aria-busy={deletingGameIds.includes(game.id) || undefined}
-                                    className="p-1 px-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/25 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-                                    title="Delete custom layout"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </div>
-                              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2.5 leading-relaxed break-words">
-                                <ColorCoded text={game.desc} aTerms={game.terms.a} bTerms={game.terms.b} />
-                              </p>
-
-                              {/* Plotted NE */}
-                              <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-2.5 border border-slate-100 dark:border-slate-800/85">
-                                <div className="text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                                  Computed Nash Equilibria:
-                                </div>
-                                <ul className="text-xs text-slate-600 dark:text-slate-300 pl-4 list-disc space-y-0.5">
-                                  {eqList.map((eq, i) => (
-                                    <li key={i}>
-                                      <strong className={eq.type === 'mixed' ? 'text-ne-mixed-600 dark:text-ne-mixed-400 font-bold' : 'text-slate-700 dark:text-slate-200'}>
-                                        <ColorCoded text={eq.label} />
-                                      </strong>{' '}
-                                      {/* fmtPayoff on the exact eq.x/eq.y — RED-MATH-6/001, same fix as the standard-presets list above. */}
-                                      val (<ColorCoded text={`E[A]=${fmtPayoff(EA(eq.x, eq.y, game.payoffs))}, E[B]=${fmtPayoff(EB(eq.x, eq.y, game.payoffs))}`} />)
-                                    </li>
-                                  ))}
-                                  {continua.map((line, i) => (
-                                    <li key={`cont-${i}`} className="text-ne-mixed-600 dark:text-ne-mixed-400">
-                                      <ColorCoded text={line} />
-                                    </li>
-                                  ))}
-                                  {eqList.length === 0 && continua.length === 0 && (
-                                    <li className="text-red-500">No classic NE in real plane</li>
-                                  )}
-                                </ul>
-                              </div>
-                            </div>
-
-                            <div className="mt-4 flex justify-end">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onLoadPreset(game.id);
-                                  onClose();
-                                }}
-                                disabled={isSelected}
-                                className={`w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${isSelected
-                                    ? 'bg-slate-100 dark:bg-slate-800 text-muted dark:text-muted-dark border border-transparent cursor-not-allowed'
-                                    : 'bg-accent-600 hover:bg-accent-700 text-white shadow-xs'
-                                  }`}
-                              >
-                                {isSelected ? 'Currently Loaded' : 'Load Game Layout'}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  /* The focus landmark stays MOUNTED in the empty state: when the
-                     drawer deletes its last saved game the list above unmounts,
-                     and App's focus restoration must still find a
-                     `drawer-games` fallback inside the open drawer instead of
-                     falling through to the page beneath it (CodeRabbit on #141). */
-                  <div data-focus-fallback="drawer-games" tabIndex={-1} aria-label="Saved custom games" className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400">
-                    {canOwnGames ? (
-                      <p>
-                        No saved custom game presets. Customize payoffs in the main board and click{' '}
-                        <strong className="text-accent-600 dark:text-accent-400">Save payoffs</strong> to record your own scenarios!
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        <p>You must be signed in to view and save custom game profiles.</p>
-                        <button
-                          onClick={() => {
-                            onClose();
-                            onOpenAuth();
-                          }}
-                          className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer shadow-xs transition-all"
-                        >
-                          <LogIn className="w-3 h-3" /> Sign In / Sign Up
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
+                <SavedGamesList
+                  games={formattedCustomGames}
+                  canOwnGames={canOwnGames}
+                  deletingGameIds={deletingGameIds}
+                  activePreset={activePreset}
+                  onLoad={(id) => { onLoadPreset(id); onClose(); }}
+                  onEdit={(game) => { onClose(); onEditCustomGame(game); }}
+                  onDelete={onDeleteCustomGame}
+                  onSignIn={() => { onClose(); onOpenAuth(); }}
+                  isDark={isDark}
+                  variant="drawer"
+                />
               </div>
             </div>
           )}
