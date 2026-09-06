@@ -28,8 +28,12 @@ name: Test
 # hang documented for local dev is not a concern here.
 on:
   workflow_dispatch:
-  push:
-    branches: [main, review-mirror]
+  # No `push: [main]` run. Branch protection requires every PR to be UP TO DATE
+  # with main before merging (strict status checks), so the PR's green run
+  # already tested the exact tree the merge produces; the post-merge rerun
+  # re-tested it a second time and held the deploy for a full CI cycle.
+  # Deploy site (deploy-site.yml) now fires on the push to main and verifies
+  # the merged PR head's required checks itself before starting Cloud Build.
   pull_request:
 
 # a new push to a PR supersedes its older runs — cancel them instead of
