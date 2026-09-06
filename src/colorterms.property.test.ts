@@ -540,7 +540,6 @@ for (const c of BOUNDARY_MUST_MATCH) {
   check('(boundary) Latin control: "se" never splits "señor"', !isHighlighted(rendered('El señor llegó.', ['se'])));
   check('(boundary) Latin control: "wolf" never matches inside "wolves"', !isHighlighted(rendered('The wolves circle the pond.', ['wolf'])));
   check('(boundary) Cyrillic control (space-delimited): "вол" never matches inside "волк"', !isHighlighted(rendered('Серый волк бежит.', ['вол'])));
-  cases += 8;
 }
 {
   // A CJK chip with real neighbours on both sides in the SAME script also
@@ -611,7 +610,6 @@ if (failures > 0) {
   const branch = app.slice(app.indexOf("res.status === 409"), app.indexOf("res.status === 409") + 6000);
   check('App.tsx 409 branch names the colliding phrase via crossPlayerUserTerms on every 409 (first and retry)',
     /crossPlayerUserTerms\(/.test(branch) && /Not saved: \$\{collisionNote\}/.test(branch) && /highlighted for both players/.test(branch));
-  cases += 8;
 }
 
 console.log(`✓ colorterms.property.test.ts: ${cases} generated cases passed — ${ALL_FOLD_FAMILIES.reduce((n, f) => n + f.variants.length, 0)} `
