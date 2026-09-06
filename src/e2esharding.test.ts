@@ -83,10 +83,12 @@ assert.deepStrictEqual(again.definitions.map((d) => d.shard), definitions.map((d
   assert(assignShards([{ id: 'zz' }], fake, 1).totals[0] === 90000, 'an unmeasured section packs at _default');
   // validateTimings (shared with scripts/shard-timings-from-run.mjs) rejects the two bad-table shapes
   // CodeRabbit named on #157: a pre-split run's table (66 at 275 s, no 66b) and an incomplete one.
-  assert.deepStrictEqual(validateTimings(['66', '66b'], { ...fake, '66': 275000 }).length, 2,
-    'a table with 66 over budget and 66b missing must report both problems');
-  assert.deepStrictEqual(validateTimings(['1'], { ...fake, '1': 1000, '2': 1000 }), ['timings name section 2, which is not registered']);
-  assert.deepStrictEqual(validateTimings(['1'], { ...fake, '1': 1000 }), [], 'a complete, in-budget table is accepted');
+  const meta = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 300000 };
+  assert.deepStrictEqual(validateTimings(['66', '66b'], { ...meta, '66': 275000 }),
+    ['section 66 measures 275 s, over the 225 s per-job section budget — split it', 'section 66b has no measured entry'],
+    'a pre-split run\'s table (66 at 275 s, no 66b) must report both problems');
+  assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000, '2': 1000 }), ['timings name section 2, which is not registered']);
+  assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000 }), [], 'a complete, in-budget table is accepted');
 }
 assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'the checked-in timings table must be complete and in budget');
 
