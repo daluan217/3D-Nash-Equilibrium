@@ -100,7 +100,17 @@ export function ColorCoded({ text, aTerms = [], bTerms = [] }: { text: string; a
       // boundary check (a combining mark is not `\p{L}`) and leave the accent
       // rendered outside the coloured span, splitting the same grapheme this
       // fix exists to keep whole.
-      const CJK = '\\p{Script=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}';
+      // RED-REGEN-9/002: the carve-out is about WRITING SYSTEMS, not "CJK":
+      // Thai, Lao, Khmer and Myanmar also write with no spaces between words
+      // (a Thai chip could never match inside Thai prose — a regression from
+      // the ASCII-only days, when any non-ASCII neighbour counted as a
+      // boundary), and Hangul attaches case particles to nouns with no space
+      // ("농부와" = farmer + particle), so the ordinary Korean sentence has
+      // the same shape. All of them join the no-boundary class; every
+      // space-delimited script keeps the real boundary (docs §(c)).
+      const CJK = '\\p{Script=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}'
+        + '\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Thai}\\p{Script_Extensions=Lao}'
+        + '\\p{Script_Extensions=Khmer}\\p{Script_Extensions=Myanmar}';
       const left = `(?:(?<![\\p{L}\\p{N}\\p{M}_])|(?<=[${CJK}]))`;
       const right = `(?:(?![\\p{L}\\p{N}\\p{M}_])|(?=[${CJK}]))`;
       const termRe = new RegExp(`${left}(?:${entries.map((e) => esc(e.t)).join('|')})${right}`, 'giu');
