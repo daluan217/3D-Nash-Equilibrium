@@ -55,7 +55,7 @@ export interface NormalizedUsage {
  * model/content failure, so the eval can retry it and keep it out of the
  * consistency denominator rather than blaming the model for a quota.
  */
-export type ProviderFailure = 'refusal' | 'max-tokens' | 'unparseable' | 'rate-limited' | 'error';
+export type ProviderFailure = 'refusal' | 'max-tokens' | 'unparseable' | 'rate-limited' | 'error' | 'aborted';
 
 export interface ProviderResult {
   /** Raw JSON text the model produced, or null. */
@@ -118,6 +118,16 @@ export interface ProviderRequest {
    * measuring the product.
    */
   extraBody?: Record<string, unknown>;
+  /**
+   * BLUE-CANCEL-12: the caller's remaining lifetime (client disconnected, or
+   * the invention ladder gave up waiting). Checked before every physical
+   * attempt below -- including each schema-negotiation variant -- so no new
+   * provider request starts once it fires, and passed to the SDK call itself
+   * so an already in-flight request is aborted rather than abandoned (the
+   * abandoned promise used to keep retrying on its own after the response had
+   * already gone out).
+   */
+  signal?: AbortSignal;
 }
 
 export type ProviderName = 'gemini' | 'foundry-openai' | 'foundry-anthropic' | 'openrouter';
@@ -187,6 +197,10 @@ const GEMINI_REFUSALS = new Set<FinishReason>([
 ]);
 
 async function callGemini(req: ProviderRequest): Promise<ProviderResult> {
+  // BLUE-CANCEL-12: already gone before this adapter even started -- no
+  // physical request at all.
+  if (req.signal?.aborted) return { text: null, stopReason: null, usage: null, failure: 'aborted' };
+
   const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
   let response;
@@ -208,10 +222,19 @@ async function callGemini(req: ProviderRequest): Promise<ProviderResult> {
         // Flash-lite ships with thinking OFF by default, so this is the switch;
         // budget 0 is the explicit OFF used by the control arm.
         ...(req.reasoning ? { thinkingConfig: { thinkingBudget: thinkingRequested(req.reasoning) ? -1 : 0 } } : {}),
+        abortSignal: req.signal,
+        // BLUE-CANCEL-12: the SDK's own retry defaults to 5 attempts,
+        // invisible to the ladder's 20s budget (RED handback: 429-storm).
+        // `inventScreenedScenario` already retries within its own deadline;
+        // let it be the only retrier.
+        httpOptions: { retryOptions: { attempts: 1 } },
       },
     });
   } catch (err) {
-    return { text: null, stopReason: null, usage: null, failure: isRateLimit(err, true) ? 'rate-limited' : 'error' };
+    return {
+      text: null, stopReason: null, usage: null,
+      failure: req.signal?.aborted ? 'aborted' : isRateLimit(err, true) ? 'rate-limited' : 'error',
+    };
   }
 
   const usage = normalizeGeminiUsage(response.usageMetadata);
@@ -359,6 +382,12 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
   const client = new OpenAI({
     baseURL: endpoint,
     apiKey,
+    // BLUE-CANCEL-12: the SDK's own default (2 retries = up to 3 physical
+    // attempts PER shape variant) multiplied one logical draw into up to 6
+    // physical requests for a single 429 (RED handback: 429-storm), invisible
+    // to `inventScreenedScenario`'s 20s budget. That ladder already retries
+    // within its own deadline; let it be the only retrier.
+    maxRetries: 0,
     ...(isAgentRouter ? { defaultHeaders: { 'user-agent': 'claude-cli/2.1.0 (external, cli)' } } : {}),
   });
 
@@ -404,13 +433,19 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
   let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
   let lastErr: unknown;
   for (const variant of variants) {
+    // BLUE-CANCEL-12: gone before this attempt started -- do not negotiate a
+    // new shape with a new physical request.
+    if (req.signal?.aborted) break;
     try {
       const body = buildChatRequestBody(req.model, messages, variant, req.extraBody) as unknown as
         OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
-      response = await client.chat.completions.create(body);
+      response = await client.chat.completions.create(body, { signal: req.signal });
       break;
     } catch (err) {
       lastErr = err;
+      // Aborted mid-flight: the caller has already moved on, so stop
+      // negotiating rather than trying the next shape.
+      if (req.signal?.aborted) break;
       // A rate limit is about load, not shape — degrading the request would not
       // help and would silently change what we measured. Surface it immediately.
       if (isRateLimit(err)) {
@@ -419,7 +454,10 @@ async function callFoundryOpenAI(req: ProviderRequest): Promise<ProviderResult> 
     }
   }
   if (!response) {
-    return { text: null, stopReason: null, usage: null, failure: isRateLimit(lastErr) ? 'rate-limited' : 'error' };
+    return {
+      text: null, stopReason: null, usage: null,
+      failure: req.signal?.aborted ? 'aborted' : isRateLimit(lastErr) ? 'rate-limited' : 'error',
+    };
   }
 
   const usage = normalizeOpenAIUsage(response.usage);
@@ -465,7 +503,12 @@ async function callFoundryAnthropic(req: ProviderRequest): Promise<ProviderResul
   const resource =
     process.env.ANTHROPIC_FOUNDRY_RESOURCE ??
     (endpoint ? new URL(endpoint).hostname.split('.')[0] : undefined);
-  const client = new AnthropicFoundry({ resource, apiKey });
+  // BLUE-CANCEL-12: the ladder already retries within its own deadline (2)
+  // below; disable the SDK's own default retry so it cannot multiply one
+  // logical draw into several physical requests behind that budget's back.
+  const client = new AnthropicFoundry({ resource, apiKey, maxRetries: 0 });
+
+  if (req.signal?.aborted) return { text: null, stopReason: null, usage: null, failure: 'aborted' };
 
   let message: any;
   try {
@@ -485,9 +528,12 @@ async function callFoundryAnthropic(req: ProviderRequest): Promise<ProviderResul
       ...(thinkingRequested(req.reasoning)
         ? { thinking: { type: 'enabled', budget_tokens: Math.max(1024, Math.floor(req.maxOutputTokens / 2)) } }
         : {}),
-    } as any);
+    } as any, { signal: req.signal });
   } catch (err) {
-    return { text: null, stopReason: null, usage: null, failure: isRateLimit(err) ? 'rate-limited' : 'error' };
+    return {
+      text: null, stopReason: null, usage: null,
+      failure: req.signal?.aborted ? 'aborted' : isRateLimit(err) ? 'rate-limited' : 'error',
+    };
   }
 
   const u = message?.usage;
@@ -604,6 +650,10 @@ async function callOpenRouter(req: ProviderRequest): Promise<ProviderResult> {
   const client = new OpenAI({
     baseURL: endpoint,
     apiKey,
+    // BLUE-CANCEL-12: same reasoning as callFoundryOpenAI — the ladder
+    // already retries within its own deadline; disable the SDK's own retry
+    // multiplier so it cannot hide extra physical requests behind that budget.
+    maxRetries: 0,
     // OpenRouter's own docs ask for these two so a request can be attributed
     // in their dashboard/rankings; harmless no-ops on a relay (like
     // agentrouter.org) that ignores them.
@@ -646,20 +696,25 @@ async function callOpenRouter(req: ProviderRequest): Promise<ProviderResult> {
   let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
   let lastErr: unknown;
   for (const variant of variants) {
+    if (req.signal?.aborted) break;
     try {
       const body = buildChatRequestBody(model, messages, variant, req.extraBody) as unknown as
         OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
-      response = await client.chat.completions.create(body);
+      response = await client.chat.completions.create(body, { signal: req.signal });
       break;
     } catch (err) {
       lastErr = err;
+      if (req.signal?.aborted) break;
       if (isRateLimit(err)) {
         return { text: null, stopReason: null, usage: null, failure: 'rate-limited' };
       }
     }
   }
   if (!response) {
-    return { text: null, stopReason: null, usage: null, failure: isRateLimit(lastErr) ? 'rate-limited' : 'error' };
+    return {
+      text: null, stopReason: null, usage: null,
+      failure: req.signal?.aborted ? 'aborted' : isRateLimit(lastErr) ? 'rate-limited' : 'error',
+    };
   }
 
   const usage = normalizeOpenAIUsage(response.usage);
