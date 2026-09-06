@@ -28,6 +28,22 @@ fast-response control passes. Replacing the shared deadline with infinity is the
 mutation that restores the defect. Assertions inspect HTTP status, a real scenario
 in the response, the bank-fallback source, and provider attempt counts.
 
+### Testing this without waiting out the real budget (BLUE-CANCEL-12)
+
+The 20-second budget above made the suite's own wall-clock cost ~20s per stalled
+case, real waiting shared with whatever else is running on the CI runner at the
+time (this suite failed 3 times in a row alongside 12 concurrent e2e smoke
+shards, always passing on a rerun or run alone). `NASH_SCENARIO_REQUEST_BUDGET_MS`
+overrides `SCENARIO_REQUEST_BUDGET_MS` for exactly this: the test spawns the
+server with a 2-second budget instead of the real 20, and sizes its own client
+abort as a PROPORTIONAL multiple of that (never a fixed millisecond count), so
+the ratio — and so what a regression looks like — stays meaningful whatever the
+configured budget is. Nothing in production sets this variable. See
+`round12/notes/BLUE-CANCEL-12/HARNESS-LOG.md` for the reproduction attempt and
+the mutation test (removing the override from the spawned env — equivalent to
+the budget silently becoming the real ~20s production one again — fails 5 of 6
+subtests; the fast control is unaffected).
+
 ## Limits and follow-up
 
 The two-second allowance is a response margin, not a guarantee against arbitrary
