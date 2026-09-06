@@ -4537,6 +4537,194 @@ try {
     }
   });
 
+  // ══ 68. BLUE-LIST-14: one SavedGamesList, two call sites — the sidebar and
+  //      the drawer's Library tab must agree, under BOTH ownership paths
+  //      (a signed-in account, and the desktop's no-account local owner), and
+  //      share their in-flight Delete state (it lives in App, not per-surface).
+  //      Mutation: gate one variant's list on `user` again (RED-DESKTOP-13/001
+  //      shape) → the name/count agreement check fails; drop `deletingGameIds`
+  //      from the drawer's call site (RED-APP-13/003 shape) → the cross-surface
+  //      disabled/aria-busy check fails.
+  section('68', 'one SavedGamesList: the sidebar and the drawer agree on names, count, in-flight Delete and empty state', 7, async () => {
+    // ── Part A: desktop local-owner server (reuses section 45's boot). ──
+    const deskPort = String(Number(PORT) + 1000);
+    const deskBase = `http://127.0.0.1:${deskPort}`;
+    const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-list68-'));
+    const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
+      cwd: deskData,
+      env: { ...process.env, NODE_ENV: 'production', PORT: deskPort, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: deskData },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    desk.stderr.on('data', () => {});
+    const deskCtx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36',
+    });
+    const saveGame = async (p, name) => {
+      await p.getByRole('button', { name: /save preset/i }).click();
+      await p.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 8000 });
+      await p.locator('[role="dialog"][aria-label="Save custom game"] input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(name);
+      await p.getByRole('dialog', { name: 'Save custom game' }).getByRole('button', { name: /save game profile/i }).click();
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 8000 });
+    };
+    const openLibrary = async (p) => {
+      await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await p.getByRole('button', { name: /library/i }).first().click();
+    };
+    // Each row carries THREE buttons (Load/Edit/Delete) — take the FIRST
+    // (the Load button, which is the row's name) per row, not every button.
+    const readSidebarNames = (p) => p.evaluate(() => Array.from(document.querySelectorAll('[data-focus-fallback="saved-games"] [data-saved-game]')).map((row) => row.querySelector('button')?.textContent?.trim()));
+    const readDrawerInfo = (p) => p.evaluate(() => {
+      const lm = document.querySelector('[data-focus-fallback="drawer-games"]');
+      const headerText = lm?.parentElement?.textContent || '';
+      const m = headerText.match(/Custom User Profiles \((\d+)\)/);
+      const names = Array.from(document.querySelectorAll('[data-drawer-game]')).map((el) => el.querySelector('span.font-bold')?.textContent?.trim());
+      return { count: m ? Number(m[1]) : null, names };
+    });
+    try {
+      let up = false;
+      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      record('precondition: the desktop local-owner server is up', up);
+      const dp = await deskCtx.newPage();
+      await dp.goto(deskBase, { waitUntil: 'networkidle' });
+      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* may not appear */ }
+      await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+
+      const nameA = `LG-A-${Date.now().toString(36)}`;
+      const nameB = `LG-B-${Date.now().toString(36)}`;
+      await saveGame(dp, nameA);
+      await saveGame(dp, nameB);
+
+      const sidebarNames = await readSidebarNames(dp);
+      record('precondition: the sidebar lists both saved games', sidebarNames.length === 2 && sidebarNames.includes(nameA) && sidebarNames.includes(nameB), JSON.stringify(sidebarNames));
+
+      await openLibrary(dp);
+      const drawerInfo1 = await readDrawerInfo(dp);
+      record('FIX: the drawer header count matches the sidebar\'s row count', drawerInfo1.count === sidebarNames.length, JSON.stringify(drawerInfo1));
+      record('FIX: the drawer lists the SAME names as the sidebar (same SavedGamesList, same data)',
+        JSON.stringify([...drawerInfo1.names].sort()) === JSON.stringify([...sidebarNames].sort()), JSON.stringify({ drawer: drawerInfo1.names, sidebar: sidebarNames }));
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+
+      // ── Cross-surface in-flight Delete: start a DELETE from the SIDEBAR,
+      // HELD OPEN by a controllable gate (never a fixed sleep racing the
+      // assertion — CodeRabbit on #150), then open the drawer while it is
+      // still in flight. The drawer's OWN row for the same game must read
+      // disabled/aria-busy — proof the guard is one shared `deletingGameIds`
+      // array, not a per-surface copy (the exact RED-APP-13/003 gap). ──
+      let releaseDelete;
+      const deleteGate = new Promise((resolve) => { releaseDelete = resolve; });
+      await dp.route('**/api/games/**', async (route) => {
+        if (route.request().method() !== 'DELETE') return route.continue();
+        await deleteGate;
+        await route.continue();
+      });
+      // Scoped to the sidebar's OWN landmark (OPUS-REVIEW-LIST N2): an
+      // unscoped `[data-saved-game]` also matches drawer rows whenever the
+      // drawer happens to be open, which this section's later steps do.
+      const sidebarRowA = dp.locator('[data-focus-fallback="saved-games"] [data-saved-game]', { has: dp.getByRole('button', { name: nameA, exact: true }) });
+      await sidebarRowA.getByTitle('Delete this saved game').click();
+      await openLibrary(dp);
+      const drawerRowA = dp.locator('[data-drawer-game]', { hasText: nameA });
+      const delA = drawerRowA.getByTitle('Delete custom layout');
+      // The request stays held until releaseDelete() below, so this poll has
+      // no race to lose — it only bounds how long we wait for the render.
+      let inFlight = { disabled: false, busy: null };
+      for (let i = 0; i < 50 && !(inFlight.disabled === true && inFlight.busy === 'true'); i++) {
+        inFlight = await delA.evaluate((el) => ({ disabled: el.disabled, busy: el.getAttribute('aria-busy') }));
+        if (!(inFlight.disabled === true && inFlight.busy === 'true')) await dp.waitForTimeout(100);
+      }
+      record('FIX: mid-delete, the DRAWER\'s row for the same game is already disabled/aria-busy (shared state, started from the SIDEBAR)',
+        inFlight.disabled === true && inFlight.busy === 'true', JSON.stringify(inFlight));
+      releaseDelete();
+      await drawerRowA.waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
+      await dp.unroute('**/api/games/**');
+      record('the deleted game is gone from the drawer', await drawerRowA.count() === 0);
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+      record('the deleted game is gone from the sidebar too (same delete, both surfaces)',
+        await dp.getByRole('button', { name: nameA, exact: true }).isVisible().catch(() => false) === false);
+
+      // ── Cross-surface in-flight Delete, the OTHER direction (CodeRabbit on
+      // #150: the drawer-origin case was untested — a regression that only
+      // threads deletingGameIds into the SIDEBAR, never the drawer's own
+      // call, could still pass the check above). Same controllable gate,
+      // delete started from the DRAWER this time; the SIDEBAR's row for the
+      // same game must read disabled/aria-busy while it is held open. ──
+      await openLibrary(dp);
+      const drawerRowB = dp.locator('[data-drawer-game]', { hasText: nameB });
+      let releaseDeleteB;
+      const deleteGateB = new Promise((resolve) => { releaseDeleteB = resolve; });
+      await dp.route('**/api/games/**', async (route) => {
+        if (route.request().method() !== 'DELETE') return route.continue();
+        await deleteGateB;
+        await route.continue();
+      });
+      await drawerRowB.getByTitle('Delete custom layout').click();
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+      const sidebarRowB = dp.locator('[data-focus-fallback="saved-games"] [data-saved-game]', { has: dp.getByRole('button', { name: nameB, exact: true }) });
+      const delSidebarB = sidebarRowB.getByTitle('Delete this saved game');
+      let inFlightB = { disabled: false, busy: null };
+      for (let i = 0; i < 50 && !(inFlightB.disabled === true && inFlightB.busy === 'true'); i++) {
+        inFlightB = await delSidebarB.evaluate((el) => ({ disabled: el.disabled, busy: el.getAttribute('aria-busy') }));
+        if (!(inFlightB.disabled === true && inFlightB.busy === 'true')) await dp.waitForTimeout(100);
+      }
+      record('FIX: mid-delete STARTED FROM THE DRAWER, the SIDEBAR\'s row for the same game is already disabled/aria-busy',
+        inFlightB.disabled === true && inFlightB.busy === 'true', JSON.stringify(inFlightB));
+      releaseDeleteB();
+      await sidebarRowB.waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
+      await dp.unroute('**/api/games/**');
+      record('the deleted game is gone from the sidebar too (delete started from the drawer)', await sidebarRowB.count() === 0);
+
+      // ── Empty state: the LANDMARK MECHANISM agrees on both surfaces (kept
+      // mounted, tabIndex=-1) after deleting the last game — the COPY itself
+      // is deliberately per-variant product text (OPUS-REVIEW-LIST F4),
+      // pinned per-surface here rather than compared for equality (unit test
+      // savedgameslist.test.ts proves the same split at the SSR level). ──
+      await openLibrary(dp);
+      await dp.waitForFunction(() => document.querySelectorAll('[data-drawer-game]').length === 0, null, { timeout: 8000 }).catch(() => {});
+      const drawerEmpty = await dp.evaluate(() => {
+        const lm = document.querySelector('[data-focus-fallback="drawer-games"]');
+        return { present: !!lm, tabIndex: lm?.getAttribute('tabindex'), text: (lm?.textContent || '').trim() };
+      });
+      record('FIX: the drawer\'s empty-state landmark is present (kept mounted) after the last delete, with the drawer\'s own copy',
+        drawerEmpty.present && drawerEmpty.tabIndex === '-1' && /No saved custom game presets/i.test(drawerEmpty.text), JSON.stringify(drawerEmpty));
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+      const sidebarEmpty = await dp.evaluate(() => {
+        const lm = document.querySelector('[data-focus-fallback="saved-games"]');
+        return { present: !!lm, tabIndex: lm?.getAttribute('tabindex'), text: (lm?.textContent || '').trim() };
+      });
+      record('FIX: the sidebar\'s empty state is present (same landmark mechanism), with the sidebar\'s OWN copy',
+        sidebarEmpty.present && sidebarEmpty.tabIndex === '-1' && /No saved custom games\. Adapt payoffs/i.test(sidebarEmpty.text), JSON.stringify(sidebarEmpty));
+    } finally {
+      await deskCtx.close().catch(() => {});
+      if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
+      try { rmSync(deskData, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+
+    // ── Part B: the OTHER ownership path — a signed-in account on the
+    // regular hosted-shaped server. The invariant (one component, one
+    // predicate) must hold here too, not just for the desktop local owner. ──
+    const ctxB = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctxB.newPage();
+      const uniq = await registerAndLogin(p, 'sgl68');
+      const nameC = `LG-C-${uniq}`;
+      const nameD = `LG-D-${uniq}`;
+      await saveGame(p, nameC);
+      await saveGame(p, nameD);
+      const sidebarNamesB = await readSidebarNames(p);
+      record('precondition (signed-in account): the sidebar lists both saved games', sidebarNamesB.length === 2 && sidebarNamesB.includes(nameC) && sidebarNamesB.includes(nameD), JSON.stringify(sidebarNamesB));
+      await openLibrary(p);
+      const drawerInfoB = await readDrawerInfo(p);
+      record('FIX (signed-in account): the drawer header count matches the sidebar\'s row count', drawerInfoB.count === sidebarNamesB.length, JSON.stringify(drawerInfoB));
+      record('FIX (signed-in account): the drawer lists the SAME names as the sidebar',
+        JSON.stringify([...drawerInfoB.names].sort()) === JSON.stringify([...sidebarNamesB].sort()), JSON.stringify({ drawer: drawerInfoB.names, sidebar: sidebarNamesB }));
+    } finally { await ctxB.close().catch(() => {}); }
+  });
+
 await executeSections();
 
 } catch (e) {

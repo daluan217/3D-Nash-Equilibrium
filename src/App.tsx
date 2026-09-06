@@ -68,7 +68,6 @@ import {
   LogIn,
   LogOut,
   Plus,
-  Trash2,
   Pencil,
   Key,
   Mail,
@@ -90,6 +89,7 @@ import {
 } from 'lucide-react';
 
 import { MenuDrawer } from './components/MenuDrawer';
+import { SavedGamesList, formatSavedGames } from './components/SavedGamesList';
 import { ColorCoded } from './components/ColorCoded';
 import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
@@ -3065,6 +3065,11 @@ export default function App() {
     return merged;
   }, [userCustomGames]);
 
+  // SavedGamesList (BLUE-LIST-14): the ONE mapping from raw saved-game
+  // records to display shape, shared with MenuDrawer's Library tab so the
+  // two surfaces can never grow different descriptions/color terms again.
+  const formattedSavedGames = useMemo(() => formatSavedGames(userCustomGames), [userCustomGames]);
+
   const selectedPreset = mergedPresets[activePreset];
   const selectedCustomGame = userCustomGames.find((g) => g.id === activePreset);
 
@@ -4440,78 +4445,25 @@ export default function App() {
               )}
             </div>
 
-            {!user && !localOwnerMode ? (
-              <div className="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-950/30 border border-slate-200/60 dark:border-slate-800/80 rounded-xl p-3 text-center">
-                <span>Want to name and save custom presets? </span>
-                <button
-                  onClick={() => {
-                    setAuthError('');
-                    setAuthSuccess('');
-                    setAuthMode('login');
-                    setIsAuthModalOpen(true);
-                  }}
-                  className="tap-24 font-bold text-accent-600 dark:text-accent-400 hover:underline cursor-pointer"
-                >
-                  Sign in here
-                </button>
-              </div>
-            ) : userCustomGames.length === 0 ? (
-              <div className="text-xs text-muted dark:text-muted-dark bg-slate-50/70 dark:bg-slate-950/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-4 text-center">
-                No saved custom games. Adapt payoffs and click <strong className="text-accent-600 dark:text-accent-400">Save Preset</strong> to persist your first game!
-              </div>
-            ) : (
-              <div data-focus-fallback="saved-games" tabIndex={-1} aria-label="Saved games" className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[160px] overflow-y-auto pr-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 rounded-xl">
-                {userCustomGames.map((game) => {
-                  const isSelected = activePreset === game.id;
-                  return (
-                    <div
-                      key={game.id}
-                      className={`group flex items-center justify-between p-2 pl-3 rounded-xl border transition-all ${isSelected
-                          ? 'bg-accent-500 border-accent-500 text-white shadow-xs'
-                          : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:bg-slate-100/80 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
-                        }`}
-                    >
-                      <button
-                        onClick={() => handleLoadPreset(game.id)}
-                        className="flex-1 text-left text-xs font-semibold truncate cursor-pointer mr-1"
-                        title={`${game.name} - ${game.description}`}
-                      >
-                        {game.name}
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEditGame(game);
-                        }}
-                        className={`p-1 rounded-md transition-colors cursor-pointer ${isSelected
-                            ? 'text-accent-100 hover:text-white hover:bg-accent-600'
-                            : 'text-slate-400 hover:text-accent-600 dark:text-slate-500 dark:hover:text-accent-400 hover:bg-accent-50 dark:hover:bg-accent-950/40'
-                          }`}
-                        title="Edit name, description and option names"
-                        aria-label={`Edit ${game.name}`}
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteGame(game.id, (e.currentTarget as HTMLElement).closest('.group') as HTMLElement | null);
-                        }}
-                        disabled={deletingGameIds.includes(game.id)}
-                        aria-busy={deletingGameIds.includes(game.id) || undefined}
-                        className={`p-1 rounded-md transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait ${isSelected
-                            ? 'text-accent-100 hover:text-white hover:bg-accent-600'
-                            : 'text-slate-400 hover:text-danger-500 dark:text-slate-500 dark:hover:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-950/40'
-                          }`}
-                        title="Delete this saved game"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            {/* BLUE-LIST-14: one SavedGamesList, shared with the drawer's
+                Library tab — see src/components/SavedGamesList.tsx. */}
+            <SavedGamesList
+              games={formattedSavedGames}
+              canOwnGames={canOwnGames}
+              deletingGameIds={deletingGameIds}
+              activePreset={activePreset}
+              onLoad={handleLoadPreset}
+              onEdit={openEditGame}
+              onDelete={handleDeleteGame}
+              onSignIn={() => {
+                setAuthError('');
+                setAuthSuccess('');
+                setAuthMode('login');
+                setIsAuthModalOpen(true);
+              }}
+              isDark={darkMode}
+              variant="sidebar"
+            />
 
             {/* Selected Preset Narrative Card */}
             {selectedPreset?.desc && (
@@ -6530,6 +6482,7 @@ export default function App() {
         userCustomGames={userCustomGames}
         deletingGameIds={deletingGameIds}
         onDeleteCustomGame={handleDeleteGame}
+        onEditCustomGame={openEditGame}
         onLoadPreset={handleLoadPreset}
         activePreset={activePreset}
         isDark={darkMode}

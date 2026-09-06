@@ -112,22 +112,70 @@ for (const [name, src] of MUST_FLAG) {
   check('the correct shape is not flagged', !bad);
 }
 
-// RED-DESKTOP-13/001 (director-reproduced): the SECOND surface for the saved-
-// games list — the menu drawer's Library tab — must gate on the same ownership
-// predicate as the sidebar (`canOwnGames`: token OR desktop local owner), never
-// on a signed-in `user` alone. Every `user`-keyed gate in that tab told the
-// no-account desktop user to sign in while hiding all of their games.
+// RED-DESKTOP-13/001 (director-reproduced), now closed structurally
+// (BLUE-LIST-14): the drawer's Library tab and the sidebar both render
+// through ONE src/components/SavedGamesList.tsx, which gates ownership on
+// `canOwnGames` (token OR desktop local owner) and never receives a `user`
+// prop at all — so a `user`-keyed gate on the saved-games list is no longer
+// merely wrong, it is impossible to write without adding a prop this file
+// would then flag.
 {
+  const list = readFileSync('src/components/SavedGamesList.tsx', 'utf8');
+  // Prose (this file's own comments) legitimately says "user" — what must be
+  // absent is a `user` GATE, i.e. a JSX-conditional or destructured `user`
+  // this component could branch on. It never takes a `user` prop at all.
+  check('SavedGamesList takes no `user` prop (only `canOwnGames`)',
+    !/\buser\b\s*[,:;)]/.test(list.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')));
+  const userGates = list.match(/\{!?user\b[^}]*(?:&&|\?)/g) ?? [];
+  check(`SavedGamesList has no user-keyed gate (found ${userGates.length})`, userGates.length === 0);
+  check('SavedGamesList gates the not-owner state on canOwnGames',
+    /if \(!canOwnGames\) \{/.test(list));
+  check('SavedGamesList gates the empty (owner, no games) state on games.length === 0',
+    /if \(games\.length === 0\) \{/.test(list));
+
   const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
   const lo = drawer.indexOf('Custom User Profiles (');
   const hi = drawer.indexOf('TAB 3: ACCOUNT');
   check('MenuDrawer: the Library tab region is found', lo > 0 && hi > lo);
   const region = drawer.slice(lo - 400, hi);
-  const userGates = region.match(/\{!?user\b[^}]*(?:&&|\?)/g) ?? [];
-  check(`MenuDrawer Library tab has no user-keyed gate on the saved-games list (found ${userGates.length}: ${userGates.join(' | ').slice(0, 120)})`, userGates.length === 0);
-  check('MenuDrawer Library tab gates the list, the lock hint and the empty-state copy on canOwnGames',
-    /\{!canOwnGames &&/.test(region) && /\{canOwnGames && formattedCustomGames\.length > 0 \?/.test(region) && /\{canOwnGames \? \(/.test(region));
+  const drawerUserGates = region.match(/\{!?user\b[^}]*(?:&&|\?)/g) ?? [];
+  check(`MenuDrawer Library tab has no user-keyed gate on the saved-games list (found ${drawerUserGates.length}: ${drawerUserGates.join(' | ').slice(0, 120)})`, drawerUserGates.length === 0);
+  check('MenuDrawer renders the shared SavedGamesList, not an inline list',
+    /<SavedGamesList\b/.test(region) && !/data-drawer-game/.test(region));
+  check('MenuDrawer passes canOwnGames straight through to SavedGamesList',
+    /<SavedGamesList[\s\S]{0,300}canOwnGames=\{canOwnGames\}/.test(region));
   check('App passes canOwnGames to MenuDrawer', /<MenuDrawer[\s\S]{0,400}canOwnGames=\{canOwnGames\}/.test(readFileSync('src/App.tsx', 'utf8')));
+  const app = readFileSync('src/App.tsx', 'utf8');
+  check('App passes canOwnGames to its own SavedGamesList (sidebar)',
+    /<SavedGamesList[\s\S]{0,400}canOwnGames=\{canOwnGames\}/.test(app));
+}
+
+// MUTATION FIXTURE — the REAL predicates above (not a reimplementation of
+// them) run against realistic regressions. OPUS-REVIEW-LIST F2 on #150: the
+// previous fixture applied `/\buser\b/g` to `'if (!user) {'` — a regex
+// neither real check above uses. The real JSX-gate regex requires `{`
+// immediately before `!user`, which `if (!user) {` does not have (that `(`
+// is not `{`), so the old fixture could not have caught what it claimed to.
+{
+  // (a) The JSX-gate regex line 129 actually uses, run against the DRAWER
+  // region's historical shape (a regression back to `{!user && (...)}`).
+  const jsxGateRegex = /\{!?user\b[^}]*(?:&&|\?)/;
+  const regressedDrawerRegion = 'Custom User Profiles ({n})\n{!user && (\n  <span>Log in to persist</span>\n)}\n<SavedGamesList canOwnGames={canOwnGames} />';
+  check('fixture sanity: the REAL JSX-gate regex (line 129) flags a regressed {!user && ...} block',
+    jsxGateRegex.test(regressedDrawerRegion));
+  const currentDrawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const currentLo = currentDrawer.indexOf('Custom User Profiles (');
+  const currentHi = currentDrawer.indexOf('TAB 3: ACCOUNT');
+  const currentRegion = currentDrawer.slice(currentLo - 400, currentHi);
+  check('fixture precondition: the CURRENT drawer region does not already trip the same regex', !jsxGateRegex.test(currentRegion));
+
+  // (b) The if-statement gate regex line 131 actually uses, run against a
+  // regressed SavedGamesList body where `canOwnGames` was replaced by
+  // `user` — the positive check must go from true to FALSE, exactly what a
+  // revert-the-fix mutation test demands.
+  const regressedIfGate = 'if (!user) {\n  return null;\n}';
+  check('fixture sanity: the REAL "gates on canOwnGames" check (line 131) goes FALSE against a regressed if (!user) body',
+    !/if \(!canOwnGames\) \{/.test(regressedIfGate));
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }

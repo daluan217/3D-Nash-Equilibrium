@@ -210,13 +210,17 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     ok(!/\btext-muted dark:text-muted-dark\b/.test(block),
       `the preset-narrative card #${i} must not use the plain text-muted token — it should use text-prose-muted if it ever needs muted text, got: ${JSON.stringify(block.slice(0, 200))}`);
   }
-  const savedGameDescIdx = menuDrawer.indexOf("<ColorCoded text={game.desc}");
-  ok(savedGameDescIdx > 0, 'the MenuDrawer saved-game description ColorCoded call must be found');
-  const savedGameDescNearby = menuDrawer.slice(Math.max(0, savedGameDescIdx - 200), savedGameDescIdx);
+  // BLUE-LIST-14 (round14): this card moved from MenuDrawer.tsx into the
+  // shared src/components/SavedGamesList.tsx (drawer variant) — same markup,
+  // new home.
+  const savedGamesList = readFileSync('src/components/SavedGamesList.tsx', 'utf8');
+  const savedGameDescIdx = savedGamesList.indexOf("<ColorCoded text={game.desc}");
+  ok(savedGameDescIdx > 0, 'the SavedGamesList saved-game description ColorCoded call must be found');
+  const savedGameDescNearby = savedGamesList.slice(Math.max(0, savedGameDescIdx - 200), savedGameDescIdx);
   ok(!/\btext-muted dark:text-muted-dark\b/.test(savedGameDescNearby),
-    'the MenuDrawer saved-game description card must not use the plain text-muted token');
+    'the SavedGamesList saved-game description card must not use the plain text-muted token');
   ok(savedGameDescNearby.includes('text-slate-500 dark:text-slate-400'),
-    'the MenuDrawer saved-game description card must still render its own matte body text (unaffected by this revert)');
+    'the SavedGamesList saved-game description card must still render its own matte body text (unaffected by this revert)');
 
   // ── No element OUTSIDE the report panel AND the two narrative-card blocks
   // uses the scoped prose token — the other half of "confined to two
@@ -245,7 +249,11 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   // (verified above: the description card's own body text is a literal
   // slate-500/400 pair, never the token), so this stays a live check.
   ok(!menuDrawer.includes('text-prose-muted'),
-    'MenuDrawer.tsx must not use text-prose-muted today (neither saved/default-game description card has anything to move onto it yet)');
+    'MenuDrawer.tsx must not use text-prose-muted today (the default-preset description card has nothing to move onto it yet)');
+  // BLUE-LIST-14: the saved-game card itself now lives in SavedGamesList.tsx
+  // (moved out of MenuDrawer.tsx) — same "nothing to move onto it yet" guard.
+  ok(!savedGamesList.includes('text-prose-muted'),
+    'SavedGamesList.tsx must not use text-prose-muted today (its description card has nothing to move onto it yet)');
 
   // ── The running-text player-a-500 instances (row/col headers, payoff-A
   // input text, coordinate/legend labels, option-name labels) are BACK,
@@ -599,15 +607,40 @@ function extractModalSurfaceBlock(src: string, id: string): string {
 // restoration would otherwise fall through to the page beneath the open
 // drawer. e2e section 56(d) exercises it; this guard keeps the empty-state
 // attribute from being tidied away.
+//
+// BLUE-LIST-14 (round14): the landmark now lives in the SHARED
+// src/components/SavedGamesList.tsx, keyed dynamically by `variant`
+// (`data-focus-fallback={landmark}`, not a literal string) — one component
+// renders it in all THREE branches (not-owner, empty-but-owner, populated),
+// for both the drawer ('drawer-games') and the sidebar ('saved-games').
 {
   const menuDrawerSrc = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
-  const landmarks = menuDrawerSrc.match(/data-focus-fallback="drawer-games" tabIndex=\{-1\}/g) ?? [];
-  ok(landmarks.length === 2,
-    `MenuDrawer must mount the drawer-games focus landmark in both the populated list and the empty-state card (found ${landmarks.length})`);
-  const emptyStateIdx = menuDrawerSrc.indexOf('No saved custom game presets.');
-  const emptyLandmarkIdx = menuDrawerSrc.lastIndexOf('data-focus-fallback="drawer-games"', emptyStateIdx);
-  ok(emptyStateIdx > 0 && emptyLandmarkIdx > 0 && emptyStateIdx - emptyLandmarkIdx < 900,
+  const savedGamesListSrc = readFileSync('src/components/SavedGamesList.tsx', 'utf8');
+  const landmarks = savedGamesListSrc.match(/data-focus-fallback=\{landmark\}\s*\n\s*tabIndex=\{-1\}/g) ?? [];
+  ok(landmarks.length === 3,
+    `SavedGamesList must mount the focus landmark in the not-owner, empty, and populated states (found ${landmarks.length})`);
+  ok(/drawer: 'drawer-games'/.test(savedGamesListSrc) && /sidebar: 'saved-games'/.test(savedGamesListSrc),
+    'SavedGamesList must map variant "drawer" to the "drawer-games" landmark id and "sidebar" to "saved-games"');
+  ok(/<SavedGamesList[\s\S]{0,600}variant="drawer"/.test(menuDrawerSrc),
+    'MenuDrawer must render SavedGamesList with variant="drawer"');
+  const appSrc = readFileSync('src/App.tsx', 'utf8');
+  ok(/<SavedGamesList[\s\S]{0,600}variant="sidebar"/.test(appSrc),
+    'App must render SavedGamesList with variant="sidebar"');
+  // OPUS-REVIEW-LIST N3 (round14 review of #150): all three branches emit
+  // the IDENTICAL `data-focus-fallback={landmark}` token (it's keyed by a
+  // variable, not a literal per branch), so a bare nearest-preceding-match
+  // is not automatically "the drawer's" landmark by the text alone — it is
+  // correct here only because "No saved custom game presets." is the
+  // drawer-only half of the `variant === 'sidebar' ? ... : ...` ternary
+  // inside THIS SAME div, with no other landmark occurrence between the
+  // two (checked explicitly below, not just a distance bound).
+  const emptyStateIdx = savedGamesListSrc.indexOf('No saved custom game presets.');
+  const emptyLandmarkIdx = savedGamesListSrc.lastIndexOf('data-focus-fallback={landmark}', emptyStateIdx);
+  const between = savedGamesListSrc.slice(emptyLandmarkIdx + 1, emptyStateIdx);
+  ok(emptyStateIdx > 0 && emptyLandmarkIdx > 0 && emptyStateIdx - emptyLandmarkIdx < 1400,
     'the empty-state card itself (the one that says "No saved custom game presets.") must carry the drawer-games landmark');
+  ok(!/data-focus-fallback=/.test(between),
+    'no OTHER data-focus-fallback occurrence must sit between this landmark and "No saved custom game presets." — otherwise the nearest-match above could be pinning the WRONG branch\'s landmark');
 }
 
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

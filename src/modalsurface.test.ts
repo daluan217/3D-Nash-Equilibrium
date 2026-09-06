@@ -126,19 +126,30 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
 
 // ── The drawer threads deletingGameIds into its own Delete button ──────────
 // (RED-APP-13/003: identical handler, identical data, only the sidebar
-// showed the in-flight state.) Mutation: delete `disabled={deletingGameIds
-// .includes(game.id)}` from the drawer's Delete button and this fails.
+// showed the in-flight state.) BLUE-LIST-14 (round14): the button itself
+// moved to the SHARED src/components/SavedGamesList.tsx — MenuDrawer.tsx
+// now only threads the PROP through. Mutation: delete `disabled={isDeleting}`
+// from SavedGamesList's drawer-variant Delete button and this fails.
 {
   ok(/deletingGameIds:\s*string\[\]/.test(drawer),
     'MenuDrawerProps must declare deletingGameIds: string[]');
-  const deleteBtnIdx = drawer.indexOf("title=\"Delete custom layout\"");
-  ok(deleteBtnIdx > 0, 'could not find the drawer\'s Delete button');
-  const btnStart = drawer.lastIndexOf('<button', deleteBtnIdx);
-  const btnSlice = drawer.slice(btnStart, deleteBtnIdx + 40);
-  ok(/disabled=\{deletingGameIds\.includes\(game\.id\)\}/.test(btnSlice),
-    'the drawer Delete button must read disabled={deletingGameIds.includes(game.id)}, matching the sidebar');
-  ok(/aria-busy=\{deletingGameIds\.includes\(game\.id\)\s*\|\|\s*undefined\}/.test(btnSlice),
-    'the drawer Delete button must read aria-busy={deletingGameIds.includes(game.id) || undefined}, matching the sidebar');
+  ok(/<SavedGamesList[\s\S]{0,300}deletingGameIds=\{deletingGameIds\}/.test(drawer),
+    'MenuDrawer must pass its deletingGameIds prop straight through to <SavedGamesList>');
+  const listSrc = stripComments(readFileSync('src/components/SavedGamesList.tsx', 'utf8'));
+  ok(/const isDeleting = deletingGameIds\.includes\(game\.id\);/.test(listSrc),
+    'SavedGamesList must derive isDeleting from deletingGameIds.includes(game.id)');
+  const deleteBtnIdx = listSrc.indexOf('title={deleteTitle}');
+  const secondDeleteBtnIdx = listSrc.indexOf('title={deleteTitle}', deleteBtnIdx + 1);
+  ok(deleteBtnIdx > 0 && secondDeleteBtnIdx > deleteBtnIdx,
+    'could not find BOTH Delete buttons (sidebar + drawer variants) in SavedGamesList.tsx');
+  for (const [variant, idx] of [['sidebar', deleteBtnIdx], ['drawer', secondDeleteBtnIdx]] as const) {
+    const btnStart = listSrc.lastIndexOf('<button', idx);
+    const btnSlice = listSrc.slice(btnStart, idx + 20);
+    ok(/disabled=\{isDeleting\}/.test(btnSlice),
+      `the ${variant}-variant Delete button must read disabled={isDeleting}`);
+    ok(/aria-busy=\{isDeleting\s*\|\|\s*undefined\}/.test(btnSlice),
+      `the ${variant}-variant Delete button must read aria-busy={isDeleting || undefined}`);
+  }
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

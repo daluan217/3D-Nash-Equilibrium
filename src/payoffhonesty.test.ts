@@ -288,42 +288,62 @@ function testSimLogAgreesWithGroundTruth() {
 // ════════════════════════════════════════════════════════════════════════════
 
 function testMenuDrawerSourceUsesFmtPayoff() {
-  const src = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
-  ok(!/eq\.eA\.toFixed|eq\.eB\.toFixed/.test(src),
-    'MenuDrawer.tsx must not read eq.eA/eq.eB (computeAllNE\'s r3-pre-rounded fields) directly for display — RED-MATH-6/001');
-  const fmtPayoffSites = [...src.matchAll(/fmtPayoff\(EA\(eq\.x, eq\.y, (preset|game)\.payoffs\)\)/g)];
-  ok(fmtPayoffSites.length === 2,
-    `expected 2 sites recomputing via fmtPayoff(EA(eq.x, eq.y, ...)) (standard presets + saved games), found ${fmtPayoffSites.length}`);
+  // BLUE-LIST-14 (round14): the "standard presets" half stayed in
+  // MenuDrawer.tsx (`preset.*`); the "saved games" half moved to
+  // src/components/SavedGamesList.tsx (`game.*`). Each guard below now reads
+  // BOTH files and requires exactly 1 site in EACH — never "2 somewhere",
+  // which would pass just as well with both sites in one file or the other,
+  // silently losing the guard on whichever file lost its site.
+  const drawerSrc = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const listSrc = readFileSync('src/components/SavedGamesList.tsx', 'utf8');
+  for (const [name, src] of [['MenuDrawer.tsx', drawerSrc], ['SavedGamesList.tsx', listSrc]] as const) {
+    ok(!/eq\.eA\.toFixed|eq\.eB\.toFixed/.test(src),
+      `${name} must not read eq.eA/eq.eB (computeAllNE's r3-pre-rounded fields) directly for display — RED-MATH-6/001`);
+  }
+
+  const presetFmtPayoffSites = [...drawerSrc.matchAll(/fmtPayoff\(EA\(eq\.x, eq\.y, preset\.payoffs\)\)/g)];
+  ok(presetFmtPayoffSites.length === 1,
+    `expected 1 MenuDrawer.tsx site recomputing via fmtPayoff(EA(eq.x, eq.y, preset.payoffs)) (standard presets), found ${presetFmtPayoffSites.length}`);
+  const gameFmtPayoffSites = [...listSrc.matchAll(/fmtPayoff\(EA\(eq\.x, eq\.y, game\.payoffs\)\)/g)];
+  ok(gameFmtPayoffSites.length === 1,
+    `expected 1 SavedGamesList.tsx site recomputing via fmtPayoff(EA(eq.x, eq.y, game.payoffs)) (saved games), found ${gameFmtPayoffSites.length}`);
 
   // RED-MATH-9/002: `eqList` must come from `.stray` — a point already
   // covered by a continuum bullet gets no separate "Pure/Mixed NE" bullet of
   // its own (same split App.tsx's own bullet list and report.ts's grounding
-  // payload use). Two sites, same as every other check in this function.
-  const splitStraySites = [...src.matchAll(/splitEquilibriaByContinuum\((preset|game)\.payoffs\)\.stray/g)];
-  ok(splitStraySites.length === 2,
-    `expected 2 sites deriving eqList from splitEquilibriaByContinuum(...payoffs).stray (standard presets + saved games), found ${splitStraySites.length}`);
+  // payload use). One site per file, same reasoning as fmtPayoff above.
+  const presetStraySites = [...drawerSrc.matchAll(/splitEquilibriaByContinuum\(preset\.payoffs\)\.stray/g)];
+  ok(presetStraySites.length === 1,
+    `expected 1 MenuDrawer.tsx site deriving eqList from splitEquilibriaByContinuum(preset.payoffs).stray, found ${presetStraySites.length}`);
+  const gameStraySites = [...listSrc.matchAll(/splitEquilibriaByContinuum\(game\.payoffs\)\.stray/g)];
+  ok(gameStraySites.length === 1,
+    `expected 1 SavedGamesList.tsx site deriving eqList from splitEquilibriaByContinuum(game.payoffs).stray, found ${gameStraySites.length}`);
 
   // RED-MATH-7/001: MenuDrawer.tsx used to read ONLY computeAllNE's finite
   // corner list — silently under-reporting an equilibrium continuum, the
-  // same class the checks below close in report.ts and plotting.ts. Two
-  // call sites (standard presets + saved games), same as the fmtPayoff
-  // check above.
-  const describeContinuaSites = [...src.matchAll(/describeContinua\((preset|game)\.payoffs\)/g)];
-  ok(describeContinuaSites.length === 2,
-    `expected 2 sites calling describeContinua(...payoffs) (standard presets + saved games), found ${describeContinuaSites.length}`);
+  // same class the checks below close in report.ts and plotting.ts. One
+  // call site per file, same as the fmtPayoff check above.
+  const presetContinuaSites = [...drawerSrc.matchAll(/describeContinua\(preset\.payoffs\)/g)];
+  ok(presetContinuaSites.length === 1,
+    `expected 1 MenuDrawer.tsx site calling describeContinua(preset.payoffs), found ${presetContinuaSites.length}`);
+  const gameContinuaSites = [...listSrc.matchAll(/describeContinua\(game\.payoffs\)/g)];
+  ok(gameContinuaSites.length === 1,
+    `expected 1 SavedGamesList.tsx site calling describeContinua(game.payoffs), found ${gameContinuaSites.length}`);
   // The rendered list must actually include those lines, not just compute
   // them — the {continua.map(...)} JSX and the emptiness guard must both be
-  // present AT BOTH SITES (a bare .test() only proves at least one exists,
+  // present AT BOTH FILES (a bare .test() only proves at least one exists,
   // which a mutation that reverts just ONE of the two sites back to the old
   // shape would still pass — counted, exactly like the fmtPayoff/
   // describeContinua site checks above).
-  const continuaMapSites = [...src.matchAll(/\{continua\.map\(/g)];
-  ok(continuaMapSites.length === 2,
-    `expected 2 sites rendering {continua.map(...)} (standard presets + saved games), found ${continuaMapSites.length}`);
-  const fixedEmptyGuardSites = [...src.matchAll(/eqList\.length === 0 && continua\.length === 0/g)];
-  ok(fixedEmptyGuardSites.length === 2,
-    `expected 2 "No classic NE" guards requiring BOTH eqList and continua empty (standard presets + saved games), found ${fixedEmptyGuardSites.length} — `
-    + 'otherwise a continuum-only game (0 corners) would wrongly show "No classic NE" at whichever site still has the old single-condition guard');
+  for (const [name, src] of [['MenuDrawer.tsx', drawerSrc], ['SavedGamesList.tsx', listSrc]] as const) {
+    const continuaMapSites = [...src.matchAll(/\{continua\.map\(/g)];
+    ok(continuaMapSites.length === 1,
+      `expected 1 ${name} site rendering {continua.map(...)}, found ${continuaMapSites.length}`);
+    const fixedEmptyGuardSites = [...src.matchAll(/eqList\.length === 0 && continua\.length === 0/g)];
+    ok(fixedEmptyGuardSites.length === 1,
+      `expected 1 ${name} "No classic NE" guard requiring BOTH eqList and continua empty, found ${fixedEmptyGuardSites.length} — `
+      + 'otherwise a continuum-only game (0 corners) would wrongly show "No classic NE" here');
+  }
 
   // MUTATION / NEGATIVE FIXTURE — the pre-fix source shape, verbatim (no
   // describeContinua import or call, and the old single-condition
