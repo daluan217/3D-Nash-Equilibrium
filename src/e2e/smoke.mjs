@@ -4606,23 +4606,34 @@ try {
       await dp.keyboard.press('Escape');
       await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
 
-      // ── Cross-surface in-flight Delete: start a delayed DELETE from the
-      // SIDEBAR, then open the drawer WHILE it is still in flight. The
-      // drawer's OWN row for the same game must already read disabled/
-      // aria-busy — proof the guard is one shared `deletingGameIds` array,
-      // not a per-surface copy (the exact RED-APP-13/003 gap). ──
+      // ── Cross-surface in-flight Delete: start a DELETE from the SIDEBAR,
+      // HELD OPEN by a controllable gate (never a fixed sleep racing the
+      // assertion — CodeRabbit on #150), then open the drawer while it is
+      // still in flight. The drawer's OWN row for the same game must read
+      // disabled/aria-busy — proof the guard is one shared `deletingGameIds`
+      // array, not a per-surface copy (the exact RED-APP-13/003 gap). ──
+      let releaseDelete;
+      const deleteGate = new Promise((resolve) => { releaseDelete = resolve; });
       await dp.route('**/api/games/**', async (route) => {
         if (route.request().method() !== 'DELETE') return route.continue();
-        await new Promise((r) => setTimeout(r, 2000));
+        await deleteGate;
         await route.continue();
       });
       const sidebarRowA = dp.locator('[data-saved-game]', { has: dp.getByRole('button', { name: nameA, exact: true }) });
       await sidebarRowA.getByTitle('Delete this saved game').click();
       await openLibrary(dp);
       const drawerRowA = dp.locator('[data-drawer-game]', { hasText: nameA });
-      const inFlight = await drawerRowA.getByTitle('Delete custom layout').evaluate((el) => ({ disabled: el.disabled, busy: el.getAttribute('aria-busy') }));
+      const delA = drawerRowA.getByTitle('Delete custom layout');
+      // The request stays held until releaseDelete() below, so this poll has
+      // no race to lose — it only bounds how long we wait for the render.
+      let inFlight = { disabled: false, busy: null };
+      for (let i = 0; i < 50 && !(inFlight.disabled === true && inFlight.busy === 'true'); i++) {
+        inFlight = await delA.evaluate((el) => ({ disabled: el.disabled, busy: el.getAttribute('aria-busy') }));
+        if (!(inFlight.disabled === true && inFlight.busy === 'true')) await dp.waitForTimeout(100);
+      }
       record('FIX: mid-delete, the DRAWER\'s row for the same game is already disabled/aria-busy (shared state, started from the SIDEBAR)',
         inFlight.disabled === true && inFlight.busy === 'true', JSON.stringify(inFlight));
+      releaseDelete();
       await drawerRowA.waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
       await dp.unroute('**/api/games/**');
       record('the deleted game is gone from the drawer', await drawerRowA.count() === 0);
