@@ -608,6 +608,12 @@ export default function App() {
   const [editDesc, setEditDesc] = useState('');
   const [editLabels, setEditLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
   const [editTerms, setEditTerms] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });
+  // Mirrors for the 409 recovery's continuation (CodeRabbit on #142): the
+  // dialog can close, or open another game, while the refetch is in flight.
+  const editTermsRef = useRef(editTerms);
+  useEffect(() => { editTermsRef.current = editTerms; }, [editTerms]);
+  const editSessionRef = useRef<string | null>(null);
+  useEffect(() => { editSessionRef.current = isEditModalOpen ? editGameId : null; }, [isEditModalOpen, editGameId]);
   const [editError, setEditError] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -873,7 +879,10 @@ export default function App() {
     const seq = ++gamesFetchSeqRef.current;
     try {
       const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });
-      const rows = res.ok ? await res.json() : [];
+      // A failed request is not an empty library (CodeRabbit on #142): a
+      // transient 500 during the 409 recovery must not wipe the saved list.
+      if (!res.ok) return undefined;
+      const rows = await res.json();
       if (seq !== gamesFetchSeqRef.current) return undefined;
       setUserCustomGames(rows);
       // RED-REGEN-8/002: the 409 branch needs the FRESH row right away, not
@@ -2271,12 +2280,18 @@ export default function App() {
         // not touched in THIS dialog session — never drop what they typed,
         // never silently resolve the collision by picking a winner.
         const rows = await refetchUserGames();
+        // The dialog may have closed or moved to another game meanwhile: then
+        // this continuation belongs to a dead session and must change nothing.
+        if (editSessionRef.current !== editGameId) return;
         const fresh = rows?.find((g) => g.id === editGameId);
         if (fresh && orig) {
           const freshA: string[] = fresh.colorTermsA ?? [];
           const freshB: string[] = fresh.colorTermsB ?? [];
-          const untouchedA = same(editTerms.a, orig.a);
-          const untouchedB = same(editTerms.b, orig.b);
+          // Judge "untouched" against the terms as they are NOW, not as
+          // captured before the await (a chip added during the refetch counts).
+          const nowTerms = editTermsRef.current;
+          const untouchedA = same(nowTerms.a, orig.a);
+          const untouchedB = same(nowTerms.b, orig.b);
           const adoptedA = untouchedA && !same(freshA, orig.a);
           const adoptedB = untouchedB && !same(freshB, orig.b);
           if (adoptedA || adoptedB) {

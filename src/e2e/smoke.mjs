@@ -3403,12 +3403,13 @@ try {
       // let the retry succeed. Mutation: generic saveDBOrFail message → fails.
       const moveBtn = offer.getByRole('button', { name: /^move it into my account$/i });
       expectingFailure = true;
+      let refusedText = '';
       chmodSync(deskData, 0o500);
       try {
         await moveBtn.click();
         const alertBox = offer.locator('[role="alert"]');
         record('a refused write shows an error in the dialog', await alertBox.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false));
-        const refusedText = await alertBox.innerText().catch(() => '');
+        refusedText = await alertBox.innerText().catch(() => '');
         record('FIX: the refusal says the games are still on this device', /still (saved )?on this device/i.test(refusedText), refusedText.slice(0, 160));
         record('the dialog stays open with Move usable again', (await offer.isVisible()) && !(await moveBtn.isDisabled()));
       } finally { chmodSync(deskData, 0o755); }
@@ -3416,9 +3417,10 @@ try {
       // drop the appended reassurance in adoptLocalGames → this check fails).
       await dp.route('**/api/games/adopt-local', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Could not save your changes. Please try again.' }) }), { times: 1 });
       await moveBtn.click();
-      const genericText = await offer.locator('[role="alert"]').innerText().catch(() => '');
-      for (let i = 0; i < 30 && !/still on this device/i.test(await offer.locator('[role="alert"]').innerText().catch(() => '')); i++) await dp.waitForTimeout(100);
-      record('FIX: even a generic server error is completed with "still on this device" by the client', /still on this device/i.test(await offer.locator('[role="alert"]').innerText().catch(() => '')), genericText.slice(0, 120));
+      // Wait for the NEW alert (text differs from the refusal), then check it.
+      let genericText = await offer.locator('[role="alert"]').innerText().catch(() => '');
+      for (let i = 0; i < 30 && (genericText === refusedText || !genericText); i++) { await dp.waitForTimeout(100); genericText = await offer.locator('[role="alert"]').innerText().catch(() => ''); }
+      record('FIX: even a generic server error is completed with "still on this device" by the client', genericText !== refusedText && /still on this device/i.test(genericText), genericText.slice(0, 120));
       adoptCalls.length = 0;
       expectingFailure = false;
 
