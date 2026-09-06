@@ -55,6 +55,10 @@ import { buildGroundingPayload } from './utils/report';
 import { validateReport } from './utils/nashValidator';
 import { neValues } from './components/equilibriumPanel';
 import { makeTraces, buildSurfaces, SurfaceData } from './utils/plotting';
+import {
+  cameraBasis, projectPoint, zRangeOfSurface, worstPairGapPx, shouldCollapseComponentAtCamera,
+  DEFAULT_EYE, DEFAULT_CAMERA_BASIS, OVERLAP_TOLERANCE_PX as PROJ_OVERLAP_TOLERANCE_PX,
+} from './utils/cameraProjection';
 
 let checks = 0;
 function ok(cond: unknown, msg: string): asserts cond {
@@ -1234,54 +1238,92 @@ function assertProjectionAssumptionsStillHold() {
     'plotting.ts must still use aspectmode:\'cube\' (independent per-axis normalization) — the helper\'s z-normalization assumes this');
 }
 
-const CAM_EYE = [1.6, -1.6, 1.1];
-const CAM_UP = [0, 0, 1];
-function v3sub(a: number[], b: number[]): number[] { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
-function v3dot(a: number[], b: number[]): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-function v3cross(a: number[], b: number[]): number[] {
-  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+// RED-MATH-13/002: the idle spin rotates the camera about the vertical (z)
+// axis only, at constant distance from the origin (RED-MATH-13/002's own
+// probe: eye magnitude constant at every sample — confirmed pure rotation,
+// not a zoom). `rotatedEye` reproduces exactly that motion so the sweep
+// below exercises the same camera family the app itself reaches.
+function rotatedEye(deg: number): [number, number, number] {
+  const [ex, ey, ez] = DEFAULT_EYE;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  return [ex * cos - ey * sin, ex * sin + ey * cos, ez];
 }
-function v3norm(a: number[]): number[] { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
-const CAM_FWD = v3norm(v3sub([0, 0, 0], CAM_EYE));
-const CAM_RIGHT = v3norm(v3cross(CAM_FWD, CAM_UP));
-const CAM_UP2 = v3cross(CAM_RIGHT, CAM_FWD);
-// FOCAL and the 700x500 canonical viewport are the ONE free calibration knob,
-// chosen so every independently-found real fixture below (not hand-tuned to
-// pass) agrees with real reach evidence: RED-MATH-12/001's own 0.0526-long
-// fused geometry (forced through this same helper, since the shipped code no
-// longer draws it as 3 markers) projects heavily overlapping, and every
-// segment at or above the shipped SHORT_CONTINUUM=0.2 — independently
-// searched, not hand-picked — projects with a positive (non-overlapping) gap.
-const FOCAL = 3;
-const VIEW_W = 700;
-const VIEW_H = 500;
 
 /**
- * Approximate screen position of a data point (x,y in [0,1]; z in the game's
- * own payoff units) under the app's default camera. Standard lookAt+pinhole
- * perspective over aspectmode:'cube' 's own per-axis-independent
- * normalization: x,y already span [0,1]; z is centered/scaled by the SAME
- * range `buildSurfaces` produces (what Plotly's zaxis autoranges over).
+ * Applies the SAME per-component decision `PlotlyView.tsx`'s runtime restyle
+ * uses (`shouldCollapseComponentAtCamera`, from cameraProjection.ts) to a
+ * game's continuum traces at one camera basis, grouping by the
+ * `meta.continuumComponentIndex`/`continuumRole` tags `plotting.ts` stamps on
+ * each trace (mirrors PlotlyView.tsx's own grouping, so this test proves
+ * exactly what the runtime would do, not an approximation of it). Returns
+ * the surviving MARKER points (what a viewer would actually see after the
+ * dynamic rule runs) and whether the rule hid any component's corners.
  */
-function projectDefaultCamera(x: number, y: number, z: number, zLo: number, zHi: number): [number, number] {
-  const zSpan = (zHi - zLo) || 1e-9;
-  const world = [x - 0.5, y - 0.5, (z - (zLo + zHi) / 2) / zSpan];
-  const rel = v3sub(world, CAM_EYE);
-  const vx = v3dot(rel, CAM_RIGHT);
-  const vy = v3dot(rel, CAM_UP2);
-  const vz = v3dot(rel, CAM_FWD);
-  const sx = (vx / vz) * FOCAL;
-  const sy = (vy / vz) * FOCAL;
-  return [VIEW_W / 2 + sx * (VIEW_W / 2), VIEW_H / 2 - sy * (VIEW_H / 2)];
+function applyDynamicCollapse(traces: any[], zLo: number, zHi: number, basis: any): { survivingMarkers: any[]; anyDynamicHide: boolean } {
+  const byComponent = new Map<number, { midpoint?: any; corners: any[] }>();
+  for (const t of traces) {
+    const m = t.meta;
+    if (!m || m.continuumComponentIndex === undefined) continue;
+    let e = byComponent.get(m.continuumComponentIndex);
+    if (!e) { e = { corners: [] }; byComponent.set(m.continuumComponentIndex, e); }
+    if (m.continuumRole === 'midpoint') e.midpoint = t;
+    else if (m.continuumRole === 'corner') e.corners.push(t);
+  }
+  const survivingMarkers: any[] = [];
+  let anyDynamicHide = false;
+  byComponent.forEach((e) => {
+    if (!e.midpoint) return;
+    if (!e.corners.length) { survivingMarkers.push(e.midpoint); return; } // already statically collapsed
+    const numSurfaces = e.midpoint.x.length;
+    let collapse = false;
+    for (let si = 0; si < numSurfaces; si++) {
+      const mid = { x: e.midpoint.x[si], y: e.midpoint.y[si], z: e.midpoint.z[si] };
+      const corners = e.corners.map((ct: any) => ({ x: ct.x[si], y: ct.y[si], z: ct.z[si] }));
+      if (shouldCollapseComponentAtCamera(mid, corners, e.midpoint.meta.continuumBaseSize, e.corners[0].marker.size, zLo, zHi, basis)) collapse = true;
+    }
+    if (collapse) {
+      anyDynamicHide = true;
+      survivingMarkers.push({ ...e.midpoint, marker: { ...e.midpoint.marker, size: e.midpoint.meta.continuumShortSize } });
+    } else {
+      survivingMarkers.push(e.midpoint, ...e.corners);
+    }
+  });
+  return { survivingMarkers, anyDynamicHide };
 }
 
-function zRangeOfSurface(surf: SurfaceData): [number, number] {
-  // makeTraces' own bounding-box lines sit at the payoff extrema ± 0.3
-  // (plotting.ts ~147-148) and are real traces Plotly's zaxis autoranges
-  // over too — matching that here keeps the z-normalization this helper uses
-  // from silently disagreeing with the real render (CodeRabbit, PR #134).
-  const all = ([] as number[]).concat(...surf.zA, ...surf.zB);
-  return [Math.min(...all) - 0.3, Math.max(...all) + 0.3];
+/** Worst projected gap among the surviving markers `applyDynamicCollapse`
+ *  returns — what a viewer sees AFTER the dynamic rule has run. */
+function worstGapAmongSurvivors(survivingMarkers: any[], zLo: number, zHi: number, basis: any): number {
+  const surfaces = survivingMarkers.length && survivingMarkers[0].x.length > 1 ? [0, 1] : [0];
+  let worst = Infinity;
+  for (const si of surfaces) {
+    const pts = survivingMarkers.map((t) => ({ size: t.marker.size, x: t.x[si], y: t.y[si], z: t.z[si] }));
+    const gap = worstPairGapPx(pts, zLo, zHi, basis);
+    if (gap < worst) worst = gap;
+  }
+  return worst;
+}
+
+/** Every 15° around the vertical axis — the idle spin's own motion. */
+const SPIN_AZIMUTHS: number[] = [];
+for (let d = 0; d < 360; d += 15) SPIN_AZIMUTHS.push(d);
+
+// RED-MATH-13/002: this test used to keep its OWN private copy of the
+// lookAt+pinhole projection geometry, calibrated only for the default
+// camera. It now imports `src/utils/cameraProjection.ts` — the SAME module
+// `PlotlyView.tsx`'s camera-aware collapse uses — so a camera this test
+// proves safe (or not) is the exact math the browser runs, not a second
+// implementation that could quietly disagree. `projectDefaultCamera` is kept
+// as a thin default-camera-only wrapper so the boundary-fixture checks below
+// (calibrated and worded against the default camera specifically) read the
+// same as before; `worstSingleComponentOverlapPx` now takes an optional
+// camera basis so the same helper drives both the default-camera sweep and
+// the new azimuth sweep.
+const OVERLAP_TOLERANCE_PX = PROJ_OVERLAP_TOLERANCE_PX;
+
+function projectDefaultCamera(x: number, y: number, z: number, zLo: number, zHi: number): [number, number] {
+  return projectPoint(x, y, z, zLo, zHi, DEFAULT_CAMERA_BASIS);
 }
 
 /**
@@ -1289,26 +1331,20 @@ function zRangeOfSurface(surf: SurfaceData): [number, number] {
  * continuumNE MARKER traces drawn by a game with EXACTLY ONE non-point
  * component (see SCOPE above) — surface A and surface B (trackingMode
  * 'both') checked separately, since they're unrelated 3D positions. +Infinity
- * when fewer than 2 markers exist (the short-collapse path).
+ * when fewer than 2 markers exist (the short-collapse path). `basis` defaults
+ * to the default camera; the azimuth sweep below passes a rotated one.
  */
-function worstSingleComponentOverlapPx(traces: any[], zLo: number, zHi: number): number {
+function worstSingleComponentOverlapPx(traces: any[], zLo: number, zHi: number, basis = DEFAULT_CAMERA_BASIS): number {
   const markers = traces.filter((t: any) => t.legendgroup === 'continuumNE' && t.mode === 'markers');
-  let worst = Infinity;
   const surfaces = markers.length && markers[0].x.length > 1 ? [0, 1] : [0];
-  for (const si of surfaces) {
-    const pts = markers.map((t: any) => ({ size: t.marker.size, px: projectDefaultCamera(t.x[si], t.y[si], t.z[si], zLo, zHi) }));
-    for (let i = 0; i < pts.length; i++) {
-      for (let j = i + 1; j < pts.length; j++) {
-        const d = Math.hypot(pts[i].px[0] - pts[j].px[0], pts[i].px[1] - pts[j].px[1]);
-        const gap = d - (pts[i].size / 2 + pts[j].size / 2);
-        if (gap < worst) worst = gap;
-      }
-    }
+  const pointsPerSurface = surfaces.map((si) => markers.map((t: any) => ({ size: t.marker.size, x: t.x[si], y: t.y[si], z: t.z[si] })));
+  let worst = Infinity;
+  for (const pts of pointsPerSurface) {
+    const gap = worstPairGapPx(pts, zLo, zHi, basis);
+    if (gap < worst) worst = gap;
   }
   return worst;
 }
-
-const OVERLAP_TOLERANCE_PX = 1;
 
 function testContinuumMarkersDoNotOverlapOnScreen() {
   assertProjectionAssumptionsStillHold();
@@ -1325,6 +1361,37 @@ function testContinuumMarkersDoNotOverlapOnScreen() {
   const gapSanity = Math.hypot(c1[0] - mid[0], c1[1] - mid[1]) - (21 / 2 + 8.925 / 2);
   ok(gapSanity < -5,
     `sanity: the helper must flag RED-MATH-12/001's own fused geometry as heavily overlapping, got gap=${gapSanity.toFixed(2)}px (proves the check below is not vacuous)`);
+
+  // RED-MATH-13/002: the DYNAMIC (camera-aware) rule's own sanity control —
+  // it must actually fire at SOME azimuth on a near-threshold fixture, or
+  // "0 violations" in the azimuth sweep below would be vacuous. Fusion
+  // depends on the segment's own data-space geometry (not azimuth alone),
+  // so RED-MATH-13/002's own sampled angles (found on ITS fixture) don't
+  // transfer here — these two (120°, 330°) were found by an independent
+  // per-15°-step scan of THIS fixture (0.2105-length, just above
+  // SHORT_CONTINUUM) specifically for this sanity check: at the default
+  // camera (0°) its worst gap is +22.17px (clearly legible, matches the
+  // default-camera check below); at 120° it is -1.46px and at 330° -15.06px
+  // (confirmed overlapping) — both ARE in SPIN_AZIMUTHS below.
+  {
+    const NEAR_THRESHOLD: GamePayoffs = { a11: -6, a12: 3, a21: 9, a22: -1, b11: -6, b12: -6, b21: 4, b22: -7 }; // length 0.2105
+    const surf = buildSurfaces(NEAR_THRESHOLD);
+    const [zLo, zHi] = zRangeOfSurface(surf);
+    const st = createInitialState(0.5, 0.5, NEAR_THRESHOLD);
+    const traces = makeTraces(surf, NEAR_THRESHOLD, st, 'both', computeAllNE(NEAR_THRESHOLD), false, 'shrink');
+    let sawHide = false;
+    for (const deg of [120, 330]) {
+      const { anyDynamicHide } = applyDynamicCollapse(traces, zLo, zHi, cameraBasis(rotatedEye(deg)));
+      if (anyDynamicHide) sawHide = true;
+    }
+    ok(sawHide, 'sanity: the dynamic rule must collapse the 0.2105-length fixture at its own independently-scanned fusing azimuths (120°, 330° — proves the azimuth sweep below is not vacuous)');
+    // And it must NOT collapse this same component at the DEFAULT camera,
+    // where the static rule already keeps its corners legible — the
+    // dynamic rule closes a gap the static rule leaves at OTHER cameras, it
+    // does not narrow what the static rule already guarantees at its own.
+    const { anyDynamicHide: hidesAtDefault } = applyDynamicCollapse(traces, zLo, zHi, DEFAULT_CAMERA_BASIS);
+    ok(!hidesAtDefault, 'the dynamic rule must not hide corners at the default camera for a component the static rule keeps (0.2105-length fixture)');
+  }
 
   // Boundary fixtures: each found by an INDEPENDENT search for a game whose
   // equilibriumSet has exactly one 'segment' component near a target length
@@ -1364,6 +1431,21 @@ function testContinuumMarkersDoNotOverlapOnScreen() {
     const worst = worstSingleComponentOverlapPx(traces, zLo, zHi);
     ok(worst >= -OVERLAP_TOLERANCE_PX,
       `"${label}": continuumNE markers overlap by ${(-worst).toFixed(2)}px on screen (tolerance ${OVERLAP_TOLERANCE_PX}px)`);
+    // RED-MATH-13/002: the SAME fixture, swept at every 15° azimuth — after
+    // the dynamic rule runs, no component may overlap at ANY of these
+    // cameras (clause 3's re-scoped guarantee), and at the default camera
+    // specifically the dynamic rule must never hide corners the static rule
+    // already keeps (expectMarkers === 3).
+    for (const deg of SPIN_AZIMUTHS) {
+      const basis = cameraBasis(rotatedEye(deg));
+      const { survivingMarkers, anyDynamicHide } = applyDynamicCollapse(traces, zLo, zHi, basis);
+      const worstDyn = worstGapAmongSurvivors(survivingMarkers, zLo, zHi, basis);
+      ok(worstDyn >= -OVERLAP_TOLERANCE_PX,
+        `"${label}" at azimuth ${deg}°: continuumNE markers overlap by ${(-worstDyn).toFixed(2)}px after the dynamic rule (tolerance ${OVERLAP_TOLERANCE_PX}px)`);
+      if (deg === 0 && expectMarkers === 3) {
+        ok(!anyDynamicHide, `"${label}" at the default camera (azimuth 0): the dynamic rule must not hide corners the static rule keeps`);
+      }
+    }
   }
 
   // Reach — the existing 300k int[-9,9] sweep (mulberry32 seed 9001), RESTRICTED
@@ -1374,11 +1456,20 @@ function testContinuumMarkersDoNotOverlapOnScreen() {
   // the existing exact-dedup coverage. Static plot at the default start point,
   // no simulation run needed (testContinuumSettledPointAlwaysOnDrawnGlyph
   // already covers the settled-point/data-space side of the contract).
+  // RED-MATH-13/002: the SAME sweep also drives the dynamic (camera-aware)
+  // rule at every 15° azimuth, reusing the surf/traces already built per
+  // game (not a second independent sweep) — "over the existing 300k sweep
+  // AND azimuths every 15° at the default elevation" the fix's contract
+  // requires. Also checks the dynamic rule never hides a component's
+  // corners at the default azimuth when the static rule already keeps them.
   const rng = mk(9001);
   const N = 300000;
   let singleComponentGames = 0;
   let violations = 0;
   let worstOverall = Infinity;
+  let dynamicViolations = 0;
+  let dynamicWorstOverall = Infinity;
+  let dynamicOverHidesAtDefault = 0;
   for (let i = 0; i < N; i++) {
     const cell = () => Math.floor(rng() * 19) - 9;
     const g: GamePayoffs = {
@@ -1395,13 +1486,30 @@ function testContinuumMarkersDoNotOverlapOnScreen() {
     const worst = worstSingleComponentOverlapPx(traces, zLo, zHi);
     if (worst < worstOverall) worstOverall = worst;
     if (worst < -OVERLAP_TOLERANCE_PX) violations++;
+
+    const hasCorners = traces.some((t: any) => t.meta?.continuumRole === 'corner');
+    for (const deg of SPIN_AZIMUTHS) {
+      const basis = cameraBasis(rotatedEye(deg));
+      const { survivingMarkers, anyDynamicHide } = applyDynamicCollapse(traces, zLo, zHi, basis);
+      const worstDyn = worstGapAmongSurvivors(survivingMarkers, zLo, zHi, basis);
+      if (worstDyn < dynamicWorstOverall) dynamicWorstOverall = worstDyn;
+      if (worstDyn < -OVERLAP_TOLERANCE_PX) dynamicViolations++;
+      if (deg === 0 && hasCorners && anyDynamicHide) dynamicOverHidesAtDefault++;
+    }
   }
   ok(singleComponentGames > 30000, `corpus too small: only ${singleComponentGames} single-component continuum games found out of ${N}`);
   ok(violations === 0,
     `${violations}/${singleComponentGames} single-component continuum games draw overlapping continuumNE markers on screen (worst gap ${worstOverall.toFixed(2)}px)`);
+  ok(dynamicViolations === 0,
+    `${dynamicViolations} (game,azimuth) pairs draw overlapping continuumNE markers AFTER the dynamic camera-aware rule, over ${singleComponentGames} games x ${SPIN_AZIMUTHS.length} azimuths (worst gap ${dynamicWorstOverall.toFixed(2)}px)`);
+  ok(dynamicOverHidesAtDefault === 0,
+    `${dynamicOverHidesAtDefault} games: the dynamic rule hid corners at the default camera that the static rule keeps`);
   console.log(`✓ within one continuum component, corner/midpoint markers never overlap on screen at the default camera: `
     + `${N} games swept, ${singleComponentGames} single-component, ${BOUNDARY_FIXTURES.length} named boundary fixtures, `
     + `0 violations (worst real gap ${worstOverall.toFixed(2)}px, tolerance ${OVERLAP_TOLERANCE_PX}px).`);
+  console.log(`✓ the dynamic camera-aware collapse (RED-MATH-13/002) keeps continuumNE markers non-overlapping at every 15° azimuth: `
+    + `${singleComponentGames} games x ${SPIN_AZIMUTHS.length} azimuths, 0 violations (worst gap ${dynamicWorstOverall.toFixed(2)}px), `
+    + `never over-hides at the default camera.`);
 }
 
 testContinuumCornerMarkersVisibleUniqueAndNamed();
@@ -1457,9 +1565,53 @@ function testShortContinuumCutoffIsExactAndRelabelInvariant() {
   console.log('✓ the 0.2 cutoff is exact (1e-9 tolerance) and relabel-invariant: six relabellings of a length-1/5 component all keep corners, on both size sets');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 5h. RED-MATH-13/002, CodeRabbit follow-up (PlotlyView.tsx#L829 thread):
+//     `cameraBasis`'s `fwd` must point at the camera's ACTUAL `center`, not
+//     always the scene origin. Some tour poses (PlotlyView.tsx's TOUR_POSES
+//     — `cornerRow1Col1`, `interior`) use a nonzero `center`; a collapse
+//     decision taken at one of those, ignoring it, could disagree with what
+//     is actually rendered.
+// ════════════════════════════════════════════════════════════════════════════
+function testCameraBasisRespectsNonzeroCenter() {
+  const EYE = [1.15, 1.15, 0.72]; // PlotlyView.tsx's cornerRow1Col1 pose
+  const CENTER = [0.3, 0.3, 0];   // same pose's own center
+
+  // Sanity: the OLD (center-ignored) behavior — cameraBasis(EYE) with the
+  // default center [0,0,0] — looks at the ORIGIN.
+  const oldBasis = cameraBasis(EYE);
+  const toOrigin = [-EYE[0], -EYE[1], -EYE[2]];
+  const toOriginMag = Math.hypot(...toOrigin) || 1;
+  const oldFwdDotOrigin = (oldBasis.fwd[0] * toOrigin[0] + oldBasis.fwd[1] * toOrigin[1] + oldBasis.fwd[2] * toOrigin[2]) / toOriginMag;
+  ok(oldFwdDotOrigin > 1 - 1e-9, `sanity: cameraBasis(eye) with no center defaults to looking at the origin (dot=${oldFwdDotOrigin})`);
+
+  // FIX: cameraBasis(EYE, CENTER) must look AT that center instead.
+  const newBasis = cameraBasis(EYE, CENTER);
+  const toCenter = [CENTER[0] - EYE[0], CENTER[1] - EYE[1], CENTER[2] - EYE[2]];
+  const toCenterMag = Math.hypot(...toCenter) || 1;
+  const newFwdDotCenter = (newBasis.fwd[0] * toCenter[0] + newBasis.fwd[1] * toCenter[1] + newBasis.fwd[2] * toCenter[2]) / toCenterMag;
+  ok(newFwdDotCenter > 1 - 1e-9, `cameraBasis(eye, center) must look AT the given center, not the origin (dot=${newFwdDotCenter})`);
+
+  // Proves the fix actually changes the answer, not a silent no-op.
+  const fwdDelta = Math.hypot(
+    oldBasis.fwd[0] - newBasis.fwd[0], oldBasis.fwd[1] - newBasis.fwd[1], oldBasis.fwd[2] - newBasis.fwd[2]);
+  ok(fwdDelta > 0.05, `cameraBasis's fwd must differ once a nonzero center is given (delta=${fwdDelta.toFixed(4)}) — otherwise center is silently ignored`);
+
+  // Concrete numeric impact: project the SAME data point under both bases —
+  // a real screen-position difference, not just an abstract vector one.
+  const pOld = projectPoint(0.5, 0.5, 0, -1, 1, oldBasis);
+  const pNew = projectPoint(0.5, 0.5, 0, -1, 1, newBasis);
+  const screenDelta = Math.hypot(pOld[0] - pNew[0], pOld[1] - pNew[1]);
+  ok(screenDelta > 5,
+    `ignoring a tour pose's nonzero center used to project a point ${screenDelta.toFixed(1)}px away from where the correct (center-aware) basis puts it`);
+  console.log(`✓ cameraBasis respects a nonzero camera center (RED-MATH-13/002 CodeRabbit follow-up): `
+    + `fwd delta=${fwdDelta.toFixed(3)}, projected screen delta=${screenDelta.toFixed(1)}px at the cornerRow1Col1 tour pose`);
+}
+
 testShortContinuumCollapsesToOneMarker();
 testShortContinuumCutoffIsExactAndRelabelInvariant();
 testContinuumMarkersDoNotOverlapOnScreen();
+testCameraBasisRespectsNonzeroCenter();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();

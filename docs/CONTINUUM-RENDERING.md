@@ -22,12 +22,33 @@ For every 2×2 game, in every rendered plot:
    corner marker's symbol/size (`diamond-open`, `diamondSize * 2`) must protrude around
    the sphere the way the Pure/Mixed NE diamonds do (`>= 1.3x` the sphere's own size).
    Enforced by `testContinuumCornerMarkersVisibleUniqueAndNamed`.
-3. **No two continuum glyphs of one plot overlap by more than X = 1px at the default
-   camera, within one component.** Marker *size* is a fixed screen-space quantity; a
-   component's *length* is data-space. A component shorter than **L = 0.2** collapses to
-   its single enlarged midpoint marker instead of drawing corners that would fuse with
-   it. See "Screen-space, in detail" below for L's derivation and this clause's own
-   validated scope.
+3. **No two continuum glyphs of one component overlap by more than X = 1px AT ANY
+   CAMERA THE APP ITSELF REACHES** — the default camera, Reset View, the tour's
+   `moveCamera` poses, a user drag/pinch, and the idle spin (RED-MATH-13/002: this
+   clause used to read "at the default camera" only, and the idle spin — on by default
+   whenever the simulation is not running, `App.tsx`'s `idleSpin`/`spinDelayMs` — drifts
+   past fusing angles within 1-2s of a fresh page, with no user action). Two layers
+   enforce it: a STATIC, data-space one (below) that is right on the FIRST paint before
+   any camera has moved, and a DYNAMIC, camera-aware one that keeps it right as the
+   camera moves.
+   - **Static**: marker *size* is a fixed screen-space quantity; a component's *length*
+     is data-space. A component shorter than **L = 0.2** collapses to its single
+     enlarged midpoint marker instead of drawing corners that would fuse with it. See
+     "Screen-space, in detail" below for L's derivation and this clause's own validated
+     scope.
+   - **Dynamic**: `src/utils/cameraProjection.ts` (shared by `PlotlyView.tsx`'s runtime
+     collapse and `payoffhonesty.test.ts`'s property sweep — ONE projection, so a camera
+     the test proves safe is the exact math the browser runs) projects each component's
+     own corner/midpoint centers through the CURRENT `scene.camera.eye` on every
+     `plotly_relayout` (throttled ~100ms; the idle spin emits one relayout per frame).
+     When the projected corner↔midpoint separation for a component falls below X, its
+     corner traces are hidden (`Plotly.restyle` visibility, by the stable
+     `meta.continuumComponentIndex`/`continuumRole` plotting.ts tags each trace with) and
+     its midpoint marker is enlarged to the same size the static collapse uses — restyled
+     only when a component's decision actually flips, never a full `Plotly.react`. Scoped
+     identically to the static rule's own validated geometry (single `segment` components
+     — see "Screen-space, in detail"); an `area` component or a cross-component pair is
+     the same pre-existing "Known gap" below, unchanged by this clause.
 4. **A component shorter than L draws one glyph; at or above L it draws corners +
    midpoint.** `SHORT_CONTINUUM` in `plotting.ts`, currently `0.2`, compared with a
    `1e-9` tolerance: the contract is on the EXACT length, so a component whose length is
@@ -128,5 +149,11 @@ Relax any one clause and name what fails:
   redraw").
 - Drop the `hoverinfo: 'skip'` on decorative traces: the hover-name check in
   `testContinuumCornerMarkersVisibleUniqueAndNamed` fails.
+- Drop the dynamic (camera-aware) collapse's relayout hook (disable the
+  `plotly_relayout` handler's `applyContinuumCollapseAtCamera` call in
+  `PlotlyView.tsx`): e2e section 62's fusing-eye check fails (corner traces stay
+  visible and overlapping at the spin-sampled fusing camera; the default-camera
+  check in the same section still passes, since the static rule alone is
+  correct there).
 
 All verified by actually reverting each fix and re-running the named check.
