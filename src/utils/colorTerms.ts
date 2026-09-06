@@ -111,8 +111,15 @@ function dropAmbiguous(a: string[], b: string[]): { a: string[]; b: string[] } {
  * through; docs/COLOUR-TERMS.md's KEY table names every glyph and its family);
  * dash glyphs to '-'; whitespace collapsed; leading/trailing punctuation
  * dropped (a drag-selection ends on the sentence's period, RED-REGEN-5/002);
- * case. Rendering never uses it — ColorCoded matches the literal text — so a
- * chip's stored spelling is untouched.
+ * case; a leading indefinite/definite article ("a "/"an "/"the "), LAST
+ * (RED-CLOUD-11/001: a regenerated actor noun and an existing chip naming the
+ * SAME character but introduced with a different article — "a landowner" vs
+ * "the landowner" — are, to a reader, one phrase; the model itself writes the
+ * same referent both ways within one description, indefinite-then-definite,
+ * so without this fold the cross-player guard never saw them as equal).
+ * Rendering never uses it — ColorCoded matches the literal text — so a
+ * chip's stored spelling (including its own article, if any) is untouched;
+ * only the EXCLUSIVITY/collision comparisons this key backs are affected.
  */
 export function colorTermKey(t: string): string {
   return t
@@ -135,7 +142,11 @@ export function colorTermKey(t: string): string {
     // "50%" onto the unrelated "50" (RED-REGEN-6/002). Covers the ideographic
     // and fullwidth forms (。、，；：！？) that a CJK keyboard produces.
     .replace(/^[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F\u3008\u3009\u300A\u300B\u3010\u3011\u3014\u3015\uFF08\uFF09\uFF3B\uFF3D\uFF5B\uFF5D()[\]{}]+|[\s.,;:!?\u2026\u2025\u3002\u3001\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\u00A1\u00BF"'\u00AB\u00BB\u300C\u300D\u300E\u300F\u3008\u3009\u300A\u300B\u3010\u3011\u3014\u3015\uFF08\uFF09\uFF3B\uFF3D\uFF5B\uFF5D()[\]{}]+$/g, '')
-    .toLowerCase();
+    .toLowerCase()
+    // Last, and only a LEADING article followed by more text — "another"
+    // (no space after "an") and a bare "a"/"the" alone (nothing left to fold
+    // onto) are both left alone by the `\s+(?=\S)` requirement.
+    .replace(/^(?:a|an|the)\s+(?=\S)/, '');
 }
 function normTerm(t: string): string {
   return colorTermKey(t);
