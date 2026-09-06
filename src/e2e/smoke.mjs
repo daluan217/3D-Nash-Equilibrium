@@ -5068,8 +5068,12 @@ try {
       // Two genuinely separate diamonds (uncollapsed) at this fixture's own
       // corner-to-corner distance span far more (RED's own measured real
       // gap: the two corners alone are ~60-70 CSS px apart at this camera).
-      record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan\'s combined purple footprint spans one marker\'s own size (<=45 CSS px), not two separate diamonds',
-        span195 <= 45, JSON.stringify({ span195, ...blobs195 }));
+      // OPUS-REVIEW-MATH FBM-3: `spanOf([])` is 0, and `0 <= 45` — an empty
+      // scan (a drifted crop, a colour shift, hideContamination hiding one
+      // trace too many, a frame that simply did not paint) would silently
+      // PASS this check. Require at least one real blob.
+      record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
+        blobs195.blobs.length >= 1 && span195 <= 45, JSON.stringify({ span195, ...blobs195 }));
     } finally { await p.close().catch(() => {}); }
   });
 
