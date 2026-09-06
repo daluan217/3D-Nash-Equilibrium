@@ -4725,6 +4725,64 @@ try {
     } finally { await ctxB.close().catch(() => {}); }
   });
 
+  // ══ 69. RED-APP-14/001 (director-reproduced): the guided tour's window-level
+  //      key listener used to fire for keys typed INSIDE an open dialog —
+  //      arrows/Enter in the Account or Save field advanced the tour, whose
+  //      onEnter replaced the payoff matrix under the dialog. Invariant: no key
+  //      typed inside an open surface reaches the tour. Control: with no
+  //      dialog open, one ArrowRight still advances the tour.
+  //      Mutation: drop Walkthrough's ModalRegistry/insideOtherDialog bail → the
+  //      "tour step unchanged" check fails (step 1 → 5).
+  section('69', 'keys typed inside an open dialog never reach the guided tour', 16, async () => {
+    const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tourSel = '[role="dialog"][aria-label="Guided tour"]';
+    await p.waitForSelector(tourSel, { timeout: 15000 });
+    const readTour = () => p.evaluate((sel) => {
+      const t = document.querySelector(sel);
+      const m = (t?.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
+      return { step: m ? Number(m[1]) : null, matrix: [...document.querySelectorAll('input[inputmode="decimal"][class*="text-center"]')].map((i) => i.value).join(',') };
+    }, tourSel);
+    const start = await readTour();
+    record('precondition: the tour auto-opened on step 1', start.step === 1, JSON.stringify(start));
+    await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+    await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 8000 });
+    const email = p.getByPlaceholder(/example\.com or username/i);
+    await email.click(); await email.type('abc');
+    record('precondition: the caret is inside the Account dialog while the tour is open',
+      await p.evaluate(() => !!document.activeElement?.closest('[role="dialog"][aria-label="Account"]')));
+    for (let k = 0; k < 4; k++) await p.keyboard.press('ArrowRight');
+    await p.keyboard.press('Enter');
+    // Poll: the tour must STILL be on step 1 after the keys had every chance to land.
+    let settled = await readTour();
+    for (let i = 0; i < 10 && settled.step === 1; i++) { await p.waitForTimeout(100); settled = await readTour(); }
+    record('FIX: four ArrowRight + Enter typed in the dialog leave the tour on step 1', settled.step === 1, JSON.stringify(settled));
+    record('FIX: the payoff matrix under the dialog is unchanged', settled.matrix === start.matrix, `${start.matrix} → ${settled.matrix}`);
+    await p.keyboard.press('Escape');
+    await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 8000 });
+    record('precondition: Escape closed the Account dialog, the tour is still open', !!(await p.$(tourSel)));
+    await p.keyboard.press('ArrowRight');
+    let after = await readTour();
+    for (let i = 0; i < 20 && after.step !== 2; i++) { await p.waitForTimeout(100); after = await readTour(); }
+    record('control: with no dialog open, one ArrowRight advances the tour to step 2', after.step === 2, JSON.stringify(after));
+    // Second path (CodeRabbit on #151): a dialog that does NOT use ModalSurface
+    // (the desktop download modal) — the `insideOtherDialog` bail must hold
+    // on its own, since the registry knows nothing about it.
+    await p.getByRole('button', { name: /get desktop app/i }).first().click();
+    const dl = p.locator('[role="dialog"]:not([aria-label="Guided tour"])').first();
+    await dl.waitFor({ state: 'visible', timeout: 8000 });
+    const dlLabel = await dl.getAttribute('aria-label');
+    const focusable = dl.locator('button, a[href], input').first(); await focusable.focus();
+    record('precondition: focus is inside a non-ModalSurface dialog while the tour is open',
+      await p.evaluate(() => !!document.activeElement?.closest('[role="dialog"]:not([aria-label="Guided tour"])')), String(dlLabel));
+    for (let k = 0; k < 3; k++) await p.keyboard.press('ArrowRight');
+    await p.keyboard.press('Enter');
+    let dlState = await readTour();
+    for (let i = 0; i < 10 && dlState.step === 2; i++) { await p.waitForTimeout(100); dlState = await readTour(); }
+    record('FIX: keys typed inside the download dialog leave the tour on step 2 and the matrix unchanged', dlState.step === 2 && dlState.matrix === start.matrix, JSON.stringify(dlState));
+    await p.close();
+  });
+
 await executeSections();
 
 } catch (e) {

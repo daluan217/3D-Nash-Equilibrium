@@ -10,7 +10,7 @@
  *   npx tsx src/modalsurface.test.ts
  */
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { ModalRegistry } from './components/ModalSurface';
 
 let checks = 0;
@@ -150,6 +150,53 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     ok(/aria-busy=\{isDeleting\s*\|\|\s*undefined\}/.test(btnSlice),
       `the ${variant}-variant Delete button must read aria-busy={isDeleting || undefined}`);
   }
+}
+
+// RED-APP-14/001 (director-reproduced): every window/document keydown
+// listener OUTSIDE ModalSurface.tsx must either handle only Escape (which
+// ModalSurface already stops from reaching lower layers) or consult the
+// registry, so no key typed inside an open surface drives something beneath
+// it. Enumerated over src/ so a new listener cannot appear unguarded.
+{
+  const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+    const p = `${dir}/${f}`;
+    if (statSync(p).isDirectory()) return f === 'e2e' || f === 'integration' ? [] : walk(p);
+    return /\.(tsx?|mjs)$/.test(f) && !/\.test\./.test(f) ? [p] : [];
+  });
+  // Named handlers AND inline callbacks (CodeRabbit on #151): for an inline
+  // `(e) => { … }` the body is the text from the listener call to the end of
+  // the enclosing effect (the next `}, [` dependency array).
+  const listenerRe = /(?:window|document)\.addEventListener\(\s*['"]keydown['"]\s*,\s*(\w+|\([^)]*\)\s*=>|\w+\s*=>|function\b)/g;
+  let listeners = 0;
+  for (const file of walk('src')) {
+    if (file.endsWith('ModalSurface.tsx')) continue;
+    const src = readFileSync(file, 'utf8');
+    for (const m of src.matchAll(listenerRe)) {
+      listeners++;
+      const handlerName = m[1];
+      const inline = !/^\w+$/.test(handlerName);
+      const def = inline ? -1 : src.indexOf(`const ${handlerName} = `);
+      const body = inline
+        ? src.slice(m.index, src.indexOf('}, [', m.index) > 0 ? src.indexOf('}, [', m.index) : m.index + 2000)
+        : (def >= 0 ? src.slice(def, m.index) : '');
+      // Benign: a handler that acts only on Escape (ModalSurface stops that key
+      // from reaching lower layers) and/or Tab (a focus trap for its own
+      // overlay). Anything that reacts to other keys must consult the registry.
+      const keysHandled = [...body.matchAll(/e\.key\s*(?:!==|===)\s*'([^']+)'/g)].map((k) => k[1]);
+      const benign = keysHandled.length > 0 && keysHandled.every((k) => k === 'Escape' || k === 'Tab');
+      const gated = /ModalRegistry\.isAnyOpen\(/.test(body);
+      ok(benign || gated,
+        `${file}: the keydown listener "${handlerName}" handles ${JSON.stringify(keysHandled)} without consulting ModalRegistry.isAnyOpen() (RED-APP-14/001)`);
+    }
+  }
+  ok(listeners >= 3, `expected at least the 3 known global keydown listeners outside ModalSurface, found ${listeners}`);
+  // Fixture: an inline unguarded listener must be caught by the same regex.
+  const inlineFixture = "useEffect(() => {\n  window.addEventListener('keydown', (e) => { if (e.key === 'ArrowRight') next(); });\n}, [next]);";
+  const fm = [...inlineFixture.matchAll(listenerRe)];
+  ok(fm.length === 1 && !/^\w+$/.test(fm[0][1]), 'fixture: the listener regex matches an inline arrow callback');
+  const tour = readFileSync('src/components/Walkthrough.tsx', 'utf8');
+  ok(/ModalRegistry\.isAnyOpen\(\) \|\| insideOtherDialog\(e\.target\)/.test(tour),
+    'Walkthrough\'s key listener must bail when any ModalSurface is open OR the key was typed inside another dialog');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
