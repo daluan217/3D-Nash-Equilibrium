@@ -808,7 +808,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     })}
                   </div>
                 ) : (
-                  <div className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                  /* The focus landmark stays MOUNTED in the empty state: when the
+                     drawer deletes its last saved game the list above unmounts,
+                     and App's focus restoration must still find a
+                     `drawer-games` fallback inside the open drawer instead of
+                     falling through to the page beneath it (CodeRabbit on #141). */
+                  <div data-focus-fallback="drawer-games" tabIndex={-1} aria-label="Saved custom games" className="bg-slate-50 dark:bg-slate-950/20 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400">
                     {user ? (
                       <p>
                         No saved custom game presets. Customize payoffs in the main board and click{' '}

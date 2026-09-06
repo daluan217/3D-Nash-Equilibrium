@@ -3698,6 +3698,27 @@ try {
       let afterDrawer = await readDrawerFocus();
       for (let i = 0; i < 30 && !afterDrawer.inDrawer; i++) { await p.waitForTimeout(100); afterDrawer = await readDrawerFocus(); }
       record('FIX: deleting from the menu drawer keeps focus inside the drawer\'s list, not on the page beneath', afterDrawer.inDrawer, JSON.stringify(afterDrawer));
+      // (d) deleting the drawer's LAST game unmounts the list itself; the
+      // empty-state card must still carry the `drawer-games` landmark so focus
+      // stays inside the open drawer (CodeRabbit on #141, second thread).
+      // Mutation: drop data-focus-fallback from the empty-state card → focus
+      // falls to the page heading under the drawer and the check fails.
+      const remaining = await drawerList.locator('[data-drawer-game]').count();
+      record('precondition: more than one saved game is left in the drawer before the final deletions', remaining >= 2, `remaining=${remaining}`);
+      for (let k = 0; k < remaining; k++) {
+        const nextCard = drawerList.locator('[data-drawer-game]').first();
+        const nextDel = nextCard.getByTitle('Delete custom layout');
+        await nextDel.scrollIntoViewIfNeeded(); await nextDel.focus();
+        p.once('dialog', async (d) => { await d.accept(); });
+        await p.keyboard.press('Enter');
+        await p.waitForFunction((n) => document.querySelectorAll('[data-drawer-game]').length === n, remaining - k - 1, { timeout: 8000 });
+      }
+      let afterLast = await readDrawerFocus();
+      for (let i = 0; i < 30 && !afterLast.inDrawer; i++) { await p.waitForTimeout(100); afterLast = await readDrawerFocus(); }
+      // "Open" is read from the drawer's own text, not from the landmark under test.
+      const drawerStillOpen = await p.evaluate(() => /Custom User Profiles \(0\)/.test(document.body.textContent || '') && document.querySelectorAll('[data-drawer-game]').length === 0);
+      record('precondition: the drawer is still open and its list is empty', drawerStillOpen);
+      record('FIX: after deleting the LAST saved game from the drawer, focus is on the drawer\'s empty-state landmark, not the page beneath', afterLast.inDrawer && afterLast.tag !== 'BODY', JSON.stringify(afterLast));
     } finally { await ctx.close().catch(() => {}); }
   });
 

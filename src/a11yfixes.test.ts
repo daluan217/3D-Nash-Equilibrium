@@ -603,4 +603,21 @@ function extractDivBlock(src: string, startMarker: string): string {
     'fixture sanity: a live region that does NOT itself contain regen.note must fail the (fixed) check, even though regen.note appears elsewhere in the block');
 }
 
+// CodeRabbit on #141 (second thread): the drawer's `drawer-games` focus
+// landmark must exist in BOTH the populated list and the empty state — after
+// the last saved game is deleted the list unmounts, and App's focus
+// restoration would otherwise fall through to the page beneath the open
+// drawer. e2e section 56(d) exercises it; this guard keeps the empty-state
+// attribute from being tidied away.
+{
+  const menuDrawerSrc = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const landmarks = menuDrawerSrc.match(/data-focus-fallback="drawer-games" tabIndex=\{-1\}/g) ?? [];
+  ok(landmarks.length === 2,
+    `MenuDrawer must mount the drawer-games focus landmark in both the populated list and the empty-state card (found ${landmarks.length})`);
+  const emptyStateIdx = menuDrawerSrc.indexOf('No saved custom game presets.');
+  const emptyLandmarkIdx = menuDrawerSrc.lastIndexOf('data-focus-fallback="drawer-games"', emptyStateIdx);
+  ok(emptyStateIdx > 0 && emptyLandmarkIdx > 0 && emptyStateIdx - emptyLandmarkIdx < 900,
+    'the empty-state card itself (the one that says "No saved custom game presets.") must carry the drawer-games landmark');
+}
+
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);
