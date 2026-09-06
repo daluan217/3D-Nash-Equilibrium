@@ -3418,8 +3418,8 @@ try {
       await dp.route('**/api/games/adopt-local', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Could not save your changes. Please try again.' }) }), { times: 1 });
       await moveBtn.click();
       // Wait for the NEW alert (text differs from the refusal), then check it.
-      let genericText = await offer.locator('[role="alert"]').innerText().catch(() => '');
-      for (let i = 0; i < 30 && (genericText === refusedText || !genericText); i++) { await dp.waitForTimeout(100); genericText = await offer.locator('[role="alert"]').innerText().catch(() => ''); }
+      await dp.waitForFunction((prev) => { const el = document.querySelector('[role="dialog"][aria-label="Games saved on this device"] [role="alert"]'); const t = el?.textContent?.trim() ?? ''; return t.length > 0 && t !== prev; }, refusedText.trim(), { timeout: 10000 }).catch(() => {});
+      const genericText = await offer.locator('[role="alert"]').innerText().catch(() => '');
       record('FIX: even a generic server error is completed with "still on this device" by the client', genericText !== refusedText && /still on this device/i.test(genericText), genericText.slice(0, 120));
       adoptCalls.length = 0;
       expectingFailure = false;

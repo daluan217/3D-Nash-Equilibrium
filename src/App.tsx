@@ -612,8 +612,12 @@ export default function App() {
   // dialog can close, or open another game, while the refetch is in flight.
   const editTermsRef = useRef(editTerms);
   useEffect(() => { editTermsRef.current = editTerms; }, [editTerms]);
-  const editSessionRef = useRef<string | null>(null);
-  useEffect(() => { editSessionRef.current = isEditModalOpen ? editGameId : null; }, [isEditModalOpen, editGameId]);
+  // A monotonically increasing token: every open, close or switch of game
+  // starts a new edit session (CodeRabbit on #142 — comparing the game id alone
+  // let a continuation from a CLOSED-then-REOPENED session of the same game
+  // through).
+  const editSessionRef = useRef(0);
+  useEffect(() => { editSessionRef.current += 1; }, [isEditModalOpen, editGameId]);
   const [editError, setEditError] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -2279,10 +2283,13 @@ export default function App() {
         // Refetch here, in place, and merge in ONLY the side(s) the user has
         // not touched in THIS dialog session — never drop what they typed,
         // never silently resolve the collision by picking a winner.
+        const sessionAtSubmit = editSessionRef.current;
         const rows = await refetchUserGames();
-        // The dialog may have closed or moved to another game meanwhile: then
-        // this continuation belongs to a dead session and must change nothing.
-        if (editSessionRef.current !== editGameId) return;
+        // The dialog may have closed, reopened or moved to another game
+        // meanwhile: then this continuation belongs to a dead session and must
+        // change nothing (session token, not game id — a reopen of the same
+        // game is a new session too).
+        if (editSessionRef.current !== sessionAtSubmit) return;
         const fresh = rows?.find((g) => g.id === editGameId);
         if (fresh && orig) {
           const freshA: string[] = fresh.colorTermsA ?? [];
