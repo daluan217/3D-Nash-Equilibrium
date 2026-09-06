@@ -86,7 +86,18 @@ export function ColorCoded({ text, aTerms = [], bTerms = [] }: { text: string; a
     let out: React.ReactNode[] = [text];
     if (entries.length > 0) {
       const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const termRe = new RegExp(`(?<![\\w])(?:${entries.map((e) => esc(e.t)).join('|')})(?![\\w])`, 'gi');
+      // RED-REGEN-8/001: `\w` is ASCII-only (no `u` flag) — it does not include
+      // é/ñ/ö/å/etc, so the old lookaround treated the join between an ASCII
+      // letter and an adjacent accented letter as a word boundary, splitting
+      // one real word ("se|ñor", "tr|ès"). `\p{L}|\p{N}|_` is Unicode-aware,
+      // but CJK/kana script has no spaces between words at all — requiring a
+      // real boundary there would make a CJK chip nearly unmatchable inside
+      // real prose, so those scripts are carved back OUT of the "word" class
+      // for boundary purposes only (docs/COLOUR-TERMS.md §(c) CJK decision).
+      const CJK = '\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}';
+      const left = `(?:(?<![\\p{L}\\p{N}_])|(?<=[${CJK}]))`;
+      const right = `(?:(?![\\p{L}\\p{N}_])|(?=[${CJK}]))`;
+      const termRe = new RegExp(`${left}(?:${entries.map((e) => esc(e.t)).join('|')})${right}`, 'giu');
       out = applyRule(out, termRe, (hit) => entries.find((e) => e.t.toLowerCase() === hit.toLowerCase())?.cls);
     }
     for (const rule of TOKEN_RULES) out = applyRule(out, rule.re, () => rule.cls);

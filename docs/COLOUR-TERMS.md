@@ -151,6 +151,30 @@ chip. This is safe *because* every list `ColorCoded` is ever handed
 `ColorCoded` is ever handed a term list from anywhere else, this invariant
 must be re-established there first.
 
+**The boundary itself (RED-REGEN-8/001).** A chip matches only where BOTH
+neighbouring characters are non-letter/non-digit/non-underscore in the
+**Unicode** sense (`\p{L}`, `\p{N}`, `_`), not ASCII `\w` — the old ASCII-only
+lookaround treated the join between an ASCII letter and an *adjacent
+non-ASCII letter* as a word boundary, silently splitting one real word
+("se|ñor", "tr|ès", "gå|rd", "Wal|öl") and painting half of it. A chip that
+IS an accented/Cyrillic/Greek word ("très", "пример", "θεωρία") still matches
+as a whole; an ASCII prefix/suffix of a longer non-ASCII word no longer does.
+
+**CJK/kana decision, made explicitly (not assumed):** Han, Hiragana, and
+Katakana characters are carved back OUT of the "letter" class for boundary
+purposes only, even though they satisfy `\p{L}`. Those scripts write with no
+spaces between words at all, so requiring a real Unicode word boundary around
+them would make a CJK colour-term chip nearly unmatchable inside ordinary
+prose ("日本" could never highlight inside "日本語" since every neighbour is
+also a CJK letter) — a strictly worse outcome for CJK users than today's
+behaviour. **Kept as-is:** a chip may still match mid-compound in CJK/kana
+text ("日本" inside "日本語" highlights; "タワー" inside "東京タワーは"
+highlights). Non-CJK scripts get the opposite fix (a real boundary is now
+enforced) because they *do* use spaces, so the old ASCII-only gap was pure
+regression there with no such trade-off. Pinned by
+`src/colorterms.property.test.ts`'s "(boundary)" checks (PART 6) so a future
+"fix" cannot flip the CJK decision silently.
+
 ## (d) Deliberately out of scope
 
 - **Fuzzy matching of variants in the model's prose.** This contract is about

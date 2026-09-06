@@ -32,6 +32,9 @@ import {
   type ScenarioLabels,
 } from './utils/colorTerms';
 import { readFileSync } from 'node:fs';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ColorCoded } from './components/ColorCoded';
 
 let failures = 0;
 let cases = 0;
@@ -397,6 +400,77 @@ for (let i = 0; i < N_RANDOM; i++) {
   check('RED-REGEN-7/001: no status-handling branch after the success case may close the Edit dialog '
     + '(a 409 falls into the generic branch here; closing it would drop the collision message unseen)',
     !/setIsEditModalOpen\(false\)/.test(errRegion), errRegion.slice(0, 300));
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// PART 6 — RED-REGEN-8/001: ColorCoded's OWN boundary regex (never routed
+// through colorTermKey, §(c)) must be Unicode-letter-aware so an ASCII chip
+// adjacent to a non-ASCII letter does not match mid-word, while CJK/kana
+// script (no spaces between words at all) keeps matching mid-compound — a
+// DECIDED, documented exception (docs/COLOUR-TERMS.md §(c)), not an
+// oversight. Calls the real exported `ColorCoded` via `renderToStaticMarkup`
+// — real React rendering, not a reimplementation of the regex.
+// ═════════════════════════════════════════════════════════════════════════
+function rendered(text: string, aTerms: string[] = [], bTerms: string[] = []): string {
+  return renderToStaticMarkup(React.createElement(ColorCoded, { text, aTerms, bTerms }));
+}
+function isHighlighted(html: string): boolean { return /<span/.test(html); }
+
+// MUST-NOT-MATCH: an ASCII (or shorter accented) chip whose match would end
+// mid-word against an adjacent non-ASCII letter, across several scripts —
+// the exact class RED-REGEN-8/001 found (not just the one Latin example).
+const BOUNDARY_MUST_NOT_MATCH: Array<{ name: string; text: string; term: string }> = [
+  { name: 'Latin (Portuguese): "cora" before ç in "coração"', text: 'O coração decide.', term: 'cora' },
+  { name: 'Latin (French): "tr" before è in "très"', text: 'Il est très calme.', term: 'tr' },
+  { name: 'Latin (Swedish): "rd" after å in "gård"', text: 'En gård i skogen.', term: 'rd' },
+  { name: 'Latin (Spanish): "se" before ñ in "señor"', text: 'El señor decide.', term: 'se' },
+  { name: 'Latin (German): "Wal" before ö in "Walöl"', text: 'Der Anbieter verkauft Walöl heute.', term: 'Wal' },
+  { name: 'Cyrillic: "при" before мер in "пример"', text: 'Вот пример игры.', term: 'при' },
+  { name: 'Greek: "θε" before ωρ in "θεωρία"', text: 'Η θεωρία λέει.', term: 'θε' },
+  { name: 'digit boundary: "item" before "_2" (underscore+digit are word chars)', text: 'Choose item_2 now.', term: 'item' },
+  { name: 'underscore boundary: "foo" adjacent to "_bar"', text: 'Pick foo_bar please.', term: 'foo' },
+];
+for (const c of BOUNDARY_MUST_NOT_MATCH) {
+  const html = rendered(c.text, [c.term]);
+  check(`(boundary) ${c.name}: must NOT highlight (inside one word)`, !isHighlighted(html), html);
+}
+
+// MUST-MATCH: the whole accented/non-Latin word, and an ASCII chip with a
+// genuine ASCII-only word boundary on both sides (positive controls proving
+// the check above can fail, and that the fix is not simply "never match").
+const BOUNDARY_MUST_MATCH: Array<{ name: string; text: string; term: string }> = [
+  { name: 'whole accented word: "très"', text: 'Il est très calme.', term: 'très' },
+  { name: 'whole Cyrillic word: "пример"', text: 'Вот пример игры.', term: 'пример' },
+  { name: 'whole Greek word: "θεωρία"', text: 'Η θεωρία λέει.', term: 'θεωρία' },
+  { name: 'ASCII control: "se" as its own word', text: 'El comprador se decide rapido.', term: 'se' },
+  { name: 'digit-adjacent whole word still matches when the WORD itself, not a prefix, is the chip', text: 'Choose item_2 now.', term: 'item_2' },
+];
+for (const c of BOUNDARY_MUST_MATCH) {
+  const html = rendered(c.text, [c.term]);
+  check(`(boundary) ${c.name}: must highlight`, isHighlighted(html), html);
+}
+
+// NEGATIVE CONTROL: the ASCII-neighbour case must NOT match either (proves
+// the defect is specifically "adjacent to a NON-ASCII letter", not "any
+// adjacent letter" — RED-REGEN-8/001's own falsifier, reproduced here).
+{
+  const html = rendered('A tree grows.', ['tr']);
+  check('(boundary) negative control: ASCII "tr" inside "tree" stays plain (both agree)', !isHighlighted(html), html);
+}
+
+// CJK DECISION, documented in docs/COLOUR-TERMS.md §(c): Han/Hiragana/
+// Katakana carry no inter-word spaces, so a chip may still match mid-run —
+// kept, not changed, and pinned here so a future "fix" cannot flip it
+// silently.
+{
+  const html = rendered('彼は日本語を話す。', ['日本']);
+  check('(boundary) CJK: "日本" inside "日本語" still highlights (decided, documented behaviour)', isHighlighted(html), html);
+}
+{
+  // A CJK chip with real neighbours on both sides in the SAME script also
+  // works (not just adjacent to the one deliberately-exempted example).
+  const html = rendered('東京タワーは高い。', ['タワー']);
+  check('(boundary) CJK/Katakana: "タワー" inside "東京タワーは" still highlights', isHighlighted(html), html);
 }
 
 if (failures > 0) {
