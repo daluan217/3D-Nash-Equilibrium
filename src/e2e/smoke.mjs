@@ -4799,7 +4799,11 @@ try {
     for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
     const speed = p.locator('input[type="range"]').first(); await speed.focus(); for (let i = 0; i < 12; i++) await p.keyboard.press('ArrowLeft');
     await p.evaluate(() => window.scrollTo(0, 0));
-    const running = () => p.evaluate(() => !![...document.querySelectorAll('button')].find((b) => /^\s*pause\s*$/i.test(b.textContent || '')));
+    // "Running" is read from the simulation's own state progressing (the log
+    // entry count grows between two reads), not from the Pause button's label
+    // (CodeRabbit CLI on this branch).
+    const logCount = () => p.evaluate(() => (document.querySelector('[data-tour="log"], [aria-label="Simulation log"]')?.textContent || document.body.textContent || '').length);
+    const running = async () => { const a = await logCount(); await p.waitForTimeout(600); return (await logCount()) > a; };
     await p.getByRole('button', { name: /^run$/i }).click();
     let up = false; for (let i = 0; i < 30 && !up; i++) { up = await running(); if (!up) await p.waitForTimeout(100); }
     record('precondition: the simulation is running', up);
