@@ -6,13 +6,16 @@
  * work" and "I don't want the dmg version updated until the live site is verified
  * by the tests." The chain that satisfies it is one door:
  *
- *     push to main -> Test -> Deploy site -> Cloud Build -> Cloud Run
- *                                                       -> Live smoke -> Release desktop
+ *     PR -> Test (on the up-to-date branch; branch protection requires it)
+ *     push to main -> Deploy site (verifies the merged head's checks) -> Cloud Build -> Cloud Run
+ *                  -> Live smoke -> Release desktop
  *
- * Branch protection cannot express this. It gates each PR individually, which says
- * nothing about the MERGE COMMIT, and it does not gate a direct push at all. The
- * Cloud Build push trigger used to fire on the push itself, racing the merge
- * commit's own test run; it is disabled now and deploy-site.yml dispatches it.
+ * Branch protection's strict up-to-date rule makes the PR's tested tree the merge
+ * commit's tree, so the suite is not rerun on main (2026-09-06: it re-tested the
+ * same tree and held every deploy for a CI cycle). What protection cannot do is
+ * gate a direct push, so deploy-site.yml refuses any push that is not a merge
+ * commit whose PR head carries the six required checks green. The Cloud Build
+ * push trigger is disabled; deploy-site.yml dispatches it and waits for it.
  *
  * WHY THESE CHECKS AND NOT A REVIEW: every guard in this repo that was ever
  * "obviously correct by inspection" and unguarded has since been found unable to
@@ -47,6 +50,8 @@ const read = (f: string) => readFileSync(WF + f, 'utf8');
  */
 function unpinnedCheckout(yaml: string): boolean {
   if (!/^\s*workflow_run:/m.test(yaml)) return false;
+  // A checkout pinned to the sha the upstream run RECORDED (deployed-sha artifact → steps.sha) is pinned too.
+  if (/name: deployed-sha[\s\S]*ref: \$\{\{ steps\.sha\.outputs\.sha \}\}/.test(yaml)) return false;
   // Each checkout step, plus whatever `with:` block is indented under it.
   for (const m of yaml.matchAll(/^(\s*)-\s*uses:\s*actions\/checkout@[^\s]+\s*$([\s\S]*?)(?=^\1-\s|^\S|(?![\s\S]))/gm)) {
     const withBlock = m[2] ?? '';
@@ -56,7 +61,7 @@ function unpinnedCheckout(yaml: string): boolean {
   return false;
 }
 
-for (const f of ['release-desktop.yml', 'deploy-site.yml', 'live-smoke.yml']) {
+for (const f of ['release-desktop.yml', 'live-smoke.yml']) {
   if (unpinnedCheckout(read(f))) {
     fail(
       `${f} is triggered by workflow_run and checks out code without ref: `
@@ -93,22 +98,45 @@ if (!/github\.event\.workflow_run\.event\s*==\s*'workflow_run'/.test(desktop)) {
 }
 
 /* ---------------------------------------------------------------- check 3
- * Cloud Build fires only from a green Test on main.
+ * Cloud Build fires only from Deploy site on a push to main, and Deploy site
+ * refuses anything but a merge commit whose PR head carries every required
+ * check green (branch protection's strict up-to-date rule makes that head's
+ * tested tree the merge's tree). No Test rerun on main: test.yml must not
+ * carry a push trigger for main, or the deploy would again wait a CI cycle.
  */
 const deploy = read('deploy-site.yml');
-if (!/workflows:\s*(\[[^\]]*Test[^\]]*\]|(?:\n\s*-\s*['"]?Test['"]?\s*$))/m.test(deploy)) {
-  fail('deploy-site.yml must be triggered by the Test workflow');
+const test = read('test.yml');
+// ANY push trigger (filtered, block-sequence or bare) would rerun the suite on main.
+const testOn = test.slice(test.indexOf('\non:'), test.search(/\n(?:jobs|env|concurrency|permissions):/));
+if (/^\s{2}push:/m.test(testOn)) {
+  fail('test.yml must not carry a push trigger at all — the PR run already tested this tree; the deploy gate is deploy-site.yml');
 }
-for (const clause of [
-  /conclusion\s*==\s*'success'/,
-  /head_branch\s*==\s*'main'/,
-]) {
-  if (!clause.test(deploy)) {
-    fail(
-      `deploy-site.yml is missing the guard ${clause} — workflow_run fires on FAILURE and on `
-      + 'every branch, so without both clauses a red run or a feature branch deploys production.',
-    );
-  }
+if (!/^on:\s*\n(?:.*\n)*?\s*push:\s*\n\s*branches:\s*\[\s*['"]?main['"]?\s*\]/m.test(deploy)) {
+  fail('deploy-site.yml must be triggered by push to main (branches: [main])');
+}
+for (const [clause, why] of [
+  [/commits\/\$\{GITHUB_SHA\}\/pulls/, 'the gate must ask GitHub which merged PR produced this commit (a hand-made two-parent commit has no record)'],
+  [/merged_at != null and \.base\.ref == \\"main\\" and \.merge_commit_sha == \\"\$\{GITHUB_SHA\}\\"/, 'the PR must be merged, into main, and its merge commit must be exactly this sha'],
+  [/rev-parse --verify -q HEAD\^2/, 'the second parent must be the PR head the checks were reported on'],
+  [/check-runs/, 'the gate reads the PR head\'s check runs from the API'],
+  [/REQUIRED: unit build e2e integration container mobile/, 'the six required contexts of branch protection, by name'],
+  [/gcloud builds describe .* --format='value\(status\)'/, 'Deploy site must wait for the Cloud Build to finish so Live smoke fires against a deployed site'],
+] as const) {
+  if (!clause.test(deploy)) fail(`deploy-site.yml is missing ${clause}: ${why}`);
+}
+/* Live smoke fires on Deploy site (the deploy is finished), not on Test (which no longer runs on main). */
+const smoke = read('live-smoke.yml');
+if (!/workflows:\s*\[\s*['"]?Deploy site['"]?\s*\]/.test(smoke)) {
+  fail('live-smoke.yml must trigger on "Deploy site" — there is no Test run on main to chain from');
+}
+if (/name: dist\s*\n/.test(smoke) && /download-artifact/.test(smoke) && /name: dist\b/.test(smoke.slice(smoke.indexOf('download-artifact')))) {
+  fail('live-smoke.yml must build the bundle for the pinned ref itself; there is no Test artifact on main any more');
+}
+if (!/name: deployed-sha/.test(smoke) || !/ref: \$\{\{ steps\.sha\.outputs\.sha \}\}/.test(smoke)) {
+  fail('live-smoke.yml must check out the sha Deploy site recorded (deployed-sha artifact), not the run head — a dispatch with inputs.sha deploys a different commit');
+}
+if (!/name: deployed-sha/.test(deploy) || !/printf '%s\\n' "\$sha" > deployed-sha\.txt/.test(deploy)) {
+  fail('deploy-site.yml must record the effective deployed sha as the deployed-sha artifact for Live smoke');
 }
 
 /* ---------------------------------------------------------------- check 4
@@ -136,7 +164,7 @@ function workflowRunFiltersToMain(yaml: string): boolean {
   }
   return block.some((l) => /^\s*branches:\s*\[\s*['"]?main['"]?\s*\]/.test(l));
 }
-for (const f of ['deploy-site.yml', 'live-smoke.yml', 'release-desktop.yml']) {
+for (const f of ['live-smoke.yml', 'release-desktop.yml']) {
   if (!workflowRunFiltersToMain(read(f))) {
     fail(`${f}: its workflow_run trigger must carry branches: [main] — otherwise every PR run of the `
       + 'upstream workflow spawns a skipped run of this one.');
@@ -180,6 +208,6 @@ if (unpinnedCheckout('on:\n  push:\n    branches: [main]\njobs:\n  a:\n    steps
 }
 
 console.log(
-  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on green Test@main, workflow_run triggers filtered to main, `
+  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on Deploy site's merged-head check gate (no Test rerun on main), workflow_run triggers filtered to main, `
   + `${MUST_FLAG.length} known-positive fixtures flagged, 2 controls clean`,
 );

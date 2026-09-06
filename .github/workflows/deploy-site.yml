@@ -9,27 +9,26 @@ name: Deploy site
 # together, and that combination reached users before any job had an opinion
 # about it. A direct push to main deployed with no checks at all.
 #
-# Now the build is started by THIS workflow, and only after Test succeeds on
-# main. The Cloud Build trigger itself is disabled, so this is the single door
-# to production. The chain, end to end:
+# Now the build is started by THIS workflow on the push to main. Branch
+# protection requires each PR to be up to date with main before merging, so
+# the PR's own green Test run already covered the exact tree the merge
+# produces — instead of running the whole suite a second time (a full CI cycle
+# between merge and deploy, for the same tree), this workflow verifies that
+# the merged PR head carries every required check green and refuses to deploy
+# anything else (a direct push, a squash of an untested branch). The Cloud
+# Build trigger itself is disabled, so this is the single door to production.
+# The chain, end to end:
 #
-#   push to main -> Test (unit/build/integration/e2e/container/mobile)
-#                -> Deploy site (this) -> Cloud Build -> Cloud Run
-#                -> Live smoke (verifies the deploy actually serves this commit)
+#   PR -> Test (unit/build/integration/e2e/container/mobile, on the up-to-date branch)
+#   push to main -> Deploy site (this: verify the merged head's checks, run Cloud Build to completion)
+#                -> Live smoke (verifies the live site actually serves this commit)
 #                -> Release desktop (the DMG ships only after that)
 #
 # If this workflow is ever broken, deploys STOP rather than proceeding
 # unchecked, which is the correct direction to fail. To ship manually in that
 # case: gcloud builds triggers run 2ndTrigger --region us-west2 --sha <sha>
 on:
-  workflow_run:
-    workflows: ['Test']
-    types: [completed]
-    # Only Test runs whose head branch is main. Without this filter every
-    # pull-request run of Test (and every failed one) fired this workflow,
-    # which then evaluated its `if:` and reported "skipped" — three phantom
-    # rows per PR push in the Actions list. The job-level `if:` below remains
-    # the actual gate (conclusion == success); this only stops the noise.
+  push:
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -47,14 +46,51 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Only a GREEN Test run, only on main. A failed or cancelled run must not
-    # reach production, and neither must a green run on a branch.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+    timeout-minutes: 45
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # THE GATE. The pushed commit must be a merge commit whose second parent
+      # (the PR head) carries every required check green. The PR was required
+      # to be up to date with main, so that head's tested merge ref IS this
+      # tree. Anything else — a direct push, a rebase-merge, a head with a
+      # missing or red required check — stops here rather than deploying.
+      - name: Require the merged PR head's required checks to be green
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED: unit build e2e integration container mobile
+        run: |
+          set -euo pipefail
+          # GitHub's own record of which merged PR produced this commit — a
+          # hand-made two-parent commit that reuses an old green sha as its
+          # second parent has no such record and stops here (CodeRabbit, #156).
+          pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq "[.[] | select(.merged_at != null and .base.ref == \"main\" and .merge_commit_sha == \"${GITHUB_SHA}\")] | first")
+          if [ -z "$pr_json" ] || [ "$pr_json" = "null" ]; then
+            echo "::error::${GITHUB_SHA} is not the merge commit of a merged pull request into main — only PR merges deploy (use workflow_dispatch for a known-good sha)"
+            exit 1
+          fi
+          head=$(printf '%s' "$pr_json" | jq -r '.head.sha')
+          echo "merged PR #$(printf '%s' "$pr_json" | jq -r '.number'), head: $head"
+          parent2=$(git rev-parse --verify -q HEAD^2 || true)
+          if [ "$parent2" != "$head" ]; then
+            echo "::error::second parent $parent2 is not the PR head $head"; exit 1
+          fi
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[] | "\(.name) \(.conclusion // .status)"')
+          echo "$runs"
+          missing=0
+          for ctx in $REQUIRED; do
+            if ! printf '%s\n' "$runs" | grep -qx "$ctx success"; then
+              echo "::error::required check '$ctx' is not green on $head"; missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -70,7 +106,7 @@ jobs:
           # "Listed 0 items" without this region and the pipeline looks absent.
           REGION: us-west2
           TRIGGER: 2ndTrigger
-          SHA: ${{ github.event.workflow_run.head_sha || inputs.sha }}
+          SHA: ${{ github.event_name == 'push' && github.sha || inputs.sha }}
         run: |
           set -euo pipefail
           sha="${SHA:-}"
@@ -85,7 +121,42 @@ jobs:
           # Build the SAME commit the tests passed on, not whatever main points
           # at now — a merge landing during the test run must not ride along
           # untested.
-          gcloud builds triggers run "$TRIGGER" \
-            --region "$REGION" --project d-nash-equilibrium --sha "$sha" --format='value(metadata.build.id)'
+          build_id=$(gcloud builds triggers run "$TRIGGER" \
+            --region "$REGION" --project d-nash-equilibrium --sha "$sha" --format='value(metadata.build.id)')
+          echo "build id: $build_id"
+          echo "BUILD_ID=$build_id" >> "$GITHUB_ENV"
+          echo "DEPLOYED_SHA=$sha" >> "$GITHUB_ENV"
+          printf '%s\n' "$sha" > deployed-sha.txt
         # gh is preinstalled on ubuntu-latest; token only needed for the fallback
         continue-on-error: false
+
+      # Live smoke (workflow_run on this workflow) verifies THIS sha, which on a
+      # workflow_dispatch with inputs.sha is not the run's head_sha (CodeRabbit,
+      # #156) — hand it over as an artifact rather than letting the smoke guess.
+      - name: Record the deployed sha for Live smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployed-sha
+          path: deployed-sha.txt
+          retention-days: 7
+
+      # Wait for the deploy to FINISH, so this workflow's conclusion means
+      # "the new revision is serving" and Live smoke (which fires on it) starts
+      # against a deployed site instead of racing the build. A failed build
+      # fails this job visibly rather than being discovered by the smoke's
+      # asset-hash timeout.
+      - name: Wait for the Cloud Build deploy to complete
+        env:
+          REGION: us-west2
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            status=$(gcloud builds describe "$BUILD_ID" --region "$REGION" --project d-nash-equilibrium --format='value(status)')
+            echo "[$i] $status"
+            case "$status" in
+              SUCCESS) exit 0;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR|EXPIRED) echo "::error::Cloud Build $BUILD_ID ended $status"; exit 1;;
+            esac
+            sleep 20
+          done
+          echo "::error::Cloud Build $BUILD_ID still running after 30 minutes"; exit 1

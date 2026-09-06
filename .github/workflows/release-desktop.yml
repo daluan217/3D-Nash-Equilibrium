@@ -5,9 +5,9 @@ name: Build & Publish macOS DMG
 # runs on a macOS runner (not Cloud Build, which is Linux).
 #
 # SHIP GATE: this publishes to live users, so it no longer fires on the raw
-# push to main — it fires when the Test workflow (the full unit → build → e2e
-# pyramid) completes successfully on main. A failing pyramid can therefore
-# never reach the DMG download. workflow_run only triggers from the default
+# push to main — it fires when Live smoke completes successfully on main,
+# which itself fires only after Deploy site verified the merged PR head's
+# checks and ran Cloud Build to completion. workflow_run only triggers from the default
 # branch, which is exactly the ship path; workflow_dispatch stays for manual
 # rebuilds of a known-good main.
 # The DMG ships only AFTER the live site has been verified, not merely after
