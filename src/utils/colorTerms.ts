@@ -1,3 +1,4 @@
+import { clampGraphemeSafe } from './textSafety';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -204,6 +205,23 @@ export const USER_TERMS_MAX = 12;
  * Shared by the client (before saving) and the server (before storing) so the
  * two cannot disagree about what a valid term is.
  */
+
+/** True when `s` has a grapheme boundary exactly at `at` — i.e. slicing there keeps every cluster whole. */
+function graphemeBrokenAt(s: string, at: number): boolean {
+  const SegmenterCtor: typeof Intl.Segmenter | undefined = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  // No Segmenter: a combining or ZWJ sequence cannot be verified whole, so every
+  // truncation is treated as a broken cluster (the term is rejected, never
+  // stored in part) — CodeRabbit on #152.
+  if (typeof SegmenterCtor !== 'function') return at < s.length;
+  let pos = 0;
+  for (const { segment } of new SegmenterCtor(undefined, { granularity: 'grapheme' }).segment(s)) {
+    if (pos === at) return false;
+    if (pos > at) return true;
+    pos += segment.length;
+  }
+  return pos !== at;
+}
+
 export function cleanUserColorTerms(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>();
@@ -212,8 +230,15 @@ export function cleanUserColorTerms(input: unknown): string[] {
     if (typeof raw !== 'string') continue;
     // Collapse internal whitespace too: a selection dragged across a line
     // break arrives with a newline that would never match the rendered text.
-    const t = raw.replace(/\s+/g, ' ').trim().slice(0, USER_TERM_MAX_LEN);
-    if (t.length < 2) continue;
+    // RED-REGEN-10/003: clamp by grapheme, never by UTF-16 code unit — a
+    // `.slice(0, 60)` cut a ZWJ emoji sequence in half and stored the lone
+    // surrogate (same class as RED-APP-7/004, third call site).
+    const collapsed = raw.replace(/\s+/g, ' ').trim();
+    const t = clampGraphemeSafe(collapsed, USER_TERM_MAX_LEN);
+    // A single cluster longer than the cap cannot be clamped whole (the
+    // fallback slices by code point) — reject it rather than store a part
+    // of a grapheme (CodeRabbit CLI on this branch).
+    if (t.length < 2 || (t.length < collapsed.length && graphemeBrokenAt(collapsed, t.length))) continue;
     const key = colorTermKey(t);
     if (key.length < 2) continue; // punctuation-only after folding: nothing to highlight
     if (seen.has(key)) continue;

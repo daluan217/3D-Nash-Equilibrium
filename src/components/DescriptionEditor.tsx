@@ -104,7 +104,13 @@ export function DescriptionEditor({
       setHint(`That is ${USER_TERMS_MAX} highlights already — remove one to add another.`);
       return;
     }
-    setHint('');
+    // RED-REGEN-10/001: choosing the other player for a phrase already
+    // highlighted MOVES it (explicit assignment wins, docs/COLOUR-TERMS.md §b)
+    // — say so instead of moving it silently.
+    const movedFrom = player === 'A'
+      ? termsB.some((t) => colorTermKey(t) === colorTermKey(term)) ? 'B' : null
+      : termsA.some((t) => colorTermKey(t) === colorTermKey(term)) ? 'A' : null;
+    setHint(movedFrom ? `"${term}" was highlighted for Player ${movedFrom}; it now belongs to Player ${player}.` : '');
     onTermsChange(cleanA, cleanB);
   };
 
@@ -209,12 +215,14 @@ export function DescriptionEditor({
           </button>
         ))}
         <span className="text-[11px] text-muted dark:text-muted-dark">
-          ({termsA.length + termsB.length}/{USER_TERMS_MAX})
+          {/* RED-REGEN-10/002: the cap is PER SIDE (USER_TERMS_MAX each), so the
+              pooled numerator is measured against both sides' room. */}
+          ({termsA.length + termsB.length}/{USER_TERMS_MAX * 2})
         </span>
       </div>
 
       {hint && (
-        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">{hint}</p>
+        <p role="status" aria-live="polite" className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">{hint}</p>
       )}
 
       {(termsA.length > 0 || termsB.length > 0) && (
