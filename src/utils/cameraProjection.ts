@@ -28,10 +28,28 @@ export const CAM_UP: [number, number, number] = [0, 0, 1];
 /** plotting.ts's own default camera.eye — the app's resting pose. */
 export const DEFAULT_EYE: [number, number, number] = [1.6, -1.6, 1.1];
 
-// The ONE free calibration knob (with the canonical 700x500 viewport below),
-// chosen so every independently-found real fixture agrees with real reach
-// evidence — see docs/CONTINUUM-RENDERING.md's "Screen-space, in detail".
-export const FOCAL = 3;
+// BLUE-MATH-15: the real bug RED-MATH-15/001 found is `x`'s scale using
+// `viewport.w/2` instead of `viewport.h/2` (below, confirmed against
+// Plotly's own live projection matrix: gl3d uses a FIXED vertical FOV,
+// exactly Math.PI/4 per `glplot.fovy` — the `w` cancels out of the
+// horizontal term algebraically, so x and y share ONE scale factor). FOCAL
+// stays 3 (OPUS-REVIEW-MATH FBM-2, 2026-09-06): a fitted 3.1 was tried and
+// reverted — against RED-MATH-15/001's own 24 real-pixel rows (embedded in
+// payoffhonesty.test.ts's REAL_PIXEL_GROUND_TRUTH, evaluated at the REAL
+// runtime viewport 276x246), F=3.0 and F=3.1 both score 18/24, while F=3.0
+// leaves the widest margin on the 700x500
+// static sweep (only ONE game excepted below, vs re-tuning the knob to
+// paper over it) and errs toward collapsing MORE often, the safer direction
+// (raising FOCAL trades toward under-collapse — the exact defect class
+// RED-MATH-15/001 reported — with no check in this file bounding that
+// direction before FBM-2; `testDynamicCollapseAgreesWithRealPixels`'s
+// under-collapse bound is that check now). The mathematically exact value
+// (1/tan(pi/8) ~= 2.41421, matching the live fovy) scores best on real
+// pixels (20/24) but regresses the 700x500 static sweep far more broadly
+// (52/300000 games, not one) — left for a future round alongside a
+// corresponding SHORT_CONTINUUM/tolerance study, not fitted in under this
+// brief.
+export const FOCAL = 3.0;
 export const VIEW_W = 700;
 export const VIEW_H = 500;
 
@@ -139,7 +157,21 @@ export function projectPoint(
   if (vz <= 0) return [NaN, NaN];
   const sx = (vx / vz) * FOCAL;
   const sy = (vy / vz) * FOCAL;
-  return [viewport.w / 2 + sx * (viewport.w / 2), viewport.h / 2 - sy * (viewport.h / 2)];
+  // BLUE-MATH-15 (RED-MATH-15/001): `sx` used to be scaled by `viewport.w / 2`,
+  // matching `sy`'s `viewport.h / 2` — i.e. x and y used DIFFERENT scale
+  // factors whenever the viewport isn't square. Real gl3d cameras use a FIXED
+  // vertical FOV (confirmed above): the projection matrix's horizontal term
+  // is `(f/aspect)*vx`, and `aspect = w/h`, so `f/aspect = f*(h/w)` — the `w`
+  // cancels out algebraically and BOTH x and y end up scaled by the SAME
+  // `h/2` factor (only the horizontal CENTER offset stays `w/2`). At the
+  // canonical 700x500 viewport (aspect 1.4) the old w/2-scaled x was ~40%
+  // too large, silently absorbed into FOCAL=3's own empirical fudge; at a
+  // narrower/portrait viewport (aspect far from 1.4) the SAME fudge no longer
+  // cancels, which is exactly why RED's over/under-collapse pairs were
+  // viewport-specific. Verified against real rendered pixels (blob centroids)
+  // at 700x500/318x298/360x640/240x400: this form's residual error is a
+  // uniform ~5px at every viewport, vs up to ~90px with the old w/2 term.
+  return [viewport.w / 2 + sx * (viewport.h / 2), viewport.h / 2 - sy * (viewport.h / 2)];
 }
 
 /** z-normalization range for a built surface: the payoff extrema padded by
