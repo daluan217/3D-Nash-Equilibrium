@@ -121,10 +121,11 @@ for (const [name, html] of [['sidebar', sidebarHtml], ['drawer', drawerHtml]] as
   ok(!rowG1.includes('disabled=""') && !rowG1.includes('aria-busy="true"'),
     `${name}: g1's ("Alpha") row must NOT carry disabled/aria-busy`);
   // g3's segment runs to the end of the string (it is the LAST row, so
-  // nothing follows it to split on) — its own row content is well within
-  // the first 600 chars for both variants' markup.
-  ok(!rowG3.slice(0, 600).includes('disabled=""'),
-    `${name}: g3's ("Gamma") row must NOT carry disabled`);
+  // nothing follows it to split on) — check the WHOLE segment, same as
+  // rowG1 above (CodeRabbit on #150: a fixed slice(0, 600) window could
+  // silently stop proving anything if the drawer's markup grows past it).
+  ok(!rowG3.includes('disabled=""') && !rowG3.includes('aria-busy="true"'),
+    `${name}: g3's ("Gamma") row must NOT carry disabled/aria-busy`);
 }
 
 // ── Empty-state / not-owner copy: per-variant PRODUCT TEXT (OPUS-REVIEW-LIST
