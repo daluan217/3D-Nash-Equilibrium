@@ -253,8 +253,19 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   record('[touch camera] precondition: the run is going before the pause tap (the sphere moved and the Pause control is up)',
     (await sphereMoved(posAtStart, 8000)) && (await isRunning()));
   const plot = page.locator(`#${PLOT}`);
-  const box = await plot.boundingBox();
-  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2); // a press on the plot pauses the run
+  // RED-APP-14/006: the plot's centre can sit UNDER the sticky header on a
+  // phone, and the old rectangle-only press test accepted that tap for the
+  // wrong reason. Tap a point that really hits the plot (hit-tested), below
+  // the header.
+  const tapAt = await page.evaluate(() => {
+    const c = document.querySelector('[data-tour="plot"]'); const r = c.getBoundingClientRect();
+    const hb = document.querySelector('header')?.getBoundingClientRect().bottom ?? 0;
+    const x = r.left + r.width / 2;
+    for (let y = Math.max(r.top, hb) + 16; y < r.bottom - 8; y += 12) { const el = document.elementFromPoint(x, y); if (el && c.contains(el)) return { x, y }; }
+    return null;
+  });
+  record('[touch camera] precondition: a hit-tested point on the plot (not under the header) exists', !!tapAt, JSON.stringify(tapAt));
+  await page.touchscreen.tap(tapAt.x, tapAt.y); // a press ON the plot pauses the run
   record('[touch camera] precondition: the tap on the plot paused the run', await settle(async () => !(await isRunning()), 5000));
   const spinBtn = page.getByRole('button', { name: /resume spinning/i });
   await settle(async () => spinBtn.isVisible().catch(() => false), 5000);
