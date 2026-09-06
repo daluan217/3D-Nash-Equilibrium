@@ -29,7 +29,12 @@ For every 2×2 game, in every rendered plot:
    it. See "Screen-space, in detail" below for L's derivation and this clause's own
    validated scope.
 4. **A component shorter than L draws one glyph; at or above L it draws corners +
-   midpoint.** `SHORT_CONTINUUM` in `plotting.ts`, currently `0.2`.
+   midpoint.** `SHORT_CONTINUUM` in `plotting.ts`, currently `0.2`, compared with a
+   `1e-9` tolerance: the contract is on the EXACT length, so a component whose length is
+   1/5 (e.g. `A=[[1,0],[0,4]]`, `B=[[0,0],[1,0]]`, computed as `0.19999999999999996`) is AT
+   the threshold and keeps its corners, and relabelling a game (rows, columns, players)
+   can never move it across the branch. Guarded by
+   `testShortContinuumCutoffIsExactAndRelabelInvariant` on both size sets.
 5. **Shared corners draw once.** Two components meeting at an exact point (an L-shaped
    or chained equilibrium set) push that corner's marker a single time, not once per
    component (`drawnCorners` deduped across the whole `continuumRects.forEach`, not
