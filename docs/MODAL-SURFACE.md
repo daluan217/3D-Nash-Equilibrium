@@ -12,9 +12,11 @@ drawer with one implementation.
   Escape-to-close, a Tab trap (`useModalTabTrap`), open-time focus (first
   focusable, or whatever the dialog's own `autoFocus` already claimed),
   and focus-return to the opener on close (`focusAfterDialog`).
-- A `[data-modal-surface]` marker and one shared z-index token
-  (`OVERLAY_CLASS`), so every converted surface paints above the guided
-  tour (see the RED-APP-5/003 history in `src/a11yfixes.test.ts`).
+- A `[data-modal-surface]` marker and a shared z-index token per layout:
+  the four centered dialogs use `OVERLAY_CLASS` (z-[65], above the guided
+  tour — see the RED-APP-5/003 history in `src/a11yfixes.test.ts`); the
+  drawer keeps its own, lower `DRAWER_OVERLAY_CLASS` (z-50, its
+  pre-existing layer — it was never part of that finding).
 - **`ModalRegistry`**: a module-level stack of every currently-open
   surface. Opening a second, non-stacking surface while one is already
   open is refused (`allowsStack` is the one declared exception, reserved
