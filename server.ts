@@ -191,7 +191,20 @@ const SCENARIO_REROLL_LIMIT = (() => {
   return Math.min(raw, MAX);
 })();
 
-const SCENARIO_REQUEST_BUDGET_MS = DEFAULT_REPORT_FETCH_TIMEOUT_MS - 2_000;
+/**
+ * BLUE-CANCEL-12: test-only override, same guard shape as SCENARIO_DEADLINE_MS
+ * below (NaN/0/negative and Node's 32-bit signed timer overflow all silently
+ * become an immediate 0/1ms setTimeout fire, which would fall back on every
+ * draw). Lets an integration test run this whole ladder against a budget of a
+ * few seconds instead of 20 real ones — CI-fast, and far less exposed to
+ * scheduling jitter than a 20s wait shared with other concurrent CI jobs —
+ * without touching the production default. Nothing in production sets it.
+ */
+const SCENARIO_REQUEST_BUDGET_MS = (() => {
+  const raw = Number(process.env.NASH_SCENARIO_REQUEST_BUDGET_MS);
+  const DEFAULT = DEFAULT_REPORT_FETCH_TIMEOUT_MS - 2_000;
+  return Number.isInteger(raw) && raw >= 1 && raw <= 2147483647 ? raw : DEFAULT;
+})();
 
 /**
  * RED-CLOUD-6/002: the reroll ladder above is correctly implemented (every
