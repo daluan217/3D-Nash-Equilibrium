@@ -128,6 +128,18 @@ a caller that hand-rolls `role="dialog"` anywhere in the app.
   that gap before the remounting surface re-registers — dev-only (production
   does not double-invoke), but worth knowing before chasing a "wrong dialog
   opened" report that only reproduces in `npm run dev`.
+- OPUS-REVIEW-MODAL2 NOTE 6: the Tab-trap's boundary check (BLOCK 1) only
+  treats `activeElement === container` as "at the edge" — a `tabIndex={-1}`
+  landmark *inside* the container (today: `SavedGamesList`'s
+  `[data-focus-fallback]` wrappers) still reaches `onKey` with no branch
+  matching, so the browser's own navigation runs. Safe today only because
+  every such wrapper has a real control before it in its dialog (the
+  drawer's Close button and its three tabs, `MenuDrawer.tsx`). A future
+  dialog whose first content is such a landmark would reopen BLOCK 1's
+  shape. The general fix — treat "`activeElement` is not in the focusables
+  list" as the edge, not just "is the container" — would close the class,
+  but forward Tab from a mid-list landmark should arguably keep going
+  forward, so it needs its own design thought; not done here.
 
 ## Evidence
 

@@ -380,6 +380,19 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
 {
   ok(/ariaLabel="Simulation log"[\s\S]{0,400}?fallbackSelector='\[aria-label="Expand simulation log"\]'/.test(app),
     'the expand-log <ModalSurface> must declare a fallbackSelector naming its one real opener (the Expand log button) — mountLogRegion\'s own focus() clobbers opener-tracking\'s lastInteractedControl, so focusAfterDialog\'s opener param resolves to null');
+  // OPUS-REVIEW-MODAL2 NOTE 3: the fallbackSelector literal and the button's
+  // actual aria-label are two independently-typed strings that must agree —
+  // nothing else checks that pairing. `app.includes(...)` alone would be a
+  // SELF-REFERENTIAL check: the fallbackSelector string itself is
+  // `'[aria-label="Expand simulation log"]'`, which already contains the
+  // exact substring being searched for, so the check would pass even with
+  // the button's own attribute renamed (verified by hand — it did). The
+  // negative lookbehind excludes that `[...]` occurrence, requiring a SECOND,
+  // real JSX-attribute occurrence. Mutation: rename only the button's own
+  // aria-label (App.tsx:4126), leaving the fallbackSelector string
+  // untouched → this fails; the naive `includes` form does not.
+  ok(/(?:^|[^[])aria-label="Expand simulation log"/.test(app),
+    'App.tsx must still have a button with aria-label="Expand simulation log" as a REAL JSX attribute (not just inside the fallbackSelector string) — the expand-log fallbackSelector names this exact string, and nothing else checks that the two agree (OPUS-REVIEW-MODAL2 NOTE 3)');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

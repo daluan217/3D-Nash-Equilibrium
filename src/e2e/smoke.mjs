@@ -5008,14 +5008,34 @@ try {
           // control still ENABLED focuses the panel itself, and
           // `Node.contains()` returning true for the node itself used to let
           // that fall through the trap's boundary check with no
-          // preventDefault(), so backward (and, less severely, forward) Tab
-          // navigation walked out of the `aria-modal` dialog on Chromium/
-          // Firefox (RED-APP-5/002's exact shape). Mutation: drop the
+          // preventDefault(), so backward Tab navigation walked out of the
+          // `aria-modal` dialog on Chromium/Firefox (RED-APP-5/002's exact
+          // shape). Mutation (OPUS-REVIEW-MODAL2 FBM-1): drop the
           // `|| document.activeElement === container` disjunct in
-          // ModalSurface.tsx's onKey → both checks below fail.
+          // ModalSurface.tsx's onKey → the Shift+Tab check below fails, on
+          // every engine, ONLY if it reads a SETTLED state and checks
+          // identity against the LAST focusable specifically — a plain
+          // "still inside the dialog" read is not enough on WebKit: pre-fix,
+          // WebKit escapes to <body> (not a background control), which is
+          // exactly the state `onFocusOut`'s rAF recapture is built to catch,
+          // and that recapture always lands on the FIRST focusable, not the
+          // last — a same-tick "inside?" read would show it escaping, but a
+          // read 100+ ms later would show it back inside for the WRONG
+          // reason and pass the mutation. Checking for `last` specifically
+          // fails on every engine under the mutation (unfixed Chromium/
+          // Firefox settle outside — not `last`; unfixed WebKit settles back
+          // inside but on `first`, via the recapture — not `last`) and
+          // passes on every engine once fixed.
           await editBtn.click({ force: true });
           await dlg.waitFor({ state: 'visible', timeout: 8000 });
           const panelBox = await dlg.boundingBox();
+          const dialogFocusables = () => wp.evaluate(() => {
+            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+            if (!d) return { last: false, inDialog: false, tag: document.activeElement?.tagName };
+            const focusables = Array.from(d.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'))
+              .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+            return { last: focusables.length > 0 && document.activeElement === focusables[focusables.length - 1], inDialog: d.contains(document.activeElement), tag: document.activeElement?.tagName };
+          });
           await wp.mouse.click(panelBox.x + panelBox.width / 2, panelBox.y + 10);
           const afterDeadSpace = await wp.evaluate(() => {
             const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
@@ -5024,22 +5044,28 @@ try {
           record(`[${label}] precondition: a dead-space click (the dialog's own padding) focuses the panel itself, controls still enabled`,
             afterDeadSpace.onPanel, JSON.stringify(afterDeadSpace));
           await wp.keyboard.press('Shift+Tab');
-          const afterShiftTab = await wp.evaluate(() => {
-            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
-            return { inDialog: !!d && d.contains(document.activeElement), tag: document.activeElement?.tagName };
-          });
-          record(`[${label}] FIX: Shift+Tab after a dead-space click stays inside the dialog (OPUS-REVIEW-MODAL BLOCK 1)`,
-            afterShiftTab.inDialog, JSON.stringify(afterShiftTab));
-          // Forward Tab too — the same fall-through affects it, just less
-          // severely (it lands on whatever follows the overlay in document
-          // order rather than a control the user can act on unnoticed).
+          // Poll to a SETTLED state (bounded ~300ms): onFocusOut's rAF
+          // recapture (a different actor, not this fix) needs a frame or two
+          // to run on some engines, and reading too early would just measure
+          // "hasn't happened yet" rather than the real end state.
+          let settledShiftTab = null;
+          for (let i = 0; i < 5; i++) {
+            await wp.waitForTimeout(60);
+            settledShiftTab = await dialogFocusables();
+          }
+          record(`[${label}] FIX: Shift+Tab after a dead-space click settles on the LAST focusable, not merely "somewhere inside" (OPUS-REVIEW-MODAL BLOCK 1) — distinguishes this fix from onFocusOut's own rAF recapture, which always targets the FIRST`,
+            settledShiftTab?.last === true, JSON.stringify(settledShiftTab));
+          // Forward Tab too. NOT mutation-discriminating (OPUS-REVIEW-MODAL2
+          // FBM-1): forward sequential navigation from a tabindex="-1"
+          // container already enters that container's own descendants,
+          // landing on `first`, identically with or without this fix — the
+          // defect this fix closes was backward navigation only. Kept as a
+          // plain regression guard (it must stay true), not as a mutation
+          // check.
           await wp.mouse.click(panelBox.x + panelBox.width / 2, panelBox.y + 10);
           await wp.keyboard.press('Tab');
-          const afterTab = await wp.evaluate(() => {
-            const d = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
-            return { inDialog: !!d && d.contains(document.activeElement), tag: document.activeElement?.tagName };
-          });
-          record(`[${label}] FIX: forward Tab after a dead-space click stays inside the dialog too`,
+          const afterTab = await dialogFocusables();
+          record(`[${label}] regression guard (not mutation-discriminating — see comment above): forward Tab after a dead-space click still lands on the FIRST focusable`,
             afterTab.inDialog, JSON.stringify(afterTab));
           await wp.keyboard.press('Escape');
           await dlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
@@ -5084,12 +5110,23 @@ try {
       // contains it, so `opener` resolved to null and Escape used to return
       // focus to [data-focus-home], not the Expand log button. Mutation: drop
       // the expand-log ModalSurface's fallbackSelector prop → this fails.
+      // OPUS-REVIEW-MODAL2 FBM-2: `focusAfterDialog` runs in a PASSIVE effect
+      // cleanup, which can race installOpenerTracking's own focusout rAF
+      // fallback (a different actor) — a single unpolled read is a flake
+      // risk even though the scheduler ordering happens to favor it today.
+      // Poll like the sibling assertion a few sections up (smoke.mjs, the
+      // Edit-dialog Escape check) instead of reading once.
       await lp.keyboard.press('Escape');
       await lp.waitForSelector('[role="dialog"][aria-label="Simulation log"]', { state: 'hidden', timeout: 8000 });
-      const afterEscape = await lp.evaluate(() => {
-        const a = document.activeElement;
-        return { tag: a?.tagName, ariaLabel: a?.getAttribute('aria-label') };
-      });
+      let afterEscape = null;
+      for (let i = 0; i < 20; i++) {
+        afterEscape = await lp.evaluate(() => {
+          const a = document.activeElement;
+          return { tag: a?.tagName, ariaLabel: a?.getAttribute('aria-label') };
+        });
+        if (afterEscape.ariaLabel === 'Expand simulation log') break;
+        await lp.waitForTimeout(100);
+      }
       record('FIX: Escape from the expanded log returns focus to the Expand log button, not [data-focus-home] (CodeRabbit CLI)',
         afterEscape.ariaLabel === 'Expand simulation log', JSON.stringify(afterEscape));
       await lp.close();
