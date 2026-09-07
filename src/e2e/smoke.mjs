@@ -5769,6 +5769,17 @@ try {
             Math.abs((mobileSizes17.cornerSize ?? 0) - 14) < 1e-6 && Math.abs((mobileSizes17.midpointBaseSize ?? 0) - 5.95) < 1e-6,
             JSON.stringify(mobileSizes17));
           const plotId17m = await p17mobile.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          // cr review (director-routed, GitHub thread): mark BEFORE the
+          // FIRST relayout attempt, not after settlement is confirmed --
+          // the relayout listener's own decision fires essentially
+          // synchronously with the relayout event (within the SAME
+          // `waitForTimeout(300)` below, not after it), so a mark taken
+          // only once `camOk17m` is true would already postdate the real
+          // decision and this check's own poll would time out waiting for
+          // a "fresh" stamp that already happened -- found by hand: the
+          // first draft of this gate always failed by timeout for exactly
+          // this reason.
+          const cameraSetMarkPerf17m = await p17mobile.evaluate(() => performance.now());
           let camOk17m = false;
           for (let attempt = 0; attempt < 3 && !camOk17m; attempt++) {
             await p17mobile.evaluate((id) => window.Plotly.relayout(id, { 'scene.camera': { eye: { x: 1.6, y: -1.6, z: 1.1 }, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), plotId17m);
@@ -5777,10 +5788,30 @@ try {
             camOk17m = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
           }
           record('precondition (RED-MATH-17/001 variant B): the camera settled at CAMERA.overview (real 320px viewport, touch-emulated)', camOk17m);
-          const collapsed17m = await p17mobile.waitForFunction(() => {
-            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
-            return ts.length > 0 ? (ts.every((t) => t.visible === 'legendonly') ? 'collapsed' : 'shown') : null;
-          }, null, { timeout: 3000 }).then((h) => h.jsonValue()).catch(() => null);
+          // cr review (director-routed, GitHub thread on smoke.mjs:5785,
+          // Minor -- valid): corner traces default to VISIBLE at first
+          // static render, so reading `visible !== 'legendonly'` as "shown"
+          // the instant corner traces exist can resolve BEFORE
+          // `applyContinuumCollapseAtCamera` has run for THIS camera at all
+          // -- the row would then pass without ever exercising the exact
+          // live-matrix decision path it claims to test. Require BOTH
+          // `continuumProjectionPath === 'exact'` AND `continuumDecidedAt`
+          // newer than `cameraSetMarkPerf17m` (marked before the FIRST
+          // relayout attempt, above) before trusting the corner-visibility
+          // read -- proves a fresh, exact-path evaluation actually ran for
+          // this camera, not merely that nothing has collapsed it yet.
+          const decisionInfo17m = await p17mobile.waitForFunction((markPerf) => {
+            const gd = document.querySelector('.js-plotly-plot');
+            const path = gd?.dataset?.continuumProjectionPath;
+            const decidedAt = gd?.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null;
+            if (path !== 'exact' || decidedAt == null || decidedAt <= markPerf) return null;
+            const ts = (gd.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            const collapse = ts.length > 0 ? (ts.every((t) => t.visible === 'legendonly') ? 'collapsed' : 'shown') : null;
+            return { collapse, path, decidedAt };
+          }, cameraSetMarkPerf17m, { timeout: 3000 }).then((h) => h.jsonValue()).catch(() => null);
+          record('precondition (RED-MATH-17/001 variant B): a fresh exact-path decision was actually computed AFTER the camera settled (not read too early)',
+            !!decisionInfo17m && decisionInfo17m.path === 'exact', JSON.stringify({ decisionInfo17m, cameraSetMarkPerf17m }));
+          const collapsed17m = decisionInfo17m?.collapse ?? null;
           record('FIX (RED-MATH-17/001 variant B, mobile marker set): the app correctly does NOT collapse this component at its own default camera on a REAL mobile viewport+markers (smaller glyphs, same centres -> genuine clearance, not the desktop-marker defect)',
             collapsed17m === 'shown', String(collapsed17m));
           const path17m = await p17mobile.evaluate(() => document.querySelector('.js-plotly-plot')?.dataset?.continuumProjectionPath ?? null);
@@ -6089,6 +6120,13 @@ try {
           }, null, { timeout: 10000 }).then(() => true).catch(() => false);
           record('precondition (FBM-1 row): the plot resized to the canonical 700x500 baseline (live glplot.shape)', wideResized17b);
           const plotId17b = await p17b.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          // cr review (director-routed, GitHub thread): mark BEFORE the
+          // FIRST relayout attempt (see variant B's own identical comment
+          // above -- the relayout listener's decision fires within the SAME
+          // `waitForTimeout(300)` below, not after it, so a mark taken only
+          // once settlement is confirmed already postdates the real
+          // decision and this gate's poll would time out for good state).
+          const cameraSetMarkPerf17b = await p17b.evaluate(() => performance.now());
           let camOk17b = false;
           for (let attempt = 0; attempt < 3 && !camOk17b; attempt++) {
             await p17b.evaluate((id) => window.Plotly.relayout(id, { 'scene.camera': { eye: { x: 1.6, y: -1.6, z: 1.1 }, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), plotId17b);
@@ -6097,10 +6135,27 @@ try {
             camOk17b = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
           }
           record('precondition (FBM-1 row): the camera settled at CAMERA.overview (wide 700x500 baseline)', camOk17b);
-          const wideCollapsed = await p17b.evaluate(() => {
-            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
-            return ts.length > 0 && ts.every((t) => t.visible === 'legendonly');
-          });
+          // cr review (director-routed, GitHub thread on smoke.mjs:5785,
+          // Minor -- same class as variant B's own fix): corner traces
+          // default VISIBLE at first static render, so reading
+          // "not collapsed" the instant traces exist can resolve BEFORE
+          // `applyContinuumCollapseAtCamera` has run for THIS camera at
+          // all -- this precondition would then pass without the exact
+          // path having actually decided anything, silently undermining the
+          // "a narrow-only flip below proves nothing" guarantee it exists
+          // for. Same gate as variant B: require a fresh exact-path
+          // evaluation strictly after `cameraSetMarkPerf17b`.
+          const wideDecisionInfo = await p17b.waitForFunction((markPerf) => {
+            const gd = document.querySelector('.js-plotly-plot');
+            const path = gd?.dataset?.continuumProjectionPath;
+            const decidedAt = gd?.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null;
+            if (path !== 'exact' || decidedAt == null || decidedAt <= markPerf) return null;
+            const ts = (gd.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            return { collapsed: ts.length > 0 && ts.every((t) => t.visible === 'legendonly'), path, decidedAt };
+          }, cameraSetMarkPerf17b, { timeout: 3000 }).then((h) => h.jsonValue()).catch(() => null);
+          record('precondition (FBM-1 row): a fresh exact-path decision was actually computed AFTER the camera settled (not read too early)',
+            !!wideDecisionInfo && wideDecisionInfo.path === 'exact', JSON.stringify({ wideDecisionInfo, cameraSetMarkPerf17b }));
+          const wideCollapsed = wideDecisionInfo?.collapsed ?? null;
           record('precondition (FBM-1 row): the wide 700x500 baseline does NOT collapse (else a narrow-only flip below proves nothing)', wideCollapsed === false, String(wideCollapsed));
 
           // Now a CONTAINER-ONLY resize -- CSS only, no relayout, no window
