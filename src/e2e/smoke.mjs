@@ -5850,15 +5850,39 @@ try {
               // — a desktop-calibrated minPixels (60, matching variant A's
               // own single-glyph blobs of ~130) found ZERO blobs here on the
               // first draft, not because nothing was there.
-              if (count >= 15) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+              if (count >= 15) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf, cx: (minx + maxx) / 2 / dsf, cy: (miny + maxy) / 2 / dsf });
             }
             if (!blobs.length) return { blobs: [], span: 0 };
             const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
             const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
             return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
           }, shot17m.toString('base64'));
-          record('FIX (RED-MATH-17/001 variant B): the pixel scan finds a footprint spanning MORE than one marker\'s own size (>18 CSS px), confirming genuine (not merely undetected) separation',
-            scan17m.span > 18, JSON.stringify(scan17m));
+          // cr review (director-routed, merged tree): same robustness the
+          // CONTROL check above now uses, not the union-bbox span this row
+          // still had — filter to marker-sized blobs (mobile glyphs are
+          // smaller than every OTHER blob-scan in this section, but the same
+          // [2,30] CSS px diagonal range still comfortably covers them: real
+          // output measures ~10-14px per fragment), require >=2, and assert
+          // the LARGEST pairwise centre-to-centre distance (not the union
+          // span) — an anti-alias-split glyph's own fragments sit ~7-9px
+          // apart in this row's real output, a genuinely separate SECOND
+          // glyph's fragments ~20-30px away; 15px (the same bound the
+          // CONTROL check uses) cleanly separates the two.
+          const markerSized17m = scan17m.blobs.filter((b) => {
+            const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
+            return diag >= 2 && diag <= 30;
+          });
+          let maxSep17m = 0;
+          for (let i = 0; i < markerSized17m.length; i++) {
+            for (let j = i + 1; j < markerSized17m.length; j++) {
+              maxSep17m = Math.max(maxSep17m, Math.hypot(
+                markerSized17m[i].cx - markerSized17m[j].cx,
+                markerSized17m[i].cy - markerSized17m[j].cy));
+            }
+          }
+          record('FIX (RED-MATH-17/001 variant B): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not one glyph\'s own anti-alias fragments), confirming genuine (not merely undetected) separation',
+            markerSized17m.length >= 2 && maxSep17m > 15,
+            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, ...scan17m }));
         } finally { await p17mobile.close().catch(() => {}); }
 
         // RED-MATH-16/001: az105, forced 700x500 (the canonical viewport,
