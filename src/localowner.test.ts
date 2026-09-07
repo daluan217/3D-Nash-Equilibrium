@@ -330,6 +330,52 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     check('fixture sanity: guardPrecedesSetters catches a setter placed BEFORE the staleness guard', !regressedGate.ok);
   }
 
+  // Director-verified regression on f3ca711: since `finally` now SKIPS
+  // setEditLoading/setSaveLoading(false) for a stale session (the point of
+  // the guard above), a request left in flight when its dialog closed left
+  // the flag stuck true FOREVER — nothing else ever cleared it, so the
+  // NEXT session's submit button stayed disabled ("Saving..."/"Saving
+  // Changes..." forever). A session's loading flag belongs to the session:
+  // it must be reset wherever that session STARTS.
+  {
+    // Edit: the ONE choke point every open/close/game-switch already passes
+    // through (not each of the several setIsEditModalOpen(true) call sites).
+    const editSessionEffect = app.slice(app.indexOf('const editSessionRef = useRef(0);'), app.indexOf('const editSessionRef = useRef(0);') + 800);
+    check('the editSessionRef bump effect also resets editLoading (one choke point covers every open/close/game-switch)',
+      /useEffect\(\(\) => \{ editSessionRef\.current \+= 1; setEditLoading\(false\); \}, \[isEditModalOpen, editGameId\]\);/.test(editSessionEffect));
+
+    // Save has no single choke point (saveRequestIdRef is reset by hand at
+    // each fresh-open site) — classify each `saveRequestIdRef.current =
+    // null;` occurrence as an OPEN site (immediately followed by
+    // setIsSaveModalOpen(true)) or the success-branch reset (is not), and
+    // require every OPEN site — and only those — to also reset saveLoading.
+    function classifySaveResetSites(src: string): Array<{ isOpenSite: boolean; hasLoadingReset: boolean }> {
+      const re = /saveRequestIdRef\.current = null;/g;
+      const sites: Array<{ isOpenSite: boolean; hasLoadingReset: boolean }> = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(src))) {
+        const after = src.slice(m.index + m[0].length, m.index + m[0].length + 400);
+        sites.push({ isOpenSite: /setIsSaveModalOpen\(true\);/.test(after), hasLoadingReset: /setSaveLoading\(false\);/.test(after) });
+      }
+      return sites;
+    }
+    const saveSites = classifySaveResetSites(app);
+    const openSites = saveSites.filter((s) => s.isOpenSite);
+    check(`exactly 2 save-dialog fresh-open sites are found (a resolver drift would silently stop checking a real site) — found ${openSites.length}`,
+      openSites.length === 2);
+    check('every save-dialog fresh-open site also resets saveLoading', openSites.every((s) => s.hasLoadingReset));
+    // The success-branch reset (not an open site) needs no such check — its
+    // OWN request's finally already clears saveLoading for the still-current session.
+    check('precondition: the success-branch reset is correctly classified as NOT an open site (so it is not required to reset loading here)',
+      saveSites.some((s) => !s.isOpenSite));
+
+    // Known-positive fixture: an open site WITHOUT the loading reset (the
+    // exact pre-fix shape) must be classified as missing it.
+    const regressedOpenSite = 'saveRequestIdRef.current = null;\nsetIsSaveModalOpen(true);';
+    const regressed = classifySaveResetSites(regressedOpenSite)[0];
+    check('fixture sanity: an open site missing setSaveLoading(false) is correctly flagged', regressed.isOpenSite && !regressed.hasLoadingReset);
+  }
+
   // OPUS-REVIEW-DESKTOP N5: a bare COUNT comparison passes if an unpaired
   // non-empty setter is added anywhere and an extra flag call is added
   // anywhere else, and misreads `setSaveError("")` (double quotes) or a

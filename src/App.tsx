@@ -508,7 +508,15 @@ export default function App() {
   // let a continuation from a CLOSED-then-REOPENED session of the same game
   // through).
   const editSessionRef = useRef(0);
-  useEffect(() => { editSessionRef.current += 1; }, [isEditModalOpen, editGameId]);
+  // CodeRabbit on #158 (director-verified regression on f3ca711): a
+  // submit's `finally` now SKIPS `setEditLoading(false)` once its session is
+  // stale (the whole point of the guard) — but nothing else ever cleared it,
+  // so a request left in flight when the dialog closed left `editLoading`
+  // stuck true forever, disabling the NEXT session's Save Changes button.
+  // A session's loading flag belongs to the session: reset it here, at the
+  // ONE place every open/close/game-switch already passes through, rather
+  // than at each of the several `setIsEditModalOpen(true)` call sites.
+  useEffect(() => { editSessionRef.current += 1; setEditLoading(false); }, [isEditModalOpen, editGameId]);
   const [editError, setEditError] = useState('');
   // RED-DESKTOP-15/001: whether `editError` is actually the "sign in" case —
   // set ONLY where the failure is known to be auth-shaped (the pre-flight
@@ -1506,6 +1514,11 @@ export default function App() {
     // A fresh save attempt for a different scenario — never reuse a
     // clientRequestId minted for whatever the dialog last tried to save.
     saveRequestIdRef.current = null;
+    // CodeRabbit on #158 (director-verified regression on f3ca711): a
+    // stale submit's `finally` now leaves `saveLoading` untouched — nothing
+    // else ever reset it, so a request in flight when the dialog closed
+    // left the NEXT session's Save Game Profile button disabled forever.
+    setSaveLoading(false);
     setIsSaveModalOpen(true);
   };
 
@@ -4484,6 +4497,10 @@ export default function App() {
                     // A brand-new "Save Preset" click — a new save attempt,
                     // never a retry of whatever the dialog last submitted.
                     saveRequestIdRef.current = null;
+                    // See the other fresh-open site's comment (CodeRabbit on
+                    // #158): a stale submit's own finally no longer clears
+                    // this, so the open path must.
+                    setSaveLoading(false);
                     setIsSaveModalOpen(true);
                   }}
                   data-focus-fallback="save-preset"

@@ -5661,6 +5661,34 @@ try {
       await dp.unroute('**/api/games/*');
       await dp.keyboard.press('Escape');
 
+      // ── Director-verified regression on f3ca711: a request left in flight
+      // when its dialog closes must not leave the NEXT session's submit
+      // button disabled forever (`editLoading`/`saveLoading` belong to the
+      // SESSION, reset at open/close, not only in a since-guarded `finally`
+      // that now skips a stale response). Hang the PATCH, submit, close
+      // mid-flight, reopen — the fresh session's button must be enabled and
+      // read "Save Changes", never "Saving...".
+      await dp.route('**/api/games/*', (route) => (route.request().method() === 'PATCH' ? new Promise(() => {}) : route.continue()));
+      await dp.locator('div.group', { has: savedRow }).getByTitle(/^Edit /).click();
+      await editDlg.waitFor({ state: 'visible', timeout: 8000 });
+      await editDlg.locator('textarea').first().fill('Edited then hung, testing the reopen loading reset.');
+      const editSubmitBtn = editDlg.getByRole('button', { name: /^save changes$|^saving\.\.\.$/i });
+      await editSubmitBtn.click();
+      await editDlg.getByRole('button', { name: /^saving\.\.\.$/i }).waitFor({ state: 'visible', timeout: 5000 });
+      record('precondition: the hung submit shows "Saving..." (disabled) before the dialog closes',
+        await editDlg.getByRole('button', { name: /^saving\.\.\.$/i }).isDisabled().catch(() => false));
+      await dp.keyboard.press('Escape');
+      await editDlg.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      await dp.locator('div.group', { has: savedRow }).getByTitle(/^Edit /).click();
+      await editDlg.waitFor({ state: 'visible', timeout: 8000 });
+      const reopenedBtn = editDlg.getByRole('button', { name: /^save changes$|^saving\.\.\.$/i });
+      record('FIX: the reopened Edit dialog reads "Save Changes" (not "Saving..."), the hung request\'s finally never ran',
+        (await reopenedBtn.textContent().catch(() => '') || '').trim().toLowerCase() === 'save changes');
+      record('FIX: the reopened Edit dialog\'s submit button is enabled, not stuck disabled by the hung request',
+        !(await reopenedBtn.isDisabled().catch(() => true)));
+      await dp.unroute('**/api/games/*');
+      await dp.keyboard.press('Escape');
+
       // ── Positive control: an ACCOUNT user, still on dbMode='local', whose
       // POST gets a session 401 — mocked below (route.fulfill), since the
       // real desktop resolver (server.ts:2124) never emits one for a dead
