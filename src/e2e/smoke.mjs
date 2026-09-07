@@ -5653,15 +5653,34 @@ try {
       const target = cardTitleText
         ? p.locator(`${LM} *`, { hasText: cardTitleText }).first()
         : p.locator(LM).first();
+      // CodeRabbit CLI: a missing target used to throw straight out of
+      // evaluate()/boundingBox() and abort the WHOLE section instead of
+      // recording a clean failure.
+      const visible = await target.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+      if (!visible) return { onScreen: false, hit: false };
       await target.evaluate((e) => e.scrollIntoView({ block: 'center' }));
       const bb = await target.boundingBox();
+      if (!bb) return { onScreen: false, hit: false };
       const cx = bb.x + bb.width / 2, cy = bb.y + (cardTitleText ? bb.height / 2 : Math.min(20, bb.height / 2));
       const hit = await p.evaluate(([x, y, lsel]) => !!document.elementFromPoint(x, y)?.closest(lsel), [cx, cy, LM]);
       const onScreen = cy >= 0 && cy < 900;
       if (onScreen && hit) await p.mouse.click(cx, cy);
       return { onScreen, hit };
     };
-    const settleActive = async (p) => { let a = null; for (let i = 0; i < 20; i++) { a = await readActive(p, LM, DLG); if (a) break; await p.waitForTimeout(100); } return a; };
+    // CodeRabbit CLI: readActive is ALWAYS truthy (document.activeElement
+    // falls back to <body>, never null), so `if (a) break` exited on the
+    // FIRST read regardless of whether Tab's focus move had actually landed
+    // — this polling loop never really polled. Wait for focus to leave the
+    // landmark instead (the actual "settled" condition every caller wants).
+    const settleActive = async (p) => {
+      let a = null;
+      for (let i = 0; i < 20; i++) {
+        a = await readActive(p, LM, DLG);
+        if (a && !a.isLandmark) break;
+        await p.waitForTimeout(100);
+      }
+      return a;
+    };
 
     let webkitAvailable = true; let webkitBrowser = null;
     try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
@@ -5729,10 +5748,16 @@ try {
         // list (not wrap past it); Shift+Tab must still land on the same
         // pre-landmark control as the 0-games case. ──
         const gameNames = [1, 2, 3].map((n) => `E75-${n}-${uniq}`);
+        // CodeRabbit CLI: a failed creation (a name collision, an auth
+        // hiccup) used to go unnoticed — the "3 games" checks would then run
+        // against fewer real games with no clear signal why.
+        const created = [];
         for (const n of gameNames) {
-          await fetch(`${BASE}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          const r = await fetch(`${BASE}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ name: n, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 } }) });
+          created.push(r.status);
         }
+        record(`[${label}] precondition: all three saved games were created via the API`, created.every((s) => s >= 200 && s < 300), JSON.stringify(created));
         await p.reload({ waitUntil: 'networkidle' });
         await dismissTour(p);
         await openLibrary(p);
