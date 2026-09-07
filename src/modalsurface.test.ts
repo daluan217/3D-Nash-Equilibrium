@@ -561,17 +561,165 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // OPUS-REVIEW-MODAL16 F2: aria-hidden on a still-tabbable element is WCAG
 // 4.1.2 / axe aria-hidden-focus. `inert` removes pointer events, tab order
 // AND AT visibility together — no separate pointer-events class swap needed.
-// Mutation: revert either site to `aria-hidden={blocked}` +
-// `${blocked ? 'pointer-events-none' : 'pointer-events-auto'}` → its check
-// fails by name.
+// round16 (RED-APP-16/001) moved `inert` from the two individual descendants
+// (exit pill, card) to the ONE outer wrapper — `inert` is inherited by the
+// whole subtree, so this also now covers the spotlight scrim, which the
+// round15 shape never gated at all (the "dims the dialog underneath" half
+// of the finding). Mutation: revert to per-element `inert={blocked}` with no
+// wrapper-level `inert`/`visibility` → the checks below fail by name; revert
+// either to `aria-hidden={blocked}` → the last check fails by name.
 {
   const walkthrough = readFileSync('src/components/Walkthrough.tsx', 'utf8');
-  ok(/aria-label="Exit tour"\s*\n\s*inert=\{blocked\}/.test(walkthrough),
-    'Walkthrough\'s standalone Exit-tour button must use inert={blocked}, not aria-hidden (OPUS-REVIEW-MODAL16 F2)');
-  ok(/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),
-    'Walkthrough\'s tour card must use inert={blocked}, not aria-hidden (OPUS-REVIEW-MODAL16 F2)');
+  ok(!/inert=\{blocked\}[\s\S]{0,40}aria-label="Exit tour"/.test(walkthrough)
+    && !/aria-label="Exit tour"[\s\S]{0,10}\n\s*inert=\{blocked\}/.test(walkthrough),
+    'the Exit-tour button must NOT carry its own inert={blocked} — that gates hit-testing/tab-order but not painting, and RED-APP-16/001 needs both on one wrapper');
+  ok(!/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),
+    'the tour card must NOT carry its own inert={blocked} — moved to the outer wrapper (RED-APP-16/001)');
   ok(!/aria-hidden=\{blocked\}/.test(walkthrough),
-    'Walkthrough must not have any remaining aria-hidden={blocked} — inert replaces it entirely (OPUS-REVIEW-MODAL16 F2)');
+    'Walkthrough must not have any aria-hidden={blocked} — inert replaces it entirely (OPUS-REVIEW-MODAL16 F2)');
+}
+
+// RED-APP-16/001 (BLUE-MODAL-17, I1): the entire tour overlay — card,
+// standalone Exit pill, spotlight scrim, arrow — sits on ONE wrapper div
+// (role="dialog" aria-label="Guided tour") that carries BOTH `inert={blocked}`
+// (removes the whole subtree from hit-testing, tab order and the AT tree)
+// and an inline `visibility: hidden` while blocked (removes it from
+// painting — `inert` alone has no default visual effect, which is exactly
+// how 001's "opaque, high-contrast card painted over a live dialog" existed
+// even though the card was already `inert`). Both must be driven by the
+// SAME `blocked` state, updated in a `useLayoutEffect` (not `useEffect`) so
+// the change lands in the same pre-paint commit ModalSurface's own
+// registration effect uses — no click window in either direction. Mutation:
+// revert `useLayoutEffect` back to `useEffect` → the third check fails by
+// name; drop `inert={blocked}` or the `visibility` style from the wrapper →
+// the first/second checks fail by name.
+{
+  const walkthrough = readFileSync('src/components/Walkthrough.tsx', 'utf8');
+  const wrapperMatch = walkthrough.match(/<div\s+data-print="hide"[\s\S]{0,400}?aria-label="Guided tour"\s*\n?\s*>/);
+  ok(!!wrapperMatch, 'could not locate the tour\'s outer wrapper div (data-print="hide" ... aria-label="Guided tour")');
+  const wrapper = wrapperMatch?.[0] ?? '';
+  ok(/inert=\{blocked\}/.test(wrapper),
+    'the tour\'s outer wrapper must carry inert={blocked} — the ONE place hit-testing/tab-order/AT visibility is gated for the whole overlay (RED-APP-16/001)');
+  ok(/style=\{blocked \? \{ visibility: 'hidden' \} : undefined\}/.test(wrapper),
+    'the tour\'s outer wrapper must carry a visibility:hidden style while blocked — inert alone does not stop the scrim/card from being PAINTED (RED-APP-16/001)');
+  ok(/const \[blocked, setBlocked\] = useState\(\(\) => ModalRegistry\.isAnyOpen\(\)\);\s*\n\s*useLayoutEffect\(\(\) => \{\s*\n\s*const check = \(\) => setBlocked\(ModalRegistry\.isAnyOpen\(\)\);\s*\n\s*check\(\);\s*\n\s*return ModalRegistry\.subscribe\(check\);\s*\n\s*\}, \[\]\);/.test(walkthrough),
+    'the blocked-state subscription must run in useLayoutEffect, not useEffect — a passive effect fires AFTER paint, leaving a real frame where a surface is registered but the tour still paints live (director\'s independent reproduction of RED-APP-16/001)');
+}
+
+// RED-APP-16/002 — DownloadModal.tsx:139-144's icon-only close button had no
+// accessible name (empty AX name) and was the panel's first focusable, so
+// useModalTabTrap's open-time focus landed there with nothing for a screen
+// reader to announce but "button". Direct fix, plus a STRUCTURAL guard
+// (not a per-surface patch): every icon-only `<button onClick={onClose}>`
+// (or `close`) whose entire body is a single self-closing icon element must
+// carry an aria-label/title — this is the exact shape both AdminDashboard's
+// original bug (OPUS-REVIEW-MODAL16 F1) and this one share, and would catch
+// a future occurrence in any ModalSurface-backed dialog. A button with real
+// text content (e.g. "Close Dialog") is NOT flagged — it already has an
+// accessible name from its text.
+{
+  // Balanced-tag extraction (same technique as extractBraced above, applied
+  // to <button>...</button> pairs instead of {...}) so a button containing
+  // ANOTHER tag with a literal '>' in an attribute value, or nested markup,
+  // is not truncated early by a naive non-greedy regex.
+  function extractButtons(src: string): { openTag: string; body: string }[] {
+    const out: { openTag: string; body: string }[] = [];
+    const startRe = /<button\b/g;
+    let m: RegExpExecArray | null;
+    while ((m = startRe.exec(src))) {
+      let i = m.index + '<button'.length;
+      let braceDepth = 0;
+      while (i < src.length) {
+        const c = src[i];
+        if (c === '{') braceDepth++;
+        else if (c === '}') braceDepth--;
+        else if (c === '>' && braceDepth === 0) break;
+        i++;
+      }
+      if (i >= src.length) break;
+      const selfClosing = src[i - 1] === '/';
+      const openTag = src.slice(m.index, i + 1);
+      if (selfClosing) { out.push({ openTag, body: '' }); startRe.lastIndex = i + 1; continue; }
+      let depth = 1; let j = i + 1;
+      while (j < src.length && depth > 0) {
+        if (src.startsWith('<button', j)) { depth++; j += 7; }
+        else if (src.startsWith('</button>', j)) { depth--; if (depth === 0) break; j += 9; }
+        else j++;
+      }
+      out.push({ openTag, body: src.slice(i + 1, j) });
+      startRe.lastIndex = j + 9;
+    }
+    return out;
+  }
+  function findUnlabeledIconCloseButtons(src: string): string[] {
+    const problems: string[] = [];
+    for (const { openTag, body } of extractButtons(src)) {
+      const isCloseHandler = /onClick=\{[\s\S]*?\b(?:onClose|close)\b/.test(openTag);
+      if (!isCloseHandler) continue;
+      const stripped = body.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').trim();
+      const isIconOnly = /^<[A-Za-z][\w.]*\b[^<>]*\/>$/.test(stripped);
+      if (!isIconOnly) continue; // has real text content (or something more complex) — accessible name comes from there
+      const hasName = /\baria-label=(?:"[^"]+"|\{[^}]+\})/.test(openTag)
+        || /\btitle=(?:"[^"]+"|\{[^}]+\})/.test(openTag)
+        || /\baria-labelledby=/.test(openTag);
+      if (!hasName) problems.push(openTag.replace(/\s+/g, ' ').slice(0, 120));
+    }
+    return problems;
+  }
+
+  // Known-positive fixtures for the extractor ITSELF: an unlabeled icon-only
+  // close button must be flagged; the same shape WITH aria-label must not;
+  // a text-content close button (no icon) must not (has its own name); a
+  // close handler with unrelated icon children plus real text must not
+  // (mirrors DownloadModal's OWN second "Close Dialog" text button).
+  {
+    const fixtures: [string, string, boolean][] = [
+      ['unlabeled icon-only', '<button onClick={onClose} className="p-1"><X className="w-4 h-4" /></button>', true],
+      ['labeled icon-only', '<button onClick={onClose} aria-label="Close dialog" className="p-1"><X className="w-4 h-4" /></button>', false],
+      ['text-only close', '<button onClick={onClose} className="px-4">Close Dialog</button>', false],
+      ['unrelated handler', '<button onClick={handleSubmit}><X className="w-4 h-4" /></button>', false],
+    ];
+    for (const [label, src, shouldFlag] of fixtures) {
+      const problems = findUnlabeledIconCloseButtons(src);
+      ok((problems.length > 0) === shouldFlag, `findUnlabeledIconCloseButtons fixture "${label}" must ${shouldFlag ? '' : 'NOT '}flag: ${src}`);
+    }
+  }
+
+  const filesToScan = [
+    'src/App.tsx',
+    'src/components/MenuDrawer.tsx',
+    'src/components/DownloadModal.tsx',
+    'src/components/AdminDashboard.tsx',
+  ];
+  let scannedButtons = 0;
+  for (const file of filesToScan) {
+    const src = readFileSync(file, 'utf8');
+    scannedButtons += extractButtons(src).filter((b) => /onClick=\{[\s\S]*?\b(?:onClose|close)\b/.test(b.openTag)).length;
+    const problems = findUnlabeledIconCloseButtons(src);
+    ok(problems.length === 0,
+      `${file}: an icon-only close button must have an accessible name (aria-label/title) (RED-APP-16/002) — found: ${problems.join(' | ')}`);
+  }
+  ok(scannedButtons >= 6, `expected to scan at least 6 onClose-handling buttons across ${filesToScan.join(', ')}, found ${scannedButtons}`);
+}
+
+// RED-APP-16/006 — @media print used to hide overlays by a HAND-ENUMERATED
+// `[data-print="hide"]` list whose own comment claimed completeness that
+// held only with no dialog open. `[data-modal-surface]` is set by the
+// PRIMITIVE itself (ModalSurface.tsx, both layouts, regardless of a custom
+// overlayClassName), so one print rule targeting that attribute covers every
+// current AND future ModalSurface-backed dialog. Mutation: delete the
+// `[data-modal-surface] { display: none !important; ... }` rule from
+// index.css → this fails by name.
+{
+  const css = readFileSync('src/index.css', 'utf8');
+  const printBlockMatch = css.match(/@media print \{[\s\S]*\n\}/);
+  ok(!!printBlockMatch, 'could not locate the @media print block in src/index.css');
+  const printBlock = printBlockMatch?.[0] ?? '';
+  ok(/\[data-modal-surface\],\s*\n\s*\[data-modal-surface\]\s*\*\s*\{\s*\n\s*display:\s*none\s*!important;\s*\n\s*position:\s*static\s*!important;\s*\n\s*\}/.test(printBlock),
+    '@media print must hide every [data-modal-surface] overlay AND every descendant (display:none) AND reset both their positions (position:static) — the primitive-set attribute, not a hand-enumerated list; a descendant (e.g. the drawer\'s own backdrop div) can independently declare position:fixed, unaffected by a display:none ANCESTOR (RED-APP-16/006, measured against the drawer in §84)');
+  // Both ModalSurface layouts must actually SET the attribute the CSS rule targets.
+  ok((modalSurfaceSrc.match(/data-modal-surface=\{id\}/g) ?? []).length === 2,
+    'ModalSurface.tsx must set data-modal-surface={id} on BOTH overlay layouts (centered + drawer) — the print rule above targets this attribute directly');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

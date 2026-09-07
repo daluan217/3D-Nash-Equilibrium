@@ -6258,6 +6258,198 @@ try {
     await oppositePage.close();
   });
 
+  // ══ 83. RED-APP-16/001 — the tour overlay must not be hit-testable NOR
+  //      visible while any ModalSurface is open: neither a "tour-advance"
+  //      (the pre-#162 shape: a real click reaches a not-yet-inert tour
+  //      control) nor a "fall-through" (the #162 regression: an inert-but-
+  //      still-PAINTED tour lets the click pass straight through to the
+  //      surface below, and its opaque scrim dims the dialog on top of it).
+  //      COMMON v5: every "blocked" click is verified as a no-op for the
+  //      TOUR (step unchanged) AND as UNCHANGED for the surface underneath
+  //      (the exact same backdrop-click outcome the surface would have if
+  //      the tour had never rendered at all — "backdrop click semantics
+  //      unchanged", not "clicks never close anything"). Two scenarios
+  //      (RED-APP-16/001's own two reproductions): the drawer at step 6,
+  //      the download dialog's standalone Exit-tour pill at step 1.
+  //      chromium + webkit. Mutation: revert Walkthrough.tsx to the
+  //      candidate 8048346 shape → the visibility/inert precondition checks
+  //      fail by name (fall-through direction; pinned deterministically —
+  //      not by CI timing — in modalsurface.test.ts, whose OTHER mutation,
+  //      useLayoutEffect->useEffect alone, is the tour-advance direction).
+  section('83', 'Walkthrough: the tour overlay is neither hit-testable nor visible while any ModalSurface is open, in both directions (RED-APP-16/001)', async () => {
+    const TOUR_SEL = '[role="dialog"][aria-label="Guided tour"]';
+    const tourStepOf = (p) => p.evaluate((sel) => {
+      const t = document.querySelector(sel);
+      return (t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null;
+    }, TOUR_SEL);
+    const tourOverlayState = (p) => p.evaluate((sel) => {
+      const t = document.querySelector(sel);
+      if (!t) return null;
+      const cs = getComputedStyle(t);
+      return { visibility: cs.visibility, inert: t.inert === true };
+    }, TOUR_SEL);
+    const hitAt = (p, x, y) => p.evaluate(([x, y, sel]) => {
+      const h = document.elementFromPoint(x, y);
+      return { tag: h?.tagName, insideTour: !!h?.closest(sel) };
+    }, [x, y, TOUR_SEL]);
+
+    // One scenario runner shared by the drawer and the download dialog,
+    // so both get every assertion instead of two hand-kept copies.
+    async function runScenario(p, label, { preSteps, openSurface, surfaceOpenSelector, closeSurface, tourButtonSelector }) {
+      for (let i = 0; i < preSteps; i++) await p.keyboard.press('ArrowRight');
+      const stepBefore = await tourStepOf(p);
+      record(`[${label}] precondition: the tour is open at the expected step`, stepBefore !== null, `step=${stepBefore}`);
+
+      await openSurface(p);
+      await p.locator(surfaceOpenSelector).first().waitFor({ state: 'visible', timeout: 8000 });
+
+      const overlay = await tourOverlayState(p);
+      record(`[${label}] FIX: the tour overlay is inert while a surface is open (RED-APP-16/001)`, overlay?.inert === true, JSON.stringify(overlay));
+      record(`[${label}] FIX: the tour overlay computes visibility:hidden while a surface is open — not just hit-testing, PAINTING too (RED-APP-16/001)`, overlay?.visibility === 'hidden', JSON.stringify(overlay));
+
+      // Not getByRole: an inert subtree is excluded from the accessibility
+      // tree by design, so a role-based locator would (correctly) find
+      // nothing here — a plain DOM locator is what proves state, not
+      // visibility, is preserved (RED-APP-16/001's "restored exactly").
+      const btn = p.locator(tourButtonSelector).first();
+      const bb = await btn.boundingBox();
+      record(`[${label}] precondition: the tour control still has a bounding box while gated (hidden, not removed — state is preserved)`, !!bb, JSON.stringify(bb));
+      if (!bb) return;
+      const cx = bb.x + bb.width / 2, cy = bb.y + bb.height / 2;
+      const hit = await hitAt(p, cx, cy);
+      record(`[${label}] FIX: elementFromPoint at the tour control's old position is NOT inside the tour (RED-APP-16/001)`, hit.insideTour === false, JSON.stringify(hit));
+
+      // ── test arm: click with the (hidden) tour present ──
+      await p.mouse.click(cx, cy);
+      const stepAfterTest = await tourStepOf(p);
+      record(`[${label}] FIX: the click did not advance the tour (tour-advance direction)`, stepAfterTest === stepBefore, JSON.stringify({ stepBefore, stepAfterTest }));
+      const surfaceOpenAfterTest = await p.locator(surfaceOpenSelector).first().isVisible().catch(() => false);
+      await closeSurface(p);
+
+      // ── control arm: dismiss the tour ENTIRELY (now unblocked and
+      // interactive again), reopen the identical surface, click the
+      // IDENTICAL viewport coordinate. If the tour's mere presence changed
+      // nothing about the surface's own backdrop-click semantics, the two
+      // arms' outcomes must match exactly — the surface underneath, not
+      // only the blocked target itself (COMMON v5).
+      const exitTour = p.locator(`${TOUR_SEL} button[aria-label="Exit tour"]`);
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await exitTour.click();
+        await p.waitForFunction((sel) => !document.querySelector(sel), TOUR_SEL, { timeout: 5000 }).catch(() => {});
+      }
+      await openSurface(p);
+      await p.locator(surfaceOpenSelector).first().waitFor({ state: 'visible', timeout: 8000 });
+      await p.mouse.click(cx, cy);
+      const surfaceOpenAfterControl = await p.locator(surfaceOpenSelector).first().isVisible().catch(() => false);
+      record(`[${label}] FIX: the surface's own outcome from this exact click is UNCHANGED whether the (now-hidden) tour is present or was never there — "backdrop click semantics unchanged" (RED-APP-16/001)`,
+        surfaceOpenAfterTest === surfaceOpenAfterControl, JSON.stringify({ surfaceOpenAfterTest, surfaceOpenAfterControl }));
+      await closeSurface(p);
+    }
+
+    const scenarios = [
+      {
+        name: 'drawer/step6', preSteps: 5,
+        openSurface: async (pg) => { await pg.locator('button[aria-label="Open workspace menu"]').first().click(); },
+        surfaceOpenSelector: '[role="dialog"][aria-label="Simulator Workspace Center"]',
+        closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {}); },
+        tourButtonSelector: `${TOUR_SEL} button:has-text("Next")`,
+      },
+      {
+        name: 'download/step1', preSteps: 0,
+        openSurface: async (pg) => { await pg.locator('button', { hasText: /Get Desktop App/i }).first().click(); },
+        surfaceOpenSelector: '[role="dialog"][aria-label="Get the desktop app"]',
+        closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction(() => !document.querySelector('[aria-label="Get the desktop app"]'), null, { timeout: 8000 }).catch(() => {}); },
+        tourButtonSelector: `${TOUR_SEL} button[aria-label="Exit tour"]`,
+      },
+    ];
+
+    let webkitAvailable = true; let webkitBrowser = null;
+    try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
+    try {
+      for (const [engineLabel, engine] of [
+        ['chromium', browser],
+        ...(webkitAvailable ? [['webkit', webkitBrowser]] : []),
+      ]) {
+        for (const scenario of scenarios) {
+          const ctx = await engine.newContext({ viewport: { width: 1440, height: 900 } });
+          const p = trackPage(await ctx.newPage());
+          try {
+            await p.goto(BASE, { waitUntil: 'networkidle' });
+            await p.waitForSelector(TOUR_SEL, { state: 'visible', timeout: 8000 }).catch(() => {});
+            await runScenario(p, `${engineLabel} ${scenario.name}`, scenario);
+          } finally {
+            await p.close().catch(() => {});
+            await ctx.close().catch(() => {});
+          }
+        }
+      }
+      if (!webkitAvailable) record('webkit unavailable in this environment — chromium ran, webkit case skipped', true, 'guarded per brief');
+    } finally {
+      if (webkitBrowser) await webkitBrowser.close().catch(() => {});
+    }
+  });
+
+  // ══ 84. RED-APP-16/006 — printing with any ModalSurface open must not
+  //      paint the overlay's scrim/panel on the printed page: the
+  //      hand-enumerated data-print list never covered ModalSurface
+  //      overlays, and Chromium's print pagination re-bakes a `position:
+  //      fixed` element on EVERY page it paginates. emulateMedia('print') +
+  //      a computed-style scan mirrors the red's own probeI-print.mjs; a
+  //      real page.pdf() at the end proves this is the actual print
+  //      pipeline (the same one Cmd+P uses), not just the emulated media
+  //      query. Mutation: delete the `[data-modal-surface]` print rule from
+  //      index.css → this fails by name. Chromium only — page.pdf() and
+  //      print-media emulation are Chromium-specific Playwright APIs.
+  section('84', 'print: an open ModalSurface overlay is excluded from print, no dialog scrim on any page (RED-APP-16/006)', async () => {
+    const p = await newTrackedPage({ viewport: { width: 1024, height: 900 } });
+    await registerAndLogin(p, 'e84');
+
+    const fixedOrStickySurvivors = () => p.evaluate(() => {
+      const hits = [];
+      for (const el of document.querySelectorAll('*')) {
+        const cs = getComputedStyle(el);
+        if (cs.position === 'fixed' || cs.position === 'sticky') {
+          hits.push({ tag: el.tagName, modalSurface: el.getAttribute('data-modal-surface') });
+        }
+      }
+      return hits;
+    });
+
+    await p.emulateMedia({ media: 'print' });
+    const controlHits = await fixedOrStickySurvivors();
+    record('control: with no dialog open, print stylesheet leaves 0 fixed/sticky elements', controlHits.length === 0, JSON.stringify(controlHits));
+    await p.emulateMedia({ media: 'screen' });
+
+    // Drawer layout (DRAWER_OVERLAY_CLASS).
+    await p.locator('button[aria-label="Open workspace menu"]').first().click();
+    await p.locator('[role="dialog"][aria-label="Simulator Workspace Center"]').waitFor({ state: 'visible', timeout: 8000 });
+    await p.emulateMedia({ media: 'print' });
+    const drawerHits = await fixedOrStickySurvivors();
+    record('FIX: with the drawer open, print stylesheet leaves 0 fixed/sticky elements (RED-APP-16/006)', drawerHits.length === 0, JSON.stringify(drawerHits));
+    await p.emulateMedia({ media: 'screen' });
+    await p.keyboard.press('Escape');
+    await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {});
+
+    // Centered layout (OVERLAY_CLASS) — the Save-preset dialog — proves the
+    // fix is on the SHARED [data-modal-surface] attribute, not the drawer's
+    // own overlay class specifically.
+    await p.locator('button', { hasText: /save preset/i }).first().click();
+    await p.locator('[role="dialog"][aria-label="Save custom game"]').waitFor({ state: 'visible', timeout: 8000 });
+    await p.emulateMedia({ media: 'print' });
+    const saveHits = await fixedOrStickySurvivors();
+    record('FIX: with the centered Save-preset dialog open, print stylesheet leaves 0 fixed/sticky elements too (RED-APP-16/006)', saveHits.length === 0, JSON.stringify(saveHits));
+
+    // Real print-pipeline sanity: a page.pdf() actually succeeds with a
+    // dialog open — the actual print path, not only the computed-style
+    // check above.
+    const pdf = await p.pdf({ printBackground: true, format: 'Letter' }).catch(() => null);
+    record('precondition: page.pdf() produced real output with a dialog open (proves this is the real print pipeline, harness sanity)', !!pdf && pdf.length > 10000, `bytes=${pdf?.length ?? 0}`);
+
+    await p.emulateMedia({ media: 'screen' });
+    await p.keyboard.press('Escape');
+    await p.close();
+  });
+
 await executeSections();
 
 } catch (e) {

@@ -468,9 +468,30 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   // Check the TAG ITSELF, not the surrounding docstring (which discusses
   // aria-modal BY NAME to explain why it is deliberately absent — a naive
   // nearby-text search would false-positive on that very explanation).
-  const tourTagLine = walkthrough.split('\n').find((l) => l.includes('role="dialog" aria-label="Guided tour"'));
-  ok(tourTagLine !== undefined && !tourTagLine.includes('aria-modal'),
-    `THE FIX MUST NOT make the tour modal — it must stay click-through, per its own docstring, got: ${JSON.stringify(tourTagLine)}`);
+  // RED-APP-16/001 (BLUE-MODAL-17): the wrapper's opening tag now spans
+  // several lines (it also carries `inert={blocked}` and a conditional
+  // `style={...}`), so a single-LINE search no longer finds it — extract the
+  // whole tag by balanced braces (same technique modalsurface.test.ts's
+  // extractButtons uses) instead of assuming it fits on one line.
+  // lastIndexOf, not indexOf: the JS `insideOtherDialog` guard earlier in
+  // this file also contains the literal substring
+  // `[role="dialog"]:not([aria-label="Guided tour"])` (documented in
+  // RED-APP-14/001's comment above it) — the actual JSX tag is the LATER of
+  // the two occurrences.
+  const labelIdx = walkthrough.lastIndexOf('aria-label="Guided tour"');
+  ok(labelIdx > 0, 'could not find aria-label="Guided tour" in Walkthrough.tsx at all');
+  const tagStart = walkthrough.lastIndexOf('<div', labelIdx);
+  let ti = tagStart; let braceDepth = 0;
+  while (ti < walkthrough.length) {
+    const c = walkthrough[ti];
+    if (c === '{') braceDepth++;
+    else if (c === '}') braceDepth--;
+    else if (c === '>' && braceDepth === 0) { ti++; break; }
+    ti++;
+  }
+  const tourTag = tagStart > 0 ? walkthrough.slice(tagStart, ti).replace(/\s+/g, ' ') : undefined;
+  ok(tourTag !== undefined && /role="dialog"/.test(tourTag) && /aria-label="Guided tour"/.test(tourTag) && !tourTag.includes('aria-modal'),
+    `THE FIX MUST NOT make the tour modal — it must stay click-through, per its own docstring, got: ${JSON.stringify(tourTag)}`);
 
   // round15: the expand-log dialog is now <ModalSurface ariaLabel="Simulation
   // log" overlayClassName="...">, so its own z-index lives in its
