@@ -874,6 +874,9 @@ function testSaveFormReconciledWithBoard() {
     const prefillSlice = app.slice(prefill, app.indexOf('setIsSaveModalOpen(true);', prefill));
     ok(/saveFormBoardRef\.current = boardKeyOf\(payoffs\);/.test(prefillSlice),
       'the report prefill path must record the board its story was written for (RED-REGEN-13/001)');
+    // "Generate a new game" replaces the board from inside the dialog: record it.
+    ok(/saveFormBoardRef\.current = boardKeyOf\(g\);/.test(app),
+      'handleGenerateGame must record the generated board as the one the form\'s text belongs to (RED-REGEN-13/001)');
     // After a successful save the form is blank: no board.
     ok(/setSaveTerms\(\{ a: \[\], b: \[\] \}\);\s*setSaveLabels\(\{ row1: '', row2: '', col1: '', col2: '' \}\);\s*saveFormBoardRef\.current = null;/.test(app),
       'a successful save must clear saveFormBoardRef with the fields (RED-REGEN-13/001)');

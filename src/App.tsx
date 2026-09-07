@@ -2691,6 +2691,10 @@ export default function App() {
       // Prefill only from a validated invention — an unvalidated story could
       // contradict the very equilibria the user just asked for.
       const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;
+      // RED-REGEN-13/001: the board is now `g` — whatever the form holds from
+      // here on (the AI fill, or the user's own text kept by the safety rule)
+      // is the text for THIS board, so a same-board reopen keeps it.
+      saveFormBoardRef.current = boardKeyOf(g);
       if (sc) {
         const gen: GeneratedFill = {
           name: (sc.name ?? '').slice(0, 40),
