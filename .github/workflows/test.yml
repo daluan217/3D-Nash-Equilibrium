@@ -292,6 +292,20 @@ jobs:
         env:
           RECOVERY_HINT_PORT: '3111'
 
+      # RED-DESKTOP-16/001: a Bearer token that WAS presented but does not
+      # resolve (garbled, or invalidated by a REAL forgot/reset-password) must
+      # be refused (401) on every game CRUD route, never silently re-owned by
+      # the shared local-owner identity. The old
+      # `getAuthUser(req) ?? ensureLocalOwner()` collapsed "no token" and "a
+      # dead token" into the same fallback: a stale account session's save
+      # landed under local-owner with an ordinary 200/"Saved successfully" and
+      # no error anywhere, while the account's own prior games could
+      # simultaneously vanish from the same list.
+      - name: Boot the production server and run the desktop dead-token-owner suite
+        run: node src/integration/desktop-dead-token-owner.test.mjs
+        env:
+          DESKTOP_DEAD_TOKEN_PORT: '4830'
+
       # RED-CLOUD-5/001: server.ts's 40-char option-label clamp
       # (`cutAtWordBoundary`, shared by the report path's `cleanScenario` and
       # the save path's `cleanLabels`) used to be a bare UTF-16 `.slice()`,

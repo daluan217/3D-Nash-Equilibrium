@@ -432,6 +432,15 @@ export default function App() {
   const canOwnGames = !!authToken || localOwnerMode;
   const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});
   const gamesFetchSeqRef = useRef(0);
+  // CodeRabbit on #163 (src/App.tsx:466): readable from inside an async
+  // fetch continuation, same pattern as `payoffsRef` below — a response for
+  // a request sent under an OLD token must not clear whatever CURRENT token
+  // is now committed (e.g. the user re-authenticated while that request was
+  // still in flight). Kept in sync wherever `authToken` commits, regardless
+  // of which of the two setters (`updateAuthToken`, `handleSwitchDbMode`)
+  // changed it.
+  const authTokenRef = useRef(authToken);
+  useLayoutEffect(() => { authTokenRef.current = authToken; });
 
   const updateAuthToken = (token: string | null) => {
     setAuthToken(token);
@@ -442,6 +451,40 @@ export default function App() {
       safeRemoveItem(key);
       safeRemoveItem('nash_sim_token'); // clear legacy as well
     }
+  };
+
+  /**
+   * The ONE place that decides "did this /api/games response mean the
+   * session died". A 401 on any of the four game routes (GET/POST/PATCH/
+   * DELETE) means `resolveGameOwner` refused a presented-but-dead token
+   * (server.ts) — clears it here so the header flips to signed-out and the
+   * #158 sign-in invitation can show; returns whether it fired so each call
+   * site can also drive its own UI (a banner's needsAuth flag, an emptied
+   * list, an alert).
+   *
+   * OPUS-REVIEW-DESKTOP16 N3: before this, only POST/PATCH/DELETE checked
+   * `res.status === 401` themselves (three separate inline copies), and GET
+   * (`refetchUserGames`) did not check it at all — a dead token left the
+   * list showing the account's last-loaded rows and the header still
+   * `@username` until the next write. All four now route through here so a
+   * future 401 handler cannot forget to clear the token or diverge on which
+   * status counts.
+   *
+   * CodeRabbit on #163 (src/App.tsx:466): a request sent under token A that
+   * comes back 401 AFTER the app has already moved on to a DIFFERENT,
+   * CURRENTLY VALID token B (re-authenticated while A's request was still in
+   * flight) must not clear B — A's own guards (the GET `seq` ref, POST/
+   * PATCH's session refs) only protect against a NEWER same-route request
+   * clobbering state, not against a token rotation with no such request in
+   * flight. `requestToken` is the token the CALLER actually attached to
+   * THIS fetch (captured before it went out, not read again afterward,
+   * which would just see the CURRENT value); the token is only cleared when
+   * it still matches what is now committed.
+   */
+  const handleDeadSessionResponse = (res: Response, requestToken: string | null): boolean => {
+    const wasAuthFailure = res.status === 401;
+    if (wasAuthFailure && authTokenRef.current === requestToken) updateAuthToken(null);
+    return wasAuthFailure;
   };
 
   const handleSwitchDbMode = (mode: 'local' | 'cloud') => {
@@ -802,8 +845,22 @@ export default function App() {
     // not overwrite the current list with the other database's rows
     // (CodeRabbit, RED-DESKTOP-10/001 review).
     const seq = ++gamesFetchSeqRef.current;
+    // CodeRabbit on #163: the token THIS request is actually attached to,
+    // captured before the fetch — not re-read afterward, which would just
+    // see whatever is current by then.
+    const requestToken = authToken;
     try {
       const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });
+      // OPUS-REVIEW-DESKTOP16 N3: a 401 here means the session died (dead
+      // token) — unlike a transient 500 (the #142 guard right below, which
+      // must NOT wipe the list), a dead session's list genuinely is not this
+      // identity's any more, so it is cleared, not left stale. Guarded by
+      // `seq` like the success path, so a stale late 401 can't clobber a
+      // newer request's still-in-flight result.
+      if (handleDeadSessionResponse(res, requestToken)) {
+        if (seq === gamesFetchSeqRef.current) setUserCustomGames([]);
+        return undefined;
+      }
       // A failed request is not an empty library (CodeRabbit on #142): a
       // transient 500 during the 409 recovery must not wipe the saved list.
       if (!res.ok) return undefined;
@@ -2146,6 +2203,8 @@ export default function App() {
     // might make, so `finally` sees the same verdict as the response branch.
     const editSessionAtSubmit = editSessionRef.current;
     let staleSession = false;
+    // CodeRabbit on #163: the token THIS request is actually attached to.
+    const requestToken = authToken;
     try {
       const res = await fetch(getApiUrl(`/api/games/${editGameId}`), {
         method: 'PATCH',
@@ -2290,8 +2349,10 @@ export default function App() {
         // RED-DESKTOP-15/001: the invitation render now follows THIS actual
         // 401, not `!authToken` — a local owner's token is always falsy, so
         // that predicate fired for every failure reason, not just this one.
-        const wasAuthFailure = res.status === 401;
-        if (wasAuthFailure) updateAuthToken(null);
+        // OPUS-REVIEW-DESKTOP16 N3: routed through the shared helper (also
+        // used by GET/POST/DELETE) so the token-clearing logic lives in ONE
+        // place.
+        const wasAuthFailure = handleDeadSessionResponse(res, requestToken);
         setEditError(data.error || 'Failed to update game.');
         setEditErrorNeedsAuth(wasAuthFailure);
       }
@@ -2333,6 +2394,8 @@ export default function App() {
     if (deletingGamesRef.current.has(gameId)) return;
     deletingGamesRef.current.add(gameId);
     setDeletingGameIds(Array.from(deletingGamesRef.current));
+    // CodeRabbit on #163: the token THIS request is actually attached to.
+    const requestToken = authToken;
     try {
       const res = await fetch(getApiUrl(`/api/games/${gameId}`), {
         method: 'DELETE',
@@ -2363,7 +2426,11 @@ export default function App() {
         // RED-APP-7/001: same dead-token cleanup as Save/Edit — an expired
         // token must not keep asserting "signed in" (header, Save/Edit's own
         // re-auth affordances) after the server has stopped honoring it.
-        if (res.status === 401) updateAuthToken(null);
+        // OPUS-REVIEW-DESKTOP16 N3/N4: routed through the shared helper (also
+        // used by GET/POST/PATCH); the server now answers this case with the
+        // same "Invalid or expired session." wording the other three routes
+        // use (server.ts's DELETE handler, was "Unauthorized access.").
+        handleDeadSessionResponse(res, requestToken);
         const data = await res.json();
         alert(data.error || 'Failed to delete game.');
       }
@@ -2535,6 +2602,8 @@ export default function App() {
     // branch's own `saveRequestIdRef.current = null` (below) cannot flip
     // this verdict for `finally`.
     let staleSession = false;
+    // CodeRabbit on #163: the token THIS request is actually attached to.
+    const requestToken = authToken;
     try {
       const res = await fetch(getApiUrl('/api/games'), {
         method: 'POST',
@@ -2611,8 +2680,10 @@ export default function App() {
         // not `!authToken` — a local owner's token is always falsy, so that
         // predicate fired for every failure reason (network, validation),
         // not just an expired session.
-        const wasAuthFailure = res.status === 401;
-        if (wasAuthFailure) updateAuthToken(null);
+        // OPUS-REVIEW-DESKTOP16 N3: routed through the shared helper (also
+        // used by GET/PATCH/DELETE) so the token-clearing logic lives in ONE
+        // place.
+        const wasAuthFailure = handleDeadSessionResponse(res, requestToken);
         setSaveError(data.error || 'Failed to save game.');
         setSaveErrorNeedsAuth(wasAuthFailure);
       }

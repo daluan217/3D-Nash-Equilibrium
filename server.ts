@@ -2050,10 +2050,30 @@ function readAuthToken(token: string): { sub: string; ver: number } | null {
   }
 }
 
-function getAuthUser(req: express.Request): User | null {
+/**
+ * Parse a bearer token out of an Authorization header, matching the scheme
+ * CASE-INSENSITIVELY (RFC 7235 auth-schemes are case-insensitive) — used by
+ * `getAuthUser` (the STRICT resolver). `resolveGameOwner`'s own "was
+ * anything presented" question is answered separately, by
+ * `hasAuthorizationHeader` below (header PRESENCE, not Bearer-scheme
+ * parsing) — CodeRabbit CLI on #163: the old exact-case "Bearer " check
+ * meant a lowercase "bearer <dead-token>" header fell through the SAME "no
+ * token at all" path as a genuinely absent header, silently re-owning it
+ * under the local owner exactly like the bug this PR fixes, for that one
+ * narrow spelling; that specific hole is closed here, but the STRUCTURAL
+ * fix for the whole class of "any non-absent header" lives in
+ * `hasAuthorizationHeader`.
+ */
+function parseBearerToken(req: express.Request): string | null {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
-  const token = authHeader.slice("Bearer ".length).trim();
+  if (typeof authHeader !== "string") return null;
+  const m = /^bearer\s+(.+)$/i.exec(authHeader);
+  return m ? m[1].trim() || null : null;
+}
+
+function getAuthUser(req: express.Request): User | null {
+  const token = parseBearerToken(req);
+  if (!token) return null;
   const claims = readAuthToken(token);
   if (!claims) return null;
   const user = loadDB().users.find(u => u.id === claims.sub) ?? null;
@@ -2117,11 +2137,52 @@ function ensureLocalOwner(): User | null {
 }
 
 /**
- * Who owns the saved games for this request: the signed-in user if there is
- * one, otherwise — on the desktop only — the local owner.
+ * Whether this request presented ANY Authorization header at all — not
+ * whether it parses as a Bearer token. The earlier `hasPresentedToken`
+ * asked the narrower, scheme-specific question (`parseBearerToken(req) !==
+ * null`), which meant every OTHER header shape (a bare `Bearer` with no
+ * token, `Bearer` with only whitespace after it, a `Basic`/`Token` scheme,
+ * a second `Authorization` header shadowing a dead Bearer) still read as
+ * "nothing was presented" and fell back to the local owner exactly like
+ * RED-DESKTOP-16/001's original bug, for those specific shapes
+ * (OPUS-REVIEW-DESKTOP16 NOTE 1; CodeRabbit on #163, server.ts:2066 —
+ * flagged "Addressed in 67b3ee4" in error, since that commit never touched
+ * this predicate). Structural, not Bearer-specific, closes the whole class
+ * in one predicate: the ONLY case that means "no credential was offered at
+ * all" is the header being entirely ABSENT (`undefined`); any string value,
+ * however malformed, means a credential WAS offered and a failure to
+ * resolve it must be a 401, never a silent local-owner substitution.
  */
-function getGameOwner(req: express.Request): User | null {
-  return getAuthUser(req) ?? ensureLocalOwner();
+function hasAuthorizationHeader(req: express.Request): boolean {
+  return typeof req.headers.authorization === "string";
+}
+
+/**
+ * Who owns the saved games for this request, and whether a PRESENTED
+ * credential was rejected.
+ *
+ * On the desktop only, NO Authorization header at all falls back to the
+ * shared local owner — the whole point of the feature: no account needed to
+ * save a file to your own disk. A header that WAS presented but did not
+ * resolve to a live user — missing, garbled, wrong scheme, expired, or
+ * invalidated by a password reset elsewhere — must NEVER fall back to that
+ * shared identity: doing so silently misfiles the write under a bucket the
+ * account can't see, with an ordinary 200/"Saved successfully" and no error
+ * anywhere (RED-DESKTOP-16/001 — the account's own prior games can
+ * simultaneously vanish from the same list, and the misfiled game is
+ * unrecoverable without knowing to check the signed-out local-owner
+ * bucket). Every caller must turn a `null` result into a 401, exactly as
+ * the strict `getAuthUser` callers already do.
+ *
+ * OPUS-REVIEW-DESKTOP16 N2: an earlier version returned
+ * `{ owner, presentedDeadToken }`; nothing ever read the second field, so it
+ * is dropped rather than kept as documented-but-unenforced dead code.
+ */
+function resolveGameOwner(req: express.Request): User | null {
+  const user = getAuthUser(req);
+  if (user) return user;
+  if (hasAuthorizationHeader(req)) return null;
+  return ensureLocalOwner();
 }
 
 /** How many games on this device belong to the local owner (0 off the desktop). */
@@ -4169,7 +4230,7 @@ async function startServer() {
 
   // Get User's Custom Games
   app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
-    const user = getGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4181,7 +4242,7 @@ async function startServer() {
 
   // Create/Save a Custom Game
   app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const user = getGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4285,7 +4346,7 @@ async function startServer() {
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
   app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const user = getGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4433,9 +4494,13 @@ async function startServer() {
   }));
 
   app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const user = getGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
-      return res.status(401).json({ error: "Unauthorized access." });
+      // OPUS-REVIEW-DESKTOP16 N4: was "Unauthorized access." — the only one
+      // of the 4 game routes with different wording, and App.tsx alerts it
+      // verbatim with no sign-in affordance. Unified with GET/POST/PATCH so
+      // the message is the same regardless of which route hit it.
+      return res.status(401).json({ error: "Invalid or expired session." });
     }
     const gameId = req.params.id;
 
