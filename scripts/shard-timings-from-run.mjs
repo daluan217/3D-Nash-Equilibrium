@@ -4,18 +4,25 @@
 // Keeps _default/_overhead_ms/_ceiling_ms; a section missing from the run keeps its old value.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-const runId = process.argv[2];
-if (!runId) { console.error('usage: shard-timings-from-run.mjs <run-id>'); process.exit(2); }
+// Several run ids: each section keeps its MAX across the runs. CI timing per section varies
+// run to run (first 24-shard run: median 0.95x the table, p90 1.35x, one section 1.76x), so
+// packing from a single measurement leaves a shard one slow section away from the ceiling.
+const runIds = process.argv.slice(2);
+if (!runIds.length) { console.error('usage: shard-timings-from-run.mjs <run-id> [<run-id> ...]  (max per section across runs)'); process.exit(2); }
+const runId = runIds.join('+');
 const file = new URL('../src/e2e/shard-timings.json', import.meta.url);
 const current = JSON.parse(readFileSync(file, 'utf8'));
-const jobs = JSON.parse(execFileSync('gh', ['run', 'view', runId, '--json', 'jobs'], { encoding: 'utf8' })).jobs
-  .filter((j) => /^e2e smoke \(\d+\/\d+\)$/.test(j.name));
+const jobs = runIds.flatMap((id) => JSON.parse(execFileSync('gh', ['run', 'view', id, '--json', 'jobs'], { encoding: 'utf8' })).jobs
+  .filter((j) => /^e2e smoke \(\d+\/\d+\)$/.test(j.name)));
 const next = { ...current };
 let seen = 0;
 const reportedIds = new Set();
 for (const job of jobs) {
   const log = execFileSync('gh', ['run', 'view', '--job', String(job.databaseId), '--log'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  for (const m of log.matchAll(/SECTION-PASS ([0-9a-z]+) .*\((\d+)ms\)/g)) { next[m[1]] = Number(m[2]); reportedIds.add(m[1]); seen++; }
+  for (const m of log.matchAll(/SECTION-PASS ([0-9a-z]+) .*\((\d+)ms\)/g)) {
+    const ms = Number(m[2]); const prev = reportedIds.has(m[1]) ? next[m[1]] : 0;
+    next[m[1]] = Math.max(prev, ms); reportedIds.add(m[1]); seen++;
+  }
 }
 // The run must have reported EVERY section registered in smoke.mjs, and none over budget —
 // otherwise the table would be a mix of two suites (CodeRabbit on #157: a pre-split run
