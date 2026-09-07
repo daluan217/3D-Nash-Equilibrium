@@ -713,6 +713,14 @@ function extractModalSurfaceBlock(src: string, id: string): string {
         i++;
         continue;
       }
+      // CodeRabbit CLI (this review): a `'` immediately preceded by a word
+      // character (e.g. "Player A's strategy", real JSX text in
+      // MenuDrawer.tsx) is a contraction/possessive, not a string-literal
+      // open — valid JS/TSX has no token that puts a bare `'` directly after
+      // an identifier with no operator between them, so this can only be
+      // prose. Treat it as a plain character; only `"`/`` ` `` and a `'` NOT
+      // preceded by a word character open a real quoted span.
+      if (c === "'" && /[A-Za-z0-9_]/.test(src[i - 1] ?? '')) { out += c; i++; continue; }
       if (c === '"' || c === "'" || c === '`') { q = c; out += c; i++; continue; }
       if (c === '/' && src[i + 1] === '/') {
         while (i < src.length && src[i] !== '\n') { out += ' '; i++; }
@@ -728,6 +736,24 @@ function extractModalSurfaceBlock(src: string, id: string): string {
       i++;
     }
     return out;
+  }
+
+  // CodeRabbit CLI (this review), isolated fixture: JSX text with a
+  // possessive apostrophe (the real shape at MenuDrawer.tsx:321-323,
+  // "Player A's strategy...") must not put the quote-tracker into a stuck
+  // "inside a string" state that then hides a REAL comment (and whatever
+  // bogus markup that comment contains) from every check downstream.
+  {
+    const fixture = [
+      "const x = <p>Player A's strategy evolution over time.</p>;",
+      "// <label>should be stripped, not real markup</label>",
+      'const y = 1;',
+    ].join('\n');
+    const stripped = stripComments(fixture);
+    ok(!/<label>should be stripped/.test(stripped),
+      `stripComments must blank a real "//" comment that follows a possessive apostrophe in JSX text, not leave it (and its fake <label>) as live markup: ${JSON.stringify(stripped)}`);
+    ok(/Player A's strategy/.test(stripped),
+      'stripComments must leave the possessive apostrophe itself untouched (it is prose, not a comment or a string to blank)');
   }
 
   /** Every `<TAG ...>` opening tag matching `names`, with its FULL attribute
