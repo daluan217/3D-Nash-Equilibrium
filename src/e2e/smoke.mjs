@@ -5245,12 +5245,19 @@ try {
         }, viewport.w === 700 ? 658 : viewport.w, { timeout: 10000 }).catch(() => {});
       }
       const plotId = await page.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
-      for (let attempt = 0; attempt < 3; attempt++) {
+      // cr review (CLI, this branch): the retry loop never recorded whether
+      // any attempt actually settled the camera -- silently proceeding on a
+      // camera that never converged would calibrate against the WRONG
+      // viewing angle. Track it and bail out (no isolation/screenshot spent)
+      // rather than return a diagonal measured under an unverified camera.
+      let camOk = false;
+      for (let attempt = 0; attempt < 3 && !camOk; attempt++) {
         await page.evaluate(({ id, eye, center }) => window.Plotly.relayout(id, { 'scene.camera': { eye, center, up: { x: 0, y: 0, z: 1 } } }), { id: plotId, eye, center });
         await page.waitForTimeout(300);
         const e = await page.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
-        if (e && Math.hypot(e.x - eye.x, e.y - eye.y, e.z - eye.z) < 0.02) break;
+        camOk = !!e && Math.hypot(e.x - eye.x, e.y - eye.y, e.z - eye.z) < 0.02;
       }
+      if (!camOk) return { rejected: 'camera-did-not-settle' };
       // Isolate ONE corner: hide everything else continuum-related plus the
       // position sphere; force this corner's own visibility true regardless
       // of what the app's dynamic collapse rule decided for THIS camera
@@ -5282,7 +5289,19 @@ try {
           document.head.appendChild(style);
         }
       });
-      await page.waitForFunction(() => document.querySelector('.js-plotly-plot')?._fullLayout?.showlegend === false ? true : null, null, { timeout: 5000 }).catch(() => {});
+      // cr review (CLI, this branch): `showlegend === false` only proves the
+      // restyle CALL landed, not that every other trace's own `visible`
+      // flag actually flipped yet -- matching variant A/B's own established
+      // "shown" gate elsewhere in this section, poll for both together.
+      await page.waitForFunction(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        if (!gd || gd._fullLayout?.showlegend !== false) return null;
+        const data = gd._fullData ?? gd.data ?? [];
+        const cornerIdx = data.findIndex((t) => t.legendgroup === 'continuumNE' && t.mode === 'markers' && t.meta?.continuumRole === 'corner');
+        if (cornerIdx < 0) return null;
+        const contaminated = data.some((t, i) => i !== cornerIdx && t.visible !== false);
+        return contaminated ? null : true;
+      }, null, { timeout: 5000 }).catch(() => {});
       // Director-routed (CI shard 27/28, second run, job 101778098377):
       // a FIXED 200ms sleep here under-measured a real corner on a loaded
       // CI runner (calibratedDiag read 14.87 for variant B, well under the
@@ -5347,16 +5366,48 @@ try {
           if (count >= 15 * dsf * dsf) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
         }
         if (!blobs.length) return null;
-        // Union of every qualifying blob, NOT just the largest -- kept
-        // deliberately: this is the SAME convention `spanOf`/every other
-        // "one marker's own footprint" measurement in this file already
-        // uses (a genuine diamond outline can anti-alias-split into >1
-        // connected component at its narrowest point; using only the
-        // largest fragment would UNDER-measure a split glyph, and this
-        // calibration must match what it calibrates FOR, not diverge from
-        // it).
-        const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
-        const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+        // Union of every qualifying blob within ONE cluster, NOT just the
+        // largest -- kept deliberately: this is the SAME convention
+        // `spanOf`/every other "one marker's own footprint" measurement in
+        // this file already uses (a genuine diamond outline can
+        // anti-alias-split into >1 connected component at its narrowest
+        // point; using only the largest fragment would UNDER-measure a
+        // split glyph, and this calibration must match what it calibrates
+        // FOR, not diverge from it).
+        //
+        // cr review (CLI, this branch): union blindly across EVERY
+        // qualifying blob risked baking in a stray blob the isolation step
+        // failed to hide (e.g. a not-yet-applied restyle, or a genuinely
+        // separate contaminated pixel region) as if it were part of the
+        // same glyph, inflating the diagonal. Cluster first by AABB
+        // proximity -- anti-alias fragments of one glyph sit within a few
+        // px of each other, a truly separate blob sits much further away --
+        // and reject the whole calibration if more than one cluster
+        // survives, rather than silently union across two different glyphs.
+        const gap = 10;
+        const aabbDist = (a, b) => {
+          const dx = Math.max(0, Math.max(a.minx, b.minx) - Math.min(a.maxx, b.maxx));
+          const dy = Math.max(0, Math.max(a.miny, b.miny) - Math.min(a.maxy, b.maxy));
+          return Math.hypot(dx, dy);
+        };
+        const clusters = blobs.map((b) => ({ minx: b.minx, maxx: b.maxx, miny: b.miny, maxy: b.maxy }));
+        let mergedAny = true;
+        while (mergedAny) {
+          mergedAny = false;
+          for (let i = 0; i < clusters.length && !mergedAny; i++) {
+            for (let j = i + 1; j < clusters.length; j++) {
+              if (aabbDist(clusters[i], clusters[j]) <= gap) {
+                const a = clusters[i], b = clusters[j];
+                clusters.splice(j, 1);
+                clusters[i] = { minx: Math.min(a.minx, b.minx), maxx: Math.max(a.maxx, b.maxx), miny: Math.min(a.miny, b.miny), maxy: Math.max(a.maxy, b.maxy) };
+                mergedAny = true;
+                break;
+              }
+            }
+          }
+        }
+        if (clusters.length > 1) return { rejected: 'multiple-separated-clusters', clusterCount: clusters.length, blobs };
+        const { minx, maxx, miny, maxy } = clusters[0];
         return { diag: Math.hypot(maxx - minx, maxy - miny), blobs };
       }, shot.toString('base64'));
       return scan ?? null;
@@ -5613,7 +5664,7 @@ try {
       const controlCal = await calibrateMarkerDiagonal({
         vals: [0, 0, 1, 0, 4, 0, 0, 1], eye: DEFAULT_EYE, viewport: { mode: 'forced', w: 700, h: 500 },
       });
-      record('precondition: a single isolated corner marker was measured to calibrate the marker-sized window', !!controlCal, JSON.stringify(controlCal));
+      record('precondition: a single isolated corner marker was measured to calibrate the marker-sized window', !!controlCal?.diag, JSON.stringify(controlCal));
       const shotControl = await plot.screenshot();
       // Localization ONLY (never the verdict, per RED-MATH-15/001's own
       // methodology): the fixture's own 3 data points, projected through
@@ -5845,7 +5896,7 @@ try {
             vals: [-5, 2, 1, -1, -5, -5, 6, 6], eye: { x: 1.6, y: -1.6, z: 1.1 },
             viewport: { mode: 'real', width: 320, height: 700 },
           });
-          record('precondition (RED-MATH-17/001 variant A): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17, JSON.stringify(cal17));
+          record('precondition (RED-MATH-17/001 variant A): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17?.diag, JSON.stringify(cal17));
           const collapsed17 = await p17.waitForFunction(() => {
             const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
             return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
@@ -6025,7 +6076,7 @@ try {
             vals: [-5, 2, 1, -1, -5, -5, 6, 6], eye: { x: 1.6, y: -1.6, z: 1.1 },
             viewport: { mode: 'real', width: 320, height: 700 }, hasTouch: true, isMobile: true,
           });
-          record('precondition (RED-MATH-17/001 variant B): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17m, JSON.stringify(cal17m));
+          record('precondition (RED-MATH-17/001 variant B): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17m?.diag, JSON.stringify(cal17m));
           // cr review (director-routed, GitHub thread on smoke.mjs:5785,
           // Minor -- valid): corner traces default to VISIBLE at first
           // static render, so reading `visible !== 'legendonly'` as "shown"
@@ -6233,7 +6284,7 @@ try {
           const cal16 = await calibrateMarkerDiagonal({
             vals: [1, 1, -4, 1, 5, -1, -6, 3], eye: eye16, viewport: { mode: 'forced', w: 700, h: 500 },
           });
-          record('precondition (RED-MATH-16/001 row): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal16, JSON.stringify(cal16));
+          record('precondition (RED-MATH-16/001 row): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal16?.diag, JSON.stringify(cal16));
           const collapsed16 = await p16.waitForFunction(() => {
             const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
             return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
