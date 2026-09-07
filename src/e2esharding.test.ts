@@ -180,8 +180,10 @@ const expectedWebkitShards = [...new Set(
 assert.deepStrictEqual(webkitShards, expectedWebkitShards,
   'webkit-shards.mjs must compute exactly the shards §70/§75/§83 are packed into — no more, no less');
 const e2eSmokeJob = workflowJob('e2e_smoke');
-assert.match(e2eSmokeJob, /node src\/e2e\/webkit-shards\.mjs \| grep -qx "\$\{\{ matrix\.shard \}\}"/,
-  'the e2e_smoke job must decide per-shard WebKit installation FROM webkit-shards.mjs, not a hand-written shard list');
+assert.match(e2eSmokeJob, /if ! webkit_shards="\$\(node src\/e2e\/webkit-shards\.mjs\)"; then/,
+  'the e2e_smoke job must decide per-shard WebKit installation FROM webkit-shards.mjs, not a hand-written shard list, and must capture its exit code explicitly (a piped `if node ... | grep` reads grep\'s exit code, not node\'s, and silently falls back to chromium-only on a script crash)');
+assert.match(e2eSmokeJob, /grep -qx "\$SHARD"/,
+  'the shard number must reach the script via env (SHARD), not inline `${{ }}` interpolation into the run body');
 assert.match(e2eSmokeJob, /playwright install --with-deps \$\{\{ steps\.webkit_need\.outputs\.browsers \}\}/,
   'the e2e_smoke job must install exactly the browser set webkit_need computed');
 assert.doesNotMatch(e2eSmokeJob, /playwright install --with-deps chromium\s*$/m,

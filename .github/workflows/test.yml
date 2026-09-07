@@ -470,8 +470,20 @@ jobs:
       # never falls out of sync with where §70/§75/§83 actually land.
       - name: Determine whether this shard runs a WebKit-guarded section
         id: webkit_need
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
-          if node src/e2e/webkit-shards.mjs | grep -qx "${{ matrix.shard }}"; then
+          # CodeRabbit: piping node straight into `if ... | grep` makes the
+          # `if` see grep's exit code, not node's — a webkit-shards.mjs crash
+          # (e.g. a renamed section) would silently fall through to the
+          # chromium-only branch instead of failing the job. Capture first so
+          # a non-zero node exit is caught explicitly. SHARD comes through
+          # env, not inline `${{ }}` interpolation into the script body.
+          if ! webkit_shards="$(node src/e2e/webkit-shards.mjs)"; then
+            echo "::error::webkit-shards.mjs failed to compute which shards need WebKit"
+            exit 1
+          fi
+          if printf '%s\n' "$webkit_shards" | grep -qx "$SHARD"; then
             echo "browsers=chromium webkit" >> "$GITHUB_OUTPUT"
           else
             echo "browsers=chromium" >> "$GITHUB_OUTPUT"
