@@ -15,7 +15,7 @@
  *   node src/e2e/webkit-shards.mjs   # prints the needed shard numbers, one per line
  */
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { assignShards } from './selection.js';
 
@@ -49,6 +49,13 @@ export function shardsNeedingWebkit(smokeSource = readFileSync(join(here, 'smoke
   return [...shards].sort((a, b) => a - b);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// OPUS-REVIEW-WEBKIT N4: `file://${process.argv[1]}` breaks silently on a
+// path containing a space (or any character `file://` string-concatenation
+// doesn't percent-encode) — prints NOTHING and exits 0, invisible to the
+// workflow's `if ! webkit_shards=$(...)` capture (a script that ran but
+// produced no output is not a script that failed). pathToFileURL() encodes
+// the path the same way import.meta.url itself was produced, so the
+// comparison is exact regardless of what characters the path contains.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   console.log(shardsNeedingWebkit().join('\n'));
 }

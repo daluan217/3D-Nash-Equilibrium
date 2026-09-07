@@ -70,6 +70,17 @@ if (helperMatch) {
   check('launchWebkitOrSkip records the local-skip path via recordSkip(...)', /recordSkip\(/.test(helperBody));
   check('launchWebkitOrSkip records the CI-failure path via record(..., false, ...)',
     /record\(\s*`[^`]*`\s*,\s*false\b/.test(helperBody));
+
+  // OPUS-REVIEW-WEBKIT FIX-BEFORE-MERGE 1: every check above tests the SHAPE
+  // (which function is called, where it's defined) but not the CONDITION
+  // that picks between them. `if (process.env.CI)` -> `if (!process.env.CI)`
+  // or `if (process.env.CI && process.env.STRICT_WEBKIT)` restores the exact
+  // pre-#168 defect (WebKit never actually gated in CI) with every check
+  // above still green. This pins the condition itself: the CI arm must FAIL
+  // and the non-CI arm must SKIP, in that branch order.
+  check('the CI arm FAILS and the non-CI arm SKIPS (the condition, not just the shapes)',
+    /if \(process\.env\.CI\) \{\s*record\([\s\S]{0,240}?,\s*false\b[\s\S]{0,80}?\} else \{\s*recordSkip\(/
+      .test(helperBody));
 }
 
 // recordSkip itself must exist and must not push pass: true.

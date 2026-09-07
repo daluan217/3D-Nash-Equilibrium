@@ -17,9 +17,22 @@ import { dirname, join } from 'node:path';
  * than the table it was packed from) — a 213 s mean, 288 s jobs, too close to
  * the ceiling — so 24 shards. The first 24-shard run then showed per-section
  * CI variance of up to 1.76x a single measurement (one 324 s job), so the
- * table now keeps the MAX per section across runs and there are 28 shards.
+ * table now keeps the MAX per section across runs and there were 28 shards.
+ *
+ * OPUS-REVIEW-WEBKIT N1 (2026-09-07): §70/§75/§83's timings had been measured
+ * while their WebKit case was being skipped (#166's defect) — once #168 made
+ * WebKit actually run there, the real numbers are 14-70% higher (§83:
+ * 100 s -> 170 s). Repacking those three real numbers alone, at 28 shards,
+ * pushed 7 OTHER shards over the 200 s headroom line too (this packer is
+ * longest-first bin-packing: changing 3 inputs reshuffles every shard's
+ * membership, not just the changed ones). 29 shards clears all but one —
+ * §70 alone now measures 207,990 ms, over the 200 s headroom line by itself,
+ * which no amount of splitting into MORE shards can fix (one section can't
+ * be packed smaller than itself). See e2esharding.test.ts's headroom assert
+ * for how a single oversized section is distinguished from a genuine
+ * multi-section pileup.
  */
-export const SHARD_COUNT = 28;
+export const SHARD_COUNT = 29;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));
