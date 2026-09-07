@@ -211,7 +211,12 @@ export function Walkthrough({
     // the tour and its onEnter replaced the matrix under the dialog — a
     // Save then stored payoffs the user never saw). No key reaches the tour
     // while any ModalSurface is registered open, or while the key was typed
-    // inside any other dialog (the overlays that do not use ModalSurface).
+    // inside any OTHER `role="dialog"` (belt-and-suspenders: every dialog in
+    // the app renders through <ModalSurface> as of round15/round16 — grep
+    // `role="dialog"` outside ModalSurface.tsx and this file's own wrapper
+    // finds none — so `ModalRegistry.isAnyOpen()` alone already covers this
+    // today; this clause is what keeps it covered if a future overlay ever
+    // hand-rolls role="dialog" without going through the registry).
     const insideOtherDialog = (t: EventTarget | Element | null) =>
       t instanceof Element && !!t.closest('[role="dialog"]:not([aria-label="Guided tour"])');
     const onKey = (e: KeyboardEvent) => {

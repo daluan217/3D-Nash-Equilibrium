@@ -6276,6 +6276,11 @@ try {
   //      fail by name (fall-through direction; pinned deterministically —
   //      not by CI timing — in modalsurface.test.ts, whose OTHER mutation,
   //      useLayoutEffect->useEffect alone, is the tour-advance direction).
+  //      OPUS-REVIEW-MODAL17 N1: `overlay?.visibility === 'hidden'` is the
+  //      ONE record below that discriminates the fix — `inert` alone
+  //      already removed the tour from elementFromPoint on the pre-#165
+  //      tree (measured on BOTH chromium and webkit), so the elementFromPoint
+  //      and surface-outcome-unchanged records are labeled CONTROL, not FIX.
   section('83', 'Walkthrough: the tour overlay is neither hit-testable nor visible while any ModalSurface is open, in both directions (RED-APP-16/001)', async () => {
     const TOUR_SEL = '[role="dialog"][aria-label="Guided tour"]';
     const tourStepOf = (p) => p.evaluate((sel) => {
@@ -6326,6 +6331,16 @@ try {
       await openSurface(p);
       await p.locator(surfaceOpenSelector).first().waitFor({ state: 'visible', timeout: 8000 });
 
+      // OPUS-REVIEW-MODAL17 N1: `overlay?.visibility === 'hidden'` is the ONE
+      // record here that actually fails on the pre-#165 (#162) tree — `inert`
+      // ALONE already removed the tour from `elementFromPoint` (measured:
+      // reverting to the #162 shape — inert on the exit pill/card only, no
+      // wrapper visibility — still reads `insideTour: false` below, on BOTH
+      // chromium and webkit, not just chromium as first measured). This is
+      // the discriminating check for the fall-through direction; the
+      // tour-advance direction is pinned by source text in
+      // modalsurface.test.ts (useLayoutEffect vs useEffect), not behaviorally
+      // here — a settled/non-race harness cannot reproduce that timing window.
       const overlay = await tourOverlayState(p);
       record(`[${label}] FIX: the tour overlay is inert while a surface is open (RED-APP-16/001)`, overlay?.inert === true, JSON.stringify(overlay));
       record(`[${label}] FIX: the tour overlay computes visibility:hidden while a surface is open — not just hit-testing, PAINTING too (RED-APP-16/001)`, overlay?.visibility === 'hidden', JSON.stringify(overlay));
@@ -6339,8 +6354,13 @@ try {
       record(`[${label}] the tour control's geometry is unchanged while hidden+inert (state preserved, not removed)`,
         !!bbAfter && Math.abs(bbAfter.x - bbBefore.x) < 1 && Math.abs(bbAfter.y - bbBefore.y) < 1, JSON.stringify({ bbBefore, bbAfter }));
 
+      // CONTROL, not FIX (OPUS-REVIEW-MODAL17 N1): this also passes on the
+      // pre-#165 tree — `inert` alone already excludes an element from
+      // elementFromPoint. It still earns its place: it proves the click
+      // really lands somewhere else (not on nothing), which the visibility
+      // check above does not by itself show.
       const hit = await hitAt(p, cx, cy);
-      record(`[${label}] FIX: elementFromPoint at the tour control's old position is NOT inside the tour (RED-APP-16/001)`, hit.insideTour === false, JSON.stringify(hit));
+      record(`[${label}] CONTROL: elementFromPoint at the tour control's old position is NOT inside the tour (confirms the click lands on real content, not proof of the fix — OPUS-REVIEW-MODAL17 N1)`, hit.insideTour === false, JSON.stringify(hit));
 
       // ── test arm: click with the (hidden) tour present ──
       await p.mouse.click(cx, cy);
@@ -6374,8 +6394,15 @@ try {
       await p.locator(surfaceOpenSelector).first().waitFor({ state: 'visible', timeout: 8000 });
       await p.mouse.click(cx, cy);
       await settleFrames(p);
+      // CONTROL, not FIX (OPUS-REVIEW-MODAL17 N1): the click falls through
+      // to the same node in both arms whether or not the wrapper is
+      // visibility:hidden (measured on both engines), so this equality also
+      // holds on the pre-#165 tree — it is not, by itself, evidence of the
+      // fix. Kept because it is still the check for "backdrop click
+      // semantics unchanged": the fix must not make the surface underneath
+      // behave any differently than if the tour had never rendered at all.
       const surfaceOpenAfterControl = await p.locator(surfaceOpenSelector).first().isVisible().catch(() => false);
-      record(`[${label}] FIX: the surface's own outcome from this exact click is UNCHANGED whether the (now-hidden) tour is present or was never there — "backdrop click semantics unchanged" (RED-APP-16/001)`,
+      record(`[${label}] CONTROL: the surface's own outcome from this exact click is UNCHANGED whether the (now-hidden) tour is present or was never there — "backdrop click semantics unchanged" (OPUS-REVIEW-MODAL17 N1)`,
         surfaceOpenAfterTest === surfaceOpenAfterControl, JSON.stringify({ surfaceOpenAfterTest, surfaceOpenAfterControl }));
       await closeSurface(p);
     }
@@ -6434,6 +6461,38 @@ try {
   //      query. Mutation: delete the `[data-modal-surface]` print rule from
   //      index.css → this fails by name. Chromium only — page.pdf() and
   //      print-media emulation are Chromium-specific Playwright APIs.
+  //      OPUS-REVIEW-MODAL17 F1: the fixed/sticky scan is a PROXY the
+  //      shipping rule's other half (`display: none`) is not the only way
+  //      to satisfy — dropping `display: none` from index.css while keeping
+  //      `position: static` still reads 0 fixed/sticky survivors (nothing
+  //      computes fixed/sticky any more) while the overlay prints INTO the
+  //      document flow (measured: `display: flex`, 1024×3672px, drawer text
+  //      rasterized onto the page). Added a direct `display === 'none'`
+  //      check on the open surface (this alone already closes the hole:
+  //      `getComputedStyle(...).display` cannot read 'flex' while also
+  //      being excluded from print). Also tried Opus's suggested oracle —
+  //      byte-length equality of page.pdf() against a no-dialog baseline —
+  //      and could NOT reproduce "byte-identical" on this harness: TEXT
+  //      content differed by exactly one blank line (pdftotext -layout) but
+  //      raw PDF bytes differed by ~28 KB, consistently, on BOTH the drawer
+  //      and the save-preset runs, including the very FIRST capture after
+  //      the baseline — i.e. real, reproducible PDF-internal variance
+  //      (almost certainly font-subset/embedding differences from a dynamic
+  //      page, not from the print CSS) rather than a timing flake. A byte-
+  //      equality assertion on this tree fails on the CORRECT, fixed code
+  //      for a reason unrelated to what it claims to test — exactly the
+  //      "check that cannot fail for the reason it claims" COMMON warns
+  //      against, just inverted (a false failure, not a false pass). Also
+  //      tried the open surface's own `innerText` (should be authoritatively
+  //      empty once its computed display is 'none') — measured NON-empty
+  //      even while `display` correctly reads 'none' under
+  //      `emulateMedia('print')` on this Playwright/Chromium combination
+  //      (a real emulation quirk, not a defect: a REAL print — page.pdf()
+  //      itself — renders correctly, as the byte-count/page-count
+  //      investigation confirmed). Landed on `display === 'none'` alone:
+  //      it directly, deterministically contradicts the exact defect F1
+  //      demonstrated (measured `display: flex` on the broken tree) and
+  //      cannot pass while that shape ships.
   section('84', 'print: an open ModalSurface overlay is excluded from print, no dialog scrim on any page (RED-APP-16/006)', async () => {
     const p = await newTrackedPage({ viewport: { width: 1024, height: 900 } });
     await registerAndLogin(p, 'e84');
@@ -6448,6 +6507,14 @@ try {
       }
       return hits;
     });
+    // OPUS-REVIEW-MODAL17 F1: checks the OTHER half of the shipping rule —
+    // a partial edit that drops `display: none` but keeps `position: static`
+    // passes fixedOrStickySurvivors() (nothing is fixed/sticky any more) yet
+    // still paints the whole dialog into the printed page.
+    const openSurfaceDisplay = () => p.evaluate(() => {
+      const el = document.querySelector('[data-modal-surface]');
+      return el ? getComputedStyle(el).display : null;
+    });
 
     await p.emulateMedia({ media: 'print' });
     const controlHits = await fixedOrStickySurvivors();
@@ -6460,6 +6527,14 @@ try {
     await p.emulateMedia({ media: 'print' });
     const drawerHits = await fixedOrStickySurvivors();
     record('FIX: with the drawer open, print stylesheet leaves 0 fixed/sticky elements (RED-APP-16/006)', drawerHits.length === 0, JSON.stringify(drawerHits));
+    const drawerDisplay = await openSurfaceDisplay();
+    record('FIX: with the drawer open, the [data-modal-surface] overlay itself computes display:none under print media (OPUS-REVIEW-MODAL17 F1)', drawerDisplay === 'none', `display=${drawerDisplay}`);
+    // Real print-pipeline sanity: page.pdf() actually succeeds with a
+    // dialog open — the actual print path, not only the computed checks
+    // above. (Not asserted byte-identical to a no-dialog baseline — see the
+    // section comment: this harness could not reproduce that reliably.)
+    const pdfDrawer = await p.pdf({ printBackground: true, format: 'Letter' }).catch(() => null);
+    record('precondition: page.pdf() produced real output with the drawer open (proves this is the real print pipeline, harness sanity)', !!pdfDrawer && pdfDrawer.length > 10000, `bytes=${pdfDrawer?.length ?? 0}`);
     await p.emulateMedia({ media: 'screen' });
     await p.keyboard.press('Escape');
     await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {});
@@ -6472,12 +6547,8 @@ try {
     await p.emulateMedia({ media: 'print' });
     const saveHits = await fixedOrStickySurvivors();
     record('FIX: with the centered Save-preset dialog open, print stylesheet leaves 0 fixed/sticky elements too (RED-APP-16/006)', saveHits.length === 0, JSON.stringify(saveHits));
-
-    // Real print-pipeline sanity: a page.pdf() actually succeeds with a
-    // dialog open — the actual print path, not only the computed-style
-    // check above.
-    const pdf = await p.pdf({ printBackground: true, format: 'Letter' }).catch(() => null);
-    record('precondition: page.pdf() produced real output with a dialog open (proves this is the real print pipeline, harness sanity)', !!pdf && pdf.length > 10000, `bytes=${pdf?.length ?? 0}`);
+    const saveDisplay = await openSurfaceDisplay();
+    record('FIX: with the Save-preset dialog open, the [data-modal-surface] overlay itself computes display:none under print media (OPUS-REVIEW-MODAL17 F1)', saveDisplay === 'none', `display=${saveDisplay}`);
 
     await p.emulateMedia({ media: 'screen' });
     await p.keyboard.press('Escape');

@@ -609,14 +609,18 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // RED-APP-16/002 — DownloadModal.tsx:139-144's icon-only close button had no
 // accessible name (empty AX name) and was the panel's first focusable, so
 // useModalTabTrap's open-time focus landed there with nothing for a screen
-// reader to announce but "button". Direct fix, plus a STRUCTURAL guard
-// (not a per-surface patch): every icon-only `<button onClick={onClose}>`
-// (or `close`) whose entire body is a single self-closing icon element must
-// carry an aria-label/title — this is the exact shape both AdminDashboard's
-// original bug (OPUS-REVIEW-MODAL16 F1) and this one share, and would catch
-// a future occurrence in any ModalSurface-backed dialog. A button with real
-// text content (e.g. "Close Dialog") is NOT flagged — it already has an
-// accessible name from its text.
+// reader to announce but "button". Direct fix, plus a STRUCTURAL guard (not
+// a per-surface patch): every icon-only `<button>` whose body carries no
+// visible text must carry a real aria-label/title — an unlabeled icon-only
+// BUTTON is the defect; which handler it calls is incidental (an earlier
+// draft filtered to only `onClick={onClose|close}` handlers and a fixed
+// `filesToScan` list — OPUS-REVIEW-MODAL17 N2 measured 8 escape shapes past
+// that filter: `aria-label={''}`, an empty sr-only span alongside the icon,
+// and any handler name other than literal onClose/close, e.g.
+// `onClick={() => setShowModal(false)}` or `onClick={handleClose}`. Zero of
+// those shapes exist for real on this tree — this is closing a hole, not a
+// found defect). A button with real text content (e.g. "Close Dialog") is
+// NOT flagged — it already has an accessible name from its text.
 {
   // Balanced-tag extraction (same technique as extractBraced above, applied
   // to <button>...</button> pairs instead of {...}) so a button containing
@@ -651,55 +655,89 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     }
     return out;
   }
-  function findUnlabeledIconCloseButtons(src: string): string[] {
+  // True if `body` renders anything an AT would read as text: strips JSX
+  // comments, drops every self-closing element (icons, <br/>, etc. — they
+  // contribute nothing here), then repeatedly drops EMPTY element pairs
+  // (an sr-only span with nothing inside renders no text either — OPUS-
+  // REVIEW-MODAL17 N2's "empty sr-only span" hole) until nothing more
+  // collapses, and checks whatever text remains.
+  function bodyHasAccessibleText(body: string): boolean {
+    let s = body.replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+    s = s.replace(/<[A-Za-z][\w.]*\b[^<>]*\/>/g, '');
+    let prev: string;
+    do {
+      prev = s;
+      s = s.replace(/<([A-Za-z][\w.]*)\b[^<>]*>\s*<\/\1>/g, '');
+    } while (s !== prev);
+    return s.trim().length > 0;
+  }
+  // True if `attr` is present on `openTag` with a NON-empty value — rejects
+  // `attr=""` and the braced empty-string-literal shapes `attr={''}` /
+  // `attr={""}` (OPUS-REVIEW-MODAL17 N2's `aria-label={''}` hole); anything
+  // else inside braces (a variable, a template literal, a ternary) is
+  // treated as potentially real, same as before.
+  function hasNonEmptyAttr(openTag: string, attr: string): boolean {
+    const quoted = new RegExp(`\\b${attr}="([^"]*)"`).exec(openTag);
+    if (quoted) return quoted[1].trim().length > 0;
+    const braced = new RegExp(`\\b${attr}=\\{([^}]*)\\}`).exec(openTag);
+    if (braced) {
+      const v = braced[1].trim();
+      if (v === "''" || v === '""' || v === '``') return false;
+      return v.length > 0;
+    }
+    return false;
+  }
+  function findUnlabeledIconButtons(src: string): string[] {
     const problems: string[] = [];
     for (const { openTag, body } of extractButtons(src)) {
-      const isCloseHandler = /onClick=\{[\s\S]*?\b(?:onClose|close)\b/.test(openTag);
-      if (!isCloseHandler) continue;
-      const stripped = body.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').trim();
-      const isIconOnly = /^<[A-Za-z][\w.]*\b[^<>]*\/>$/.test(stripped);
-      if (!isIconOnly) continue; // has real text content (or something more complex) — accessible name comes from there
-      const hasName = /\baria-label=(?:"[^"]+"|\{[^}]+\})/.test(openTag)
-        || /\btitle=(?:"[^"]+"|\{[^}]+\})/.test(openTag)
-        || /\baria-labelledby=/.test(openTag);
+      if (bodyHasAccessibleText(body)) continue; // real text/content — accessible name comes from there
+      const hasName = hasNonEmptyAttr(openTag, 'aria-label') || hasNonEmptyAttr(openTag, 'title') || /\baria-labelledby=/.test(openTag);
       if (!hasName) problems.push(openTag.replace(/\s+/g, ' ').slice(0, 120));
     }
     return problems;
   }
 
-  // Known-positive fixtures for the extractor ITSELF: an unlabeled icon-only
-  // close button must be flagged; the same shape WITH aria-label must not;
-  // a text-content close button (no icon) must not (has its own name); a
-  // close handler with unrelated icon children plus real text must not
-  // (mirrors DownloadModal's OWN second "Close Dialog" text button).
+  // Known-positive fixtures for the extractor ITSELF, incl. OPUS-REVIEW-
+  // MODAL17 N2's four measured escape shapes (the last two exist ONLY
+  // because this version drops the onClose/close handler-name filter).
   {
     const fixtures: [string, string, boolean][] = [
       ['unlabeled icon-only', '<button onClick={onClose} className="p-1"><X className="w-4 h-4" /></button>', true],
       ['labeled icon-only', '<button onClick={onClose} aria-label="Close dialog" className="p-1"><X className="w-4 h-4" /></button>', false],
       ['text-only close', '<button onClick={onClose} className="px-4">Close Dialog</button>', false],
-      ['unrelated handler', '<button onClick={handleSubmit}><X className="w-4 h-4" /></button>', false],
+      ['unrelated handler, but still unlabeled icon-only (N2)', '<button onClick={handleSubmit}><X className="w-4 h-4" /></button>', true],
+      ['empty aria-label={\'\'} (N2)', '<button onClick={onClose} aria-label={\'\'}><X className="w-4 h-4" /></button>', true],
+      ['empty aria-label="" (N2)', '<button onClick={onClose} aria-label=""><X className="w-4 h-4" /></button>', true],
+      ['icon + empty sr-only span (N2)', '<button onClick={onClose}><X className="w-4 h-4" /><span className="sr-only"></span></button>', true],
+      ['icon + NON-empty sr-only span', '<button onClick={onClose}><X className="w-4 h-4" /><span className="sr-only">Close</span></button>', false],
+      ['setState-arrow handler, unlabeled (N2)', '<button onClick={() => setShowModal(false)}><X className="w-4 h-4" /></button>', true],
+      ['handleClose handler, unlabeled (N2)', '<button onClick={handleClose}><X className="w-4 h-4" /></button>', true],
+      ['handleClose handler, labeled', '<button onClick={handleClose} aria-label="Close"><X className="w-4 h-4" /></button>', false],
     ];
     for (const [label, src, shouldFlag] of fixtures) {
-      const problems = findUnlabeledIconCloseButtons(src);
-      ok((problems.length > 0) === shouldFlag, `findUnlabeledIconCloseButtons fixture "${label}" must ${shouldFlag ? '' : 'NOT '}flag: ${src}`);
+      const problems = findUnlabeledIconButtons(src);
+      ok((problems.length > 0) === shouldFlag, `findUnlabeledIconButtons fixture "${label}" must ${shouldFlag ? '' : 'NOT '}flag: ${src}`);
     }
   }
 
-  const filesToScan = [
-    'src/App.tsx',
-    'src/components/MenuDrawer.tsx',
-    'src/components/DownloadModal.tsx',
-    'src/components/AdminDashboard.tsx',
-  ];
+  // Full scan, not a hand-kept list (OPUS-REVIEW-MODAL17 N2): every .tsx
+  // directly under src/components, plus src/App.tsx — a NEW component file
+  // is picked up automatically, never silently skipped.
+  const filesToScan = readdirSync('src/components')
+    .filter((f) => f.endsWith('.tsx'))
+    .map((f) => `src/components/${f}`)
+    .concat('src/App.tsx');
+  ok(filesToScan.includes('src/components/DownloadModal.tsx') && filesToScan.includes('src/components/AdminDashboard.tsx') && filesToScan.includes('src/App.tsx'),
+    'the dynamic file list must still include the files this finding actually touched (harness sanity)');
   let scannedButtons = 0;
   for (const file of filesToScan) {
     const src = readFileSync(file, 'utf8');
-    scannedButtons += extractButtons(src).filter((b) => /onClick=\{[\s\S]*?\b(?:onClose|close)\b/.test(b.openTag)).length;
-    const problems = findUnlabeledIconCloseButtons(src);
+    scannedButtons += extractButtons(src).length;
+    const problems = findUnlabeledIconButtons(src);
     ok(problems.length === 0,
-      `${file}: an icon-only close button must have an accessible name (aria-label/title) (RED-APP-16/002) — found: ${problems.join(' | ')}`);
+      `${file}: an icon-only button with no visible text must have an accessible name (aria-label/title) (RED-APP-16/002) — found: ${problems.join(' | ')}`);
   }
-  ok(scannedButtons >= 6, `expected to scan at least 6 onClose-handling buttons across ${filesToScan.join(', ')}, found ${scannedButtons}`);
+  ok(scannedButtons >= 6, `expected to scan at least 6 buttons across ${filesToScan.join(', ')}, found ${scannedButtons}`);
 }
 
 // RED-APP-16/006 — @media print used to hide overlays by a HAND-ENUMERATED
