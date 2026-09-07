@@ -5784,7 +5784,15 @@ try {
     const p = trackPage(await ctx.newPage());
     try {
     await p.goto(BASE, { waitUntil: 'networkidle' });
-    const tourStep = () => p.evaluate(() => (document.body.innerText.match(/(\d+)\s*\/\s*\d+/) || [])[1] || null);
+    // CodeRabbit CLI: read the step counter from the tour dialog's OWN
+    // subtree, not document.body.innerText — an unrelated "n / m" string
+    // elsewhere on the page would otherwise be indistinguishable from the
+    // tour's step counter.
+    const TOUR_SEL = '[role="dialog"][aria-label="Guided tour"]';
+    const tourStep = () => p.evaluate((sel) => {
+      const t = document.querySelector(sel);
+      return (t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null;
+    }, TOUR_SEL);
     const step0 = await tourStep();
     record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0}`);
 
@@ -5806,8 +5814,11 @@ try {
     if (nb) {
       await p.mouse.click(nb.x + nb.width / 2, nb.y + nb.height / 2);
       const advanced = await p.waitForFunction(
-        (s) => ((document.body.innerText.match(/(\d+)\s*\/\s*\d+/) || [])[1] || null) !== s,
-        step0, { timeout: 3000 },
+        ([sel, s]) => {
+          const t = document.querySelector(sel);
+          return ((t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null) !== s;
+        },
+        [TOUR_SEL, step0], { timeout: 3000 },
       ).then(() => true).catch(() => false);
       step1 = advanced ? await tourStep() : step0;
     }
@@ -5825,8 +5836,11 @@ try {
     if (nb2) {
       await p.mouse.click(nb2.x + nb2.width / 2, nb2.y + nb2.height / 2);
       await p.waitForFunction(
-        (s) => ((document.body.innerText.match(/(\d+)\s*\/\s*\d+/) || [])[1] || null) !== s,
-        step1, { timeout: 3000 },
+        ([sel, s]) => {
+          const t = document.querySelector(sel);
+          return ((t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null) !== s;
+        },
+        [TOUR_SEL, step1], { timeout: 3000 },
       ).catch(() => {});
       step2 = await tourStep();
     }
