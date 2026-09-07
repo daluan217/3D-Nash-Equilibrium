@@ -861,12 +861,26 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     (() => { const i = deleteSlice.indexOf('const requestGen = gamesContextGenRef.current;'); return i !== -1 && i < fetchIdx; })());
   check('the games-context generation is bumped on every identity, API-base and database-mode commit',
     /useLayoutEffect\(\(\) => \{ gamesContextGenRef\.current \+= 1; \}, \[authToken, apiBaseUrl, dbMode\]\);/.test(app));
+  // Every await is a chance for the context to move on: the body read before
+  // the server-error alert, and the catch before the network alert.
+  const jsonIdx = deleteSlice.indexOf('const data = await res.json();');
+  const errAlertIdx = deleteSlice.indexOf("alert(data.error || 'Failed to delete game.')");
+  const netAlertIdx = deleteSlice.indexOf("alert('Network error. Failed to delete game.");
+  const gateAfter = (from: number, before: number) => { const i = deleteSlice.indexOf(DELETE_STALE_GATE, from); return i !== -1 && i < before; };
+  check(`handleDeleteGame re-checks the generation after the body read, before the server-error alert (json@${jsonIdx} alert@${errAlertIdx})`,
+    jsonIdx !== -1 && errAlertIdx !== -1 && gateAfter(jsonIdx, errAlertIdx));
+  check(`handleDeleteGame re-checks the generation in the catch, before the network alert (alert@${netAlertIdx})`,
+    netAlertIdx !== -1 && gateAfter(errAlertIdx, netAlertIdx));
   // Mutation fixtures: the two ways this regresses — the gate removed (the
   // original defect) and the gate moved below the helper (the alert is gone
   // but the list edits and the 404 refetch run under the wrong identity).
+  // (The gate string recurs after the later awaits; removing the FIRST one
+  // leaves only gates that sit after `if (res.ok)`, which the discard check
+  // rejects.)
   const noGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '');
+  const noGateFirst = noGate.indexOf(DELETE_STALE_GATE);
   check('fixture: removing the stale-identity gate fails the discard check (precondition: the plant landed)',
-    noGate !== deleteSlice && noGate.indexOf(DELETE_STALE_GATE) === -1);
+    noGate !== deleteSlice && (noGateFirst === -1 || noGateFirst > noGate.indexOf('if (res.ok)')));
   const lateGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '')
     .replace('handleDeadSessionResponse(res, requestToken);', 'handleDeadSessionResponse(res, requestToken);\n        ' + DELETE_STALE_GATE);
   const lateIdx = lateGate.indexOf(DELETE_STALE_GATE);

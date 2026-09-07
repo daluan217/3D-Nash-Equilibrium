@@ -2576,11 +2576,17 @@ export default function App() {
         // use (server.ts's DELETE handler, was "Unauthorized access.").
         handleDeadSessionResponse(res, requestToken);
         const data = await res.json();
+        // The body read is a second await: the context can move on between
+        // the response and its body (CodeRabbit CLI on the fix).
+        if (gamesContextGenRef.current !== requestGen) return;
         alert(data.error || 'Failed to delete game.');
       }
     } catch {
       // RED-APP-10/003: offline, the click used to do nothing visible at all.
       // The alert IS the report (no console noise: Save/Edit report the same way).
+      // A network failure of a request from a previous context is not this
+      // context's to report either.
+      if (gamesContextGenRef.current !== requestGen) return;
       alert('Network error. Failed to delete game. Check your connection and try again.');
     } finally {
       deletingGamesRef.current.delete(gameId);
