@@ -2124,6 +2124,14 @@ export default function App() {
     }
     setEditError('');
     setEditLoading(true);
+    // CodeRabbit on #158 (outside-diff, 9a71dce): a late response from a
+    // PREVIOUS dialog session (submitted, closed, reopened — possibly on a
+    // different game) used to paint its error/needsAuth/loading into the
+    // NEW session — a stale 401 could show a sign-in invitation over an
+    // unrelated Edit attempt. Captured once, before any mutation this call
+    // might make, so `finally` sees the same verdict as the response branch.
+    const editSessionAtSubmit = editSessionRef.current;
+    let staleSession = false;
     try {
       const res = await fetch(getApiUrl(`/api/games/${editGameId}`), {
         method: 'PATCH',
@@ -2134,6 +2142,8 @@ export default function App() {
         body: JSON.stringify(editPatchBody),
       });
       const data = await res.json();
+      staleSession = editSessionRef.current !== editSessionAtSubmit;
+      if (staleSession) return;
       if (res.ok) {
         setUserCustomGames((prev) => prev.map((g) => (g.id === editGameId ? data.game : g)));
         setIsEditModalOpen(false);
@@ -2194,8 +2204,10 @@ export default function App() {
         // The dialog may have closed, reopened or moved to another game
         // meanwhile: then this continuation belongs to a dead session and must
         // change nothing (session token, not game id — a reopen of the same
-        // game is a new session too).
-        if (editSessionRef.current !== sessionAtSubmit) return;
+        // game is a new session too). Also updates the OUTER `staleSession`
+        // flag `finally` reads, or a session change during THIS second await
+        // would still incorrectly clear the new session's editLoading.
+        if (editSessionRef.current !== sessionAtSubmit) { staleSession = true; return; }
         const fresh = rows?.find((g) => g.id === editGameId);
         if (fresh && orig) {
           const freshA: string[] = fresh.colorTermsA ?? [];
@@ -2270,10 +2282,12 @@ export default function App() {
         setEditErrorNeedsAuth(wasAuthFailure);
       }
     } catch {
+      staleSession = editSessionRef.current !== editSessionAtSubmit;
+      if (staleSession) return;
       setEditError('Network error. Failed to update game.');
       setEditErrorNeedsAuth(false);
     } finally {
-      setEditLoading(false);
+      if (!staleSession) setEditLoading(false);
     }
   };
 
@@ -2499,6 +2513,14 @@ export default function App() {
     // read as "a new save" the second time) — see the ref's own doc comment.
     if (!saveRequestIdRef.current) saveRequestIdRef.current = crypto.randomUUID();
     const clientRequestId = saveRequestIdRef.current;
+    // CodeRabbit on #158 (outside-diff, 9a71dce): a late response from a
+    // PREVIOUS dialog session (submitted, closed, reopened) used to paint
+    // its error/needsAuth/loading into the NEW session — a stale 401 could
+    // now show a sign-in invitation over an unrelated Save attempt.
+    // Captured once, at the moment the outcome is known, so the success
+    // branch's own `saveRequestIdRef.current = null` (below) cannot flip
+    // this verdict for `finally`.
+    let staleSession = false;
     try {
       const res = await fetch(getApiUrl('/api/games'), {
         method: 'POST',
@@ -2521,6 +2543,11 @@ export default function App() {
         })
       });
       const data = await res.json();
+      // `saveRequestIdRef` is reset on every fresh open (and on success), so
+      // a mismatch here means this response belongs to a session that is
+      // already gone; touch nothing.
+      staleSession = saveRequestIdRef.current !== clientRequestId;
+      if (staleSession) return;
       if (res.ok) {
         // This attempt is done (successfully) — the NEXT Save Preset click
         // is a new attempt and must mint its own id, not reuse this one.
@@ -2576,10 +2603,12 @@ export default function App() {
         setSaveErrorNeedsAuth(wasAuthFailure);
       }
     } catch (err) {
+      staleSession = saveRequestIdRef.current !== clientRequestId;
+      if (staleSession) return;
       setSaveError('Network error. Failed to save game.');
       setSaveErrorNeedsAuth(false);
     } finally {
-      setSaveLoading(false);
+      if (!staleSession) setSaveLoading(false);
     }
   };
 

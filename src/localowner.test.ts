@@ -267,6 +267,31 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
       editFnSlice.replace(/\s+/g, ' ').slice(0, 160));
   }
 
+  // CodeRabbit on #158 (outside-diff, 9a71dce): a late response from a
+  // PREVIOUS dialog session (submitted, closed, reopened) used to paint its
+  // error/needsAuth/loading into the NEW session — a stale 401 could show a
+  // sign-in invitation over an unrelated dialog. Both handlers must check
+  // staleness right after the response arrives (before ANY branch touches
+  // state), in the catch, AND in finally (which runs on every path,
+  // including the early return) — checking only one of the three would
+  // still let a stale response through the other two.
+  {
+    const editSlice = app.slice(app.indexOf('const handleEditGameSubmit'), app.indexOf('const handleDeleteGame'));
+    const saveSlice = app.slice(app.indexOf('const handleSaveGameSubmit'), app.indexOf('const handleRegenerateScenario'));
+    check('handleEditGameSubmit checks staleness (editSessionRef) immediately after the response, before any branch',
+      /const data = await res\.json\(\);[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
+    check('handleEditGameSubmit checks staleness in its catch block too',
+      /catch \{[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
+    check('handleEditGameSubmit guards setEditLoading(false) in finally with the SAME flag (not re-derived, which the success branch\'s own session bump would flip)',
+      /finally \{[\s\S]{0,50}if \(!staleSession\) setEditLoading\(false\);/.test(editSlice));
+    check('handleSaveGameSubmit checks staleness (saveRequestIdRef vs clientRequestId) immediately after the response, before any branch',
+      /const data = await res\.json\(\);[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
+    check('handleSaveGameSubmit checks staleness in its catch block too',
+      /catch \(err\) \{[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
+    check('handleSaveGameSubmit guards setSaveLoading(false) in finally with the SAME flag',
+      /finally \{[\s\S]{0,50}if \(!staleSession\) setSaveLoading\(false\);/.test(saveSlice));
+  }
+
   // OPUS-REVIEW-DESKTOP N5: a bare COUNT comparison passes if an unpaired
   // non-empty setter is added anywhere and an extra flag call is added
   // anywhere else, and misreads `setSaveError("")` (double quotes) or a
