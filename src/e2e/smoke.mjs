@@ -5179,6 +5179,161 @@ try {
     }
   });
 
+  /**
+   * BLUE-MATH-17 (director-routed, CI: shard 27/28 §71 CONTROL failure --
+   * job 101764850611, run 34129084879): the GitHub-hosted runner's
+   * SwiftShader rasterizes the SAME marker outline noticeably LARGER than
+   * local dev at devicePixelRatio 1 (measured on CI: a desktop corner's own
+   * bbox diagonal ~38-42 CSS px, vs ~30px locally) -- a hard-coded
+   * "marker-sized" window tuned on one machine silently drops real glyphs
+   * on the other. Self-calibrates instead: isolates ONE real CORNER marker
+   * on a FRESH page at the EXACT fixture/camera/viewport the check under
+   * calibration uses, measures its REAL rendered bbox diagonal with the
+   * IDENTICAL blob-scan algorithm (same colour target/tolerance/dsf
+   * normalization -- the window and what it bounds must share units, per
+   * the routed finding), and returns that one number. Every
+   * "marker-sized"/span bound in this section derives from it (0.5x-1.5x
+   * for a pairwise-separation filter, 1.5x as a single-glyph span ceiling)
+   * instead of a number tuned against one environment.
+   *
+   * A CORNER specifically, not the midpoint: `plotting.ts`'s
+   * `continuumShortSize` (the ENLARGED midpoint drawn once a component
+   * collapses) is `diamondSize * 2`, the IDENTICAL formula a corner's own
+   * size uses -- so a corner's real rendered size is the right single
+   * reference for both "are 2+ real corners genuinely separated" (CONTROL,
+   * variant B) and "is this ONE collapsed glyph roughly one marker's own
+   * size" (variant A, RED-MATH-16/001) checks.
+   */
+  async function calibrateMarkerDiagonal({ vals, eye, center = { x: 0, y: 0, z: 0 }, viewport, hasTouch = false, isMobile = false }) {
+    const page = await newTrackedPage({
+      viewport: viewport.mode === 'real' ? { width: viewport.width, height: viewport.height } : { width: 1000, height: 900 },
+      reducedMotion: 'reduce',
+      ...(hasTouch ? { hasTouch, isMobile } : {}),
+    });
+    try {
+      await page.goto(BASE, { waitUntil: 'networkidle' });
+      try { await page.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await page.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+      const matrix = page.locator('input[inputmode="decimal"][class*="text-center"]');
+      await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+      for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
+      await page.waitForFunction(() => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+        return ts.length > 0 ? true : null;
+      }, null, { timeout: 20000 }).catch(() => {});
+      const trackABtn = page.locator('label:has-text("Expected Payoff Surface Tracking")')
+        .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+      await trackABtn.click({ timeout: 5000 }).catch(() => {});
+      await page.waitForFunction(() => {
+        const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+        return mid && mid.x?.length === 1 ? true : null;
+      }, null, { timeout: 10000 }).catch(() => {});
+      if (viewport.mode === 'forced') {
+        await page.evaluate(({ w, h }) => {
+          const el = document.querySelector('[data-tour="plot"]');
+          el.style.setProperty('width', w + 'px', 'important');
+          el.style.setProperty('height', h + 'px', 'important');
+          el.style.setProperty('max-width', w + 'px', 'important');
+          el.style.setProperty('min-width', w + 'px', 'important');
+          el.style.setProperty('flex', 'none', 'important');
+        }, { w: viewport.w, h: viewport.h });
+        await page.waitForFunction((targetW) => {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+          if (!glplot?.shape || !glplot.pixelRatio) return null;
+          return Math.abs(glplot.shape[0] / glplot.pixelRatio - targetW) < 24 ? true : null;
+        }, viewport.w === 700 ? 658 : viewport.w, { timeout: 10000 }).catch(() => {});
+      }
+      const plotId = await page.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await page.evaluate(({ id, eye, center }) => window.Plotly.relayout(id, { 'scene.camera': { eye, center, up: { x: 0, y: 0, z: 1 } } }), { id: plotId, eye, center });
+        await page.waitForTimeout(300);
+        const e = await page.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+        if (e && Math.hypot(e.x - eye.x, e.y - eye.y, e.z - eye.z) < 0.02) break;
+      }
+      // Isolate ONE corner: hide everything else continuum-related plus the
+      // position sphere; force this corner's own visibility true regardless
+      // of what the app's dynamic collapse rule decided for THIS camera
+      // (isolation is about MEASURING the glyph, not about the decision).
+      // Found by hand while building this calibration: hiding only the
+      // OTHER continuum traces (matching the style used elsewhere in this
+      // section, where the payoff surface itself is never a confound
+      // because every check crops to a hand-derived region near the
+      // marker) left the SURFACE traces on screen -- their own red/blue
+      // gradient passes through a purple-ish blend hue (the SAME confound
+      // section 71's own crop comments document), and this calibration
+      // does NOT crop (it cannot: the marker's screen position is the
+      // unknown being measured). Hide EVERY trace except the one target
+      // corner -- including the surfaces -- so nothing else can register
+      // as a false #8E44AD blob.
+      await page.evaluate(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        window.Plotly.relayout(gd, { showlegend: false });
+        const data = gd._fullData ?? gd.data ?? [];
+        const cornerIdx = data.findIndex((t) => t.legendgroup === 'continuumNE' && t.mode === 'markers' && t.meta?.continuumRole === 'corner');
+        const hideIdx = [];
+        data.forEach((t, i) => { if (i !== cornerIdx) hideIdx.push(i); });
+        if (hideIdx.length) window.Plotly.restyle(gd, { visible: false }, hideIdx);
+        if (cornerIdx >= 0) window.Plotly.restyle(gd, { visible: true }, [cornerIdx]);
+        if (!document.getElementById('e2e-hide-feedback-btn')) {
+          const style = document.createElement('style');
+          style.id = 'e2e-hide-feedback-btn';
+          style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+          document.head.appendChild(style);
+        }
+      });
+      await page.waitForFunction(() => document.querySelector('.js-plotly-plot')?._fullLayout?.showlegend === false ? true : null, null, { timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(200);
+      const shot = await page.locator('[data-tour="plot"]').screenshot();
+      // SAME blob-scan algorithm (colour target #8E44AD, tol=40, dsf
+      // normalization) every check in this section uses -- the calibrated
+      // window must be measured in the SAME units it bounds.
+      const scan = await page.evaluate(async (b64) => {
+        const img = new Image();
+        await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+        const dsf = window.devicePixelRatio || 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const { data } = ctx.getImageData(0, 0, img.width, img.height);
+        const target = [142, 68, 173]; const tol2 = 40 * 40;
+        const w = img.width, h = img.height;
+        const mask = new Uint8Array(w * h);
+        for (let i = 0; i < w * h; i++) {
+          const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+          if (a < 100) continue;
+          const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+          if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+        }
+        const visited = new Uint8Array(w * h);
+        const blobs = [];
+        for (let i = 0; i < w * h; i++) {
+          if (!mask[i] || visited[i]) continue;
+          const stack = [i]; visited[i] = 1; let count = 0;
+          let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+          while (stack.length) {
+            const cur = stack.pop(); count++;
+            const cx = cur % w, cy = (cur / w) | 0;
+            if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+            if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+            for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+              if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+              const ni = ny * w + nx;
+              if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+            }
+          }
+          if (count >= 15) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+        }
+        if (!blobs.length) return null;
+        const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
+        const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+        return { diag: Math.hypot(maxx - minx, maxy - miny), blobs };
+      }, shot.toString('base64'));
+      return scan ?? null;
+    } finally { await page.close().catch(() => {}); }
+  }
+
   // ── BLUE-MATH-15 (RED-MATH-15/001): camera-aware continuum collapse at a
   //    genuinely narrow LIVE viewport, verified against REAL RENDERED PIXELS
   //    (never the module's own `visible`/`marker.size` state — that would
@@ -5422,6 +5577,14 @@ try {
       const DEFAULT_EYE = { x: 1.6, y: -1.6, z: 1.1 };
       const stableDefault = await setEyeVerified(DEFAULT_EYE);
       record('precondition: the camera settled at the default eye (700x500 control)', stableDefault.ok, JSON.stringify(stableDefault));
+      // Self-calibrate the marker-sized window from a REAL isolated corner
+      // at this exact fixture/camera/viewport (director-routed, CI shard
+      // 27/28 job 101764850611 — see `calibrateMarkerDiagonal`'s own
+      // comment above for the full reasoning).
+      const controlCal = await calibrateMarkerDiagonal({
+        vals: [0, 0, 1, 0, 4, 0, 0, 1], eye: DEFAULT_EYE, viewport: { mode: 'forced', w: 700, h: 500 },
+      });
+      record('precondition: a single isolated corner marker was measured to calibrate the marker-sized window', !!controlCal, JSON.stringify(controlCal));
       const shotControl = await plot.screenshot();
       // Localization ONLY (never the verdict, per RED-MATH-15/001's own
       // methodology): the fixture's own 3 data points, projected through
@@ -5445,28 +5608,29 @@ try {
       // unrelated UI blob elsewhere in the crop (falsely "separated"), or
       // (less likely here, but not ruled out by span alone) shrunk by a
       // clustered layout that still spans >40px only by chance. Replace the
-      // inference with a direct measurement: filter to MARKER-SIZED blobs
-      // (a genuine diamond outline, whole or anti-alias-split, has a bbox
-      // diagonal in roughly [2,36] CSS px at this crop's scale — cr review
-      // (CLI, this branch): a WHOLE unsplit desktop diamond (21px marker)
-      // already measures ~29.7-30.4px in this exact check's own real
-      // output, right at a 30px cutoff's edge; one of the 3 real blobs was
-      // silently excluded by that tighter bound (markerSizedCount read 2,
-      // not 3, though the check still passed on the remaining pair) —
-      // 36px keeps every whole real diamond comfortably inside with room
-      // for anti-alias/DPR growth, while a mutation-tested single collapsed
-      // glyph (~31.8px) still fails via the COUNT requirement below, not
-      // this size filter; anything above 36 is a stray, not a marker), then
-      // require >=2 of them and assert the LARGEST pairwise centre-to-centre
-      // distance among them clears a marker's own footprint. MAX (not min)
-      // pairwise distance on purpose: an anti-alias-split diamond's own
-      // fragments sit close together (near-zero apart), so a min-distance
-      // check would fail on a single, genuinely correct glyph; only the
-      // presence of some pair that is FAR apart proves two distinct markers
-      // are actually on screen.
+      // inference with a direct measurement: filter to MARKER-SIZED blobs.
+      // Director-routed, CI shard 27/28 job 101764850611: a HARD-CODED
+      // [2,36] window (tuned on local dev, where a whole desktop diamond
+      // measured ~29.7-30.4px) dropped BOTH real corners on the CI runner
+      // (SwiftShader there rasterizes the same marker ~38-42px,
+      // markerSizedCount read 1) — self-calibrated from `controlCal`
+      // (measured on THIS SAME run, THIS SAME environment) instead: [0.5x,
+      // 1.5x] of one real isolated corner's own diagonal. Falls back to the
+      // old [2,36] only if calibration itself failed (never silently widens
+      // to "anything passes" — a null/zero calibration would make EVERY
+      // blob fail the filter under a naive 0.5x-1.5x of 0, so the explicit
+      // fallback keeps this check meaningful even then). Then require >=2
+      // of them and assert the LARGEST pairwise centre-to-centre distance
+      // among them clears a marker's own footprint. MAX (not min) pairwise
+      // distance on purpose: an anti-alias-split diamond's own fragments
+      // sit close together (near-zero apart), so a min-distance check would
+      // fail on a single, genuinely correct glyph; only the presence of
+      // some pair that is FAR apart proves two distinct markers are
+      // actually on screen.
+      const controlWindow = controlCal?.diag ? [controlCal.diag * 0.5, controlCal.diag * 1.5] : [2, 36];
       const markerSizedControl = controlBlobs.blobs.filter((b) => {
         const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
-        return diag >= 2 && diag <= 36;
+        return diag >= controlWindow[0] && diag <= controlWindow[1];
       });
       let maxSepControl = 0;
       for (let i = 0; i < markerSizedControl.length; i++) {
@@ -5478,7 +5642,7 @@ try {
       }
       record('CONTROL (700x500, default camera): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not stray-UI-inflated, not one glyph\'s own anti-alias fragments)',
         markerSizedControl.length >= 2 && maxSepControl > 15,
-        JSON.stringify({ spanControl, maxSepControl, markerSizedCount: markerSizedControl.length, ...controlBlobs }));
+        JSON.stringify({ spanControl, maxSepControl, markerSizedCount: markerSizedControl.length, controlWindow, calibratedDiag: controlCal?.diag ?? null, ...controlBlobs }));
 
       // ── FIX (under-collapse, RED-MATH-15/001 az195): back to the narrow
       //    318x298 outer container (real plot div 276x256), RED's exact
@@ -5644,6 +5808,15 @@ try {
             camOk17 = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
           }
           record('precondition (RED-MATH-17/001 variant A): the camera settled at CAMERA.overview (real 320px viewport)', camOk17);
+          // Self-calibrate (director-routed, CI shard 27/28 job
+          // 101764850611): same fixture/camera/viewport as this row's own
+          // real-pixel check, NO touch emulation (matching this variant's
+          // own desktop marker set).
+          const cal17 = await calibrateMarkerDiagonal({
+            vals: [-5, 2, 1, -1, -5, -5, 6, 6], eye: { x: 1.6, y: -1.6, z: 1.1 },
+            viewport: { mode: 'real', width: 320, height: 700 },
+          });
+          record('precondition (RED-MATH-17/001 variant A): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17, JSON.stringify(cal17));
           const collapsed17 = await p17.waitForFunction(() => {
             const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
             return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
@@ -5740,8 +5913,14 @@ try {
           // assertion would fail on a genuinely-correct single collapsed
           // glyph. `span` (this UNION bbox's diagonal) is the established,
           // already-reviewed way to bound "one marker's own size" here.
-          record('FIX (RED-MATH-17/001 variant A): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
-            (scan17.blobs?.length ?? 0) >= 1 && scan17.span <= 45, JSON.stringify(scan17));
+          // Director-routed, CI shard 27/28 job 101764850611: the fixed
+          // 45px ceiling is now a fallback only; the real bound is 1.5x the
+          // isolated corner `cal17` just measured on THIS run/environment
+          // (matches CONTROL's own self-calibration above).
+          const spanBound17 = cal17?.diag ? cal17.diag * 1.5 : 45;
+          record('FIX (RED-MATH-17/001 variant A): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=1.5x the calibrated corner), not two separate diamonds',
+            (scan17.blobs?.length ?? 0) >= 1 && scan17.span <= spanBound17,
+            JSON.stringify({ ...scan17, spanBound17, calibratedDiag: cal17?.diag ?? null }));
         } finally { await p17.close().catch(() => {}); }
 
         // ── RED-MATH-17/001, VARIANT B — the SAME fixture/camera/viewport,
@@ -5808,6 +5987,16 @@ try {
             camOk17m = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
           }
           record('precondition (RED-MATH-17/001 variant B): the camera settled at CAMERA.overview (real 320px viewport, touch-emulated)', camOk17m);
+          // Self-calibrate (director-routed, CI shard 27/28 job
+          // 101764850611): same fixture/camera/viewport as this row's own
+          // real-pixel check, WITH touch/mobile emulation too, so the
+          // measured corner reflects the SAME mobile marker set this row
+          // actually renders.
+          const cal17m = await calibrateMarkerDiagonal({
+            vals: [-5, 2, 1, -1, -5, -5, 6, 6], eye: { x: 1.6, y: -1.6, z: 1.1 },
+            viewport: { mode: 'real', width: 320, height: 700 }, hasTouch: true, isMobile: true,
+          });
+          record('precondition (RED-MATH-17/001 variant B): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17m, JSON.stringify(cal17m));
           // cr review (director-routed, GitHub thread on smoke.mjs:5785,
           // Minor -- valid): corner traces default to VISIBLE at first
           // static render, so reading `visible !== 'legendonly'` as "shown"
@@ -5921,18 +6110,19 @@ try {
           }, shot17m.toString('base64'));
           // cr review (director-routed, merged tree): same robustness the
           // CONTROL check above now uses, not the union-bbox span this row
-          // still had — filter to marker-sized blobs (mobile glyphs are
-          // smaller than every OTHER blob-scan in this section, but the same
-          // [2,30] CSS px diagonal range still comfortably covers them: real
-          // output measures ~10-14px per fragment), require >=2, and assert
-          // the LARGEST pairwise centre-to-centre distance (not the union
-          // span) — an anti-alias-split glyph's own fragments sit ~7-9px
-          // apart in this row's real output, a genuinely separate SECOND
-          // glyph's fragments ~20-30px away; 15px (the same bound the
-          // CONTROL check uses) cleanly separates the two.
+          // still had — filter to marker-sized blobs, require >=2, and
+          // assert the LARGEST pairwise centre-to-centre distance (not the
+          // union span). Director-routed, CI shard 27/28 job 101764850611:
+          // the window is now SELF-CALIBRATED from `cal17m` (measured on
+          // THIS run, THIS environment, WITH the same touch/mobile
+          // emulation), not a hard-coded [2,30] tuned on local dev alone —
+          // 15px (the same bound the CONTROL check uses) still cleanly
+          // separates an anti-alias-split glyph's own close-together
+          // fragments from a genuinely separate second glyph.
+          const window17m = cal17m?.diag ? [cal17m.diag * 0.5, cal17m.diag * 1.5] : [2, 30];
           const markerSized17m = scan17m.blobs.filter((b) => {
             const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
-            return diag >= 2 && diag <= 30;
+            return diag >= window17m[0] && diag <= window17m[1];
           });
           let maxSep17m = 0;
           for (let i = 0; i < markerSized17m.length; i++) {
@@ -5944,7 +6134,7 @@ try {
           }
           record('FIX (RED-MATH-17/001 variant B): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not one glyph\'s own anti-alias fragments), confirming genuine (not merely undetected) separation',
             markerSized17m.length >= 2 && maxSep17m > 15,
-            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, ...scan17m }));
+            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: cal17m?.diag ?? null, ...scan17m }));
         } finally { await p17mobile.close().catch(() => {}); }
 
         // RED-MATH-16/001: az105, forced 700x500 (the canonical viewport,
@@ -6008,6 +6198,13 @@ try {
             camOk16 = !!e && Math.hypot(e.x - eye16.x, e.y - eye16.y, e.z - eye16.z) < 0.02;
           }
           record('precondition (RED-MATH-16/001 row): the camera settled at az105 (700x500)', camOk16);
+          // Self-calibrate (director-routed, CI shard 27/28 job
+          // 101764850611): same fixture/camera/viewport as this row's own
+          // real-pixel check.
+          const cal16 = await calibrateMarkerDiagonal({
+            vals: [1, 1, -4, 1, 5, -1, -6, 3], eye: eye16, viewport: { mode: 'forced', w: 700, h: 500 },
+          });
+          record('precondition (RED-MATH-16/001 row): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal16, JSON.stringify(cal16));
           const collapsed16 = await p16.waitForFunction(() => {
             const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
             return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
@@ -6093,8 +6290,15 @@ try {
             const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
             return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
           }, shot16.toString('base64'));
-          record('FIX (RED-MATH-16/001): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
-            (scan16.blobs?.length ?? 0) >= 1 && scan16.span <= 45, JSON.stringify(scan16));
+          // Director-routed, CI shard 27/28 job 101764850611: the fixed
+          // 45px ceiling (this row's OWN CI run already measured span:42.4
+          // here, only 2.6px of margin) is now a fallback only; the real
+          // bound is 1.5x the isolated corner `cal16` just measured on THIS
+          // run/environment.
+          const spanBound16 = cal16?.diag ? cal16.diag * 1.5 : 45;
+          record('FIX (RED-MATH-16/001): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=1.5x the calibrated corner), not two separate diamonds',
+            (scan16.blobs?.length ?? 0) >= 1 && scan16.span <= spanBound16,
+            JSON.stringify({ ...scan16, spanBound16, calibratedDiag: cal16?.diag ?? null }));
         } finally { await p16.close().catch(() => {}); }
 
         // ── OPUS-REVIEW-MATH17 FBM-1: a CONTAINER-ONLY resize (a panel
