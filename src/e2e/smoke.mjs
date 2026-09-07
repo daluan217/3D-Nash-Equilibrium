@@ -5440,8 +5440,38 @@ try {
       // ALSO confirm the combined footprint spans more than one marker's
       // own size, or it could pass while the fusion defect is present.
       const spanControl = spanOf(controlBlobs.blobs);
-      record('CONTROL (700x500, default camera): the pixel scan finds >=3 separate continuum glyphs spanning well past one marker\'s own size',
-        controlBlobs.blobs.length >= 3 && spanControl > 40, JSON.stringify({ spanControl, ...controlBlobs }));
+      // cr review (director-routed, merged tree): the UNION-bbox span above
+      // can be fooled either way — inflated by one real blob plus a stray,
+      // unrelated UI blob elsewhere in the crop (falsely "separated"), or
+      // (less likely here, but not ruled out by span alone) shrunk by a
+      // clustered layout that still spans >40px only by chance. Replace the
+      // inference with a direct measurement: filter to MARKER-SIZED blobs
+      // (a genuine diamond outline, whole or anti-alias-split, has a bbox
+      // diagonal in roughly [2,30] CSS px at this crop's scale — the
+      // fragment sizes and full-diamond sizes already observed in this
+      // exact check's own real output; anything outside that range is a
+      // stray, not a marker), then require >=2 of them and assert the
+      // LARGEST pairwise centre-to-centre distance among them clears a
+      // marker's own footprint. MAX (not min) pairwise distance on purpose:
+      // an anti-alias-split diamond's own fragments sit close together
+      // (near-zero apart), so a min-distance check would fail on a single,
+      // genuinely correct glyph; only the presence of some pair that is
+      // FAR apart proves two distinct markers are actually on screen.
+      const markerSizedControl = controlBlobs.blobs.filter((b) => {
+        const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
+        return diag >= 2 && diag <= 30;
+      });
+      let maxSepControl = 0;
+      for (let i = 0; i < markerSizedControl.length; i++) {
+        for (let j = i + 1; j < markerSizedControl.length; j++) {
+          maxSepControl = Math.max(maxSepControl, Math.hypot(
+            markerSizedControl[i].cx - markerSizedControl[j].cx,
+            markerSizedControl[i].cy - markerSizedControl[j].cy));
+        }
+      }
+      record('CONTROL (700x500, default camera): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not stray-UI-inflated, not one glyph\'s own anti-alias fragments)',
+        markerSizedControl.length >= 2 && maxSepControl > 15,
+        JSON.stringify({ spanControl, maxSepControl, markerSizedCount: markerSizedControl.length, ...controlBlobs }));
 
       // ── FIX (under-collapse, RED-MATH-15/001 az195): back to the narrow
       //    318x298 outer container (real plot div 276x256), RED's exact
@@ -5989,11 +6019,26 @@ try {
           await m17b.first().waitFor({ state: 'visible', timeout: 20000 });
           const vals17b = [-5, 2, 1, -1, -5, -5, 6, 6]; // RED-MATH-17/001's own fixture
           for (let i = 0; i < 8; i++) { const c = m17b.nth(i); await c.click(); await c.fill(String(vals17b[i])); await c.blur(); }
-          await p17b.waitForTimeout(400);
+          // cr review (director-routed, merged tree): reuse the section's own
+          // fixture-midpoint predicate instead of a fixed sleep -- a slow
+          // CI runner can still be mid-render at 400ms, silently reading a
+          // stale/absent trace.
+          const ready17b = await p17b.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+            return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
+          }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+          record('precondition (FBM-1 row): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17b);
           const trackABtn17b = p17b.locator('label:has-text("Expected Payoff Surface Tracking")')
             .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
           await trackABtn17b.click({ timeout: 5000 }).catch(() => {});
-          await p17b.waitForTimeout(300);
+          // Same tracking-mode predicate the other rows in this section use
+          // (a z-stacked 'both' trace would corrupt the corner-visibility
+          // reads below).
+          const trackingIsA17b = await p17b.waitForFunction(() => {
+            const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+            return mid && mid.x?.length === 1 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (FBM-1 row): tracking mode is Player A only', trackingIsA17b);
 
           // Wide first: force 700x500, set CAMERA.overview via an explicit
           // relayout (the ONE evaluation this scenario is allowed -- it goes
@@ -6007,7 +6052,18 @@ try {
             el.style.setProperty('min-width', '700px', 'important');
             el.style.setProperty('flex', 'none', 'important');
           });
-          await p17b.waitForTimeout(900);
+          // Live glplot.shape settle check (the SAME predicate the
+          // RED-MATH-16/001 row above and section 71's own `narrowResized`
+          // use) instead of a fixed 900ms sleep -- this row's own FBM-1 fix
+          // is precisely about NOT trusting a fixed delay for this.
+          const wideResized17b = await p17b.waitForFunction(() => {
+            const gd = document.getElementById('plotly-3d-market-simulation');
+            const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+            if (!glplot?.shape || !glplot.pixelRatio) return null;
+            const cssW = glplot.shape[0] / glplot.pixelRatio;
+            return Math.abs(cssW - 658) < 24 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (FBM-1 row): the plot resized to the canonical 700x500 baseline (live glplot.shape)', wideResized17b);
           const plotId17b = await p17b.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
           let camOk17b = false;
           for (let attempt = 0; attempt < 3 && !camOk17b; attempt++) {
@@ -6028,14 +6084,22 @@ try {
           // fixtures) collapses this same component. The ONLY re-evaluation
           // trigger reachable from here is the ResizeObserver path FBM-1
           // patched.
+          // cr review (director-routed, merged tree): measure APP-SIDE, not
+          // wall-clock around the Playwright round-trip -- `resizeStartT`
+          // (Date.now(), Node-side) is kept only as a diagnostic; the
+          // ASSERTED delta below is `continuumDecidedAt - resizeStartPerf`,
+          // both `performance.now()` reads taken INSIDE this same page, so
+          // CI-scheduler/IPC jitter around the `evaluate()` calls themselves
+          // never counts against the bound.
           const resizeStartT = Date.now();
-          await p17b.evaluate(() => {
+          const resizeStartPerf = await p17b.evaluate(() => {
             const el = document.querySelector('[data-tour="plot"]');
             el.style.setProperty('width', '280px', 'important');
             el.style.setProperty('height', '320px', 'important');
             el.style.setProperty('max-width', '280px', 'important');
             el.style.setProperty('min-width', '280px', 'important');
             el.style.setProperty('flex', 'none', 'important');
+            return performance.now();
           });
           // The ResizeObserver's own debounce is 150ms; give the settle-poll
           // (bounded 1000ms) room too, then read the decision. No relayout,
@@ -6091,29 +6155,44 @@ try {
             const ts = (gd?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
             return { shape: glplot?.shape ? Array.from(glplot.shape) : null, rect: rect ? { w: rect.width, h: rect.height } : null, collapse: ts.length > 0 && ts.every((t) => t.visible === 'legendonly') };
           });
-          const elapsedMs = Date.now() - resizeStartT;
-          const path17b = await p17b.evaluate(() => document.querySelector('.js-plotly-plot')?.dataset?.continuumProjectionPath ?? null);
+          // Diagnostic only, per cr review: Node-side wall clock around the
+          // Playwright round-trips (network/IPC/CI-scheduler jitter), never
+          // asserted on.
+          const elapsedMsWallClock = Date.now() - resizeStartT;
+          const decidedInfo17b = await p17b.evaluate(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            return { path: gd?.dataset?.continuumProjectionPath ?? null, decidedAt: gd?.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null };
+          });
+          const path17b = decidedInfo17b.path;
           record('FIX (OPUS-REVIEW-MATH17 FBM-1): a container-only resize (no camera change, no relayout) ends with the decision matching the SETTLED shape, not the stale pre-resize one',
-            !!settledAndCollapsed && settledAndCollapsed.collapse === true, JSON.stringify({ settledAndCollapsed, lastKnown, path: path17b, elapsedMs }));
-          // cr review (CLI, this branch): assert this actually settles
-          // PROMPTLY (well under `waitForGlplotShapeSettled`'s own 1000ms
-          // bound plus the 150ms debounce), not merely "eventually, by the
-          // time this test's own generous 8000ms poll gives up" — the two
-          // are different claims. Mutation: reverting the `marginTop`
-          // subtraction cr review's OWN finding caught in
+            !!settledAndCollapsed && settledAndCollapsed.collapse === true, JSON.stringify({ settledAndCollapsed, lastKnown, path: path17b, elapsedMsWallClock }));
+          // cr review (director-routed, merged tree): assert this actually
+          // settles PROMPTLY (well under `waitForGlplotShapeSettled`'s own
+          // 1000ms bound plus the 150ms debounce), not merely "eventually,
+          // by the time this test's own generous 8000ms poll gives up" — the
+          // two are different claims. Measured APP-SIDE
+          // (`continuumDecidedAt - resizeStartPerf`, both `performance.now()`
+          // reads from inside this same page — see the comment on
+          // `resizeStartPerf` above), so a slow CI runner's OWN scheduling
+          // jitter around the Playwright calls can never trip this bound for
+          // a reason that has nothing to do with the component's real
+          // resize-to-decision latency; wall-clock stays diagnostic-only in
+          // the record above. Mutation: reverting the `marginTop`
+          // subtraction cr review's OWN CLI finding caught in
           // `waitForGlplotShapeSettled` (PlotlyView.tsx) makes its internal
           // "settled" comparison never match early, so this row's decision
           // is only ever reached via that function's timeout fallback —
           // functionally correct but always slow; this bound catches that
           // even when the FUNCTIONAL assertion above still happens to pass.
           // Bound tuned against BOTH ends, not guessed: working code measures
-          // ~800-900ms here (150ms debounce + a couple animation frames);
-          // the `waitForGlplotShapeSettled` marginTop mutation cr review
-          // found (its own settle check never matching early) measures
-          // ~1400ms (debounce + its own FULL internal poll timeout). 1200ms
+          // an app-side delta of ~350-500ms here (150ms debounce + a couple
+          // settle-poll rAF frames); the marginTop mutation measures
+          // ~1000ms+ (debounce + its own FULL internal poll timeout). 800ms
           // sits between the two with margin on both sides.
-          record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (<1200ms: ~150ms debounce + a couple settle-poll frames), not merely by the time a generous test-level wait gives up',
-            elapsedMs < 1200, `${elapsedMs}ms`);
+          const appSideDeltaMs = decidedInfo17b.decidedAt != null ? decidedInfo17b.decidedAt - resizeStartPerf : null;
+          record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (app-side delta <800ms: ~150ms debounce + a couple settle-poll frames), not merely by the time a generous test-level wait gives up',
+            appSideDeltaMs != null && appSideDeltaMs >= 0 && appSideDeltaMs < 800,
+            JSON.stringify({ appSideDeltaMs, decidedAt: decidedInfo17b.decidedAt, resizeStartPerf, elapsedMsWallClock }));
         } finally { await p17b.close().catch(() => {}); }
       }
     } finally { await p.close().catch(() => {}); }

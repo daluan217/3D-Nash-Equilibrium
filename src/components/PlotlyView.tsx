@@ -476,7 +476,17 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // WHICH path actually decided — presence of a decision is not proof of
     // which math made it (COMMON v5 self-adversarial checklist, item (f) —
     // this is that discipline applied to a projection path, not a message).
-    if (gdNow.dataset) gdNow.dataset.continuumProjectionPath = exactReady ? 'exact' : 'estimate';
+    // `continuumDecidedAt` (director-routed cr review): an APP-side
+    // timestamp (the same `performance.now()` clock a page-side test reads
+    // for its own "resize started" mark), stamped on every evaluation —
+    // lets a fixture measure the resize-to-decision latency directly rather
+    // than inferring it from wall-clock time around Playwright round-trips
+    // (network/IPC/CI-scheduler jitter that has nothing to do with this
+    // component's own timing).
+    if (gdNow.dataset) {
+      gdNow.dataset.continuumProjectionPath = exactReady ? 'exact' : 'estimate';
+      gdNow.dataset.continuumDecidedAt = String(performance.now());
+    }
 
     let basis: ReturnType<typeof cameraBasis> | undefined;
     let viewport: { w: number; h: number } | undefined;
