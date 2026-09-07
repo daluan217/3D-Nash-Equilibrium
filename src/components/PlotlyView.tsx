@@ -7,7 +7,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
 import { EA, EB, r3 } from '../utils/gameEngine';
-import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera } from '../utils/cameraProjection';
+import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera, shouldCollapseComponentAtCameraExact } from '../utils/cameraProjection';
 import { Rotate3d, Move, RefreshCw } from 'lucide-react';
 
 /**
@@ -298,6 +298,49 @@ export function moveCamera(pose: CameraPose, duration = 900): void {
   cameraAnim = requestAnimationFrame(tick);
 }
 
+/**
+ * OPUS-REVIEW-MATH17 FBM-1: waits for gl-plot3d's OWN rendered canvas
+ * (`glplot.shape`, device px) to actually match the plot DIV's current CSS
+ * box, rather than trusting `Plotly.Plots.resize`'s promise (measured: still
+ * stale immediately after `await`) or a fixed delay. Polls via
+ * `requestAnimationFrame`, BOUNDED — a shape that never settles within
+ * `timeoutMs` still resolves (a decision on a possibly-stale shape is better
+ * than a decision that never happens; the pre-fix code decided on an
+ * ALWAYS-stale shape at this call site, which is strictly worse).
+ * Pulled out as a standalone function (not inlined in the ResizeObserver
+ * callback) so an e2e/unit fixture can `await` the exact same settling this
+ * component relies on, rather than approximating it with a sleep.
+ */
+export function waitForGlplotShapeSettled(plotId: string, timeoutMs = 1000): Promise<void> {
+  return new Promise((resolve) => {
+    const start = performance.now();
+    const check = () => {
+      const gd = document.getElementById(plotId) as any;
+      const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+      const rect = typeof gd?.getBoundingClientRect === 'function' ? gd.getBoundingClientRect() : null;
+      // cr review (CLI, this branch): the gl3d canvas is `margin.t` px
+      // SHORTER than the plot DIV (plotting.ts's own `margin.t: 10`,
+      // matching the SAME subtraction `applyContinuumCollapseAtCamera`'s own
+      // `shapeFresh` check makes below) — comparing `cssH` against the RAW
+      // `rect.height` here meant this function's "settled" check could
+      // NEVER match early, always burning the full `timeoutMs` bound before
+      // resolving via timeout rather than detecting real settlement.
+      const marginTop = Number(gd?._fullLayout?.margin?.t) || 0;
+      if (glplot?.shape && glplot.pixelRatio > 0 && rect && rect.width > 0 && rect.height > marginTop) {
+        const cssW = glplot.shape[0] / glplot.pixelRatio;
+        const cssH = glplot.shape[1] / glplot.pixelRatio;
+        // A couple CSS px of slack for sub-pixel layout/DPR rounding — not a
+        // tolerance on the COLLAPSE decision itself, only on "has the canvas
+        // caught up to the box", so it stays tight.
+        if (Math.abs(cssW - rect.width) < 2 && Math.abs(cssH - (rect.height - marginTop)) < 2) { resolve(); return; }
+      }
+      if (performance.now() - start > timeoutMs) { resolve(); return; }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
 export const PlotlyView: React.FC<PlotlyViewProps> = ({
   payoffs,
   simState,
@@ -380,17 +423,6 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // use one), and `up` was always the default — both now flow through.
     const center = camera?.center ?? { x: 0, y: 0, z: 0 };
     const up = camera?.up ?? { x: 0, y: 0, z: 1 };
-    const basis = cameraBasis([eye.x, eye.y, eye.z], [center.x, center.y, center.z], [up.x, up.y, up.z]);
-    // CodeRabbit (this branch): marker SIZE is fixed CSS px, but the
-    // projected GAP between two points scales with the container's actual
-    // pixel size — the STATIC test's fixed 700x500 canonical viewport
-    // under-predicts real fusion risk on a narrower live container (e.g.
-    // mobile) and over-predicts it on a wider one. Read the plot's OWN
-    // current rendered size instead of assuming the canonical one; the
-    // canonical viewport stays the STATIC threshold's calibration (untouched
-    // default in cameraProjection.ts), used only if the live rect is
-    // unavailable (e.g. a detached node mid-teardown).
-    const rect = typeof gdNow.getBoundingClientRect === 'function' ? gdNow.getBoundingClientRect() : null;
     // OPUS-REVIEW-MATH NOTE-1: the plot DIV's own rect is NOT the gl3d
     // canvas's actual rendered size — plotting.ts's `margin.t: 10` reserves
     // 10px at the top of the SVG/WebGL area for every subplot, so the real
@@ -398,9 +430,83 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // renders a 276x246 `glplot.shape`). Read the live margin rather than
     // hardcoding 10, so a future margin change stays correct for free.
     const marginTop = Number(gdNow._fullLayout?.margin?.t) || 0;
-    const viewport = rect && rect.width > 0 && rect.height > marginTop
-      ? { w: rect.width, h: rect.height - marginTop }
-      : undefined;
+
+    // BLUE-MATH-17 (RED-MATH-17/001, RED-MATH-16/001): project through the
+    // LIVE gl3d camera matrices whenever gl-plot3d has rendered at least one
+    // frame — the EXACT transform that drew what's on screen right now, not
+    // an estimate of it (cameraProjection.ts's own block comment above
+    // `projectPointExact` has the full derivation + real-pixel verification:
+    // both known-gap fixtures land within 0.3 CSS px of prediction). Only
+    // missing before the first frame (a detached/not-yet-rendered node),
+    // which is the one case the old FOCAL/lookAt estimate still covers.
+    const sceneNow = gdNow._fullLayout?.scene?._scene;
+    const glplotNow = sceneNow?.glplot;
+    const cp = glplotNow?.cameraParams;
+    const dataScaleNow = sceneNow?.dataScale;
+    const shapeNow = glplotNow?.shape;
+    const pixelRatioNow = glplotNow?.pixelRatio;
+    // OPUS-REVIEW-MATH17 FBM-1 (structural, not a bounded-wait patch): reading
+    // the live matrices is not enough on its own — `glplot.shape` can be
+    // STALE (mid-resize: `Plots.resize` is debounced ~100ms and gl-plot3d's
+    // own canvas resize lands later still) or, in some rendering
+    // environments, effectively FROZEN at its very first value (observed:
+    // headless Chromium without explicit WebGL/SwiftShader launch flags never
+    // updates `glplot.shape` after the initial render at all — confirmed by
+    // instrumenting this exact function and diffing against the live
+    // container rect across a real resize). Precise math on a STALE viewport
+    // is worse than imprecise math on the RIGHT one (the estimate below,
+    // which reads `getBoundingClientRect()` FRESH every call) — so the exact
+    // path is gated on the shape ACTUALLY MATCHING the container's current
+    // box right now, not merely existing.
+    const rect = typeof gdNow.getBoundingClientRect === 'function' ? gdNow.getBoundingClientRect() : null;
+    const shapeFresh = !!(
+      shapeNow && shapeNow.length === 2 && typeof pixelRatioNow === 'number' && pixelRatioNow > 0 &&
+      rect && rect.width > 0 && rect.height > marginTop &&
+      Math.abs(shapeNow[0] / pixelRatioNow - rect.width) < 2 &&
+      Math.abs(shapeNow[1] / pixelRatioNow - (rect.height - marginTop)) < 2
+    );
+    const exactReady = !!(
+      cp?.model && cp?.view && cp?.projection &&
+      dataScaleNow && dataScaleNow.length === 3 &&
+      shapeNow && shapeNow[0] > 0 && shapeNow[1] > 0 &&
+      typeof pixelRatioNow === 'number' && pixelRatioNow > 0 &&
+      shapeFresh
+    );
+    // Recorded on the DOM node (not just returned) so a fixture can assert
+    // WHICH path actually decided — presence of a decision is not proof of
+    // which math made it (COMMON v5 self-adversarial checklist, item (f) —
+    // this is that discipline applied to a projection path, not a message).
+    // `continuumDecidedAt` (director-routed cr review): an APP-side
+    // timestamp (the same `performance.now()` clock a page-side test reads
+    // for its own "resize started" mark), stamped on every evaluation —
+    // lets a fixture measure the resize-to-decision latency directly rather
+    // than inferring it from wall-clock time around Playwright round-trips
+    // (network/IPC/CI-scheduler jitter that has nothing to do with this
+    // component's own timing).
+    if (gdNow.dataset) {
+      gdNow.dataset.continuumProjectionPath = exactReady ? 'exact' : 'estimate';
+      gdNow.dataset.continuumDecidedAt = String(performance.now());
+    }
+
+    let basis: ReturnType<typeof cameraBasis> | undefined;
+    let viewport: { w: number; h: number } | undefined;
+    if (!exactReady) {
+      basis = cameraBasis([eye.x, eye.y, eye.z], [center.x, center.y, center.z], [up.x, up.y, up.z]);
+      // CodeRabbit (this branch): marker SIZE is fixed CSS px, but the
+      // projected GAP between two points scales with the container's actual
+      // pixel size — the STATIC test's fixed 700x500 canonical viewport
+      // under-predicts real fusion risk on a narrower live container (e.g.
+      // mobile) and over-predicts it on a wider one. Read the plot's OWN
+      // current rendered size (the SAME `rect` the freshness check above
+      // just read — always current, computed once per call) instead of
+      // assuming the canonical one; the canonical viewport stays the STATIC
+      // threshold's calibration (untouched default in cameraProjection.ts),
+      // used only if the live rect is unavailable too (e.g. a detached node
+      // mid-teardown).
+      viewport = rect && rect.width > 0 && rect.height > marginTop
+        ? { w: rect.width, h: rect.height - marginTop }
+        : undefined;
+    }
     // CodeRabbit (this branch): un-collapsing must restore the corner
     // traces' BASELINE visibility, not force `true` unconditionally — the
     // user may have hidden the whole 'continuumNE' legend group
@@ -413,8 +519,12 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     const midIdx: number[] = [];
     const midSize: number[] = [];
     for (const m of metas) {
-      const collapse = m.surfaces.some((s) =>
-        shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis, viewport));
+      const collapse = m.surfaces.some((s) => exactReady
+        ? shouldCollapseComponentAtCameraExact(
+            s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize,
+            cp, [dataScaleNow[0], dataScaleNow[1], dataScaleNow[2]],
+            { w: shapeNow[0], h: shapeNow[1] }, pixelRatioNow, marginTop)
+        : shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis, viewport));
       const was = continuumCollapsedRef.current.get(m.componentIndex) ?? false;
       if (collapse === was) continue;
       continuumCollapsedRef.current.set(m.componentIndex, collapse);
@@ -493,6 +603,18 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    * running a resize storm shows 200–260ms frames; with it quiet, zero.
    */
   const resizeBusyUntilRef = useRef(0);
+  /** OPUS-REVIEW-MATH17 FBM-1 follow-up (self-adversarial check (b) —
+   *  every async continuation must check its generation before touching
+   *  state): `waitForGlplotShapeSettled` is a BOUNDED poll (up to 1000ms), so
+   *  a resize event that fires again before an earlier one's poll resolves
+   *  leaves TWO settle-waits in flight. Without a generation check, the
+   *  earlier (now-stale) one can resolve LATER than the newer one and apply
+   *  a decision computed at an intermediate, no-longer-current shape —
+   *  confirmed to corrupt an UNRELATED later screenshot (e2e section 71's
+   *  CONTROL row, a viewport-sensitive length-0.2-boundary fixture) when
+   *  this guard was first tried without it. Only the LATEST resize's
+   *  settle-wait may apply its decision. */
+  const resizeSettleGenRef = useRef(0);
 
   // Set up robust ResizeObserver to force Plotly bounds to sync with fluid flex columns
   useEffect(() => {
@@ -523,13 +645,26 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       timer = setTimeout(() => {
         if (Plotly && document.getElementById(plotId)) {
           Plotly.Plots.resize(plotId);
-          // CodeRabbit (this branch): the camera-aware continuum collapse
-          // reads the plot's LIVE container size (not a fixed canonical
-          // one) precisely so it agrees with what a resize just changed —
-          // re-evaluate at the (unchanged) current camera now that the
-          // resize has actually applied, so a decision made at the OLD size
-          // is never left stale after the container settles at a new one.
-          applyContinuumCollapseAtCamera(cameraRef.current);
+          // OPUS-REVIEW-MATH17 FBM-1: `Plots.resize` is internally debounced
+          // (~100ms setTimeout) and gl-plot3d resizes its OWN canvas later
+          // still — calling `applyContinuumCollapseAtCamera` right after (even
+          // `await`ing the resize promise) reads a STALE `glplot.shape`
+          // (measured: [1306,1016] before/synchronously-after/awaited,
+          // [516,1016] once actually settled — precise math on the WRONG
+          // viewport is worse than the old estimate on the RIGHT one, which
+          // is what this call site regressed from). Poll the live shape
+          // until it actually matches the container's own box (bounded, so a
+          // shape that never settles still gets a decision, just a possibly
+          // stale one — never blocks forever) before deciding.
+          const gen = ++resizeSettleGenRef.current;
+          waitForGlplotShapeSettled(plotId).then(() => {
+            // A NEWER resize started while this poll was in flight — its OWN
+            // settle-wait owns the next decision; applying this stale one now
+            // would risk stomping a correct, more-current one (see
+            // `resizeSettleGenRef`'s own comment above).
+            if (resizeSettleGenRef.current !== gen) return;
+            applyContinuumCollapseAtCamera(cameraRef.current);
+          });
         }
       }, 150);
     });

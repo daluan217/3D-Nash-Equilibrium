@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path';
  * CI variance of up to 1.76x a single measurement (one 324 s job), so the
  * table now keeps the MAX per section across runs and there are 28 shards.
  */
-export const SHARD_COUNT = 28;
+export const SHARD_COUNT = 29;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));

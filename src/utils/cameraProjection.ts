@@ -233,3 +233,151 @@ export function shouldCollapseComponentAtCamera(
   ];
   return worstPairGapPx(points, zLo, zHi, basis, viewport) < -OVERLAP_TOLERANCE_PX;
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// BLUE-MATH-17 (RED-MATH-17/001, RED-MATH-16/001): everything above this
+// line is the FOCAL/lookAt ESTIMATE — one fixed vertical FOV, a hand-rolled
+// lookAt basis, and a manual z-normalization (`zRangeOfSurface`) that this
+// round confirmed does NOT match Plotly's own live z-axis autorange (a real
+// fixture's live `dataScale[2]` measured 0.08620689655172414, implying an
+// axis span of 11.6 data-units; the SAME fixture's live `zaxis.range` is
+// [-6.6625, 5.6625], span 12.325 — a ~6% mismatch this module has no rule
+// to reproduce, since Plotly's exact autorange/padding is not published
+// arithmetic). That residual is exactly why the estimate under/over-collapses
+// near the tolerance boundary (docs/CONTINUUM-RENDERING.md "Known gaps"):
+// no FOCAL value papers over an error that is not a focal-length error.
+//
+// This section is the STRUCTURAL fix: project through the LIVE gl3d camera
+// matrices Plotly itself computed for the frame actually on screen —
+// `gd._fullLayout.scene._scene.glplot.cameraParams` (model/view/projection,
+// column-major, gl-matrix/WebGL convention) plus `scene._scene.dataScale`
+// (the live x/y/z axis-to-cube scale — reads Plotly's OWN autorange instead
+// of re-deriving it) and `glplot.shape`/`pixelRatio` (device px, Plotly's
+// internal supersample factor). No FOCAL, no lookAt re-derivation, no
+// z-range guess: every number comes from the same pipeline that drew the
+// pixels.
+//
+// Verified against REAL rendered pixels (round16/notes/BLUE-MATH-17/,
+// `_bluescratch/validate_exact.mjs` + `exact_validation.json`): per-marker
+// isolation (fresh page per marker, RED-MATH-16/17's own method) at BOTH
+// RED-MATH-17/001's fixture (CAMERA.overview, real 320px-mobile viewport)
+// and RED-MATH-16/001's fixture (az105, 700x500) — all 6 markers (3 per
+// fixture) land within 0.4 CSS px of this formula's prediction (OPUS-REVIEW-
+// MATH17 N-1: independently re-derived, worst residual 0.357px, not 0.3 as
+// first stated — still sub-pixel, the conclusion holds), camera- and
+// viewport-independent. The two known-gap real-pixel disagreements this
+// module previously could not resolve are gone at the camera/viewport that
+// exposed them (see the new real-pixel e2e rows, smoke.mjs #71).
+//
+// Kept ONLY as a fallback (`applyContinuumCollapseAtCamera` in
+// PlotlyView.tsx) for the one case it must cover: before gl-plot3d's first
+// frame exists (`glplot`/`cameraParams` not yet on the DOM node). The
+// runtime logs which path decided (`gd.dataset.continuumProjectionPath`)
+// so a fixture can assert the exact path actually fired, not merely that a
+// decision was made.
+
+/** A 16-element column-major 4x4 matrix (WebGL/gl-matrix convention,
+ *  translation in elements 12/13/14) — the exact shape of
+ *  `glplot.cameraParams.model` / `.view` / `.projection`. */
+export type Mat4 = ArrayLike<number>;
+
+export interface LiveCameraParams {
+  model: Mat4;
+  view: Mat4;
+  projection: Mat4;
+}
+
+/** `glplot.shape` — the gl3d canvas's own rendered size, in DEVICE px
+ *  (already scaled by `glplot.pixelRatio`, independent of
+ *  `window.devicePixelRatio`). */
+export interface LiveCanvasShape { w: number; h: number; }
+
+function mat4MulVec4(m: Mat4, v: readonly [number, number, number, number]): [number, number, number, number] {
+  const out: [number, number, number, number] = [0, 0, 0, 0];
+  for (let row = 0; row < 4; row++) {
+    out[row] = m[row] * v[0] + m[4 + row] * v[1] + m[8 + row] * v[2] + m[12 + row] * v[3];
+  }
+  return out;
+}
+
+/**
+ * Exact screen position of a data point (x,y in [0,1]; z in the game's own
+ * payoff units — RAW, not pre-normalized: `dataScale` does that, reading
+ * Plotly's own live axis range) under the camera matrices gl-plot3d itself
+ * used to draw this frame. `marginTop` (plotting.ts's `margin.t`, read live
+ * off `_fullLayout.margin.t`) shifts the result from canvas-relative to
+ * plot-DIV-relative CSS px, matching what `getBoundingClientRect()`-based
+ * hit testing expects; pass 0 to get canvas-relative px (the two cancel out
+ * of any GAP between two points either way, since both share the offset).
+ */
+export function projectPointExact(
+  x: number, y: number, z: number,
+  cam: LiveCameraParams,
+  dataScale: readonly [number, number, number],
+  shape: LiveCanvasShape,
+  pixelRatio: number,
+  marginTop = 0,
+): [number, number] {
+  const world = mat4MulVec4(cam.model, [x * dataScale[0], y * dataScale[1], z * dataScale[2], 1]);
+  const eye = mat4MulVec4(cam.view, world);
+  const clip = mat4MulVec4(cam.projection, eye);
+  const w = clip[3];
+  // Same discipline as `projectPoint`'s `vz <= 0` guard (there in eye-space;
+  // here in clip-space, since a standard OpenGL perspective matrix folds
+  // `w = -eye.z`): a point at or behind the camera plane must never produce
+  // a spurious on-screen position. NaN drops out of every gap comparison
+  // below (`NaN < x` is always false), so a bad divide silently excludes
+  // that pair rather than manufacturing evidence either way.
+  if (!(w > 0)) return [NaN, NaN];
+  const ndcX = clip[0] / w;
+  const ndcY = clip[1] / w;
+  const devX = (ndcX * 0.5 + 0.5) * shape.w;
+  const devY = (1 - (ndcY * 0.5 + 0.5)) * shape.h; // NDC +Y is up; device px +Y is down
+  return [devX / pixelRatio, devY / pixelRatio + marginTop];
+}
+
+/** Exact-projection counterpart of `worstPairGapPx`. */
+export function worstPairGapPxExact(
+  points: Array<{ x: number; y: number; z: number; size: number }>,
+  cam: LiveCameraParams,
+  dataScale: readonly [number, number, number],
+  shape: LiveCanvasShape,
+  pixelRatio: number,
+  marginTop = 0,
+): number {
+  let worst = Infinity;
+  const proj = points.map((p) => ({
+    px: projectPointExact(p.x, p.y, p.z, cam, dataScale, shape, pixelRatio, marginTop),
+    size: p.size,
+  }));
+  for (let i = 0; i < proj.length; i++) {
+    for (let j = i + 1; j < proj.length; j++) {
+      const d = Math.hypot(proj[i].px[0] - proj[j].px[0], proj[i].px[1] - proj[j].px[1]);
+      const gap = d - (proj[i].size / 2 + proj[j].size / 2);
+      if (gap < worst) worst = gap;
+    }
+  }
+  return worst;
+}
+
+/** Exact-projection counterpart of `shouldCollapseComponentAtCamera` — the
+ *  PRIMARY runtime decision path (PlotlyView.tsx); `shouldCollapseComponentAtCamera`
+ *  above is now the pre-first-render fallback only. */
+export function shouldCollapseComponentAtCameraExact(
+  midpoint: ContinuumPoint,
+  corners: ContinuumPoint[],
+  midpointSize: number,
+  cornerSize: number,
+  cam: LiveCameraParams,
+  dataScale: readonly [number, number, number],
+  shape: LiveCanvasShape,
+  pixelRatio: number,
+  marginTop = 0,
+): boolean {
+  if (!corners.length) return false;
+  const points = [
+    { ...midpoint, size: midpointSize },
+    ...corners.map((c) => ({ ...c, size: cornerSize })),
+  ];
+  return worstPairGapPxExact(points, cam, dataScale, shape, pixelRatio, marginTop) < -OVERLAP_TOLERANCE_PX;
+}
