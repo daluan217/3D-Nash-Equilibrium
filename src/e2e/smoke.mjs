@@ -6292,13 +6292,36 @@ try {
       const h = document.elementFromPoint(x, y);
       return { tag: h?.tagName, insideTour: !!h?.closest(sel) };
     }, [x, y, TOUR_SEL]);
+    // Two animation frames: the same idiom §17's Tab-trap check already uses
+    // (line ~1241) to be certain a synchronous click handler's re-render has
+    // actually committed before the next read (CodeRabbit CLI).
+    const settleFrames = (p) => p.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
     // One scenario runner shared by the drawer and the download dialog,
     // so both get every assertion instead of two hand-kept copies.
-    async function runScenario(p, label, { preSteps, openSurface, surfaceOpenSelector, closeSurface, tourButtonSelector }) {
+    async function runScenario(p, label, { preSteps, expectedStep, openSurface, surfaceOpenSelector, closeSurface, tourButtonSelector }) {
       for (let i = 0; i < preSteps; i++) await p.keyboard.press('ArrowRight');
-      const stepBefore = await tourStepOf(p);
-      record(`[${label}] precondition: the tour is open at the expected step`, stepBefore !== null, `step=${stepBefore}`);
+      // Poll for the EXACT expected step, not merely "some step is showing"
+      // — a dropped ArrowRight would otherwise leave this on the wrong step
+      // and the old `!== null` precondition would still (wrongly) pass
+      // (CodeRabbit CLI).
+      let stepBefore = await tourStepOf(p);
+      for (let i = 0; i < 20 && stepBefore !== expectedStep; i++) {
+        await p.waitForTimeout(100);
+        stepBefore = await tourStepOf(p);
+      }
+      record(`[${label}] precondition: the tour is open at the expected step ${expectedStep}`, stepBefore === expectedStep, `step=${stepBefore}`);
+
+      // Capture the tour control's coordinate BEFORE the surface opens,
+      // while it is still fully visible/interactive — not by building the
+      // harness's own click coordinate on boundingBox() returning a real
+      // box for a hidden+inert element (real, observed Playwright/browser
+      // behavior, but not a documented guarantee to rely on) (CodeRabbit CLI).
+      const btn = p.locator(tourButtonSelector).first();
+      const bbBefore = await btn.boundingBox();
+      record(`[${label}] precondition: the tour control has a bounding box before any surface opens (harness sanity)`, !!bbBefore, JSON.stringify(bbBefore));
+      if (!bbBefore) return;
+      const cx = bbBefore.x + bbBefore.width / 2, cy = bbBefore.y + bbBefore.height / 2;
 
       await openSurface(p);
       await p.locator(surfaceOpenSelector).first().waitFor({ state: 'visible', timeout: 8000 });
@@ -6307,20 +6330,21 @@ try {
       record(`[${label}] FIX: the tour overlay is inert while a surface is open (RED-APP-16/001)`, overlay?.inert === true, JSON.stringify(overlay));
       record(`[${label}] FIX: the tour overlay computes visibility:hidden while a surface is open — not just hit-testing, PAINTING too (RED-APP-16/001)`, overlay?.visibility === 'hidden', JSON.stringify(overlay));
 
-      // Not getByRole: an inert subtree is excluded from the accessibility
-      // tree by design, so a role-based locator would (correctly) find
-      // nothing here — a plain DOM locator is what proves state, not
-      // visibility, is preserved (RED-APP-16/001's "restored exactly").
-      const btn = p.locator(tourButtonSelector).first();
-      const bb = await btn.boundingBox();
-      record(`[${label}] precondition: the tour control still has a bounding box while gated (hidden, not removed — state is preserved)`, !!bb, JSON.stringify(bb));
-      if (!bb) return;
-      const cx = bb.x + bb.width / 2, cy = bb.y + bb.height / 2;
+      // Geometry is PRESERVED while hidden (RED-APP-16/001's "restored
+      // exactly") — checked, not assumed: re-read the same control's box
+      // now that it is hidden+inert and require it to match the pre-open
+      // reading above (this is now a genuine assertion, not the coordinate
+      // source).
+      const bbAfter = await btn.boundingBox();
+      record(`[${label}] the tour control's geometry is unchanged while hidden+inert (state preserved, not removed)`,
+        !!bbAfter && Math.abs(bbAfter.x - bbBefore.x) < 1 && Math.abs(bbAfter.y - bbBefore.y) < 1, JSON.stringify({ bbBefore, bbAfter }));
+
       const hit = await hitAt(p, cx, cy);
       record(`[${label}] FIX: elementFromPoint at the tour control's old position is NOT inside the tour (RED-APP-16/001)`, hit.insideTour === false, JSON.stringify(hit));
 
       // ── test arm: click with the (hidden) tour present ──
       await p.mouse.click(cx, cy);
+      await settleFrames(p);
       const stepAfterTest = await tourStepOf(p);
       record(`[${label}] FIX: the click did not advance the tour (tour-advance direction)`, stepAfterTest === stepBefore, JSON.stringify({ stepBefore, stepAfterTest }));
       const surfaceOpenAfterTest = await p.locator(surfaceOpenSelector).first().isVisible().catch(() => false);
@@ -6337,9 +6361,19 @@ try {
         await exitTour.click();
         await p.waitForFunction((sel) => !document.querySelector(sel), TOUR_SEL, { timeout: 5000 }).catch(() => {});
       }
+      // Assert the tour is actually gone before comparing the two arms —
+      // the wait above used to be silently swallowed (`.catch(() => {})`),
+      // so a failed dismissal could leave the "control" running with the
+      // tour still present, comparing the same condition against itself
+      // (CodeRabbit CLI).
+      const tourGone = await p.evaluate((sel) => !document.querySelector(sel), TOUR_SEL);
+      record(`[${label}] precondition: the control arm runs with the tour fully dismissed (otherwise the two arms would not compare the same condition)`,
+        tourGone, JSON.stringify({ tourGone }));
+      if (!tourGone) { await closeSurface(p); return; }
       await openSurface(p);
       await p.locator(surfaceOpenSelector).first().waitFor({ state: 'visible', timeout: 8000 });
       await p.mouse.click(cx, cy);
+      await settleFrames(p);
       const surfaceOpenAfterControl = await p.locator(surfaceOpenSelector).first().isVisible().catch(() => false);
       record(`[${label}] FIX: the surface's own outcome from this exact click is UNCHANGED whether the (now-hidden) tour is present or was never there — "backdrop click semantics unchanged" (RED-APP-16/001)`,
         surfaceOpenAfterTest === surfaceOpenAfterControl, JSON.stringify({ surfaceOpenAfterTest, surfaceOpenAfterControl }));
@@ -6348,14 +6382,14 @@ try {
 
     const scenarios = [
       {
-        name: 'drawer/step6', preSteps: 5,
+        name: 'drawer/step6', preSteps: 5, expectedStep: '6',
         openSurface: async (pg) => { await pg.locator('button[aria-label="Open workspace menu"]').first().click(); },
         surfaceOpenSelector: '[role="dialog"][aria-label="Simulator Workspace Center"]',
         closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {}); },
         tourButtonSelector: `${TOUR_SEL} button:has-text("Next")`,
       },
       {
-        name: 'download/step1', preSteps: 0,
+        name: 'download/step1', preSteps: 0, expectedStep: '1',
         openSurface: async (pg) => { await pg.locator('button', { hasText: /Get Desktop App/i }).first().click(); },
         surfaceOpenSelector: '[role="dialog"][aria-label="Get the desktop app"]',
         closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction(() => !document.querySelector('[aria-label="Get the desktop app"]'), null, { timeout: 8000 }).catch(() => {}); },
