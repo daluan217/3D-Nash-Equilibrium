@@ -12,10 +12,14 @@ import { dirname, join } from 'node:path';
  * MEASURED duration (shard-timings.json, longest-first): a job pays ~75 s of
  * fixed overhead (checkout, dist, browsers, server boot) and must finish under
  * 300 s, so every shard holds at most 225 s of sections. 16 shards stopped
- * fitting on 2026-09-06 (4,040 s of sections; shards 6/7/8 at 390 s); 20 gives
- * a 202 s mean with the longest section (66 → split into 66/66b) under 200 s.
+ * fitting on 2026-09-06 (4,040 s of sections; shards 6/7/8 at 390 s). The
+ * first 20-shard run measured 4,260 s of sections on CI (CI runs ~5% slower
+ * than the table it was packed from) — a 213 s mean, 288 s jobs, too close to
+ * the ceiling — so 24 shards. The first 24-shard run then showed per-section
+ * CI variance of up to 1.76x a single measurement (one 324 s job), so the
+ * table now keeps the MAX per section across runs and there are 28 shards.
  */
-export const SHARD_COUNT = 20;
+export const SHARD_COUNT = 28;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));
