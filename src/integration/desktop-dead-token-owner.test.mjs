@@ -146,8 +146,9 @@ try {
   record('control: NO token still saves as the desktop local owner (unchanged, by design)',
     noTokenSave.status === 200 && noTokenSave.json?.game?.userId === 'local-owner',
     `status ${noTokenSave.status} userId ${noTokenSave.json?.game?.userId}`);
-  // Clean up the local-owner control row so it can't be mistaken for a misfile below.
-  const noTokenId = noTokenSave.json?.game?.id;
+  // This row is left in the local-owner bucket deliberately — it is the
+  // baseline the "local-owner bucket got ONLY its own no-token control row"
+  // check below expects to still find there.
 
   // ── The defect surface: a token that WAS presented but does not resolve ──
   const garbled = token.slice(0, -4) + 'dead';
@@ -193,12 +194,14 @@ try {
     tokenAuth.status === 401 && tokenAuth.json?.game === undefined,
     `status ${tokenAuth.status} body ${JSON.stringify(tokenAuth.json)}`);
 
-  // Two REAL Authorization header lines (Node keeps only the first) — a
-  // Basic header masking a dead Bearer must still refuse, not fall back
-  // just because the masked value happened to be a Bearer scheme.
+  // Two REAL Authorization header lines (Node keeps only the first) — the
+  // second value is the STILL-VALID token (not a garbled one): if the
+  // server looked at all headers, or the LAST one, this would succeed
+  // (200, account-owned), so refusal here specifically proves the FIRST
+  // header is what's masking it, not merely that the second value is dead.
   const twoHeaders = await callTwoAuthHeaders(port, 'POST', '/api/games',
-    ['Basic eHl6', `Bearer ${garbled}`], game('headershape-two-header'));
-  record('two Authorization headers (Basic first, dead Bearer second — the FIRST one wins) is refused (401), never re-owned',
+    ['Basic eHl6', `Bearer ${token}`], game('headershape-two-header'));
+  record('two Authorization headers (Basic first, VALID Bearer second — the FIRST one wins) is refused (401), never re-owned',
     twoHeaders.status === 401 && twoHeaders.json?.game === undefined,
     `status ${twoHeaders.status} body ${JSON.stringify(twoHeaders.json)}`);
 
@@ -262,8 +265,6 @@ try {
     localGames.status === 200 && localNames.includes('DeadToken-no-token')
       && !localNames.some((n) => n.includes('garbled') || n.includes('reset-invalidated') || n.includes('headershape')),
     `names: ${localNames.join(', ')}`);
-
-  void noTokenId; // recorded for readability of the fixture above; not asserted further
 } finally {
   await stop(srv);
   try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effort */ }

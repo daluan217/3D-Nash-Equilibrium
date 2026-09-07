@@ -141,6 +141,17 @@ check('fixture: a planted old expression is flagged by the same regex',
     /if \(hasAuthorizationHeader\(req\)\) return null;/.test(fnSrc));
   check('resolveGameOwner falls back to the local owner ONLY when no Authorization header was presented at all',
     /return ensureLocalOwner\(\);/.test(fnSrc));
+  // CodeRabbit CLI: the three checks above each confirm a LINE is present
+  // ANYWHERE in the function — none of them enforce ORDER. A reordering that
+  // moves the `hasAuthorizationHeader` guard BEFORE `getAuthUser` would
+  // refuse every VALID token too (any presented header, resolved or not,
+  // hits the guard first) while still satisfying all three checks above,
+  // since every substring they look for would still be present somewhere in
+  // the function. One exact WHOLE-BODY pin (statement order included) closes
+  // that gap.
+  check('resolveGameOwner\'s full body matches the exact intended sequence (auth check, then the header-presence guard, then the local-owner fallback — in that order)',
+    /^function resolveGameOwner\(req: express\.Request\): User \| null \{\n {2}const user = getAuthUser\(req\);\n {2}if \(user\) return user;\n {2}if \(hasAuthorizationHeader\(req\)\) return null;\n {2}return ensureLocalOwner\(\);\n\}$/.test(fnSrc));
+
   // Known-positive: a regression back to unconditional fallback (the old bug,
   // renamed) must be caught by the same three checks above going false.
   const regressed = 'function resolveGameOwner(req) {\n  return getAuthUser(req) ?? ensureLocalOwner();\n}';
@@ -156,6 +167,21 @@ check('fixture: a planted old expression is flagged by the same regex',
     + '  if (hasPresentedToken(req)) return null;\n  return ensureLocalOwner();\n}';
   check('fixture: a regression back to the Bearer-specific predicate (hasPresentedToken) fails the structural check',
     !/if \(hasAuthorizationHeader\(req\)\) return null;/.test(regressedBearerOnly));
+  // Known-positive (CodeRabbit CLI, MAJOR): the reordered shape itself — the
+  // header-presence guard moved BEFORE the auth check. Every one of the
+  // three presence checks above still matches this text (nothing was
+  // deleted, only moved), so ONLY the new whole-body order pin can catch it.
+  const reordered = 'function resolveGameOwner(req: express.Request): User | null {\n'
+    + '  if (hasAuthorizationHeader(req)) return null;\n'
+    + '  const user = getAuthUser(req);\n'
+    + '  if (user) return user;\n'
+    + '  return ensureLocalOwner();\n}';
+  check('fixture sanity: the reordered function still passes all three individual presence checks (proving they cannot catch this on their own)',
+    /const user = getAuthUser\(req\);\s*\n\s*if \(user\) return user;/.test(reordered)
+    && /if \(hasAuthorizationHeader\(req\)\) return null;/.test(reordered)
+    && /return ensureLocalOwner\(\);/.test(reordered));
+  check('fixture: the reordered function (header guard before the auth check — would 401 a VALID token) fails the whole-body order pin',
+    !/^function resolveGameOwner\(req: express\.Request\): User \| null \{\n {2}const user = getAuthUser\(req\);\n {2}if \(user\) return user;\n {2}if \(hasAuthorizationHeader\(req\)\) return null;\n {2}return ensureLocalOwner\(\);\n\}$/.test(reordered));
 }
 
 // OPUS-REVIEW-DESKTOP16 (residual) + director's structural decision
