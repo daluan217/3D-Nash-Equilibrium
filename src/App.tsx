@@ -679,16 +679,23 @@ export default function App() {
     // Watching the token rather than any one success handler means the save
     // modal comes back regardless of which path produced the sign-in (login,
     // or register + verification).
+    //
+    // cr review (CLI): a fresh, valid token means the user is signed in for
+    // real, REGARDLESS of which path produced it — clearing `deadSession`
+    // only inside the two resume branches missed every OTHER way to sign in
+    // (the header's own "Sign In / Sign Up" button, e.g., after Cancelling a
+    // gated dialog instead of using its banner). Left uncleared, a stale
+    // `deadSession` would keep routing an already-signed-in user's NEXT
+    // Save/Edit attempt straight back to the Account dialog, forever.
+    if (authToken) setDeadSession(null);
     if (authToken && resumeSaveAfterAuthRef.current) {
       resumeSaveAfterAuthRef.current = false;
       setSaveError('');
-      setDeadSession((d) => (d === 'save' ? null : d));
       setIsSaveModalOpen(true);
     }
     if (authToken && resumeEditAfterAuthRef.current) {
       resumeEditAfterAuthRef.current = false;
       setEditError('');
-      setDeadSession((d) => (d === 'edit' ? null : d));
       setIsEditModalOpen(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
