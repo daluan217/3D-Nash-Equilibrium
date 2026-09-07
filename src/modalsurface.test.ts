@@ -351,19 +351,35 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     'the log region must not rely on autoFocus — it is inert on a non-form element (React only special-cases button/input/select/textarea)');
 }
 
-// OPUS-REVIEW-MODAL BLOCK 1 (regression from the round15 fix): `tabIndex={-1}`
-// on the panel (added for RED-APP-14/002's focus-parking) makes it MOUSE-
-// focusable — a plain click on the dialog's own dead space (padding, a
-// heading) with every control still ENABLED focuses the panel itself.
-// `Node.contains()` returns true for the node itself, so the old
-// `!container.contains(document.activeElement)` boundary check never fired
-// for `activeElement === container`, and Shift+Tab fell through to the
-// browser's own backward navigation — escaping the dialog on Chromium and
-// Firefox (RED-APP-5/002's exact shape, reintroduced). Mutation: drop the
-// `|| document.activeElement === container` disjunct and this fails.
+// OPUS-REVIEW-MODAL BLOCK 1 (round15) folded into RED-APP-15/001's general fix
+// (round16, BLUE-MODAL-16): `document.activeElement` can be the panel itself
+// (`tabIndex={-1}`, mouse-focusable) OR any OTHER `tabIndex={-1}` landmark
+// inside the container (SavedGamesList's `[data-focus-fallback]` wrappers) —
+// neither is ever in `focusables`, so `!focusables.includes(active)` is the
+// general edge check (subsumes BLOCK 1's `=== container` case: the container
+// is never matched by getModalFocusables' selector either). Route by DOM
+// order (focusableAfter/Before) instead of a fixed first/last so a landmark
+// with real controls nested after it (a populated saved-games list) still
+// advances into them. Mutation: revert to the old
+// `!container.contains(document.activeElement) || document.activeElement === container`
+// check (no `focusableAfter`/`focusableBefore`) and this fails — RED-APP-15/001
+// reproduces the escape again (forward Tab from an empty-state landmark).
 {
-  ok(/if \(!container\.contains\(document\.activeElement\) \|\| document\.activeElement === container\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*\(e\.shiftKey \? last : first\)\.focus\(\);\s*\n\s*return;\s*\n\s*\}/.test(modalSurfaceSrc),
-    'the Tab-trap boundary check must also treat activeElement === container (the panel itself, mouse-focusable via tabIndex={-1}) as "at the edge" (OPUS-REVIEW-MODAL BLOCK 1)');
+  const onKeyWindow = (modalSurfaceSrc.match(/if \(!focusables\.includes\(active\)\) \{[\s\S]{0,500}?\n\s*\}/) ?? [''])[0];
+  ok(/e\.preventDefault\(\);/.test(onKeyWindow), 'the landmark-edge branch must preventDefault so the browser never runs its own Tab traversal (RED-APP-15/001)');
+  ok(/\(e\.shiftKey \? focusableBefore\(focusables, active\) : focusableAfter\(focusables, active\)\)\.focus\(\);/.test(onKeyWindow),
+    'the landmark-edge branch must route by DOM order via focusableBefore/focusableAfter, not a fixed first/last (RED-APP-15/001)');
+}
+
+// The DOM-order helpers themselves (RED-APP-15/001): a landmark's neighbors
+// are found via compareDocumentPosition, wrapping to the far end when there
+// is nothing after/before. Mutation: swap DOCUMENT_POSITION_FOLLOWING for
+// _PRECEDING (or vice versa) in either helper and this fails.
+{
+  ok(/function focusableAfter\(focusables: HTMLElement\[\], from: Node\): HTMLElement \{\s*\n\s*for \(const el of focusables\) \{\s*\n\s*if \(from\.compareDocumentPosition\(el\) & Node\.DOCUMENT_POSITION_FOLLOWING\) return el;\s*\n\s*\}\s*\n\s*return focusables\[0\];\s*\n\s*\}/.test(modalSurfaceSrc),
+    'focusableAfter must pick the first focusable that FOLLOWS `from` in DOM order, wrapping to focusables[0]');
+  ok(/function focusableBefore\(focusables: HTMLElement\[\], from: Node\): HTMLElement \{\s*\n\s*for \(let i = focusables\.length - 1; i >= 0; i--\) \{\s*\n\s*if \(from\.compareDocumentPosition\(focusables\[i\]\) & Node\.DOCUMENT_POSITION_PRECEDING\) return focusables\[i\];\s*\n\s*\}\s*\n\s*return focusables\[focusables\.length - 1\];\s*\n\s*\}/.test(modalSurfaceSrc),
+    'focusableBefore must pick the last focusable that PRECEDES `from` in DOM order, wrapping to the last focusable');
 }
 
 // CodeRabbit CLI (round15 review): `mountLogRegion`'s own `el.focus()` on the
