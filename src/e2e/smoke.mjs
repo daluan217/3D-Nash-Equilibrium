@@ -5841,7 +5841,20 @@ try {
       // ~1.25x-1.47x genuine separation actually measured on THIS row and
       // the 17m row below. 15 stays only as the calibration-failed
       // fallback (matches controlWindow's own fallback discipline above).
-      const controlSepThreshold = controlCal?.diag ? controlCal.diag * 1.1 : 15;
+      // CORRECTION (director, CI run 34160015179 shard 26 at 1fddc9b): 1.1x
+      // was calibrated on LOCAL dsf=2 geometry (genuine separation 1.25x-
+      // 1.47x). On the runner (dsf=1, swiftshader) the SAME two genuine
+      // markers measure maxSep 38.11px vs diag 42.43px = 0.90x, and the
+      // variant-B pair 29.15 vs 28.28 = 1.03x — both rejected by 1.1x, both
+      // identical on #164's green run with the old flat 15. The ceiling for
+      // fragments is not "one diagonal": the SIZE window above already keeps
+      // only blobs with bbox diag in [0.5, 1.5]*diag, so the only fragments
+      // that can reach this check are near-halves of ONE glyph, and two
+      // sub-boxes each >= 0.5*diag inside a box of diag D have centres at
+      // most ~0.6*D apart. 0.7x sits between that ceiling and the tightest
+      // genuine separation measured on the shipping condition (0.90x); the
+      // unit fixture in separationbound.guard.test.ts pins both numbers.
+      const controlSepThreshold = controlCal?.diag ? controlCal.diag * 0.7 : 15;
       record('CONTROL (700x500, default camera): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not stray-UI-inflated, not one glyph\'s own anti-alias fragments)',
         markerSizedControl.length >= 2 && maxSepControl > controlSepThreshold,
         JSON.stringify({ spanControl, maxSepControl, controlSepThreshold, markerSizedCount: markerSizedControl.length, controlWindow, calibratedDiag: controlCal?.diag ?? null, ...controlBlobs }));
@@ -6377,7 +6390,10 @@ try {
           // 1.5x would reject). 1.1x still clears the ~1x fragment-spread
           // ceiling a single glyph's own anti-alias fragments can reach. 15
           // stays only as the calibration-failed fallback.
-          const sepThreshold17m = diag17m ? diag17m * 1.1 : 15;
+          // CORRECTION (director, CI run 34160015179): see controlSepThreshold
+          // — on the runner this pair measures 1.03x diag17m, so 1.1x rejected
+          // known-good output; 0.7x clears the ~0.6x half-split ceiling.
+          const sepThreshold17m = diag17m ? diag17m * 0.7 : 15;
           record('FIX (RED-MATH-17/001 variant B): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not one glyph\'s own anti-alias fragments), confirming genuine (not merely undetected) separation',
             markerSized17m.length >= 2 && maxSep17m > sepThreshold17m,
             JSON.stringify({ maxSep17m, sepThreshold17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: diag17m, rawCal17mDiag: cal17m?.diag ?? null, ...scan17m }));
@@ -6702,6 +6718,13 @@ try {
           // The ResizeObserver's own debounce is 150ms; give the settle-poll
           // (bounded 1000ms) room too, then read the decision. No relayout,
           // no window resize event, no other trigger happens in between.
+          // The generous test-level wait. The FBM-1 timing check below is
+          // expressed RELATIVE to it (decision well before the wait could give
+          // up), not as an absolute budget: the earlier `< 800ms` was calibrated
+          // on a local machine — the runner measured 571ms on #164's green run
+          // and 957/1102ms on #167's (CI run 34160015179), all genuine prompt
+          // decisions, all wall-clock ~1.2-1.6s under a 8s wait.
+          const SETTLE_WAIT_MS_17B = 8000;
           const settledAndCollapsed = await p17b.waitForFunction(() => {
             const gd = document.querySelector('.js-plotly-plot');
             // Same shared predicate `wideResized17b` above installed on
@@ -6746,7 +6769,7 @@ try {
               path: gd.dataset?.continuumProjectionPath ?? null,
               decidedAt: gd.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null,
             };
-          }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null);
+          }, null, { timeout: SETTLE_WAIT_MS_17B }).then((h) => h.jsonValue()).catch(() => null);
           // On a genuine failure, capture the LAST known state (not just
           // "null") so the record's JSON says WHY: never settled at all,
           // settled but still not collapsed, or something else.
@@ -6796,8 +6819,8 @@ try {
           // sits between the two with margin on both sides.
           const decidedAt17b = settledAndCollapsed?.decidedAt ?? null;
           const appSideDeltaMs = decidedAt17b != null ? decidedAt17b - resizeStartPerf : null;
-          record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (app-side delta <800ms: ~150ms debounce + a couple settle-poll frames), not merely by the time a generous test-level wait gives up',
-            appSideDeltaMs != null && appSideDeltaMs >= 0 && appSideDeltaMs < 800,
+          record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (app-side delta under a quarter of the 8s test-level wait: ~150ms debounce + settle-poll frames, runner-measured 571-1102ms), not merely by the time the generous wait gives up',
+            appSideDeltaMs != null && appSideDeltaMs >= 0 && appSideDeltaMs < SETTLE_WAIT_MS_17B / 4,
             JSON.stringify({ appSideDeltaMs, decidedAt: decidedAt17b, resizeStartPerf, elapsedMsWallClock }));
         } finally { await p17b.close().catch(() => {}); }
       }
