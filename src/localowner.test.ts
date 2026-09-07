@@ -401,7 +401,10 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // flag, same as handleSaveGameSubmit's preflight.
   {
     const editFnStart = app.indexOf('const handleEditGameSubmit');
-    const editFnSlice = app.slice(editFnStart, editFnStart + 700);
+    // 900, not 700: RED-DESKTOP-17/002 added a needs-auth gate ahead of this
+    // block (its own check, below), pushing !canOwnGames further into the
+    // function body.
+    const editFnSlice = app.slice(editFnStart, editFnStart + 900);
     check("handleEditGameSubmit's own !canOwnGames branch sets both editError and editErrorNeedsAuth(true), not a silent return",
       /if \(!canOwnGames\) \{[^}]*setEditError\([^}]*setEditErrorNeedsAuth\(true\)/.test(editFnSlice),
       editFnSlice.replace(/\s+/g, ' ').slice(0, 160));
@@ -841,6 +844,30 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // detector — proves the fixtures above test the mutation, not the harness.
   check('control: the real (unmutated) Edit slice passes', gatePrecedesFetch(editSlice, editGatePattern).ok);
   check('control: the real (unmutated) Save slice passes', gatePrecedesFetch(saveSlice, saveGatePattern).ok);
+
+  // CodeRabbit CLI: the gate must precede the `!canOwnGames` preflight too,
+  // not just the fetch — otherwise a signed-out repeat click (no account,
+  // no local fallback) falls into the generic "sign in or create an
+  // account" branch again instead of routing straight to Sign In, unlike
+  // Save's own ordering.
+  const precedesCanOwnGames = (slice: string, gatePattern: RegExp): boolean => {
+    const gateIdx = slice.search(gatePattern);
+    const preflightIdx = slice.indexOf('if (!canOwnGames)');
+    return gateIdx !== -1 && preflightIdx !== -1 && gateIdx < preflightIdx;
+  };
+  check('handleEditGameSubmit\'s gate precedes its own !canOwnGames preflight too (matches Save\'s ordering)',
+    precedesCanOwnGames(editSlice, editGatePattern));
+  check('handleSaveGameSubmit\'s gate precedes its own !canOwnGames preflight too',
+    precedesCanOwnGames(saveSlice, saveGatePattern));
+  // Known-positive: the pre-CodeRabbit-fix Edit ordering (gate AFTER the
+  // !canOwnGames preflight, the shape this finding replaced) must be caught.
+  const editPreflightFirst = 'const handleEditGameSubmit = async (e) => {\n'
+    + '  e.preventDefault();\n  if (!editGameId) return;\n  if (!canOwnGames) {\n'
+    + "    setEditError('Sign in or create an account to save changes.');\n"
+    + '    setEditErrorNeedsAuth(true);\n    return;\n  }\n'
+    + "  if (editError && editErrorNeedsAuth) { beginNeedsAuthSignIn('edit'); return; }\n";
+  check('fixture: the pre-CodeRabbit-fix Edit ordering (gate AFTER !canOwnGames) is caught',
+    !precedesCanOwnGames(editPreflightFirst, editGatePattern));
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }

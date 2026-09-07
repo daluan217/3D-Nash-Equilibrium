@@ -2171,6 +2171,10 @@ export default function App() {
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editGameId) return;
+    // RED-DESKTOP-17/002 (CodeRabbit CLI): checked first, matching Save's
+    // ordering — a repeat click while signed out routes to Sign In instead
+    // of re-showing the same static invitation.
+    if (editError && editErrorNeedsAuth) { beginNeedsAuthSignIn('edit'); return; }
     // CodeRabbit on #158 (outside-diff, 73e5fba): a silent no-op here left the
     // dialog open with no feedback if the token died (401) WHILE it was open —
     // the user edits and resubmits, canOwnGames is now false, and nothing
@@ -2180,11 +2184,6 @@ export default function App() {
       setEditErrorNeedsAuth(true);
       return;
     }
-    // RED-DESKTOP-17/002: an already-shown sign-in banner must not resubmit
-    // (this dialog session already tried as the account holder and was
-    // refused — `canOwnGames` alone doesn't catch it: a dead token flips
-    // `localOwnerMode` true on desktop, so the check above passes anyway).
-    if (editError && editErrorNeedsAuth) { beginNeedsAuthSignIn('edit'); return; }
     if (!cleanText(editName)) { setEditError('Please enter a game name.'); setEditErrorNeedsAuth(false); return; }
     const orig = editOriginalRef.current;
     const same = (x: readonly string[], y: readonly string[]) => x.length === y.length && x.every((v, i) => v === y[i]);
