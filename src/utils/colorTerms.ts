@@ -427,20 +427,24 @@ export function regenKeptColorTerms(
   const result = cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
   const resultAKeys = new Set(result.a.map(colorTermKey));
   const resultBKeys = new Set(result.b.map(colorTermKey));
-  // CodeRabbit (this PR): a newly-offered noun missing from `result.b` is
-  // NOT always a cap drop — the SAME draw can offer the identical phrase on
-  // BOTH sides (actorA and actorB naming the same actor), and A wins that
-  // tie inside the final `cleanUserColorTermPair` call, same as any other
+  // CodeRabbit (this PR) + director-reproduced Opus review F1: a newly-
+  // offered noun missing from ITS OWN side's result is not always a cap
+  // drop — the SAME draw can offer the identical phrase on BOTH sides
+  // (actorA and actorB naming the same actor), and one side wins that tie
+  // inside the final `cleanUserColorTermPair` call, same as any other
   // same-phrase collision. That is the documented ownership rule, not a
-  // capacity loss: the highlight still exists, just attributed to A, so it
-  // must not be reported as "dropped". Only B's own filter (`ownedA`, above)
-  // can drop a phrase for the cross-player-EXISTING-chip reason, which is
-  // already excluded from `newB` before this point; this second check is
-  // the tie against a phrase newly claimed by A in THIS SAME call.
+  // capacity loss: the highlight still exists, just attributed to the OTHER
+  // player, so it must not be reported as "dropped" on either side. F1: the
+  // tie can resolve either way, not only "A wins" — if A's OWN cap truncates
+  // the tie phrase out of `[...existing.a, ...newA]` before B is even
+  // considered, `resultAKeys` lacks it and B (with room) keeps it, so the
+  // ORIGINAL guard (checking only `resultBKeys` for the `a` filter) reported
+  // it dropped for A even though it survived, coloured, as a B chip. A term
+  // is genuinely dropped only when it appears in NEITHER final list.
   return {
     ...result,
     dropped: {
-      a: newA.filter((t) => !resultAKeys.has(colorTermKey(t))),
+      a: newA.filter((t) => !resultAKeys.has(colorTermKey(t)) && !resultBKeys.has(colorTermKey(t))),
       b: newB.filter((t) => !resultBKeys.has(colorTermKey(t)) && !resultAKeys.has(colorTermKey(t))),
     },
   };

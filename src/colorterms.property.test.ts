@@ -704,6 +704,31 @@ if (failures > 0) {
   check('regenKeptColorTerms: (control) the tie itself still resolves to A, same as cleanUserColorTermPair elsewhere',
     tieDraw.a.includes('shared') && !tieDraw.b.includes('shared'));
 
+  // Director-reproduced Opus review F1: the MIRROR of the tie case above --
+  // A (not B) is the side under cap pressure, so A's OWN cap truncates the
+  // tie phrase out of `[...existing.a, ...newA]` BEFORE B is even
+  // considered; B has room and keeps it, since it is no longer "owned" by
+  // A. The pre-fix `dropped.a` filter (checking only `resultAKeys`) reported
+  // this as a cap drop for A even though the phrase survived, coloured, as
+  // a B chip -- the exact false alarm this whole feature exists to prevent,
+  // one side over. Isolating: cap pressure ONLY on A, a same-draw tie, B
+  // free. Mutation: drop the `&& !resultBKeys.has(...)` conjunct from
+  // `dropped.a` (the pre-fix code) -> this check fails by name.
+  const fullATie = Array.from({ length: USER_TERMS_MAX }, (_, i) => `crew ${i + 1}`);
+  const tieOnFullA = regenKeptColorTerms(['the ferry operator'], ['the ferry operator'], fullATie, []);
+  check('regenKeptColorTerms (F1): a same-draw tie where A is capped and B is free is NOT reported dropped for A either',
+    tieOnFullA.dropped.a.length === 0, JSON.stringify(tieOnFullA.dropped));
+  check('regenKeptColorTerms (F1): (control) the noun really did survive -- as a B chip, not lost',
+    tieOnFullA.b.includes('the ferry operator') && !tieOnFullA.a.includes('the ferry operator'));
+  // Control: when BOTH sides are at the cap, the tie phrase fits nowhere and
+  // must still be reported dropped on both sides (the fix must not turn
+  // this into a blanket "never report a tie" no-op).
+  const fullBTie = Array.from({ length: USER_TERMS_MAX }, (_, i) => `dock ${i + 1}`);
+  const tieOnBothFull = regenKeptColorTerms(['the ferry operator'], ['the ferry operator'], fullATie, fullBTie);
+  check('regenKeptColorTerms (F1 control): a same-draw tie with BOTH sides at the cap is still reported dropped on both sides',
+    tieOnBothFull.dropped.a.includes('the ferry operator') && tieOnBothFull.dropped.b.includes('the ferry operator'),
+    JSON.stringify(tieOnBothFull.dropped));
+
   // capHitMessage: exact wording, shared by both add-paths -- one term with
   // no player tag (the manual picker's own single-side case), several terms
   // with one (Keep's per-side case).
@@ -722,11 +747,27 @@ if (failures > 0) {
     combined === `${capHitMessage(['the lighthouse keeper'], 'A')} ${capHitMessage(['the ferry crew'], 'B')}`, combined ?? 'null');
 
   // Structural: the manual-highlight cap hint (DescriptionEditor.addSelection)
-  // calls the SAME shared helper, so the two paths cannot drift back onto
-  // different wording for the identical limit.
+  // calls the SAME shared helper for a genuine cap-blocked ADD, so the two
+  // paths cannot drift back onto different wording for the identical limit.
   const editorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
-  check('DescriptionEditor\'s cap-hit hint calls the shared capHitMessage helper (not a bespoke, unnamed string)',
-    /setHint\(capHitMessage\(\[term\]\)\)/.test(editorSrc));
+  check('DescriptionEditor\'s cap-hit hint calls the shared capHitMessage helper for a fresh add (not a bespoke, unnamed string)',
+    /capHitMessage\(\[term\]\)/.test(editorSrc));
+
+  // Opus review N1: a cap-blocked MOVE (the phrase is already highlighted
+  // for the OTHER player) must say so, never the shared "remove one to add"
+  // wording -- that phrase is not missing, it is on screen, unmoved.
+  // Structural + ORDER-sensitive: `movedFrom` must be computed BEFORE the
+  // cap guard (`if (...!cleanA.some...`) reads it, so the guard branch can
+  // tell a move from a fresh add. Mutation: move the `const movedFrom = `
+  // computation back to after the guard (the pre-N1-fix position) -> the
+  // guard block can no longer reference it and this regex fails.
+  const capGuardIdx = editorSrc.indexOf('!cleanA.some((t) => colorTermKey(t) === colorTermKey(term))');
+  const movedFromIdx = editorSrc.indexOf('const movedFrom =');
+  check('DescriptionEditor (N1): `movedFrom` is computed BEFORE the cap guard reads it',
+    movedFromIdx >= 0 && capGuardIdx >= 0 && movedFromIdx < capGuardIdx,
+    `movedFromIdx=${movedFromIdx} capGuardIdx=${capGuardIdx}`);
+  check('DescriptionEditor (N1): the cap-guard branch names a MOVE differently from a fresh add ("already has N highlights — remove one to move it")',
+    /is highlighted for Player \$\{movedFrom\}; Player \$\{player\} already has \$\{USER_TERMS_MAX\} highlights — remove one to move it/.test(editorSrc));
 }
 
 if (failures > 0) {
