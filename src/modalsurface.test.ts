@@ -517,8 +517,8 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // three checks (after fetch, after res.json, in catch/finally) → the
 // corresponding regex fails.
 {
-  ok(/const fetchStats = async \(secret: string\) => \{\s*\n\s*const gen = requestGenRef\.current;/.test(admin),
-    'fetchStats must capture requestGenRef.current at its own start, before any await (CodeRabbit CLI)');
+  ok(/const fetchStats = async \(secret: string\) => \{\s*\n\s*const gen = \+\+requestGenRef\.current;/.test(admin),
+    'fetchStats must capture requestGenRef.current at its own start, before any await, PRE-INCREMENTING it so two concurrent calls (e.g. a double-clicked Refresh) never share a generation (CodeRabbit CLI this review)');
   ok(/const res = await fetch\(adminUrl\('\/api\/admin\/stats'\), \{\s*\n\s*headers: \{ 'x-admin-secret': secret \},\s*\n\s*\}\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;/.test(admin),
     'fetchStats must bail out immediately after the fetch() await if the generation moved on (CodeRabbit CLI)');
   ok(/const data = await res\.json\(\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;\s*\n\s*setStats\(data\);/.test(admin),
@@ -527,6 +527,17 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     'fetchStats must gate its catch-block setError AND the trailing setLoading(false) on the generation too, not just the success path (CodeRabbit CLI)');
   ok(/const wasAuthed = authed;/.test(admin),
     'fetchStats must capture `authed` (Refresh vs initial Login) before its own await, same as `gen` (RED-APP-16/005)');
+  // MUTATION TEST — reverting the pre-increment (CodeRabbit CLI, this
+  // review) back to a bare read must be caught: two concurrent fetchStats
+  // calls (nothing disables Refresh while loading) would then share one
+  // generation, so an older response landing last could overwrite fresher
+  // stats/error undetected.
+  {
+    const mutatedAdmin = admin.replace('const gen = ++requestGenRef.current;', 'const gen = requestGenRef.current;');
+    ok(mutatedAdmin !== admin, 'mutation-test precondition: the pre-increment must be found and strippable');
+    ok(!/const gen = \+\+requestGenRef\.current;/.test(mutatedAdmin),
+      'mutation-test: reverting to a bare (non-incrementing) generation read must be caught by the check above');
+  }
   // OPUS-REVIEW-MODAL16 N4: Sign out is a THIRD site that touches
   // authed/stats/password — the generation ref invariant applies to it too,
   // or a Refresh started just before Sign out still lands and re-auths the

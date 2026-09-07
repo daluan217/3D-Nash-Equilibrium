@@ -5981,8 +5981,12 @@ try {
         // RED-APP-16/005 (§76 extension): a real ADMIN_SECRET is not set on
         // this shared server, so /api/admin/stats always 401s — mocked here
         // (route.fulfill, same technique mockRegenOn uses elsewhere) so the
-        // FIRST call (the Login click) succeeds and the SECOND (Refresh)
-        // 429s, reaching the authed-branch error path a real secret cannot.
+        // FIRST call (the Login click) succeeds, the SECOND (Refresh) 429s
+        // (reaching the authed-branch error path a real secret cannot), and
+        // the THIRD (Retry) succeeds with a CHANGED totalUsers value — so
+        // "Retry works" is checked by the actual number changing and the
+        // error clearing, not merely by the button existing (CodeRabbit CLI,
+        // this review: "a no-op or incorrectly wired handler still passes").
         let adminCalls = 0;
         await p.route('**/api/admin/stats', async (route) => {
           adminCalls++;
@@ -5991,8 +5995,13 @@ try {
               status: 200, contentType: 'application/json',
               body: JSON.stringify({ totalUsers: 1, verifiedUsers: 1, unverifiedUsers: 0, totalGames: 0, signupsToday: 0, signupsThisWeek: 0, users: [] }),
             });
-          } else {
+          } else if (adminCalls === 2) {
             await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'Too many requests' }) });
+          } else {
+            await route.fulfill({
+              status: 200, contentType: 'application/json',
+              body: JSON.stringify({ totalUsers: 5, verifiedUsers: 1, unverifiedUsers: 0, totalGames: 0, signupsToday: 0, signupsThisWeek: 0, users: [] }),
+            });
           }
         });
         await p.keyboard.type('hunter2');
@@ -6011,6 +6020,22 @@ try {
           // The stale numbers are still on screen (not blanked) alongside the error.
           record('RED-APP-16/005 FIX: the stale stat numbers stay visible alongside the error (not cleared)',
             await p.getByText(/total users/i).first().isVisible().catch(() => false));
+
+          // Retry actually re-fetches: click it, wait for the STATE to
+          // change (the new totalUsers value, "5", appearing), then assert
+          // the error is gone. A no-op/broken handler would leave "1" on
+          // screen and this waitForFunction would time out (a real FAIL,
+          // not a false pass).
+          if (errorVisible) {
+            await p.getByRole('button', { name: 'Retry' }).click();
+            const updated = await p.waitForFunction(
+              () => /\b5\b/.test(document.body.innerText) && /Total Users/i.test(document.body.innerText),
+              null, { timeout: 5000 },
+            ).then(() => true).catch(() => false);
+            record('RED-APP-16/005 FIX: clicking Retry re-fetches and renders the UPDATED stat value (not a no-op)', updated);
+            const errorCleared = await p.getByText(/could not refresh the stats/i).isVisible().catch(() => false);
+            record('RED-APP-16/005 FIX: a successful Retry clears the error banner', !errorCleared);
+          }
         }
 
         // Exercise the "Close admin dashboard" control itself (control-
@@ -6383,38 +6408,67 @@ try {
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
       const exitTour = p.getByRole('button', { name: /exit tour/i });
-      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
-      await p.waitForTimeout(300);
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await exitTour.click();
+        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
+      }
       await sweep('main page (signed out)');
 
       await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
       await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
       await sweep('account/login');
-      await p.getByText(/sign up/i).last().click().catch(async () => {
-        await p.getByRole('button', { name: /create.*account|register/i }).first().click();
-      });
-      await p.waitForTimeout(300);
-      await sweep('account/signup');
-      await p.getByRole('button', { name: /^login$/i }).click().catch(() => {});
-      await p.waitForTimeout(300);
-      await p.getByText(/forgot your password/i).click().catch(() => {});
-      await p.waitForTimeout(300);
-      await sweep('account/forgot-password');
+
+      // CodeRabbit CLI (this review): each mode switch now asserts a marker
+      // UNIQUE to the target mode before sweeping it — a swallowed click
+      // failure used to let the sweep silently run on the WRONG (unchanged)
+      // mode while reporting it under the target mode's label.
+      // Scoped to the dialog + `exact: true`: the HEADER's own opener button
+      // reads "Sign In / Sign Up" — a bare substring match on 'Sign Up'
+      // resolves to BOTH it and the in-dialog link (Playwright strict mode
+      // then refuses to click either), a defect CodeRabbit's "assert state"
+      // finding surfaced by making the click no longer silently swallowed.
+      const accountDlg = p.locator('[role="dialog"][aria-label="Account"]');
+      await accountDlg.getByRole('button', { name: 'Sign Up', exact: true }).click();
+      const inSignup = await p.getByPlaceholder('game_theorist').waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      record('§85 precondition: switched into account/signup (Username field visible)', inSignup);
+      if (inSignup) await sweep('account/signup');
+
+      // The link back to login is "Log In" (with a space) — distinct from
+      // the login mode's OWN submit button, which says "Login" (no space).
+      await accountDlg.getByRole('button', { name: 'Log In', exact: true }).click();
+      const backToLogin = await accountDlg.getByRole('button', { name: 'Sign Up', exact: true }).waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      record('§85 precondition: switched back to account/login (Sign Up link visible again)', backToLogin);
+
+      await accountDlg.getByRole('button', { name: 'Forgot your password?', exact: true }).click();
+      const inForgot = await p.getByText(/enter the email address associated with your account/i).waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      record('§85 precondition: switched into account/forgot-password (recovery copy visible)', inForgot);
+      if (inForgot) await sweep('account/forgot-password');
       await p.keyboard.press('Escape');
-      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 5000 }).catch(() => {});
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 5000 });
 
       await registerAndLogin(p, 'e2e85');
       await sweep('main page (signed in)');
 
       await p.getByRole('button', { name: /open workspace menu/i }).first().click();
-      await p.waitForSelector('[data-modal-surface="drawer"]', { timeout: 8000 }).catch(() => {});
+      await p.waitForSelector('[data-modal-surface="drawer"]', { timeout: 8000 });
       for (const t of [/help guides/i, /library/i, /danger zone/i]) {
-        await p.locator('button', { hasText: t }).first().click().catch(() => {});
-        await p.waitForTimeout(400);
-        await sweep(`drawer/${t}`);
+        const tabBtn = p.locator('button', { hasText: t }).first();
+        await tabBtn.click();
+        // The active tab's own button gets `border-accent-600` (MenuDrawer.tsx)
+        // — a real state check, not a fixed sleep guessing the render landed.
+        const activated = await p.waitForFunction(
+          ([src, flags, cls]) => {
+            const re = new RegExp(src, flags);
+            return [...document.querySelectorAll('button')].some((b) => re.test(b.textContent || '') && b.className.includes(cls));
+          },
+          [t.source, t.flags, 'border-accent-600'],
+          { timeout: 3000 },
+        ).then(() => true).catch(() => false);
+        record(`§85 precondition: drawer tab ${t} activated (border-accent-600 on its own button)`, activated);
+        if (activated) await sweep(`drawer/${t}`);
       }
       await p.keyboard.press('Escape');
-      await p.waitForTimeout(300);
+      await p.waitForFunction(() => !document.querySelector('[data-modal-surface="drawer"]'), null, { timeout: 5000 });
 
       await p.getByRole('button', { name: /save preset/i }).click();
       await p.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
@@ -6450,8 +6504,10 @@ try {
       const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       const exitTour = p.getByRole('button', { name: /exit tour/i });
-      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
-      await p.waitForTimeout(300);
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await exitTour.click();
+        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
+      }
 
       // The default preset payoffs converge in ~3 steps regardless of start
       // point or speed — nothing left to append once it settles. RED-APP-16/004's
@@ -6541,6 +6597,20 @@ try {
       const afterExp = await expandedBox.evaluate((el) => el.scrollTop);
       record('FIX: expanded log holds a keyboard (Home) scroll-up position through a new line',
         afterExp === beforeExp, `before=${beforeExp} after=${afterExp}`);
+
+      // ── Control: expanded log, AT the bottom, still follows new lines ──
+      // CodeRabbit CLI (this review): the arm above only proves the
+      // scrolled-away case; a defect that broke the expanded log's OWN
+      // follow-when-at-bottom behavior (mirroring the inline control above)
+      // would still pass everything else in this section.
+      await expandedBox.evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      const linesExpControl = await p.locator('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').length > n,
+        linesExpControl, { timeout: 10000 },
+      );
+      const expAtBottom = await expandedBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 4);
+      record('control: expanded log AT the bottom still follows new lines', expAtBottom);
     } finally {
       await ctx.close().catch(() => {});
     }

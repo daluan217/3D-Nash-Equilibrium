@@ -53,7 +53,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
   }, [open]);
 
   const fetchStats = async (secret: string) => {
-    const gen = requestGenRef.current;
+    // CodeRabbit CLI (this review): a bare read (no bump) let two concurrent
+    // calls — e.g. a double-clicked Refresh, nothing here disables it while
+    // loading — share the SAME generation, so neither's post-await check
+    // could tell an older, slower response apart from a newer one; a stale
+    // response landing last could overwrite fresher stats or clobber a
+    // fresher error. Pre-incrementing gives every call its own generation.
+    const gen = ++requestGenRef.current;
     // RED-APP-16/005: distinguishes an initial-login failure from an authed
     // Refresh failure, captured before either `await` — after the fetch,
     // `authed` in the closure is still the value from render time, exactly
