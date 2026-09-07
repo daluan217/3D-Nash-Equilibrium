@@ -5838,6 +5838,13 @@ try {
         // where (confirmed empirically) the SAME camera decides differently
         // — smaller glyphs, same centre-to-centre distance, genuinely more
         // clearance.
+        // Declared outside variant A's own try/finally (p17 closes at its
+        // end) so variant B, below, can still reference this run's REAL
+        // desktop-corner calibration and size prop -- needed as a fallback
+        // basis when variant B's own mobile-page calibration looks broken
+        // (see the cr-review-hardening comment in variant B's block).
+        let cal17 = null;
+        let desktopSizes17 = { cornerSize: null, midpointBaseSize: null };
         const p17 = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce' });
         try {
           await p17.goto(BASE, { waitUntil: 'networkidle' });
@@ -5867,7 +5874,7 @@ try {
           // confirm PlotlyView.tsx's `isMobile` read false here, rather than
           // assuming it (a touch-emulation change elsewhere in the file
           // could otherwise silently leak into this page's context).
-          const desktopSizes17 = await p17.evaluate(() => {
+          desktopSizes17 = await p17.evaluate(() => {
             const data = document.querySelector('.js-plotly-plot')?.data ?? [];
             const corner = data.find((t) => t.meta?.continuumRole === 'corner');
             const mid = data.find((t) => t.meta?.continuumRole === 'midpoint');
@@ -5892,7 +5899,7 @@ try {
           // 101764850611): same fixture/camera/viewport as this row's own
           // real-pixel check, NO touch emulation (matching this variant's
           // own desktop marker set).
-          const cal17 = await calibrateMarkerDiagonal({
+          cal17 = await calibrateMarkerDiagonal({
             vals: [-5, 2, 1, -1, -5, -5, 6, 6], eye: { x: 1.6, y: -1.6, z: 1.1 },
             viewport: { mode: 'real', width: 320, height: 700 },
           });
@@ -6199,7 +6206,37 @@ try {
           // 15px (the same bound the CONTROL check uses) still cleanly
           // separates an anti-alias-split glyph's own close-together
           // fragments from a genuinely separate second glyph.
-          const window17m = cal17m?.diag ? [cal17m.diag * 0.5, cal17m.diag * 1.5] : [2, 30];
+          //
+          // CI reproduction (job 101816691575, run 34145485252): on THIS
+          // runner, `cal17m.diag` measured 14.87 for the size:14 corner —
+          // only ~1.06x the raw size prop. Every OTHER calibration in the
+          // SAME run (CONTROL 42.43 for size 21, variant A 42.43 for size
+          // 21) measures ~2x the size prop, and a real diamond glyph's own
+          // bbox diagonal is size*sqrt(2)=~1.41x at the absolute geometric
+          // MINIMUM (zero anti-alias halo) — 1.06x is smaller than that
+          // minimum, so it cannot be a genuine full render of the corner:
+          // isolating traces on this touch/isMobile page specifically
+          // renders the target corner visibly SMALLER than the SAME corner
+          // renders in the row's own full-scene screenshot moments later
+          // (confirmed: the row's own real corner blob that run had a 21x19
+          // bbox, diag 28.3 — matching cal17.diag * (14/21) = 28.27 almost
+          // exactly). Root cause not fully isolated (likely an
+          // isMobile/hasTouch-specific SwiftShader anti-alias or autorange
+          // interaction with the isolation restyle); the reliable
+          // structural fix is to sanity-check `cal17m.diag` against the
+          // geometric floor and, when it fails, fall back to the ALREADY
+          // reliably-measured desktop corner (`cal17`, same run, same
+          // isolation method, no touch emulation) scaled by the corner-size
+          // ratio actually read from each page's own live data — never a
+          // hard-coded constant.
+          const sizeRatio17m = (desktopSizes17.cornerSize && mobileSizes17.cornerSize)
+            ? mobileSizes17.cornerSize / desktopSizes17.cornerSize : null;
+          const scaledDiag17m = (cal17?.diag && sizeRatio17m) ? cal17.diag * sizeRatio17m : null;
+          const cal17mLooksBroken = !cal17m?.diag || cal17m.diag < (mobileSizes17.cornerSize ?? 14) * 1.3;
+          const diag17m = (!cal17mLooksBroken && cal17m?.diag) ? cal17m.diag : scaledDiag17m;
+          record('precondition (RED-MATH-17/001 variant B): the calibrated diagonal used for the marker-sized window is a plausible full-glyph measurement (>= the geometric minimum for its own size prop), falling back to the desktop calibration scaled by the live size ratio otherwise',
+            diag17m != null, JSON.stringify({ cal17mDiag: cal17m?.diag ?? null, cal17mLooksBroken, sizeRatio17m, scaledDiag17m, diag17m }));
+          const window17m = diag17m ? [diag17m * 0.5, diag17m * 1.5] : [2, 30];
           const markerSized17m = scan17m.blobs.filter((b) => {
             const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
             return diag >= window17m[0] && diag <= window17m[1];
@@ -6214,7 +6251,7 @@ try {
           }
           record('FIX (RED-MATH-17/001 variant B): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not one glyph\'s own anti-alias fragments), confirming genuine (not merely undetected) separation',
             markerSized17m.length >= 2 && maxSep17m > 15,
-            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: cal17m?.diag ?? null, ...scan17m }));
+            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: diag17m, rawCal17mDiag: cal17m?.diag ?? null, ...scan17m }));
         } finally { await p17mobile.close().catch(() => {}); }
 
         // RED-MATH-16/001: az105, forced 700x500 (the canonical viewport,
