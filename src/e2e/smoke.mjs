@@ -5748,7 +5748,12 @@ try {
   //      `blocked` pointer gate (leave the keydown gate in place) → the
   //      "drawer open: a real click on Next does not advance" check fails.
   section('76', 'Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003)', async () => {
-    const p = trackPage(await browser.newPage({ viewport: { width: 1280, height: 900 } }));
+    // Own context (never the shared default one `newTrackedPage` uses): this
+    // section needs a genuinely signed-out visitor, and another section's
+    // signed-in localStorage would otherwise leak in via the shared context.
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const p = trackPage(await ctx.newPage());
+    try {
     await p.goto(BASE, { waitUntil: 'networkidle' });
     const tourStep = () => p.evaluate(() => (document.body.innerText.match(/(\d+)\s*\/\s*\d+/) || [])[1] || null);
     const step0 = await tourStep();
@@ -5781,7 +5786,14 @@ try {
     if (nb2) { await p.mouse.click(nb2.x + nb2.width / 2, nb2.y + nb2.height / 2); await p.waitForTimeout(400); }
     const step2 = await tourStep();
     record('control: the same click on Next DOES advance the tour when no surface is open', step2 !== null && step2 !== step1, JSON.stringify({ step1, step2 }));
-    await p.close();
+    } finally {
+      // Close cleanly (not mid-request): an abrupt context teardown while
+      // the drawer's own games fetch is in flight surfaces as a spurious
+      // console error attributed to this section.
+      await p.keyboard.press('Escape').catch(() => {});
+      await p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      await ctx.close().catch(() => {});
+    }
   });
 
 await executeSections();
