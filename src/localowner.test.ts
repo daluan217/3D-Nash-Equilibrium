@@ -223,7 +223,13 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     // boolean combination like `(authToken && user) || localOwnerMode`
     // (App.tsx's own refetch-gating effect), where nothing JSX-shaped
     // immediately follows the `&&`.
-    const pattern = /(?<!\w)!?authToken\s*(?:\?|&&)\s*[(<]/g;
+    // CodeRabbit CLI: also matches the PARENTHESIZED forms, `(!authToken) ?`
+    // / `(authToken) &&` — the bare alternative alone missed these. The
+    // parenthesized alternative requires authToken's OWN closing `)`
+    // immediately after (only whitespace between), which is why
+    // `(authToken && user)` still does not match it (the `)` there closes
+    // over `&& user`, not authToken alone).
+    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?|&&)\s*[(<]/g;
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(norm))) {
       const context = norm.slice(Math.max(0, m.index - 60), m.index);
@@ -349,13 +355,22 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     // null;` occurrence as an OPEN site (immediately followed by
     // setIsSaveModalOpen(true)) or the success-branch reset (is not), and
     // require every OPEN site — and only those — to also reset saveLoading.
+    // CodeRabbit CLI: the original 400-char window accepted `setSaveLoading
+    // (false);` ANYWHERE in the window — even after the open call, or from
+    // an unrelated later statement. Tightened to the ordered shape every
+    // real site actually has: find the SPECIFIC `setIsSaveModalOpen(true);`
+    // this reset leads into, and require the loading reset strictly BETWEEN
+    // the two (proving it belongs to THIS site, in the right order).
     function classifySaveResetSites(src: string): Array<{ isOpenSite: boolean; hasLoadingReset: boolean }> {
       const re = /saveRequestIdRef\.current = null;/g;
       const sites: Array<{ isOpenSite: boolean; hasLoadingReset: boolean }> = [];
       let m: RegExpExecArray | null;
       while ((m = re.exec(src))) {
-        const after = src.slice(m.index + m[0].length, m.index + m[0].length + 400);
-        sites.push({ isOpenSite: /setIsSaveModalOpen\(true\);/.test(after), hasLoadingReset: /setSaveLoading\(false\);/.test(after) });
+        const resetEnd = m.index + m[0].length;
+        const openIdx = src.indexOf('setIsSaveModalOpen(true);', resetEnd);
+        const isOpenSite = openIdx >= 0 && openIdx - resetEnd < 400;
+        const between = isOpenSite ? src.slice(resetEnd, openIdx) : '';
+        sites.push({ isOpenSite, hasLoadingReset: isOpenSite && /setSaveLoading\(false\);/.test(between) });
       }
       return sites;
     }
@@ -427,7 +442,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   const multilineTernary = '{saveError && (\n  !authToken\n    ? (\n      <div>Sign In / Sign Up</div>\n    )\n    : (\n      <p>{saveError}</p>\n    )\n)}';
   function violationsInText(text: string, allowListed: RegExp[]): string[] {
     const norm = text.replace(/\s+/g, ' ');
-    const pattern = /(?<!\w)!?authToken\s*(?:\?|&&)\s*[(<]/g;
+    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?|&&)\s*[(<]/g;
     const out: string[] = [];
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(norm))) {
@@ -443,6 +458,16 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   const andGate = '{saveError && !authToken && (\n  <div>Sign In / Sign Up</div>\n)}';
   check('fixture (b) &&-gate form is flagged (OPUS F1b)',
     violationsInText(andGate, ALLOW).length > 0);
+  // CodeRabbit CLI: the PARENTHESIZED forms of both shapes.
+  check('fixture: parenthesized ternary `(!authToken) ? (` is flagged',
+    violationsInText('{saveError && (\n  (!authToken) ? (\n    <div>Sign In / Sign Up</div>\n  ) : null\n)}', ALLOW).length > 0);
+  check('fixture: parenthesized &&-gate `(authToken) && (` is flagged',
+    violationsInText('{saveError && (authToken) && (\n  <div>Sign In / Sign Up</div>\n)}', ALLOW).length > 0);
+  // Control: the parenthesized alternative must not misfire on the
+  // legitimate effect-gating `(authToken && user)` — its own closing paren
+  // does not sit immediately after `authToken`.
+  check('control: `(authToken && user) || localOwnerMode` still is not flagged with the parenthesized alternative added',
+    violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
   // (c) The predicate reappearing in a DIFFERENT component the old two-file
   // guard never read — SavedGamesList.tsx's real "not signed in" branch,
   // mutated exactly the way F1's own demonstration did (canOwnGames swapped
