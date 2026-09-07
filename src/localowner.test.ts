@@ -137,90 +137,73 @@ check('fixture: a planted old expression is flagged by the same regex',
   const fnSrc = server.slice(fnStart, server.indexOf('\n}', fnStart) + 2);
   check('resolveGameOwner checks getAuthUser(req) first',
     /const user = getAuthUser\(req\);\s*\n\s*if \(user\) return user;/.test(fnSrc));
-  check('resolveGameOwner refuses (null) when a token WAS presented but did not resolve',
-    /if \(hasPresentedToken\(req\)\) return null;/.test(fnSrc));
-  check('resolveGameOwner falls back to the local owner ONLY when no token was presented at all',
+  check('resolveGameOwner refuses (null) when an Authorization header WAS presented but did not resolve',
+    /if \(hasAuthorizationHeader\(req\)\) return null;/.test(fnSrc));
+  check('resolveGameOwner falls back to the local owner ONLY when no Authorization header was presented at all',
     /return ensureLocalOwner\(\);/.test(fnSrc));
   // Known-positive: a regression back to unconditional fallback (the old bug,
   // renamed) must be caught by the same three checks above going false.
   const regressed = 'function resolveGameOwner(req) {\n  return getAuthUser(req) ?? ensureLocalOwner();\n}';
-  check('fixture: a regression to unconditional fallback fails the "presented token refused" check',
-    !/if \(hasPresentedToken\(req\)\) return null;/.test(regressed));
+  check('fixture: a regression to unconditional fallback fails the "presented header refused" check',
+    !/if \(hasAuthorizationHeader\(req\)\) return null;/.test(regressed));
+  // Known-positive: a regression back to the narrower, Bearer-SPECIFIC
+  // predicate this same finding replaced (CodeRabbit on server.ts:2066 —
+  // OPUS-REVIEW-DESKTOP16 NOTE 1's "unreachable from the SPA" argument
+  // stopped being load-bearing once a bare Bearer/Basic/Token header proved
+  // reachable through a direct API call) must ALSO be caught, since it is
+  // textually different from `hasAuthorizationHeader`.
+  const regressedBearerOnly = 'function resolveGameOwner(req) {\n  const user = getAuthUser(req);\n  if (user) return user;\n'
+    + '  if (hasPresentedToken(req)) return null;\n  return ensureLocalOwner();\n}';
+  check('fixture: a regression back to the Bearer-specific predicate (hasPresentedToken) fails the structural check',
+    !/if \(hasAuthorizationHeader\(req\)\) return null;/.test(regressedBearerOnly));
 }
 
-// OPUS-REVIEW-DESKTOP16 (residual): the unit file previously had NO pin on
-// `parseBearerToken`/`hasPresentedToken` themselves — a mutant that hardcoded
-// `hasPresentedToken` to always return `false` would restore the exact bug
-// this PR fixes (every dead token falls back to the local owner again) with
-// every check ABOVE still green, because they only assert resolveGameOwner's
-// OWN source shape, not what the two helpers underneath it actually compute.
-// Only the integration suite would have caught that mutant before this.
-//
-// This file has no way to IMPORT server.ts (it is the app entrypoint, not a
-// module anything else here requires) and re-implementing the regex by hand
-// would test the fixture, not the source — exactly the "check that cannot
-// fail for the reason it claims" class. Instead: (1) pin hasPresentedToken's
-// body to an EXACT literal — a hardcoded `return false;`/`true;` fails this
-// immediately, by name; (2) extract parseBearerToken's regex PATTERN AND
-// FLAGS textually from the live `server` string and build a real `RegExp`
-// from them (no eval, no hand copy) — the case matrix below runs against
-// THAT object, so a mutated pattern/flag in server.ts changes what the
-// matrix actually exercises and the affected cases fail for the real reason.
+// OPUS-REVIEW-DESKTOP16 (residual) + director's structural decision
+// (2026-09-07, following CodeRabbit on server.ts:2066): `hasPresentedToken`
+// (Bearer-scheme-specific: `parseBearerToken(req) !== null`) is replaced by
+// `hasAuthorizationHeader` (structural: header PRESENCE, not scheme
+// parsing) — the earlier predicate read a bare `Bearer`, whitespace-only
+// `Bearer `, `Basic`/`Token` schemes, and (via Node keeping only the FIRST
+// `Authorization` header) a dead Bearer masked by a preceding Basic header
+// as "nothing presented", so all of those fell back to the local owner
+// exactly like RED-DESKTOP-16/001's original bug. This file has no way to
+// IMPORT server.ts (it is the app entrypoint, not a module anything else
+// here requires), so re-pinned the same way as before: an EXACT-text pin
+// on the real function body (a mutant fails this immediately, by name),
+// plus a case matrix gated by that pin, not trusted on its own.
 {
-  check('hasPresentedToken is exactly `return parseBearerToken(req) !== null;` (no hardcoded shortcut)',
-    /function hasPresentedToken\(req: express\.Request\): boolean \{\s*\n\s*return parseBearerToken\(req\) !== null;\s*\n\}/.test(server));
+  check('hasAuthorizationHeader is exactly `return typeof req.headers.authorization === "string";` (structural: only an ABSENT header counts as no-credential)',
+    /function hasAuthorizationHeader\(req: express\.Request\): boolean \{\s*\n\s*return typeof req\.headers\.authorization === "string";\s*\n\}/.test(server));
 
-  const parseFnStart = server.indexOf('function parseBearerToken(req');
-  check('parseBearerToken is defined', parseFnStart >= 0);
-  const parseFnSrc = server.slice(parseFnStart, server.indexOf('\n}', parseFnStart) + 2);
-  const regexMatch = parseFnSrc.match(/const m = \/(.*)\/([a-z]*)\.exec\(authHeader\);/);
-  check('parseBearerToken\'s regex literal is found in source (the matrix below runs THIS pattern, not a copy)',
-    regexMatch !== null);
-  const liveRegex = regexMatch ? new RegExp(regexMatch[1], regexMatch[2]) : null;
-  check('the extracted regex is case-insensitive (has the "i" flag)', (liveRegex?.flags ?? '').includes('i'));
+  // Known-positives: two DIFFERENT realistic regressions — a lazy
+  // hardcoded shortcut, and "tidying" it back to the narrower Bearer-only
+  // predicate this same round replaced.
+  const regressedHardcodedFalse = 'function hasAuthorizationHeader(req: express.Request): boolean {\n  return false;\n}';
+  check('fixture: a hardcoded-false hasAuthorizationHeader fails the exact-body-text pin',
+    !/function hasAuthorizationHeader\(req: express\.Request\): boolean \{\s*\n\s*return typeof req\.headers\.authorization === "string";\s*\n\}/.test(regressedHardcodedFalse));
+  const regressedBackToBearerOnly = 'function hasAuthorizationHeader(req: express.Request): boolean {\n  return parseBearerToken(req) !== null;\n}';
+  check('fixture: reverting to the old Bearer-only predicate fails the exact-body-text pin',
+    !/function hasAuthorizationHeader\(req: express\.Request\): boolean \{\s*\n\s*return typeof req\.headers\.authorization === "string";\s*\n\}/.test(regressedBackToBearerOnly));
 
-  const cases: Array<[string, string | undefined, string | null]> = [
-    ['undefined header (no token at all)', undefined, null],
-    ['empty string header', '', null],
-    ['"Bearer " with nothing after (whitespace-only token)', 'Bearer ', null],
-    ['"Bearer" with no space/token at all', 'Bearer', null],
-    ['lowercase "bearer abc123"', 'bearer abc123', 'abc123'],
-    ['mixed-case "BeArEr abc123"', 'BeArEr abc123', 'abc123'],
-    ['tab between scheme and token', 'Bearer\tabc123', 'abc123'],
-    ['a literal "null" token string ("Bearer null")', 'Bearer null', 'null'],
-    ['a 10 KB token', `Bearer ${'a'.repeat(10_000)}`, 'a'.repeat(10_000)],
-    ['a non-Bearer scheme ("Basic xyz")', 'Basic xyz', null],
+  // Case matrix — gated by the exact-text pin above (its realism is
+  // guaranteed by that pin passing, not by itself): every header shape
+  // OPUS NOTE 1 and CodeRabbit (server.ts:2066) named. Only the ABSENT
+  // header (undefined) reads as "nothing presented"; every string value,
+  // however malformed, reads as presented.
+  const hasAuthorizationHeaderFixture = (authHeader: string | undefined): boolean => typeof authHeader === 'string';
+  const cases: Array<[string, string | undefined, boolean]> = [
+    ['absent header (undefined) -> the ONLY case the local owner may answer', undefined, false],
+    ['empty string header -> a credential WAS presented', '', true],
+    ['bare "Bearer" (no space, no token at all) -> presented', 'Bearer', true],
+    ['"Bearer " (whitespace only after the scheme) -> presented', 'Bearer ', true],
+    ['"Bearer    " (several whitespace chars, still no token) -> presented', 'Bearer    ', true],
+    ['"Basic eHl6" (a real, non-Bearer scheme) -> presented', 'Basic eHl6', true],
+    ['"Token abc" (a made-up non-Bearer scheme) -> presented', 'Token abc', true],
+    ['a garbled Bearer token -> presented', 'Bearer dead', true],
   ];
   for (const [name, header, expected] of cases) {
-    let got: string | null = null;
-    if (liveRegex && typeof header === 'string') {
-      const m = liveRegex.exec(header);
-      got = m ? (m[1].trim() || null) : null;
-    }
-    check(`parseBearerToken (live source regex) fixture: ${name}`, got === expected,
-      `got ${got === null ? 'null' : `"${String(got).slice(0, 20)}${got.length > 20 ? '…' : ''}"`}`);
-    check(`hasPresentedToken (via the live regex) fixture: ${name}`, (got !== null) === (expected !== null));
+    check(`hasAuthorizationHeader fixture: ${name}`, hasAuthorizationHeaderFixture(header) === expected);
   }
-
-  // Known-positives: both mechanisms above, demonstrated against a PLANTED
-  // mutation rather than only exercised (once, out-of-band) against the real
-  // file during development — round16/COMMON.md v5(e): a structural-guard
-  // fixture needs a known-positive for each shape it claims to catch.
-  const regressedHasPresentedToken = 'function hasPresentedToken(req: express.Request): boolean {\n  return false;\n}';
-  check('fixture: a hardcoded-false hasPresentedToken fails the exact-body-text pin',
-    !/function hasPresentedToken\(req: express\.Request\): boolean \{\s*\n\s*return parseBearerToken\(req\) !== null;\s*\n\}/.test(regressedHasPresentedToken));
-
-  const mutatedParseFnSrc = 'function parseBearerToken(req: express.Request): string | null {\n'
-    + '  const authHeader = req.headers.authorization;\n'
-    + '  if (typeof authHeader !== "string") return null;\n'
-    + '  const m = /^bearer\\s+(.+)$/.exec(authHeader);\n' // the "i" flag dropped
-    + '  return m ? m[1].trim() || null : null;\n}';
-  const mutatedMatch = mutatedParseFnSrc.match(/const m = \/(.*)\/([a-z]*)\.exec\(authHeader\);/);
-  const mutatedRegex = mutatedMatch ? new RegExp(mutatedMatch[1], mutatedMatch[2]) : null;
-  check('fixture: a regex missing the "i" flag fails the case-insensitivity check',
-    !(mutatedRegex?.flags ?? '').includes('i'));
-  check('fixture: that same extracted (flag-mutated) regex fails to match a mixed-case "BeArEr" header',
-    mutatedRegex !== null && !mutatedRegex.test('BeArEr abc123'));
 }
 
 // RED-DESKTOP-13/001 (director-reproduced), now closed structurally

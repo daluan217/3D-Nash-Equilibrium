@@ -18,6 +18,7 @@
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -94,6 +95,29 @@ async function call(thePort, method, url, { body, token, rawAuth } = {}) {
   return { status: r.status, json };
 }
 
+// Node's `fetch`/undici cannot send TWO separate `Authorization:` header
+// lines (a plain object collapses to one value); `http.request` can, via an
+// array value — this is how the "first header wins" shape (director's
+// structural decision, 2026-09-07) is actually reproduced, not approximated.
+function callTwoAuthHeaders(thePort, method, url, authValues, body) {
+  return new Promise((resolve, reject) => {
+    const headers = { authorization: authValues };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    const req = http.request({ host: '127.0.0.1', port: thePort, path: url, method, headers }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(data); } catch { /* non-JSON */ }
+        resolve({ status: res.statusCode, json });
+      });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
 const game = (tag) => ({
   name: `DeadToken-${tag}`, description: 'desktop-dead-token-owner fixture',
   payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 },
@@ -142,6 +166,41 @@ try {
   record('lowercase "bearer" scheme with a DEAD token is refused (401), never re-owned',
     lowerGarbledSave.status === 401 && lowerGarbledSave.json?.game === undefined,
     `status ${lowerGarbledSave.status} body ${JSON.stringify(lowerGarbledSave.json)}`);
+
+  // Director's structural decision (2026-09-07, following OPUS-REVIEW-DESKTOP16
+  // NOTE 1 + CodeRabbit on server.ts:2066): the invariant is no longer
+  // Bearer-specific. ANY Authorization header that does not resolve to a
+  // live user must be refused — only a genuinely ABSENT header may fall
+  // back to the local owner. Every shape NOTE 1 measured on the pre-fix
+  // build, now asserted 401 on the ACTUAL fix.
+  const bareBearer = await call(port, 'POST', '/api/games', { rawAuth: 'Bearer', body: game('headershape-bare-bearer') });
+  record('a bare "Bearer" header (no space, no token at all) is refused (401), never re-owned',
+    bareBearer.status === 401 && bareBearer.json?.game === undefined,
+    `status ${bareBearer.status} body ${JSON.stringify(bareBearer.json)}`);
+
+  const whitespaceBearer = await call(port, 'POST', '/api/games', { rawAuth: 'Bearer    ', body: game('headershape-whitespace-bearer') });
+  record('"Bearer" followed only by whitespace is refused (401), never re-owned',
+    whitespaceBearer.status === 401 && whitespaceBearer.json?.game === undefined,
+    `status ${whitespaceBearer.status} body ${JSON.stringify(whitespaceBearer.json)}`);
+
+  const basicAuth = await call(port, 'POST', '/api/games', { rawAuth: 'Basic eHl6', body: game('headershape-basic') });
+  record('a "Basic" (non-Bearer) scheme is refused (401), never re-owned',
+    basicAuth.status === 401 && basicAuth.json?.game === undefined,
+    `status ${basicAuth.status} body ${JSON.stringify(basicAuth.json)}`);
+
+  const tokenAuth = await call(port, 'POST', '/api/games', { rawAuth: 'Token abc', body: game('headershape-token-scheme') });
+  record('a "Token" (non-Bearer) scheme is refused (401), never re-owned',
+    tokenAuth.status === 401 && tokenAuth.json?.game === undefined,
+    `status ${tokenAuth.status} body ${JSON.stringify(tokenAuth.json)}`);
+
+  // Two REAL Authorization header lines (Node keeps only the first) — a
+  // Basic header masking a dead Bearer must still refuse, not fall back
+  // just because the masked value happened to be a Bearer scheme.
+  const twoHeaders = await callTwoAuthHeaders(port, 'POST', '/api/games',
+    ['Basic eHl6', `Bearer ${garbled}`], game('headershape-two-header'));
+  record('two Authorization headers (Basic first, dead Bearer second — the FIRST one wins) is refused (401), never re-owned',
+    twoHeaders.status === 401 && twoHeaders.json?.game === undefined,
+    `status ${twoHeaders.status} body ${JSON.stringify(twoHeaders.json)}`);
 
   // Invalidate the REAL token via the real forgot/reset-password routes —
   // exactly what a password reset from another device does server-side
@@ -193,14 +252,15 @@ try {
     acctGames.status === 200 && acctNames.includes('DeadToken-valid-token'), `names: ${acctNames.join(', ')}`);
   record('the account also lists the lowercase-"bearer" valid-token save (case-insensitive scheme works both ways)',
     acctGames.status === 200 && acctNames.includes('DeadToken-lower-bearer-valid'), `names: ${acctNames.join(', ')}`);
-  record('none of the 4 refused writes (garbled/reset-invalidated x POST/PATCH/DELETE/GET) landed on the account',
-    !acctNames.some((n) => n.includes('garbled') || n.includes('reset-invalidated')), `names: ${acctNames.join(', ')}`);
+  record('none of the refused writes (garbled/reset-invalidated/header-shape x POST/PATCH/DELETE/GET) landed on the account',
+    !acctNames.some((n) => n.includes('garbled') || n.includes('reset-invalidated') || n.includes('headershape')),
+    `names: ${acctNames.join(', ')}`);
 
   const localGames = await call(port, 'GET', '/api/games');
   const localNames = Array.isArray(localGames.json) ? localGames.json.map((g) => g.name) : [];
-  record('the local-owner bucket got ONLY its own no-token control row — no misfiled dead-token write landed there',
+  record('the local-owner bucket got ONLY its own no-token control row — no misfiled dead-token OR header-shape write landed there',
     localGames.status === 200 && localNames.includes('DeadToken-no-token')
-      && !localNames.some((n) => n.includes('garbled') || n.includes('reset-invalidated')),
+      && !localNames.some((n) => n.includes('garbled') || n.includes('reset-invalidated') || n.includes('headershape')),
     `names: ${localNames.join(', ')}`);
 
   void noTokenId; // recorded for readability of the fixture above; not asserted further
