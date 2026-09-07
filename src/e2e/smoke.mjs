@@ -5624,9 +5624,17 @@ try {
     // both the dialog AND the landmark (the actual pre-fix defect shape)
     // still satisfies "!isLandmark && !insideLandmark && tag matches" by
     // accident — assert dialog membership explicitly, not infer it.
+    // CodeRabbit CLI (PR #162 follow-up): the dialog's focusable set is
+    // BUTTON-dominated, so a tag-only comparison against readNeighbor's
+    // expected element cannot tell "the right button" from "a wrong but
+    // still-inside button" — return the same idx readNeighbor computes (same
+    // selector, same container) so identity is asserted by POSITION.
     const readActive = async (p, lsel, dsel) => p.evaluate(([lsel, dsel]) => {
       const a = document.activeElement; const landmark = document.querySelector(lsel);
-      return a ? { tag: a.tagName, insideLandmark: !!landmark?.contains(a), isLandmark: a === landmark,
+      const c = document.querySelector(dsel);
+      const all = c ? Array.from(c.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'))
+        .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1) : [];
+      return a ? { tag: a.tagName, idx: all.indexOf(a), insideLandmark: !!landmark?.contains(a), isLandmark: a === landmark,
         inDialog: !!a.closest(dsel), title: a.getAttribute('title'), aria: a.getAttribute('aria-label') } : null;
     }, [lsel, dsel]);
 
@@ -5681,16 +5689,27 @@ try {
         await p.keyboard.press('Tab');
         let after = await settleActive(p);
         record(`[${label}, 0 games] FIX: forward Tab from the landmark lands on the expected neighbor, still inside the dialog (RED-APP-15/001)`,
-          !!after && after.inDialog === true && !after.isLandmark && after.insideLandmark === false && after.tag === expAfter0?.tag, JSON.stringify({ after, expAfter0 }));
+          !!after && after.inDialog === true && !after.isLandmark && after.insideLandmark === false
+          && after.tag === expAfter0?.tag && after.idx === expAfter0?.idx, JSON.stringify({ after, expAfter0 }));
 
         await p.keyboard.press('Escape');
         await openLibrary(p);
         click = await clickLandmarkOrCard(p, null);
+        // CodeRabbit CLI (PR #162 follow-up): this phase used to click and
+        // move straight to Shift+Tab with no precondition check — a missed
+        // click would leave focus on some OTHER real dialog control, and
+        // Shift+Tab from there could still coincidentally land on a BUTTON
+        // matching expBefore0's tag/idx. Record the same two preconditions
+        // the forward-Tab phase already does.
+        record(`[${label}, 0 games] precondition: the Shift+Tab click is on-screen and hit-tests to the landmark`, click.onScreen && click.hit, JSON.stringify(click));
+        before = await readActive(p, LM, DLG);
+        record(`[${label}, 0 games] precondition: the Shift+Tab click actually focused the landmark`, before?.isLandmark === true, JSON.stringify(before));
         const expBefore0 = await readNeighbor(p, DLG, LM, 'before');
         await p.keyboard.press('Shift+Tab');
         after = await settleActive(p);
         record(`[${label}, 0 games] FIX: Shift+Tab from the landmark lands on the expected neighbor (RED-APP-15/001)`,
-          !!after && after.inDialog === true && !after.isLandmark && after.tag === expBefore0?.tag, JSON.stringify({ after, expBefore0 }));
+          !!after && after.inDialog === true && !after.isLandmark
+          && after.tag === expBefore0?.tag && after.idx === expBefore0?.idx, JSON.stringify({ after, expBefore0 }));
 
         // Positive control: from a REAL control (the library tab button
         // itself), one Tab still moves within the dialog as before — the
@@ -5725,16 +5744,22 @@ try {
         await p.keyboard.press('Tab');
         after = await settleActive(p);
         record(`[${label}, 3 games] FIX: forward Tab from the landmark ADVANCES INTO the populated list, not past it (RED-APP-15/001)`,
-          !!after && after.insideLandmark === true && after.tag === expAfter3?.tag, JSON.stringify({ after, expAfter3 }));
+          !!after && after.insideLandmark === true && after.tag === expAfter3?.tag && after.idx === expAfter3?.idx, JSON.stringify({ after, expAfter3 }));
 
         await p.keyboard.press('Escape');
         await openLibrary(p);
         click = await clickLandmarkOrCard(p, gameNames[0]);
+        // CodeRabbit CLI (PR #162 follow-up): same missing precondition as
+        // the 0-games Shift+Tab phase above.
+        record(`[${label}, 3 games] precondition: the Shift+Tab click is on-screen and hit-tests inside the landmark`, click.onScreen && click.hit, JSON.stringify(click));
+        before = await readActive(p, LM, DLG);
+        record(`[${label}, 3 games] precondition: the Shift+Tab click actually focused a node inside the landmark`, before?.insideLandmark === true, JSON.stringify(before));
         const expBefore3 = await readNeighbor(p, DLG, LM, 'before');
         await p.keyboard.press('Shift+Tab');
         after = await settleActive(p);
         record(`[${label}, 3 games] FIX: Shift+Tab from the landmark lands on the same pre-landmark control as the 0-games case (RED-APP-15/001)`,
-          !!after && after.inDialog === true && after.insideLandmark === false && after.tag === expBefore3?.tag, JSON.stringify({ after, expBefore3 }));
+          !!after && after.inDialog === true && after.insideLandmark === false
+          && after.tag === expBefore3?.tag && after.idx === expBefore3?.idx, JSON.stringify({ after, expBefore3 }));
         await p.close();
         await engineCtx.close();
       }

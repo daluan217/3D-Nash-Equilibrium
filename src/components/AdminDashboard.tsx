@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Users, GamepadIcon, ShieldCheck, ShieldX, TrendingUp, RefreshCw, LogOut, X } from 'lucide-react';
 import { ModalSurface } from './ModalSurface';
 
@@ -39,27 +39,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
   // hides it, App.tsx renders it unconditionally) — without this, closing kept
   // the admin secret in memory and reopening (a triple-click anyone at the
   // machine can do) showed the cached user table with no password prompt.
+  //
+  // CodeRabbit CLI (PR #162 follow-up): resetting state on close is not
+  // enough on its own — an in-flight fetchStats() started before the close
+  // can still resolve AFTER it and write stats/authed right back in. A
+  // request-generation ref, bumped on close and checked before every
+  // post-await state update, makes a stale continuation a no-op.
+  const requestGenRef = useRef(0);
   useEffect(() => {
     if (open) return;
+    requestGenRef.current += 1;
     setAuthed(false); setPassword(''); setStats(null); setError(''); setLoading(false);
   }, [open]);
 
   const fetchStats = async (secret: string) => {
+    const gen = requestGenRef.current;
     setLoading(true);
     setError('');
     try {
       const res = await fetch(adminUrl('/api/admin/stats'), {
         headers: { 'x-admin-secret': secret },
       });
+      if (gen !== requestGenRef.current) return;
       if (res.status === 401) { setError('Incorrect password.'); setLoading(false); return; }
       if (!res.ok) throw new Error('Server error');
       const data = await res.json();
+      if (gen !== requestGenRef.current) return;
       setStats(data);
       setAuthed(true);
     } catch {
-      setError('Could not reach the server.');
+      if (gen === requestGenRef.current) setError('Could not reach the server.');
     }
-    setLoading(false);
+    if (gen === requestGenRef.current) setLoading(false);
   };
 
   const StatCard = ({ icon, label, value, sub }: { icon: React.ReactNode; label: string; value: number; sub?: string }) => (

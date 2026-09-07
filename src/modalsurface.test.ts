@@ -424,6 +424,56 @@ const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'u
 // `ModalRegistry.isAnyOpen()` for RED-APP-15/003 instead). Known-positive
 // fixture: reverting AdminDashboard.tsx to its pre-fix wrapper divs fails
 // this. Mutation: revert the AdminDashboard.tsx conversion → this fails.
+// CodeRabbit CLI (PR #162 follow-up): the scan above required a quote or
+// backtick immediately after `=`, so `className={...}` — a template literal
+// with interpolation, a `clsx(...)` call, or a ternary — was invisible to it;
+// a dynamic hand-rolled overlay could bypass the check entirely. Extract the
+// COMPLETE braced expression (balanced braces, so a nested `${...}` inside a
+// template literal doesn't truncate it early) and search its raw text for
+// `fixed`/`inset-0`, rather than requiring them inside one quoted literal.
+function extractBraced(src: string, openBraceIdx: number): string {
+  let depth = 1; let i = openBraceIdx + 1;
+  while (i < src.length && depth > 0) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') depth--;
+    i++;
+  }
+  return src.slice(openBraceIdx + 1, i - 1);
+}
+function findOverlayAttrs(src: string): { attr: string; value: string; braced: boolean }[] {
+  const hits: { attr: string; value: string; braced: boolean }[] = [];
+  for (const m of src.matchAll(/(overlayClassName|className)\s*=\s*(?:"([^"]*)"|`([^`]*)`|\{)/g)) {
+    const [whole, attr, dq, bt] = m;
+    const braced = whole.endsWith('{');
+    const value = braced ? extractBraced(src, m.index! + whole.length - 1) : (dq ?? bt ?? '');
+    if (/\bfixed\b/.test(value) && /\binset-0\b/.test(value)) hits.push({ attr, value, braced });
+  }
+  return hits;
+}
+
+// Known-positive fixtures for the extractor ITSELF (RED-APP-15/002 follow-up,
+// CodeRabbit CLI) — a template literal, a clsx() call, a conditional, and a
+// template literal with a NESTED `${...}` (the case a naive `[^}]*` regex
+// truncates early, understating why a real balanced-brace scan is needed).
+// Mutation: revert findOverlayAttrs to the old quote-only regex → all four fail.
+{
+  const fixtures: [string, string][] = [
+    ['template literal', 'const X = () => <div className={`fixed inset-0 ${isDark ? "a" : "b"}`} />;'],
+    ['clsx() call', 'const X = () => <div className={clsx("fixed inset-0", extra)} />;'],
+    ['conditional', 'const X = () => <div className={condition ? "fixed inset-0" : ""} />;'],
+    ['nested-brace template literal', 'const X = () => <div className={`fixed inset-0 ${a ? `${b}` : "c"}`} />;'],
+  ];
+  for (const [label, src] of fixtures) {
+    const hits = findOverlayAttrs(src);
+    ok(hits.length === 1 && hits[0].attr === 'className' && hits[0].braced,
+      `findOverlayAttrs must catch a braced className overlay (${label}): ${src}`);
+  }
+  // Negative control: a braced className with NEITHER fixed NOR inset-0 must
+  // not be flagged (the extractor should not just fire on any braced className).
+  ok(findOverlayAttrs('const X = () => <div className={`rounded-xl p-4 ${x}`} />;').length === 0,
+    'findOverlayAttrs must not flag a braced className with no fixed/inset-0 (negative control)');
+}
+
 {
   const ALLOWED_BARE_OVERLAY_FILES = new Set(['src/components/Walkthrough.tsx']);
   const walkAll = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
@@ -440,9 +490,7 @@ const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'u
     // own overlayClassName JSX below it. Scanning raw source sidesteps that;
     // a real JSX attribute value is not fabricated by a stray comment.
     const src = readFileSync(file, 'utf8');
-    for (const m of src.matchAll(/(overlayClassName|className)\s*=\s*(?:"([^"]*)"|`([^`]*)`)/g)) {
-      const [, attr, dq, bt] = m; const value = dq ?? bt ?? '';
-      if (!(/\bfixed\b/.test(value) && /\binset-0\b/.test(value))) continue;
+    for (const { attr, value } of findOverlayAttrs(src)) {
       scanned++;
       const ok1 = attr === 'overlayClassName' || ALLOWED_BARE_OVERLAY_FILES.has(file);
       ok(ok1, `${file}: a bare className="fixed inset-0..." overlay must render through <ModalSurface> (pass the class via overlayClassName), or be an allow-listed non-interactive backdrop with a stated reason (RED-APP-15/002) — found ${attr}="${value.slice(0, 60)}"`);
@@ -455,10 +503,28 @@ const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'u
 // hides it, App.tsx renders it unconditionally) — without a reset-on-close
 // effect, the admin secret stayed in memory and reopening (any triple-click)
 // showed the cached user table with no password prompt. Mutation: delete the
-// reset useEffect → this fails.
+// reset useEffect body → this fails.
 {
-  ok(/useEffect\(\(\) => \{\s*\n\s*if \(open\) return;\s*\n\s*setAuthed\(false\); setPassword\(''\); setStats\(null\); setError\(''\); setLoading\(false\);\s*\n\s*\}, \[open\]\);/.test(admin),
-    'AdminDashboard must reset authed/password/stats/error/loading in a useEffect keyed on `open` going false — it no longer unmounts on close (CodeRabbit CLI)');
+  ok(/useEffect\(\(\) => \{\s*\n\s*if \(open\) return;\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setPassword\(''\); setStats\(null\); setError\(''\); setLoading\(false\);\s*\n\s*\}, \[open\]\);/.test(admin),
+    'AdminDashboard must bump requestGenRef and reset authed/password/stats/error/loading in a useEffect keyed on `open` going false — it no longer unmounts on close (CodeRabbit CLI)');
+}
+
+// CodeRabbit CLI (PR #162 follow-up): resetting state on close alone still let
+// an in-flight fetchStats() resolve AFTER the close and write stats/authed
+// back in (the dashboard stays mounted, so nothing cancels the promise).
+// Every post-await continuation must check the captured generation against
+// requestGenRef.current before touching state. Mutation: drop any ONE of the
+// three checks (after fetch, after res.json, in catch/finally) → the
+// corresponding regex fails.
+{
+  ok(/const fetchStats = async \(secret: string\) => \{\s*\n\s*const gen = requestGenRef\.current;/.test(admin),
+    'fetchStats must capture requestGenRef.current at its own start, before any await (CodeRabbit CLI)');
+  ok(/const res = await fetch\(adminUrl\('\/api\/admin\/stats'\), \{\s*\n\s*headers: \{ 'x-admin-secret': secret \},\s*\n\s*\}\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;/.test(admin),
+    'fetchStats must bail out immediately after the fetch() await if the generation moved on (CodeRabbit CLI)');
+  ok(/const data = await res\.json\(\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;\s*\n\s*setStats\(data\);/.test(admin),
+    'fetchStats must re-check the generation after res.json() too, before setStats/setAuthed (CodeRabbit CLI)');
+  ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\('Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
+    'fetchStats must gate its catch-block setError AND the trailing setLoading(false) on the generation too, not just the success path (CodeRabbit CLI)');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
