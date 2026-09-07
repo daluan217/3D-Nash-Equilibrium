@@ -6,6 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import { GamePayoffs, PresetGame } from '../types';
 import { PRESETS, splitEquilibriaByContinuum, describeContinua, fmtPayoff, EA, EB } from '../utils/gameEngine';
+import { labelFor } from '../utils/a11y';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { ModalSurface } from './ModalSurface';
@@ -936,12 +937,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                         </div>
 
                         <div>
-                          <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
+                          <label htmlFor={labelFor('drawer-delete', 'code')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
                             6-Digit Security Confirmation Code
                           </label>
                           <div className="relative">
                             <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                             <input
+                              id={labelFor('drawer-delete', 'code')}
                               type="text"
                               maxLength={6}
                               required

@@ -31,8 +31,18 @@ import { dirname, join } from 'node:path';
  * be packed smaller than itself). See e2esharding.test.ts's headroom assert
  * for how a single oversized section is distinguished from a genuine
  * multi-section pileup.
+ *
+ * blue16-app merge-main round (2026-09-07): #164's rewritten §71
+ * (self-calibrating window + variant B fallback, 17,072 ms -> 77,507 ms
+ * measured) plus this branch's own §85/85b/86, merged on TOP of #168's
+ * already-repacked 29-shard table, pushed 6 more multi-section shards over
+ * the 200 s line (worst: 204,888 ms). Two independent branches each raised
+ * the count for their own real reason and neither anticipated the other's
+ * — 30 shards clears every multi-section shard under 200 s again (worst
+ * single-section shard, §70 alone, stays 207,990 ms as before; unaffected
+ * by shard count).
  */
-export const SHARD_COUNT = 29;
+export const SHARD_COUNT = 30;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));

@@ -393,6 +393,70 @@ async function registerAndLogin(p, tag) {
   return uniq;
 }
 
+/* RED-APP-16/003's own instrument, made a fixture (§85): every VISIBLE,
+ * enabled, focusable control's computed accessible name via Chromium's OWN
+ * AX engine (CDP `Accessibility.getPartialAXTree`) — not a hand-rolled name()
+ * predicate, which over-fired on 15 placeholder-named fields when the red
+ * tried one first and discarded it. Returns the controls with an EMPTY name;
+ * a real defect is any non-zero return, not a rate.
+ *
+ * `cdp` is a session created ONCE per page (see `openAxCdp` below) and
+ * reused across every sweep — a fresh `newCDPSession` + `Accessibility.
+ * enable` per call, plus `DOM.getDocument` with `depth: -1, pierce: true`
+ * (eagerly serializing the ENTIRE DOM, including the 3D plot's huge SVG/
+ * canvas subtree, on every single sweep), measured at 20-40s PER SWEEP on
+ * the main page — the whole section blew its 225s shard budget on this
+ * alone. `depth: 0` (the default) returns just the document node; `DOM.
+ * querySelector` resolves relative to it lazily, without pre-walking the
+ * tree, and cut each of those sweeps to well under 2s. */
+async function emptyAccessibleNames(p, cdp) {
+  const n = await p.evaluate(() => {
+    const all = Array.from(document.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])'))
+      .filter((el) => {
+        if (el.hasAttribute('disabled') || el.hasAttribute('inert') || el.closest('[inert]')) return false;
+        const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.01;
+      });
+    all.forEach((el, k) => el.setAttribute('data-ax-probe', String(k)));
+    return all.length;
+  });
+  const { root } = await cdp.send('DOM.getDocument');
+  // ONE DOM.querySelectorAll (plural) instead of N sequential DOM.querySelector
+  // calls, then the N Accessibility.getPartialAXTree lookups IN PARALLEL —
+  // each is an independent CDP round trip, and running them sequentially (the
+  // original shape) measured 20-40s per sweep on this section alone. Document
+  // order is preserved by both DOM.querySelectorAll and the plain JS
+  // querySelectorAll below (same selector), so index `i` names the same
+  // element in both without a separate id-based lookup.
+  const { nodeIds } = await cdp.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: '[data-ax-probe]' });
+  const axNodes = await Promise.all(nodeIds.map((nodeId) =>
+    cdp.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false })
+      .then(({ nodes }) => nodes.find((x) => x.backendDOMNodeId !== undefined) || nodes[0])
+      .catch(() => null)));
+  const emptyIdx = axNodes
+    .map((node, i) => ({ node, i }))
+    .filter(({ node }) => !node?.ignored && (node?.name?.value ?? '').trim() === '')
+    .map(({ i }) => i);
+  const details = emptyIdx.length > 0
+    ? await p.evaluate((idxs) => {
+      const all = Array.from(document.querySelectorAll('[data-ax-probe]'));
+      return idxs.map((i) => { const el = all[i]; return { tag: el.tagName, type: el.getAttribute('type'), value: (el.value || '').slice(0, 24) }; });
+    }, emptyIdx)
+    : [];
+  const hits = emptyIdx.map((i, j) => ({ role: axNodes[i]?.role?.value, ...details[j] }));
+  await p.evaluate(() => document.querySelectorAll('[data-ax-probe]').forEach((e) => e.removeAttribute('data-ax-probe')));
+  return { total: n, hits };
+}
+
+/** One CDP session for the page's whole lifetime, Accessibility domain
+ *  enabled once — see `emptyAccessibleNames`'s comment for why re-creating
+ *  this per sweep was the dominant cost. */
+async function openAxCdp(p, ctx) {
+  const cdp = await ctx.newCDPSession(p);
+  await cdp.send('Accessibility.enable');
+  return cdp;
+}
+
 /* Mock `/api/health` to advertise the regen capability and `/api/scenario/
  * regenerate` with a canned handler — used by every regen section below so
  * none of them needs real credentials or the (not-yet-merged) server route. */
@@ -687,7 +751,10 @@ try {
     await page.waitForTimeout(500);
     await $.run.click();
     await page.waitForSelector('text=Converged', { timeout: 240000 });
-    const jump = page.locator('xpath=//span[contains(text(),"Go to step")]/following-sibling::input[1]');
+    // RED CI (shard 7, reproduced locally at 1fb91f6): "Go to step" is now a
+    // <label htmlFor> (RED-APP-16/003), not a <span> — locate by ACCESSIBLE
+    // NAME, not tag, which is the whole point of the label fix.
+    const jump = page.getByLabel('Go to step', { exact: true });
     await jump.fill('0');
     await page.getByRole('button', { name: 'Go', exact: true }).click();
     await page.waitForTimeout(400);
@@ -5254,8 +5321,7 @@ try {
         const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
         return ts.length > 0 ? true : null;
       }, null, { timeout: 20000 }).catch(() => {});
-      const trackABtn = page.locator('label:has-text("Expected Payoff Surface Tracking")')
-        .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+      const trackABtn = page.getByRole('group', { name: 'Expected Payoff Surface Tracking' }).getByRole('button', { name: 'Player A' });
       await trackABtn.click({ timeout: 5000 }).catch(() => {});
       await page.waitForFunction(() => {
         const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
@@ -5487,8 +5553,13 @@ try {
 
       // Force trackingMode 'A' (RED's own harness: 'both' doubles every
       // glyph into 2 z-stacked copies, which would corrupt the pixel scan).
-      const trackABtn = p.locator('label:has-text("Expected Payoff Surface Tracking")')
-        .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+      // RED CI (shard 21, reproduced locally at 1fb91f6): the heading is now
+      // a <div id> + role="group" aria-labelledby (RED-APP-16/003), not a
+      // <label> — locate the group by its ACCESSIBLE NAME, not tag. (#164
+      // rewrites this section's structure on main; re-apply this
+      // accessible-name locator to #164's version when merging main.)
+      const trackABtn = p.getByRole('group', { name: 'Expected Payoff Surface Tracking' })
+        .getByRole('button', { name: 'Player A' });
       await trackABtn.click({ timeout: 5000 }).catch(() => {});
       // CodeRabbit (this branch): a swallowed click failure or a slow
       // SwiftShader Plotly.react would leave trackingMode 'both' and z-stack
@@ -5753,9 +5824,40 @@ try {
             markerSizedControl[i].cy - markerSizedControl[j].cy));
         }
       }
+      // CodeRabbit outside-diff (#168, director-confirmed): the SIZE window
+      // above is self-calibrated (0.5x-1.5x of THIS run's own real corner
+      // diagonal), but this pairwise-SEPARATION bound stayed a flat 15px —
+      // on CI (~42px CONTROL diagonal observed), one glyph's own
+      // anti-alias fragments can sit up to ~1x its bbox diagonal apart,
+      // comfortably clearing a hard-coded 15px and reading as "two
+      // separated markers" when it is really one split glyph. Derive the
+      // bound from the SAME calibrated diagonal instead — at 1.1x, not the
+      // window's own 1.5x (tried first, and self-adversarially FALSIFIED:
+      // this exact CONTROL row's own genuine, real two-corner separation
+      // measures ~1.25x its calibrated diagonal on this environment,
+      // 38.81px vs a 31.11px diag, which 1.5x — 46.67px — would reject as
+      // "not separated enough", a false negative on known-good output).
+      // 1.1x sits strictly between the ~1x fragment-spread ceiling and the
+      // ~1.25x-1.47x genuine separation actually measured on THIS row and
+      // the 17m row below. 15 stays only as the calibration-failed
+      // fallback (matches controlWindow's own fallback discipline above).
+      // CORRECTION (director, CI run 34160015179 shard 26 at 1fddc9b): 1.1x
+      // was calibrated on LOCAL dsf=2 geometry (genuine separation 1.25x-
+      // 1.47x). On the runner (dsf=1, swiftshader) the SAME two genuine
+      // markers measure maxSep 38.11px vs diag 42.43px = 0.90x, and the
+      // variant-B pair 29.15 vs 28.28 = 1.03x — both rejected by 1.1x, both
+      // identical on #164's green run with the old flat 15. The ceiling for
+      // fragments is not "one diagonal": the SIZE window above already keeps
+      // only blobs with bbox diag in [0.5, 1.5]*diag, so the only fragments
+      // that can reach this check are near-halves of ONE glyph, and two
+      // sub-boxes each >= 0.5*diag inside a box of diag D have centres at
+      // most ~0.6*D apart. 0.7x sits between that ceiling and the tightest
+      // genuine separation measured on the shipping condition (0.90x); the
+      // unit fixture in separationbound.guard.test.ts pins both numbers.
+      const controlSepThreshold = controlCal?.diag ? controlCal.diag * 0.7 : 15;
       record('CONTROL (700x500, default camera): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not stray-UI-inflated, not one glyph\'s own anti-alias fragments)',
-        markerSizedControl.length >= 2 && maxSepControl > 15,
-        JSON.stringify({ spanControl, maxSepControl, markerSizedCount: markerSizedControl.length, controlWindow, calibratedDiag: controlCal?.diag ?? null, ...controlBlobs }));
+        markerSizedControl.length >= 2 && maxSepControl > controlSepThreshold,
+        JSON.stringify({ spanControl, maxSepControl, controlSepThreshold, markerSizedCount: markerSizedControl.length, controlWindow, calibratedDiag: controlCal?.diag ?? null, ...controlBlobs }));
 
       // ── FIX (under-collapse, RED-MATH-15/001 az195): back to the narrow
       //    318x298 outer container (real plot div 276x256), RED's exact
@@ -5893,8 +5995,7 @@ try {
             return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
           }, null, { timeout: 20000 }).then(() => true).catch(() => false);
           record('precondition (RED-MATH-17/001 variant A, narrow desktop window): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17);
-          const trackABtn17 = p17.locator('label:has-text("Expected Payoff Surface Tracking")')
-            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          const trackABtn17 = p17.getByRole('group', { name: 'Expected Payoff Surface Tracking' }).getByRole('button', { name: 'Player A' });
           await trackABtn17.click({ timeout: 5000 }).catch(() => {});
           const trackingIsA17 = await p17.waitForFunction(() => {
             const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
@@ -6070,8 +6171,7 @@ try {
             return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
           }, null, { timeout: 20000 }).then(() => true).catch(() => false);
           record('precondition (RED-MATH-17/001 variant B, mobile marker set): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17m);
-          const trackABtn17m = p17mobile.locator('label:has-text("Expected Payoff Surface Tracking")')
-            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          const trackABtn17m = p17mobile.getByRole('group', { name: 'Expected Payoff Surface Tracking' }).getByRole('button', { name: 'Player A' });
           await trackABtn17m.click({ timeout: 5000 }).catch(() => {});
           const trackingIsA17m = await p17mobile.waitForFunction(() => {
             const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
@@ -6282,9 +6382,21 @@ try {
                 markerSized17m[i].cy - markerSized17m[j].cy));
             }
           }
+          // CodeRabbit outside-diff (#168, director-confirmed): same fix as
+          // the CONTROL row above — derive the separation bound from THIS
+          // row's own calibrated diagonal (diag17m), at 1.1x (not the
+          // window's own 1.5x — falsified on this exact row: its genuine
+          // separation measures ~1.47x diag17m on this environment, which
+          // 1.5x would reject). 1.1x still clears the ~1x fragment-spread
+          // ceiling a single glyph's own anti-alias fragments can reach. 15
+          // stays only as the calibration-failed fallback.
+          // CORRECTION (director, CI run 34160015179): see controlSepThreshold
+          // — on the runner this pair measures 1.03x diag17m, so 1.1x rejected
+          // known-good output; 0.7x clears the ~0.6x half-split ceiling.
+          const sepThreshold17m = diag17m ? diag17m * 0.7 : 15;
           record('FIX (RED-MATH-17/001 variant B): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not one glyph\'s own anti-alias fragments), confirming genuine (not merely undetected) separation',
-            markerSized17m.length >= 2 && maxSep17m > 15,
-            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: diag17m, rawCal17mDiag: cal17m?.diag ?? null, ...scan17m }));
+            markerSized17m.length >= 2 && maxSep17m > sepThreshold17m,
+            JSON.stringify({ maxSep17m, sepThreshold17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: diag17m, rawCal17mDiag: cal17m?.diag ?? null, ...scan17m }));
         } finally { await p17mobile.close().catch(() => {}); }
 
         // RED-MATH-16/001: az105, forced 700x500 (the canonical viewport,
@@ -6304,8 +6416,7 @@ try {
             return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 1) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 0.16666666666666666) < 1e-6) ? true : null;
           }, null, { timeout: 20000 }).then(() => true).catch(() => false);
           record('precondition (RED-MATH-16/001 row): the fixture\'s continuum midpoint (1, 0.1667) is drawn before reading trace state', ready16);
-          const trackABtn16 = p16.locator('label:has-text("Expected Payoff Surface Tracking")')
-            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          const trackABtn16 = p16.getByRole('group', { name: 'Expected Payoff Surface Tracking' }).getByRole('button', { name: 'Player A' });
           await trackABtn16.click({ timeout: 5000 }).catch(() => {});
           const trackingIsA16 = await p16.waitForFunction(() => {
             const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
@@ -6486,8 +6597,7 @@ try {
             return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
           }, null, { timeout: 20000 }).then(() => true).catch(() => false);
           record('precondition (FBM-1 row): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17b);
-          const trackABtn17b = p17b.locator('label:has-text("Expected Payoff Surface Tracking")')
-            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          const trackABtn17b = p17b.getByRole('group', { name: 'Expected Payoff Surface Tracking' }).getByRole('button', { name: 'Player A' });
           await trackABtn17b.click({ timeout: 5000 }).catch(() => {});
           // Same tracking-mode predicate the other rows in this section use
           // (a z-stacked 'both' trace would corrupt the corner-visibility
@@ -6608,6 +6718,13 @@ try {
           // The ResizeObserver's own debounce is 150ms; give the settle-poll
           // (bounded 1000ms) room too, then read the decision. No relayout,
           // no window resize event, no other trigger happens in between.
+          // The generous test-level wait. The FBM-1 timing check below is
+          // expressed RELATIVE to it (decision well before the wait could give
+          // up), not as an absolute budget: the earlier `< 800ms` was calibrated
+          // on a local machine — the runner measured 571ms on #164's green run
+          // and 957/1102ms on #167's (CI run 34160015179), all genuine prompt
+          // decisions, all wall-clock ~1.2-1.6s under a 8s wait.
+          const SETTLE_WAIT_MS_17B = 8000;
           const settledAndCollapsed = await p17b.waitForFunction(() => {
             const gd = document.querySelector('.js-plotly-plot');
             // Same shared predicate `wideResized17b` above installed on
@@ -6652,7 +6769,7 @@ try {
               path: gd.dataset?.continuumProjectionPath ?? null,
               decidedAt: gd.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null,
             };
-          }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null);
+          }, null, { timeout: SETTLE_WAIT_MS_17B }).then((h) => h.jsonValue()).catch(() => null);
           // On a genuine failure, capture the LAST known state (not just
           // "null") so the record's JSON says WHY: never settled at all,
           // settled but still not collapsed, or something else.
@@ -6702,8 +6819,8 @@ try {
           // sits between the two with margin on both sides.
           const decidedAt17b = settledAndCollapsed?.decidedAt ?? null;
           const appSideDeltaMs = decidedAt17b != null ? decidedAt17b - resizeStartPerf : null;
-          record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (app-side delta <800ms: ~150ms debounce + a couple settle-poll frames), not merely by the time a generous test-level wait gives up',
-            appSideDeltaMs != null && appSideDeltaMs >= 0 && appSideDeltaMs < 800,
+          record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (app-side delta under a quarter of the 8s test-level wait: ~150ms debounce + settle-poll frames, runner-measured 571-1102ms), not merely by the time the generous wait gives up',
+            appSideDeltaMs != null && appSideDeltaMs >= 0 && appSideDeltaMs < SETTLE_WAIT_MS_17B / 4,
             JSON.stringify({ appSideDeltaMs, decidedAt: decidedAt17b, resizeStartPerf, elapsedMsWallClock }));
         } finally { await p17b.close().catch(() => {}); }
       }
@@ -7102,9 +7219,79 @@ try {
         const focused = await p.evaluate(() => ({ tag: document.activeElement?.tagName, type: document.activeElement?.getAttribute('type') }));
         record('FIX: Admin\'s password input has focus on open (autoFocus wins the trap\'s open-time focus race, OPUS-REVIEW-MODAL16 F1)',
           focused.tag === 'INPUT' && focused.type === 'password', JSON.stringify(focused));
+
+        // RED-APP-16/005 (§76 extension): a real ADMIN_SECRET is not set on
+        // this shared server, so /api/admin/stats always 401s — mocked here
+        // (route.fulfill, same technique mockRegenOn uses elsewhere) so the
+        // FIRST call (the Login click) succeeds, the SECOND (Refresh) 429s
+        // (reaching the authed-branch error path a real secret cannot), and
+        // the THIRD (Retry) succeeds with a CHANGED totalUsers value — so
+        // "Retry works" is checked by the actual number changing and the
+        // error clearing, not merely by the button existing (CodeRabbit CLI,
+        // this review: "a no-op or incorrectly wired handler still passes").
+        let adminCalls = 0;
+        await p.route('**/api/admin/stats', async (route) => {
+          adminCalls++;
+          if (adminCalls === 1) {
+            await route.fulfill({
+              status: 200, contentType: 'application/json',
+              body: JSON.stringify({ totalUsers: 1, verifiedUsers: 1, unverifiedUsers: 0, totalGames: 0, signupsToday: 0, signupsThisWeek: 0, users: [] }),
+            });
+          } else if (adminCalls === 2) {
+            await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'Too many requests' }) });
+          } else {
+            await route.fulfill({
+              status: 200, contentType: 'application/json',
+              body: JSON.stringify({ totalUsers: 5, verifiedUsers: 1, unverifiedUsers: 0, totalGames: 0, signupsToday: 0, signupsThisWeek: 0, users: [] }),
+            });
+          }
+        });
         await p.keyboard.type('hunter2');
         const typed = await p.evaluate(() => document.querySelector('input[type="password"]')?.value);
         record('FIX: typing right after open reaches the password field, with no click (OPUS-REVIEW-MODAL16 F1)', typed === 'hunter2', `value=${JSON.stringify(typed)}`);
+
+        await p.getByRole('button', { name: /^login$/i }).click();
+        const statsVisible = await p.getByText(/total users/i).first().waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+        record('§76 extension precondition: mocked Login succeeds and shows stats', statsVisible);
+        if (statsVisible) {
+          await p.getByRole('button', { name: /refresh/i }).click();
+          const errorVisible = await p.getByText(/could not refresh the stats/i).waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+          record('RED-APP-16/005 FIX: a 429 on Refresh renders a visible error message beside the stale numbers', errorVisible);
+          record('RED-APP-16/005 FIX: the error banner offers a Retry control',
+            await p.getByRole('button', { name: 'Retry' }).isVisible().catch(() => false));
+          // The stale numbers are still on screen (not blanked) alongside the error.
+          record('RED-APP-16/005 FIX: the stale stat numbers stay visible alongside the error (not cleared)',
+            await p.getByText(/total users/i).first().isVisible().catch(() => false));
+
+          // Retry actually re-fetches: click it, wait for the STATE to
+          // change (the new totalUsers value, "5", appearing), then assert
+          // the error is gone. A no-op/broken handler would leave "1" on
+          // screen and this waitForFunction would time out (a real FAIL,
+          // not a false pass).
+          if (errorVisible) {
+            await p.getByRole('button', { name: 'Retry' }).click();
+            // CodeRabbit CLI (this review): the old predicate tested
+            // document.body.innerText for a bare `5` ANYWHERE on the page —
+            // the panel also renders other numbers, user rows and dates,
+            // so an unrelated `5` could satisfy it while Total Users still
+            // showed the stale `1` (mocked verifiedUsers stays 1 in both
+            // responses, so the paired 1->5 change is only observable on
+            // Total Users specifically). Scoped to that one StatCard.
+            const updated = await p.waitForFunction(
+              () => {
+                const labelEl = [...document.querySelectorAll('*')]
+                  .find((n) => n.children.length === 0 && /^total users$/i.test((n.textContent || '').trim()));
+                const card = labelEl?.closest('div')?.parentElement;
+                return /\b5\b/.test(card?.innerText || '');
+              },
+              null, { timeout: 5000 },
+            ).then(() => true).catch(() => false);
+            record('RED-APP-16/005 FIX: clicking Retry re-fetches and renders the UPDATED Total Users value (not a no-op)', updated);
+            const errorCleared = await p.getByText(/could not refresh the stats/i).isVisible().catch(() => false);
+            record('RED-APP-16/005 FIX: a successful Retry clears the error banner', !errorCleared);
+          }
+        }
+
         // Exercise the "Close admin dashboard" control itself (control-
         // coverage guard, controlcoverage.test.ts) rather than only closing
         // via Escape — a real click by its own accessible name.
@@ -7927,7 +8114,12 @@ try {
     record('precondition: page.pdf() produced real output with the drawer open (proves this is the real print pipeline, harness sanity)', !!pdfDrawer && pdfDrawer.length > 10000, `bytes=${pdfDrawer?.length ?? 0}`);
     await p.emulateMedia({ media: 'screen' });
     await p.keyboard.press('Escape');
-    await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {});
+    // CodeRabbit CLI (#164, outside-diff): '[aria-label="Close menu"]' names
+    // the drawer's OWN close button, not the drawer itself — a rename of
+    // that button's label (independent of the drawer closing) would turn
+    // this wait into a silent no-op. Poll the same drawer dialog selector
+    // this section already uses to open/verify it.
+    await p.waitForFunction((sel) => !document.querySelector(sel), '[role="dialog"][aria-label="Simulator Workspace Center"]', { timeout: 8000 }).catch(() => {});
 
     // Centered layout (OVERLAY_CLASS) — the Save-preset dialog — proves the
     // fix is on the SHARED [data-modal-surface] attribute, not the drawer's
@@ -7943,6 +8135,293 @@ try {
     await p.emulateMedia({ media: 'screen' });
     await p.keyboard.press('Escape');
     await p.close();
+  });
+
+  // ══ 85. RED-APP-16/003 — every visible, enabled control across the app has
+  //      a real accessible name (Chromium's own AX engine, the red's own
+  //      instrument, made a fixture). Sweeps the states the brief's invariant
+  //      names — every Account mode and every drawer tab (the red's own probe
+  //      scope: login/signup/forgot, not verify/reset, which need a real
+  //      code) — plus Save Preset and Edit. Every field the sweep visits
+  //      EXCEPT Edit's "Game Name" has a placeholder or aria-label fallback,
+  //      so an htmlFor regression on any of THOSE could never show up as an
+  //      EMPTY Chromium AX name (only as a static finding in
+  //      a11yfixes.test.ts's unassociatedLabels/placeholderOnlyControls walk,
+  //      which covers every field exactly, not sampled). Edit's Game Name
+  //      (no placeholder at all — the red's one REAL hit) is what makes
+  //      reverting ITS htmlFor actually flip this e2e check red too; every
+  //      other sweep here stays green under that same mutation.
+  // Split 85 -> 85/85b (same precedent as 66/66b): the combined sweep alone
+  // measured 128735ms, and merging main's #164/#165/#166 sections pushed the
+  // 28-shard packing to 205s on the heaviest shard, over the 200s headroom
+  // line (e2esharding.test.ts). 85 keeps every PRE-AUTH state (signed-out,
+  // login, signup, forgot-password); 85b re-establishes a signed-in session
+  // on its own (same registerAndLogin call, since each section must be
+  // independently runnable/shardable) and sweeps every SIGNED-IN state
+  // (main, all 3 drawer tabs, edit-saved-game). Each keeps its own TOTAL.
+  function axSweepHelpers(p, cdp) {
+    const allHits = [];
+    const sweep = async (label) => {
+      const { total, hits } = await emptyAccessibleNames(p, cdp);
+      allHits.push(...hits.map((h) => ({ label, ...h })));
+      // OPUS-REVIEW-APP16 N-1: `total > 0` is part of the pass condition,
+      // not a separate precondition — a sweep that visits NOTHING (page
+      // not rendered, dialog never opened, selector drift) used to record
+      // hits.length===0 as a silent PASS.
+      record(`AX sweep: ${label} (${total} controls)`, hits.length === 0 && total > 0, JSON.stringify(hits));
+    };
+    return { allHits, sweep };
+  }
+
+  section('85', 'AX sweep: 0 controls with an empty accessible name across pre-auth account modes', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    try {
+      const p = trackPage(await ctx.newPage());
+      const cdp = await openAxCdp(p, ctx);
+      const { allHits, sweep } = axSweepHelpers(p, cdp);
+
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await exitTour.click();
+        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
+      }
+      await sweep('main page (signed out)');
+
+      await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+      await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+      await sweep('account/login');
+
+      // CodeRabbit CLI (this review): each mode switch now asserts a marker
+      // UNIQUE to the target mode before sweeping it — a swallowed click
+      // failure used to let the sweep silently run on the WRONG (unchanged)
+      // mode while reporting it under the target mode's label.
+      // Scoped to the dialog + `exact: true`: the HEADER's own opener button
+      // reads "Sign In / Sign Up" — a bare substring match on 'Sign Up'
+      // resolves to BOTH it and the in-dialog link (Playwright strict mode
+      // then refuses to click either), a defect CodeRabbit's "assert state"
+      // finding surfaced by making the click no longer silently swallowed.
+      const accountDlg = p.locator('[role="dialog"][aria-label="Account"]');
+      await accountDlg.getByRole('button', { name: 'Sign Up', exact: true }).click();
+      const inSignup = await p.getByPlaceholder('game_theorist').waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      record('§85 precondition: switched into account/signup (Username field visible)', inSignup);
+      if (inSignup) await sweep('account/signup');
+
+      // The link back to login is "Log In" (with a space) — distinct from
+      // the login mode's OWN submit button, which says "Login" (no space).
+      await accountDlg.getByRole('button', { name: 'Log In', exact: true }).click();
+      const backToLogin = await accountDlg.getByRole('button', { name: 'Sign Up', exact: true }).waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      record('§85 precondition: switched back to account/login (Sign Up link visible again)', backToLogin);
+
+      await accountDlg.getByRole('button', { name: 'Forgot your password?', exact: true }).click();
+      const inForgot = await p.getByText(/enter the email address associated with your account/i).waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      record('§85 precondition: switched into account/forgot-password (recovery copy visible)', inForgot);
+      if (inForgot) await sweep('account/forgot-password');
+      await p.keyboard.press('Escape');
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 5000 });
+
+      record('TOTAL: 0 controls with an empty accessible name across every pre-auth swept state', allHits.length === 0, JSON.stringify(allHits));
+    } finally {
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  section('85b', 'AX sweep: 0 controls with an empty accessible name across signed-in main, drawer tabs, and saved-game edit', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    try {
+      const p = trackPage(await ctx.newPage());
+      const cdp = await openAxCdp(p, ctx);
+      const { allHits, sweep } = axSweepHelpers(p, cdp);
+
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await exitTour.click();
+        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
+      }
+      await registerAndLogin(p, 'e2e85b');
+      await sweep('main page (signed in)');
+
+      await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await p.waitForSelector('[data-modal-surface="drawer"]', { timeout: 8000 });
+      for (const t of [/help guides/i, /library/i, /danger zone/i]) {
+        const tabBtn = p.locator('button', { hasText: t }).first();
+        await tabBtn.click();
+        // The active tab's own button gets `border-accent-600` (MenuDrawer.tsx)
+        // — a real state check, not a fixed sleep guessing the render landed.
+        const activated = await p.waitForFunction(
+          ([src, flags, cls]) => {
+            const re = new RegExp(src, flags);
+            return [...document.querySelectorAll('button')].some((b) => re.test(b.textContent || '') && b.className.includes(cls));
+          },
+          [t.source, t.flags, 'border-accent-600'],
+          { timeout: 3000 },
+        ).then(() => true).catch(() => false);
+        record(`§85b precondition: drawer tab ${t} activated (border-accent-600 on its own button)`, activated);
+        if (activated) await sweep(`drawer/${t}`);
+      }
+      await p.keyboard.press('Escape');
+      await p.waitForFunction(() => !document.querySelector('[data-modal-surface="drawer"]'), null, { timeout: 5000 });
+
+      await p.getByRole('button', { name: /save preset/i }).click();
+      await p.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      await p.locator('[role="dialog"][aria-label="Save custom game"] input[type="text"]').first().fill('AX sweep game');
+      await p.getByRole('button', { name: /save game profile/i }).click();
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 8000 }).catch(() => {});
+      // The Edit dialog's "Game Name" field is the ONE real hit RED-APP-16/003
+      // found (App.tsx:6112-6118, no placeholder — every OTHER swept field
+      // above has a placeholder/aria-label fallback, so an htmlFor regression
+      // there could never show up as an EMPTY Chromium AX name, only as a
+      // structural finding in a11yfixes.test.ts's static walk). Sweeping this
+      // dialog is what makes THIS check's own mutation test — reverting the
+      // Game Name label's htmlFor — actually go red; every other sweep here
+      // stays green under that same mutation (verified: see REPORT.md).
+      await p.getByRole('button', { name: /^edit /i }).first().click();
+      const editOpened = await p.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 }).then(() => true).catch(() => false);
+      record('precondition: the Edit dialog opened', editOpened);
+      if (editOpened) await sweep('edit-saved-game');
+
+      record('TOTAL: 0 controls with an empty accessible name across every signed-in swept state', allHits.length === 0, JSON.stringify(allHits));
+    } finally {
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  // ══ 86. RED-APP-16/004 — the simulation log pins to the bottom only when
+  //      the user was already there; a scroll away (mouse OR keyboard) must
+  //      hold through the next appended line, for BOTH the inline and the
+  //      expanded log. Control arm (still at the bottom) follows.
+  section('86', 'simulation log: a user-set scroll position holds through new lines; at-bottom still follows', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = trackPage(await ctx.newPage());
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await exitTour.click();
+        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
+      }
+
+      // The default preset payoffs converge in ~3 steps regardless of start
+      // point or speed — nothing left to append once it settles. RED-APP-16/004's
+      // own repro fixture (a genuine mixed equilibrium: -12, 12, 8, -8, 2, -2,
+      // 0, 0) keeps the run going long enough for this section's scroll/append
+      // races to matter. Own-page equivalent of the shared setSpeed() helper
+      // (that one is hard-bound to the module's shared `page`).
+      const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
+      await matrix.first().waitFor({ state: 'visible', timeout: 15000 });
+      const mixedVals = [-12, 12, 8, -8, 2, -2, 0, 0];
+      for (let i = 0; i < 8; i++) { await matrix.nth(i).fill(String(mixedVals[i])); await matrix.nth(i).blur(); }
+      // OPUS-REVIEW-APP16 N-3: the aria-label (which used to name these
+      // fields) is gone — the <label> supplies the accessible name now, so
+      // select by the stable labelFor id (`field-coords-x0`/`-y0`) instead.
+      await p.locator('#field-coords-x0').fill('0.05');
+      await p.locator('#field-coords-y0').fill('0.95');
+      await p.evaluate(() => {
+        const el = document.querySelector('input[aria-label="Loop Speed"]');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(el, el.min);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await p.getByRole('button', { name: /^(run|resume)$/i }).click();
+
+      const logBox = p.locator('[role="region"][aria-label="Simulation log"]').first();
+      await logBox.waitFor({ state: 'visible', timeout: 5000 });
+      // Wait until the log has overflowed its own box (scrollHeight >
+      // clientHeight) — otherwise there is nothing to scroll away from.
+      await p.waitForFunction(
+        (sel) => { const el = document.querySelector(sel); return !!el && el.scrollHeight > el.clientHeight + 20; },
+        '[role="region"][aria-label="Simulation log"]', { timeout: 15000 },
+      );
+
+      // ── Arm 1: inline log, mouse-wheel scroll away from the bottom ──
+      await logBox.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      const before1 = await logBox.evaluate((el) => el.scrollTop);
+      // CodeRabbit CLI (this review): before1 alone does not prove the log
+      // was STILL away from the bottom at this instant — the log appends a
+      // new line every ~550ms, so if the pin-to-bottom defect were present,
+      // it could already have snapped scrollTop back before this read,
+      // making before1 itself an "at bottom" value; after1 would then match
+      // it and the check below would pass with the defect present.
+      const away1 = await logBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight > 20);
+      record('§86 precondition: the inline log actually left the bottom before a line appended', away1, `scrollTop=${before1}`);
+      const lines1 = await p.locator('[role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="region"][aria-label="Simulation log"] > *').length > n,
+        lines1, { timeout: 10000 },
+      );
+      const after1 = await logBox.evaluate((el) => el.scrollTop);
+      record('FIX: inline log holds a user-set scroll-up position through a new line',
+        after1 === before1, `before=${before1} after=${after1}`);
+
+      // ── Control: inline log, AT the bottom, still follows new lines ──
+      await logBox.evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      const lines2 = await p.locator('[role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="region"][aria-label="Simulation log"] > *').length > n,
+        lines2, { timeout: 10000 },
+      );
+      const atBottom = await logBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 4);
+      record('control: inline log AT the bottom still follows new lines', atBottom);
+
+      // ── Arm 2: expanded log, keyboard scroll (Home) away from the bottom ──
+      await p.locator('[aria-label="Expand simulation log"]').click();
+      const expandedBox = p.locator('[role="dialog"] [role="region"][aria-label="Simulation log"]').first();
+      await expandedBox.waitFor({ state: 'visible', timeout: 5000 });
+      await p.waitForFunction(
+        (sel) => { const el = document.querySelector(sel); return !!el && el.scrollHeight > el.clientHeight + 20; },
+        '[role="dialog"] [role="region"][aria-label="Simulation log"]', { timeout: 15000 },
+      );
+      await expandedBox.focus();
+      await p.keyboard.press('Home');
+      // Wait for the Home-triggered scroll to actually SETTLE (two identical
+      // reads in a row) before taking the "before" measurement — the log is
+      // actively appending a new line every ~550ms during this whole
+      // section, and reading scrollTop immediately after the keypress can
+      // catch the browser's own scroll animation mid-flight, not the fix.
+      const stableScrollTop = () => p.waitForFunction(
+        (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return false;
+          if (window.__lastScrollTop === el.scrollTop) return true;
+          window.__lastScrollTop = el.scrollTop;
+          return false;
+        },
+        '[role="dialog"] [role="region"][aria-label="Simulation log"]', { timeout: 8000, polling: 100 },
+      );
+      await p.evaluate(() => { window.__lastScrollTop = -1; });
+      await stableScrollTop();
+      const beforeExp = await expandedBox.evaluate((el) => el.scrollTop);
+      // CodeRabbit CLI (this review): same gap as arm 1 — beforeExp settling
+      // does not itself prove the log was away from the bottom; assert it.
+      const awayExp = await expandedBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight > 20);
+      record('§86 precondition: the expanded log actually left the bottom before a line appended', awayExp, `scrollTop=${beforeExp}`);
+      const linesExp = await p.locator('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').length > n,
+        linesExp, { timeout: 10000 },
+      );
+      const afterExp = await expandedBox.evaluate((el) => el.scrollTop);
+      record('FIX: expanded log holds a keyboard (Home) scroll-up position through a new line',
+        afterExp === beforeExp, `before=${beforeExp} after=${afterExp}`);
+
+      // ── Control: expanded log, AT the bottom, still follows new lines ──
+      // CodeRabbit CLI (this review): the arm above only proves the
+      // scrolled-away case; a defect that broke the expanded log's OWN
+      // follow-when-at-bottom behavior (mirroring the inline control above)
+      // would still pass everything else in this section.
+      await expandedBox.evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      const linesExpControl = await p.locator('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').length > n,
+        linesExpControl, { timeout: 10000 },
+      );
+      const expAtBottom = await expandedBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 4);
+      record('control: expanded log AT the bottom still follows new lines', expAtBottom);
+    } finally {
+      await ctx.close().catch(() => {});
+    }
   });
 
 await executeSections();
@@ -8011,6 +8490,10 @@ const EXPECTED_STATUS_NOISE = {
   // dialog's PATCH, one each — the exact behavior the section's own
   // focus-stays-inside assertions verify.
   '66b': [401, 401],
+  // §76 extension (RED-APP-16/005): deliberately mocks a 429 on the admin
+  // panel's Refresh — the exact behavior "a visible error banner + Retry,
+  // stale numbers stay on screen" verifies.
+  '76': [429],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),

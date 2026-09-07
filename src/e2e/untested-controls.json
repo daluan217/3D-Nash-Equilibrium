@@ -11,7 +11,6 @@
   "Increase y₀": "See 'Increase x₀'.",
   "Decrease y₀": "See 'Increase x₀'.",
   "Prefer the terminal?": "Informational link-style control; navigates, holds no state.",
-  "Refresh": "Re-fetches the saved-game list; the list endpoint itself is covered by the integration suite.",
   "Get the desktop app": "Starts a DMG download from GCS. Not clicked in CI because the download itself is the thing it does; the release pipeline covers producing and uploading that artifact.",
   "Sign out": "See 'Log out'.",
   "Dismiss": "OtherAccountsNotice's own close button — sets a localStorage flag and hides the banner, no server call, no other state. The banner's SERVER-SIDE predicate (GET /api/auth/desktop-hint) is covered end to end by src/integration/desktop-recovery-hint.test.mjs against the real server; this button is client-only dialog chrome on top of it, same shape as 'Cancel'/'Done' above."

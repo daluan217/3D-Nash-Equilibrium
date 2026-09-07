@@ -12,7 +12,8 @@
  *   npx tsx src/a11yfixes.test.ts
  */
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 let checks = 0;
 function ok(cond: boolean, msg: string) {
@@ -99,9 +100,18 @@ function extractModalSurfaceBlock(src: string, id: string): string {
       `the ${field} input must carry an aria-label built from activeLabels.${row}/${col} naming Player ${player}, got: ${JSON.stringify(block)}`);
   }
 
-  // The other 5 flagged controls.
-  ok(app.includes(`aria-label="Row Start Point (x0)"`), 'the x0 input must carry an aria-label');
-  ok(app.includes(`aria-label="Col Start Point (y0)"`), 'the y0 input must carry an aria-label');
+  // The other 5 flagged controls. OPUS-REVIEW-APP16 N-3: x0/y0 used to carry
+  // BOTH a real <label> (RED-APP-16/003's fix) and an aria-label with the
+  // ASCII "x0"/"y0" spelling — aria-label wins the accessible-name
+  // computation, so the visible "x₀"/"y₀" (U+2080) label never reached
+  // assistive tech (WCAG 2.5.3 label-in-name). The aria-label is gone; the
+  // <label> now supplies the name, so it now matches what is on screen.
+  ok(!app.includes(`aria-label="Row Start Point (x0)"`), 'the x0 input must NOT carry the old ASCII-spelled aria-label (the <label> supplies the name now)');
+  ok(!app.includes(`aria-label="Col Start Point (y0)"`), 'the y0 input must NOT carry the old ASCII-spelled aria-label (the <label> supplies the name now)');
+  ok(/<label htmlFor=\{labelFor\('coords', 'x0'\)\}[^>]*>Row Start Point \(x₀\)<\/label>[\s\S]{0,200}id=\{labelFor\('coords', 'x0'\)\}/.test(app),
+    'the x0 field\'s <label> (with the visible U+2080 subscript) must be htmlFor/id-paired to the input');
+  ok(/<label htmlFor=\{labelFor\('coords', 'y0'\)\}[^>]*>Col Start Point \(y₀\)<\/label>[\s\S]{0,200}id=\{labelFor\('coords', 'y0'\)\}/.test(app),
+    'the y0 field\'s <label> (with the visible U+2080 subscript) must be htmlFor/id-paired to the input');
   ok(/aria-label=\{stepMode === 'regret' \? 'Regret Step Weight \(lambda\)' : 'Initial Domain Shrink Step Size'\}/.test(app),
     'the step-size text box must carry a mode-aware aria-label');
   ok(/aria-label=\{stepMode === 'regret' \? 'Regret Step Weight \(lambda\) slider' : 'Initial Domain Shrink Step Size slider'\}/.test(app),
@@ -661,6 +671,437 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     'the empty-state card itself (the one that says "No saved custom game presets.") must carry the drawer-games landmark');
   ok(!/data-focus-fallback=/.test(between),
     'no OTHER data-focus-fallback occurrence must sit between this landmark and "No saved custom game presets." — otherwise the nearest-match above could be pinning the WRONG branch\'s landmark');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RED-APP-16/003: every `<label>` in the app must be associated with a real
+// control — `htmlFor`/`id`, or by wrapping the control — and no input's ONLY
+// name source may be `placeholder` (a hint, not a label; it disappears once
+// the user types). 24 of the app's 25 `<label>`s were unassociated and 15
+// fields were placeholder-only; the fix is `src/utils/a11y.ts`'s shared
+// `labelFor(scope, field)` id pairing, used at every text/number/password/
+// email/textarea site, and a plain heading (not a `<label>`) for the few
+// headings that caption a GROUP of buttons rather than one control.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  /** Blanks out `/* ... *\/` block comments and `// ...` line comments
+   *  (replacing with spaces, so byte offsets used in error messages stay
+   *  meaningful) — this file's OWN prose repeatedly says things like
+   *  "a real `<label>`", which a naive scan over raw source would flag as
+   *  an unassociated label in a comment, not in JSX.
+   *
+   *  CodeRabbit CLI (this review): the old regex-only version was NOT
+   *  quote-aware — MenuDrawer.tsx's own real
+   *  `placeholder="e.g., https://nash-equilibrium.run.app"` contains a
+   *  literal `//` INSIDE a string, which `\/\/[^\n]*` blanked from that
+   *  point to end-of-line, erasing the placeholder's own closing quote and
+   *  leaving `openTags`'s quote-tracker stuck "inside a string" for
+   *  everything after — corrupting every check for the rest of the file.
+   *  This walker tracks quote state (character-by-character, same
+   *  backslash-escape handling as `openTags`) and only treats `//`/`/*` as
+   *  a comment when OUTSIDE any quote. */
+  function stripComments(src: string): string {
+    let out = '';
+    let i = 0;
+    let q: string | null = null;
+    while (i < src.length) {
+      const c = src[i];
+      if (q) {
+        if (c === '\\' && i + 1 < src.length) { out += c + src[i + 1]; i += 2; continue; }
+        out += c;
+        if (c === q) q = null;
+        i++;
+        continue;
+      }
+      // CodeRabbit CLI (this review): a `'` immediately preceded by a word
+      // character (e.g. "Player A's strategy", real JSX text in
+      // MenuDrawer.tsx) is a contraction/possessive, not a string-literal
+      // open — valid JS/TSX has no token that puts a bare `'` directly after
+      // an identifier with no operator between them, so this can only be
+      // prose. Treat it as a plain character; only `"`/`` ` `` and a `'` NOT
+      // preceded by a word character open a real quoted span.
+      if (c === "'" && /[A-Za-z0-9_]/.test(src[i - 1] ?? '')) { out += c; i++; continue; }
+      if (c === '"' || c === "'" || c === '`') { q = c; out += c; i++; continue; }
+      if (c === '/' && src[i + 1] === '/') {
+        while (i < src.length && src[i] !== '\n') { out += ' '; i++; }
+        continue;
+      }
+      if (c === '/' && src[i + 1] === '*') {
+        out += '  '; i += 2;
+        while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) { out += (src[i] === '\n' ? '\n' : ' '); i++; }
+        if (i < src.length) { out += '  '; i += 2; }
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return out;
+  }
+
+  // CodeRabbit CLI (this review), isolated fixture: JSX text with a
+  // possessive apostrophe (the real shape at MenuDrawer.tsx:321-323,
+  // "Player A's strategy...") must not put the quote-tracker into a stuck
+  // "inside a string" state that then hides a REAL comment (and whatever
+  // bogus markup that comment contains) from every check downstream.
+  {
+    const fixture = [
+      "const x = <p>Player A's strategy evolution over time.</p>;",
+      "// <label>should be stripped, not real markup</label>",
+      'const y = 1;',
+    ].join('\n');
+    const stripped = stripComments(fixture);
+    ok(!/<label>should be stripped/.test(stripped),
+      `stripComments must blank a real "//" comment that follows a possessive apostrophe in JSX text, not leave it (and its fake <label>) as live markup: ${JSON.stringify(stripped)}`);
+    ok(/Player A's strategy/.test(stripped),
+      'stripComments must leave the possessive apostrophe itself untouched (it is prose, not a comment or a string to blank)');
+  }
+
+  /** Every `<TAG ...>` opening tag matching `names`, with its FULL attribute
+   *  string — consumed to the `>` at BRACE DEPTH 0, outside quotes.
+   *
+   *  OPUS-REVIEW-APP16 FIX-BEFORE-MERGE 1: the original `[^>]*` stopped at
+   *  the first `>` inside the tag, which for nearly every real control in
+   *  this app is the `>` of its OWN event handler arrow function
+   *  (`onChange={e => ...}`) — every attribute written after the first
+   *  handler, placeholder included, was invisible to both checkers below.
+   *  `placeholderOnlyControls` on the pre-fix tree passed on a file
+   *  (AdminDashboard.tsx) that violates its own stated invariant, because
+   *  the ONE attribute it needed (`placeholder=`) never appeared in the
+   *  truncated string it read. This walker tracks `{}` depth and skips over
+   *  `"`/`'`/`` ` `` quoted spans (a `>` or unbalanced brace inside a string
+   *  literal must not end the tag early or corrupt the depth count). */
+  function openTags(src: string, names: string[]): { tag: string; attrs: string; index: number; end: number }[] {
+    const out: { tag: string; attrs: string; index: number; end: number }[] = [];
+    const re = new RegExp(`<(${names.join('|')})\\b`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src))) {
+      let i = m.index + m[0].length;
+      let depth = 0;
+      let q: string | null = null;
+      for (; i < src.length; i++) {
+        const c = src[i];
+        // CodeRabbit CLI (this review): a backslash-escaped quote INSIDE a
+        // quoted span (a handler like `setValue("a \"quoted\" value")`)
+        // must not close the span early — skip the escaped character so the
+        // real closing quote (and the tag's own `>`) are found correctly.
+        if (q) { if (c === '\\') { i++; continue; } if (c === q) q = null; continue; }
+        if (c === '"' || c === "'" || c === '`') { q = c; continue; }
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+        else if (c === '>' && depth === 0) break;
+      }
+      // `i` is the index of the tag's own closing `>` (or src.length if
+      // unterminated); +1 gives the offset the tag's BODY starts at.
+      out.push({ tag: m[1], attrs: src.slice(m.index + m[0].length, i), index: m.index, end: i + 1 });
+    }
+    return out;
+  }
+
+  /** Tags whose `id=` genuinely gives a `<label htmlFor>` something to
+   *  point at — HTML's own labelable-elements list, restricted to what
+   *  this app uses, plus `DescriptionEditor` (verified below to forward its
+   *  `id` prop straight to its own `<textarea>`). Every OTHER custom
+   *  component's `id` (e.g. ModalSurface's dialog id: `expand-log`,
+   *  `account`, `admin`, `drawer` — none ever targeted by an htmlFor)
+   *  names a DIFFERENT DOM node, not a labelable control. */
+  const LABELABLE_TAGS = ['input', 'textarea', 'select', 'button', 'meter', 'output', 'progress', 'DescriptionEditor'];
+  /** Extracts the VALUE of a `name=` attribute from an attrs string,
+   *  accepting all three valid JSX/TSX quoting styles — double-quoted,
+   *  single-quoted, or a `{expr}` (CodeRabbit CLI, this review: the old
+   *  double-quote-or-brace-only regexes at every id=/htmlFor= site silently
+   *  missed `id='x'`/`htmlFor='x'` — valid TSX no checker below would ever
+   *  catch a mismatch in). */
+  function attrValue(attrs: string, name: string): string | undefined {
+    const m = attrs.match(new RegExp(`\\b${name}=(?:"([^"]+)"|'([^']+)'|\\{([^}]+)\\})`));
+    return m ? (m[1] ?? m[2] ?? m[3]).trim() : undefined;
+  }
+  /** Every `id=` VALUE on a labelable tag in `src` — used to check that an
+   *  `htmlFor=` actually names a real, labelable control, not just that
+   *  SOME element somewhere carries that id (CodeRabbit CLI, this review:
+   *  "collectIdValues accepts IDs from all elements... a `<div id=...>`
+   *  passes unassociatedLabels, but the label is not associated with a
+   *  control"). */
+  function collectIdValues(src: string): Set<string> {
+    const ids = new Set<string>();
+    for (const { attrs } of openTags(src, LABELABLE_TAGS)) {
+      const v = attrValue(attrs, 'id');
+      if (v !== undefined) ids.add(v);
+    }
+    return ids;
+  }
+  /** Every `htmlFor=` VALUE, but ONLY on a real `<label>` tag (CodeRabbit
+   *  CLI, this review: "placeholderOnlyControls accepts an input when ANY
+   *  tag has a matching htmlFor value" — an `htmlFor` on a non-label
+   *  element names nothing real; only a genuine `<label>` can associate). */
+  function collectHtmlForValues(src: string): Set<string> {
+    const values = new Set<string>();
+    for (const { attrs } of openTags(src, ['label'])) {
+      const v = attrValue(attrs, 'htmlFor');
+      if (v !== undefined) values.add(v);
+    }
+    return values;
+  }
+
+  /** Every `<label ...>` tag in `src` with no `htmlFor` AND no control
+   *  (input/select/textarea) nested before its own `</label>` — OR an
+   *  `htmlFor` whose value does not match any `id=` anywhere in the file
+   *  (a dangling/mismatched pair, CodeRabbit CLI this review). */
+  function unassociatedLabels(rawSrc: string): string[] {
+    const src = stripComments(rawSrc);
+    const idValues = collectIdValues(src);
+    const violations: string[] = [];
+    for (const { attrs, index, end } of openTags(src, ['label'])) {
+      const hfValue = attrValue(attrs, 'htmlFor');
+      if (hfValue !== undefined) {
+        if (idValues.has(hfValue)) continue;
+        violations.push(`<label${attrs}> at offset ${index} has htmlFor=${JSON.stringify(hfValue)} but no matching id= anywhere in the file (dangling)`);
+        continue;
+      }
+      const bodyStart = end;
+      const bodyEnd = src.indexOf('</label>', bodyStart);
+      const body = bodyEnd > 0 ? src.slice(bodyStart, bodyEnd) : src.slice(bodyStart, bodyStart + 400);
+      if (/<input\b|<select\b|<textarea\b/.test(body)) continue;
+      violations.push(`<label${attrs}> at offset ${index} has no htmlFor and wraps no control`);
+    }
+    return violations;
+  }
+
+  /** Every `<input .../>`/`<textarea ...>` opening tag that carries
+   *  `placeholder=` but no `aria-label=`/`aria-labelledby=`, and either no
+   *  `id=` at all, or an `id=` whose value does not match any `htmlFor=`
+   *  anywhere in the file (dangling/mismatched, CodeRabbit CLI this
+   *  review) — i.e. nothing that COULD be a real accessible name besides
+   *  the placeholder hint.
+   *
+   *  The one exception: `id={id}` — the EXACT shape `DescriptionEditor`'s
+   *  textarea uses to forward a caller-supplied `id` PROP (its own file
+   *  never contains the literal `labelFor(...)` value the caller passes,
+   *  so it can never match any `htmlFor=` collected from THIS file — that
+   *  pairing is cross-file, checked directly below by name for both call
+   *  sites and the forwarded prop).
+   *
+   *  CodeRabbit CLI (this review): the `id === 'id'` exemption used to apply
+   *  to EVERY scanned file — a new, unrelated component destructuring a
+   *  prop named `id` and writing `id={id}` on a placeholder-only control
+   *  would pass with no linked label or ARIA name at all. `filePath` scopes
+   *  the exemption to `DescriptionEditor.tsx` specifically, the one file
+   *  this shape is actually verified (by name, below) to be safe in. */
+  function placeholderOnlyControls(rawSrc: string, filePath?: string): string[] {
+    const src = stripComments(rawSrc);
+    const htmlForValues = collectHtmlForValues(src);
+    // aria-labelledby may point at ANY element (not just a labelable one —
+    // unlike htmlFor, its target need not itself be a control), so this
+    // collects every id= in the file regardless of tag.
+    const allIds = new Set([...src.matchAll(/\bid=(?:"([^"]+)"|'([^']+)'|\{([^}]+)\})/g)].map((m) => (m[1] ?? m[2] ?? m[3]).trim()));
+    const isDescriptionEditor = filePath?.endsWith('DescriptionEditor.tsx') ?? false;
+    const violations: string[] = [];
+    for (const { tag, attrs, index } of openTags(src, ['input', 'textarea'])) {
+      if (!/\bplaceholder=/.test(attrs)) continue;
+      // CodeRabbit CLI (this review): the old check exempted on bare
+      // ATTRIBUTE PRESENCE — `aria-label=""` and a dangling/empty
+      // `aria-labelledby=""` both passed with no real accessible name at
+      // all. A real aria-label must be non-empty; a real aria-labelledby
+      // must be non-empty AND every space-separated IDREF it lists must
+      // resolve to an id= that actually exists somewhere in the file.
+      const ariaLabel = attrValue(attrs, 'aria-label');
+      if (ariaLabel !== undefined && ariaLabel.trim() !== '') continue;
+      const ariaLabelledBy = attrValue(attrs, 'aria-labelledby');
+      if (ariaLabelledBy !== undefined) {
+        const refs = ariaLabelledBy.trim().split(/\s+/).filter(Boolean);
+        if (refs.length > 0 && refs.every((r) => allIds.has(r))) continue;
+      }
+      const idValue = attrValue(attrs, 'id');
+      if (idValue !== undefined) {
+        if (idValue === 'id' && isDescriptionEditor) continue; // DescriptionEditor's forwarded-prop shape ONLY
+        if (htmlForValues.has(idValue)) continue;
+        violations.push(`<${tag}${attrs}> at offset ${index} has id=${JSON.stringify(idValue)} but no matching htmlFor= anywhere in the file (dangling)`);
+        continue;
+      }
+      violations.push(`<${tag}${attrs}> at offset ${index} has placeholder but no aria-label/aria-labelledby/id`);
+    }
+    return violations;
+  }
+
+  // ── Known-positive fixtures — both shapes must be CAUGHT, proving the
+  //    checkers do not just pass everything. ──
+  ok(unassociatedLabels('<label className="x">Name</label><input value="" />').length === 1,
+    'fixture: a sibling label+input with no htmlFor/id pair and no wrapping must be flagged (the exact RED-APP-16/003 shape)');
+  ok(unassociatedLabels('<label htmlFor="a">Name</label><input id="a" />').length === 0,
+    'fixture: an htmlFor/id pair must NOT be flagged');
+  ok(unassociatedLabels('<label>Name<input value="" /></label>').length === 0,
+    'fixture: a wrapping label must NOT be flagged (the other valid shape named in the brief)');
+  ok(placeholderOnlyControls('<input placeholder="Game Name" />').length === 1,
+    'fixture: an input named only by placeholder must be flagged (the pre-fix "Game Name" shape had none at all, but placeholder-only is the broader 15-field class)');
+  ok(placeholderOnlyControls('<input id="a" placeholder="x" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: a placeholder input that ALSO has a real htmlFor-linked label must NOT be flagged');
+  ok(placeholderOnlyControls('<input aria-label="Name" placeholder="x" />').length === 0,
+    'fixture: a placeholder input with its own aria-label must NOT be flagged (Row/Col Start Point keep this shape)');
+  // OPUS-REVIEW-APP16 FIX-BEFORE-MERGE 1: the exact blind spot — an event
+  // handler arrow function (its OWN `>`) appears BEFORE `placeholder=` in
+  // the tag. The old `[^>]*` scan stopped at that `>` and never saw
+  // `placeholder=` at all, so this fixture passed (wrongly) on the pre-fix
+  // checker; `openTags`'s brace-aware scan must still see past it.
+  ok(placeholderOnlyControls('<input onChange={e => setX(e.target.value)} placeholder="x" />').length === 1,
+    'fixture: placeholder AFTER an arrow-function handler must still be flagged (the AdminDashboard/Go-to-step shape)');
+  ok(placeholderOnlyControls('<input onChange={e => setX(e.target.value)} id="a" placeholder="x" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: the same handler-then-placeholder shape, but WITH a real htmlFor-linked id, must NOT be flagged');
+
+  // CodeRabbit CLI (this review): "An id alone does not give an input an
+  // accessible name... a label with htmlFor="missing" also passes" — both
+  // checkers must verify the VALUE matches, not just that either attribute
+  // is merely present.
+  ok(unassociatedLabels('<label htmlFor="missing">Name</label><input id="a" />').length === 1,
+    'fixture: a label htmlFor pointing at an id that does not exist anywhere in the file must be flagged (dangling htmlFor)');
+  // CodeRabbit CLI (this review): collectIdValues must not accept an id from
+  // ANY element — a <label htmlFor> pointing at a non-labelable element's id
+  // (a heading <div>, e.g. this app's own button-group headings) is not
+  // really associated with a control, even though the two VALUES match.
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><div id="g">Group</div>').length === 1,
+    'fixture: htmlFor matching a <div id> (not a labelable element) must still be flagged — a matching VALUE on the wrong TAG is not real association');
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><select id="g"><option /></select>').length === 0,
+    'fixture: htmlFor matching a <select id> must NOT be flagged — select is a genuine labelable element');
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><DescriptionEditor id="g" />').length === 0,
+    'fixture: htmlFor matching a <DescriptionEditor id> must NOT be flagged — its forwarded id reaches a real <textarea> (verified below, cross-file)');
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><ModalSurface id="g">x</ModalSurface>').length === 1,
+    'fixture: htmlFor matching a <ModalSurface id> MUST be flagged — that id names the dialog itself (App.tsx\'s own expand-log/account/admin/drawer ids), never a labelable control, unlike DescriptionEditor');
+  // CodeRabbit CLI (this review): valid TSX may single-quote an attribute
+  // value (`id='g'`) — every id=/htmlFor= matcher must accept it, not just
+  // double-quoted or `{expr}`.
+  ok(unassociatedLabels(`<label htmlFor='g'>Name</label><input id='g' />`).length === 0,
+    'fixture: a single-quoted htmlFor/id pair must NOT be flagged — single-quoted JSX attributes are valid TSX');
+  ok(placeholderOnlyControls(`<input id='missing' placeholder="x" /><label htmlFor="a">Name</label>`).length === 1,
+    'fixture: a single-quoted dangling id must still be flagged (proves the single-quote branch is actually consulted, not just accepted as a non-match)');
+  // CodeRabbit CLI (this review): an escaped quote INSIDE a quoted attribute
+  // span (a handler like `onChange={() => setValue("a \"b")}`, an ODD
+  // number of escaped quotes so the naive tracker's quote parity never
+  // recovers) used to leave the scanner permanently "inside a string" for
+  // the rest of the source — the real closing `>` of THIS tag was never
+  // found at depth 0, so the scan ran straight through it and swallowed the
+  // ENTIRE next `<input>` tag (including its real `aria-label`) into this
+  // tag's own attrs, wrongly exempting a placeholder-only control that has
+  // no accessible name of its own.
+  ok(placeholderOnlyControls(String.raw`<input onChange={() => setValue("a \"b")} placeholder="x" /><input aria-label="Other" placeholder="y" />`).length === 1,
+    'fixture: a handler with an ODD count of escaped quotes must not swallow the NEXT tag\'s real aria-label into this tag\'s own attrs — only the first (unnamed) input should be flagged, not zero');
+  // CodeRabbit CLI (this review): the old aria-label/aria-labelledby
+  // exemption fired on bare ATTRIBUTE PRESENCE — an empty aria-label or a
+  // dangling/empty aria-labelledby gave no real accessible name at all.
+  ok(placeholderOnlyControls('<input aria-label="" placeholder="x" />').length === 1,
+    'fixture: an EMPTY aria-label must still be flagged — presence alone is not a real accessible name');
+  ok(placeholderOnlyControls('<input aria-labelledby="missing" placeholder="x" />').length === 1,
+    'fixture: an aria-labelledby whose IDREF matches no id= anywhere in the file must be flagged (dangling, same class as htmlFor)');
+  ok(placeholderOnlyControls('<input aria-labelledby="" placeholder="x" />').length === 1,
+    'fixture: an EMPTY aria-labelledby must be flagged — no IDREF at all names nothing');
+  ok(placeholderOnlyControls('<input aria-labelledby="g" placeholder="x" /><div id="g">Name</div>').length === 0,
+    'fixture: an aria-labelledby whose IDREF resolves to a real id= (even on a non-labelable <div>, valid per the ARIA spec) must NOT be flagged');
+  ok(placeholderOnlyControls('<input id="missing" placeholder="x" /><label htmlFor="a">Name</label>').length === 1,
+    'fixture: a placeholder input\'s id pointing at an htmlFor that does not exist anywhere in the file must be flagged (dangling id)');
+  ok(placeholderOnlyControls('<input id={id} placeholder="x" />', 'src/components/DescriptionEditor.tsx').length === 0,
+    'fixture: id={id} in DescriptionEditor.tsx — its own forwarded-prop shape — must NOT be flagged even though nothing in ITS file names that value (checked cross-file, by name, below)');
+  ok(placeholderOnlyControls('<input id={id} placeholder="x" />').length === 1,
+    'fixture: the SAME id={id} shape with NO filePath (or a different file) must be flagged — the exemption is scoped to DescriptionEditor.tsx specifically, not any component that happens to destructure a prop named `id` (CodeRabbit CLI, this review)');
+  ok(placeholderOnlyControls('<input id={id} placeholder="x" />', 'src/components/SomeOtherComponent.tsx').length === 1,
+    'fixture: id={id} in an UNRELATED file must be flagged — the exemption must not accidentally generalize');
+  // CodeRabbit CLI (this review): an htmlFor= on a NON-label tag names
+  // nothing real — only a genuine <label> can associate. A decoy htmlFor
+  // elsewhere in the file must not suppress a real placeholder-only
+  // violation.
+  ok(placeholderOnlyControls('<input id="a" placeholder="x" /><div htmlFor="a">Not a label</div>').length === 1,
+    'fixture: an htmlFor on a non-<label> tag must NOT count as association — a placeholder-only input still gets flagged even when a decoy element elsewhere happens to carry a matching htmlFor');
+  ok(placeholderOnlyControls('<input id="a" placeholder="x" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: an htmlFor on a REAL <label> tag still associates normally (control, proves the label-scoping did not break the valid case)');
+  // CodeRabbit CLI (this review): stripComments used to be regex-only, not
+  // quote-aware — a real placeholder string containing "//" (a URL) was
+  // itself treated as a line-comment START, blanking its own closing quote
+  // and everything after it on that line (the exact MenuDrawer.tsx shape:
+  // `placeholder="e.g., https://nash-equilibrium.run.app"`), corrupting
+  // every check for the rest of the file.
+  ok(placeholderOnlyControls('<input placeholder="e.g., https://example.com" />').length === 1,
+    'fixture: a placeholder containing "//" (a URL) is STILL a placeholder-only control (no aria-label/id of its own) and must be flagged for that real reason — proves the "//" text itself was not silently blanked away along with everything meant to follow it');
+  ok(placeholderOnlyControls('<input id="a" placeholder="e.g., https://example.com" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: the SAME "//"-containing placeholder, but with a real htmlFor-linked label, must NOT be flagged — proves the quote-aware stripComments does not corrupt the tag\'s own later id= attribute');
+  ok(unassociatedLabels('<input placeholder="e.g., https://example.com" /><label className="x">Name</label><input value="" />').length === 1,
+    'fixture: a REAL violation AFTER a "//"-containing placeholder must still be caught — proves stripComments did not swallow the rest of the source into a phantom open string');
+
+  // ── The real tree: walk every src/**/*.tsx file, both checkers, 0 violations. ──
+  function walkTsx(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...walkTsx(p));
+      else if (entry.name.endsWith('.tsx')) out.push(p);
+    }
+    return out;
+  }
+  const tsxFiles = walkTsx('src');
+  ok(tsxFiles.length >= 13, `sanity: found a plausible number of .tsx files, got ${tsxFiles.length}`);
+  const allLabelViolations: string[] = [];
+  const allPlaceholderViolations: string[] = [];
+  for (const file of tsxFiles) {
+    const src = readFileSync(file, 'utf8');
+    for (const v of unassociatedLabels(src)) allLabelViolations.push(`${file}: ${v}`);
+    for (const v of placeholderOnlyControls(src, file)) allPlaceholderViolations.push(`${file}: ${v}`);
+  }
+  ok(allLabelViolations.length === 0, `every <label> in src/**/*.tsx must be associated: ${JSON.stringify(allLabelViolations)}`);
+  ok(allPlaceholderViolations.length === 0, `no input's only name source may be placeholder: ${JSON.stringify(allPlaceholderViolations)}`);
+
+  // ── MUTATION TEST — stripping the new htmlFor from the exact field
+  //    RED-APP-16/003 named (the Edit dialog's "Game Name", which unlike
+  //    the others has no placeholder at all — so on the real pre-fix tree
+  //    this was the one hit an AX sweep actually saw) must be caught. ──
+  const editGameNameSrc = readFileSync('src/App.tsx', 'utf8');
+  const mutated = editGameNameSrc.replace(
+    `htmlFor={labelFor('edit-game', 'name')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name`,
+    `className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name`,
+  );
+  ok(mutated !== editGameNameSrc, 'mutation-test precondition: the Game Name label\'s htmlFor must be found and strippable');
+  ok(unassociatedLabels(mutated).length === 1,
+    'mutation-test: reverting the Edit dialog\'s Game Name htmlFor must be caught by unassociatedLabels');
+
+  // ── DescriptionEditor forwards its `id` prop to the textarea (checked
+  //    generically above via unassociatedLabels/placeholderOnlyControls
+  //    treating any id= as associated), so the CROSS-file half of the pair
+  //    — that both call sites actually PASS a real id, matching their
+  //    label's htmlFor — is checked explicitly here by name. ──
+  const descEditorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  ok(/<textarea\s[\s\S]{0,40}id=\{id\}/.test(descEditorSrc),
+    'DescriptionEditor\'s textarea must forward the id prop it declares (so a caller\'s htmlFor pairing actually reaches the DOM)');
+  const editDescPair = /htmlFor=\{labelFor\('edit-game', 'description'\)\}[\s\S]{0,700}<DescriptionEditor\s[\s\S]{0,80}id=\{labelFor\('edit-game', 'description'\)\}/.test(app);
+  ok(editDescPair, 'the Edit dialog\'s Game Description label and its DescriptionEditor must share the same labelFor id');
+  const saveDescPair = /htmlFor=\{labelFor\('save-game', 'description'\)\}[\s\S]{0,700}<DescriptionEditor\s[\s\S]{0,80}id=\{labelFor\('save-game', 'description'\)\}/.test(app);
+  ok(saveDescPair, 'the Save dialog\'s Game Description label and its DescriptionEditor must share the same labelFor id');
+
+  // ── MUTATION TEST — stripping the `id` from a real placeholder-only field
+  //    (the register form's Username, one of the original 15) must be
+  //    caught by placeholderOnlyControls. ──
+  const usernameMutated = app.replace(
+    `id={labelFor('auth', 'username')}\n                      type="text"`,
+    `type="text"`,
+  );
+  ok(usernameMutated !== app, 'mutation-test precondition: the Username input\'s id must be found and strippable');
+  ok(placeholderOnlyControls(usernameMutated).length === 1,
+    'mutation-test: reverting the Username field\'s id must be caught by placeholderOnlyControls');
+
+  // ── MUTATION TEST — OPUS-REVIEW-APP16 FIX-BEFORE-MERGE 1's exact blind
+  //    spot: the admin password field's `placeholder=` sits AFTER its own
+  //    `onChange={e => ...}` handler, so the OLD `[^>]*` scan could never
+  //    see it (unlike Username above, whose placeholder happens to sit
+  //    before its first handler and so was already naive-visible). Stripping
+  //    its `id` must be caught ONLY by the brace-aware `openTags` scan. ──
+  const adminSrc = readFileSync('src/components/AdminDashboard.tsx', 'utf8');
+  const adminMutated = adminSrc.replace(
+    `id={labelFor('admin', 'password')}\n                  type="password"`,
+    `type="password"`,
+  );
+  ok(adminMutated !== adminSrc, 'mutation-test precondition: the admin password input\'s id must be found and strippable');
+  ok(placeholderOnlyControls(adminMutated).length === 1,
+    'mutation-test: reverting the admin password field\'s id must be caught by placeholderOnlyControls (the naive [^>]* scan could not see this field at all)');
+  // Sanity: the NAIVE (pre-fix) regex genuinely cannot see this field's
+  // placeholder even on the UNMUTATED source — proves the fixture above is
+  // exercising the real blind spot, not a shape the old scan already caught.
+  const naiveAttrs = [...stripComments(adminSrc).matchAll(/<(input|textarea)\b([^>]*)>/g)]
+    .map((m) => m[2]).find((a) => /type="password"/.test(a));
+  ok(naiveAttrs !== undefined && !/\bplaceholder=/.test(naiveAttrs),
+    `fixture precondition: the naive [^>]* regex must NOT see 'placeholder=' on the admin password tag (proves this is the real blind spot), got: ${JSON.stringify(naiveAttrs)}`);
 }
 
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

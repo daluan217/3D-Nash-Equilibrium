@@ -344,8 +344,8 @@ const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'u
 // in the SAME ref callback that already solved this ordering problem for
 // focus; the callback is renamed `mountLogRegion` to reflect doing both.
 {
-  ok(/const mountLogRegion = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) \{\s*\n\s*el\.scrollTop = el\.scrollHeight;\s*\n\s*el\.focus\(\);\s*\n\s*\}\s*\n\s*\}, \[\]\);/.test(app),
-    'App.tsx must focus AND scroll-to-bottom the log region via the SAME stable (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)');
+  ok(/const mountLogRegion = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) \{\s*\n\s*logStuckRef\.current\.expanded = true;\s*\n\s*el\.scrollTop = el\.scrollHeight;\s*\n\s*el\.focus\(\);\s*\n\s*\}\s*\n\s*\}, \[\]\);/.test(app),
+    'App.tsx must focus AND scroll-to-bottom the log region via the SAME stable (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2); it must also reset logStuckRef.current.expanded to true on (re)mount (RED-APP-16/004)');
   ok(/ref=\{mountLogRegion\}/.test(app),
     'the log region\'s own div must use the stable mountLogRegion ref callback');
   ok(!/autoFocus/.test((app.match(/aria-label="Simulation log"[\s\S]{0,400}/) ?? [''])[0]),
@@ -517,14 +517,39 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // three checks (after fetch, after res.json, in catch/finally) → the
 // corresponding regex fails.
 {
-  ok(/const fetchStats = async \(secret: string\) => \{\s*\n\s*const gen = requestGenRef\.current;/.test(admin),
-    'fetchStats must capture requestGenRef.current at its own start, before any await (CodeRabbit CLI)');
+  ok(/const fetchStats = async \(secret: string\) => \{\s*\n\s*const gen = \+\+requestGenRef\.current;/.test(admin),
+    'fetchStats must capture requestGenRef.current at its own start, before any await, PRE-INCREMENTING it so two concurrent calls (e.g. a double-clicked Refresh) never share a generation (CodeRabbit CLI this review)');
   ok(/const res = await fetch\(adminUrl\('\/api\/admin\/stats'\), \{\s*\n\s*headers: \{ 'x-admin-secret': secret \},\s*\n\s*\}\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;/.test(admin),
     'fetchStats must bail out immediately after the fetch() await if the generation moved on (CodeRabbit CLI)');
   ok(/const data = await res\.json\(\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;\s*\n\s*setStats\(data\);/.test(admin),
     'fetchStats must re-check the generation after res.json() too, before setStats/setAuthed (CodeRabbit CLI)');
-  ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\('Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
+  ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\(wasAuthed \? 'Could not refresh the stats\.' : 'Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
     'fetchStats must gate its catch-block setError AND the trailing setLoading(false) on the generation too, not just the success path (CodeRabbit CLI)');
+  // CodeRabbit CLI (this review): unlike the other checks in this block,
+  // `const wasAuthed = authed;` is generic enough that an unrelated
+  // declaration elsewhere in the file could satisfy it even if fetchStats
+  // itself lost the capture — scope to fetchStats's own body (same
+  // isolation technique the 401-branch check below already uses).
+  {
+    const wasAuthedFetchStatsIdx = admin.indexOf('const fetchStats = async (secret: string) => {');
+    ok(wasAuthedFetchStatsIdx > 0, 'fetchStats must be found');
+    const wasAuthedFetchStatsEnd = admin.indexOf('const StatCard = ', wasAuthedFetchStatsIdx);
+    ok(wasAuthedFetchStatsEnd > wasAuthedFetchStatsIdx, 'the StatCard declaration after fetchStats must be found');
+    const wasAuthedFetchStatsBody = admin.slice(wasAuthedFetchStatsIdx, wasAuthedFetchStatsEnd);
+    ok(/const wasAuthed = authed;/.test(wasAuthedFetchStatsBody),
+      'fetchStats must capture `authed` (Refresh vs initial Login) before its own await, same as `gen` (RED-APP-16/005)');
+  }
+  // MUTATION TEST — reverting the pre-increment (CodeRabbit CLI, this
+  // review) back to a bare read must be caught: two concurrent fetchStats
+  // calls (nothing disables Refresh while loading) would then share one
+  // generation, so an older response landing last could overwrite fresher
+  // stats/error undetected.
+  {
+    const mutatedAdmin = admin.replace('const gen = ++requestGenRef.current;', 'const gen = requestGenRef.current;');
+    ok(mutatedAdmin !== admin, 'mutation-test precondition: the pre-increment must be found and strippable');
+    ok(!/const gen = \+\+requestGenRef\.current;/.test(mutatedAdmin),
+      'mutation-test: reverting to a bare (non-incrementing) generation read must be caught by the check above');
+  }
   // OPUS-REVIEW-MODAL16 N4: Sign out is a THIRD site that touches
   // authed/stats/password — the generation ref invariant applies to it too,
   // or a Refresh started just before Sign out still lands and re-auths the
@@ -771,6 +796,109 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   // Both ModalSurface layouts must actually SET the attribute the CSS rule targets.
   ok((modalSurfaceSrc.match(/data-modal-surface=\{id\}/g) ?? []).length === 2,
     'ModalSurface.tsx must set data-modal-surface={id} on BOTH overlay layouts (centered + drawer) — the print rule above targets this attribute directly');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RED-APP-16/005 — `error` used to render ONLY in the `!authed` (password
+// prompt) branch; a Refresh failure (401 stale secret, 429 rate limit, a
+// dropped connection) set `error` into a state nothing could display, and the
+// stale stat numbers stayed on screen with no sign anything had failed.
+// Fixed: a 401 on an authed fetch signs the panel back out (mirroring
+// Sign-out's own reset, item (a) of round16/COMMON.md v5's self-adversarial
+// checklist) so the existing `!authed`-branch error slot shows it; every
+// OTHER failure renders a dedicated error banner + Retry in the authed
+// branch instead of being silently dropped.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  // CodeRabbit CLI (this review): both checks used to test the WHOLE
+  // `admin` (file) source — they would pass even if `fetchStats` lost this
+  // branch entirely, so long as some OTHER handler in the file happened to
+  // contain byte-identical text. Scoped to `fetchStats`'s own body
+  // (from its declaration to the sibling `const StatCard =` that follows
+  // it), the same isolation technique the authed-branch error-banner check
+  // above already uses.
+  const fetchStatsIdx = admin.indexOf('const fetchStats = async (secret: string) => {');
+  ok(fetchStatsIdx > 0, 'fetchStats must be found');
+  const fetchStatsEnd = admin.indexOf('const StatCard = ', fetchStatsIdx);
+  ok(fetchStatsEnd > fetchStatsIdx, 'the StatCard declaration after fetchStats must be found (used to isolate fetchStats\'s own body)');
+  const fetchStatsBody = admin.slice(fetchStatsIdx, fetchStatsEnd);
+
+  ok(/if \(res\.status === 401\) \{\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setStats\(null\); setPassword\(''\);\s*\n\s*setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);\s*\n\s*setLoading\(false\);\s*\n\s*return;\s*\n\s*\}/.test(fetchStatsBody),
+    'a 401 in fetchStats must bump requestGenRef and reset authed/stats/password — mirroring Sign-out\'s own reset — while KEEPING an error message (Sign-out itself clears it) so the password prompt explains why the panel signed back out; the message must be wasAuthed-conditioned so a Refresh 401 does not blame a password the user never typed (RED-APP-16/005, OPUS-REVIEW-APP16 N-2)');
+  // MUTATION TEST — collapsing the wasAuthed branch back to a bare
+  // 'Incorrect password.' (OPUS-REVIEW-APP16 N-2's exact defect) must fail.
+  {
+    const mutatedBody = fetchStatsBody.replace(
+      "setError(wasAuthed ? 'Your admin session is no longer valid. Sign in again.' : 'Incorrect password.');",
+      "setError('Incorrect password.');",
+    );
+    ok(mutatedBody !== fetchStatsBody, 'mutation-test precondition: the wasAuthed-conditioned 401 message must be found and strippable');
+    ok(!/setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);/.test(mutatedBody),
+      'mutation-test: collapsing the 401 message back to unconditional "Incorrect password." must be caught by the check above');
+  }
+
+  // CodeRabbit CLI (this review): the presence check above only proves a
+  // 401 branch EXISTS somewhere in fetchStats — it would still pass if that
+  // branch moved to AFTER `await res.json()`, where a 401 response with an
+  // empty/non-JSON body throws before the session-reset ever runs. Require
+  // the real ORDER: after the post-fetch generation guard, before res.json().
+  function admin401BeforeJson(body: string): boolean {
+    const genGuardIdx = body.indexOf('if (gen !== requestGenRef.current) return;');
+    const status401Idx = body.indexOf('if (res.status === 401)');
+    const resJsonIdx = body.indexOf('const data = await res.json();');
+    return genGuardIdx > -1 && status401Idx > genGuardIdx && resJsonIdx > -1 && status401Idx < resJsonIdx;
+  }
+  ok(admin401BeforeJson(fetchStatsBody),
+    'the 401 check must run after the post-fetch generation guard and BEFORE res.json() is parsed — a 401 branch moved after res.json() would throw on an empty/non-JSON body before the session reset ever runs (CodeRabbit CLI, this review)');
+  // MUTATION-TEST FIXTURES — prove the order check itself actually rejects
+  // the two wrong orderings, not just accepts the one real (correct) body.
+  ok(!admin401BeforeJson('if (gen !== requestGenRef.current) return;\nconst data = await res.json();\nif (res.status === 401) { requestGenRef.current += 1; }'),
+    'mutation-test fixture: a 401 check placed AFTER res.json() must be rejected by the order check above');
+  ok(!admin401BeforeJson('if (res.status === 401) { requestGenRef.current += 1; }\nif (gen !== requestGenRef.current) return;\nconst data = await res.json();'),
+    'mutation-test fixture: a 401 check placed BEFORE the post-fetch generation guard must also be rejected');
+
+  // The authed branch (`stats ? (...)`) must render `error`, with a Retry
+  // that re-issues the SAME request (fetchStats(password)) — isolated to
+  // the authed branch specifically (between `stats ? (` and the stat-cards
+  // comment that already follows it), not merely present somewhere in the
+  // file (the `!authed` branch already renders `error`, so a bare
+  // `/\{error &&/.test(admin)` could never fail even on the pre-fix tree).
+  const authedBranchStart = admin.indexOf('stats ? (');
+  ok(authedBranchStart > 0, 'the authed (stats-present) branch must be found');
+  const statCardsIdx = admin.indexOf('<StatCard icon=', authedBranchStart);
+  ok(statCardsIdx > authedBranchStart, 'the stat cards must be found after the authed branch opens');
+  const authedBranchHead = admin.slice(authedBranchStart, statCardsIdx);
+  ok(/\{error && \(/.test(authedBranchHead),
+    `the authed branch must render {error && (...)} BEFORE the stat cards, got: ${JSON.stringify(authedBranchHead)}`);
+  ok(/onClick=\{\(\) => fetchStats\(password\)\}/.test(authedBranchHead),
+    'the authed branch\'s error banner must offer a Retry that calls fetchStats(password) again');
+  ok(/Retry/.test(authedBranchHead), 'the authed branch\'s error banner must be labelled Retry');
+  // CodeRabbit CLI (this review): a plain <span>{error}</span> has no
+  // live-region semantics — a screen reader only discovers the message if
+  // it happens to already have focus inside the banner. role="alert" makes
+  // it announced the moment it appears.
+  ok(/<span role="alert">\{error\}<\/span>/.test(authedBranchHead),
+    `the authed branch's error banner must announce via role="alert", got: ${JSON.stringify(authedBranchHead)}`);
+
+  // ── MUTATION TEST — removing the authed branch's error banner (leaving
+  //    the 401-reset fix in place) must be caught: a 429/network failure
+  //    would once again have nowhere to render. ──
+  const mutatedAdmin = admin.replace(
+    authedBranchHead,
+    authedBranchHead.replace(/\{error && \([\s\S]*?\)\}\s*/, ''),
+  );
+  ok(mutatedAdmin !== admin, 'mutation-test precondition: the authed branch\'s error banner must be found and strippable');
+  const mutatedHead = mutatedAdmin.slice(authedBranchStart, mutatedAdmin.indexOf('<StatCard icon=', authedBranchStart));
+  ok(!/\{error && \(/.test(mutatedHead),
+    'mutation-test: removing the authed branch\'s error banner must be caught by the check above');
+
+  // MUTATION TEST — dropping role="alert" (leaving the rest of the banner
+  // intact) must be caught by the check above, independent of the
+  // banner-removal mutation.
+  const noAlertHead = authedBranchHead.replace('<span role="alert">{error}</span>', '<span>{error}</span>');
+  ok(noAlertHead !== authedBranchHead, 'mutation-test precondition: role="alert" must be found and strippable');
+  ok(!/<span role="alert">\{error\}<\/span>/.test(noAlertHead),
+    'mutation-test: dropping role="alert" from the authed branch\'s error banner must be caught by the check above');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
