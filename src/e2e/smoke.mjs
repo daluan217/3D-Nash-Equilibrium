@@ -6093,6 +6093,80 @@ try {
       record('the 401 cleared the account session token (what would otherwise have flipped localOwnerMode true)',
         await dp.waitForFunction(() => !localStorage.getItem('nash_sim_token_local'), null, { timeout: 8000 })
           .then(() => true).catch(() => false));
+
+      // ── RED-DESKTOP-17/002: the SAME still-enabled submit button, clicked
+      // a SECOND time (instead of the offered Sign In), used to silently
+      // resubmit as the local owner — `canOwnGames` alone doesn't catch it,
+      // since the cleared token flips `localOwnerMode` true on desktop. The
+      // needs-auth gate must block it and route to Sign In instead, exactly
+      // like the banner's own button. ──
+      let secondPostCount = 0;
+      await dp.route('**/api/games', (route) => {
+        if (route.request().method() === 'POST') secondPostCount++;
+        route.continue();
+      });
+      const gateSubmitBtn = saveDlg.locator('button[type="submit"]');
+      record('FIX (RED-DESKTOP-17/002): the submit button now reads the sign-in action, not "Save Game Profile"',
+        /sign in/i.test(await gateSubmitBtn.textContent().catch(() => '')));
+      await gateSubmitBtn.click();
+      await dp.waitForTimeout(600);
+      record('FIX (RED-DESKTOP-17/002): clicking the SAME Save button again after the token cleared sends NO request',
+        secondPostCount === 0, `secondPostCount=${secondPostCount}`);
+      const acctDlgAgain = dp.locator('[role="dialog"][aria-label="Account"]');
+      record('FIX (RED-DESKTOP-17/002): the gate routes to the SAME Sign In flow as the banner\'s own button',
+        await acctDlgAgain.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false));
+
+      // ── The explicit "Save on this device instead" choice must be the
+      // ONLY way a resubmit lands under local-owner. Re-authenticate the
+      // SAME account (its password was never actually changed — the 401
+      // above was a mocked response, not a real invalidation), trigger a
+      // fresh dead-session moment, then click the SECONDARY button — with
+      // the mock REMOVED so the click actually reaches the real server. ──
+      await acctDlgAgain.getByPlaceholder(/example\.com or username/i).fill(email);
+      await acctDlgAgain.getByPlaceholder('••••••••').first().fill('TestPass123');
+      await acctDlgAgain.getByRole('button', { name: /^login$/i }).click();
+      await acctDlgAgain.waitFor({ state: 'hidden', timeout: 8000 });
+      // This account still holds the "leave it here" local-owner game from
+      // the FIRST login above (never adopted) — the server offers to move
+      // it again on every login. Dismiss it the same way the FIRST login
+      // already does, so the resume-after-auth effect's own Save dialog can
+      // take the single-active-modal slot.
+      const offerAgain = dp.locator('[role="dialog"][aria-label="Games saved on this device"]');
+      if (await offerAgain.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false)) {
+        await dp.keyboard.press('Escape');
+        await offerAgain.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      }
+      await saveDlg.waitFor({ state: 'visible', timeout: 8000 });
+      record('precondition: signing back in resumed the pending save (same dialog, name intact)',
+        await saveDlg.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').inputValue().then((v) => v === 'AcctSession401-78').catch(() => false));
+      await dp.unroute('**/api/games');
+      await saveDlg.getByRole('button', { name: /save game profile/i }).click();
+      await saveDlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+
+      await dp.route('**/api/games', (route) => (route.request().method() === 'POST'
+        ? route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) })
+        : route.continue()));
+      await dp.getByRole('button', { name: /save preset/i }).click();
+      await saveDlg.waitFor({ state: 'visible', timeout: 8000 });
+      await saveDlg.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill('LocalConfirmed78');
+      await saveDlg.locator('button[type="submit"]').click();
+      const localBtn = saveDlg.getByRole('button', { name: /save on this device instead/i });
+      record('FIX (RED-DESKTOP-17/002): the explicit "Save on this device instead" choice is offered (desktop, dbMode=local)',
+        await localBtn.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false));
+      await dp.unroute('**/api/games');
+      let thirdPostHadAuthHeader = null;
+      await dp.route('**/api/games', (route) => {
+        if (route.request().method() === 'POST') thirdPostHadAuthHeader = 'authorization' in route.request().headers();
+        route.continue();
+      });
+      await localBtn.click();
+      const savedRowLocal = dp.getByRole('button', { name: 'LocalConfirmed78', exact: true });
+      record('FIX (RED-DESKTOP-17/002): the explicit local-device save actually lands (no Authorization header, closes the dialog)',
+        await savedRowLocal.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false)
+        && thirdPostHadAuthHeader === false, `hadAuthHeader=${thirdPostHadAuthHeader}`);
+      const logText78 = await dp.locator('body').innerText().catch(() => '');
+      record('FIX (RED-DESKTOP-17/002): the log line names the device/local library, not an ordinary account save',
+        /local library/i.test(logText78) && /LocalConfirmed78/.test(logText78));
       await dp.unroute('**/api/games');
 
       record('no console/page errors through the desktop auth-predicate cycle (the two deliberate drops [ERR_CONNECTION_RESET] and the mocked 401 resource-load error are expected, filtered)',

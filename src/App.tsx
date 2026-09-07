@@ -605,6 +605,19 @@ export default function App() {
    * Cleared whenever the auth modal is dismissed without signing in.
    */
   const resumeEditAfterAuthRef = useRef(false);
+  /**
+   * RED-DESKTOP-17/002: the ONE place a dialog is sent to Sign In because
+   * ITS OWN attempt was refused for authentication. Consulted by BOTH
+   * submit handlers (before their fetch — a needs-auth session must not
+   * silently resubmit as someone else, e.g. the local owner) and by both
+   * banners' own "Sign In / Sign Up" buttons, so the two paths can never
+   * diverge on what "sign in now" means for this dialog.
+   */
+  const beginNeedsAuthSignIn = (kind: 'save' | 'edit') => {
+    if (kind === 'save') { resumeSaveAfterAuthRef.current = true; setIsSaveModalOpen(false); }
+    else { resumeEditAfterAuthRef.current = true; setIsEditModalOpen(false); }
+    setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
+  };
   // Set when "Save this scenario with the game" routes through the save modal
   // (preset or unsaved matrix): the scenario only becomes real when that save
   // completes, so the explanation regenerates there — from the fields as
@@ -2167,6 +2180,11 @@ export default function App() {
       setEditErrorNeedsAuth(true);
       return;
     }
+    // RED-DESKTOP-17/002: an already-shown sign-in banner must not resubmit
+    // (this dialog session already tried as the account holder and was
+    // refused — `canOwnGames` alone doesn't catch it: a dead token flips
+    // `localOwnerMode` true on desktop, so the check above passes anyway).
+    if (editError && editErrorNeedsAuth) { beginNeedsAuthSignIn('edit'); return; }
     if (!cleanText(editName)) { setEditError('Please enter a game name.'); setEditErrorNeedsAuth(false); return; }
     const orig = editOriginalRef.current;
     const same = (x: readonly string[], y: readonly string[]) => x.length === y.length && x.every((v, i) => v === y[i]);
@@ -2571,8 +2589,22 @@ export default function App() {
     }
   };
 
-  const handleSaveGameSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  /**
+   * RED-DESKTOP-17/002: `localConfirmed` is the ONLY way past the needs-auth
+   * gate below — set by the "Save on this device instead" button, which
+   * calls this directly (bypassing the gate on purpose: clicking it IS the
+   * decision the gate exists to require). `e` is null on that path (no form
+   * event to prevent); the ordinary submit passes its real FormEvent.
+   */
+  const handleSaveGameSubmit = async (e: React.FormEvent | null, opts?: { localConfirmed?: boolean }) => {
+    e?.preventDefault();
+    const localConfirmed = opts?.localConfirmed ?? false;
+    // Once THIS dialog's own banner is already showing the sign-in
+    // invitation (a real 401 cleared the token), the SAME still-enabled
+    // submit button must not silently resubmit as someone else (the local
+    // owner) — route to Sign In instead, exactly like the banner's own
+    // button. `localConfirmed` is the one deliberate bypass (above).
+    if (!localConfirmed && saveError && saveErrorNeedsAuth) { beginNeedsAuthSignIn('save'); return; }
     if (!cleanText(saveName)) {
       setSaveError('Please enter a game name.');
       setSaveErrorNeedsAuth(false);
@@ -2668,7 +2700,13 @@ export default function App() {
         // no longer exists.
         lastGeneratedFillRef.current = null;
         saveNameBaselineRef.current = '';
-        setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
+        // RED-DESKTOP-17/002: a save made via the explicit local-device
+        // choice reads differently from an ordinary account save — the
+        // whole point of the choice was that the destination might not be
+        // what the user first intended.
+        setLogEntries(prev => [...prev, localConfirmed
+          ? `✓ Saved custom game "${data.game.name}" to this device's local library — sign in to move it to your account.`
+          : `✓ Saved custom game "${data.game.name}" successfully!`]);
       } else {
         // RED-APP-7/001: same dead-token cleanup as Edit/Delete — see that
         // comment. `authToken` was truthy but dead, so this branch's own
@@ -6287,11 +6325,7 @@ export default function App() {
                       <span>{editError} Your changes will stay right here.</span>
                       <button
                         type="button"
-                        onClick={() => {
-                          resumeEditAfterAuthRef.current = true;
-                          setIsEditModalOpen(false);
-                          setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
-                        }}
+                        onClick={() => beginNeedsAuthSignIn('edit')}
                         className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
                       >
                         Sign In / Sign Up
@@ -6316,7 +6350,10 @@ export default function App() {
                   disabled={editLoading}
                   className="bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
-                  {editLoading ? 'Saving...' : 'Save Changes'}
+                  {/* RED-DESKTOP-17/002: relabelled while editErrorNeedsAuth
+                      so the still-enabled button never reads as "just try
+                      again" — clicking it is gated to Sign In (above). */}
+                  {editLoading ? 'Saving...' : (editError && editErrorNeedsAuth) ? 'Sign In to Save' : 'Save Changes'}
                 </button>
               </div>
             </form>
@@ -6360,17 +6397,32 @@ export default function App() {
                   <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                   <div className="flex flex-col items-start gap-2">
                     <span>{saveError} Your matrix, name and description will stay right here.</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        resumeSaveAfterAuthRef.current = true;
-                        setIsSaveModalOpen(false);
-                        setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
-                      }}
-                      className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
-                    >
-                      Sign In / Sign Up
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => beginNeedsAuthSignIn('save')}
+                        className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                      >
+                        Sign In / Sign Up
+                      </button>
+                      {/* RED-DESKTOP-17/002: desktop only, and only a REAL
+                          local owner (isElectron && dbMode==='local') — the
+                          only shape where a save with no Authorization
+                          header actually lands somewhere real. Explicit
+                          choice, never the default: wording names the
+                          device library so it can't be mistaken for the
+                          account save the button next to it offers. */}
+                      {isElectron && dbMode === 'local' && (
+                        <button
+                          type="button"
+                          disabled={saveLoading}
+                          onClick={() => void handleSaveGameSubmit(null, { localConfirmed: true })}
+                          className="rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white/70 dark:bg-slate-900/40 px-2.5 py-1.5 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 transition hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 cursor-pointer"
+                        >
+                          {saveLoading ? 'Saving…' : 'Save on this device instead'}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -6613,7 +6665,10 @@ export default function App() {
                   disabled={saveLoading}
                   className="bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
-                  {saveLoading ? 'Saving...' : 'Save Game Profile'}
+                  {/* RED-DESKTOP-17/002: relabelled while saveErrorNeedsAuth
+                      so the still-enabled button never reads as "just try
+                      again" — clicking it is gated to Sign In (above). */}
+                  {saveLoading ? 'Saving...' : (saveError && saveErrorNeedsAuth) ? 'Sign In to Save' : 'Save Game Profile'}
                 </button>
               </div>
             </form>

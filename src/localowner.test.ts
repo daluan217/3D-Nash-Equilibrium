@@ -777,5 +777,71 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   }
 }
 
+// RED-DESKTOP-17/002: a SECOND click of the SAME still-enabled submit
+// button, after THIS dialog's own banner already shows the sign-in
+// invitation (a real 401 cleared the token), used to resubmit as the local
+// owner — `canOwnGames` alone doesn't catch it, because a dead token flips
+// `localOwnerMode` true on desktop. Every submit handler must consult its
+// own needs-auth flag BEFORE the fetch, through the ONE shared helper
+// (`beginNeedsAuthSignIn`) — never a per-button/per-dialog duplicate. Sliced
+// by the SAME stable markers the 401-routing block above already uses, so a
+// regression in either dialog is named, not just "something in App.tsx
+// broke".
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const editSlice = app.slice(app.indexOf('const handleEditGameSubmit'), app.indexOf('const handleDeleteGame'));
+  const saveSlice = app.slice(app.indexOf('const handleSaveGameSubmit'), app.indexOf('const handleRegenerateScenario'));
+  const editGatePattern = /if \(editError && editErrorNeedsAuth\) \{ beginNeedsAuthSignIn\('edit'\); return; \}/;
+  const saveGatePattern = /if \(!localConfirmed && saveError && saveErrorNeedsAuth\) \{ beginNeedsAuthSignIn\('save'\); return; \}/;
+
+  // Order matters, not just presence: a gate present but placed AFTER the
+  // fetch it exists to prevent would satisfy a naive substring check while
+  // protecting nothing.
+  function gatePrecedesFetch(slice: string, gatePattern: RegExp): { ok: boolean; detail: string } {
+    const gateIdx = slice.search(gatePattern);
+    const fetchIdx = slice.indexOf('await fetch(');
+    if (gateIdx === -1) return { ok: false, detail: 'gate not found' };
+    if (fetchIdx === -1) return { ok: false, detail: 'fetch not found' };
+    return { ok: gateIdx < fetchIdx, detail: `gate@${gateIdx} fetch@${fetchIdx}` };
+  }
+
+  const editGate = gatePrecedesFetch(editSlice, editGatePattern);
+  check(`handleEditGameSubmit consults its needs-auth gate before the fetch (${editGate.detail})`, editGate.ok);
+  const saveGate = gatePrecedesFetch(saveSlice, saveGatePattern);
+  check(`handleSaveGameSubmit consults its needs-auth gate before the fetch (${saveGate.detail})`, saveGate.ok);
+
+  // Both dialogs must route through the SAME helper name — never a
+  // per-button/per-dialog duplicate of the sign-in-detour logic.
+  check('the needs-auth gate is ONE shared helper (beginNeedsAuthSignIn), used by both dialogs',
+    (app.match(/const beginNeedsAuthSignIn = /g) || []).length === 1
+    && /beginNeedsAuthSignIn\('edit'\)/.test(editSlice) && /beginNeedsAuthSignIn\('save'\)/.test(saveSlice));
+
+  // Save's explicit bypass exists ONLY for the deliberate "Save on this
+  // device instead" choice — without `localConfirmed` gating the check
+  // itself, that button could never get past its own gate.
+  check('the Save gate has a named escape for the explicit local-device choice (localConfirmed)',
+    /!localConfirmed &&/.test(saveSlice));
+
+  // Known-positive fixtures (mutation: bypass -> fails by name): removing
+  // the gate line entirely must be caught, by NAME, for each dialog.
+  const editBypassed = editSlice.replace(new RegExp(`${editGatePattern.source}\\n\\s*`), '');
+  check('fixture: reverting the Edit gate (bypass) is caught by the gate-before-fetch check',
+    !gatePrecedesFetch(editBypassed, editGatePattern).ok);
+  const saveBypassed = saveSlice.replace(new RegExp(`${saveGatePattern.source}\\n\\s*`), '');
+  check('fixture: reverting the Save gate (bypass) is caught by the gate-before-fetch check',
+    !gatePrecedesFetch(saveBypassed, saveGatePattern).ok);
+
+  // Known-positive: the gate present but MOVED after the fetch (order, not
+  // just presence) must also be caught.
+  const saveGateAfterFetch = `${saveSlice.replace(new RegExp(`${saveGatePattern.source}\\n\\s*`), '')}\n    if (!localConfirmed && saveError && saveErrorNeedsAuth) { beginNeedsAuthSignIn('save'); return; }\n`;
+  check('fixture: the Save gate present but placed AFTER the fetch is still caught (order-sensitive, not a bare substring check)',
+    !gatePrecedesFetch(saveGateAfterFetch, saveGatePattern).ok);
+
+  // Control: the real, unmutated slices must NOT be flagged by the bypass
+  // detector — proves the fixtures above test the mutation, not the harness.
+  check('control: the real (unmutated) Edit slice passes', gatePrecedesFetch(editSlice, editGatePattern).ok);
+  check('control: the real (unmutated) Save slice passes', gatePrecedesFetch(saveSlice, saveGatePattern).ok);
+}
+
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
 console.log(`✓ local owner: ${sites.length} resolver sites — game routes fall back to the device owner, account deletion and /auth/me keep the strict check, provisioning and adoption are desktop-only, adoption re-parents`);
