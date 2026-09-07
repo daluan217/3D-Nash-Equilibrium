@@ -21,14 +21,14 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 };
 const server = readFileSync('server.ts', 'utf8');
 
-/** Each `getAuthUser`/`getGameOwner` call, tagged with the route above it. */
+/** Each `getAuthUser`/`resolveGameOwner` call, tagged with the route above it. */
 function resolverByRoute(src: string): Array<{ route: string; resolver: string }> {
   const out: Array<{ route: string; resolver: string }> = [];
   let route = '(top level)';
   for (const line of src.split('\n')) {
     const m = line.match(/app\.(get|post|patch|delete)\("(\/api\/[^"]+)"/);
     if (m) route = m[2];
-    const r = line.match(/\b(getAuthUser|getGameOwner)\(req\)/);
+    const r = line.match(/\b(getAuthUser|resolveGameOwner)\(req\)/);
     if (r) out.push({ route, resolver: r[1] });
   }
   return out;
@@ -58,7 +58,7 @@ const STRICT_ROUTES = ['/api/auth/delete-request', '/api/auth/delete-confirm', '
 for (const { route, resolver } of sites) {
   if (GAME_ROUTES.includes(route)) {
     check(`${route} resolves the game owner (so the desktop works signed out)`,
-      resolver === 'getGameOwner', `uses ${resolver}`);
+      resolver === 'resolveGameOwner', `uses ${resolver}`);
   }
   if (STRICT_ROUTES.includes(route)) {
     check(`${route} keeps the STRICT check — a fallback identity here would hand the keyboard someone's account`,
@@ -92,24 +92,57 @@ check('the adopt-local route commits the candidate through a confirmed write and
 /* ------------------------------------------------------ known positives */
 const MUST_FLAG: Array<[string, string]> = [
   ['deletion falling back to the game owner',
-   'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const user = getGameOwner(req);\n});'],
+   'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const { owner: user } = resolveGameOwner(req);\n});'],
   ['a game route left on the strict check',
    'app.get("/api/games", h, (req, res) => {\n  const user = getAuthUser(req);\n});'],
 ];
 for (const [name, src] of MUST_FLAG) {
   const found = resolverByRoute(src);
   const bad = found.some((f) => (STRICT_ROUTES.includes(f.route) && f.resolver !== 'getAuthUser')
-    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'getGameOwner'));
+    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'resolveGameOwner'));
   check(`fixture "${name}" is flagged`, bad);
 }
 // Control: the correct shape must not be flagged.
 {
-  const good = 'app.get("/api/games", h, (req, res) => {\n  const user = getGameOwner(req);\n});\n'
+  const good = 'app.get("/api/games", h, (req, res) => {\n  const { owner: user } = resolveGameOwner(req);\n});\n'
     + 'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const user = getAuthUser(req);\n});';
   const found = resolverByRoute(good);
   const bad = found.some((f) => (STRICT_ROUTES.includes(f.route) && f.resolver !== 'getAuthUser')
-    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'getGameOwner'));
+    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'resolveGameOwner'));
   check('the correct shape is not flagged', !bad);
+}
+
+// RED-DESKTOP-16/001: the OLD expression silently re-owned a presented-but-dead
+// token under the shared local owner. It must never reappear, anywhere in the
+// file — not just inside resolveGameOwner, which no longer exists under that
+// name.
+check('the silently-reowning expression `getAuthUser(req) ?? ensureLocalOwner()` is gone from server.ts',
+  !/getAuthUser\(req\)\s*\?\?\s*ensureLocalOwner\(\)/.test(server));
+// Known-positive: the same regex, run against a fixture that plants the old
+// expression back, must fail BY NAME (proving the check can actually fire).
+check('fixture: a planted old expression is flagged by the same regex',
+  /getAuthUser\(req\)\s*\?\?\s*ensureLocalOwner\(\)/.test('function getGameOwner(req) {\n  return getAuthUser(req) ?? ensureLocalOwner();\n}'));
+
+// resolveGameOwner itself must distinguish "no token" from "a token that
+// didn't resolve" rather than collapsing both to the same fallback — the
+// actual mechanism of the fix, not just the absence of the old text (a
+// rewrite that reintroduced the bug under new names would still pass the
+// text-absence check above).
+{
+  const fnStart = server.indexOf('function resolveGameOwner(req');
+  check('resolveGameOwner is defined', fnStart >= 0);
+  const fnSrc = server.slice(fnStart, server.indexOf('\n}', fnStart) + 2);
+  check('resolveGameOwner checks getAuthUser(req) first',
+    /const user = getAuthUser\(req\);\s*\n\s*if \(user\) return \{ owner: user, presentedDeadToken: false \};/.test(fnSrc));
+  check('resolveGameOwner refuses (owner: null) when a token WAS presented but did not resolve',
+    /if \(hasPresentedToken\(req\)\) return \{ owner: null, presentedDeadToken: true \};/.test(fnSrc));
+  check('resolveGameOwner falls back to the local owner ONLY when no token was presented at all',
+    /return \{ owner: ensureLocalOwner\(\), presentedDeadToken: false \};/.test(fnSrc));
+  // Known-positive: a regression back to unconditional fallback (the old bug,
+  // renamed) must be caught by the same three checks above going false.
+  const regressed = 'function resolveGameOwner(req) {\n  return { owner: getAuthUser(req) ?? ensureLocalOwner(), presentedDeadToken: false };\n}';
+  check('fixture: a regression to unconditional fallback fails the "presented token refused" check',
+    !/if \(hasPresentedToken\(req\)\) return \{ owner: null, presentedDeadToken: true \};/.test(regressed));
 }
 
 // RED-DESKTOP-13/001 (director-reproduced), now closed structurally

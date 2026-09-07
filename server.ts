@@ -2117,11 +2117,36 @@ function ensureLocalOwner(): User | null {
 }
 
 /**
- * Who owns the saved games for this request: the signed-in user if there is
- * one, otherwise — on the desktop only — the local owner.
+ * Whether this request presented a bearer token at all, valid or not — the
+ * question `getAuthUser` alone can't answer (it returns the same `null` for
+ * "no token" and "a token that didn't resolve").
  */
-function getGameOwner(req: express.Request): User | null {
-  return getAuthUser(req) ?? ensureLocalOwner();
+function hasPresentedToken(req: express.Request): boolean {
+  const authHeader = req.headers.authorization;
+  return typeof authHeader === "string" && authHeader.startsWith("Bearer ");
+}
+
+/**
+ * Who owns the saved games for this request, and whether a PRESENTED token
+ * was rejected.
+ *
+ * On the desktop only, NO token at all falls back to the shared local owner
+ * — the whole point of the feature: no account needed to save a file to your
+ * own disk. A token that WAS presented but did not resolve to a live user —
+ * missing, garbled, expired, or invalidated by a password reset elsewhere —
+ * must NEVER fall back to that shared identity: doing so silently misfiles
+ * the write under a bucket the account can't see, with an ordinary
+ * 200/"Saved successfully" and no error anywhere (RED-DESKTOP-16/001 — the
+ * account's own prior games can simultaneously vanish from the same list,
+ * and the misfiled game is unrecoverable without knowing to check the
+ * signed-out local-owner bucket). Every caller must turn `owner === null`
+ * into a 401, exactly as the strict `getAuthUser` callers already do.
+ */
+function resolveGameOwner(req: express.Request): { owner: User | null; presentedDeadToken: boolean } {
+  const user = getAuthUser(req);
+  if (user) return { owner: user, presentedDeadToken: false };
+  if (hasPresentedToken(req)) return { owner: null, presentedDeadToken: true };
+  return { owner: ensureLocalOwner(), presentedDeadToken: false };
 }
 
 /** How many games on this device belong to the local owner (0 off the desktop). */
@@ -4169,7 +4194,7 @@ async function startServer() {
 
   // Get User's Custom Games
   app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
-    const user = getGameOwner(req);
+    const { owner: user } = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4181,7 +4206,7 @@ async function startServer() {
 
   // Create/Save a Custom Game
   app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const user = getGameOwner(req);
+    const { owner: user } = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4285,7 +4310,7 @@ async function startServer() {
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
   app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const user = getGameOwner(req);
+    const { owner: user } = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4433,7 +4458,7 @@ async function startServer() {
   }));
 
   app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const user = getGameOwner(req);
+    const { owner: user } = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access." });
     }
