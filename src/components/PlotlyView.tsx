@@ -7,7 +7,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
 import { EA, EB, r3 } from '../utils/gameEngine';
-import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera } from '../utils/cameraProjection';
+import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera, shouldCollapseComponentAtCameraExact } from '../utils/cameraProjection';
 import { Rotate3d, Move, RefreshCw } from 'lucide-react';
 
 /**
@@ -380,17 +380,6 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // use one), and `up` was always the default — both now flow through.
     const center = camera?.center ?? { x: 0, y: 0, z: 0 };
     const up = camera?.up ?? { x: 0, y: 0, z: 1 };
-    const basis = cameraBasis([eye.x, eye.y, eye.z], [center.x, center.y, center.z], [up.x, up.y, up.z]);
-    // CodeRabbit (this branch): marker SIZE is fixed CSS px, but the
-    // projected GAP between two points scales with the container's actual
-    // pixel size — the STATIC test's fixed 700x500 canonical viewport
-    // under-predicts real fusion risk on a narrower live container (e.g.
-    // mobile) and over-predicts it on a wider one. Read the plot's OWN
-    // current rendered size instead of assuming the canonical one; the
-    // canonical viewport stays the STATIC threshold's calibration (untouched
-    // default in cameraProjection.ts), used only if the live rect is
-    // unavailable (e.g. a detached node mid-teardown).
-    const rect = typeof gdNow.getBoundingClientRect === 'function' ? gdNow.getBoundingClientRect() : null;
     // OPUS-REVIEW-MATH NOTE-1: the plot DIV's own rect is NOT the gl3d
     // canvas's actual rendered size — plotting.ts's `margin.t: 10` reserves
     // 10px at the top of the SVG/WebGL area for every subplot, so the real
@@ -398,9 +387,51 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // renders a 276x246 `glplot.shape`). Read the live margin rather than
     // hardcoding 10, so a future margin change stays correct for free.
     const marginTop = Number(gdNow._fullLayout?.margin?.t) || 0;
-    const viewport = rect && rect.width > 0 && rect.height > marginTop
-      ? { w: rect.width, h: rect.height - marginTop }
-      : undefined;
+
+    // BLUE-MATH-17 (RED-MATH-17/001, RED-MATH-16/001): project through the
+    // LIVE gl3d camera matrices whenever gl-plot3d has rendered at least one
+    // frame — the EXACT transform that drew what's on screen right now, not
+    // an estimate of it (cameraProjection.ts's own block comment above
+    // `projectPointExact` has the full derivation + real-pixel verification:
+    // both known-gap fixtures land within 0.3 CSS px of prediction). Only
+    // missing before the first frame (a detached/not-yet-rendered node),
+    // which is the one case the old FOCAL/lookAt estimate still covers.
+    const sceneNow = gdNow._fullLayout?.scene?._scene;
+    const glplotNow = sceneNow?.glplot;
+    const cp = glplotNow?.cameraParams;
+    const dataScaleNow = sceneNow?.dataScale;
+    const shapeNow = glplotNow?.shape;
+    const pixelRatioNow = glplotNow?.pixelRatio;
+    const exactReady = !!(
+      cp?.model && cp?.view && cp?.projection &&
+      dataScaleNow && dataScaleNow.length === 3 &&
+      shapeNow && shapeNow.length === 2 && shapeNow[0] > 0 && shapeNow[1] > 0 &&
+      typeof pixelRatioNow === 'number' && pixelRatioNow > 0
+    );
+    // Recorded on the DOM node (not just returned) so a fixture can assert
+    // WHICH path actually decided — presence of a decision is not proof of
+    // which math made it (COMMON v5 self-adversarial checklist, item (f) —
+    // this is that discipline applied to a projection path, not a message).
+    if (gdNow.dataset) gdNow.dataset.continuumProjectionPath = exactReady ? 'exact' : 'estimate';
+
+    let basis: ReturnType<typeof cameraBasis> | undefined;
+    let viewport: { w: number; h: number } | undefined;
+    if (!exactReady) {
+      basis = cameraBasis([eye.x, eye.y, eye.z], [center.x, center.y, center.z], [up.x, up.y, up.z]);
+      // CodeRabbit (this branch): marker SIZE is fixed CSS px, but the
+      // projected GAP between two points scales with the container's actual
+      // pixel size — the STATIC test's fixed 700x500 canonical viewport
+      // under-predicts real fusion risk on a narrower live container (e.g.
+      // mobile) and over-predicts it on a wider one. Read the plot's OWN
+      // current rendered size instead of assuming the canonical one; the
+      // canonical viewport stays the STATIC threshold's calibration
+      // (untouched default in cameraProjection.ts), used only if the live
+      // rect is unavailable too (e.g. a detached node mid-teardown).
+      const rect = typeof gdNow.getBoundingClientRect === 'function' ? gdNow.getBoundingClientRect() : null;
+      viewport = rect && rect.width > 0 && rect.height > marginTop
+        ? { w: rect.width, h: rect.height - marginTop }
+        : undefined;
+    }
     // CodeRabbit (this branch): un-collapsing must restore the corner
     // traces' BASELINE visibility, not force `true` unconditionally — the
     // user may have hidden the whole 'continuumNE' legend group
@@ -413,8 +444,12 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     const midIdx: number[] = [];
     const midSize: number[] = [];
     for (const m of metas) {
-      const collapse = m.surfaces.some((s) =>
-        shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis, viewport));
+      const collapse = m.surfaces.some((s) => exactReady
+        ? shouldCollapseComponentAtCameraExact(
+            s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize,
+            cp, [dataScaleNow[0], dataScaleNow[1], dataScaleNow[2]],
+            { w: shapeNow[0], h: shapeNow[1] }, pixelRatioNow, marginTop)
+        : shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis, viewport));
       const was = continuumCollapsedRef.current.get(m.componentIndex) ?? false;
       if (collapse === was) continue;
       continuumCollapsedRef.current.set(m.componentIndex, collapse);

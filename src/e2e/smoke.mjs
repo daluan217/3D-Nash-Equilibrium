@@ -5496,6 +5496,281 @@ try {
       // PASS this check. Require at least one real blob.
       record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
         blobs195.blobs.length >= 1 && span195 <= 45, JSON.stringify({ span195, ...blobs195 }));
+
+      // ── BLUE-MATH-17 (RED-MATH-17/001, RED-MATH-16/001): two MORE
+      //    real-pixel-verified rows, at cameras/viewports the OLD FOCAL
+      //    estimate got wrong (round16/findings/RED-MATH-17/001,
+      //    round15/findings/RED-MATH-16/001 — both DIRECTOR-CONFIRMED real
+      //    disagreements, not the harness-artifact "stale pose" class that
+      //    round found and discarded elsewhere). The fix
+      //    (cameraProjection.ts's `projectPointExact`, wired into
+      //    PlotlyView.tsx's `applyContinuumCollapseAtCamera`) now decides
+      //    "collapse" at both — verified against real per-marker isolation
+      //    to sub-pixel agreement offline (round16/notes/BLUE-MATH-17/,
+      //    `_bluescratch/validate_exact.mjs`); here, in the actual e2e
+      //    harness, checked the same way az195 above is: (1) the app's OWN
+      //    decision collapsed the component (never take that on faith —
+      //    CodeRabbit FBM-3's own discipline applies here too), (2) the
+      //    `continuumProjectionPath` dataset marker confirms the EXACT
+      //    matrix path decided it, not a coincidental estimator agreement,
+      //    (3) the real pixel scan finds exactly one clustered glyph
+      //    spanning one marker's own size, not two separate diamonds still
+      //    touching.
+      //
+      //    Mutation: forcing `exactReady` false in PlotlyView.tsx (reverting
+      //    to the FOCAL/lookAt estimate for every camera, not just
+      //    pre-first-render) makes BOTH of these fail by name — the
+      //    estimate keeps deciding "show" at both cameras, so the pixel scan
+      //    finds 2-3 separate glyphs instead of one collapsed cluster
+      //    (round16/notes/BLUE-MATH-17/STATE.md records the exact mutation
+      //    command and failure output).
+      {
+        // RED-MATH-17/001: CAMERA.overview (== DEFAULT_EYE), a REAL
+        // (unforced) 320px-wide viewport — the app's own default resting
+        // camera on an ordinary mobile page load.
+        const p17 = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce' });
+        try {
+          await p17.goto(BASE, { waitUntil: 'networkidle' });
+          try { await p17.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await p17.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+          const m17 = p17.locator('input[inputmode="decimal"][class*="text-center"]');
+          await m17.first().waitFor({ state: 'visible', timeout: 20000 });
+          // RED-MATH-17/001's own fixture: A=[[-5,1],[-5,6]], B=[[2,-1],[-5,6]].
+          const vals17 = [-5, 2, 1, -1, -5, -5, 6, 6]; // a11,b11,a12,b12,a21,b21,a22,b22
+          for (let i = 0; i < 8; i++) { const c = m17.nth(i); await c.click(); await c.fill(String(vals17[i])); await c.blur(); }
+          const ready17 = await p17.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+            return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
+          }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-17/001 row): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17);
+          const trackABtn17 = p17.locator('label:has-text("Expected Payoff Surface Tracking")')
+            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          await trackABtn17.click({ timeout: 5000 }).catch(() => {});
+          const trackingIsA17 = await p17.waitForFunction(() => {
+            const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+            return mid && mid.x?.length === 1 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-17/001 row): tracking mode is Player A only', trackingIsA17);
+          // CAMERA.overview IS the app's own default eye — no relayout
+          // needed, but set it explicitly (and verify) so this row does not
+          // silently depend on the idle spin having not yet moved.
+          const plotId17 = await p17.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          let camOk17 = false;
+          for (let attempt = 0; attempt < 3 && !camOk17; attempt++) {
+            await p17.evaluate((id) => window.Plotly.relayout(id, { 'scene.camera': { eye: { x: 1.6, y: -1.6, z: 1.1 }, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), plotId17);
+            await p17.waitForTimeout(300);
+            const e = await p17.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+            camOk17 = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
+          }
+          record('precondition (RED-MATH-17/001 row): the camera settled at CAMERA.overview (real 320px viewport)', camOk17);
+          const collapsed17 = await p17.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
+          }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+          record('FIX (RED-MATH-17/001): the app decides to collapse this component at its own default camera on a real mobile viewport (was "show" pre-fix — an under-collapse)', collapsed17);
+          const path17 = await p17.evaluate(() => document.querySelector('.js-plotly-plot')?.dataset?.continuumProjectionPath ?? null);
+          record('FIX (RED-MATH-17/001): the decision came from the EXACT live-matrix path, not the FOCAL estimate', path17 === 'exact', String(path17));
+          await p17.evaluate(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            window.Plotly.relayout(gd, { showlegend: false });
+            const idx = [];
+            (gd.data ?? []).forEach((t, i) => {
+              if (/^(Starting Point|Current position)/.test(t.name ?? '')) idx.push(i);
+              if (t.legendgroup === 'continuumNE' && t.mode === 'lines') idx.push(i);
+            });
+            if (idx.length) window.Plotly.restyle(gd, { visible: false }, idx);
+            if (!document.getElementById('e2e-hide-feedback-btn')) {
+              const style = document.createElement('style');
+              style.id = 'e2e-hide-feedback-btn';
+              style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+              document.head.appendChild(style);
+            }
+          });
+          await p17.waitForTimeout(250);
+          const shot17 = await p17.locator('[data-tour="plot"]').screenshot();
+          const scan17 = await p17.evaluate(async (b64) => {
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+            const dsf = window.devicePixelRatio || 1;
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width; canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const { data } = ctx.getImageData(0, 0, img.width, img.height);
+            const target = [142, 68, 173]; const tol2 = 40 * 40;
+            const w = img.width, h = img.height;
+            const mask = new Uint8Array(w * h);
+            for (let i = 0; i < w * h; i++) {
+              const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+              if (a < 100) continue;
+              const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+              if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+            }
+            const visited = new Uint8Array(w * h);
+            const blobs = [];
+            for (let i = 0; i < w * h; i++) {
+              if (!mask[i] || visited[i]) continue;
+              const stack = [i]; visited[i] = 1; let count = 0;
+              let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+              while (stack.length) {
+                const cur = stack.pop(); count++;
+                const cx = cur % w, cy = (cur / w) | 0;
+                if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+                if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+                for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+                  if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                  const ni = ny * w + nx;
+                  if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+                }
+              }
+              // Same discipline as the fixture-level scan above: a real
+              // mobile viewport carries a small, unrelated fixed-position
+              // UI element close enough to #8E44AD to register a false
+              // ~33px blob (found by hand, round16/notes/BLUE-MATH-17/) —
+              // far smaller than any real marker glyph; drop it.
+              if (count >= 100) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+            }
+            if (!blobs.length) return { blobs: [] };
+            const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
+            const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+            return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
+          }, shot17.toString('base64'));
+          record('FIX (RED-MATH-17/001): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
+            (scan17.blobs?.length ?? 0) >= 1 && scan17.span <= 45, JSON.stringify(scan17));
+        } finally { await p17.close().catch(() => {}); }
+
+        // RED-MATH-16/001: az105, forced 700x500 (the canonical viewport,
+        // reached by the idle spin with no interaction at all).
+        const p16 = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
+        try {
+          await p16.goto(BASE, { waitUntil: 'networkidle' });
+          try { await p16.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await p16.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+          const m16 = p16.locator('input[inputmode="decimal"][class*="text-center"]');
+          await m16.first().waitFor({ state: 'visible', timeout: 20000 });
+          // RED-MATH-16/001's own fixture: A=[[1,-4],[5,-6]], B=[[1,1],[-1,3]].
+          const vals16 = [1, 1, -4, 1, 5, -1, -6, 3]; // a11,b11,a12,b12,a21,b21,a22,b22
+          for (let i = 0; i < 8; i++) { const c = m16.nth(i); await c.click(); await c.fill(String(vals16[i])); await c.blur(); }
+          const ready16 = await p16.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+            return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 1) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 0.16666666666666666) < 1e-6) ? true : null;
+          }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-16/001 row): the fixture\'s continuum midpoint (1, 0.1667) is drawn before reading trace state', ready16);
+          const trackABtn16 = p16.locator('label:has-text("Expected Payoff Surface Tracking")')
+            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          await trackABtn16.click({ timeout: 5000 }).catch(() => {});
+          const trackingIsA16 = await p16.waitForFunction(() => {
+            const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+            return mid && mid.x?.length === 1 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-16/001 row): tracking mode is Player A only', trackingIsA16);
+          await p16.evaluate(() => {
+            const el = document.querySelector('[data-tour="plot"]');
+            el.style.setProperty('width', '700px', 'important');
+            el.style.setProperty('height', '500px', 'important');
+            el.style.setProperty('max-width', '700px', 'important');
+            el.style.setProperty('min-width', '700px', 'important');
+            el.style.setProperty('flex', 'none', 'important');
+          });
+          // CodeRabbit-class staleness guard (this branch's own note on
+          // section 71's `narrowResized`): the CSS box can resize a frame
+          // before gl-plot3d's OWN internal `glplot.shape`/`cameraParams`
+          // catch up — an exactReady evaluation racing that gap would use
+          // the OLD (1000x900 initial) canvas dimensions, silently
+          // corrupting this row regardless of which projection path decided
+          // (found by hand while writing this row: the CSS-rect-only wait
+          // let a stale glplot.shape through once). Poll the REAL rendered
+          // scene geometry, not just the CSS box.
+          const resized16 = await p16.waitForFunction(() => {
+            const gd = document.getElementById('plotly-3d-market-simulation');
+            const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+            if (!glplot?.shape || !glplot.pixelRatio) return null;
+            const cssW = glplot.shape[0] / glplot.pixelRatio;
+            return Math.abs(cssW - 658) < 24 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-16/001 row): the plot resized to the canonical 700x500 size (live glplot.shape, not just the CSS box)', resized16);
+          const plotId16 = await p16.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          const r105 = Math.hypot(1.6, 1.6), rad105 = 105 * Math.PI / 180;
+          const eye16 = { x: r105 * Math.cos(rad105), y: r105 * Math.sin(rad105), z: 1.1 };
+          let camOk16 = false;
+          for (let attempt = 0; attempt < 3 && !camOk16; attempt++) {
+            await p16.evaluate(({ id, eye }) => window.Plotly.relayout(id, { 'scene.camera': { eye, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), { id: plotId16, eye: eye16 });
+            await p16.waitForTimeout(300);
+            const e = await p16.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+            camOk16 = !!e && Math.hypot(e.x - eye16.x, e.y - eye16.y, e.z - eye16.z) < 0.02;
+          }
+          record('precondition (RED-MATH-16/001 row): the camera settled at az105 (700x500)', camOk16);
+          const collapsed16 = await p16.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
+          }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+          record('FIX (RED-MATH-16/001): the app decides to collapse this component at az105/700x500 (was "show" pre-fix, real pixels touching by ~1.4px)', collapsed16);
+          const path16 = await p16.evaluate(() => document.querySelector('.js-plotly-plot')?.dataset?.continuumProjectionPath ?? null);
+          record('FIX (RED-MATH-16/001): the decision came from the EXACT live-matrix path, not the FOCAL estimate', path16 === 'exact', String(path16));
+          await p16.evaluate(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            window.Plotly.relayout(gd, { showlegend: false });
+            const idx = [];
+            (gd.data ?? []).forEach((t, i) => {
+              if (/^(Starting Point|Current position)/.test(t.name ?? '')) idx.push(i);
+              if (t.legendgroup === 'continuumNE' && t.mode === 'lines') idx.push(i);
+            });
+            if (idx.length) window.Plotly.restyle(gd, { visible: false }, idx);
+            if (!document.getElementById('e2e-hide-feedback-btn')) {
+              const style = document.createElement('style');
+              style.id = 'e2e-hide-feedback-btn';
+              style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+              document.head.appendChild(style);
+            }
+          });
+          await p16.waitForTimeout(250);
+          const shot16 = await p16.locator('[data-tour="plot"]').screenshot();
+          const scan16 = await p16.evaluate(async (b64) => {
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+            const dsf = window.devicePixelRatio || 1;
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width; canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const { data } = ctx.getImageData(0, 0, img.width, img.height);
+            const target = [142, 68, 173]; const tol2 = 40 * 40;
+            const w = img.width, h = img.height;
+            const mask = new Uint8Array(w * h);
+            for (let i = 0; i < w * h; i++) {
+              const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+              if (a < 100) continue;
+              const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+              if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+            }
+            const visited = new Uint8Array(w * h);
+            const blobs = [];
+            for (let i = 0; i < w * h; i++) {
+              if (!mask[i] || visited[i]) continue;
+              const stack = [i]; visited[i] = 1; let count = 0;
+              let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+              while (stack.length) {
+                const cur = stack.pop(); count++;
+                const cx = cur % w, cy = (cur / w) | 0;
+                if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+                if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+                for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+                  if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                  const ni = ny * w + nx;
+                  if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+                }
+              }
+              if (count >= 15) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+            }
+            if (!blobs.length) return { blobs: [] };
+            const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
+            const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+            return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
+          }, shot16.toString('base64'));
+          record('FIX (RED-MATH-16/001): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
+            (scan16.blobs?.length ?? 0) >= 1 && scan16.span <= 45, JSON.stringify(scan16));
+        } finally { await p16.close().catch(() => {}); }
+      }
     } finally { await p.close().catch(() => {}); }
   });
 
