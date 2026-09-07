@@ -309,6 +309,31 @@ input.no-native-spinner {
  * this file would otherwise have had to pattern-match against.
  */
 @media print {
+  /* RED-APP-17/001: printing is a separate light surface. The `dark` class
+   * remains on <html> while the browser switches to print media, so neutralise
+   * every dark utility before it can put pale ink or a dark flood on paper.
+   * Attribute selectors cover all Tailwind dark variants without duplicating
+   * the generated palette (and apply in Chromium and WebKit). */
+  html,
+  html.dark,
+  html.dark body {
+    color-scheme: light !important;
+    background-color: var(--color-white) !important;
+    color: var(--color-slate-900) !important;
+  }
+
+  html.dark [class*="dark:bg-"] {
+    background-color: var(--color-white) !important;
+  }
+
+  html.dark [class*="dark:text-"] {
+    color: var(--color-slate-900) !important;
+  }
+
+  html.dark [class*="dark:border-"] {
+    border-color: var(--color-slate-200) !important;
+  }
+
   /* The one `position: sticky` element on the page. Reset to static so it
    * prints once, in flow, at the top of page 1 — never re-baked as a
    * floating box mid-page. The on-screen sticky behavior is untouched

@@ -24,6 +24,37 @@ function ok(cond: boolean, msg: string) {
 const app = readFileSync('src/App.tsx', 'utf8');
 const css = readFileSync('src/index.css', 'utf8');
 
+/** RED-APP-17/001: dark print must use the light paper palette. */
+function assertDarkPrintPalette(source: string): void {
+  const start = source.indexOf('@media print');
+  let printBlock = '';
+  if (start >= 0) {
+    const open = source.indexOf('{', start);
+    let depth = open >= 0 ? 0 : -1;
+    for (let i = open; i >= 0 && i < source.length; i++) {
+      if (source[i] === '{') depth++;
+      else if (source[i] === '}' && --depth === 0) {
+        printBlock = source.slice(start, i + 1);
+        break;
+      }
+    }
+  }
+  assert(printBlock, 'src/index.css must contain an @media print block');
+  assert(/html\.dark[\s\S]{0,260}color-scheme:\s*light\s*!important/.test(printBlock),
+    '@media print must force color-scheme: light for html.dark');
+  assert(/html\.dark\s+\[class\*="dark:bg-"\][\s\S]{0,120}background-color:\s*var\(--color-white\)\s*!important/.test(printBlock),
+    '@media print must neutralise every dark background utility');
+  assert(/html\.dark\s+\[class\*="dark:text-"\][\s\S]{0,120}color:\s*var\(--color-slate-900\)\s*!important/.test(printBlock),
+    '@media print must neutralise every dark text utility');
+}
+
+assertDarkPrintPalette(css);
+const printPaletteMutant = css.replace(/\n  html\.dark\s+\[class\*="dark:text-"\][\s\S]*?\n  \}/, '');
+assert.notStrictEqual(printPaletteMutant, css,
+  'mutation-test precondition: the dark-print text rule must be removable');
+assert.throws(() => assertDarkPrintPalette(printPaletteMutant),
+  /dark text utility/, 'mutation-test: removing the dark-print text rule must fail the named guard');
+
 /**
  * The full text of the `<div>` block that OPENS at `startMarker`, found by
  * counting div depth (not a fixed character window) so a comment or JSX
