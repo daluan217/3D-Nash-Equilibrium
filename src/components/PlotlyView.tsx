@@ -878,7 +878,17 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // never move the camera on the app's own initiative under this
     // preference. Early-return rather than starting the rAF loop and holding
     // it still: no frame, no relayout, no main-thread cost at all.
-    if (reducedMotion) return;
+    if (reducedMotion) {
+      // CodeRabbit on #170: a pause or auto-resume countdown entered BEFORE
+      // the preference flipped on would otherwise keep the Resume button up
+      // for a spin that can no longer run (same family as OPUS-REVIEW-170/A).
+      // Under reduced motion no spin flag may stay set.
+      spinPausedRef.current = false;
+      setSpinPaused(false);
+      spinWaitingRef.current = false;
+      setSpinWaiting(false);
+      return;
+    }
     const Plotly = (window as any).Plotly;
     const container = containerRef.current;
     if (!Plotly || !container) return;

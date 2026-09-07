@@ -3628,6 +3628,25 @@ function testGeometryDegenerateShelf() {
   holdContract(holdFn);
   assert(plot.indexOf('const [reducedMotion, setReducedMotion] = useState<boolean>(') < holdStart,
     'OPUS-REVIEW-170/A: holdSpinForCameraControl must be declared after the reducedMotion state it reads');
+  // CodeRabbit on #170: the spin EFFECT's reduced-motion exit must clear every
+  // spin flag (a pause or countdown entered before the preference flipped on),
+  // so no path can leave the Resume button up while the spin cannot run.
+  const effectRmContract = (src: string) => {
+    const m = /if \(reducedMotion\) \{([\s\S]{0,900}?)\n\s*return;\n\s*\}/.exec(src);
+    assert(m !== null, 'CodeRabbit #170: the idle-spin effect must exit under reducedMotion through a block that ends in `return;`');
+    const body = m![1].replace(/^\s*\/\/.*$/gm, '');
+    for (const stmt of ['spinPausedRef.current = false;', 'setSpinPaused(false);', 'spinWaitingRef.current = false;', 'setSpinWaiting(false);'])
+      assert(body.includes(stmt), `CodeRabbit #170: the effect's reduced-motion exit must run \`${stmt}\` before returning`);
+  };
+  effectRmContract(plot);
+  {
+    let threw = false;
+    try { effectRmContract(plot.replace(/if \(reducedMotion\) \{[\s\S]*?\n\s*return;\n\s*\}/, 'if (reducedMotion) return;')); } catch { threw = true; }
+    assert(threw, 'fixture: the bare `if (reducedMotion) return;` exit (no flag reset) must be rejected');
+    threw = false;
+    try { effectRmContract(plot.replace('      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      return;', '      return;')); } catch { threw = true; }
+    assert(threw, 'fixture: an exit that clears the pause flags but not the waiting flags must be rejected');
+  }
   {
     let threw = false;
     try { holdContract(holdFn.replace('if (reducedMotion || !idleSpin) return;\n', '')); } catch { threw = true; }
