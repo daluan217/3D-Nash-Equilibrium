@@ -11,6 +11,7 @@ import {
   cleanUserColorTermPair,
   crossPlayerUserTerms,
   mergeDescriptionTerms,
+  capHitMessage,
   USER_TERMS_MAX,
   USER_TERM_MAX_LEN,
 } from '../utils/colorTerms';
@@ -101,7 +102,9 @@ export function DescriptionEditor({
       (player === 'A' && !cleanA.some((t) => colorTermKey(t) === colorTermKey(term)))
       || (player === 'B' && !cleanB.some((t) => colorTermKey(t) === colorTermKey(term)))
     ) {
-      setHint(`That is ${USER_TERMS_MAX} highlights already — remove one to add another.`);
+      // RED-REGEN-11/001: name the phrase itself, the same wording
+      // `regenDroppedNote` uses for a Keep-side drop of the same cap.
+      setHint(capHitMessage([term]));
       return;
     }
     // RED-REGEN-10/001: choosing the other player for a phrase already

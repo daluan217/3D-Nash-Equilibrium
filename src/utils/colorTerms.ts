@@ -194,6 +194,21 @@ export const USER_TERM_MAX_LEN = 60;
 export const USER_TERMS_MAX = 12;
 
 /**
+ * RED-REGEN-11/001: every path that can hit the per-side cap must say so, and
+ * must name the phrase(s) it could not keep — a silent drop is never
+ * possible. Shared by `DescriptionEditor.addSelection` (manual highlight,
+ * always its own single side) and `regenKeptColorTerms`'s `dropped` output
+ * via `regenDroppedNote` (Regenerate -> Keep, which can drop on A and/or B
+ * in the same call), so the two paths say the identical thing for the
+ * identical limit instead of one having a message and the other having none.
+ */
+export function capHitMessage(dropped: readonly string[], player?: 'A' | 'B'): string {
+  const quoted = dropped.map((t) => `"${t}"`).join(', ');
+  const who = player ? ` for Player ${player}` : '';
+  return `That is ${USER_TERMS_MAX} highlights already${who} — remove one to add ${quoted}.`;
+}
+
+/**
  * Clean a user-supplied term list: trim, drop anything under two characters,
  * de-duplicate case-insensitively, cap the length and the count.
  *
@@ -384,13 +399,24 @@ export function mergeDescriptionTerms(
  * with the OTHER side's existing, user-placed term; a colliding actor noun is
  * simply dropped rather than added anywhere, exactly like any other duplicate
  * `cleanUserColorTermPair` already resolves.
+ *
+ * RED-REGEN-11/001: dropping a noun at the per-side CAP (`USER_TERMS_MAX`,
+ * distinct from the cross-player collision above) used to be just as silent,
+ * with no way for a caller to tell "the draw supplied no actor noun" apart
+ * from "the draw's own actor noun was truncated by a limit it never saw" —
+ * the sibling manual-highlight path (`DescriptionEditor.addSelection`) has
+ * always told the user this; Keep never did. `dropped` names exactly the
+ * newly-offered noun(s) that did not make the final list BECAUSE of the cap
+ * — a noun excluded above for colliding with the other side is never in
+ * `newA`/`newB` in the first place, so it can never appear here either; the
+ * two causes stay distinguishable by construction, not by re-deriving them.
  */
 export function regenKeptColorTerms(
   actorA: readonly string[],
   actorB: readonly string[],
   existingA: readonly string[],
   existingB: readonly string[],
-): { a: string[]; b: string[] } {
+): { a: string[]; b: string[]; dropped: { a: string[]; b: string[] } } {
   const existing = cleanUserColorTermPair(existingA, existingB);
   const ownedA = new Set(existing.a.map(colorTermKey));
   const ownedB = new Set(existing.b.map(colorTermKey));
@@ -398,7 +424,16 @@ export function regenKeptColorTerms(
   // phrase the user already placed on the other side.
   const newA = cleanUserColorTerms(actorA).filter((t) => !ownedB.has(colorTermKey(t)));
   const newB = cleanUserColorTerms(actorB).filter((t) => !ownedA.has(colorTermKey(t)));
-  return cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
+  const result = cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
+  const resultAKeys = new Set(result.a.map(colorTermKey));
+  const resultBKeys = new Set(result.b.map(colorTermKey));
+  return {
+    ...result,
+    dropped: {
+      a: newA.filter((t) => !resultAKeys.has(colorTermKey(t))),
+      b: newB.filter((t) => !resultBKeys.has(colorTermKey(t))),
+    },
+  };
 }
 
 /**

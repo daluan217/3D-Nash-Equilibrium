@@ -32,8 +32,10 @@ import {
   regenKeptColorTerms,
   regenPreviewColorTerms,
   savedGameColorTerms,
+  capHitMessage,
   type ScenarioLabels,
 } from './utils/colorTerms';
+import { regenDroppedNote } from './utils/scenarioRegen';
 import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -647,6 +649,84 @@ if (failures > 0) {
     /movedFrom/.test(editor) && /was highlighted for Player \$\{movedFrom\}; it now belongs to Player \$\{player\}/.test(editor));
 }
 
+// PART 9 — RED-REGEN-11/001: the per-side USER_TERMS_MAX cap on Regenerate ->
+// Keep must report exactly which actor noun(s) it dropped, the same way the
+// manual-highlight path (`DescriptionEditor.addSelection`) already reports
+// its own cap hit -- a Keep-side drop used to be totally silent (no field on
+// the return, no note, nothing). Mutation: remove `dropped` from
+// `regenKeptColorTerms`'s return (revert to the bare `cleanUserColorTermPair`
+// result) -> every check in this block either throws (reading `.a`/`.b` off
+// `undefined`) or reads an empty/undefined list and fails.
+{
+  const fullA = Array.from({ length: USER_TERMS_MAX }, (_, i) => `harbour master ${i + 1}`);
+  const fullB = Array.from({ length: USER_TERMS_MAX }, (_, i) => `dock hand ${i + 1}`);
+
+  // Both sides already at the cap: the draw's own actor noun on EACH side is
+  // dropped, and named -- not merely counted.
+  const bothFull = regenKeptColorTerms(['the lighthouse keeper'], ['the ferry crew'], fullA, fullB);
+  check('regenKeptColorTerms: A at cap drops and NAMES the new A noun',
+    bothFull.dropped.a.includes('the lighthouse keeper'), JSON.stringify(bothFull.dropped));
+  check('regenKeptColorTerms: B at cap drops and NAMES the new B noun',
+    bothFull.dropped.b.includes('the ferry crew'), JSON.stringify(bothFull.dropped));
+  check('regenKeptColorTerms: a dropped noun never sneaks into the kept list too',
+    !bothFull.a.includes('the lighthouse keeper') && !bothFull.b.includes('the ferry crew'));
+
+  // One side full, the other free: only the full side reports a drop (positive
+  // control -- proves this is cap-specific, not "always report something");
+  // the free side's noun is genuinely ADDED, not silently lost either.
+  const oneFull = regenKeptColorTerms(['the lighthouse keeper'], ['the ferry crew'], fullA, []);
+  check('regenKeptColorTerms: the FULL side (A) drops and names its noun',
+    oneFull.dropped.a.includes('the lighthouse keeper'), JSON.stringify(oneFull.dropped));
+  check('regenKeptColorTerms: the FREE side (B) reports no drop at all',
+    oneFull.dropped.b.length === 0, JSON.stringify(oneFull.dropped));
+  check('regenKeptColorTerms: the FREE side\'s own noun is actually kept',
+    oneFull.b.includes('the ferry crew'));
+
+  // Cross-player exclusivity vs the cap: a noun filtered because the OTHER
+  // side already owns it (an existing, unrelated rule) must NOT be reported
+  // as a cap drop -- the two causes stay distinguishable by construction.
+  const exclusivity = regenKeptColorTerms(['wolf'], [], [], ['wolf']);
+  check('regenKeptColorTerms: a cross-player-excluded noun is NOT reported as a cap drop (different cause)',
+    exclusivity.dropped.a.length === 0, JSON.stringify(exclusivity.dropped));
+  check('regenKeptColorTerms: (control) the cross-player exclusion itself still applies',
+    !exclusivity.a.includes('wolf') && exclusivity.b.includes('wolf'));
+
+  // capHitMessage: exact wording, shared by both add-paths -- one term with
+  // no player tag (the manual picker's own single-side case), several terms
+  // with one (Keep's per-side case).
+  check('capHitMessage names a single dropped term, no player tag when omitted',
+    capHitMessage(['the lighthouse keeper']) === 'That is 12 highlights already — remove one to add "the lighthouse keeper".');
+  check('capHitMessage names every dropped term, comma-joined, with the player tag',
+    capHitMessage(['x', 'y'], 'A') === 'That is 12 highlights already for Player A — remove one to add "x", "y".');
+
+  // regenDroppedNote: the one place Keep turns `dropped` into the note shown
+  // through the SAME role="status" aria-live="polite" region every other
+  // regen note already uses (App.tsx's `regen.note`).
+  check('regenDroppedNote is null when nothing was dropped (the common case)',
+    regenDroppedNote({ a: [], b: [] }) === null);
+  const combined = regenDroppedNote({ a: ['the lighthouse keeper'], b: ['the ferry crew'] });
+  check('regenDroppedNote names BOTH sides\' dropped nouns when both cap out in the same Keep',
+    combined === `${capHitMessage(['the lighthouse keeper'], 'A')} ${capHitMessage(['the ferry crew'], 'B')}`, combined ?? 'null');
+
+  // Structural: the manual-highlight cap hint (DescriptionEditor.addSelection)
+  // calls the SAME shared helper, so the two paths cannot drift back onto
+  // different wording for the identical limit.
+  const editorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  check('DescriptionEditor\'s cap-hit hint calls the shared capHitMessage helper (not a bespoke, unnamed string)',
+    /setHint\(capHitMessage\(\[term\]\)\)/.test(editorSrc));
+}
+
+if (failures > 0) {
+  // The mid-file gate after PART 6 only stops a run early when PART 1-6
+  // already failed; PART 7/8/9 failures reached this point with NOTHING
+  // setting a non-zero exit code (confirmed by mutation: a forced failing
+  // check here printed "✗" to stderr and the process still exited 0, so
+  // `npm test`'s `&&` chain never saw it and this file logged "passed" on a
+  // red run). This is the one gate that actually fails the process for
+  // every PART in the file, not just the first six.
+  console.error(`✗ colorterms.property.test.ts: ${failures}/${cases} checks failed`);
+  process.exit(1);
+}
 console.log(`✓ colorterms.property.test.ts: ${cases} generated cases passed — ${ALL_FOLD_FAMILIES.reduce((n, f) => n + f.variants.length, 0)} `
   + `glyph variants across ${ALL_FOLD_FAMILIES.length} fold families, ${EDGE_STRIP_WRAPS.length} edge-strip wraps, `
   + `${NEGATIVE_PAIRS.length} negative pairs, ${ownershipCases} ownership x surface sweeps, ${N_RANDOM - randomSkippedGaps} random-sampled draws `

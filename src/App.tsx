@@ -100,6 +100,7 @@ import {
   shouldReplaceName,
   regenErrorFromResponse,
   cleanPreview,
+  regenDroppedNote,
   REGEN_ERROR_MESSAGES,
   REGEN_ANNOUNCE,
   type RegenKey,
@@ -2645,9 +2646,14 @@ export default function App() {
       setSaveLabels(kept.labels);
       setSaveTerms(kept.terms);
     }
+    // RED-REGEN-11/001: a draw's own actor noun silently truncated by the
+    // per-side cap must say so, same as a manual highlight already does —
+    // `dropNote` is null on every draw that fit, which is the common case.
+    const dropNote = regenDroppedNote(kept.dropped);
+    const keptNote = key.kind === 'edit' ? REGEN_ANNOUNCE.keptEdit : REGEN_ANNOUNCE.keptSave;
     setRegen({
       status: 'idle', preview: null, error: null,
-      note: key.kind === 'edit' ? REGEN_ANNOUNCE.keptEdit : REGEN_ANNOUNCE.keptSave,
+      note: dropNote ? `${dropNote} ${keptNote}` : keptNote,
     });
     regenButtonRef.current?.focus();
   };

@@ -5575,6 +5575,99 @@ try {
     await p.close();
   });
 
+  // ══ 80. RED-REGEN-11/001 — Regenerate -> Keep at the per-side
+  //      USER_TERMS_MAX cap: the draw's own actor noun used to be silently
+  //      truncated with NO signal (the sibling manual-highlight path
+  //      already has one). Mocked exactly like §27/§28 (mockRegenOn + a
+  //      canned scenario); the 12 pre-existing chips are placed through the
+  //      REAL DescriptionEditor picker (select text, click "Player A"), not
+  //      typed into state, so the cap precondition is genuine.
+  const REGEN_STORY_CAP = {
+    name: 'Harbour Watch Rotation',
+    row1: 'Morning Watch', row2: 'Night Watch', col1: 'Dock Duty', col2: 'Patrol',
+    description: 'The lighthouse keeper and the ferry crew coordinate harbour watch shifts.',
+    actorA: ['the lighthouse keeper'], actorB: ['the ferry crew'],
+  };
+  const CAP_WORDS = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima'];
+  const capSelectWord = async (p, word) => {
+    await p.evaluate(({ w, sel }) => {
+      const ta = document.querySelector(sel);
+      const idx = ta.value.indexOf(w);
+      ta.focus();
+      ta.setSelectionRange(idx, idx + w.length);
+    }, { w: word, sel: '[role="dialog"][aria-label="Save custom game"] textarea' });
+  };
+  section('80', 'Regenerate -> Keep at the highlight cap names the dropped actor noun', async () => {
+    const desc = `The ${CAP_WORDS.join(', ')} crew members meet at the dock.`;
+
+    const capPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(capPage, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_CAP }) });
+    });
+    await registerAndLogin(capPage, 'e2e80cap');
+    await capPage.getByRole('button', { name: /save preset/i }).click();
+    await capPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await capPage.locator('[role="dialog"][aria-label="Save custom game"] textarea').fill(desc);
+    const dialog = capPage.getByRole('dialog', { name: 'Save custom game' });
+    for (const w of CAP_WORDS) {
+      await capSelectWord(capPage, w);
+      await dialog.getByRole('button', { name: 'Player A' }).click();
+    }
+    const chipCountBefore = await dialog.locator('button[data-player="A"]').count();
+    record('precondition: 12 real Player A chips are placed through the actual chip picker',
+      chipCountBefore === 12, `count=${chipCountBefore}`);
+
+    const regenBtn = capPage.getByRole('button', { name: 'Regenerate scenario' });
+    await regenBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await regenBtn.click();
+    await capPage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
+    await capPage.getByRole('button', { name: 'Keep' }).click();
+    await capPage.waitForTimeout(300);
+
+    const note = await dialog.locator('p[role="status"]').innerText().catch(() => '');
+    record('FIX: at the cap, Keep\'s live region names the noun the cap could not keep',
+      /the lighthouse keeper/.test(note) && /12 highlights already/.test(note), note);
+    record('FIX: the note renders through the same role="status" aria-live="polite" paragraph every regen note uses',
+      await dialog.locator('p[role="status"][aria-live="polite"]').count() > 0);
+    const chipCountAfter = await dialog.locator('button[data-player="A"]').count();
+    record('the dropped noun is not silently added as a 13th chip either (still exactly 12)',
+      chipCountAfter === 12, `count=${chipCountAfter}`);
+    await capPage.close();
+
+    // Positive control: one FEWER existing chip (11, not 12) — Keep actually
+    // ADDS the noun as a new chip, and the note is the plain "Kept" message
+    // with no cap wording (proves the fix is cap-specific, not a message
+    // that now fires on every Keep).
+    const controlWords = CAP_WORDS.slice(0, 11);
+    const controlPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(controlPage, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_CAP }) });
+    });
+    await registerAndLogin(controlPage, 'e2e80ctl');
+    await controlPage.getByRole('button', { name: /save preset/i }).click();
+    await controlPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await controlPage.locator('[role="dialog"][aria-label="Save custom game"] textarea').fill(desc);
+    const dialog2 = controlPage.getByRole('dialog', { name: 'Save custom game' });
+    for (const w of controlWords) {
+      await capSelectWord(controlPage, w);
+      await dialog2.getByRole('button', { name: 'Player A' }).click();
+    }
+    record('control precondition: exactly 11 Player A chips (one under the cap)',
+      await dialog2.locator('button[data-player="A"]').count() === 11);
+    const regenBtn2 = controlPage.getByRole('button', { name: 'Regenerate scenario' });
+    await regenBtn2.waitFor({ state: 'visible', timeout: 5000 });
+    await regenBtn2.click();
+    await controlPage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
+    await controlPage.getByRole('button', { name: 'Keep' }).click();
+    await controlPage.waitForTimeout(300);
+    const note2 = await dialog2.locator('p[role="status"]').innerText().catch(() => '');
+    record('control: below the cap, Keep\'s note is the plain "Kept" message with no cap wording',
+      /^Kept/.test(note2) && !/highlights already/.test(note2), note2);
+    record('control: below the cap, Keep actually ADDS the noun as a 12th chip',
+      await dialog2.locator('button[data-player="A"]:has-text("the lighthouse keeper")').isVisible().catch(() => false));
+    await controlPage.close();
+  });
+
 await executeSections();
 
 } catch (e) {
