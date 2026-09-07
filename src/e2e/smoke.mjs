@@ -6349,10 +6349,26 @@ try {
       // exactly") — checked, not assumed: re-read the same control's box
       // now that it is hidden+inert and require it to match the pre-open
       // reading above (this is now a genuine assertion, not the coordinate
-      // source).
-      const bbAfter = await btn.boundingBox();
+      // source). CodeRabbit CLI: Locator.boundingBox() is documented to
+      // return null for a non-visible element, so reading it a SECOND time
+      // here (now that the control is visibility:hidden) risked silently
+      // asserting on `!!null === false` rather than a real geometry
+      // comparison. Measured across every §83 run so far (chromium +
+      // webkit, both scenarios): `bbAfter` was never actually null here —
+      // Playwright's null case is keyed on zero LAYOUT size, and
+      // `visibility:hidden` (unlike `display:none`) preserves layout, so
+      // the box stayed real in practice — but `getBoundingClientRect()` via
+      // `evaluate()` sidesteps that Playwright-internal visibility
+      // heuristic entirely and reads the box directly, so this can no
+      // longer depend on it either way.
+      const rectAfter = await btn.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      });
       record(`[${label}] the tour control's geometry is unchanged while hidden+inert (state preserved, not removed)`,
-        !!bbAfter && Math.abs(bbAfter.x - bbBefore.x) < 1 && Math.abs(bbAfter.y - bbBefore.y) < 1, JSON.stringify({ bbBefore, bbAfter }));
+        Math.abs(rectAfter.x - bbBefore.x) < 1 && Math.abs(rectAfter.y - bbBefore.y) < 1
+        && Math.abs(rectAfter.width - bbBefore.width) < 1 && Math.abs(rectAfter.height - bbBefore.height) < 1,
+        JSON.stringify({ bbBefore, rectAfter }));
 
       // CONTROL, not FIX (OPUS-REVIEW-MODAL17 N1): this also passes on the
       // pre-#165 tree — `inert` alone already excludes an element from
