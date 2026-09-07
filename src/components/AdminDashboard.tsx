@@ -90,6 +90,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
       open={open}
       onClose={onClose}
       ariaLabel="Admin dashboard"
+      // OPUS-REVIEW-MODAL16 N3: same as OVERLAY_CLASS (ModalSurface.tsx) MINUS
+      // select-none — this panel's whole reason to exist is a table of user
+      // emails and counts an operator wants to copy. Keeps z-[65] (NOT
+      // DownloadModal's z-50): that is what puts Admin above the guided tour's
+      // z-[60] (OPUS-REVIEW-MODAL16 note 7) — copying DownloadModal's overlay
+      // class verbatim would silently drop Admin back under the tour.
+      overlayClassName="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
       panelClassName={`relative w-full max-w-3xl rounded-2xl border shadow-2xl flex flex-col max-h-[90vh] ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
     >
         {/* Header */}
@@ -105,11 +112,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
               </button>
             )}
             {authed && (
-              <button onClick={() => { setAuthed(false); setStats(null); setPassword(''); }} className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-500 cursor-pointer">
+              // OPUS-REVIEW-MODAL16 N4: Sign out must invalidate the same
+              // generation an in-flight Refresh checks — otherwise a Refresh
+              // started just before Sign out still lands and re-auths the
+              // panel with the stale response.
+              <button onClick={() => { requestGenRef.current += 1; setAuthed(false); setStats(null); setPassword(''); }} className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-500 cursor-pointer">
                 <LogOut className="w-3.5 h-3.5" /> Sign out
               </button>
             )}
-            <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 cursor-pointer">
+            {/* OPUS-REVIEW-MODAL16 F1: this button is the panel's first
+                focusable (the trap parks open-time focus here), so it needs
+                a real accessible name — an icon-only button announces
+                nothing and a screen-reader user has no idea what it does. */}
+            <button onClick={onClose} aria-label="Close admin dashboard" className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 cursor-pointer">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -127,6 +142,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
                   onChange={e => setPassword(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && fetchStats(password)}
                   placeholder="Admin password"
+                  // OPUS-REVIEW-MODAL16 F1: without this, the trap's open-time
+                  // focus lands on the close X (first in DOM order) instead —
+                  // autoFocus wins over that because it commits in the SAME
+                  // phase, strictly before the trap's passive effect runs.
+                  autoFocus
                   className={`flex-1 px-3 py-2 text-sm rounded-xl border focus:outline-none focus:ring-2 focus:ring-accent-300 ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-800'}`}
                 />
                 <button

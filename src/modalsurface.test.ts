@@ -525,6 +525,43 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     'fetchStats must re-check the generation after res.json() too, before setStats/setAuthed (CodeRabbit CLI)');
   ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\('Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
     'fetchStats must gate its catch-block setError AND the trailing setLoading(false) on the generation too, not just the success path (CodeRabbit CLI)');
+  // OPUS-REVIEW-MODAL16 N4: Sign out is a THIRD site that touches
+  // authed/stats/password — the generation ref invariant applies to it too,
+  // or a Refresh started just before Sign out still lands and re-auths the
+  // panel after the operator signed out. Mutation: drop the
+  // `requestGenRef.current += 1;` from the Sign out handler → this fails.
+  ok(/onClick=\{\(\) => \{ requestGenRef\.current \+= 1; setAuthed\(false\); setStats\(null\); setPassword\(''\); \}\}[^}]*Sign out/.test(admin),
+    'AdminDashboard\'s Sign out button must also bump requestGenRef before resetting state (OPUS-REVIEW-MODAL16 N4)');
+}
+
+// OPUS-REVIEW-MODAL16 F1: the close button is the panel's FIRST focusable —
+// useModalTabTrap's open-time focus (ModalSurface.tsx) lands there unless
+// something else already claims focus first. An icon-only button with no
+// aria-label has an empty accessible name; autoFocus on the password field
+// wins the race (React commits it in the SAME phase, before the trap's
+// passive effect reads document.activeElement) so the field gets focus
+// instead. Mutation: drop either attribute → its own check fails by name.
+{
+  ok(/<button onClick=\{onClose\} aria-label="Close admin dashboard"/.test(admin),
+    'AdminDashboard\'s close button must have aria-label="Close admin dashboard" — it is the panel\'s first focusable and an icon-only button has no accessible name otherwise (OPUS-REVIEW-MODAL16 F1)');
+  ok(/type="password"[\s\S]{0,400}?autoFocus/.test(admin),
+    'AdminDashboard\'s password input must have autoFocus — otherwise the trap\'s open-time focus lands on the close X instead (OPUS-REVIEW-MODAL16 F1)');
+}
+
+// OPUS-REVIEW-MODAL16 F2: aria-hidden on a still-tabbable element is WCAG
+// 4.1.2 / axe aria-hidden-focus. `inert` removes pointer events, tab order
+// AND AT visibility together — no separate pointer-events class swap needed.
+// Mutation: revert either site to `aria-hidden={blocked}` +
+// `${blocked ? 'pointer-events-none' : 'pointer-events-auto'}` → its check
+// fails by name.
+{
+  const walkthrough = readFileSync('src/components/Walkthrough.tsx', 'utf8');
+  ok(/aria-label="Exit tour"\s*\n\s*inert=\{blocked\}/.test(walkthrough),
+    'Walkthrough\'s standalone Exit-tour button must use inert={blocked}, not aria-hidden (OPUS-REVIEW-MODAL16 F2)');
+  ok(/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),
+    'Walkthrough\'s tour card must use inert={blocked}, not aria-hidden (OPUS-REVIEW-MODAL16 F2)');
+  ok(!/aria-hidden=\{blocked\}/.test(walkthrough),
+    'Walkthrough must not have any remaining aria-hidden={blocked} — inert replaces it entirely (OPUS-REVIEW-MODAL16 F2)');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

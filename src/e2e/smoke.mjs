@@ -5800,10 +5800,19 @@ try {
     await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 8000 });
     const next = p.locator('button', { hasText: /^Next\s*$/ }).first();
     const nb = await next.boundingBox();
-    const hit = nb ? await p.evaluate(([x, y]) => {
+    // OPUS-REVIEW-MODAL16 N (§76): `hit` used to be computed and then only
+    // interpolated into the note string, never asserted — the FIX check
+    // below would have passed even if the click missed for an unrelated
+    // reason. Assert the topmost element at that point is OUTSIDE the tour's
+    // own subtree (with `inert`, a real click there passes through to
+    // whatever is visually behind it — the drawer). The old
+    // `h?.tagName === 'BUTTON'` fallback made isTourButton true for ANY
+    // button under the point, not specifically a tour one; closest(TOUR_SEL)
+    // names the thing this check is actually about.
+    const hit = nb ? await p.evaluate(([x, y, sel]) => {
       const h = document.elementFromPoint(x, y);
-      return { tag: h?.tagName, isTourButton: h?.closest('button[aria-hidden]') === h || h?.tagName === 'BUTTON' };
-    }, [nb.x + nb.width / 2, nb.y + nb.height / 2]) : null;
+      return { tag: h?.tagName, insideTour: !!h?.closest(sel) };
+    }, [nb.x + nb.width / 2, nb.y + nb.height / 2, TOUR_SEL]) : null;
     record('precondition: the tour Next button has a bounding box while the drawer is open (still rendered, just gated)', !!nb, JSON.stringify({ nb }));
     // CodeRabbit CLI: poll for the FAILURE state (the step changing) instead
     // of a fixed sleep + "unchanged" read — a slow runner could advance the
@@ -5822,10 +5831,18 @@ try {
       ).then(() => true).catch(() => false);
       step1 = advanced ? await tourStep() : step0;
     }
-    record('FIX: a real click on the tour\'s Next button does NOT advance the tour while the drawer is open (RED-APP-15/003)', step1 === step0, JSON.stringify({ step0, step1, hit }));
+    record('FIX: a real click on the tour\'s Next button does NOT advance the tour while the drawer is open (RED-APP-15/003)',
+      step1 === step0 && hit?.insideTour === false, JSON.stringify({ step0, step1, hit }));
 
     await p.keyboard.press('Escape');
-    await p.getByRole('button', { name: /close menu/i }).first().click().catch(() => {});
+    // Bounded, not a blind .click().catch(): Escape already closes the drawer
+    // in the common case, and a plain .click() on an absent locator waits
+    // Playwright's full default actionability timeout (30s) before its
+    // rejection is caught — wasted time that made this section flaky under
+    // load. Only click if the button is still actually there.
+    if (await p.getByRole('button', { name: /close menu/i }).first().isVisible({ timeout: 1000 }).catch(() => false)) {
+      await p.getByRole('button', { name: /close menu/i }).first().click().catch(() => {});
+    }
     await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {});
 
     // Control: with no surface open, the exact same click DOES advance —
@@ -5845,6 +5862,45 @@ try {
       step2 = await tourStep();
     }
     record('control: the same click on Next DOES advance the tour when no surface is open', step2 !== null && step2 !== step1, JSON.stringify({ step1, step2 }));
+
+    // OPUS-REVIEW-MODAL16 F1: opening Admin used to park focus on the
+    // unnamed close X (the panel's first focusable, DOM order) — typed
+    // keystrokes went nowhere. autoFocus on the password input should win
+    // that race. Reached by a real triple-click on the header compass icon,
+    // no synthetic focus() call.
+    const compass = p.locator('header svg').first();
+    const cb = await compass.boundingBox();
+    if (cb) {
+      // A synthetic triple-click is timing-sensitive under CPU load (three
+      // dispatched press/release pairs have to land inside the browser's own
+      // double-click window) — measured flaky (~1 in 2) with a single
+      // attempt on this machine. Retry a few times rather than let a lost
+      // click count as "the trap doesn't work"; a genuine defect fails EVERY
+      // attempt, not intermittently.
+      const adminDlg = p.locator('[role="dialog"][aria-label="Admin dashboard"]');
+      let opened = false;
+      for (let i = 0; i < 5 && !opened; i++) {
+        await p.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2, { clickCount: 3 });
+        opened = await adminDlg.waitFor({ state: 'visible', timeout: 2000 }).then(() => true).catch(() => false);
+      }
+      record('precondition: the triple-click opens the Admin dashboard', opened, `attempts<=5`);
+      if (opened) {
+        const focused = await p.evaluate(() => ({ tag: document.activeElement?.tagName, type: document.activeElement?.getAttribute('type') }));
+        record('FIX: Admin\'s password input has focus on open (autoFocus wins the trap\'s open-time focus race, OPUS-REVIEW-MODAL16 F1)',
+          focused.tag === 'INPUT' && focused.type === 'password', JSON.stringify(focused));
+        await p.keyboard.type('hunter2');
+        const typed = await p.evaluate(() => document.querySelector('input[type="password"]')?.value);
+        record('FIX: typing right after open reaches the password field, with no click (OPUS-REVIEW-MODAL16 F1)', typed === 'hunter2', `value=${JSON.stringify(typed)}`);
+        // Exercise the "Close admin dashboard" control itself (control-
+        // coverage guard, controlcoverage.test.ts) rather than only closing
+        // via Escape — a real click by its own accessible name.
+        await p.getByRole('button', { name: 'Close admin dashboard' }).click();
+        const closed = await adminDlg.waitFor({ state: 'hidden', timeout: 8000 }).then(() => true).catch(() => false);
+        record('FIX: "Close admin dashboard" (aria-label, OPUS-REVIEW-MODAL16 F1) actually closes the dialog when clicked', closed);
+      }
+    } else {
+      record('precondition: the header compass icon has a bounding box (harness sanity)', false, 'compass not found');
+    }
     } finally {
       // Close cleanly (not mid-request): an abrupt context teardown while
       // the drawer's own games fetch is in flight surfaces as a spurious
