@@ -194,6 +194,26 @@ export const USER_TERM_MAX_LEN = 60;
 export const USER_TERMS_MAX = 12;
 
 /**
+ * RED-REGEN-11/001: every path that can hit the per-side cap must say so, and
+ * must name the phrase(s) it could not keep — a silent drop is never
+ * possible. Shared by `DescriptionEditor.addSelection` (manual highlight,
+ * always its own single side) and `regenKeptColorTerms`'s `dropped` output
+ * via `regenDroppedNote` (Regenerate -> Keep, which can drop on A and/or B
+ * in the same call), so the two paths say the identical thing for the
+ * identical limit instead of one having a message and the other having none.
+ */
+export function capHitMessage(dropped: readonly string[], player?: 'A' | 'B'): string {
+  const quoted = dropped.map((t) => `"${t}"`).join(', ');
+  const who = player ? ` for Player ${player}` : '';
+  // CodeRabbit (PR #161): a side at the cap can drop SEVERAL generated
+  // terms in the same Keep, and one free slot cannot admit all of them —
+  // "remove one" was wrong whenever `dropped.length > 1`. Base the count on
+  // `dropped.length` itself, the same list `quoted` names.
+  const removeCount = dropped.length === 1 ? 'one' : String(dropped.length);
+  return `That is ${USER_TERMS_MAX} highlights already${who} — remove ${removeCount} to add ${quoted}.`;
+}
+
+/**
  * Clean a user-supplied term list: trim, drop anything under two characters,
  * de-duplicate case-insensitively, cap the length and the count.
  *
@@ -384,13 +404,24 @@ export function mergeDescriptionTerms(
  * with the OTHER side's existing, user-placed term; a colliding actor noun is
  * simply dropped rather than added anywhere, exactly like any other duplicate
  * `cleanUserColorTermPair` already resolves.
+ *
+ * RED-REGEN-11/001: dropping a noun at the per-side CAP (`USER_TERMS_MAX`,
+ * distinct from the cross-player collision above) used to be just as silent,
+ * with no way for a caller to tell "the draw supplied no actor noun" apart
+ * from "the draw's own actor noun was truncated by a limit it never saw" —
+ * the sibling manual-highlight path (`DescriptionEditor.addSelection`) has
+ * always told the user this; Keep never did. `dropped` names exactly the
+ * newly-offered noun(s) that did not make the final list BECAUSE of the cap
+ * — a noun excluded above for colliding with the other side is never in
+ * `newA`/`newB` in the first place, so it can never appear here either; the
+ * two causes stay distinguishable by construction, not by re-deriving them.
  */
 export function regenKeptColorTerms(
   actorA: readonly string[],
   actorB: readonly string[],
   existingA: readonly string[],
   existingB: readonly string[],
-): { a: string[]; b: string[] } {
+): { a: string[]; b: string[]; dropped: { a: string[]; b: string[] } } {
   const existing = cleanUserColorTermPair(existingA, existingB);
   const ownedA = new Set(existing.a.map(colorTermKey));
   const ownedB = new Set(existing.b.map(colorTermKey));
@@ -398,7 +429,30 @@ export function regenKeptColorTerms(
   // phrase the user already placed on the other side.
   const newA = cleanUserColorTerms(actorA).filter((t) => !ownedB.has(colorTermKey(t)));
   const newB = cleanUserColorTerms(actorB).filter((t) => !ownedA.has(colorTermKey(t)));
-  return cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
+  const result = cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
+  const resultAKeys = new Set(result.a.map(colorTermKey));
+  const resultBKeys = new Set(result.b.map(colorTermKey));
+  // CodeRabbit (this PR) + director-reproduced Opus review F1: a newly-
+  // offered noun missing from ITS OWN side's result is not always a cap
+  // drop — the SAME draw can offer the identical phrase on BOTH sides
+  // (actorA and actorB naming the same actor), and one side wins that tie
+  // inside the final `cleanUserColorTermPair` call, same as any other
+  // same-phrase collision. That is the documented ownership rule, not a
+  // capacity loss: the highlight still exists, just attributed to the OTHER
+  // player, so it must not be reported as "dropped" on either side. F1: the
+  // tie can resolve either way, not only "A wins" — if A's OWN cap truncates
+  // the tie phrase out of `[...existing.a, ...newA]` before B is even
+  // considered, `resultAKeys` lacks it and B (with room) keeps it, so the
+  // ORIGINAL guard (checking only `resultBKeys` for the `a` filter) reported
+  // it dropped for A even though it survived, coloured, as a B chip. A term
+  // is genuinely dropped only when it appears in NEITHER final list.
+  return {
+    ...result,
+    dropped: {
+      a: newA.filter((t) => !resultAKeys.has(colorTermKey(t)) && !resultBKeys.has(colorTermKey(t))),
+      b: newB.filter((t) => !resultBKeys.has(colorTermKey(t)) && !resultAKeys.has(colorTermKey(t))),
+    },
+  };
 }
 
 /**

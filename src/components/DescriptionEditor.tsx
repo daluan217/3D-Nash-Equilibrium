@@ -11,6 +11,7 @@ import {
   cleanUserColorTermPair,
   crossPlayerUserTerms,
   mergeDescriptionTerms,
+  capHitMessage,
   USER_TERMS_MAX,
   USER_TERM_MAX_LEN,
 } from '../utils/colorTerms';
@@ -97,19 +98,33 @@ export function DescriptionEditor({
     const nextB = player === 'B' ? [...termsB, term] : termsB.filter((t) => colorTermKey(t) !== colorTermKey(term));
     // As a pair, so a phrase can never end up owned by both players.
     const { a: cleanA, b: cleanB } = cleanUserColorTermPair(nextA, nextB);
+    // RED-REGEN-10/001: choosing the other player for a phrase already
+    // highlighted MOVES it (explicit assignment wins, docs/COLOUR-TERMS.md §b)
+    // — computed BEFORE the cap guard below, since a move that the cap
+    // blocks is still a move, not a fresh add.
+    const movedFrom = player === 'A'
+      ? termsB.some((t) => colorTermKey(t) === colorTermKey(term)) ? 'B' : null
+      : termsA.some((t) => colorTermKey(t) === colorTermKey(term)) ? 'A' : null;
     if (
       (player === 'A' && !cleanA.some((t) => colorTermKey(t) === colorTermKey(term)))
       || (player === 'B' && !cleanB.some((t) => colorTermKey(t) === colorTermKey(term)))
     ) {
-      setHint(`That is ${USER_TERMS_MAX} highlights already — remove one to add another.`);
+      // Opus review N1: a cap-blocked MOVE is a different situation from a
+      // cap-blocked fresh highlight — the phrase is already on screen,
+      // unmoved, so `capHitMessage`'s "remove one to add X" is both false
+      // (X is not missing) and unactionable (removing a chip on THIS
+      // player's side does not move X off the other player). Name the
+      // actual state instead of the shared "add" wording.
+      setHint(
+        movedFrom
+          ? `"${term}" is highlighted for Player ${movedFrom}; Player ${player} already has ${USER_TERMS_MAX} highlights — remove one to move it.`
+          // CodeRabbit (PR #161): name the SELECTED player's cap, not a
+          // player-agnostic message — this is always a single side's own
+          // pick (Player A or B), never the pooled Keep-side case.
+          : capHitMessage([term], player),
+      );
       return;
     }
-    // RED-REGEN-10/001: choosing the other player for a phrase already
-    // highlighted MOVES it (explicit assignment wins, docs/COLOUR-TERMS.md §b)
-    // — say so instead of moving it silently.
-    const movedFrom = player === 'A'
-      ? termsB.some((t) => colorTermKey(t) === colorTermKey(term)) ? 'B' : null
-      : termsA.some((t) => colorTermKey(t) === colorTermKey(term)) ? 'A' : null;
     setHint(movedFrom ? `"${term}" was highlighted for Player ${movedFrom}; it now belongs to Player ${player}.` : '');
     onTermsChange(cleanA, cleanB);
   };
