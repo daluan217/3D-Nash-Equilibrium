@@ -5618,13 +5618,17 @@ try {
       const el = hit ?? (dir === 'after' ? all[0] : all[all.length - 1]);
       return el ? { tag: el.tagName, insideLandmark: landmark.contains(el), idx: all.indexOf(el) } : null;
     }, [csel, lsel, dir]);
-    const readActive = async (p, lsel) => p.evaluate((lsel) => {
-      const a = document.activeElement; const landmark = document.querySelector(lsel);
-      return a ? { tag: a.tagName, insideLandmark: !!landmark?.contains(a), isLandmark: a === landmark,
-        title: a.getAttribute('title'), aria: a.getAttribute('aria-label') } : null;
-    }, lsel);
     const DLG = '[role="dialog"][aria-label="Simulator Workspace Center"]';
     const LM = '[data-focus-fallback="drawer-games"]';
+    // CodeRabbit CLI: without inDialog, an escape to a real BUTTON outside
+    // both the dialog AND the landmark (the actual pre-fix defect shape)
+    // still satisfies "!isLandmark && !insideLandmark && tag matches" by
+    // accident — assert dialog membership explicitly, not infer it.
+    const readActive = async (p, lsel, dsel) => p.evaluate(([lsel, dsel]) => {
+      const a = document.activeElement; const landmark = document.querySelector(lsel);
+      return a ? { tag: a.tagName, insideLandmark: !!landmark?.contains(a), isLandmark: a === landmark,
+        inDialog: !!a.closest(dsel), title: a.getAttribute('title'), aria: a.getAttribute('aria-label') } : null;
+    }, [lsel, dsel]);
 
     const dismissTour = async (p) => { try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ } };
     const openLibrary = async (p) => {
@@ -5649,7 +5653,7 @@ try {
       if (onScreen && hit) await p.mouse.click(cx, cy);
       return { onScreen, hit };
     };
-    const settleActive = async (p) => { let a = null; for (let i = 0; i < 20; i++) { a = await readActive(p, LM); if (a) break; await p.waitForTimeout(100); } return a; };
+    const settleActive = async (p) => { let a = null; for (let i = 0; i < 20; i++) { a = await readActive(p, LM, DLG); if (a) break; await p.waitForTimeout(100); } return a; };
 
     let webkitAvailable = true; let webkitBrowser = null;
     try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
@@ -5671,13 +5675,13 @@ try {
         await openLibrary(p);
         let click = await clickLandmarkOrCard(p, null);
         record(`[${label}, 0 games] precondition: the empty-state landmark click is on-screen and hit-tests to itself`, click.onScreen && click.hit, JSON.stringify(click));
-        let before = await readActive(p, LM);
+        let before = await readActive(p, LM, DLG);
         record(`[${label}, 0 games] precondition: the click actually focused the landmark`, before?.isLandmark === true, JSON.stringify(before));
         const expAfter0 = await readNeighbor(p, DLG, LM, 'after');
         await p.keyboard.press('Tab');
         let after = await settleActive(p);
         record(`[${label}, 0 games] FIX: forward Tab from the landmark lands on the expected neighbor, still inside the dialog (RED-APP-15/001)`,
-          !!after && !after.isLandmark && after.insideLandmark === false && after.tag === expAfter0?.tag, JSON.stringify({ after, expAfter0 }));
+          !!after && after.inDialog === true && !after.isLandmark && after.insideLandmark === false && after.tag === expAfter0?.tag, JSON.stringify({ after, expAfter0 }));
 
         await p.keyboard.press('Escape');
         await openLibrary(p);
@@ -5686,7 +5690,7 @@ try {
         await p.keyboard.press('Shift+Tab');
         after = await settleActive(p);
         record(`[${label}, 0 games] FIX: Shift+Tab from the landmark lands on the expected neighbor (RED-APP-15/001)`,
-          !!after && !after.isLandmark && after.tag === expBefore0?.tag, JSON.stringify({ after, expBefore0 }));
+          !!after && after.inDialog === true && !after.isLandmark && after.tag === expBefore0?.tag, JSON.stringify({ after, expBefore0 }));
 
         // Positive control: from a REAL control (the library tab button
         // itself), one Tab still moves within the dialog as before — the
@@ -5715,7 +5719,7 @@ try {
         await openLibrary(p);
         click = await clickLandmarkOrCard(p, gameNames[0]);
         record(`[${label}, 3 games] precondition: the first card's title click is on-screen and hit-tests inside the landmark`, click.onScreen && click.hit, JSON.stringify(click));
-        before = await readActive(p, LM);
+        before = await readActive(p, LM, DLG);
         record(`[${label}, 3 games] precondition: the click focused a node inside the landmark (WebKit's mouse-focusable-ancestor behavior)`, before?.insideLandmark === true, JSON.stringify(before));
         const expAfter3 = await readNeighbor(p, DLG, LM, 'after');
         await p.keyboard.press('Tab');
@@ -5730,7 +5734,7 @@ try {
         await p.keyboard.press('Shift+Tab');
         after = await settleActive(p);
         record(`[${label}, 3 games] FIX: Shift+Tab from the landmark lands on the same pre-landmark control as the 0-games case (RED-APP-15/001)`,
-          !!after && after.insideLandmark === false && after.tag === expBefore3?.tag, JSON.stringify({ after, expBefore3 }));
+          !!after && after.inDialog === true && after.insideLandmark === false && after.tag === expBefore3?.tag, JSON.stringify({ after, expBefore3 }));
         await p.close();
         await engineCtx.close();
       }
@@ -5768,11 +5772,20 @@ try {
       return { tag: h?.tagName, isTourButton: h?.closest('button[aria-hidden]') === h || h?.tagName === 'BUTTON' };
     }, [nb.x + nb.width / 2, nb.y + nb.height / 2]) : null;
     record('precondition: the tour Next button has a bounding box while the drawer is open (still rendered, just gated)', !!nb, JSON.stringify({ nb }));
+    // CodeRabbit CLI: poll for the FAILURE state (the step changing) instead
+    // of a fixed sleep + "unchanged" read — a slow runner could advance the
+    // tour AFTER a 400ms sleep and still read as unchanged. A bounded
+    // waitForFunction that resolves only on a CHANGE, timing out as the pass
+    // case, catches a late advance a fixed sleep would miss.
+    let step1 = step0;
     if (nb) {
       await p.mouse.click(nb.x + nb.width / 2, nb.y + nb.height / 2);
-      await p.waitForTimeout(400);
+      const advanced = await p.waitForFunction(
+        (s) => ((document.body.innerText.match(/(\d+)\s*\/\s*\d+/) || [])[1] || null) !== s,
+        step0, { timeout: 3000 },
+      ).then(() => true).catch(() => false);
+      step1 = advanced ? await tourStep() : step0;
     }
-    const step1 = await tourStep();
     record('FIX: a real click on the tour\'s Next button does NOT advance the tour while the drawer is open (RED-APP-15/003)', step1 === step0, JSON.stringify({ step0, step1, hit }));
 
     await p.keyboard.press('Escape');
@@ -5783,8 +5796,15 @@ try {
     // proves the tour card and its Next button are otherwise unchanged.
     const next2 = p.locator('button', { hasText: /^Next\s*$/ }).first();
     const nb2 = await next2.boundingBox();
-    if (nb2) { await p.mouse.click(nb2.x + nb2.width / 2, nb2.y + nb2.height / 2); await p.waitForTimeout(400); }
-    const step2 = await tourStep();
+    let step2 = null;
+    if (nb2) {
+      await p.mouse.click(nb2.x + nb2.width / 2, nb2.y + nb2.height / 2);
+      await p.waitForFunction(
+        (s) => ((document.body.innerText.match(/(\d+)\s*\/\s*\d+/) || [])[1] || null) !== s,
+        step1, { timeout: 3000 },
+      ).catch(() => {});
+      step2 = await tourStep();
+    }
     record('control: the same click on Next DOES advance the tour when no surface is open', step2 !== null && step2 !== step1, JSON.stringify({ step1, step2 }));
     } finally {
       // Close cleanly (not mid-request): an abrupt context teardown while

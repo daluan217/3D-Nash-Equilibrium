@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Users, GamepadIcon, ShieldCheck, ShieldX, TrendingUp, RefreshCw, LogOut, X } from 'lucide-react';
 import { ModalSurface } from './ModalSurface';
 
@@ -34,6 +34,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // CodeRabbit CLI: the component now stays mounted across opens (ModalSurface
+  // hides it, App.tsx renders it unconditionally) — without this, closing kept
+  // the admin secret in memory and reopening (a triple-click anyone at the
+  // machine can do) showed the cached user table with no password prompt.
+  useEffect(() => {
+    if (open) return;
+    setAuthed(false); setPassword(''); setStats(null); setError(''); setLoading(false);
+  }, [open]);
 
   const fetchStats = async (secret: string) => {
     setLoading(true);

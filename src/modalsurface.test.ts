@@ -34,6 +34,7 @@ function stripComments(src: string): string {
 const app = stripComments(readFileSync('src/App.tsx', 'utf8'));
 const drawer = stripComments(readFileSync('src/components/MenuDrawer.tsx', 'utf8'));
 const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.tsx', 'utf8'));
+const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'utf8'));
 
 // ── Structural: every converted dialog renders through <ModalSurface> ──────
 // round15 (RED-APP-14/002+004): the local-games offer and the expand-log
@@ -448,6 +449,16 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     }
   }
   ok(scanned >= 3, `expected at least DownloadModal's, the expand-log's and the guided tour's fixed inset-0 occurrences, found ${scanned}`);
+}
+
+// CodeRabbit CLI: AdminDashboard now stays MOUNTED across opens (ModalSurface
+// hides it, App.tsx renders it unconditionally) — without a reset-on-close
+// effect, the admin secret stayed in memory and reopening (any triple-click)
+// showed the cached user table with no password prompt. Mutation: delete the
+// reset useEffect → this fails.
+{
+  ok(/useEffect\(\(\) => \{\s*\n\s*if \(open\) return;\s*\n\s*setAuthed\(false\); setPassword\(''\); setStats\(null\); setError\(''\); setLoading\(false\);\s*\n\s*\}, \[open\]\);/.test(admin),
+    'AdminDashboard must reset authed/password/stats/error/loading in a useEffect keyed on `open` going false — it no longer unmounts on close (CodeRabbit CLI)');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
