@@ -45,7 +45,7 @@ assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 20, 'the smoke suite is split into 20 CI shards (test.yml matrix must match)');
+assert.strictEqual(SHARD_COUNT, 24, 'the smoke suite is split into 24 CI shards (test.yml matrix must match)');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
@@ -65,6 +65,9 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
     `shard ${shard} packs ${Math.round(totals[shard - 1] / 1000)} s of measured sections, over the ${SECTION_BUDGET_MS / 1000} s budget `
     + `(300 s job ceiling minus ~75 s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
 }
+// Headroom: CI ran ~5% slower than the table the first 20-shard matrix was packed from (285 s on a
+// 207 s-packed shard). Keep every packed shard ≤ 200 s so that slack cannot reach the 225 s budget.
+assert(Math.max(...totals) <= 200000, `the heaviest packed shard is ${Math.round(Math.max(...totals) / 1000)} s — over the 200 s headroom line; raise SHARD_COUNT`);
 for (const { id } of definitions) {
   assert(measuredMs(id) <= SECTION_BUDGET_MS,
     `section ${id} alone measures ${Math.round(measuredMs(id) / 1000)} s — over the per-job budget; split it (as 66 → 66/66b)`);
@@ -95,7 +98,7 @@ assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'th
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
 // A shard selector returns exactly the packed assignment's members.
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/20' }).selected.map(({ id }) => id);
+const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/24' }).selected.map(({ id }) => id);
 assert.deepStrictEqual(shard1Now, definitions.filter((d) => d.shard === 1).map(({ id }) => id),
   'E2E_SHARD must select exactly the sections the packing assigned to that shard');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
@@ -106,7 +109,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/20', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/24', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
