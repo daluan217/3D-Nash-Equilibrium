@@ -652,13 +652,28 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   for (const [name, startMarker, endMarker] of FOUR_SITES) {
     const slice = app.slice(idx(startMarker), idx(endMarker));
     check(`${name} routes its 401 through handleDeadSessionResponse`,
-      /handleDeadSessionResponse\(res\)/.test(slice));
+      /handleDeadSessionResponse\(res/.test(slice));
     // A site that checks `res.status === 401` DIRECTLY, bypassing the
     // helper, is exactly the pre-fix shape (three independent inline copies
     // plus one site with no check at all) — must not reappear in any of the
     // four slices.
     check(`${name} has no bypassing inline \`res.status === 401\` check`,
       !/res\.status === 401/.test(slice));
+    // CodeRabbit on #163 (src/App.tsx:466): a response for a request sent
+    // under an OLD token must not clear a CURRENT, different one committed
+    // while that request was still in flight — so the helper takes the
+    // token THIS request actually used, captured BEFORE the fetch, not
+    // whatever is current by the time the response lands. Each site must
+    // (a) capture it and (b) pass EXACTLY that captured identifier as the
+    // second argument — passing `null` or re-reading the CURRENT token at
+    // call time (`authTokenRef.current`, or the outer `authToken` read
+    // AFTER a later `await`) would make the ref-comparison inside the
+    // helper trivially always-true again, silently reintroducing the exact
+    // race CodeRabbit found under a different spelling.
+    check(`${name} captures its own requestToken before the fetch`,
+      /const requestToken = authToken;/.test(slice));
+    check(`${name} passes its captured requestToken (not null, not a re-read of the current token) to the helper`,
+      /handleDeadSessionResponse\(res, requestToken\)/.test(slice));
   }
 
   // Known-positive (the mutation OPUS-REVIEW-DESKTOP16 N3 names by example):
@@ -672,12 +687,85 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     + "  return rows;\n"
     + "}, [authToken, apiBaseUrl, dbMode, canOwnGames]);";
   check('fixture: the pre-fix GET site (no dead-session check) fails the routing check',
-    !/handleDeadSessionResponse\(res\)/.test(regressedRefetch));
+    !/handleDeadSessionResponse\(res/.test(regressedRefetch));
   // And a regression back to the OLD inline three-copies shape (still bypassing
   // the helper) must be flagged by the second check.
   const regressedInline = "const wasAuthFailure = res.status === 401;\nif (wasAuthFailure) updateAuthToken(null);";
   check('fixture: the pre-fix inline `res.status === 401` shape is flagged by the bypass check',
     /res\.status === 401/.test(regressedInline));
+
+  // CodeRabbit's own named mutations: passing `null`, or re-reading the
+  // CURRENT token instead of the captured snapshot, at the helper call site.
+  const passedNull = "const requestToken = authToken;\n"
+    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "handleDeadSessionResponse(res, null);";
+  check('fixture: passing `null` as the second argument fails the requestToken-passing check',
+    !/handleDeadSessionResponse\(res, requestToken\)/.test(passedNull));
+  const passedCurrentTokenRef = "const requestToken = authToken;\n"
+    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "handleDeadSessionResponse(res, authTokenRef.current);";
+  check('fixture: passing `authTokenRef.current` (re-reading the CURRENT token, not the captured one) fails the requestToken-passing check',
+    !/handleDeadSessionResponse\(res, requestToken\)/.test(passedCurrentTokenRef));
+  // Control: the correct shape (capture, then pass that exact identifier) passes both.
+  const correctShape = "const requestToken = authToken;\n"
+    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "handleDeadSessionResponse(res, requestToken);";
+  check('control: the correct capture-then-pass shape is not flagged',
+    /const requestToken = authToken;/.test(correctShape) && /handleDeadSessionResponse\(res, requestToken\)/.test(correctShape));
+}
+
+// CodeRabbit on #163 (delayed-401 regression, unit-level on the helper
+// itself): a 401 with a STALE requestToken (does not match what is
+// currently committed) must NOT clear the current token; a 401 with the
+// MATCHING token must. The four call-site checks above only pin that each
+// site passes its OWN captured token through — they say nothing about
+// whether `handleDeadSessionResponse`'s own comparison is correct. Pinned
+// two ways: (1) an exact-text pin on the helper's own conditional (a
+// mutation to the comparison, e.g. dropping the ref check or comparing the
+// wrong things, fails this immediately); (2) a hand-run case matrix against
+// a reimplementation of that SAME pinned line — its realism is guaranteed
+// by (1) passing, not by itself (this file cannot import App.tsx's
+// component internals to call the real closure directly).
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const fnStart = app.indexOf('const handleDeadSessionResponse = (res: Response, requestToken');
+  check('handleDeadSessionResponse is defined with the (res, requestToken) signature', fnStart >= 0);
+  const fnSrc = app.slice(fnStart, app.indexOf('};', fnStart) + 2);
+  check('handleDeadSessionResponse only clears the token when authTokenRef.current === requestToken',
+    /if \(wasAuthFailure && authTokenRef\.current === requestToken\) updateAuthToken\(null\);/.test(fnSrc));
+  check('handleDeadSessionResponse still reports wasAuthFailure from the RAW response status, regardless of the ref match',
+    /const wasAuthFailure = res\.status === 401;/.test(fnSrc));
+
+  // Known-positive: the exact CodeRabbit-named regression (unconditional
+  // clear, ignoring which token the response belongs to) must fail the pin.
+  const regressedUnconditional = 'const handleDeadSessionResponse = (res, requestToken) => {\n'
+    + '  const wasAuthFailure = res.status === 401;\n'
+    + '  if (wasAuthFailure) updateAuthToken(null);\n'
+    + '  return wasAuthFailure;\n};';
+  check('fixture: an unconditional clear (the pre-fix / CodeRabbit-found shape) fails the ref-match pin',
+    !/if \(wasAuthFailure && authTokenRef\.current === requestToken\) updateAuthToken\(null\);/.test(regressedUnconditional));
+
+  // Delayed-401 case matrix, gated by the exact-text pin above.
+  type Case = { name: string; committedToken: string | null; requestToken: string | null; status: number; expectCleared: boolean; expectAuthFailure: boolean };
+  const cases: Case[] = [
+    { name: 'matching token, 401 -> clears', committedToken: 'tok-A', requestToken: 'tok-A', status: 401, expectCleared: true, expectAuthFailure: true },
+    { name: 'STALE token (delayed response after re-auth), 401 -> does NOT clear the current one', committedToken: 'tok-B', requestToken: 'tok-A', status: 401, expectCleared: false, expectAuthFailure: true },
+    { name: 'request sent with no token, committed also none, 401 -> clears (both null, matches)', committedToken: null, requestToken: null, status: 401, expectCleared: true, expectAuthFailure: true },
+    { name: 'request sent with no token but a token was since committed, 401 -> does NOT clear it', committedToken: 'tok-B', requestToken: null, status: 401, expectCleared: false, expectAuthFailure: true },
+    { name: 'matching token, 200 -> no clear, not an auth failure', committedToken: 'tok-A', requestToken: 'tok-A', status: 200, expectCleared: false, expectAuthFailure: false },
+    { name: 'stale token, 200 -> no clear, not an auth failure', committedToken: 'tok-B', requestToken: 'tok-A', status: 200, expectCleared: false, expectAuthFailure: false },
+  ];
+  for (const c of cases) {
+    let cleared = false;
+    const authTokenRefSim = { current: c.committedToken };
+    const updateAuthTokenSim = (t: string | null) => { cleared = t === null ? true : cleared; };
+    // The SAME pinned line, executed:
+    const wasAuthFailure = c.status === 401;
+    if (wasAuthFailure && authTokenRefSim.current === c.requestToken) updateAuthTokenSim(null);
+    check(`delayed-401 fixture: ${c.name}`,
+      cleared === c.expectCleared && wasAuthFailure === c.expectAuthFailure,
+      `cleared=${cleared} (want ${c.expectCleared}), wasAuthFailure=${wasAuthFailure} (want ${c.expectAuthFailure})`);
+  }
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
