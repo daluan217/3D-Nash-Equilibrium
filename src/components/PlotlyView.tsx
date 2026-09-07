@@ -561,11 +561,14 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    *  animation loop can read it without being torn down and rebuilt. */
   const [spinPaused, setSpinPaused] = useState(false);
   const spinPausedRef = useRef(false);
-  const pauseSpin = () => {
+  /** `rebind` false: the caller is about to set the camera itself and re-binds
+   *  AFTER its own relayout (RED-MATH-18/001 — a dragmode relayout issued
+   *  before a camera relayout made Plotly re-apply its recorded pose). */
+  const pauseSpin = (rebind = true) => {
     if (spinPausedRef.current) return;
     spinPausedRef.current = true;
     setSpinPaused(true);
-    rebindPlotInput();
+    if (rebind) rebindPlotInput();
   };
   const resumeSpin = () => {
     spinPausedRef.current = false;
@@ -605,7 +608,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       }
       return;
     }
-    pauseSpin();
+    pauseSpin(false);
   };
   /**
    * `prefers-reduced-motion: reduce`, tracked reactively (RED-APP-4, round 4).

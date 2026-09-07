@@ -3575,44 +3575,59 @@ function testGeometryDegenerateShelf() {
 // issued BEFORE it made Plotly re-apply its recorded pose and the reset never
 // landed at all (the first attempt, caught by the same probe). Static, on the
 // real file, because the order is the whole fix and a substring test cannot see
-// order.
+// order. The contract is one function, run on the real handler AND on each
+// mutated copy (CodeRabbit CLI: the fixtures must exercise the checks, not
+// merely inspect text).
 {
   const plot = readFileForContract('src/components/PlotlyView.tsx', 'utf8');
+  const RELAYOUT = "Plotly.relayout(gd, { 'scene.camera': DEFAULT_CAMERA })";
+  /** Throws with the named reason when the Reset View handler source violates the contract. */
+  const resetHandlerContract = (handler: string) => {
+    const idx = (needle: string) => handler.indexOf(needle);
+    const cancelIdx = idx('cancelCameraGlide();');
+    const holdIdx = idx('holdSpinForCameraControl();');
+    const relayoutIdx = idx(RELAYOUT);
+    const rebindIdx = idx('rebindPlotInput();');
+    assert(cancelIdx !== -1 && holdIdx !== -1 && relayoutIdx !== -1 && rebindIdx !== -1,
+      `RED-MATH-18/001: Reset View must cancel the glide, hold the spin, relayout to DEFAULT_CAMERA and re-bind input (cancel@${cancelIdx} hold@${holdIdx} relayout@${relayoutIdx} rebind@${rebindIdx})`);
+    assert(cancelIdx < relayoutIdx && holdIdx < relayoutIdx,
+      `RED-MATH-18/001: the glide cancel and the spin hold must come BEFORE the camera relayout (cancel@${cancelIdx} hold@${holdIdx} relayout@${relayoutIdx})`);
+    assert(rebindIdx > relayoutIdx,
+      `RED-MATH-18/001: rebindPlotInput must come AFTER the camera relayout — before it, the dragmode relayout re-applied the old pose (rebind@${rebindIdx} relayout@${relayoutIdx})`);
+  };
   const resetStart = plot.indexOf('title="Reset 3D camera to default perspective"');
   assert(resetStart !== -1, 'RED-MATH-18/001: the Reset View button (title "Reset 3D camera to default perspective") must exist');
-  // The onClick body precedes the title attribute inside the same <button>; scan
-  // back to the opening tag.
-  const buttonStart = plot.lastIndexOf('<button', resetStart);
-  const handler = plot.slice(buttonStart, resetStart);
-  const idx = (needle: string) => handler.indexOf(needle);
-  const cancelIdx = idx('cancelCameraGlide();');
-  const holdIdx = idx('holdSpinForCameraControl();');
-  const relayoutIdx = idx("Plotly.relayout(gd, { 'scene.camera': DEFAULT_CAMERA })");
-  const rebindIdx = idx('rebindPlotInput();');
-  assert(cancelIdx !== -1 && holdIdx !== -1 && relayoutIdx !== -1 && rebindIdx !== -1,
-    `RED-MATH-18/001: Reset View must cancel the glide, hold the spin, relayout to DEFAULT_CAMERA and re-bind input (cancel@${cancelIdx} hold@${holdIdx} relayout@${relayoutIdx} rebind@${rebindIdx})`);
-  assert(cancelIdx < relayoutIdx && holdIdx < relayoutIdx,
-    `RED-MATH-18/001: the glide cancel and the spin hold must come BEFORE the camera relayout (cancel@${cancelIdx} hold@${holdIdx} relayout@${relayoutIdx})`);
-  assert(rebindIdx > relayoutIdx,
-    `RED-MATH-18/001: rebindPlotInput must come AFTER the camera relayout — before it, the dragmode relayout re-applied the old pose (rebind@${rebindIdx} relayout@${relayoutIdx})`);
-  // cancelCameraGlide itself must not re-bind (that is the caller's job, after
-  // its relayout) and must release cameraBusy so the spin's own gate reopens.
-  const cancelFn = plot.slice(plot.indexOf('export function cancelCameraGlide()'), plot.indexOf('}', plot.indexOf('export function cancelCameraGlide()')) + 1);
+  // The onClick body precedes the title attribute inside the same <button>.
+  const handler = plot.slice(plot.lastIndexOf('<button', resetStart), resetStart);
+  resetHandlerContract(handler);
+
+  // cancelCameraGlide must not re-bind (the caller does, after its relayout) and
+  // must release cameraBusy so the spin's own gate reopens.
+  const cancelStart = plot.indexOf('export function cancelCameraGlide()');
+  const cancelFn = plot.slice(cancelStart, plot.indexOf('}', cancelStart) + 1);
   assert(/cancelAnimationFrame\(cameraAnim\);/.test(cancelFn) && /cameraBusy = false;/.test(cancelFn) && !/rebindPlotInput\(\)/.test(cancelFn),
     'RED-MATH-18/001: cancelCameraGlide cancels the glide frame, releases cameraBusy and does NOT re-bind input itself');
-  // The spin hold must act in BOTH spin modes: auto-resume (restart the
-  // countdown via nextSpinAtRef) and take-over (pauseSpin).
-  const holdFn = plot.slice(plot.indexOf('const holdSpinForCameraControl = () => {'), plot.indexOf('pauseSpin();', plot.indexOf('const holdSpinForCameraControl = () => {')) + 'pauseSpin();'.length);
-  assert(/nextSpinAtRef\.current = performance\.now\(\) \+ spinAutoResumeMs;/.test(holdFn) && /spinWaitingRef\.current = true;/.test(holdFn) && /pauseSpin\(\);/.test(holdFn),
-    'RED-MATH-18/001: holdSpinForCameraControl restarts the auto-resume countdown AND pauses a take-over-mode spin');
+  // The spin hold acts in BOTH modes — auto-resume (restart the countdown) and
+  // take-over (pause) — and pauses WITHOUT re-binding (pauseSpin(false)): in
+  // take-over mode pauseSpin's own rebind would otherwise run before the
+  // camera relayout (CodeRabbit CLI on this fix).
+  const holdStart = plot.indexOf('const holdSpinForCameraControl = () => {');
+  const holdFn = plot.slice(holdStart, plot.indexOf('};', holdStart) + 2);
+  assert(/nextSpinAtRef\.current = performance\.now\(\) \+ spinAutoResumeMs;/.test(holdFn) && /spinWaitingRef\.current = true;/.test(holdFn) && /pauseSpin\(false\);/.test(holdFn),
+    'RED-MATH-18/001: holdSpinForCameraControl restarts the auto-resume countdown AND pauses a take-over-mode spin without re-binding (pauseSpin(false))');
+  assert(/const pauseSpin = \(rebind = true\) => \{[\s\S]{0,400}?if \(rebind\) rebindPlotInput\(\);/.test(plot),
+    'RED-MATH-18/001: pauseSpin takes a `rebind` flag (default true) and only re-binds when it is set');
 
-  // Mutation fixtures (on a copy): each of the three regressions this guard
-  // exists for must be rejected — the plant is asserted to have landed first.
-  const noHold = handler.replace('holdSpinForCameraControl();\n', '');
-  assert(noHold !== handler && noHold.indexOf('holdSpinForCameraControl();') === -1, 'fixture: dropping the spin hold is detected');
-  const rebindFirst = handler.replace('rebindPlotInput();\n', '').replace('cancelCameraGlide();', 'cancelCameraGlide();\n            rebindPlotInput();');
-  assert(rebindFirst !== handler && rebindFirst.indexOf('rebindPlotInput();') < rebindFirst.indexOf("Plotly.relayout(gd, { 'scene.camera': DEFAULT_CAMERA })"), 'fixture: re-binding before the relayout is detected');
-  const cancelLate = handler.replace('cancelCameraGlide();\n', '').replace('cameraRef.current = DEFAULT_CAMERA;', 'cancelCameraGlide();\n            cameraRef.current = DEFAULT_CAMERA;');
-  assert(cancelLate !== handler && cancelLate.indexOf('cancelCameraGlide();') > cancelLate.indexOf("Plotly.relayout(gd, { 'scene.camera': DEFAULT_CAMERA })"), 'fixture: cancelling the glide after the relayout is detected');
-  console.log('✓ RED-MATH-18/001: Reset View cancels the glide and holds the spin before the relayout, re-binds after; cancelCameraGlide and holdSpinForCameraControl have the required shape');
+  // Mutation fixtures: each regression shape must make the SAME contract throw.
+  const mustThrow = (label: string, mutated: string) => {
+    assert(mutated !== handler, `fixture precondition: the plant "${label}" landed`);
+    let threw = false;
+    try { resetHandlerContract(mutated); } catch { threw = true; }
+    assert(threw, `fixture: ${label} must be rejected by the Reset View contract`);
+  };
+  mustThrow('spin hold removed', handler.replace('holdSpinForCameraControl();\n', ''));
+  mustThrow('glide cancel removed', handler.replace('cancelCameraGlide();\n', ''));
+  mustThrow('rebind moved before the relayout', handler.replace('rebindPlotInput();\n', '').replace('cancelCameraGlide();', 'cancelCameraGlide();\n            rebindPlotInput();'));
+  mustThrow('glide cancel moved after the relayout', handler.replace('cancelCameraGlide();\n', '').replace('cameraRef.current = DEFAULT_CAMERA;', 'cancelCameraGlide();\n            cameraRef.current = DEFAULT_CAMERA;'));
+  console.log('✓ RED-MATH-18/001: Reset View cancels the glide and holds the spin before the relayout, re-binds after; four mutants rejected by the same contract');
 }
