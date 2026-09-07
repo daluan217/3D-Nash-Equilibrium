@@ -538,7 +538,7 @@ jobs:
 
   # Branch protection requires the exact context "e2e". Keep that stable
   # while the implementation fans out behind it. The deploy gate therefore
-  # cannot pass until all twelve smoke shards and the AI-surface suite pass.
+  # cannot pass until every smoke shard (the matrix above, packed by selection.js) and the AI-surface suite pass.
   e2e:
     name: e2e
     runs-on: ubuntu-latest
