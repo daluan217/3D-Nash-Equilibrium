@@ -3615,6 +3615,27 @@ function testGeometryDegenerateShelf() {
   const holdFn = plot.slice(holdStart, plot.indexOf('};', holdStart) + 2);
   assert(/nextSpinAtRef\.current = performance\.now\(\) \+ spinAutoResumeMs;/.test(holdFn) && /spinWaitingRef\.current = true;/.test(holdFn) && /pauseSpin\(false\);/.test(holdFn),
     'RED-MATH-18/001: holdSpinForCameraControl restarts the auto-resume countdown AND pauses a take-over-mode spin without re-binding (pauseSpin(false))');
+  // OPUS-REVIEW-170/A: the hold mirrors the spin effect's own gates. Under
+  // reduced motion (or idleSpin off) the effect never runs, so the flags the
+  // hold sets would never clear — a dead, sticky "Resume spinning" button.
+  // The gate must be the FIRST statement (stripped of comments), before any
+  // flag is touched; the hold must be declared after `reducedMotion`.
+  const holdContract = (fn: string) => {
+    const body = fn.slice(fn.indexOf('{') + 1).replace(/^\s*\/\/.*$/gm, '').trimStart();
+    assert(body.startsWith('if (reducedMotion || !idleSpin) return;'),
+      'OPUS-REVIEW-170/A: holdSpinForCameraControl must early-return under reducedMotion or with idleSpin off BEFORE touching any spin flag');
+  };
+  holdContract(holdFn);
+  assert(plot.indexOf('const [reducedMotion, setReducedMotion] = useState<boolean>(') < holdStart,
+    'OPUS-REVIEW-170/A: holdSpinForCameraControl must be declared after the reducedMotion state it reads');
+  {
+    let threw = false;
+    try { holdContract(holdFn.replace('if (reducedMotion || !idleSpin) return;\n', '')); } catch { threw = true; }
+    assert(threw, 'fixture: a hold without the reduced-motion gate must be rejected');
+    threw = false;
+    try { holdContract(holdFn.replace('if (reducedMotion || !idleSpin) return;\n', '').replace('pauseSpin(false);', 'if (reducedMotion || !idleSpin) return;\n    pauseSpin(false);')); } catch { threw = true; }
+    assert(threw, 'fixture: a hold that gates only the take-over branch (auto-resume flags already set) must be rejected');
+  }
   assert(/const pauseSpin = \(rebind = true\) => \{[\s\S]{0,400}?if \(rebind\) rebindPlotInput\(\);/.test(plot),
     'RED-MATH-18/001: pauseSpin takes a `rebind` flag (default true) and only re-binds when it is set');
 

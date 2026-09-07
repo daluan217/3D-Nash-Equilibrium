@@ -597,19 +597,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    * default 1.5 s after the click; the tour's glide, if one is in flight,
    * would overwrite it as well). Same effect as a press on the picture:
    * take-over mode pauses until Resume; auto-resume mode restarts the
-   * countdown.
+   * countdown. Declared below `reducedMotion`, which gates it.
    */
-  const holdSpinForCameraControl = () => {
-    if (spinAutoResumeMs > 0) {
-      nextSpinAtRef.current = performance.now() + spinAutoResumeMs;
-      if (!spinWaitingRef.current) {
-        spinWaitingRef.current = true;
-        setSpinWaiting(true);
-      }
-      return;
-    }
-    pauseSpin(false);
-  };
   /**
    * `prefers-reduced-motion: reduce`, tracked reactively (RED-APP-4, round 4).
    *
@@ -634,6 +623,22 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
+  const holdSpinForCameraControl = () => {
+    // OPUS-REVIEW-170/A: mirror the spin effect's own gates. Under reduced
+    // motion (or with the spin off) the effect never runs, so nothing would
+    // ever clear the flags set below — the Resume button would advertise a
+    // spin that cannot run and stick for the whole session.
+    if (reducedMotion || !idleSpin) return;
+    if (spinAutoResumeMs > 0) {
+      nextSpinAtRef.current = performance.now() + spinAutoResumeMs;
+      if (!spinWaitingRef.current) {
+        spinWaitingRef.current = true;
+        setSpinWaiting(true);
+      }
+      return;
+    }
+    pauseSpin(false);
+  };
 
   /**
    * Deadline until which the idle spin must stay quiet because the container
