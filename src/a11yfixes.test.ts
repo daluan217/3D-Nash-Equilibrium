@@ -667,11 +667,46 @@ function extractModalSurfaceBlock(src: string, id: string): string {
    *  (replacing with spaces, so byte offsets used in error messages stay
    *  meaningful) — this file's OWN prose repeatedly says things like
    *  "a real `<label>`", which a naive scan over raw source would flag as
-   *  an unassociated label in a comment, not in JSX. */
+   *  an unassociated label in a comment, not in JSX.
+   *
+   *  CodeRabbit CLI (this review): the old regex-only version was NOT
+   *  quote-aware — MenuDrawer.tsx's own real
+   *  `placeholder="e.g., https://nash-equilibrium.run.app"` contains a
+   *  literal `//` INSIDE a string, which `\/\/[^\n]*` blanked from that
+   *  point to end-of-line, erasing the placeholder's own closing quote and
+   *  leaving `openTags`'s quote-tracker stuck "inside a string" for
+   *  everything after — corrupting every check for the rest of the file.
+   *  This walker tracks quote state (character-by-character, same
+   *  backslash-escape handling as `openTags`) and only treats `//`/`/*` as
+   *  a comment when OUTSIDE any quote. */
   function stripComments(src: string): string {
-    return src
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-      .replace(/\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, ' '));
+    let out = '';
+    let i = 0;
+    let q: string | null = null;
+    while (i < src.length) {
+      const c = src[i];
+      if (q) {
+        if (c === '\\' && i + 1 < src.length) { out += c + src[i + 1]; i += 2; continue; }
+        out += c;
+        if (c === q) q = null;
+        i++;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') { q = c; out += c; i++; continue; }
+      if (c === '/' && src[i + 1] === '/') {
+        while (i < src.length && src[i] !== '\n') { out += ' '; i++; }
+        continue;
+      }
+      if (c === '/' && src[i + 1] === '*') {
+        out += '  '; i += 2;
+        while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) { out += (src[i] === '\n' ? '\n' : ' '); i++; }
+        if (i < src.length) { out += '  '; i += 2; }
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return out;
   }
 
   /** Every `<TAG ...>` opening tag matching `names`, with its FULL attribute
@@ -698,7 +733,11 @@ function extractModalSurfaceBlock(src: string, id: string): string {
       let q: string | null = null;
       for (; i < src.length; i++) {
         const c = src[i];
-        if (q) { if (c === q) q = null; continue; }
+        // CodeRabbit CLI (this review): a backslash-escaped quote INSIDE a
+        // quoted span (a handler like `setValue("a \"quoted\" value")`)
+        // must not close the span early — skip the escaped character so the
+        // real closing quote (and the tag's own `>`) are found correctly.
+        if (q) { if (c === '\\') { i++; continue; } if (c === q) q = null; continue; }
         if (c === '"' || c === "'" || c === '`') { q = c; continue; }
         if (c === '{') depth++;
         else if (c === '}') depth--;
@@ -711,17 +750,49 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     return out;
   }
 
-  /** Every `id=` VALUE (literal or `{expr}`) anywhere in `src` — used to
-   *  check that an `htmlFor=` actually names a real id, not just that the
-   *  attribute is present (CodeRabbit CLI, this review: "An id alone does
-   *  not give an input an accessible name... a label with
-   *  htmlFor="missing" also passes"). */
-  function collectIdValues(src: string): Set<string> {
-    return new Set([...src.matchAll(/\bid=(?:"([^"]+)"|\{([^}]+)\})/g)].map((m) => (m[1] ?? m[2]).trim()));
+  /** Tags whose `id=` genuinely gives a `<label htmlFor>` something to
+   *  point at — HTML's own labelable-elements list, restricted to what
+   *  this app uses, plus `DescriptionEditor` (verified below to forward its
+   *  `id` prop straight to its own `<textarea>`). Every OTHER custom
+   *  component's `id` (e.g. ModalSurface's dialog id: `expand-log`,
+   *  `account`, `admin`, `drawer` — none ever targeted by an htmlFor)
+   *  names a DIFFERENT DOM node, not a labelable control. */
+  const LABELABLE_TAGS = ['input', 'textarea', 'select', 'button', 'meter', 'output', 'progress', 'DescriptionEditor'];
+  /** Extracts the VALUE of a `name=` attribute from an attrs string,
+   *  accepting all three valid JSX/TSX quoting styles — double-quoted,
+   *  single-quoted, or a `{expr}` (CodeRabbit CLI, this review: the old
+   *  double-quote-or-brace-only regexes at every id=/htmlFor= site silently
+   *  missed `id='x'`/`htmlFor='x'` — valid TSX no checker below would ever
+   *  catch a mismatch in). */
+  function attrValue(attrs: string, name: string): string | undefined {
+    const m = attrs.match(new RegExp(`\\b${name}=(?:"([^"]+)"|'([^']+)'|\\{([^}]+)\\})`));
+    return m ? (m[1] ?? m[2] ?? m[3]).trim() : undefined;
   }
-  /** Every `htmlFor=` VALUE anywhere in `src`, same shape as above. */
+  /** Every `id=` VALUE on a labelable tag in `src` — used to check that an
+   *  `htmlFor=` actually names a real, labelable control, not just that
+   *  SOME element somewhere carries that id (CodeRabbit CLI, this review:
+   *  "collectIdValues accepts IDs from all elements... a `<div id=...>`
+   *  passes unassociatedLabels, but the label is not associated with a
+   *  control"). */
+  function collectIdValues(src: string): Set<string> {
+    const ids = new Set<string>();
+    for (const { attrs } of openTags(src, LABELABLE_TAGS)) {
+      const v = attrValue(attrs, 'id');
+      if (v !== undefined) ids.add(v);
+    }
+    return ids;
+  }
+  /** Every `htmlFor=` VALUE, but ONLY on a real `<label>` tag (CodeRabbit
+   *  CLI, this review: "placeholderOnlyControls accepts an input when ANY
+   *  tag has a matching htmlFor value" — an `htmlFor` on a non-label
+   *  element names nothing real; only a genuine `<label>` can associate). */
   function collectHtmlForValues(src: string): Set<string> {
-    return new Set([...src.matchAll(/\bhtmlFor=(?:"([^"]+)"|\{([^}]+)\})/g)].map((m) => (m[1] ?? m[2]).trim()));
+    const values = new Set<string>();
+    for (const { attrs } of openTags(src, ['label'])) {
+      const v = attrValue(attrs, 'htmlFor');
+      if (v !== undefined) values.add(v);
+    }
+    return values;
   }
 
   /** Every `<label ...>` tag in `src` with no `htmlFor` AND no control
@@ -733,9 +804,8 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     const idValues = collectIdValues(src);
     const violations: string[] = [];
     for (const { attrs, index, end } of openTags(src, ['label'])) {
-      const hfMatch = attrs.match(/\bhtmlFor=(?:"([^"]+)"|\{([^}]+)\})/);
-      if (hfMatch) {
-        const hfValue = (hfMatch[1] ?? hfMatch[2]).trim();
+      const hfValue = attrValue(attrs, 'htmlFor');
+      if (hfValue !== undefined) {
         if (idValues.has(hfValue)) continue;
         violations.push(`<label${attrs}> at offset ${index} has htmlFor=${JSON.stringify(hfValue)} but no matching id= anywhere in the file (dangling)`);
         continue;
@@ -772,14 +842,29 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   function placeholderOnlyControls(rawSrc: string, filePath?: string): string[] {
     const src = stripComments(rawSrc);
     const htmlForValues = collectHtmlForValues(src);
+    // aria-labelledby may point at ANY element (not just a labelable one —
+    // unlike htmlFor, its target need not itself be a control), so this
+    // collects every id= in the file regardless of tag.
+    const allIds = new Set([...src.matchAll(/\bid=(?:"([^"]+)"|'([^']+)'|\{([^}]+)\})/g)].map((m) => (m[1] ?? m[2] ?? m[3]).trim()));
     const isDescriptionEditor = filePath?.endsWith('DescriptionEditor.tsx') ?? false;
     const violations: string[] = [];
     for (const { tag, attrs, index } of openTags(src, ['input', 'textarea'])) {
       if (!/\bplaceholder=/.test(attrs)) continue;
-      if (/\baria-label=|\baria-labelledby=/.test(attrs)) continue;
-      const idMatch = attrs.match(/\bid=(?:"([^"]+)"|\{([^}]+)\})/);
-      if (idMatch) {
-        const idValue = (idMatch[1] ?? idMatch[2]).trim();
+      // CodeRabbit CLI (this review): the old check exempted on bare
+      // ATTRIBUTE PRESENCE — `aria-label=""` and a dangling/empty
+      // `aria-labelledby=""` both passed with no real accessible name at
+      // all. A real aria-label must be non-empty; a real aria-labelledby
+      // must be non-empty AND every space-separated IDREF it lists must
+      // resolve to an id= that actually exists somewhere in the file.
+      const ariaLabel = attrValue(attrs, 'aria-label');
+      if (ariaLabel !== undefined && ariaLabel.trim() !== '') continue;
+      const ariaLabelledBy = attrValue(attrs, 'aria-labelledby');
+      if (ariaLabelledBy !== undefined) {
+        const refs = ariaLabelledBy.trim().split(/\s+/).filter(Boolean);
+        if (refs.length > 0 && refs.every((r) => allIds.has(r))) continue;
+      }
+      const idValue = attrValue(attrs, 'id');
+      if (idValue !== undefined) {
         if (idValue === 'id' && isDescriptionEditor) continue; // DescriptionEditor's forwarded-prop shape ONLY
         if (htmlForValues.has(idValue)) continue;
         violations.push(`<${tag}${attrs}> at offset ${index} has id=${JSON.stringify(idValue)} but no matching htmlFor= anywhere in the file (dangling)`);
@@ -820,6 +905,47 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   // is merely present.
   ok(unassociatedLabels('<label htmlFor="missing">Name</label><input id="a" />').length === 1,
     'fixture: a label htmlFor pointing at an id that does not exist anywhere in the file must be flagged (dangling htmlFor)');
+  // CodeRabbit CLI (this review): collectIdValues must not accept an id from
+  // ANY element — a <label htmlFor> pointing at a non-labelable element's id
+  // (a heading <div>, e.g. this app's own button-group headings) is not
+  // really associated with a control, even though the two VALUES match.
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><div id="g">Group</div>').length === 1,
+    'fixture: htmlFor matching a <div id> (not a labelable element) must still be flagged — a matching VALUE on the wrong TAG is not real association');
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><select id="g"><option /></select>').length === 0,
+    'fixture: htmlFor matching a <select id> must NOT be flagged — select is a genuine labelable element');
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><DescriptionEditor id="g" />').length === 0,
+    'fixture: htmlFor matching a <DescriptionEditor id> must NOT be flagged — its forwarded id reaches a real <textarea> (verified below, cross-file)');
+  ok(unassociatedLabels('<label htmlFor="g">Name</label><ModalSurface id="g">x</ModalSurface>').length === 1,
+    'fixture: htmlFor matching a <ModalSurface id> MUST be flagged — that id names the dialog itself (App.tsx\'s own expand-log/account/admin/drawer ids), never a labelable control, unlike DescriptionEditor');
+  // CodeRabbit CLI (this review): valid TSX may single-quote an attribute
+  // value (`id='g'`) — every id=/htmlFor= matcher must accept it, not just
+  // double-quoted or `{expr}`.
+  ok(unassociatedLabels(`<label htmlFor='g'>Name</label><input id='g' />`).length === 0,
+    'fixture: a single-quoted htmlFor/id pair must NOT be flagged — single-quoted JSX attributes are valid TSX');
+  ok(placeholderOnlyControls(`<input id='missing' placeholder="x" /><label htmlFor="a">Name</label>`).length === 1,
+    'fixture: a single-quoted dangling id must still be flagged (proves the single-quote branch is actually consulted, not just accepted as a non-match)');
+  // CodeRabbit CLI (this review): an escaped quote INSIDE a quoted attribute
+  // span (a handler like `onChange={() => setValue("a \"b")}`, an ODD
+  // number of escaped quotes so the naive tracker's quote parity never
+  // recovers) used to leave the scanner permanently "inside a string" for
+  // the rest of the source — the real closing `>` of THIS tag was never
+  // found at depth 0, so the scan ran straight through it and swallowed the
+  // ENTIRE next `<input>` tag (including its real `aria-label`) into this
+  // tag's own attrs, wrongly exempting a placeholder-only control that has
+  // no accessible name of its own.
+  ok(placeholderOnlyControls(String.raw`<input onChange={() => setValue("a \"b")} placeholder="x" /><input aria-label="Other" placeholder="y" />`).length === 1,
+    'fixture: a handler with an ODD count of escaped quotes must not swallow the NEXT tag\'s real aria-label into this tag\'s own attrs — only the first (unnamed) input should be flagged, not zero');
+  // CodeRabbit CLI (this review): the old aria-label/aria-labelledby
+  // exemption fired on bare ATTRIBUTE PRESENCE — an empty aria-label or a
+  // dangling/empty aria-labelledby gave no real accessible name at all.
+  ok(placeholderOnlyControls('<input aria-label="" placeholder="x" />').length === 1,
+    'fixture: an EMPTY aria-label must still be flagged — presence alone is not a real accessible name');
+  ok(placeholderOnlyControls('<input aria-labelledby="missing" placeholder="x" />').length === 1,
+    'fixture: an aria-labelledby whose IDREF matches no id= anywhere in the file must be flagged (dangling, same class as htmlFor)');
+  ok(placeholderOnlyControls('<input aria-labelledby="" placeholder="x" />').length === 1,
+    'fixture: an EMPTY aria-labelledby must be flagged — no IDREF at all names nothing');
+  ok(placeholderOnlyControls('<input aria-labelledby="g" placeholder="x" /><div id="g">Name</div>').length === 0,
+    'fixture: an aria-labelledby whose IDREF resolves to a real id= (even on a non-labelable <div>, valid per the ARIA spec) must NOT be flagged');
   ok(placeholderOnlyControls('<input id="missing" placeholder="x" /><label htmlFor="a">Name</label>').length === 1,
     'fixture: a placeholder input\'s id pointing at an htmlFor that does not exist anywhere in the file must be flagged (dangling id)');
   ok(placeholderOnlyControls('<input id={id} placeholder="x" />', 'src/components/DescriptionEditor.tsx').length === 0,
@@ -828,6 +954,26 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     'fixture: the SAME id={id} shape with NO filePath (or a different file) must be flagged — the exemption is scoped to DescriptionEditor.tsx specifically, not any component that happens to destructure a prop named `id` (CodeRabbit CLI, this review)');
   ok(placeholderOnlyControls('<input id={id} placeholder="x" />', 'src/components/SomeOtherComponent.tsx').length === 1,
     'fixture: id={id} in an UNRELATED file must be flagged — the exemption must not accidentally generalize');
+  // CodeRabbit CLI (this review): an htmlFor= on a NON-label tag names
+  // nothing real — only a genuine <label> can associate. A decoy htmlFor
+  // elsewhere in the file must not suppress a real placeholder-only
+  // violation.
+  ok(placeholderOnlyControls('<input id="a" placeholder="x" /><div htmlFor="a">Not a label</div>').length === 1,
+    'fixture: an htmlFor on a non-<label> tag must NOT count as association — a placeholder-only input still gets flagged even when a decoy element elsewhere happens to carry a matching htmlFor');
+  ok(placeholderOnlyControls('<input id="a" placeholder="x" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: an htmlFor on a REAL <label> tag still associates normally (control, proves the label-scoping did not break the valid case)');
+  // CodeRabbit CLI (this review): stripComments used to be regex-only, not
+  // quote-aware — a real placeholder string containing "//" (a URL) was
+  // itself treated as a line-comment START, blanking its own closing quote
+  // and everything after it on that line (the exact MenuDrawer.tsx shape:
+  // `placeholder="e.g., https://nash-equilibrium.run.app"`), corrupting
+  // every check for the rest of the file.
+  ok(placeholderOnlyControls('<input placeholder="e.g., https://example.com" />').length === 1,
+    'fixture: a placeholder containing "//" (a URL) is STILL a placeholder-only control (no aria-label/id of its own) and must be flagged for that real reason — proves the "//" text itself was not silently blanked away along with everything meant to follow it');
+  ok(placeholderOnlyControls('<input id="a" placeholder="e.g., https://example.com" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: the SAME "//"-containing placeholder, but with a real htmlFor-linked label, must NOT be flagged — proves the quote-aware stripComments does not corrupt the tag\'s own later id= attribute');
+  ok(unassociatedLabels('<input placeholder="e.g., https://example.com" /><label className="x">Name</label><input value="" />').length === 1,
+    'fixture: a REAL violation AFTER a "//"-containing placeholder must still be caught — proves stripComments did not swallow the rest of the source into a phantom open string');
 
   // ── The real tree: walk every src/**/*.tsx file, both checkers, 0 violations. ──
   function walkTsx(dir: string): string[] {

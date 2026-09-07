@@ -525,8 +525,20 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     'fetchStats must re-check the generation after res.json() too, before setStats/setAuthed (CodeRabbit CLI)');
   ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\(wasAuthed \? 'Could not refresh the stats\.' : 'Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
     'fetchStats must gate its catch-block setError AND the trailing setLoading(false) on the generation too, not just the success path (CodeRabbit CLI)');
-  ok(/const wasAuthed = authed;/.test(admin),
-    'fetchStats must capture `authed` (Refresh vs initial Login) before its own await, same as `gen` (RED-APP-16/005)');
+  // CodeRabbit CLI (this review): unlike the other checks in this block,
+  // `const wasAuthed = authed;` is generic enough that an unrelated
+  // declaration elsewhere in the file could satisfy it even if fetchStats
+  // itself lost the capture — scope to fetchStats's own body (same
+  // isolation technique the 401-branch check below already uses).
+  {
+    const wasAuthedFetchStatsIdx = admin.indexOf('const fetchStats = async (secret: string) => {');
+    ok(wasAuthedFetchStatsIdx > 0, 'fetchStats must be found');
+    const wasAuthedFetchStatsEnd = admin.indexOf('const StatCard = ', wasAuthedFetchStatsIdx);
+    ok(wasAuthedFetchStatsEnd > wasAuthedFetchStatsIdx, 'the StatCard declaration after fetchStats must be found');
+    const wasAuthedFetchStatsBody = admin.slice(wasAuthedFetchStatsIdx, wasAuthedFetchStatsEnd);
+    ok(/const wasAuthed = authed;/.test(wasAuthedFetchStatsBody),
+      'fetchStats must capture `authed` (Refresh vs initial Login) before its own await, same as `gen` (RED-APP-16/005)');
+  }
   // MUTATION TEST — reverting the pre-increment (CodeRabbit CLI, this
   // review) back to a bare read must be caught: two concurrent fetchStats
   // calls (nothing disables Refresh while loading) would then share one
@@ -625,6 +637,26 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     ok(!/setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);/.test(mutatedBody),
       'mutation-test: collapsing the 401 message back to unconditional "Incorrect password." must be caught by the check above');
   }
+
+  // CodeRabbit CLI (this review): the presence check above only proves a
+  // 401 branch EXISTS somewhere in fetchStats — it would still pass if that
+  // branch moved to AFTER `await res.json()`, where a 401 response with an
+  // empty/non-JSON body throws before the session-reset ever runs. Require
+  // the real ORDER: after the post-fetch generation guard, before res.json().
+  function admin401BeforeJson(body: string): boolean {
+    const genGuardIdx = body.indexOf('if (gen !== requestGenRef.current) return;');
+    const status401Idx = body.indexOf('if (res.status === 401)');
+    const resJsonIdx = body.indexOf('const data = await res.json();');
+    return genGuardIdx > -1 && status401Idx > genGuardIdx && resJsonIdx > -1 && status401Idx < resJsonIdx;
+  }
+  ok(admin401BeforeJson(fetchStatsBody),
+    'the 401 check must run after the post-fetch generation guard and BEFORE res.json() is parsed — a 401 branch moved after res.json() would throw on an empty/non-JSON body before the session reset ever runs (CodeRabbit CLI, this review)');
+  // MUTATION-TEST FIXTURES — prove the order check itself actually rejects
+  // the two wrong orderings, not just accepts the one real (correct) body.
+  ok(!admin401BeforeJson('if (gen !== requestGenRef.current) return;\nconst data = await res.json();\nif (res.status === 401) { requestGenRef.current += 1; }'),
+    'mutation-test fixture: a 401 check placed AFTER res.json() must be rejected by the order check above');
+  ok(!admin401BeforeJson('if (res.status === 401) { requestGenRef.current += 1; }\nif (gen !== requestGenRef.current) return;\nconst data = await res.json();'),
+    'mutation-test fixture: a 401 check placed BEFORE the post-fetch generation guard must also be rejected');
 
   // The authed branch (`stats ? (...)`) must render `error`, with a Retry
   // that re-issues the SAME request (fetchStats(password)) — isolated to

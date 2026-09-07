@@ -715,7 +715,10 @@ try {
     await page.waitForTimeout(500);
     await $.run.click();
     await page.waitForSelector('text=Converged', { timeout: 240000 });
-    const jump = page.locator('xpath=//span[contains(text(),"Go to step")]/following-sibling::input[1]');
+    // RED CI (shard 7, reproduced locally at 1fb91f6): "Go to step" is now a
+    // <label htmlFor> (RED-APP-16/003), not a <span> — locate by ACCESSIBLE
+    // NAME, not tag, which is the whole point of the label fix.
+    const jump = page.getByLabel('Go to step', { exact: true });
     await jump.fill('0');
     await page.getByRole('button', { name: 'Go', exact: true }).click();
     await page.waitForTimeout(400);
@@ -5283,8 +5286,13 @@ try {
 
       // Force trackingMode 'A' (RED's own harness: 'both' doubles every
       // glyph into 2 z-stacked copies, which would corrupt the pixel scan).
-      const trackABtn = p.locator('label:has-text("Expected Payoff Surface Tracking")')
-        .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+      // RED CI (shard 21, reproduced locally at 1fb91f6): the heading is now
+      // a <div id> + role="group" aria-labelledby (RED-APP-16/003), not a
+      // <label> — locate the group by its ACCESSIBLE NAME, not tag. (#164
+      // rewrites this section's structure on main; re-apply this
+      // accessible-name locator to #164's version when merging main.)
+      const trackABtn = p.getByRole('group', { name: 'Expected Payoff Surface Tracking' })
+        .getByRole('button', { name: 'Player A' });
       await trackABtn.click({ timeout: 5000 }).catch(() => {});
       // CodeRabbit (this branch): a swallowed click failure or a slow
       // SwiftShader Plotly.react would leave trackingMode 'both' and z-stack
