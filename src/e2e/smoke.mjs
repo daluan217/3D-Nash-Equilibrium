@@ -6369,6 +6369,14 @@ try {
       record(`[${label}] FIX: the click did not advance the tour (tour-advance direction)`, stepAfterTest === stepBefore, JSON.stringify({ stepBefore, stepAfterTest }));
       const surfaceOpenAfterTest = await p.locator(surfaceOpenSelector).first().isVisible().catch(() => false);
       await closeSurface(p);
+      // Assert the surface actually closed before reopening it below — the
+      // wait inside closeSurface is itself `.catch(() => {})`, so a failed
+      // dismissal must not silently let the control arm "reopen" a surface
+      // that was never really closed (CodeRabbit CLI).
+      const surfaceReallyClosed = await p.evaluate((sel) => !document.querySelector(sel), surfaceOpenSelector);
+      record(`[${label}] precondition: the surface actually closed after the test arm (otherwise the control arm's "reopen" is not a real reopen)`,
+        surfaceReallyClosed, JSON.stringify({ surfaceReallyClosed }));
+      if (!surfaceReallyClosed) return;
 
       // ── control arm: dismiss the tour ENTIRELY (now unblocked and
       // interactive again), reopen the identical surface, click the
@@ -6412,7 +6420,12 @@ try {
         name: 'drawer/step6', preSteps: 5, expectedStep: '6',
         openSurface: async (pg) => { await pg.locator('button[aria-label="Open workspace menu"]').first().click(); },
         surfaceOpenSelector: '[role="dialog"][aria-label="Simulator Workspace Center"]',
-        closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {}); },
+        // CodeRabbit CLI: watch the SAME selector openSurface/surfaceOpenSelector
+        // use (the dialog panel itself), not a different element (the close
+        // button) — a real close-button removal doesn't guarantee the whole
+        // panel is gone in the same instant, and this selector is also what
+        // runScenario's own precondition check below verifies against.
+        closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction((sel) => !document.querySelector(sel), '[role="dialog"][aria-label="Simulator Workspace Center"]', { timeout: 8000 }).catch(() => {}); },
         tourButtonSelector: `${TOUR_SEL} button:has-text("Next")`,
       },
       {
@@ -6510,11 +6523,14 @@ try {
     // OPUS-REVIEW-MODAL17 F1: checks the OTHER half of the shipping rule —
     // a partial edit that drops `display: none` but keeps `position: static`
     // passes fixedOrStickySurvivors() (nothing is fixed/sticky any more) yet
-    // still paints the whole dialog into the printed page.
-    const openSurfaceDisplay = () => p.evaluate(() => {
-      const el = document.querySelector('[data-modal-surface]');
+    // still paints the whole dialog into the printed page. CodeRabbit CLI:
+    // scoped to the SPECIFIC surface id under test (`[data-modal-surface="id"]`),
+    // not a bare `[data-modal-surface]` that would silently read whichever
+    // surface happens to match first if more than one were ever present.
+    const surfaceDisplay = (id) => p.evaluate((id) => {
+      const el = document.querySelector(`[data-modal-surface="${id}"]`);
       return el ? getComputedStyle(el).display : null;
-    });
+    }, id);
 
     await p.emulateMedia({ media: 'print' });
     const controlHits = await fixedOrStickySurvivors();
@@ -6527,8 +6543,8 @@ try {
     await p.emulateMedia({ media: 'print' });
     const drawerHits = await fixedOrStickySurvivors();
     record('FIX: with the drawer open, print stylesheet leaves 0 fixed/sticky elements (RED-APP-16/006)', drawerHits.length === 0, JSON.stringify(drawerHits));
-    const drawerDisplay = await openSurfaceDisplay();
-    record('FIX: with the drawer open, the [data-modal-surface] overlay itself computes display:none under print media (OPUS-REVIEW-MODAL17 F1)', drawerDisplay === 'none', `display=${drawerDisplay}`);
+    const drawerDisplay = await surfaceDisplay('drawer');
+    record('FIX: with the drawer open, the [data-modal-surface="drawer"] overlay itself computes display:none under print media (OPUS-REVIEW-MODAL17 F1)', drawerDisplay === 'none', `display=${drawerDisplay}`);
     // Real print-pipeline sanity: page.pdf() actually succeeds with a
     // dialog open — the actual print path, not only the computed checks
     // above. (Not asserted byte-identical to a no-dialog baseline — see the
@@ -6547,8 +6563,8 @@ try {
     await p.emulateMedia({ media: 'print' });
     const saveHits = await fixedOrStickySurvivors();
     record('FIX: with the centered Save-preset dialog open, print stylesheet leaves 0 fixed/sticky elements too (RED-APP-16/006)', saveHits.length === 0, JSON.stringify(saveHits));
-    const saveDisplay = await openSurfaceDisplay();
-    record('FIX: with the Save-preset dialog open, the [data-modal-surface] overlay itself computes display:none under print media (OPUS-REVIEW-MODAL17 F1)', saveDisplay === 'none', `display=${saveDisplay}`);
+    const saveDisplay = await surfaceDisplay('save-preset');
+    record('FIX: with the Save-preset dialog open, the [data-modal-surface="save-preset"] overlay itself computes display:none under print media (OPUS-REVIEW-MODAL17 F1)', saveDisplay === 'none', `display=${saveDisplay}`);
 
     await p.emulateMedia({ media: 'screen' });
     await p.keyboard.press('Escape');

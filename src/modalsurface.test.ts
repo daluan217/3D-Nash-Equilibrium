@@ -750,7 +750,14 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // index.css → this fails by name.
 {
   const css = readFileSync('src/index.css', 'utf8');
-  const printBlockMatch = css.match(/@media print \{[\s\S]*\n\}/);
+  // Non-greedy up to the first closing brace at column 0 — the greedy form
+  // (`[\s\S]*`) swallowed every rule through the LAST `\n}` in the whole
+  // file, not just the print block's own closing brace, so a rule declared
+  // OUTSIDE @media print could also satisfy the assertion below (no live
+  // defect today — nothing currently follows the print block in this file —
+  // but the greedy form would silently stop discriminating the moment
+  // something does; CodeRabbit CLI).
+  const printBlockMatch = css.match(/@media print \{[\s\S]*?\n\}/);
   ok(!!printBlockMatch, 'could not locate the @media print block in src/index.css');
   const printBlock = printBlockMatch?.[0] ?? '';
   ok(/\[data-modal-surface\],\s*\n\s*\[data-modal-surface\]\s*\*\s*\{\s*\n\s*display:\s*none\s*!important;\s*\n\s*position:\s*static\s*!important;\s*\n\s*\}/.test(printBlock),
