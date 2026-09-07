@@ -5283,7 +5283,22 @@ try {
         }
       });
       await page.waitForFunction(() => document.querySelector('.js-plotly-plot')?._fullLayout?.showlegend === false ? true : null, null, { timeout: 5000 }).catch(() => {});
-      await page.waitForTimeout(200);
+      // Director-routed (CI shard 27/28, second run, job 101778098377):
+      // a FIXED 200ms sleep here under-measured a real corner on a loaded
+      // CI runner (calibratedDiag read 14.87 for variant B, well under the
+      // ~28px the SAME marker measured moments later in the row's own real
+      // scan -- a partially-painted frame, the SAME "canvas hasn't caught
+      // up yet" class of bug this whole thread has already been about
+      // elsewhere). A fixed ms sleep cannot adapt to a runner that is
+      // momentarily slower; wait for several REAL animation frames
+      // (naturally throttles to whatever the runner can actually deliver)
+      // before the fixed sleep, not instead of it.
+      await page.evaluate(() => new Promise((resolve) => {
+        let n = 0;
+        const tick = () => { n += 1; if (n >= 6) resolve(); else requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      }));
+      await page.waitForTimeout(300);
       const shot = await page.locator('[data-tour="plot"]').screenshot();
       // SAME blob-scan algorithm (colour target #8E44AD, tol=40, dsf
       // normalization) every check in this section uses -- the calibrated
