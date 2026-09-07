@@ -842,17 +842,25 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // red's harness). The invariant is the one Save/Edit already hold: a
   // stale-identity response is discarded before it touches ANY state —
   // before `res.ok`'s list edit, before the 404 refetch, before the helper.
+  //
+  // CodeRabbit CLI on the fix: identity is not the whole context — both
+  // database modes can be signed out (token null in each), and the mode
+  // decides which server the response came from — so the gate compares a
+  // request-context GENERATION bumped on every identity / mode / API-base
+  // commit, captured before the fetch.
   const deleteSlice = app.slice(app.indexOf('const handleDeleteGame'), app.indexOf('const handleGenerateGame'));
-  const DELETE_STALE_GATE = 'if (authTokenRef.current !== requestToken) return;';
+  const DELETE_STALE_GATE = 'if (gamesContextGenRef.current !== requestGen) return;';
   const gateIdx = deleteSlice.indexOf(DELETE_STALE_GATE);
   const okIdx = deleteSlice.indexOf('if (res.ok)');
   const helperIdx = deleteSlice.indexOf('handleDeadSessionResponse(res, requestToken)');
   const fetchIdx = deleteSlice.indexOf('await fetch(');
-  check(`handleDeleteGame discards a stale-identity response before ANY state change (fetch@${fetchIdx} gate@${gateIdx} res.ok@${okIdx} helper@${helperIdx})`,
+  check(`handleDeleteGame discards a stale-context response before ANY state change (fetch@${fetchIdx} gate@${gateIdx} res.ok@${okIdx} helper@${helperIdx})`,
     gateIdx !== -1 && okIdx !== -1 && helperIdx !== -1 && fetchIdx !== -1
     && fetchIdx < gateIdx && gateIdx < okIdx && gateIdx < helperIdx);
-  check('handleDeleteGame captures the request identity before the fetch (requestToken = authToken)',
-    (() => { const i = deleteSlice.indexOf('const requestToken = authToken;'); return i !== -1 && i < fetchIdx; })());
+  check('handleDeleteGame captures the request generation before the fetch (requestGen = gamesContextGenRef.current)',
+    (() => { const i = deleteSlice.indexOf('const requestGen = gamesContextGenRef.current;'); return i !== -1 && i < fetchIdx; })());
+  check('the games-context generation is bumped on every identity, API-base and database-mode commit',
+    /useLayoutEffect\(\(\) => \{ gamesContextGenRef\.current \+= 1; \}, \[authToken, apiBaseUrl, dbMode\]\);/.test(app));
   // Mutation fixtures: the two ways this regresses — the gate removed (the
   // original defect) and the gate moved below the helper (the alert is gone
   // but the list edits and the 404 refetch run under the wrong identity).
