@@ -5681,10 +5681,12 @@ try {
       await editDlg.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
       await dp.locator('div.group', { has: savedRow }).getByTitle(/^Edit /).click();
       await editDlg.waitFor({ state: 'visible', timeout: 8000 });
+      // CodeRabbit CLI: locate the button by BOTH possible names (its label
+      // is copy, not the oracle) and assert the app STATE the regression
+      // actually broke — `editLoading`, read through `disabled={editLoading}`
+      // (App.tsx:6222) — not the button's wording.
       const reopenedBtn = editDlg.getByRole('button', { name: /^save changes$|^saving\.\.\.$/i });
-      record('FIX: the reopened Edit dialog reads "Save Changes" (not "Saving..."), the hung request\'s finally never ran',
-        (await reopenedBtn.textContent().catch(() => '') || '').trim().toLowerCase() === 'save changes');
-      record('FIX: the reopened Edit dialog\'s submit button is enabled, not stuck disabled by the hung request',
+      record('FIX: the reopened Edit dialog\'s submit button is enabled, not stuck disabled by the hung request\'s editLoading',
         !(await reopenedBtn.isDisabled().catch(() => true)));
       await dp.unroute('**/api/games/*');
       await dp.keyboard.press('Escape');
