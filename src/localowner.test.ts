@@ -249,8 +249,10 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     violations.length === 0);
 
   // The two fixed sites read the per-error flag instead.
-  check('Save dialog error render gates on saveErrorNeedsAuth', /saveErrorNeedsAuth \? \(/.test(app));
-  check('Edit dialog error render gates on editErrorNeedsAuth', /editErrorNeedsAuth \? \(/.test(app));
+  // CodeRabbit CLI: `\s*` (not a literal space) so a formatter's line break
+  // between the flag and `?` still passes.
+  check('Save dialog error render gates on saveErrorNeedsAuth', /saveErrorNeedsAuth\s*\?\s*\(/.test(app));
+  check('Edit dialog error render gates on editErrorNeedsAuth', /editErrorNeedsAuth\s*\?\s*\(/.test(app));
 
   // CodeRabbit on #158 (outside-diff, 73e5fba): `if (!editGameId ||
   // !canOwnGames) return;` was a SILENT no-op if the token died while the
@@ -291,8 +293,12 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
         else if (src[i] === ')') depth--;
         i++;
       }
-      const after = src.slice(i, Math.min(src.length, i + 200));
-      if (!new RegExp(`${flag}\\(`).test(after)) {
+      // CodeRabbit CLI: require the flag call IMMEDIATELY after this setter's
+      // own closing paren (only a `;` and whitespace between) — not merely
+      // somewhere within a window, which could be satisfied by an unrelated
+      // LATER setter's flag call and let a genuinely unpaired setter through.
+      const after = src.slice(i);
+      if (!new RegExp(`^\\s*;?\\s*${flag}\\(`).test(after)) {
         unpaired.push(src.slice(m.index, Math.min(i, m.index + 80)).replace(/\s+/g, ' '));
       }
     }
