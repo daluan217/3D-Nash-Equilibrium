@@ -5575,6 +5575,129 @@ try {
     await p.close();
   });
 
+  // ══ 78. RED-DESKTOP-15/001 (director-reproduced). The Save/Edit error
+  //      banners decided "does this need a sign-in" by reading `!authToken`
+  //      — a boolean that is STRUCTURALLY always false for a desktop LOCAL
+  //      OWNER (no account at all), so EVERY failure (a dropped connection,
+  //      here) rendered the "Sign In / Sign Up" invitation, never the plain
+  //      error the exact same failure gets for anyone else. Fixed:
+  //      `saveErrorNeedsAuth`/`editErrorNeedsAuth`, set only where the
+  //      failure is actually auth-shaped. The second half closes the
+  //      loophole a bare `!canOwnGames` re-check would still have: an
+  //      ACCOUNT user signed in while dbMode stays 'local' whose session
+  //      genuinely 401s clears the token, which flips `localOwnerMode` (and
+  //      so `canOwnGames`) true too — the invitation must still show for
+  //      THAT failure, because it really is an expired session. Mutation:
+  //      reverting App.tsx's fix makes both negative-control FIX checks
+  //      below fail (see src/localowner.test.ts for the structural guard and
+  //      its own mutation test against the same revert).
+  section('78', 'desktop: a local owner (no account) never gets a sign-in invitation for a non-auth failure; a real session 401 still does', async () => {
+    const deskPort = String(Number(PORT) + 1004);
+    const deskBase = `http://127.0.0.1:${deskPort}`;
+    const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-authpred-'));
+    const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
+      cwd: deskData,
+      env: { ...process.env, NODE_ENV: 'production', PORT: deskPort, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: deskData },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    desk.stderr.on('data', () => {});
+    const deskCtx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36',
+    });
+    try {
+      let up = false;
+      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
+      const dp = await deskCtx.newPage();
+      const deskErrors = [];
+      dp.on('pageerror', (e) => deskErrors.push(String(e)));
+      dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
+      await dp.goto(deskBase, { waitUntil: 'networkidle' });
+      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
+      if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
+      record('precondition: the guided tour is dismissed', tourGone);
+      record('precondition: this is a genuine local owner (no token in localStorage)',
+        await dp.evaluate(() => !localStorage.getItem('nash_sim_token_local') && !localStorage.getItem('nash_sim_token_cloud') && !localStorage.getItem('nash_sim_token')));
+
+      // ── Negative control: a plain dropped connection on Save must NOT show the invitation ──
+      await dp.route('**/api/games', (route) => (route.request().method() === 'POST' ? route.abort('connectionreset') : route.continue()));
+      await dp.getByRole('button', { name: /save preset/i }).click();
+      const saveDlg = dp.locator('[role="dialog"][aria-label="Save custom game"]');
+      await saveDlg.waitFor({ state: 'visible', timeout: 8000 });
+      await saveDlg.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill('LocalOwnerNetFail78');
+      await saveDlg.getByRole('button', { name: /save game profile/i }).click();
+      await saveDlg.getByText(/network error/i).waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      const saveFailText = await saveDlg.innerText().catch(() => '');
+      record('FIX: a dropped connection on Save renders as a plain error, no Sign In / Sign Up invitation, for a local owner',
+        /network error/i.test(saveFailText) && !/sign in \/ sign up/i.test(saveFailText), saveFailText.slice(0, 160));
+      await dp.unroute('**/api/games');
+
+      // Retry for real (route removed) so there is a saved game to Edit.
+      await saveDlg.getByRole('button', { name: /save game profile/i }).click();
+      const savedRow = dp.getByRole('button', { name: 'LocalOwnerNetFail78', exact: true });
+      record('precondition: the retry (no interception) really saves the game',
+        await savedRow.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false));
+
+      // ── Negative control: a plain dropped connection on Edit must NOT show the invitation ──
+      await dp.route('**/api/games/*', (route) => (route.request().method() === 'PATCH' ? route.abort('connectionreset') : route.continue()));
+      await dp.locator('div.group', { has: savedRow }).getByTitle(/^Edit /).click();
+      const editDlg = dp.locator('[role="dialog"][aria-label="Edit saved game"]');
+      await editDlg.waitFor({ state: 'visible', timeout: 8000 });
+      await editDlg.locator('textarea').first().fill('Edited despite a dropped connection.');
+      await editDlg.getByRole('button', { name: /^save changes$/i }).click();
+      await editDlg.getByText(/network error/i).waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      const editFailText = await editDlg.innerText().catch(() => '');
+      record('FIX: a dropped connection on Edit renders as a plain error, no Sign In / Sign Up invitation, for a local owner',
+        /network error/i.test(editFailText) && !/sign in \/ sign up/i.test(editFailText), editFailText.slice(0, 160));
+      await dp.unroute('**/api/games/*');
+      await dp.keyboard.press('Escape');
+
+      // ── Positive control: an ACCOUNT user, still on dbMode='local', whose
+      // session genuinely 401s. Closes the loophole a bare `!canOwnGames`
+      // fix would leave open (the cleared token flips localOwnerMode true).
+      const email = `d15auth${Date.now().toString(36)}@example.com`;
+      const reg = await fetch(deskBase + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: `d15auth${Date.now().toString(36)}`, email, password: 'TestPass123' }) });
+      record('precondition: a real account exists on this device (still dbMode=local)', reg.ok, `status ${reg.status}`);
+      await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+      await dp.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+      await dp.getByPlaceholder(/example\.com or username/i).fill(email);
+      await dp.getByPlaceholder('••••••••').first().fill('TestPass123');
+      await dp.getByRole('button', { name: /^login$/i }).click();
+      // Signing in on a device holding a local-owner game offers to move it — dismiss, do not move.
+      const offer = dp.locator('[role="dialog"][aria-label="Games saved on this device"]');
+      if (await offer.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false)) {
+        await dp.keyboard.press('Escape');
+        await offer.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      }
+      record('precondition: the account session token is stored under the LOCAL key',
+        typeof (await dp.evaluate(() => localStorage.getItem('nash_sim_token_local'))) === 'string');
+
+      await dp.route('**/api/games', (route) => (route.request().method() === 'POST'
+        ? route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) })
+        : route.continue()));
+      await dp.getByRole('button', { name: /save preset/i }).click();
+      await saveDlg.waitFor({ state: 'visible', timeout: 8000 });
+      await saveDlg.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill('AcctSession401-78');
+      await saveDlg.getByRole('button', { name: /save game profile/i }).click();
+      const inviteBtn = saveDlg.getByRole('button', { name: /sign in \/ sign up/i });
+      record('FIX: a real 401 for a signed-in account (still dbMode=local) DOES show the Sign In / Sign Up invitation',
+        await inviteBtn.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false));
+      record('the 401 cleared the account session token (what would otherwise have flipped localOwnerMode true)',
+        !(await dp.evaluate(() => localStorage.getItem('nash_sim_token_local'))));
+      await dp.unroute('**/api/games');
+
+      record('no console/page errors through the desktop auth-predicate cycle (the two deliberate drops [ERR_CONNECTION_RESET] and the mocked 401 resource-load error are expected, filtered)',
+        deskErrors.filter((t) => !/ERR_CONNECTION_RESET/.test(t) && !/status of 401/.test(t)).length === 0, deskErrors.join(' | ').slice(0, 300));
+    } finally {
+      await deskCtx.close().catch(() => {});
+      if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
+      try { rmSync(deskData, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+
 await executeSections();
 
 } catch (e) {
