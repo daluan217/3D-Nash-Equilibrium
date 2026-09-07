@@ -341,6 +341,31 @@ input.no-native-spinner {
     display: none !important;
   }
 
+  /* RED-APP-16/006: this block used to enumerate `data-print` hooks by hand,
+   * and its own comment above claimed that enumeration was complete — true
+   * only with no dialog open. Every <ModalSurface> overlay (both the
+   * centered and the drawer layout) carries `data-modal-surface={id}`
+   * (ModalSurface.tsx) whether or not it also has a custom
+   * `overlayClassName`, so hiding by that ONE primitive-set attribute covers
+   * every current dialog and every future one with no separate opt-in —
+   * unlike the hand list, this can't go stale the next time a dialog is
+   * added. Same `position: static !important` companion as `[data-print="hide"]`
+   * above, for the same reason: `display: none` alone leaves the element's
+   * own computed `position: fixed` intact for anything that reads it.
+   *
+   * Measured while building this (§84): `display: none` on the wrapper does
+   * NOT propagate to a DESCENDANT's own computed `position` either — the
+   * drawer layout's separate backdrop div (DRAWER_BACKDROP_CLASS) declares
+   * `fixed` itself, independent of its `display:none` ancestor, and
+   * `getComputedStyle` still reports it (a display:none subtree is not
+   * rendered, but each element's own declared `position` still resolves).
+   * The wildcard descendant selector resets every such node too. */
+  [data-modal-surface],
+  [data-modal-surface] * {
+    display: none !important;
+    position: static !important;
+  }
+
   /* backdrop-filter (blur) is a known Chromium print limitation: it can
    * render as a solid, opaque block instead of being ignored, rather than
    * simply not blurring anything (there is nothing behind a printed page
