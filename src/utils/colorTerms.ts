@@ -205,7 +205,12 @@ export const USER_TERMS_MAX = 12;
 export function capHitMessage(dropped: readonly string[], player?: 'A' | 'B'): string {
   const quoted = dropped.map((t) => `"${t}"`).join(', ');
   const who = player ? ` for Player ${player}` : '';
-  return `That is ${USER_TERMS_MAX} highlights already${who} — remove one to add ${quoted}.`;
+  // CodeRabbit (PR #161): a side at the cap can drop SEVERAL generated
+  // terms in the same Keep, and one free slot cannot admit all of them —
+  // "remove one" was wrong whenever `dropped.length > 1`. Base the count on
+  // `dropped.length` itself, the same list `quoted` names.
+  const removeCount = dropped.length === 1 ? 'one' : String(dropped.length);
+  return `That is ${USER_TERMS_MAX} highlights already${who} — remove ${removeCount} to add ${quoted}.`;
 }
 
 /**

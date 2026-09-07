@@ -5589,6 +5589,16 @@ try {
     actorA: ['the lighthouse keeper'], actorB: ['the ferry crew'],
   };
   const CAP_WORDS = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima'];
+  // Opposite-side control (CodeRabbit, PR #161): actorB is "alpha" -- one of
+  // CAP_WORDS itself, ALREADY a Player-B chip when B is seeded from this
+  // list -- so it is absorbed as a duplicate with zero drop signal on B,
+  // isolating the assertion to A's own (empty) side.
+  const REGEN_STORY_CAP_OPPOSITE = {
+    name: 'Harbour Watch Rotation (Opposite)',
+    row1: 'Morning Watch', row2: 'Night Watch', col1: 'Dock Duty', col2: 'Patrol',
+    description: 'The lighthouse keeper and alpha coordinate harbour watch shifts.',
+    actorA: ['the lighthouse keeper'], actorB: ['alpha'],
+  };
   const capSelectWord = async (p, word) => {
     await p.evaluate(({ w, sel }) => {
       const ta = document.querySelector(sel);
@@ -5596,6 +5606,18 @@ try {
       ta.focus();
       ta.setSelectionRange(idx, idx + w.length);
     }, { w: word, sel: '[role="dialog"][aria-label="Save custom game"] textarea' });
+  };
+  // §70's idiom: ONE real register+login (pbkdf2 + the Account-modal UI
+  // journey) is expensive; the other two sub-tests below reuse that SAME
+  // account by injecting its token directly, instead of repeating the full
+  // UI signup/signin flow three times over — this alone is most of why the
+  // section measured 251s before (see the commit note) and had to shrink.
+  const injectAuth = async (p, token) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+    await p.evaluate((t) => localStorage.setItem('nash_sim_token_local', t), token);
+    await p.reload({ waitUntil: 'networkidle' });
+    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
   };
   section('80', 'Regenerate -> Keep at the highlight cap names the dropped actor noun', async () => {
     const desc = `The ${CAP_WORDS.join(', ')} crew members meet at the dock.`;
@@ -5605,6 +5627,7 @@ try {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_CAP }) });
     });
     await registerAndLogin(capPage, 'e2e80cap');
+    const sharedToken = await capPage.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
     await capPage.getByRole('button', { name: /save preset/i }).click();
     await capPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
     await capPage.locator('[role="dialog"][aria-label="Save custom game"] textarea').fill(desc);
@@ -5645,7 +5668,7 @@ try {
     await mockRegenOn(controlPage, async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_CAP }) });
     });
-    await registerAndLogin(controlPage, 'e2e80ctl');
+    await injectAuth(controlPage, sharedToken);
     await controlPage.getByRole('button', { name: /save preset/i }).click();
     await controlPage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
     await controlPage.locator('[role="dialog"][aria-label="Save custom game"] textarea').fill(desc);
@@ -5668,6 +5691,42 @@ try {
     record('control: below the cap, Keep actually ADDS the noun as a 12th chip',
       await dialog2.locator('button[data-player="A"]:has-text("the lighthouse keeper")').isVisible().catch(() => false));
     await controlPage.close();
+
+    // CodeRabbit (PR #161): opposite-side capacity control -- the cap is
+    // PER SIDE, not a pooled/global 24-slot budget. Seed 12 chips on PLAYER
+    // B instead of A; Player A is empty, so Keep must add "the lighthouse
+    // keeper" for A with the ordinary "Kept" note. A defective GLOBAL
+    // 12-highlight cap would fail this (it would report A's own add as
+    // capped out too, since 12 highlights already exist somewhere in the
+    // dialog) while every earlier assertion in this section still passes.
+    const oppositePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(oppositePage, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ scenario: REGEN_STORY_CAP_OPPOSITE }) });
+    });
+    await injectAuth(oppositePage, sharedToken);
+    await oppositePage.getByRole('button', { name: /save preset/i }).click();
+    await oppositePage.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await oppositePage.locator('[role="dialog"][aria-label="Save custom game"] textarea').fill(desc);
+    const dialog3 = oppositePage.getByRole('dialog', { name: 'Save custom game' });
+    for (const w of CAP_WORDS) {
+      await capSelectWord(oppositePage, w);
+      await dialog3.getByRole('button', { name: 'Player B' }).click();
+    }
+    record('opposite-side precondition: 12 real Player B chips, Player A empty',
+      await dialog3.locator('button[data-player="B"]').count() === 12
+        && await dialog3.locator('button[data-player="A"]').count() === 0);
+    const regenBtn3 = oppositePage.getByRole('button', { name: 'Regenerate scenario' });
+    await regenBtn3.waitFor({ state: 'visible', timeout: 5000 });
+    await regenBtn3.click();
+    await oppositePage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
+    await oppositePage.getByRole('button', { name: 'Keep' }).click();
+    await oppositePage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
+    const note3 = await dialog3.locator('p[role="status"]').innerText().catch(() => '');
+    record('FIX (opposite-side control): Player A is not capped by Player B\'s 12 chips -- the note is the plain "Kept" message',
+      /^Kept/.test(note3) && !/highlights already/.test(note3), note3);
+    record('FIX (opposite-side control): Keep actually ADDS "the lighthouse keeper" for Player A',
+      await dialog3.locator('button[data-player="A"]:has-text("the lighthouse keeper")').isVisible().catch(() => false));
+    await oppositePage.close();
   });
 
 await executeSections();

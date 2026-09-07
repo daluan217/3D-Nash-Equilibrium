@@ -118,7 +118,10 @@ export function DescriptionEditor({
       setHint(
         movedFrom
           ? `"${term}" is highlighted for Player ${movedFrom}; Player ${player} already has ${USER_TERMS_MAX} highlights — remove one to move it.`
-          : capHitMessage([term]),
+          // CodeRabbit (PR #161): name the SELECTED player's cap, not a
+          // player-agnostic message — this is always a single side's own
+          // pick (Player A or B), never the pooled Keep-side case.
+          : capHitMessage([term], player),
       );
       return;
     }

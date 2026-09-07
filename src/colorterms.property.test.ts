@@ -732,10 +732,19 @@ if (failures > 0) {
   // capHitMessage: exact wording, shared by both add-paths -- one term with
   // no player tag (the manual picker's own single-side case), several terms
   // with one (Keep's per-side case).
-  check('capHitMessage names a single dropped term, no player tag when omitted',
+  check('capHitMessage names a single dropped term, no player tag when omitted, "remove one"',
     capHitMessage(['the lighthouse keeper']) === 'That is 12 highlights already — remove one to add "the lighthouse keeper".');
-  check('capHitMessage names every dropped term, comma-joined, with the player tag',
-    capHitMessage(['x', 'y'], 'A') === 'That is 12 highlights already for Player A — remove one to add "x", "y".');
+  // CodeRabbit (PR #161): a side at the cap can drop SEVERAL terms in one
+  // Keep, and one free slot cannot admit all of them -- the instruction is
+  // now `dropped.length`, not always "one". Mutation: hard-code "remove
+  // one" regardless of count -> this check fails (two terms would still
+  // say "remove one").
+  check('capHitMessage names every dropped term, comma-joined, with the player tag, and the ACTUAL count to remove (not always "one")',
+    capHitMessage(['x', 'y'], 'A') === 'That is 12 highlights already for Player A — remove 2 to add "x", "y".');
+  check('capHitMessage (control): a single term with a player tag still says "remove one" (not "remove 1")',
+    capHitMessage(['x'], 'B') === 'That is 12 highlights already for Player B — remove one to add "x".');
+  check('capHitMessage: three dropped terms says "remove 3"',
+    capHitMessage(['x', 'y', 'z']) === 'That is 12 highlights already — remove 3 to add "x", "y", "z".');
 
   // regenDroppedNote: the one place Keep turns `dropped` into the note shown
   // through the SAME role="status" aria-live="polite" region every other
@@ -751,7 +760,11 @@ if (failures > 0) {
   // paths cannot drift back onto different wording for the identical limit.
   const editorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
   check('DescriptionEditor\'s cap-hit hint calls the shared capHitMessage helper for a fresh add (not a bespoke, unnamed string)',
-    /capHitMessage\(\[term\]\)/.test(editorSrc));
+    /capHitMessage\(\[term\]/.test(editorSrc));
+  // CodeRabbit (PR #161): the fresh-add call must pass the SELECTED player
+  // too, so the hint names which side's cap is full (it did not before).
+  check('DescriptionEditor\'s fresh-add cap-hit call passes `player`, so the message names the full side',
+    /capHitMessage\(\[term\],\s*player\)/.test(editorSrc));
 
   // Opus review N1: a cap-blocked MOVE (the phrase is already highlighted
   // for the OTHER player) must say so, never the shared "remove one to add"
