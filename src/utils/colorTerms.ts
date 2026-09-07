@@ -427,11 +427,21 @@ export function regenKeptColorTerms(
   const result = cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
   const resultAKeys = new Set(result.a.map(colorTermKey));
   const resultBKeys = new Set(result.b.map(colorTermKey));
+  // CodeRabbit (this PR): a newly-offered noun missing from `result.b` is
+  // NOT always a cap drop — the SAME draw can offer the identical phrase on
+  // BOTH sides (actorA and actorB naming the same actor), and A wins that
+  // tie inside the final `cleanUserColorTermPair` call, same as any other
+  // same-phrase collision. That is the documented ownership rule, not a
+  // capacity loss: the highlight still exists, just attributed to A, so it
+  // must not be reported as "dropped". Only B's own filter (`ownedA`, above)
+  // can drop a phrase for the cross-player-EXISTING-chip reason, which is
+  // already excluded from `newB` before this point; this second check is
+  // the tie against a phrase newly claimed by A in THIS SAME call.
   return {
     ...result,
     dropped: {
       a: newA.filter((t) => !resultAKeys.has(colorTermKey(t))),
-      b: newB.filter((t) => !resultBKeys.has(colorTermKey(t))),
+      b: newB.filter((t) => !resultBKeys.has(colorTermKey(t)) && !resultAKeys.has(colorTermKey(t))),
     },
   };
 }

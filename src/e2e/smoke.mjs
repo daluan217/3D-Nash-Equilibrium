@@ -5622,7 +5622,9 @@ try {
     await regenBtn.click();
     await capPage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
     await capPage.getByRole('button', { name: 'Keep' }).click();
-    await capPage.waitForTimeout(300);
+    // State, not a fixed sleep: Keep synchronously clears `regen.preview`, so
+    // the preview card unmounting is the actual signal the note is settled.
+    await capPage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
 
     const note = await dialog.locator('p[role="status"]').innerText().catch(() => '');
     record('FIX: at the cap, Keep\'s live region names the noun the cap could not keep',
@@ -5659,7 +5661,7 @@ try {
     await regenBtn2.click();
     await controlPage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 5000 });
     await controlPage.getByRole('button', { name: 'Keep' }).click();
-    await controlPage.waitForTimeout(300);
+    await controlPage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
     const note2 = await dialog2.locator('p[role="status"]').innerText().catch(() => '');
     record('control: below the cap, Keep\'s note is the plain "Kept" message with no cap wording',
       /^Kept/.test(note2) && !/highlights already/.test(note2), note2);

@@ -691,6 +691,19 @@ if (failures > 0) {
   check('regenKeptColorTerms: (control) the cross-player exclusion itself still applies',
     !exclusivity.a.includes('wolf') && exclusivity.b.includes('wolf'));
 
+  // CodeRabbit (this PR): a SAME-DRAW tie -- actorA and actorB offer the
+  // IDENTICAL phrase, with no cap pressure at all (both sides empty) -- must
+  // not be reported dropped either. A wins the tie inside the final
+  // `cleanUserColorTermPair` call (documented ownership rule); the highlight
+  // still exists, just attributed to A, so B's `dropped` must stay empty.
+  // Mutation: drop the `&& !resultAKeys.has(...)` conjunct from `dropped.b`
+  // -> this check fails (b.dropped would wrongly include 'shared').
+  const tieDraw = regenKeptColorTerms(['shared'], ['shared'], [], []);
+  check('regenKeptColorTerms: a same-draw A/B naming tie is NOT reported as a cap drop for B (A winning the tie is not a capacity loss)',
+    tieDraw.dropped.b.length === 0, JSON.stringify(tieDraw.dropped));
+  check('regenKeptColorTerms: (control) the tie itself still resolves to A, same as cleanUserColorTermPair elsewhere',
+    tieDraw.a.includes('shared') && !tieDraw.b.includes('shared'));
+
   // capHitMessage: exact wording, shared by both add-paths -- one term with
   // no player tag (the manual picker's own single-side case), several terms
   // with one (Keep's per-side case).
