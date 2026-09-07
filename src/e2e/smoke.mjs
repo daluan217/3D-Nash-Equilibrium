@@ -5323,9 +5323,23 @@ try {
               if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
             }
           }
-          if (count >= 15) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+          // cr review (CLI, this branch): minPixels must scale with dsf^2
+          // (pixel COUNT scales with area) -- this copy used a flat 15
+          // regardless of devicePixelRatio, unlike `countPurpleBlobs`'s own
+          // established `15 * dsf * dsf` a few lines above in this same
+          // file. A flat floor is too permissive at a high dsf (real noise
+          // could pass) and too strict at a low one.
+          if (count >= 15 * dsf * dsf) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
         }
         if (!blobs.length) return null;
+        // Union of every qualifying blob, NOT just the largest -- kept
+        // deliberately: this is the SAME convention `spanOf`/every other
+        // "one marker's own footprint" measurement in this file already
+        // uses (a genuine diamond outline can anti-alias-split into >1
+        // connected component at its narrowest point; using only the
+        // largest fragment would UNDER-measure a split glyph, and this
+        // calibration must match what it calibrates FOR, not diverge from
+        // it).
         const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
         const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
         return { diag: Math.hypot(maxx - minx, maxy - miny), blobs };
