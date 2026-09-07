@@ -58,6 +58,7 @@ import { makeTraces, buildSurfaces, SurfaceData } from './utils/plotting';
 import {
   cameraBasis, projectPoint, zRangeOfSurface, worstPairGapPx, shouldCollapseComponentAtCamera,
   DEFAULT_EYE, DEFAULT_CAMERA_BASIS, OVERLAP_TOLERANCE_PX as PROJ_OVERLAP_TOLERANCE_PX,
+  projectPointExact, LiveCameraParams,
 } from './utils/cameraProjection';
 
 let checks = 0;
@@ -1639,6 +1640,126 @@ function testContinuumMarkersDoNotOverlapOnScreen() {
 }
 
 testContinuumCornerMarkersVisibleUniqueAndNamed();
+// ════════════════════════════════════════════════════════════════════════════
+// BLUE-MATH-17 (RED-MATH-17/001, RED-MATH-16/001): `projectPointExact`
+// (cameraProjection.ts) reproduces gl-plot3d's OWN projection, checked two
+// ways against LIVE camera state captured from the real running app (never
+// generated in Node — there is no browser here to compute a real
+// `cameraParams`/`dataScale`/`glplot.shape`; round16/notes/BLUE-MATH-17/
+// records the exact capture command, `_bluescratch/validate_exact.mjs`):
+//
+// (a) against REAL RENDERED PIXELS: the 3 markers of each of the two
+//     known-gap fixtures (RED-MATH-17/001's corner/midpoint pair at a real
+//     320px-mobile viewport; RED-MATH-16/001's at az105/700x500), each
+//     measured independently by per-marker isolation (fresh page per
+//     marker — RED-MATH-16/17's own method) on the SAME camera the app's
+//     `applyContinuumCollapseAtCamera` used. This is the direct evidence
+//     the runtime fix actually agrees with what is on screen — not merely
+//     that the linear algebra is self-consistent.
+// (b) against an INDEPENDENTLY-written reference transform (`refProject`
+//     below — plain unrolled dot products, sharing no code with
+//     `projectPointExact`/`mat4MulVec4`) for 20 random data points (10 per
+//     fixture, x/y in [0,1], z spanning well past both fixtures' own
+//     marker z-values) — catches a transcription bug in the shared
+//     implementation that (a) alone, with only 6 fixed points, could miss.
+//
+// Mutation-tested: flipping the NDC-Y sign (drop the `1 - (...)` flip) or
+// swapping `dataScale`'s z-index for x's own (both real bugs hit and fixed
+// while deriving this formula — see STATE.md) makes every (a) row fail by
+// several to tens of CSS px, and several (b) rows fail outside 1e-6.
+function testExactProjectorReproducesLiveCameraMatrices() {
+  interface Capture {
+    id: string;
+    model: number[]; view: number[]; projection: number[];
+    dataScale: [number, number, number];
+    shape: { w: number; h: number }; pixelRatio: number; marginTop: number;
+    markers: Array<{ role: string; x: number; y: number; z: number; realCssX: number; realCssY: number }>;
+  }
+  // Captured live 2026-09-07 via `_bluescratch/validate_exact.mjs` against a
+  // build of this exact branch's `dist/` (PORT=4890) — see
+  // round16/notes/BLUE-MATH-17/exact_validation.json for the full capture
+  // (per-marker screenshots + blob-scan detail) this table is distilled from.
+  const CAPTURES: Capture[] = [
+    {
+      id: 'redmath17-001 (CAMERA.overview, real 320px mobile)',
+      model: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.9411764705882353, 0, -0.5, -0.5, -0.04056795131845842, 1],
+      view: [0.7071067811865476, -0.30915468502563853, 0.6359429068137314, 0, 0.7071067811865476, 0.30915468502563853, -0.6359429068137314, 0, 0, 0.8993590837109483, 0.43721074843444035, 0, 0, 1.1102230246251565e-16, -2.5159491250818253, 1],
+      projection: [2.6949360696257805, 0, 0, 0, 0, 2.414213562373095, 0, 0, 0, 0, -1.000020000200002, -1, 0, 0, -0.020000200002000017, 0],
+      dataScale: [1, 1, 0.08620689655172414],
+      shape: { w: 516, h: 576 }, pixelRatio: 2, marginTop: 10,
+      markers: [
+        { role: 'midpoint', x: 0.8928571428571428, y: 1, z: -5, realCssX: 207.83333333333331, realCssY: 200.16666666666669 },
+        { role: 'corner0', x: 0.7857142857142857, y: 1, z: -5, realCssX: 196.66666666666669, realCssY: 195.16666666666666 },
+        { role: 'corner1', x: 1, y: 1, z: -5, realCssX: 219.66666666666669, realCssY: 205.5 },
+      ],
+    },
+    {
+      id: 'redmath16-001 (az105, forced 700x500)',
+      model: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.9411764705882353, 0, -0.5, -0.5, 0.04056795131845842, 1],
+      view: [-0.9659258262890682, 0.11315846841836033, -0.23277125925034586, 0, -0.2588190451025209, -0.42231315344399867, 0.8687141660640771, 0, 0, 0.8993590837109484, 0.4372107484344402, 0, 1.1102230246251565e-16, 2.220446049250313e-16, -2.515949125081826, 1],
+      projection: [1.643719872254022, 0, 0, 0, 0, 2.414213562373095, 0, 0, 0, 0, -1.000020000200002, -1, 0, 0, -0.020000200002000017, 0],
+      dataScale: [1, 1, 0.08620689655172414],
+      shape: { w: 1316, h: 896 }, pixelRatio: 2, marginTop: 10,
+      markers: [
+        { role: 'midpoint', x: 1, y: 0.16666666666666666, z: -3.166666666666667, realCssX: 257.83333333333337, realCssY: 233.5 },
+        { role: 'corner0', x: 1, y: 0, z: -4, realCssX: 268.83333333333337, realCssY: 232.16666666666666 },
+        { role: 'corner1', x: 1, y: 0.3333333333333333, z: -2.3333333333333335, realCssX: 245.5, realCssY: 235.33333333333331 },
+      ],
+    },
+  ];
+
+  // (a) against real pixels.
+  let worstPxErr = 0;
+  for (const cap of CAPTURES) {
+    const cam: LiveCameraParams = { model: cap.model, view: cap.view, projection: cap.projection };
+    for (const m of cap.markers) {
+      const [px, py] = projectPointExact(m.x, m.y, m.z, cam, cap.dataScale, cap.shape, cap.pixelRatio, cap.marginTop);
+      const err = Math.hypot(px - m.realCssX, py - m.realCssY);
+      if (err > worstPxErr) worstPxErr = err;
+      ok(err < 0.5, `${cap.id} ${m.role}: predicted (${px.toFixed(2)},${py.toFixed(2)}) vs real (${m.realCssX.toFixed(2)},${m.realCssY.toFixed(2)}) — ${err.toFixed(2)}px off`);
+    }
+  }
+  console.log(`✓ projectPointExact matches real rendered pixels at both known-gap fixtures: 6/6 markers within 0.5 CSS px (worst ${worstPxErr.toFixed(3)}px)`);
+
+  // (b) against an independently-written reference (no shared code with
+  // mat4MulVec4/projectPointExact — a plain unrolled dot product per row,
+  // NDC/device-px mapping written out longhand a second time).
+  function refProject(x: number, y: number, z: number, cap: Capture): [number, number] {
+    const { model: M, view: V, projection: P } = cap;
+    const [xs, ys, zs] = [x * cap.dataScale[0], y * cap.dataScale[1], z * cap.dataScale[2]];
+    const wx = M[0] * xs + M[4] * ys + M[8] * zs + M[12];
+    const wy = M[1] * xs + M[5] * ys + M[9] * zs + M[13];
+    const wz = M[2] * xs + M[6] * ys + M[10] * zs + M[14];
+    const wwv = M[3] * xs + M[7] * ys + M[11] * zs + M[15];
+    const ex = V[0] * wx + V[4] * wy + V[8] * wz + V[12] * wwv;
+    const ey = V[1] * wx + V[5] * wy + V[9] * wz + V[13] * wwv;
+    const ez = V[2] * wx + V[6] * wy + V[10] * wz + V[14] * wwv;
+    const ew = V[3] * wx + V[7] * wy + V[11] * wz + V[15] * wwv;
+    const cx = P[0] * ex + P[4] * ey + P[8] * ez + P[12] * ew;
+    const cy = P[1] * ex + P[5] * ey + P[9] * ez + P[13] * ew;
+    const cw = P[3] * ex + P[7] * ey + P[11] * ez + P[15] * ew;
+    const ndcX = cx / cw, ndcY = cy / cw;
+    const devX = (ndcX * 0.5 + 0.5) * cap.shape.w;
+    const devY = (1 - (ndcY * 0.5 + 0.5)) * cap.shape.h;
+    return [devX / cap.pixelRatio, devY / cap.pixelRatio + cap.marginTop];
+  }
+  const rand = mk(0x17ba7e17);
+  let checked = 0;
+  for (const cap of CAPTURES) {
+    const cam: LiveCameraParams = { model: cap.model, view: cap.view, projection: cap.projection };
+    for (let i = 0; i < 10; i++) {
+      const x = rand(), y = rand(), z = (rand() - 0.5) * 20; // well past both fixtures' own z values (-2.3..-5)
+      const [px, py] = projectPointExact(x, y, z, cam, cap.dataScale, cap.shape, cap.pixelRatio, cap.marginTop);
+      const [rx, ry] = refProject(x, y, z, cap);
+      ok(Math.abs(px - rx) < 1e-6 && Math.abs(py - ry) < 1e-6,
+        `${cap.id} random point (${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}): projectPointExact (${px},${py}) vs independent reference (${rx},${ry})`);
+      checked++;
+    }
+  }
+  ok(checked === 20, `expected 20 random points checked, got ${checked}`);
+  console.log(`✓ projectPointExact matches an independently-written reference transform on ${checked} random points across both fixtures' live matrices (<1e-6 px)`);
+}
+testExactProjectorReproducesLiveCameraMatrices();
 // ════════════════════════════════════════════════════════════════════════════
 // 5e'. The cutoff is a contract on the EXACT length and is relabel-invariant
 //      (2026-09-05 handback, director-reproduced): A=[[1,0],[0,4]],

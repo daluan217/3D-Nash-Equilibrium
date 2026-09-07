@@ -215,12 +215,58 @@ corner's for this configuration. Tried FOCAL from 2.5 to 4 and both the live plo
 (276x256) and its underlying WebGL sub-shape (276x246, from `glplot.shape/pixelRatio`) —
 no combination flips az225 correct without reopening az195 or regressing the wider
 real-pixel agreement count (`testDynamicCollapseAgreesWithRealPixels`'s own
-`overCollapse === 2` bound tracks this exactly: az225 and az240). Left open rather than
-shipped as a fabricated pass: a future round should build (or read live from Plotly, per
-the module's own preference for that) an EXACT projection — this linear pinhole
-approximation's residual error is evidently large enough, specifically for
-midpoint-to-corner distances near this length's own geometry, to flip a decision the
-corner-to-corner distance alone gets right.
+`overCollapse === 2` bound tracks this exactly: az225 and az240). **Still open as of
+BLUE-MATH-17 (below) and will stay open until this specific Node-only test gets a live
+browser**, for the reason explained there: this is the STATIC 24-azimuth PROPERTY SWEEP
+(`payoffhonesty.test.ts`, no browser in the process at all), which cannot use the exact
+live-matrix projection — only the RUNTIME (the actual browser) can. **OPUS-REVIEW-MATH17
+N-3: this sweep, and `FOCAL` itself, are a guard on the FALLBACK path only** — sampled
+across every reachable app state (first paint, payoff edits, container/window resizes,
+camera relayouts), the runtime never once fell back to the estimator once gl-plot3d had
+rendered a frame. Do not re-tune `FOCAL` against this sweep expecting it to change what
+ships; it governs the pre-first-render window only.
+
+**The FOCAL/lookAt estimate is superseded at RUNTIME by an exact live-camera projection
+(BLUE-MATH-17, RED-MATH-17/001 + RED-MATH-16/001, FIXED).** Both of those findings were
+REAL, camera-verified disagreements between the module's decision and real rendered
+pixels — RED-MATH-17/001 at the app's own default resting camera (`CAMERA.overview`) on a
+real 320px-mobile viewport (~4.3 CSS px corner/midpoint overlap, reachable with zero
+interaction), RED-MATH-16/001 at az105/700x500 (~1.4 CSS px corner/corner overlap, reached
+by the idle spin alone). Root cause: the FOCAL/lookAt estimate's own residual error (this
+doc's "az225 not fixed" paragraph above is the SAME error family, just a different sign) —
+not a focal-length tuning problem; a real fixture's live `dataScale[2]` (Plotly's own
+z-axis-to-cube scale) measured 0.08620689655172414, implying an axis span of 11.6
+data-units, while the SAME fixture's live `zaxis.range` is `[-6.6625, 5.6625]`, span
+12.325 — a ~6% mismatch this module has no rule to reproduce (Plotly's exact
+autorange/padding is not published arithmetic), and no FOCAL value can correct because it
+is not a focal-length error.
+`src/utils/cameraProjection.ts`'s `projectPointExact` instead projects through the LIVE
+gl3d camera matrices Plotly itself computed for the frame on screen
+(`gd._fullLayout.scene._scene.glplot.cameraParams` — model/view/projection — plus
+`scene._scene.dataScale` and `glplot.shape`/`pixelRatio`), gated on the shape ACTUALLY
+matching the plot DIV's current box (OPUS-REVIEW-MATH17 FBM-1: `glplot.shape` can be stale
+mid-resize, or in some rendering environments not update from a bare `Plots.resize` call
+at all — precise math on a stale viewport is worse than the estimate on the current one,
+so the exact path is refused, not merely delayed, whenever freshness cannot be confirmed),
+wired into `PlotlyView.tsx`'s `applyContinuumCollapseAtCamera` as the PRIMARY runtime
+decision path. **The FOCAL/lookAt estimate is fallback-only** — before gl-plot3d has drawn
+a first frame, or whenever the live shape is not (yet) confirmed fresh —
+`gd.dataset.continuumProjectionPath` records which path decided, and OPUS-REVIEW-MATH17's
+own sampling (first paint, after payoff edits, after container/window resizes, after camera
+relayouts, at 1280x900 and 320x700) never observed `"estimate"` once: **the estimator
+governs no decision this app currently ships**, and the static sweep below is a guard ON
+THAT FALLBACK, not on the live product path — do not re-tune `FOCAL` to move it.
+Verified against real per-marker isolation to within 0.4 CSS px (worst measured residual
+0.357px) at both fixtures' cameras/viewports (round16/notes/BLUE-MATH-17/) and against real
+rendered pixels in the actual e2e harness (smoke.mjs section 71's rows). **This fix does NOT reach the
+STATIC 24-azimuth Node-only sweep above** (`testDynamicCollapseAgreesWithRealPixels`
+stays 18/24 agree, 4/24 under-collapse, 2/24 over-collapse — unchanged, not regressed):
+that test runs with no browser process at all, so `cameraParams`/`dataScale` do not exist
+to read. Closing az225/az240 in THAT test would need either launching a real browser from
+inside it (a different kind of test than the one documented "needs nothing outside the
+repo" at its own definition) or reverse-engineering Plotly's undocumented z-autorange
+padding rule well enough to reconstruct `dataScale` analytically — attempted and abandoned
+this round (the 6% mismatch above), left as future work rather than shipped as a guess.
 
 ## What each fix's mutation test proves
 
@@ -249,5 +295,14 @@ Relax any one clause and name what fails:
   `payoffhonesty.test.ts`'s `testDynamicCollapseAgreesWithRealPixels` (14/24 agree, fails
   the `agree >= 18` bound) and e2e section 71's two pixel checks (the collapse precondition
   and the FIX check) fail.
+- Force `exactReady` false in `PlotlyView.tsx` (BLUE-MATH-17, reverting the runtime
+  decision to the FOCAL/lookAt estimate at every camera, not just pre-first-render): e2e
+  section 71's two NEW rows fail by name — `continuumProjectionPath` reads `'estimate'`
+  instead of `'exact'`, both RED-MATH-17/001 and RED-MATH-16/001 revert to "show" (their
+  original under-collapse defect), and the pixel-span check fails on both.
+- Flip the NDC-Y sign in `projectPointExact` (drop the `1 - (...)` flip), or swap
+  `dataScale`'s z-index for x's own: `payoffhonesty.test.ts`'s
+  `testExactProjectorReproducesLiveCameraMatrices` fails both its real-pixel check (tens of
+  CSS px off) and its independent-reference check (several of the 20 random points).
 
 All verified by actually reverting each fix and re-running the named check.
