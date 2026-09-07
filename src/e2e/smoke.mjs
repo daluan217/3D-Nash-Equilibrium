@@ -5635,6 +5635,17 @@ try {
             const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
             return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
           }, shot17.toString('base64'));
+          // cr review (CLI, this branch) suggested requiring EXACTLY one
+          // blob, sized to a single marker's own bbox. Rejected: this exact
+          // file already rejected that shape for the identical reason at
+          // az195 above (`spanOf`'s own comment, and the "CodeRabbit (this
+          // branch): blob COUNT alone cannot tell 3 genuinely separate
+          // diamonds from 2 fused ones that each anti-alias-split" note) —
+          // a foreshortened diamond outline can break into >1 connected
+          // component at its own narrowest point, so an exact-count
+          // assertion would fail on a genuinely-correct single collapsed
+          // glyph. `span` (this UNION bbox's diagonal) is the established,
+          // already-reviewed way to bound "one marker's own size" here.
           record('FIX (RED-MATH-17/001): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
             (scan17.blobs?.length ?? 0) >= 1 && scan17.span <= 45, JSON.stringify(scan17));
         } finally { await p17.close().catch(() => {}); }
