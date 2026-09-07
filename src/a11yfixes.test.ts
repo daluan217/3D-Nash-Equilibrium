@@ -100,9 +100,18 @@ function extractModalSurfaceBlock(src: string, id: string): string {
       `the ${field} input must carry an aria-label built from activeLabels.${row}/${col} naming Player ${player}, got: ${JSON.stringify(block)}`);
   }
 
-  // The other 5 flagged controls.
-  ok(app.includes(`aria-label="Row Start Point (x0)"`), 'the x0 input must carry an aria-label');
-  ok(app.includes(`aria-label="Col Start Point (y0)"`), 'the y0 input must carry an aria-label');
+  // The other 5 flagged controls. OPUS-REVIEW-APP16 N-3: x0/y0 used to carry
+  // BOTH a real <label> (RED-APP-16/003's fix) and an aria-label with the
+  // ASCII "x0"/"y0" spelling — aria-label wins the accessible-name
+  // computation, so the visible "x₀"/"y₀" (U+2080) label never reached
+  // assistive tech (WCAG 2.5.3 label-in-name). The aria-label is gone; the
+  // <label> now supplies the name, so it now matches what is on screen.
+  ok(!app.includes(`aria-label="Row Start Point (x0)"`), 'the x0 input must NOT carry the old ASCII-spelled aria-label (the <label> supplies the name now)');
+  ok(!app.includes(`aria-label="Col Start Point (y0)"`), 'the y0 input must NOT carry the old ASCII-spelled aria-label (the <label> supplies the name now)');
+  ok(/<label htmlFor=\{labelFor\('coords', 'x0'\)\}[^>]*>Row Start Point \(x₀\)<\/label>[\s\S]{0,200}id=\{labelFor\('coords', 'x0'\)\}/.test(app),
+    'the x0 field\'s <label> (with the visible U+2080 subscript) must be htmlFor/id-paired to the input');
+  ok(/<label htmlFor=\{labelFor\('coords', 'y0'\)\}[^>]*>Col Start Point \(y₀\)<\/label>[\s\S]{0,200}id=\{labelFor\('coords', 'y0'\)\}/.test(app),
+    'the y0 field\'s <label> (with the visible U+2080 subscript) must be htmlFor/id-paired to the input');
   ok(/aria-label=\{stepMode === 'regret' \? 'Regret Step Weight \(lambda\)' : 'Initial Domain Shrink Step Size'\}/.test(app),
     'the step-size text box must carry a mode-aware aria-label');
   ok(/aria-label=\{stepMode === 'regret' \? 'Regret Step Weight \(lambda\) slider' : 'Initial Domain Shrink Step Size slider'\}/.test(app),
@@ -665,21 +674,55 @@ function extractModalSurfaceBlock(src: string, id: string): string {
       .replace(/\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, ' '));
   }
 
+  /** Every `<TAG ...>` opening tag matching `names`, with its FULL attribute
+   *  string — consumed to the `>` at BRACE DEPTH 0, outside quotes.
+   *
+   *  OPUS-REVIEW-APP16 FIX-BEFORE-MERGE 1: the original `[^>]*` stopped at
+   *  the first `>` inside the tag, which for nearly every real control in
+   *  this app is the `>` of its OWN event handler arrow function
+   *  (`onChange={e => ...}`) — every attribute written after the first
+   *  handler, placeholder included, was invisible to both checkers below.
+   *  `placeholderOnlyControls` on the pre-fix tree passed on a file
+   *  (AdminDashboard.tsx) that violates its own stated invariant, because
+   *  the ONE attribute it needed (`placeholder=`) never appeared in the
+   *  truncated string it read. This walker tracks `{}` depth and skips over
+   *  `"`/`'`/`` ` `` quoted spans (a `>` or unbalanced brace inside a string
+   *  literal must not end the tag early or corrupt the depth count). */
+  function openTags(src: string, names: string[]): { tag: string; attrs: string; index: number; end: number }[] {
+    const out: { tag: string; attrs: string; index: number; end: number }[] = [];
+    const re = new RegExp(`<(${names.join('|')})\\b`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src))) {
+      let i = m.index + m[0].length;
+      let depth = 0;
+      let q: string | null = null;
+      for (; i < src.length; i++) {
+        const c = src[i];
+        if (q) { if (c === q) q = null; continue; }
+        if (c === '"' || c === "'" || c === '`') { q = c; continue; }
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+        else if (c === '>' && depth === 0) break;
+      }
+      // `i` is the index of the tag's own closing `>` (or src.length if
+      // unterminated); +1 gives the offset the tag's BODY starts at.
+      out.push({ tag: m[1], attrs: src.slice(m.index + m[0].length, i), index: m.index, end: i + 1 });
+    }
+    return out;
+  }
+
   /** Every `<label ...>` tag in `src` with no `htmlFor` AND no control
    *  (input/select/textarea) nested before its own `</label>`. */
   function unassociatedLabels(rawSrc: string): string[] {
     const src = stripComments(rawSrc);
     const violations: string[] = [];
-    const labelOpen = /<label\b([^>]*)>/g;
-    let m: RegExpExecArray | null;
-    while ((m = labelOpen.exec(src))) {
-      const attrs = m[1];
+    for (const { attrs, index, end } of openTags(src, ['label'])) {
       if (/\bhtmlFor=/.test(attrs)) continue;
-      const bodyStart = m.index + m[0].length;
+      const bodyStart = end;
       const bodyEnd = src.indexOf('</label>', bodyStart);
       const body = bodyEnd > 0 ? src.slice(bodyStart, bodyEnd) : src.slice(bodyStart, bodyStart + 400);
       if (/<input\b|<select\b|<textarea\b/.test(body)) continue;
-      violations.push(`<label${attrs}> at offset ${m.index} has no htmlFor and wraps no control`);
+      violations.push(`<label${attrs}> at offset ${index} has no htmlFor and wraps no control`);
     }
     return violations;
   }
@@ -697,15 +740,12 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   function placeholderOnlyControls(rawSrc: string): string[] {
     const src = stripComments(rawSrc);
     const violations: string[] = [];
-    const controlOpen = /<(input|textarea)\b([^>]*)>/g;
-    let m: RegExpExecArray | null;
-    while ((m = controlOpen.exec(src))) {
-      const [, tag, attrs] = m;
+    for (const { tag, attrs, index } of openTags(src, ['input', 'textarea'])) {
       if (!/\bplaceholder=/.test(attrs)) continue;
       if (/\baria-label=|\baria-labelledby=/.test(attrs)) continue;
       const idMatch = attrs.match(/\bid=(?:"([^"]+)"|\{([^}]+)\})/);
       if (idMatch) continue;
-      violations.push(`<${tag}${attrs}> at offset ${m.index} has placeholder but no aria-label/aria-labelledby/id`);
+      violations.push(`<${tag}${attrs}> at offset ${index} has placeholder but no aria-label/aria-labelledby/id`);
     }
     return violations;
   }
@@ -724,6 +764,15 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     'fixture: a placeholder input that ALSO has a real htmlFor-linked label must NOT be flagged');
   ok(placeholderOnlyControls('<input aria-label="Name" placeholder="x" />').length === 0,
     'fixture: a placeholder input with its own aria-label must NOT be flagged (Row/Col Start Point keep this shape)');
+  // OPUS-REVIEW-APP16 FIX-BEFORE-MERGE 1: the exact blind spot — an event
+  // handler arrow function (its OWN `>`) appears BEFORE `placeholder=` in
+  // the tag. The old `[^>]*` scan stopped at that `>` and never saw
+  // `placeholder=` at all, so this fixture passed (wrongly) on the pre-fix
+  // checker; `openTags`'s brace-aware scan must still see past it.
+  ok(placeholderOnlyControls('<input onChange={e => setX(e.target.value)} placeholder="x" />').length === 1,
+    'fixture: placeholder AFTER an arrow-function handler must still be flagged (the AdminDashboard/Go-to-step shape)');
+  ok(placeholderOnlyControls('<input onChange={e => setX(e.target.value)} id="a" placeholder="x" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: the same handler-then-placeholder shape, but WITH a real htmlFor-linked id, must NOT be flagged');
 
   // ── The real tree: walk every src/**/*.tsx file, both checkers, 0 violations. ──
   function walkTsx(dir: string): string[] {
@@ -783,6 +832,28 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   ok(usernameMutated !== app, 'mutation-test precondition: the Username input\'s id must be found and strippable');
   ok(placeholderOnlyControls(usernameMutated).length === 1,
     'mutation-test: reverting the Username field\'s id must be caught by placeholderOnlyControls');
+
+  // ── MUTATION TEST — OPUS-REVIEW-APP16 FIX-BEFORE-MERGE 1's exact blind
+  //    spot: the admin password field's `placeholder=` sits AFTER its own
+  //    `onChange={e => ...}` handler, so the OLD `[^>]*` scan could never
+  //    see it (unlike Username above, whose placeholder happens to sit
+  //    before its first handler and so was already naive-visible). Stripping
+  //    its `id` must be caught ONLY by the brace-aware `openTags` scan. ──
+  const adminSrc = readFileSync('src/components/AdminDashboard.tsx', 'utf8');
+  const adminMutated = adminSrc.replace(
+    `id={labelFor('admin', 'password')}\n                  type="password"`,
+    `type="password"`,
+  );
+  ok(adminMutated !== adminSrc, 'mutation-test precondition: the admin password input\'s id must be found and strippable');
+  ok(placeholderOnlyControls(adminMutated).length === 1,
+    'mutation-test: reverting the admin password field\'s id must be caught by placeholderOnlyControls (the naive [^>]* scan could not see this field at all)');
+  // Sanity: the NAIVE (pre-fix) regex genuinely cannot see this field's
+  // placeholder even on the UNMUTATED source — proves the fixture above is
+  // exercising the real blind spot, not a shape the old scan already caught.
+  const naiveAttrs = [...stripComments(adminSrc).matchAll(/<(input|textarea)\b([^>]*)>/g)]
+    .map((m) => m[2]).find((a) => /type="password"/.test(a));
+  ok(naiveAttrs !== undefined && !/\bplaceholder=/.test(naiveAttrs),
+    `fixture precondition: the naive [^>]* regex must NOT see 'placeholder=' on the admin password tag (proves this is the real blind spot), got: ${JSON.stringify(naiveAttrs)}`);
 }
 
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

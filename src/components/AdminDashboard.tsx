@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Users, GamepadIcon, ShieldCheck, ShieldX, TrendingUp, RefreshCw, LogOut, X } from 'lucide-react';
 import { ModalSurface } from './ModalSurface';
+import { labelFor } from '../utils/a11y';
 
 interface AdminStats {
   totalUsers: number;
@@ -80,9 +81,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
         // under a secret the server just rejected. Unlike Sign-out, the
         // message SURVIVES the reset, so the password prompt it falls back
         // to explains why the user landed back here.
+        //
+        // OPUS-REVIEW-APP16 N-2: on a REFRESH (wasAuthed), the user typed
+        // nothing this time — "Incorrect password." blamed a password they
+        // never entered. Only the initial Login attempt (the one where the
+        // user actually just typed a password) gets that copy; a Refresh
+        // 401 names what actually happened (the session/secret expired).
         requestGenRef.current += 1;
         setAuthed(false); setStats(null); setPassword('');
-        setError('Incorrect password.');
+        setError(wasAuthed ? 'Your admin session is no longer valid. Sign in again.' : 'Incorrect password.');
         setLoading(false);
         return;
       }
@@ -169,9 +176,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
           {!authed ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <ShieldCheck className="w-10 h-10 text-accent-400" />
-              <p className="text-sm text-slate-500 dark:text-slate-400">Enter admin password to view stats</p>
+              {/* OPUS-REVIEW-APP16 FBM-1: was a bare <p>, so this input's
+                  ONLY name source was `placeholder` — labelFor pairs them. */}
+              <label htmlFor={labelFor('admin', 'password')} className="text-sm text-slate-500 dark:text-slate-400">Enter admin password to view stats</label>
               <div className="flex gap-2 w-full max-w-xs">
                 <input
+                  id={labelFor('admin', 'password')}
                   type="password"
                   value={password}
                   onChange={e => setPassword(e.target.value)}

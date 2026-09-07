@@ -4847,7 +4847,12 @@ export default function App() {
               Simulation Coordinates & Parameters
             </div>
 
-            {/* Starting coordinate fields */}
+            {/* Starting coordinate fields. OPUS-REVIEW-APP16 N-3: the old
+                aria-label="...x0" (ASCII zero) used to WIN over the visible
+                "...x₀" (U+2080 subscript) label added by RED-APP-16/003's
+                fix — a WCAG 2.5.3 label-in-name mismatch. Removed; the real
+                <label> now supplies the accessible name, matching what is
+                on screen exactly. */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label htmlFor={labelFor('coords', 'x0')} className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
@@ -4864,7 +4869,6 @@ export default function App() {
                       setInitialized(false);
                     }}
                     onBlur={() => commitStartField('x')}
-                    aria-label="Row Start Point (x0)"
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-rose-200 focus:outline-none"
                   />
                   <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
@@ -4904,7 +4908,6 @@ export default function App() {
                       setInitialized(false);
                     }}
                     onBlur={() => commitStartField('y')}
-                    aria-label="Col Start Point (y0)"
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-accent-100 focus:outline-none"
                   />
                   <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex flex-col">
@@ -5166,8 +5169,9 @@ export default function App() {
             <div className="flex items-center gap-2 flex-wrap">
               {thinHistory.length > 1 && (
                 <>
-                  <span className={`text-xs font-medium shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Go to step</span>
+                  <label htmlFor={labelFor('sim', 'go-to-step')} className={`text-xs font-medium shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Go to step</label>
                   <input
+                    id={labelFor('sim', 'go-to-step')}
                     type="number"
                     min={0}
                     max={thinHistory.length - 1}

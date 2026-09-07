@@ -599,8 +599,19 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // branch instead of being silently dropped.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  ok(/if \(res\.status === 401\) \{\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setStats\(null\); setPassword\(''\);\s*\n\s*setError\('Incorrect password\.'\);\s*\n\s*setLoading\(false\);\s*\n\s*return;\s*\n\s*\}/.test(admin),
-    'a 401 in fetchStats must bump requestGenRef and reset authed/stats/password — mirroring Sign-out\'s own reset — while KEEPING the error message (Sign-out itself clears it) so the password prompt explains why the panel signed back out (RED-APP-16/005)');
+  ok(/if \(res\.status === 401\) \{\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setStats\(null\); setPassword\(''\);\s*\n\s*setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);\s*\n\s*setLoading\(false\);\s*\n\s*return;\s*\n\s*\}/.test(admin),
+    'a 401 in fetchStats must bump requestGenRef and reset authed/stats/password — mirroring Sign-out\'s own reset — while KEEPING an error message (Sign-out itself clears it) so the password prompt explains why the panel signed back out; the message must be wasAuthed-conditioned so a Refresh 401 does not blame a password the user never typed (RED-APP-16/005, OPUS-REVIEW-APP16 N-2)');
+  // MUTATION TEST — collapsing the wasAuthed branch back to a bare
+  // 'Incorrect password.' (OPUS-REVIEW-APP16 N-2's exact defect) must fail.
+  {
+    const mutatedAdmin401 = admin.replace(
+      "setError(wasAuthed ? 'Your admin session is no longer valid. Sign in again.' : 'Incorrect password.');",
+      "setError('Incorrect password.');",
+    );
+    ok(mutatedAdmin401 !== admin, 'mutation-test precondition: the wasAuthed-conditioned 401 message must be found and strippable');
+    ok(!/setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);/.test(mutatedAdmin401),
+      'mutation-test: collapsing the 401 message back to unconditional "Incorrect password." must be caught by the check above');
+  }
 
   // The authed branch (`stats ? (...)`) must render `error`, with a Retry
   // that re-issues the SAME request (fetchStats(password)) — isolated to

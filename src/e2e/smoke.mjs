@@ -6403,7 +6403,11 @@ try {
       const sweep = async (label) => {
         const { total, hits } = await emptyAccessibleNames(p, cdp);
         allHits.push(...hits.map((h) => ({ label, ...h })));
-        record(`AX sweep: ${label} (${total} controls)`, hits.length === 0, JSON.stringify(hits));
+        // OPUS-REVIEW-APP16 N-1: `total > 0` is part of the pass condition,
+        // not a separate precondition — a sweep that visits NOTHING (page
+        // not rendered, dialog never opened, selector drift) used to record
+        // hits.length===0 as a silent PASS.
+        record(`AX sweep: ${label} (${total} controls)`, hits.length === 0 && total > 0, JSON.stringify(hits));
       };
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
@@ -6519,8 +6523,11 @@ try {
       await matrix.first().waitFor({ state: 'visible', timeout: 15000 });
       const mixedVals = [-12, 12, 8, -8, 2, -2, 0, 0];
       for (let i = 0; i < 8; i++) { await matrix.nth(i).fill(String(mixedVals[i])); await matrix.nth(i).blur(); }
-      await p.locator('input[aria-label="Row Start Point (x0)"]').fill('0.05');
-      await p.locator('input[aria-label="Col Start Point (y0)"]').fill('0.95');
+      // OPUS-REVIEW-APP16 N-3: the aria-label (which used to name these
+      // fields) is gone — the <label> supplies the accessible name now, so
+      // select by the stable labelFor id (`field-coords-x0`/`-y0`) instead.
+      await p.locator('#field-coords-x0').fill('0.05');
+      await p.locator('#field-coords-y0').fill('0.95');
       await p.evaluate(() => {
         const el = document.querySelector('input[aria-label="Loop Speed"]');
         const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
