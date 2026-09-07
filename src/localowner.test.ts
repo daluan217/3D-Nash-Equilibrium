@@ -229,7 +229,15 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     // immediately after (only whitespace between), which is why
     // `(authToken && user)` still does not match it (the `)` there closes
     // over `&& user`, not authToken alone).
-    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?|&&)\s*[(<]/g;
+    // CodeRabbit CLI: also matches a CHAINED &&-gate where a plain
+    // identifier sits between authToken and the JSX, e.g.
+    // `!authToken && saveError && (<Invite/>)` — the bare form alone
+    // required the JSX immediately after authToken's OWN `&&`. Each extra
+    // link must itself be a bare identifier (`[A-Za-z_$][\w$.]*`, optionally
+    // negated) followed by `&&`, which is why the control effect-gate
+    // (`(authToken && user) || localOwnerMode`) still does not match: `user`
+    // is followed by `)`, never another `&&`, so the chain cannot close.
+    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?\s*[(<]|&&(?:\s*!?[A-Za-z_$][\w$.]*\s*&&)*\s*[(<])/g;
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(norm))) {
       const context = norm.slice(Math.max(0, m.index - 60), m.index);
@@ -442,7 +450,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   const multilineTernary = '{saveError && (\n  !authToken\n    ? (\n      <div>Sign In / Sign Up</div>\n    )\n    : (\n      <p>{saveError}</p>\n    )\n)}';
   function violationsInText(text: string, allowListed: RegExp[]): string[] {
     const norm = text.replace(/\s+/g, ' ');
-    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?|&&)\s*[(<]/g;
+    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?\s*[(<]|&&(?:\s*!?[A-Za-z_$][\w$.]*\s*&&)*\s*[(<])/g;
     const out: string[] = [];
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(norm))) {
@@ -467,6 +475,16 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // legitimate effect-gating `(authToken && user)` — its own closing paren
   // does not sit immediately after `authToken`.
   check('control: `(authToken && user) || localOwnerMode` still is not flagged with the parenthesized alternative added',
+    violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
+  // CodeRabbit CLI: a CHAINED &&-gate — an unrelated identifier between
+  // authToken and the JSX, not the JSX immediately after authToken's own &&.
+  check('fixture: chained &&-gate `!authToken && saveError && (` is flagged',
+    violationsInText('{!authToken && saveError && (\n  <div>Sign In / Sign Up</div>\n)}', ALLOW).length > 0);
+  // Control: the chain-link grammar (a bare identifier + &&) must not let
+  // the effect-gate's own `user` link the chain to something JSX-shaped
+  // further away — there is nothing further away here, so this stays a
+  // sanity re-check rather than a new distinct shape.
+  check('control: the effect-gate is still unflagged with the chained-&& extension',
     violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
   // (c) The predicate reappearing in a DIFFERENT component the old two-file
   // guard never read — SavedGamesList.tsx's real "not signed in" branch,
