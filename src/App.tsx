@@ -2574,11 +2574,16 @@ export default function App() {
         // used by GET/POST/PATCH); the server now answers this case with the
         // same "Invalid or expired session." wording the other three routes
         // use (server.ts's DELETE handler, was "Unauthorized access.").
-        handleDeadSessionResponse(res, requestToken);
-        const data = await res.json();
         // The body read is a second await: the context can move on between
-        // the response and its body (CodeRabbit CLI on the fix).
+        // the response and its body (CodeRabbit CLI on the fix) — so read it,
+        // re-check, and only THEN act. OPUS-REVIEW-169/A: the helper itself
+        // moves the generation on a same-account dead session (it clears the
+        // token, and the token is a dependency of the generation), so no gate
+        // may follow it — with the gate after the helper, the legitimate
+        // "Invalid or expired session." alert never showed.
+        const data = await res.json().catch(() => ({}));
         if (gamesContextGenRef.current !== requestGen) return;
+        handleDeadSessionResponse(res, requestToken);
         alert(data.error || 'Failed to delete game.');
       }
     } catch {

@@ -863,12 +863,26 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     /useLayoutEffect\(\(\) => \{ gamesContextGenRef\.current \+= 1; \}, \[authToken, apiBaseUrl, dbMode\]\);/.test(app));
   // Every await is a chance for the context to move on: the body read before
   // the server-error alert, and the catch before the network alert.
-  const jsonIdx = deleteSlice.indexOf('const data = await res.json();');
+  const jsonIdx = deleteSlice.indexOf('const data = await res.json()');
   const errAlertIdx = deleteSlice.indexOf("alert(data.error || 'Failed to delete game.')");
   const netAlertIdx = deleteSlice.indexOf("alert('Network error. Failed to delete game.");
   const gateAfter = (from: number, before: number) => { const i = deleteSlice.indexOf(DELETE_STALE_GATE, from); return i !== -1 && i < before; };
   check(`handleDeleteGame re-checks the generation after the body read, before the server-error alert (json@${jsonIdx} alert@${errAlertIdx})`,
     jsonIdx !== -1 && errAlertIdx !== -1 && gateAfter(jsonIdx, errAlertIdx));
+  // OPUS-REVIEW-169/A: the dead-session helper clears the token on a
+  // same-account 401, and the token is a dependency of the generation — so a
+  // gate placed AFTER the helper sees a moved generation and swallows the
+  // legitimate "Invalid or expired session." alert (confirmed A/B on main vs
+  // the first fix). The helper must run after the LAST gate and with no
+  // await between it and the alert: body read → gate → helper → alert.
+  const lastGateBeforeErrAlert = deleteSlice.lastIndexOf(DELETE_STALE_GATE, errAlertIdx);
+  check(`handleDeleteGame runs the dead-session helper AFTER the last generation gate and after the body read (json@${jsonIdx} gate@${lastGateBeforeErrAlert} helper@${helperIdx} alert@${errAlertIdx})`,
+    helperIdx !== -1 && lastGateBeforeErrAlert !== -1 && jsonIdx < lastGateBeforeErrAlert && lastGateBeforeErrAlert < helperIdx && helperIdx < errAlertIdx
+    && !/await/.test(deleteSlice.slice(helperIdx, errAlertIdx)));
+  const helperFirst = deleteSlice.replace('handleDeadSessionResponse(res, requestToken);\n', '')
+    .replace('const data = await res.json()', 'handleDeadSessionResponse(res, requestToken);\n        const data = await res.json()');
+  check('fixture: the helper moved back before the body read and the gate is rejected (precondition: the plant landed)',
+    helperFirst !== deleteSlice && helperFirst.indexOf('handleDeadSessionResponse(res, requestToken)') < helperFirst.lastIndexOf(DELETE_STALE_GATE, helperFirst.indexOf("alert(data.error")));
   check(`handleDeleteGame re-checks the generation in the catch, before the network alert (alert@${netAlertIdx})`,
     netAlertIdx !== -1 && gateAfter(errAlertIdx, netAlertIdx));
   // Mutation fixtures: the two ways this regresses — the gate removed (the
