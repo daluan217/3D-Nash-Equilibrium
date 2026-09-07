@@ -13,7 +13,7 @@
  * the keyboard an account-deletion flow, and every behavioural test would still
  * pass.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -176,6 +176,343 @@ for (const [name, src] of MUST_FLAG) {
   const regressedIfGate = 'if (!user) {\n  return null;\n}';
   check('fixture sanity: the REAL "gates on canOwnGames" check (line 131) goes FALSE against a regressed if (!user) body',
     !/if \(!canOwnGames\) \{/.test(regressedIfGate));
+}
+
+// RED-DESKTOP-15/001: the Save/Edit error banners decided "does this failure
+// need a sign-in" by asking `!authToken`/`authToken ?` — a boolean that is
+// STRUCTURALLY always false for a local owner (no account at all), so it
+// mislabeled every non-auth failure (network drop, blank name, 404, 409) as
+// "please sign in". The fix reads a per-error flag (`saveErrorNeedsAuth` /
+// `editErrorNeedsAuth`) set only where the failure is actually auth-shaped.
+// This guards the predicate never regresses back to the raw token read in a
+// render/copy decision. `authToken ?` is allow-listed for exactly one line
+// — `authHeaders`, which builds an HTTP header, not a UI decision.
+//
+// OPUS-REVIEW-DESKTOP F1 (2026-09-06): the first version of this guard read
+// two hard-coded files line-by-line, so it could not see (a) the SAME
+// ternary split across lines (what a formatter produces for a long JSX
+// ternary), (b) the `&&`-gate form of the identical decision, or (c) the
+// predicate reappearing in ANY OTHER component (SavedGamesList.tsx, or a
+// future extraction) — a real risk given round 15/16's ModalSurface/
+// SavedGamesList extraction work. Rewritten to scan every `src/**/*.tsx`
+// file on whitespace-NORMALIZED text (so a multi-line ternary reads the same
+// as a one-liner) for both the `? (`/`? <` and `&& (`/`&& <` shapes — the
+// shape this codebase actually authors a JSX consequent in (never `? {`,
+// which is what excludes `authHeaders` structurally, on top of the explicit
+// allow-list kept for defense in depth).
+function findTsxFiles(dir: string): string[] {
+  return readdirSync(dir, { recursive: true } as any)
+    .map((f) => String(f))
+    .filter((f) => f.endsWith('.tsx'))
+    .map((f) => `${dir}/${f}`);
+}
+
+function authTokenRenderViolations(files: string[], allowListed: RegExp[]): string[] {
+  const violations: string[] = [];
+  for (const file of files) {
+    const src = readFileSync(file, 'utf8');
+    // Collapse ALL whitespace (including newlines) to one space: a ternary or
+    // &&-chain split across lines by a formatter reads identically to a
+    // one-liner, so the multi-line escape shape (OPUS F1a) is not a distinct
+    // case to detect — it is the SAME regex match.
+    const norm = src.replace(/\s+/g, ' ');
+    // Ternary: `!?authToken ? (` or `!?authToken ? <` — excludes `? {`, the
+    // authHeaders shape (an object literal, never a JSX/UI branch), and `?.`
+    // (optional chaining) since `.` is neither `(` nor `<`.
+    // &&-gate: `!?authToken && (` or `!?authToken && <` — excludes a plain
+    // boolean combination like `(authToken && user) || localOwnerMode`
+    // (App.tsx's own refetch-gating effect), where nothing JSX-shaped
+    // immediately follows the `&&`.
+    // CodeRabbit CLI: also matches the PARENTHESIZED forms, `(!authToken) ?`
+    // / `(authToken) &&` — the bare alternative alone missed these. The
+    // parenthesized alternative requires authToken's OWN closing `)`
+    // immediately after (only whitespace between), which is why
+    // `(authToken && user)` still does not match it (the `)` there closes
+    // over `&& user`, not authToken alone).
+    // CodeRabbit CLI: also matches a CHAINED &&-gate where a plain
+    // identifier sits between authToken and the JSX, e.g.
+    // `!authToken && saveError && (<Invite/>)` — the bare form alone
+    // required the JSX immediately after authToken's OWN `&&`. Each extra
+    // link must itself be a bare identifier (`[A-Za-z_$][\w$.]*`, optionally
+    // negated) followed by `&&`, which is why the control effect-gate
+    // (`(authToken && user) || localOwnerMode`) still does not match: `user`
+    // is followed by `)`, never another `&&`, so the chain cannot close.
+    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?\s*[(<]|&&(?:\s*!?[A-Za-z_$][\w$.]*\s*&&)*\s*[(<])/g;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(norm))) {
+      const context = norm.slice(Math.max(0, m.index - 60), m.index);
+      if (allowListed.some((re) => re.test(context))) continue;
+      violations.push(`${file}: …${norm.slice(Math.max(0, m.index - 20), m.index + 30)}…`);
+    }
+  }
+  return violations;
+}
+
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const tsxFiles = findTsxFiles('src');
+  check('src scan includes App.tsx, MenuDrawer.tsx and SavedGamesList.tsx (sanity: the scan reaches the files that matter)',
+    tsxFiles.some((f) => f.endsWith('App.tsx')) && tsxFiles.some((f) => f.endsWith('MenuDrawer.tsx'))
+    && tsxFiles.some((f) => f.endsWith('SavedGamesList.tsx')));
+  // The ONE legitimate `authToken ?` ternary: it returns an HTTP header
+  // object (`Authorization: Bearer ...`), never JSX, never a copy decision.
+  // CodeRabbit CLI: the bare `authHeaders\s*=` context check could suppress
+  // a REAL defect if unrelated text happened to mention "authHeaders" within
+  // the window — tied to the exact declaration signature instead (nothing
+  // else in this codebase reads `(): Record<string, string> =>`), and the
+  // window (60 chars) is sized to the real line's own length, not padded
+  // further for slack.
+  const ALLOW = [/authHeaders\s*=\s*\(\):\s*Record<string,\s*string>\s*=>/];
+
+  const violations = authTokenRenderViolations(tsxFiles, ALLOW);
+  check(`no authToken-ternary/&& render or copy branch anywhere under src/**/*.tsx (found ${violations.length}: ${violations.join(' | ').slice(0, 300)})`,
+    violations.length === 0);
+
+  // The two fixed sites read the per-error flag instead.
+  // CodeRabbit CLI: `\s*` (not a literal space) so a formatter's line break
+  // between the flag and `?` still passes.
+  check('Save dialog error render gates on saveErrorNeedsAuth', /saveErrorNeedsAuth\s*\?\s*\(/.test(app));
+  check('Edit dialog error render gates on editErrorNeedsAuth', /editErrorNeedsAuth\s*\?\s*\(/.test(app));
+
+  // CodeRabbit on #158 (outside-diff, 73e5fba): `if (!editGameId ||
+  // !canOwnGames) return;` was a SILENT no-op if the token died while the
+  // Edit dialog stayed open — resubmitting did nothing, no banner. The
+  // handler's own `!canOwnGames` branch must set BOTH the message and the
+  // flag, same as handleSaveGameSubmit's preflight.
+  {
+    const editFnStart = app.indexOf('const handleEditGameSubmit');
+    const editFnSlice = app.slice(editFnStart, editFnStart + 700);
+    check("handleEditGameSubmit's own !canOwnGames branch sets both editError and editErrorNeedsAuth(true), not a silent return",
+      /if \(!canOwnGames\) \{[^}]*setEditError\([^}]*setEditErrorNeedsAuth\(true\)/.test(editFnSlice),
+      editFnSlice.replace(/\s+/g, ' ').slice(0, 160));
+  }
+
+  // CodeRabbit on #158 (outside-diff, 9a71dce): a late response from a
+  // PREVIOUS dialog session (submitted, closed, reopened) used to paint its
+  // error/needsAuth/loading into the NEW session — a stale 401 could show a
+  // sign-in invitation over an unrelated dialog. Both handlers must check
+  // staleness right after the response arrives (before ANY branch touches
+  // state), in the catch, AND in finally (which runs on every path,
+  // including the early return) — checking only one of the three would
+  // still let a stale response through the other two.
+  // CodeRabbit CLI: the anchored regexes above prove the guard is PRESENT
+  // near the response, but not that it comes BEFORE every state setter — a
+  // mutation that inserted `setEditError(...)` between the response and the
+  // guard could still satisfy a "guard found within N chars" regex. This
+  // walks the actual text between the response and the guard and requires
+  // it contain NONE of the setters the guard exists to protect.
+  function guardPrecedesSetters(slice: string, anchor: string, guardTail: string, setterNames: string[]): { ok: boolean; between: string } {
+    const anchorIdx = slice.indexOf(anchor);
+    if (anchorIdx < 0) return { ok: false, between: '(anchor not found)' };
+    const guardIdx = slice.indexOf(guardTail, anchorIdx);
+    if (guardIdx < 0) return { ok: false, between: '(guard not found)' };
+    const between = slice.slice(anchorIdx + anchor.length, guardIdx);
+    const leaked = setterNames.filter((name) => between.includes(`${name}(`));
+    return { ok: leaked.length === 0, between: leaked.join(',') || between.replace(/\s+/g, ' ').slice(0, 80) };
+  }
+
+  {
+    const editSlice = app.slice(app.indexOf('const handleEditGameSubmit'), app.indexOf('const handleDeleteGame'));
+    const saveSlice = app.slice(app.indexOf('const handleSaveGameSubmit'), app.indexOf('const handleRegenerateScenario'));
+    check('handleEditGameSubmit checks staleness (editSessionRef) immediately after the response, before any branch',
+      /const data = await res\.json\(\);[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
+    check('handleEditGameSubmit checks staleness in its catch block too',
+      /catch \{[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
+    check('handleEditGameSubmit guards setEditLoading(false) in finally with the SAME flag (not re-derived, which the success branch\'s own session bump would flip)',
+      /finally \{[\s\S]{0,50}if \(!staleSession\) setEditLoading\(false\);/.test(editSlice));
+    check('handleSaveGameSubmit checks staleness (saveRequestIdRef vs clientRequestId) immediately after the response, before any branch',
+      /const data = await res\.json\(\);[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
+    check('handleSaveGameSubmit checks staleness in its catch block too',
+      /catch \(err\) \{[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
+    check('handleSaveGameSubmit guards setSaveLoading(false) in finally with the SAME flag',
+      /finally \{[\s\S]{0,50}if \(!staleSession\) setSaveLoading\(false\);/.test(saveSlice));
+
+    // The guard must precede every setter it exists to protect — no setter
+    // sneaks in between the response and the `if (staleSession) return;`.
+    const editGate = guardPrecedesSetters(editSlice, 'const data = await res.json();', 'if (staleSession) return;',
+      ['setEditError', 'setEditErrorNeedsAuth', 'setEditLoading', 'setUserCustomGames']);
+    check(`handleEditGameSubmit: no setter runs between the response and its staleness guard (found: ${editGate.between})`, editGate.ok);
+    const saveGate = guardPrecedesSetters(saveSlice, 'const data = await res.json();', 'if (staleSession) return;',
+      ['setSaveError', 'setSaveErrorNeedsAuth', 'setSaveLoading', 'setUserCustomGames']);
+    check(`handleSaveGameSubmit: no setter runs between the response and its staleness guard (found: ${saveGate.between})`, saveGate.ok);
+
+    // Known-positive fixtures: a setter inserted BEFORE the guard (the exact
+    // regression the anchored regexes above cannot see on their own) MUST be
+    // caught by `guardPrecedesSetters`.
+    const regressedOrder = 'const data = await res.json();\nsetEditError(data.error || \'x\');\nstaleSession = editSessionRef.current !== editSessionAtSubmit;\nif (staleSession) return;';
+    const regressedGate = guardPrecedesSetters(regressedOrder, 'const data = await res.json();', 'if (staleSession) return;', ['setEditError']);
+    check('fixture sanity: guardPrecedesSetters catches a setter placed BEFORE the staleness guard', !regressedGate.ok);
+  }
+
+  // Director-verified regression on f3ca711: since `finally` now SKIPS
+  // setEditLoading/setSaveLoading(false) for a stale session (the point of
+  // the guard above), a request left in flight when its dialog closed left
+  // the flag stuck true FOREVER — nothing else ever cleared it, so the
+  // NEXT session's submit button stayed disabled ("Saving..."/"Saving
+  // Changes..." forever). A session's loading flag belongs to the session:
+  // it must be reset wherever that session STARTS.
+  {
+    // Edit: the ONE choke point every open/close/game-switch already passes
+    // through (not each of the several setIsEditModalOpen(true) call sites).
+    const editSessionEffect = app.slice(app.indexOf('const editSessionRef = useRef(0);'), app.indexOf('const editSessionRef = useRef(0);') + 800);
+    check('the editSessionRef bump effect also resets editLoading (one choke point covers every open/close/game-switch)',
+      /useEffect\(\(\) => \{ editSessionRef\.current \+= 1; setEditLoading\(false\); \}, \[isEditModalOpen, editGameId\]\);/.test(editSessionEffect));
+
+    // Save has no single choke point (saveRequestIdRef is reset by hand at
+    // each fresh-open site) — classify each `saveRequestIdRef.current =
+    // null;` occurrence as an OPEN site (immediately followed by
+    // setIsSaveModalOpen(true)) or the success-branch reset (is not), and
+    // require every OPEN site — and only those — to also reset saveLoading.
+    // CodeRabbit CLI: the original 400-char window accepted `setSaveLoading
+    // (false);` ANYWHERE in the window — even after the open call, or from
+    // an unrelated later statement. Tightened to the ordered shape every
+    // real site actually has: find the SPECIFIC `setIsSaveModalOpen(true);`
+    // this reset leads into, and require the loading reset strictly BETWEEN
+    // the two (proving it belongs to THIS site, in the right order).
+    function classifySaveResetSites(src: string): Array<{ isOpenSite: boolean; hasLoadingReset: boolean }> {
+      const re = /saveRequestIdRef\.current = null;/g;
+      const sites: Array<{ isOpenSite: boolean; hasLoadingReset: boolean }> = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(src))) {
+        const resetEnd = m.index + m[0].length;
+        const openIdx = src.indexOf('setIsSaveModalOpen(true);', resetEnd);
+        const isOpenSite = openIdx >= 0 && openIdx - resetEnd < 400;
+        const between = isOpenSite ? src.slice(resetEnd, openIdx) : '';
+        sites.push({ isOpenSite, hasLoadingReset: isOpenSite && /setSaveLoading\(false\);/.test(between) });
+      }
+      return sites;
+    }
+    const saveSites = classifySaveResetSites(app);
+    const openSites = saveSites.filter((s) => s.isOpenSite);
+    check(`exactly 2 save-dialog fresh-open sites are found (a resolver drift would silently stop checking a real site) — found ${openSites.length}`,
+      openSites.length === 2);
+    check('every save-dialog fresh-open site also resets saveLoading', openSites.every((s) => s.hasLoadingReset));
+    // The success-branch reset (not an open site) needs no such check — its
+    // OWN request's finally already clears saveLoading for the still-current session.
+    check('precondition: the success-branch reset is correctly classified as NOT an open site (so it is not required to reset loading here)',
+      saveSites.some((s) => !s.isOpenSite));
+
+    // Known-positive fixture: an open site WITHOUT the loading reset (the
+    // exact pre-fix shape) must be classified as missing it.
+    const regressedOpenSite = 'saveRequestIdRef.current = null;\nsetIsSaveModalOpen(true);';
+    const regressed = classifySaveResetSites(regressedOpenSite)[0];
+    check('fixture sanity: an open site missing setSaveLoading(false) is correctly flagged', regressed.isOpenSite && !regressed.hasLoadingReset);
+  }
+
+  // OPUS-REVIEW-DESKTOP N5: a bare COUNT comparison passes if an unpaired
+  // non-empty setter is added anywhere and an extra flag call is added
+  // anywhere else, and misreads `setSaveError("")` (double quotes) or a
+  // setter broken across a line as "non-empty". This instead PAIRS each
+  // real (non-empty) call with a flag call inside its own statement — found
+  // by balancing parens from the setter's `(` to its OWN closing `)`, then
+  // requiring the flag setter within a short window after that close, which
+  // is where every real call site puts it (see handleSaveGameSubmit /
+  // handleEditGameSubmit) even when the message itself spans many lines
+  // (the 409 branch's nested ternary).
+  function pairedNonEmptySetters(src: string, setter: string, flag: string): string[] {
+    const unpaired: string[] = [];
+    const re = new RegExp(`${setter}\\(`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src))) {
+      const start = m.index + m[0].length;
+      // A pure reset — setSaveError('') or setSaveError("") — is not a real
+      // message and needs no flag.
+      if (/^\s*(['"])\1\s*\)/.test(src.slice(start, start + 12))) continue;
+      let depth = 1;
+      let i = start;
+      while (i < src.length && depth > 0) {
+        if (src[i] === '(') depth++;
+        else if (src[i] === ')') depth--;
+        i++;
+      }
+      // CodeRabbit CLI: require the flag call IMMEDIATELY after this setter's
+      // own closing paren (only a `;` and whitespace between) — not merely
+      // somewhere within a window, which could be satisfied by an unrelated
+      // LATER setter's flag call and let a genuinely unpaired setter through.
+      const after = src.slice(i);
+      if (!new RegExp(`^\\s*;?\\s*${flag}\\(`).test(after)) {
+        unpaired.push(src.slice(m.index, Math.min(i, m.index + 80)).replace(/\s+/g, ' '));
+      }
+    }
+    return unpaired;
+  }
+  const unpairedSave = pairedNonEmptySetters(app, 'setSaveError', 'setSaveErrorNeedsAuth');
+  check(`every non-empty setSaveError call sets saveErrorNeedsAuth in its own statement (found ${unpairedSave.length} unpaired: ${unpairedSave.join(' | ').slice(0, 200)})`,
+    unpairedSave.length === 0);
+  const unpairedEdit = pairedNonEmptySetters(app, 'setEditError', 'setEditErrorNeedsAuth');
+  check(`every non-empty setEditError call sets editErrorNeedsAuth in its own statement (found ${unpairedEdit.length} unpaired: ${unpairedEdit.join(' | ').slice(0, 200)})`,
+    unpairedEdit.length === 0);
+
+  // Known-positive fixtures: each escape shape F1 named MUST trip the check.
+  // `authTokenRenderViolations` reads FILES; `violationsInText` drives the
+  // SAME regex and allow-list directly, on an in-memory string, so a fixture
+  // never touches disk while staying in lockstep with the real detector.
+  const multilineTernary = '{saveError && (\n  !authToken\n    ? (\n      <div>Sign In / Sign Up</div>\n    )\n    : (\n      <p>{saveError}</p>\n    )\n)}';
+  function violationsInText(text: string, allowListed: RegExp[]): string[] {
+    const norm = text.replace(/\s+/g, ' ');
+    const pattern = /(?<!\w)(?:!?authToken|\(\s*!?authToken\s*\))\s*(?:\?\s*[(<]|&&(?:\s*!?[A-Za-z_$][\w$.]*\s*&&)*\s*[(<])/g;
+    const out: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(norm))) {
+      const context = norm.slice(Math.max(0, m.index - 60), m.index);
+      if (allowListed.some((re) => re.test(context))) continue;
+      out.push(norm.slice(m.index, m.index + 30));
+    }
+    return out;
+  }
+  check('fixture (a) multi-line ternary is flagged (OPUS F1a)',
+    violationsInText(multilineTernary, ALLOW).length > 0);
+  // (b) The `&&`-gate form of the identical decision.
+  const andGate = '{saveError && !authToken && (\n  <div>Sign In / Sign Up</div>\n)}';
+  check('fixture (b) &&-gate form is flagged (OPUS F1b)',
+    violationsInText(andGate, ALLOW).length > 0);
+  // CodeRabbit CLI: the PARENTHESIZED forms of both shapes.
+  check('fixture: parenthesized ternary `(!authToken) ? (` is flagged',
+    violationsInText('{saveError && (\n  (!authToken) ? (\n    <div>Sign In / Sign Up</div>\n  ) : null\n)}', ALLOW).length > 0);
+  check('fixture: parenthesized &&-gate `(authToken) && (` is flagged',
+    violationsInText('{saveError && (authToken) && (\n  <div>Sign In / Sign Up</div>\n)}', ALLOW).length > 0);
+  // Control: the parenthesized alternative must not misfire on the
+  // legitimate effect-gating `(authToken && user)` — its own closing paren
+  // does not sit immediately after `authToken`.
+  check('control: `(authToken && user) || localOwnerMode` still is not flagged with the parenthesized alternative added',
+    violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
+  // CodeRabbit CLI: a CHAINED &&-gate — an unrelated identifier between
+  // authToken and the JSX, not the JSX immediately after authToken's own &&.
+  check('fixture: chained &&-gate `!authToken && saveError && (` is flagged',
+    violationsInText('{!authToken && saveError && (\n  <div>Sign In / Sign Up</div>\n)}', ALLOW).length > 0);
+  // Control: the chain-link grammar (a bare identifier + &&) must not let
+  // the effect-gate's own `user` link the chain to something JSX-shaped
+  // further away — there is nothing further away here, so this stays a
+  // sanity re-check rather than a new distinct shape.
+  check('control: the effect-gate is still unflagged with the chained-&& extension',
+    violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
+  // (c) The predicate reappearing in a DIFFERENT component the old two-file
+  // guard never read — SavedGamesList.tsx's real "not signed in" branch,
+  // mutated exactly the way F1's own demonstration did (canOwnGames swapped
+  // for the raw token), scanned through the SAME multi-file `findTsxFiles`
+  // path (not a hand-picked file) to prove the scan itself reaches it.
+  const savedGamesListSrc = readFileSync('src/components/SavedGamesList.tsx', 'utf8');
+  const regressedSavedGamesList = savedGamesListSrc.replace('if (!canOwnGames) {',
+    'if (!authToken) {\n  return (\n    <span>{!authToken ? (\n      <em>Sign In / Sign Up</em>\n    ) : null}</span>\n  );\n}\nif (!canOwnGames) {');
+  check('precondition: the REAL SavedGamesList.tsx is clean before mutation', violationsInText(savedGamesListSrc, ALLOW).length === 0);
+  check('fixture (c) the predicate in a DIFFERENT component (SavedGamesList-shaped) is flagged (OPUS F1c)',
+    violationsInText(regressedSavedGamesList, ALLOW).length > 0);
+
+  // Control: the header-builder line alone must NOT trip it (object-literal
+  // consequent `{`, not `(`/`<`, PLUS the explicit allow-list).
+  const headerOnly = "const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});";
+  check('control: the authHeaders line alone is not flagged', violationsInText(headerOnly, ALLOW).length === 0);
+  // CodeRabbit CLI: an unrelated REAL defect elsewhere in the same file must
+  // still be flagged — the authHeaders declaration's presence earlier in the
+  // text must not leak an allow-list past its own statement.
+  const headerFollowedByRealDefect = `${headerOnly}\n// unrelated code between the two statements\nfunction Foo() {\n  return (\n    <div>{saveError && (\n      !authToken ? (\n        <span>Sign In / Sign Up</span>\n      ) : null\n    )}</div>\n  );\n}`;
+  check('control: a genuine defect elsewhere in the file is still flagged despite an earlier, unrelated authHeaders declaration',
+    violationsInText(headerFollowedByRealDefect, ALLOW).length > 0);
+  // Control: the legitimate effect-gating `&&` (App.tsx's own refetch guard)
+  // must NOT trip the &&-shape detector — its consequent is `user`, not a
+  // JSX/parenthesized expression.
+  check('control: `(authToken && user) || localOwnerMode` (App.tsx\'s own effect) is not flagged',
+    violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
