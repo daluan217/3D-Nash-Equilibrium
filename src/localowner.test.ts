@@ -21,14 +21,14 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 };
 const server = readFileSync('server.ts', 'utf8');
 
-/** Each `getAuthUser`/`getGameOwner` call, tagged with the route above it. */
+/** Each `getAuthUser`/`resolveGameOwner` call, tagged with the route above it. */
 function resolverByRoute(src: string): Array<{ route: string; resolver: string }> {
   const out: Array<{ route: string; resolver: string }> = [];
   let route = '(top level)';
   for (const line of src.split('\n')) {
     const m = line.match(/app\.(get|post|patch|delete)\("(\/api\/[^"]+)"/);
     if (m) route = m[2];
-    const r = line.match(/\b(getAuthUser|getGameOwner)\(req\)/);
+    const r = line.match(/\b(getAuthUser|resolveGameOwner)\(req\)/);
     if (r) out.push({ route, resolver: r[1] });
   }
   return out;
@@ -58,7 +58,7 @@ const STRICT_ROUTES = ['/api/auth/delete-request', '/api/auth/delete-confirm', '
 for (const { route, resolver } of sites) {
   if (GAME_ROUTES.includes(route)) {
     check(`${route} resolves the game owner (so the desktop works signed out)`,
-      resolver === 'getGameOwner', `uses ${resolver}`);
+      resolver === 'resolveGameOwner', `uses ${resolver}`);
   }
   if (STRICT_ROUTES.includes(route)) {
     check(`${route} keeps the STRICT check — a fallback identity here would hand the keyboard someone's account`,
@@ -92,24 +92,144 @@ check('the adopt-local route commits the candidate through a confirmed write and
 /* ------------------------------------------------------ known positives */
 const MUST_FLAG: Array<[string, string]> = [
   ['deletion falling back to the game owner',
-   'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const user = getGameOwner(req);\n});'],
+   'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const user = resolveGameOwner(req);\n});'],
   ['a game route left on the strict check',
    'app.get("/api/games", h, (req, res) => {\n  const user = getAuthUser(req);\n});'],
 ];
 for (const [name, src] of MUST_FLAG) {
   const found = resolverByRoute(src);
   const bad = found.some((f) => (STRICT_ROUTES.includes(f.route) && f.resolver !== 'getAuthUser')
-    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'getGameOwner'));
+    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'resolveGameOwner'));
   check(`fixture "${name}" is flagged`, bad);
 }
 // Control: the correct shape must not be flagged.
 {
-  const good = 'app.get("/api/games", h, (req, res) => {\n  const user = getGameOwner(req);\n});\n'
+  const good = 'app.get("/api/games", h, (req, res) => {\n  const user = resolveGameOwner(req);\n});\n'
     + 'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const user = getAuthUser(req);\n});';
   const found = resolverByRoute(good);
   const bad = found.some((f) => (STRICT_ROUTES.includes(f.route) && f.resolver !== 'getAuthUser')
-    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'getGameOwner'));
+    || (GAME_ROUTES.includes(f.route) && f.resolver !== 'resolveGameOwner'));
   check('the correct shape is not flagged', !bad);
+}
+
+// RED-DESKTOP-16/001: the OLD expression silently re-owned a presented-but-dead
+// token under the shared local owner. It must never reappear, anywhere in the
+// file — not just inside resolveGameOwner, which no longer exists under that
+// name.
+check('the silently-reowning expression `getAuthUser(req) ?? ensureLocalOwner()` is gone from server.ts',
+  !/getAuthUser\(req\)\s*\?\?\s*ensureLocalOwner\(\)/.test(server));
+// Known-positive: the same regex, run against a fixture that plants the old
+// expression back, must fail BY NAME (proving the check can actually fire).
+check('fixture: a planted old expression is flagged by the same regex',
+  /getAuthUser\(req\)\s*\?\?\s*ensureLocalOwner\(\)/.test('function getGameOwner(req) {\n  return getAuthUser(req) ?? ensureLocalOwner();\n}'));
+
+// resolveGameOwner itself must distinguish "no token" from "a token that
+// didn't resolve" rather than collapsing both to the same fallback — the
+// actual mechanism of the fix, not just the absence of the old text (a
+// rewrite that reintroduced the bug under new names would still pass the
+// text-absence check above). OPUS-REVIEW-DESKTOP16 N2: the return shape is
+// now a bare `User | null` — the earlier `{ owner, presentedDeadToken }`
+// wrapper had a second field nothing ever read, so it was dropped rather
+// than kept as documented-but-unenforced dead code.
+{
+  const fnStart = server.indexOf('function resolveGameOwner(req');
+  check('resolveGameOwner is defined', fnStart >= 0);
+  const fnSrc = server.slice(fnStart, server.indexOf('\n}', fnStart) + 2);
+  check('resolveGameOwner checks getAuthUser(req) first',
+    /const user = getAuthUser\(req\);\s*\n\s*if \(user\) return user;/.test(fnSrc));
+  check('resolveGameOwner refuses (null) when an Authorization header WAS presented but did not resolve',
+    /if \(hasAuthorizationHeader\(req\)\) return null;/.test(fnSrc));
+  check('resolveGameOwner falls back to the local owner ONLY when no Authorization header was presented at all',
+    /return ensureLocalOwner\(\);/.test(fnSrc));
+  // CodeRabbit CLI: the three checks above each confirm a LINE is present
+  // ANYWHERE in the function — none of them enforce ORDER. A reordering that
+  // moves the `hasAuthorizationHeader` guard BEFORE `getAuthUser` would
+  // refuse every VALID token too (any presented header, resolved or not,
+  // hits the guard first) while still satisfying all three checks above,
+  // since every substring they look for would still be present somewhere in
+  // the function. One exact WHOLE-BODY pin (statement order included) closes
+  // that gap.
+  check('resolveGameOwner\'s full body matches the exact intended sequence (auth check, then the header-presence guard, then the local-owner fallback — in that order)',
+    /^function resolveGameOwner\(req: express\.Request\): User \| null \{\n {2}const user = getAuthUser\(req\);\n {2}if \(user\) return user;\n {2}if \(hasAuthorizationHeader\(req\)\) return null;\n {2}return ensureLocalOwner\(\);\n\}$/.test(fnSrc));
+
+  // Known-positive: a regression back to unconditional fallback (the old bug,
+  // renamed) must be caught by the same three checks above going false.
+  const regressed = 'function resolveGameOwner(req) {\n  return getAuthUser(req) ?? ensureLocalOwner();\n}';
+  check('fixture: a regression to unconditional fallback fails the "presented header refused" check',
+    !/if \(hasAuthorizationHeader\(req\)\) return null;/.test(regressed));
+  // Known-positive: a regression back to the narrower, Bearer-SPECIFIC
+  // predicate this same finding replaced (CodeRabbit on server.ts:2066 —
+  // OPUS-REVIEW-DESKTOP16 NOTE 1's "unreachable from the SPA" argument
+  // stopped being load-bearing once a bare Bearer/Basic/Token header proved
+  // reachable through a direct API call) must ALSO be caught, since it is
+  // textually different from `hasAuthorizationHeader`.
+  const regressedBearerOnly = 'function resolveGameOwner(req) {\n  const user = getAuthUser(req);\n  if (user) return user;\n'
+    + '  if (hasPresentedToken(req)) return null;\n  return ensureLocalOwner();\n}';
+  check('fixture: a regression back to the Bearer-specific predicate (hasPresentedToken) fails the structural check',
+    !/if \(hasAuthorizationHeader\(req\)\) return null;/.test(regressedBearerOnly));
+  // Known-positive (CodeRabbit CLI, MAJOR): the reordered shape itself — the
+  // header-presence guard moved BEFORE the auth check. Every one of the
+  // three presence checks above still matches this text (nothing was
+  // deleted, only moved), so ONLY the new whole-body order pin can catch it.
+  const reordered = 'function resolveGameOwner(req: express.Request): User | null {\n'
+    + '  if (hasAuthorizationHeader(req)) return null;\n'
+    + '  const user = getAuthUser(req);\n'
+    + '  if (user) return user;\n'
+    + '  return ensureLocalOwner();\n}';
+  check('fixture sanity: the reordered function still passes all three individual presence checks (proving they cannot catch this on their own)',
+    /const user = getAuthUser\(req\);\s*\n\s*if \(user\) return user;/.test(reordered)
+    && /if \(hasAuthorizationHeader\(req\)\) return null;/.test(reordered)
+    && /return ensureLocalOwner\(\);/.test(reordered));
+  check('fixture: the reordered function (header guard before the auth check — would 401 a VALID token) fails the whole-body order pin',
+    !/^function resolveGameOwner\(req: express\.Request\): User \| null \{\n {2}const user = getAuthUser\(req\);\n {2}if \(user\) return user;\n {2}if \(hasAuthorizationHeader\(req\)\) return null;\n {2}return ensureLocalOwner\(\);\n\}$/.test(reordered));
+}
+
+// OPUS-REVIEW-DESKTOP16 (residual) + director's structural decision
+// (2026-09-07, following CodeRabbit on server.ts:2066): `hasPresentedToken`
+// (Bearer-scheme-specific: `parseBearerToken(req) !== null`) is replaced by
+// `hasAuthorizationHeader` (structural: header PRESENCE, not scheme
+// parsing) — the earlier predicate read a bare `Bearer`, whitespace-only
+// `Bearer `, `Basic`/`Token` schemes, and (via Node keeping only the FIRST
+// `Authorization` header) a dead Bearer masked by a preceding Basic header
+// as "nothing presented", so all of those fell back to the local owner
+// exactly like RED-DESKTOP-16/001's original bug. This file has no way to
+// IMPORT server.ts (it is the app entrypoint, not a module anything else
+// here requires), so re-pinned the same way as before: an EXACT-text pin
+// on the real function body (a mutant fails this immediately, by name),
+// plus a case matrix gated by that pin, not trusted on its own.
+{
+  check('hasAuthorizationHeader is exactly `return typeof req.headers.authorization === "string";` (structural: only an ABSENT header counts as no-credential)',
+    /function hasAuthorizationHeader\(req: express\.Request\): boolean \{\s*\n\s*return typeof req\.headers\.authorization === "string";\s*\n\}/.test(server));
+
+  // Known-positives: two DIFFERENT realistic regressions — a lazy
+  // hardcoded shortcut, and "tidying" it back to the narrower Bearer-only
+  // predicate this same round replaced.
+  const regressedHardcodedFalse = 'function hasAuthorizationHeader(req: express.Request): boolean {\n  return false;\n}';
+  check('fixture: a hardcoded-false hasAuthorizationHeader fails the exact-body-text pin',
+    !/function hasAuthorizationHeader\(req: express\.Request\): boolean \{\s*\n\s*return typeof req\.headers\.authorization === "string";\s*\n\}/.test(regressedHardcodedFalse));
+  const regressedBackToBearerOnly = 'function hasAuthorizationHeader(req: express.Request): boolean {\n  return parseBearerToken(req) !== null;\n}';
+  check('fixture: reverting to the old Bearer-only predicate fails the exact-body-text pin',
+    !/function hasAuthorizationHeader\(req: express\.Request\): boolean \{\s*\n\s*return typeof req\.headers\.authorization === "string";\s*\n\}/.test(regressedBackToBearerOnly));
+
+  // Case matrix — gated by the exact-text pin above (its realism is
+  // guaranteed by that pin passing, not by itself): every header shape
+  // OPUS NOTE 1 and CodeRabbit (server.ts:2066) named. Only the ABSENT
+  // header (undefined) reads as "nothing presented"; every string value,
+  // however malformed, reads as presented.
+  const hasAuthorizationHeaderFixture = (authHeader: string | undefined): boolean => typeof authHeader === 'string';
+  const cases: Array<[string, string | undefined, boolean]> = [
+    ['absent header (undefined) -> the ONLY case the local owner may answer', undefined, false],
+    ['empty string header -> a credential WAS presented', '', true],
+    ['bare "Bearer" (no space, no token at all) -> presented', 'Bearer', true],
+    ['"Bearer " (whitespace only after the scheme) -> presented', 'Bearer ', true],
+    ['"Bearer    " (several whitespace chars, still no token) -> presented', 'Bearer    ', true],
+    ['"Basic eHl6" (a real, non-Bearer scheme) -> presented', 'Basic eHl6', true],
+    ['"Token abc" (a made-up non-Bearer scheme) -> presented', 'Token abc', true],
+    ['a garbled Bearer token -> presented', 'Bearer dead', true],
+  ];
+  for (const [name, header, expected] of cases) {
+    check(`hasAuthorizationHeader fixture: ${name}`, hasAuthorizationHeaderFixture(header) === expected);
+  }
 }
 
 // RED-DESKTOP-13/001 (director-reproduced), now closed structurally
@@ -513,6 +633,148 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // JSX/parenthesized expression.
   check('control: `(authToken && user) || localOwnerMode` (App.tsx\'s own effect) is not flagged',
     violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
+}
+
+// OPUS-REVIEW-DESKTOP16 N3: all FOUR client call sites for the game routes
+// (GET refetchUserGames, POST/PATCH/DELETE handlers) must route their 401
+// through the ONE shared `handleDeadSessionResponse` helper, not a separate
+// inline `res.status === 401` check each — the GET site originally had NO
+// check at all (a dead token left the list stale and the header lying until
+// the next write). Each site is sliced out of App.tsx by its own stable
+// start/end markers (the same markers the staleness-guard checks above
+// already use for the Save/Edit handlers) and scanned independently, so a
+// regression in ONE site is named, not just "something in App.tsx broke".
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const idx = (marker: string): number => {
+    const i = app.indexOf(marker);
+    if (i < 0) throw new Error(`marker not found: ${marker}`);
+    return i;
+  };
+  const FOUR_SITES: Array<[string, string, string]> = [
+    ['GET /api/games (refetchUserGames)', 'const refetchUserGames = useCallback',
+      '}, [authToken, apiBaseUrl, dbMode, canOwnGames]);'],
+    ['POST /api/games (handleSaveGameSubmit)', 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async'],
+    ['PATCH /api/games/:id (handleEditGameSubmit)', 'const handleEditGameSubmit = async', 'const handleDeleteGame = async'],
+    ['DELETE /api/games/:id (handleDeleteGame)', 'const handleDeleteGame = async', 'const handleGenerateGame = async'],
+  ];
+  for (const [name, startMarker, endMarker] of FOUR_SITES) {
+    const slice = app.slice(idx(startMarker), idx(endMarker));
+    check(`${name} routes its 401 through handleDeadSessionResponse`,
+      /handleDeadSessionResponse\(res/.test(slice));
+    // A site that checks `res.status === 401` DIRECTLY, bypassing the
+    // helper, is exactly the pre-fix shape (three independent inline copies
+    // plus one site with no check at all) — must not reappear in any of the
+    // four slices.
+    check(`${name} has no bypassing inline \`res.status === 401\` check`,
+      !/res\.status === 401/.test(slice));
+    // CodeRabbit on #163 (src/App.tsx:466): a response for a request sent
+    // under an OLD token must not clear a CURRENT, different one committed
+    // while that request was still in flight — so the helper takes the
+    // token THIS request actually used, captured BEFORE the fetch, not
+    // whatever is current by the time the response lands. Each site must
+    // (a) capture it and (b) pass EXACTLY that captured identifier as the
+    // second argument — passing `null` or re-reading the CURRENT token at
+    // call time (`authTokenRef.current`, or the outer `authToken` read
+    // AFTER a later `await`) would make the ref-comparison inside the
+    // helper trivially always-true again, silently reintroducing the exact
+    // race CodeRabbit found under a different spelling.
+    check(`${name} captures its own requestToken before the fetch`,
+      /const requestToken = authToken;/.test(slice));
+    check(`${name} passes its captured requestToken (not null, not a re-read of the current token) to the helper`,
+      /handleDeadSessionResponse\(res, requestToken\)/.test(slice));
+  }
+
+  // Known-positive (the mutation OPUS-REVIEW-DESKTOP16 N3 names by example):
+  // revert the GET site to its pre-fix shape (no dead-session check at all)
+  // and confirm the FIRST check above fails BY NAME for that site only.
+  const regressedRefetch = "const refetchUserGames = useCallback(async () => {\n"
+    + "  const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "  if (!res.ok) return undefined;\n"
+    + "  const rows = await res.json();\n"
+    + "  setUserCustomGames(rows);\n"
+    + "  return rows;\n"
+    + "}, [authToken, apiBaseUrl, dbMode, canOwnGames]);";
+  check('fixture: the pre-fix GET site (no dead-session check) fails the routing check',
+    !/handleDeadSessionResponse\(res/.test(regressedRefetch));
+  // And a regression back to the OLD inline three-copies shape (still bypassing
+  // the helper) must be flagged by the second check.
+  const regressedInline = "const wasAuthFailure = res.status === 401;\nif (wasAuthFailure) updateAuthToken(null);";
+  check('fixture: the pre-fix inline `res.status === 401` shape is flagged by the bypass check',
+    /res\.status === 401/.test(regressedInline));
+
+  // CodeRabbit's own named mutations: passing `null`, or re-reading the
+  // CURRENT token instead of the captured snapshot, at the helper call site.
+  const passedNull = "const requestToken = authToken;\n"
+    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "handleDeadSessionResponse(res, null);";
+  check('fixture: passing `null` as the second argument fails the requestToken-passing check',
+    !/handleDeadSessionResponse\(res, requestToken\)/.test(passedNull));
+  const passedCurrentTokenRef = "const requestToken = authToken;\n"
+    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "handleDeadSessionResponse(res, authTokenRef.current);";
+  check('fixture: passing `authTokenRef.current` (re-reading the CURRENT token, not the captured one) fails the requestToken-passing check',
+    !/handleDeadSessionResponse\(res, requestToken\)/.test(passedCurrentTokenRef));
+  // Control: the correct shape (capture, then pass that exact identifier) passes both.
+  const correctShape = "const requestToken = authToken;\n"
+    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "handleDeadSessionResponse(res, requestToken);";
+  check('control: the correct capture-then-pass shape is not flagged',
+    /const requestToken = authToken;/.test(correctShape) && /handleDeadSessionResponse\(res, requestToken\)/.test(correctShape));
+}
+
+// CodeRabbit on #163 (delayed-401 regression, unit-level on the helper
+// itself): a 401 with a STALE requestToken (does not match what is
+// currently committed) must NOT clear the current token; a 401 with the
+// MATCHING token must. The four call-site checks above only pin that each
+// site passes its OWN captured token through — they say nothing about
+// whether `handleDeadSessionResponse`'s own comparison is correct. Pinned
+// two ways: (1) an exact-text pin on the helper's own conditional (a
+// mutation to the comparison, e.g. dropping the ref check or comparing the
+// wrong things, fails this immediately); (2) a hand-run case matrix against
+// a reimplementation of that SAME pinned line — its realism is guaranteed
+// by (1) passing, not by itself (this file cannot import App.tsx's
+// component internals to call the real closure directly).
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const fnStart = app.indexOf('const handleDeadSessionResponse = (res: Response, requestToken');
+  check('handleDeadSessionResponse is defined with the (res, requestToken) signature', fnStart >= 0);
+  const fnSrc = app.slice(fnStart, app.indexOf('};', fnStart) + 2);
+  check('handleDeadSessionResponse only clears the token when authTokenRef.current === requestToken',
+    /if \(wasAuthFailure && authTokenRef\.current === requestToken\) updateAuthToken\(null\);/.test(fnSrc));
+  check('handleDeadSessionResponse still reports wasAuthFailure from the RAW response status, regardless of the ref match',
+    /const wasAuthFailure = res\.status === 401;/.test(fnSrc));
+
+  // Known-positive: the exact CodeRabbit-named regression (unconditional
+  // clear, ignoring which token the response belongs to) must fail the pin.
+  const regressedUnconditional = 'const handleDeadSessionResponse = (res, requestToken) => {\n'
+    + '  const wasAuthFailure = res.status === 401;\n'
+    + '  if (wasAuthFailure) updateAuthToken(null);\n'
+    + '  return wasAuthFailure;\n};';
+  check('fixture: an unconditional clear (the pre-fix / CodeRabbit-found shape) fails the ref-match pin',
+    !/if \(wasAuthFailure && authTokenRef\.current === requestToken\) updateAuthToken\(null\);/.test(regressedUnconditional));
+
+  // Delayed-401 case matrix, gated by the exact-text pin above.
+  type Case = { name: string; committedToken: string | null; requestToken: string | null; status: number; expectCleared: boolean; expectAuthFailure: boolean };
+  const cases: Case[] = [
+    { name: 'matching token, 401 -> clears', committedToken: 'tok-A', requestToken: 'tok-A', status: 401, expectCleared: true, expectAuthFailure: true },
+    { name: 'STALE token (delayed response after re-auth), 401 -> does NOT clear the current one', committedToken: 'tok-B', requestToken: 'tok-A', status: 401, expectCleared: false, expectAuthFailure: true },
+    { name: 'request sent with no token, committed also none, 401 -> clears (both null, matches)', committedToken: null, requestToken: null, status: 401, expectCleared: true, expectAuthFailure: true },
+    { name: 'request sent with no token but a token was since committed, 401 -> does NOT clear it', committedToken: 'tok-B', requestToken: null, status: 401, expectCleared: false, expectAuthFailure: true },
+    { name: 'matching token, 200 -> no clear, not an auth failure', committedToken: 'tok-A', requestToken: 'tok-A', status: 200, expectCleared: false, expectAuthFailure: false },
+    { name: 'stale token, 200 -> no clear, not an auth failure', committedToken: 'tok-B', requestToken: 'tok-A', status: 200, expectCleared: false, expectAuthFailure: false },
+  ];
+  for (const c of cases) {
+    let cleared = false;
+    const authTokenRefSim = { current: c.committedToken };
+    const updateAuthTokenSim = (t: string | null) => { cleared = t === null ? true : cleared; };
+    // The SAME pinned line, executed:
+    const wasAuthFailure = c.status === 401;
+    if (wasAuthFailure && authTokenRefSim.current === c.requestToken) updateAuthTokenSim(null);
+    check(`delayed-401 fixture: ${c.name}`,
+      cleared === c.expectCleared && wasAuthFailure === c.expectAuthFailure,
+      `cleared=${cleared} (want ${c.expectCleared}), wasAuthFailure=${wasAuthFailure} (want ${c.expectAuthFailure})`);
+  }
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
