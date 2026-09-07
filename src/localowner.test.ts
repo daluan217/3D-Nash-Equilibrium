@@ -226,7 +226,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     const pattern = /(?<!\w)!?authToken\s*(?:\?|&&)\s*[(<]/g;
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(norm))) {
-      const context = norm.slice(Math.max(0, m.index - 40), m.index);
+      const context = norm.slice(Math.max(0, m.index - 60), m.index);
       if (allowListed.some((re) => re.test(context))) continue;
       violations.push(`${file}: …${norm.slice(Math.max(0, m.index - 20), m.index + 30)}…`);
     }
@@ -242,7 +242,13 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     && tsxFiles.some((f) => f.endsWith('SavedGamesList.tsx')));
   // The ONE legitimate `authToken ?` ternary: it returns an HTTP header
   // object (`Authorization: Bearer ...`), never JSX, never a copy decision.
-  const ALLOW = [/authHeaders\s*=/];
+  // CodeRabbit CLI: the bare `authHeaders\s*=` context check could suppress
+  // a REAL defect if unrelated text happened to mention "authHeaders" within
+  // the window — tied to the exact declaration signature instead (nothing
+  // else in this codebase reads `(): Record<string, string> =>`), and the
+  // window (60 chars) is sized to the real line's own length, not padded
+  // further for slack.
+  const ALLOW = [/authHeaders\s*=\s*\(\):\s*Record<string,\s*string>\s*=>/];
 
   const violations = authTokenRenderViolations(tsxFiles, ALLOW);
   check(`no authToken-ternary/&& render or copy branch anywhere under src/**/*.tsx (found ${violations.length}: ${violations.join(' | ').slice(0, 300)})`,
@@ -275,6 +281,22 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // state), in the catch, AND in finally (which runs on every path,
   // including the early return) — checking only one of the three would
   // still let a stale response through the other two.
+  // CodeRabbit CLI: the anchored regexes above prove the guard is PRESENT
+  // near the response, but not that it comes BEFORE every state setter — a
+  // mutation that inserted `setEditError(...)` between the response and the
+  // guard could still satisfy a "guard found within N chars" regex. This
+  // walks the actual text between the response and the guard and requires
+  // it contain NONE of the setters the guard exists to protect.
+  function guardPrecedesSetters(slice: string, anchor: string, guardTail: string, setterNames: string[]): { ok: boolean; between: string } {
+    const anchorIdx = slice.indexOf(anchor);
+    if (anchorIdx < 0) return { ok: false, between: '(anchor not found)' };
+    const guardIdx = slice.indexOf(guardTail, anchorIdx);
+    if (guardIdx < 0) return { ok: false, between: '(guard not found)' };
+    const between = slice.slice(anchorIdx + anchor.length, guardIdx);
+    const leaked = setterNames.filter((name) => between.includes(`${name}(`));
+    return { ok: leaked.length === 0, between: leaked.join(',') || between.replace(/\s+/g, ' ').slice(0, 80) };
+  }
+
   {
     const editSlice = app.slice(app.indexOf('const handleEditGameSubmit'), app.indexOf('const handleDeleteGame'));
     const saveSlice = app.slice(app.indexOf('const handleSaveGameSubmit'), app.indexOf('const handleRegenerateScenario'));
@@ -290,6 +312,22 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
       /catch \(err\) \{[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
     check('handleSaveGameSubmit guards setSaveLoading(false) in finally with the SAME flag',
       /finally \{[\s\S]{0,50}if \(!staleSession\) setSaveLoading\(false\);/.test(saveSlice));
+
+    // The guard must precede every setter it exists to protect — no setter
+    // sneaks in between the response and the `if (staleSession) return;`.
+    const editGate = guardPrecedesSetters(editSlice, 'const data = await res.json();', 'if (staleSession) return;',
+      ['setEditError', 'setEditErrorNeedsAuth', 'setEditLoading', 'setUserCustomGames']);
+    check(`handleEditGameSubmit: no setter runs between the response and its staleness guard (found: ${editGate.between})`, editGate.ok);
+    const saveGate = guardPrecedesSetters(saveSlice, 'const data = await res.json();', 'if (staleSession) return;',
+      ['setSaveError', 'setSaveErrorNeedsAuth', 'setSaveLoading', 'setUserCustomGames']);
+    check(`handleSaveGameSubmit: no setter runs between the response and its staleness guard (found: ${saveGate.between})`, saveGate.ok);
+
+    // Known-positive fixtures: a setter inserted BEFORE the guard (the exact
+    // regression the anchored regexes above cannot see on their own) MUST be
+    // caught by `guardPrecedesSetters`.
+    const regressedOrder = 'const data = await res.json();\nsetEditError(data.error || \'x\');\nstaleSession = editSessionRef.current !== editSessionAtSubmit;\nif (staleSession) return;';
+    const regressedGate = guardPrecedesSetters(regressedOrder, 'const data = await res.json();', 'if (staleSession) return;', ['setEditError']);
+    check('fixture sanity: guardPrecedesSetters catches a setter placed BEFORE the staleness guard', !regressedGate.ok);
   }
 
   // OPUS-REVIEW-DESKTOP N5: a bare COUNT comparison passes if an unpaired
@@ -347,7 +385,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     const out: string[] = [];
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(norm))) {
-      const context = norm.slice(Math.max(0, m.index - 40), m.index);
+      const context = norm.slice(Math.max(0, m.index - 60), m.index);
       if (allowListed.some((re) => re.test(context))) continue;
       out.push(norm.slice(m.index, m.index + 30));
     }
@@ -375,6 +413,12 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // consequent `{`, not `(`/`<`, PLUS the explicit allow-list).
   const headerOnly = "const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});";
   check('control: the authHeaders line alone is not flagged', violationsInText(headerOnly, ALLOW).length === 0);
+  // CodeRabbit CLI: an unrelated REAL defect elsewhere in the same file must
+  // still be flagged — the authHeaders declaration's presence earlier in the
+  // text must not leak an allow-list past its own statement.
+  const headerFollowedByRealDefect = `${headerOnly}\n// unrelated code between the two statements\nfunction Foo() {\n  return (\n    <div>{saveError && (\n      !authToken ? (\n        <span>Sign In / Sign Up</span>\n      ) : null\n    )}</div>\n  );\n}`;
+  check('control: a genuine defect elsewhere in the file is still flagged despite an earlier, unrelated authHeaders declaration',
+    violationsInText(headerFollowedByRealDefect, ALLOW).length > 0);
   // Control: the legitimate effect-gating `&&` (App.tsx's own refetch guard)
   // must NOT trip the &&-shape detector — its consequent is `user`, not a
   // JSX/parenthesized expression.

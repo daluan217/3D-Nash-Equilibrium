@@ -5697,8 +5697,11 @@ try {
       const inviteBtn = saveDlg.getByRole('button', { name: /sign in \/ sign up/i });
       record('FIX: a real 401 for a signed-in account (still dbMode=local) DOES show the Sign In / Sign Up invitation',
         await inviteBtn.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false));
+      // CodeRabbit CLI: poll for the cleared token (this suite's own idiom
+      // for async state) rather than a single point-in-time read.
       record('the 401 cleared the account session token (what would otherwise have flipped localOwnerMode true)',
-        !(await dp.evaluate(() => localStorage.getItem('nash_sim_token_local'))));
+        await dp.waitForFunction(() => !localStorage.getItem('nash_sim_token_local'), null, { timeout: 8000 })
+          .then(() => true).catch(() => false));
       await dp.unroute('**/api/games');
 
       record('no console/page errors through the desktop auth-predicate cycle (the two deliberate drops [ERR_CONNECTION_RESET] and the mocked 401 resource-load error are expected, filtered)',
