@@ -11,6 +11,7 @@ import {
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
 import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
+import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -46,12 +47,13 @@ assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 29, 'the smoke suite is split into 29 CI shards (test.yml matrix must match) '
-  + '-- raised from 28 (director merge-main round, blue16-app): merging #164/#165/#166 landed a heavily rewritten '
-  + '§71 (self-calibrating window + variant B fallback, 77507ms measured vs the old 17072ms) on top of the '
-  + 'existing 72 sections plus this branch\'s own §85/85b/86 -- the combined measured total (~5.6M ms) no '
-  + 'longer fits 28 shards under the 200 s headroom line even with §85 split into 85/85b (66/66b\'s own '
-  + 'precedent); one more shard was the only fix, not a packing bug.');
+assert.strictEqual(SHARD_COUNT, 30, 'the smoke suite is split into 30 CI shards (test.yml matrix must match) '
+  + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
+  + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
+  + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
+  + 'skipped (§70 alone: 207,990ms) and raised 28->29 on its own. Merging both onto ONE 29-shard table '
+  + 'pushed 6 more multi-section shards over the 200 s headroom line (worst 204,888ms) -- neither branch '
+  + 'anticipated the other\'s addition; 30 shards clears every multi-section shard again.');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
@@ -72,8 +74,40 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
     + `(300 s job ceiling minus ~75 s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
 }
 // Headroom: CI ran ~5% slower than the table the first 20-shard matrix was packed from (285 s on a
-// 207 s-packed shard). Keep every packed shard ≤ 200 s so that slack cannot reach the 225 s budget.
-assert(Math.max(...totals) <= 200000, `the heaviest packed shard is ${Math.round(Math.max(...totals) / 1000)} s — over the 200 s headroom line; raise SHARD_COUNT`);
+// 207 s-packed shard). Keep every MULTI-section packed shard ≤ 200 s so that slack cannot reach the
+// 225 s budget. A shard holding exactly ONE section is exempted from the 200 s line (bounded instead
+// by the per-section SECTION_BUDGET_MS assert above): the 200 s line exists to catch a PILEUP —
+// several sections landing on one shard close enough to the ceiling that CI's ~5% slop could tip it
+// over — and no amount of splitting into more shards makes one already-isolated section smaller
+// (OPUS-REVIEW-WEBKIT N1: §70 alone now measures 207,990 ms after WebKit started actually running
+// there). Silently raising the 200 s line instead would have hidden the other 7 shards this same
+// repack pushed over it for ordinary multi-section reasons — those are exactly what this must still
+// catch.
+const shardMembers = new Map<number, string[]>();
+for (const { id, shard } of definitions) {
+  if (shard === undefined) continue;
+  const list = shardMembers.get(shard) ?? [];
+  list.push(id);
+  shardMembers.set(shard, list);
+}
+for (let shard = 1; shard <= SHARD_COUNT; shard++) {
+  const members = shardMembers.get(shard) ?? [];
+  const total = totals[shard - 1];
+  if (members.length <= 1) continue; // a single section is bounded by SECTION_BUDGET_MS above, not this line
+  assert(total <= 200000,
+    `shard ${shard} packs ${members.length} sections (${members.join(', ')}) totalling ${Math.round(total / 1000)} s `
+    + `— over the 200 s headroom line for a MULTI-section shard; raise SHARD_COUNT`);
+}
+// A single-section shard is still bounded — just by SECTION_BUDGET_MS (the per-section assert
+// above), not the tighter 200 s multi-section line. Restated here as an explicit, separately-named
+// check so a shard that quietly grows a SECOND section (no longer "single") is not silently exempted
+// from the 200 s line by an earlier, now-stale membership snapshot.
+for (let shard = 1; shard <= SHARD_COUNT; shard++) {
+  const members = shardMembers.get(shard) ?? [];
+  if (members.length !== 1) continue;
+  assert(totals[shard - 1] <= SECTION_BUDGET_MS,
+    `shard ${shard} holds one section (${members[0]}) at ${Math.round(totals[shard - 1] / 1000)} s — over the ${SECTION_BUDGET_MS / 1000} s per-section budget even alone`);
+}
 for (const { id } of definitions) {
   assert(measuredMs(id) <= SECTION_BUDGET_MS,
     `section ${id} alone measures ${Math.round(measuredMs(id) / 1000)} s — over the per-job budget; split it (as 66 → 66/66b)`);
@@ -104,7 +138,7 @@ assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'th
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
 // A shard selector returns exactly the packed assignment's members.
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/29' }).selected.map(({ id }) => id);
+const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/30' }).selected.map(({ id }) => id);
 assert.deepStrictEqual(shard1Now, definitions.filter((d) => d.shard === 1).map(({ id }) => id),
   'E2E_SHARD must select exactly the sections the packing assigned to that shard');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
@@ -115,7 +149,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/29', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/30', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
@@ -158,6 +192,72 @@ assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface\]/,
   'the required e2e context must aggregate both smoke and AI-surface jobs');
 assert.match(workflow, new RegExp(`e2e_smoke_failure_shard-\\$\\{\\{ matrix\\.shard \\}\\}-of-${SHARD_COUNT}_section-\\*-attempt-\\*\\.png`),
   'failure evidence must retain every section attempt and remain unique per matrix child');
+
+// ── BLUE-WEBKIT-CI: WebKit must actually run on the runner ──────────────────
+// §70/§75/§83 launch WebKit (CodeRabbit outside-diff on #166 — a skipped
+// WebKit case must never print PASS). Every registered WebKit section id
+// must still exist and be assigned a shard by the CURRENT packing, and the
+// e2e_smoke job must install WebKit conditionally FROM webkit-shards.mjs
+// (not a hand-named shard list, which would silently go stale the next time
+// shard-timings.json is remeasured or a section is added/split).
+for (const id of WEBKIT_SECTION_IDS) {
+  assert(definitions.some((d) => d.id === id), `webkit-shards.mjs names section ${id}, which no longer exists in smoke.mjs`);
+}
+// OPUS-REVIEW-WEBKIT N2: WEBKIT_SECTION_IDS is a hand-kept list in
+// webkit-shards.mjs — nothing previously asserted it equals the set of
+// sections that actually CALL launchWebkitOrSkip in smoke.mjs. A 4th section
+// starting to use WebKit without updating that list would install nothing
+// extra for its shard (silent — caught only ~25 min later when that shard's
+// smoke run fails). Assert set equality between the two, by name, both ways.
+const actualWebkitCallSites = [...smoke.matchAll(/launchWebkitOrSkip\('§(\d+)'\)/g)].map((m) => m[1]);
+assert.deepStrictEqual([...actualWebkitCallSites].sort(), [...WEBKIT_SECTION_IDS].sort(),
+  `webkit-shards.mjs's WEBKIT_SECTION_IDS (${WEBKIT_SECTION_IDS.join(', ')}) must equal the sections that actually call `
+  + `launchWebkitOrSkip in smoke.mjs (${actualWebkitCallSites.join(', ')}) — a section added or removed on one side and `
+  + `not the other must fail here, not 25 minutes into e2e`);
+const webkitShards = shardsNeedingWebkit(smoke);
+assert(webkitShards.length > 0, 'at least one shard must be computed as needing WebKit');
+for (const shard of webkitShards) {
+  assert(shard >= 1 && shard <= SHARD_COUNT, `webkit-shards.mjs computed an out-of-range shard ${shard}`);
+}
+// Cross-check against the packing computed directly here. OPUS-REVIEW-WEBKIT
+// N5: this is NOT a fully independent oracle — both this file's `definitions`
+// (parsed above from `expectedIds`, cross-checked against the hand-written
+// list) and webkit-shards.mjs's own parse use the character-identical regex,
+// and both call the same `assignShards`. It DOES catch a real bug in
+// `shardsNeedingWebkit`'s own set/dedup/sort logic (a mistake independent of
+// the parse/packing it reuses), so it is not vacuous — but it cannot catch a
+// shared parse-drift or packing bug. The `expectedIds`/`assert.deepStrictEqual`
+// pair near the top of this file is the actual independent oracle for parsing.
+const expectedWebkitShards = [...new Set(
+  WEBKIT_SECTION_IDS.map((id) => definitions.find((d) => d.id === id)?.shard),
+)].sort((a, b) => (a ?? 0) - (b ?? 0));
+assert.deepStrictEqual(webkitShards, expectedWebkitShards,
+  'webkit-shards.mjs must compute exactly the shards §70/§75/§83 are packed into — no more, no less');
+const e2eSmokeJob = workflowJob('e2e_smoke');
+assert.match(e2eSmokeJob, /if ! webkit_shards="\$\(node src\/e2e\/webkit-shards\.mjs\)"; then/,
+  'the e2e_smoke job must decide per-shard WebKit installation FROM webkit-shards.mjs, not a hand-written shard list, and must capture its exit code explicitly (a piped `if node ... | grep` reads grep\'s exit code, not node\'s, and silently falls back to chromium-only on a script crash)');
+assert.match(e2eSmokeJob, /grep -qx "\$SHARD"/,
+  'the shard number must reach the script via env (SHARD), not inline `${{ }}` interpolation into the run body');
+// CodeRabbit: the check above only pins that the SCRIPT reads $SHARD — not
+// that the step's `env:` block actually assigns it from matrix.shard. A step
+// that renamed/dropped that env mapping would still match "grep -qx \"$SHARD\""
+// (an always-unset/empty variable) while every shard silently installs
+// chromium only.
+assert.match(e2eSmokeJob, /id: webkit_need\s*\n\s*env:\s*\n\s*SHARD:\s*\$\{\{ matrix\.shard \}\}/,
+  'the webkit_need step\'s env: block must assign SHARD from matrix.shard, not just be read by the script');
+// OPUS-REVIEW-WEBKIT N3: the earlier assertions pin the `if !` capture, the
+// `grep -qx "$SHARD"` match, and that the install step CONSUMES
+// `steps.webkit_need.outputs.browsers` — but never that the POSITIVE branch
+// (a shard that DOES need WebKit) actually emits "webkit" in its output.
+// Changing `echo "browsers=chromium webkit"` to `echo "browsers=chromium"`
+// in that branch slipped every prior check; this pins the literal text of
+// both branches so that mutation is caught here, not ~25 min into e2e.
+assert.match(e2eSmokeJob, /if printf '%s\\n' "\$webkit_shards" \| grep -qx "\$SHARD"; then\s*\n\s*echo "browsers=chromium webkit" >> "\$GITHUB_OUTPUT"\s*\n\s*else\s*\n\s*echo "browsers=chromium" >> "\$GITHUB_OUTPUT"/,
+  'the shard-needs-WebKit branch must echo "browsers=chromium webkit" and the else branch "browsers=chromium" — not both branches emitting the same thing');
+assert.match(e2eSmokeJob, /playwright install --with-deps \$\{\{ steps\.webkit_need\.outputs\.browsers \}\}/,
+  'the e2e_smoke job must install exactly the browser set webkit_need computed');
+assert.doesNotMatch(e2eSmokeJob, /playwright install --with-deps chromium\s*$/m,
+  'the e2e_smoke job must not fall back to an unconditional chromium-only install (that would silently skip WebKit again)');
 
 assert.match(workflow, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'the throwaway CI artifact must use the short client timeout');
