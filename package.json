@@ -1,7 +1,7 @@
 {
   "name": "nash-equilibrium-simulator",
   "private": true,
-  "version": "0.0.188",
+  "version": "0.0.189",
   "type": "module",
   "main": "electron-main.cjs",
   "engines": {
