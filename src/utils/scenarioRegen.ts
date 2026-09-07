@@ -23,7 +23,7 @@
  * assertion in `src/scenarioregen.test.ts` with no mount required.
  */
 import { cleanText } from './textSafety';
-import { regenKeptColorTerms } from './colorTerms';
+import { regenKeptColorTerms, capHitMessage } from './colorTerms';
 import type { GamePayoffs } from '../types';
 
 // ── field limits, matching the existing save/edit dialogs and server clamps ──
@@ -167,6 +167,12 @@ export interface KeptFill {
   desc: string;
   labels: { row1: string; row2: string; col1: string; col2: string };
   terms: { a: string[]; b: string[] };
+  /** RED-REGEN-11/001: actor noun(s) the draw offered but the per-side
+   *  `USER_TERMS_MAX` cap kept out of `terms` — empty on both sides for
+   *  every draw that fit. `keepRegen` turns this into the same cap-hit
+   *  wording `DescriptionEditor.addSelection` shows for a manual highlight
+   *  (see `regenDroppedNote`), so this path is never silent either. */
+  dropped: { a: string[]; b: string[] };
 }
 
 /**
@@ -219,10 +225,30 @@ export function keepFill(
       col1: codepointSafeSlice(cleanText(preview.col1 ?? ''), REGEN_LABEL_MAX),
       col2: codepointSafeSlice(cleanText(preview.col2 ?? ''), REGEN_LABEL_MAX),
     },
-    terms: regenKeptColorTerms(preview.actorA ?? [], preview.actorB ?? [], existingTerms.a, existingTerms.b),
+    terms: { a: [], b: [] },
+    dropped: { a: [], b: [] },
   };
+  const kept = regenKeptColorTerms(preview.actorA ?? [], preview.actorB ?? [], existingTerms.a, existingTerms.b);
+  out.terms = { a: kept.a, b: kept.b };
+  out.dropped = kept.dropped;
   if (replaceName) out.name = codepointSafeSlice(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
   return out;
+}
+
+/**
+ * RED-REGEN-11/001: the ONE place `keepRegen` turns a Keep's `dropped` actor
+ * noun(s) into user-facing wording — same cap, same wording template
+ * (`capHitMessage`) as `DescriptionEditor.addSelection`'s manual-highlight
+ * hint, so the two paths that can both hit `USER_TERMS_MAX` say the same
+ * thing instead of one being silent. Returns `null` when nothing was
+ * dropped (the common case — a Keep note falls back to
+ * `REGEN_ANNOUNCE.keptEdit`/`keptSave` unchanged).
+ */
+export function regenDroppedNote(dropped: { a: readonly string[]; b: readonly string[] }): string | null {
+  const notes: string[] = [];
+  if (dropped.a.length > 0) notes.push(capHitMessage(dropped.a, 'A'));
+  if (dropped.b.length > 0) notes.push(capHitMessage(dropped.b, 'B'));
+  return notes.length > 0 ? notes.join(' ') : null;
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────

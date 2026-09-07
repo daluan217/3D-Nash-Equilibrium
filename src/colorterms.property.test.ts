@@ -32,8 +32,10 @@ import {
   regenKeptColorTerms,
   regenPreviewColorTerms,
   savedGameColorTerms,
+  capHitMessage,
   type ScenarioLabels,
 } from './utils/colorTerms';
+import { regenDroppedNote } from './utils/scenarioRegen';
 import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -647,6 +649,151 @@ if (failures > 0) {
     /movedFrom/.test(editor) && /was highlighted for Player \$\{movedFrom\}; it now belongs to Player \$\{player\}/.test(editor));
 }
 
+// PART 9 — RED-REGEN-11/001: the per-side USER_TERMS_MAX cap on Regenerate ->
+// Keep must report exactly which actor noun(s) it dropped, the same way the
+// manual-highlight path (`DescriptionEditor.addSelection`) already reports
+// its own cap hit -- a Keep-side drop used to be totally silent (no field on
+// the return, no note, nothing). Mutation: remove `dropped` from
+// `regenKeptColorTerms`'s return (revert to the bare `cleanUserColorTermPair`
+// result) -> every check in this block either throws (reading `.a`/`.b` off
+// `undefined`) or reads an empty/undefined list and fails.
+{
+  const fullA = Array.from({ length: USER_TERMS_MAX }, (_, i) => `harbour master ${i + 1}`);
+  const fullB = Array.from({ length: USER_TERMS_MAX }, (_, i) => `dock hand ${i + 1}`);
+
+  // Both sides already at the cap: the draw's own actor noun on EACH side is
+  // dropped, and named -- not merely counted.
+  const bothFull = regenKeptColorTerms(['the lighthouse keeper'], ['the ferry crew'], fullA, fullB);
+  check('regenKeptColorTerms: A at cap drops and NAMES the new A noun',
+    bothFull.dropped.a.includes('the lighthouse keeper'), JSON.stringify(bothFull.dropped));
+  check('regenKeptColorTerms: B at cap drops and NAMES the new B noun',
+    bothFull.dropped.b.includes('the ferry crew'), JSON.stringify(bothFull.dropped));
+  check('regenKeptColorTerms: a dropped noun never sneaks into the kept list too',
+    !bothFull.a.includes('the lighthouse keeper') && !bothFull.b.includes('the ferry crew'));
+
+  // One side full, the other free: only the full side reports a drop (positive
+  // control -- proves this is cap-specific, not "always report something");
+  // the free side's noun is genuinely ADDED, not silently lost either.
+  const oneFull = regenKeptColorTerms(['the lighthouse keeper'], ['the ferry crew'], fullA, []);
+  check('regenKeptColorTerms: the FULL side (A) drops and names its noun',
+    oneFull.dropped.a.includes('the lighthouse keeper'), JSON.stringify(oneFull.dropped));
+  check('regenKeptColorTerms: the FREE side (B) reports no drop at all',
+    oneFull.dropped.b.length === 0, JSON.stringify(oneFull.dropped));
+  check('regenKeptColorTerms: the FREE side\'s own noun is actually kept',
+    oneFull.b.includes('the ferry crew'));
+
+  // Cross-player exclusivity vs the cap: a noun filtered because the OTHER
+  // side already owns it (an existing, unrelated rule) must NOT be reported
+  // as a cap drop -- the two causes stay distinguishable by construction.
+  const exclusivity = regenKeptColorTerms(['wolf'], [], [], ['wolf']);
+  check('regenKeptColorTerms: a cross-player-excluded noun is NOT reported as a cap drop (different cause)',
+    exclusivity.dropped.a.length === 0, JSON.stringify(exclusivity.dropped));
+  check('regenKeptColorTerms: (control) the cross-player exclusion itself still applies',
+    !exclusivity.a.includes('wolf') && exclusivity.b.includes('wolf'));
+
+  // CodeRabbit (this PR): a SAME-DRAW tie -- actorA and actorB offer the
+  // IDENTICAL phrase, with no cap pressure at all (both sides empty) -- must
+  // not be reported dropped either. A wins the tie inside the final
+  // `cleanUserColorTermPair` call (documented ownership rule); the highlight
+  // still exists, just attributed to A, so B's `dropped` must stay empty.
+  // Mutation: drop the `&& !resultAKeys.has(...)` conjunct from `dropped.b`
+  // -> this check fails (b.dropped would wrongly include 'shared').
+  const tieDraw = regenKeptColorTerms(['shared'], ['shared'], [], []);
+  check('regenKeptColorTerms: a same-draw A/B naming tie is NOT reported as a cap drop for B (A winning the tie is not a capacity loss)',
+    tieDraw.dropped.b.length === 0, JSON.stringify(tieDraw.dropped));
+  check('regenKeptColorTerms: (control) the tie itself still resolves to A, same as cleanUserColorTermPair elsewhere',
+    tieDraw.a.includes('shared') && !tieDraw.b.includes('shared'));
+
+  // Director-reproduced Opus review F1: the MIRROR of the tie case above --
+  // A (not B) is the side under cap pressure, so A's OWN cap truncates the
+  // tie phrase out of `[...existing.a, ...newA]` BEFORE B is even
+  // considered; B has room and keeps it, since it is no longer "owned" by
+  // A. The pre-fix `dropped.a` filter (checking only `resultAKeys`) reported
+  // this as a cap drop for A even though the phrase survived, coloured, as
+  // a B chip -- the exact false alarm this whole feature exists to prevent,
+  // one side over. Isolating: cap pressure ONLY on A, a same-draw tie, B
+  // free. Mutation: drop the `&& !resultBKeys.has(...)` conjunct from
+  // `dropped.a` (the pre-fix code) -> this check fails by name.
+  const fullATie = Array.from({ length: USER_TERMS_MAX }, (_, i) => `crew ${i + 1}`);
+  const tieOnFullA = regenKeptColorTerms(['the ferry operator'], ['the ferry operator'], fullATie, []);
+  check('regenKeptColorTerms (F1): a same-draw tie where A is capped and B is free is NOT reported dropped for A either',
+    tieOnFullA.dropped.a.length === 0, JSON.stringify(tieOnFullA.dropped));
+  check('regenKeptColorTerms (F1): (control) the noun really did survive -- as a B chip, not lost',
+    tieOnFullA.b.includes('the ferry operator') && !tieOnFullA.a.includes('the ferry operator'));
+  // Control: when BOTH sides are at the cap, the tie phrase fits nowhere and
+  // must still be reported dropped on both sides (the fix must not turn
+  // this into a blanket "never report a tie" no-op).
+  const fullBTie = Array.from({ length: USER_TERMS_MAX }, (_, i) => `dock ${i + 1}`);
+  const tieOnBothFull = regenKeptColorTerms(['the ferry operator'], ['the ferry operator'], fullATie, fullBTie);
+  check('regenKeptColorTerms (F1 control): a same-draw tie with BOTH sides at the cap is still reported dropped on both sides',
+    tieOnBothFull.dropped.a.includes('the ferry operator') && tieOnBothFull.dropped.b.includes('the ferry operator'),
+    JSON.stringify(tieOnBothFull.dropped));
+
+  // capHitMessage: exact wording, shared by both add-paths -- one term with
+  // no player tag (the manual picker's own single-side case), several terms
+  // with one (Keep's per-side case).
+  check('capHitMessage names a single dropped term, no player tag when omitted, "remove one"',
+    capHitMessage(['the lighthouse keeper']) === 'That is 12 highlights already — remove one to add "the lighthouse keeper".');
+  // CodeRabbit (PR #161): a side at the cap can drop SEVERAL terms in one
+  // Keep, and one free slot cannot admit all of them -- the instruction is
+  // now `dropped.length`, not always "one". Mutation: hard-code "remove
+  // one" regardless of count -> this check fails (two terms would still
+  // say "remove one").
+  check('capHitMessage names every dropped term, comma-joined, with the player tag, and the ACTUAL count to remove (not always "one")',
+    capHitMessage(['x', 'y'], 'A') === 'That is 12 highlights already for Player A — remove 2 to add "x", "y".');
+  check('capHitMessage (control): a single term with a player tag still says "remove one" (not "remove 1")',
+    capHitMessage(['x'], 'B') === 'That is 12 highlights already for Player B — remove one to add "x".');
+  check('capHitMessage: three dropped terms says "remove 3"',
+    capHitMessage(['x', 'y', 'z']) === 'That is 12 highlights already — remove 3 to add "x", "y", "z".');
+
+  // regenDroppedNote: the one place Keep turns `dropped` into the note shown
+  // through the SAME role="status" aria-live="polite" region every other
+  // regen note already uses (App.tsx's `regen.note`).
+  check('regenDroppedNote is null when nothing was dropped (the common case)',
+    regenDroppedNote({ a: [], b: [] }) === null);
+  const combined = regenDroppedNote({ a: ['the lighthouse keeper'], b: ['the ferry crew'] });
+  check('regenDroppedNote names BOTH sides\' dropped nouns when both cap out in the same Keep',
+    combined === `${capHitMessage(['the lighthouse keeper'], 'A')} ${capHitMessage(['the ferry crew'], 'B')}`, combined ?? 'null');
+
+  // Structural: the manual-highlight cap hint (DescriptionEditor.addSelection)
+  // calls the SAME shared helper for a genuine cap-blocked ADD, so the two
+  // paths cannot drift back onto different wording for the identical limit.
+  const editorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  check('DescriptionEditor\'s cap-hit hint calls the shared capHitMessage helper for a fresh add (not a bespoke, unnamed string)',
+    /capHitMessage\(\[term\]/.test(editorSrc));
+  // CodeRabbit (PR #161): the fresh-add call must pass the SELECTED player
+  // too, so the hint names which side's cap is full (it did not before).
+  check('DescriptionEditor\'s fresh-add cap-hit call passes `player`, so the message names the full side',
+    /capHitMessage\(\[term\],\s*player\)/.test(editorSrc));
+
+  // Opus review N1: a cap-blocked MOVE (the phrase is already highlighted
+  // for the OTHER player) must say so, never the shared "remove one to add"
+  // wording -- that phrase is not missing, it is on screen, unmoved.
+  // Structural + ORDER-sensitive: `movedFrom` must be computed BEFORE the
+  // cap guard (`if (...!cleanA.some...`) reads it, so the guard branch can
+  // tell a move from a fresh add. Mutation: move the `const movedFrom = `
+  // computation back to after the guard (the pre-N1-fix position) -> the
+  // guard block can no longer reference it and this regex fails.
+  const capGuardIdx = editorSrc.indexOf('!cleanA.some((t) => colorTermKey(t) === colorTermKey(term))');
+  const movedFromIdx = editorSrc.indexOf('const movedFrom =');
+  check('DescriptionEditor (N1): `movedFrom` is computed BEFORE the cap guard reads it',
+    movedFromIdx >= 0 && capGuardIdx >= 0 && movedFromIdx < capGuardIdx,
+    `movedFromIdx=${movedFromIdx} capGuardIdx=${capGuardIdx}`);
+  check('DescriptionEditor (N1): the cap-guard branch names a MOVE differently from a fresh add ("already has N highlights — remove one to move it")',
+    /is highlighted for Player \$\{movedFrom\}; Player \$\{player\} already has \$\{USER_TERMS_MAX\} highlights — remove one to move it/.test(editorSrc));
+}
+
+if (failures > 0) {
+  // The mid-file gate after PART 6 only stops a run early when PART 1-6
+  // already failed; PART 7/8/9 failures reached this point with NOTHING
+  // setting a non-zero exit code (confirmed by mutation: a forced failing
+  // check here printed "✗" to stderr and the process still exited 0, so
+  // `npm test`'s `&&` chain never saw it and this file logged "passed" on a
+  // red run). This is the one gate that actually fails the process for
+  // every PART in the file, not just the first six.
+  console.error(`✗ colorterms.property.test.ts: ${failures}/${cases} checks failed`);
+  process.exit(1);
+}
 console.log(`✓ colorterms.property.test.ts: ${cases} generated cases passed — ${ALL_FOLD_FAMILIES.reduce((n, f) => n + f.variants.length, 0)} `
   + `glyph variants across ${ALL_FOLD_FAMILIES.length} fold families, ${EDGE_STRIP_WRAPS.length} edge-strip wraps, `
   + `${NEGATIVE_PAIRS.length} negative pairs, ${ownershipCases} ownership x surface sweeps, ${N_RANDOM - randomSkippedGaps} random-sampled draws `
