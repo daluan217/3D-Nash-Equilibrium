@@ -34,6 +34,7 @@ function stripComments(src: string): string {
 const app = stripComments(readFileSync('src/App.tsx', 'utf8'));
 const drawer = stripComments(readFileSync('src/components/MenuDrawer.tsx', 'utf8'));
 const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.tsx', 'utf8'));
+const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'utf8'));
 
 // ── Structural: every converted dialog renders through <ModalSurface> ──────
 // round15 (RED-APP-14/002+004): the local-games offer and the expand-log
@@ -351,19 +352,35 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     'the log region must not rely on autoFocus — it is inert on a non-form element (React only special-cases button/input/select/textarea)');
 }
 
-// OPUS-REVIEW-MODAL BLOCK 1 (regression from the round15 fix): `tabIndex={-1}`
-// on the panel (added for RED-APP-14/002's focus-parking) makes it MOUSE-
-// focusable — a plain click on the dialog's own dead space (padding, a
-// heading) with every control still ENABLED focuses the panel itself.
-// `Node.contains()` returns true for the node itself, so the old
-// `!container.contains(document.activeElement)` boundary check never fired
-// for `activeElement === container`, and Shift+Tab fell through to the
-// browser's own backward navigation — escaping the dialog on Chromium and
-// Firefox (RED-APP-5/002's exact shape, reintroduced). Mutation: drop the
-// `|| document.activeElement === container` disjunct and this fails.
+// OPUS-REVIEW-MODAL BLOCK 1 (round15) folded into RED-APP-15/001's general fix
+// (round16, BLUE-MODAL-16): `document.activeElement` can be the panel itself
+// (`tabIndex={-1}`, mouse-focusable) OR any OTHER `tabIndex={-1}` landmark
+// inside the container (SavedGamesList's `[data-focus-fallback]` wrappers) —
+// neither is ever in `focusables`, so `!focusables.includes(active)` is the
+// general edge check (subsumes BLOCK 1's `=== container` case: the container
+// is never matched by getModalFocusables' selector either). Route by DOM
+// order (focusableAfter/Before) instead of a fixed first/last so a landmark
+// with real controls nested after it (a populated saved-games list) still
+// advances into them. Mutation: revert to the old
+// `!container.contains(document.activeElement) || document.activeElement === container`
+// check (no `focusableAfter`/`focusableBefore`) and this fails — RED-APP-15/001
+// reproduces the escape again (forward Tab from an empty-state landmark).
 {
-  ok(/if \(!container\.contains\(document\.activeElement\) \|\| document\.activeElement === container\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*\(e\.shiftKey \? last : first\)\.focus\(\);\s*\n\s*return;\s*\n\s*\}/.test(modalSurfaceSrc),
-    'the Tab-trap boundary check must also treat activeElement === container (the panel itself, mouse-focusable via tabIndex={-1}) as "at the edge" (OPUS-REVIEW-MODAL BLOCK 1)');
+  const onKeyWindow = (modalSurfaceSrc.match(/if \(!focusables\.includes\(active\)\) \{[\s\S]{0,500}?\n\s*\}/) ?? [''])[0];
+  ok(/e\.preventDefault\(\);/.test(onKeyWindow), 'the landmark-edge branch must preventDefault so the browser never runs its own Tab traversal (RED-APP-15/001)');
+  ok(/\(e\.shiftKey \? focusableBefore\(focusables, active\) : focusableAfter\(focusables, active\)\)\.focus\(\);/.test(onKeyWindow),
+    'the landmark-edge branch must route by DOM order via focusableBefore/focusableAfter, not a fixed first/last (RED-APP-15/001)');
+}
+
+// The DOM-order helpers themselves (RED-APP-15/001): a landmark's neighbors
+// are found via compareDocumentPosition, wrapping to the far end when there
+// is nothing after/before. Mutation: swap DOCUMENT_POSITION_FOLLOWING for
+// _PRECEDING (or vice versa) in either helper and this fails.
+{
+  ok(/function focusableAfter\(focusables: HTMLElement\[\], from: Node\): HTMLElement \{\s*\n\s*for \(const el of focusables\) \{\s*\n\s*if \(from\.compareDocumentPosition\(el\) & Node\.DOCUMENT_POSITION_FOLLOWING\) return el;\s*\n\s*\}\s*\n\s*return focusables\[0\];\s*\n\s*\}/.test(modalSurfaceSrc),
+    'focusableAfter must pick the first focusable that FOLLOWS `from` in DOM order, wrapping to focusables[0]');
+  ok(/function focusableBefore\(focusables: HTMLElement\[\], from: Node\): HTMLElement \{\s*\n\s*for \(let i = focusables\.length - 1; i >= 0; i--\) \{\s*\n\s*if \(from\.compareDocumentPosition\(focusables\[i\]\) & Node\.DOCUMENT_POSITION_PRECEDING\) return focusables\[i\];\s*\n\s*\}\s*\n\s*return focusables\[focusables\.length - 1\];\s*\n\s*\}/.test(modalSurfaceSrc),
+    'focusableBefore must pick the last focusable that PRECEDES `from` in DOM order, wrapping to the last focusable');
 }
 
 // CodeRabbit CLI (round15 review): `mountLogRegion`'s own `el.focus()` on the
@@ -393,6 +410,168 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
   // untouched → this fails; the naive `includes` form does not.
   ok(/(?:^|[^[])aria-label="Expand simulation log"/.test(app),
     'App.tsx must still have a button with aria-label="Expand simulation log" as a REAL JSX attribute (not just inside the fallbackSelector string) — the expand-log fallbackSelector names this exact string, and nothing else checks that the two agree (OPUS-REVIEW-MODAL2 NOTE 3)');
+}
+
+// RED-APP-15/002 (round16, BLUE-MODAL-16): AdminDashboard.tsx hand-rolled a
+// `fixed inset-0` overlay with a bare `className=` — no role, no Escape, no
+// trap, not in ModalRegistry — reachable by a real triple-click, letting its
+// own keystrokes drive the guided tour underneath it. Scan EVERY .tsx under
+// src/components plus App.tsx for a bare `className="...fixed...inset-0..."`
+// (never `overlayClassName=`, which is a value forwarded INTO a <ModalSurface>
+// caller, not a hand-rolled overlay); the only allowed exception is the
+// guided tour's own non-modal backdrop (Walkthrough.tsx — documented
+// `pointer-events-none`, deliberately not `aria-modal`, gated by
+// `ModalRegistry.isAnyOpen()` for RED-APP-15/003 instead). Known-positive
+// fixture: reverting AdminDashboard.tsx to its pre-fix wrapper divs fails
+// this. Mutation: revert the AdminDashboard.tsx conversion → this fails.
+// CodeRabbit CLI (PR #162 follow-up): the scan above required a quote or
+// backtick immediately after `=`, so `className={...}` — a template literal
+// with interpolation, a `clsx(...)` call, or a ternary — was invisible to it;
+// a dynamic hand-rolled overlay could bypass the check entirely. Extract the
+// COMPLETE braced expression (balanced braces, so a nested `${...}` inside a
+// template literal doesn't truncate it early) and search its raw text for
+// `fixed`/`inset-0`, rather than requiring them inside one quoted literal.
+function extractBraced(src: string, openBraceIdx: number): string {
+  let depth = 1; let i = openBraceIdx + 1;
+  while (i < src.length && depth > 0) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') depth--;
+    i++;
+  }
+  return src.slice(openBraceIdx + 1, i - 1);
+}
+function findOverlayAttrs(src: string): { attr: string; value: string; braced: boolean }[] {
+  const hits: { attr: string; value: string; braced: boolean }[] = [];
+  for (const m of src.matchAll(/(overlayClassName|className)\s*=\s*(?:"([^"]*)"|`([^`]*)`|\{)/g)) {
+    const [whole, attr, dq, bt] = m;
+    const braced = whole.endsWith('{');
+    const value = braced ? extractBraced(src, m.index! + whole.length - 1) : (dq ?? bt ?? '');
+    if (/\bfixed\b/.test(value) && /\binset-0\b/.test(value)) hits.push({ attr, value, braced });
+  }
+  return hits;
+}
+
+// Known-positive fixtures for the extractor ITSELF (RED-APP-15/002 follow-up,
+// CodeRabbit CLI) — a template literal, a clsx() call, a conditional, and a
+// template literal with a NESTED `${...}` (the case a naive `[^}]*` regex
+// truncates early, understating why a real balanced-brace scan is needed).
+// Mutation: revert findOverlayAttrs to the old quote-only regex → all four fail.
+{
+  const fixtures: [string, string][] = [
+    ['template literal', 'const X = () => <div className={`fixed inset-0 ${isDark ? "a" : "b"}`} />;'],
+    ['clsx() call', 'const X = () => <div className={clsx("fixed inset-0", extra)} />;'],
+    ['conditional', 'const X = () => <div className={condition ? "fixed inset-0" : ""} />;'],
+    ['nested-brace template literal', 'const X = () => <div className={`fixed inset-0 ${a ? `${b}` : "c"}`} />;'],
+  ];
+  for (const [label, src] of fixtures) {
+    const hits = findOverlayAttrs(src);
+    ok(hits.length === 1 && hits[0].attr === 'className' && hits[0].braced,
+      `findOverlayAttrs must catch a braced className overlay (${label}): ${src}`);
+  }
+  // Negative control: a braced className with NEITHER fixed NOR inset-0 must
+  // not be flagged (the extractor should not just fire on any braced className).
+  ok(findOverlayAttrs('const X = () => <div className={`rounded-xl p-4 ${x}`} />;').length === 0,
+    'findOverlayAttrs must not flag a braced className with no fixed/inset-0 (negative control)');
+}
+
+{
+  const ALLOWED_BARE_OVERLAY_FILES = new Set(['src/components/Walkthrough.tsx']);
+  const walkAll = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+    const p = `${dir}/${f}`;
+    return statSync(p).isDirectory() ? walkAll(p) : (/\.tsx?$/.test(f) && !/\.test\./.test(f) ? [p] : []);
+  });
+  const files = [...walkAll('src/components'), 'src/App.tsx'].filter((f) => f !== 'src/components/ModalSurface.tsx');
+  let scanned = 0;
+  for (const file of files) {
+    // NOT stripComments here: its `/\*...\*\//` regex has no notion of `//`
+    // line comments, so a `//` comment that happens to contain a literal
+    // `/*` substring (DownloadModal.tsx:69, `dist-electron/*.dmg`) makes it
+    // swallow everything up to the next real `*/` — including this file's
+    // own overlayClassName JSX below it. Scanning raw source sidesteps that;
+    // a real JSX attribute value is not fabricated by a stray comment.
+    const src = readFileSync(file, 'utf8');
+    for (const { attr, value } of findOverlayAttrs(src)) {
+      scanned++;
+      const ok1 = attr === 'overlayClassName' || ALLOWED_BARE_OVERLAY_FILES.has(file);
+      ok(ok1, `${file}: a bare className="fixed inset-0..." overlay must render through <ModalSurface> (pass the class via overlayClassName), or be an allow-listed non-interactive backdrop with a stated reason (RED-APP-15/002) — found ${attr}="${value.slice(0, 60)}"`);
+    }
+  }
+  ok(scanned >= 3, `expected at least DownloadModal's, the expand-log's and the guided tour's fixed inset-0 occurrences, found ${scanned}`);
+}
+
+// CodeRabbit CLI: AdminDashboard now stays MOUNTED across opens (ModalSurface
+// hides it, App.tsx renders it unconditionally) — without a reset-on-close
+// effect, the admin secret stayed in memory and reopening (any triple-click)
+// showed the cached user table with no password prompt. Mutation: delete the
+// reset useEffect body → this fails.
+{
+  ok(/useEffect\(\(\) => \{\s*\n\s*if \(open\) return;\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setPassword\(''\); setStats\(null\); setError\(''\); setLoading\(false\);\s*\n\s*\}, \[open\]\);/.test(admin),
+    'AdminDashboard must bump requestGenRef and reset authed/password/stats/error/loading in a useEffect keyed on `open` going false — it no longer unmounts on close (CodeRabbit CLI)');
+}
+
+// CodeRabbit CLI (PR #162 follow-up): resetting state on close alone still let
+// an in-flight fetchStats() resolve AFTER the close and write stats/authed
+// back in (the dashboard stays mounted, so nothing cancels the promise).
+// Every post-await continuation must check the captured generation against
+// requestGenRef.current before touching state. Mutation: drop any ONE of the
+// three checks (after fetch, after res.json, in catch/finally) → the
+// corresponding regex fails.
+{
+  ok(/const fetchStats = async \(secret: string\) => \{\s*\n\s*const gen = requestGenRef\.current;/.test(admin),
+    'fetchStats must capture requestGenRef.current at its own start, before any await (CodeRabbit CLI)');
+  ok(/const res = await fetch\(adminUrl\('\/api\/admin\/stats'\), \{\s*\n\s*headers: \{ 'x-admin-secret': secret \},\s*\n\s*\}\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;/.test(admin),
+    'fetchStats must bail out immediately after the fetch() await if the generation moved on (CodeRabbit CLI)');
+  ok(/const data = await res\.json\(\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;\s*\n\s*setStats\(data\);/.test(admin),
+    'fetchStats must re-check the generation after res.json() too, before setStats/setAuthed (CodeRabbit CLI)');
+  ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\('Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
+    'fetchStats must gate its catch-block setError AND the trailing setLoading(false) on the generation too, not just the success path (CodeRabbit CLI)');
+  // OPUS-REVIEW-MODAL16 N4: Sign out is a THIRD site that touches
+  // authed/stats/password — the generation ref invariant applies to it too,
+  // or a Refresh started just before Sign out still lands and re-auths the
+  // panel after the operator signed out. Mutation: drop the
+  // `requestGenRef.current += 1;` from the Sign out handler → this fails.
+  ok(/onClick=\{\(\) => \{ requestGenRef\.current \+= 1; setAuthed\(false\); setStats\(null\); setPassword\(''\); setLoading\(false\); setError\(''\); \}\}[^}]*Sign out/.test(admin),
+    'AdminDashboard\'s Sign out button must also bump requestGenRef before resetting state (OPUS-REVIEW-MODAL16 N4)');
+  // CodeRabbit (PR #162 follow-up): bumping the generation alone leaves an
+  // in-flight fetchStats' OWN `setLoading(false)` skipped (it bails out on
+  // the generation check first) — Sign out must reset loading/error itself,
+  // the same way the close effect (above) already does, or the Login button
+  // stays disabled until the whole panel closes. Mutation: drop
+  // `setLoading(false); setError('');` from the Sign out handler (leaving the
+  // requestGenRef bump and the other three resets in place) → this fails,
+  // distinctly from the check above.
+  ok(/setPassword\(''\); setLoading\(false\); setError\(''\); \}\}[^}]*Sign out/.test(admin),
+    'AdminDashboard\'s Sign out handler must also reset loading/error (not just bump requestGenRef) — an in-flight fetchStats otherwise leaves the Login button disabled until the panel closes (CodeRabbit CLI)');
+}
+
+// OPUS-REVIEW-MODAL16 F1: the close button is the panel's FIRST focusable —
+// useModalTabTrap's open-time focus (ModalSurface.tsx) lands there unless
+// something else already claims focus first. An icon-only button with no
+// aria-label has an empty accessible name; autoFocus on the password field
+// wins the race (React commits it in the SAME phase, before the trap's
+// passive effect reads document.activeElement) so the field gets focus
+// instead. Mutation: drop either attribute → its own check fails by name.
+{
+  ok(/<button onClick=\{onClose\} aria-label="Close admin dashboard"/.test(admin),
+    'AdminDashboard\'s close button must have aria-label="Close admin dashboard" — it is the panel\'s first focusable and an icon-only button has no accessible name otherwise (OPUS-REVIEW-MODAL16 F1)');
+  ok(/type="password"[\s\S]{0,400}?autoFocus/.test(admin),
+    'AdminDashboard\'s password input must have autoFocus — otherwise the trap\'s open-time focus lands on the close X instead (OPUS-REVIEW-MODAL16 F1)');
+}
+
+// OPUS-REVIEW-MODAL16 F2: aria-hidden on a still-tabbable element is WCAG
+// 4.1.2 / axe aria-hidden-focus. `inert` removes pointer events, tab order
+// AND AT visibility together — no separate pointer-events class swap needed.
+// Mutation: revert either site to `aria-hidden={blocked}` +
+// `${blocked ? 'pointer-events-none' : 'pointer-events-auto'}` → its check
+// fails by name.
+{
+  const walkthrough = readFileSync('src/components/Walkthrough.tsx', 'utf8');
+  ok(/aria-label="Exit tour"\s*\n\s*inert=\{blocked\}/.test(walkthrough),
+    'Walkthrough\'s standalone Exit-tour button must use inert={blocked}, not aria-hidden (OPUS-REVIEW-MODAL16 F2)');
+  ok(/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),
+    'Walkthrough\'s tour card must use inert={blocked}, not aria-hidden (OPUS-REVIEW-MODAL16 F2)');
+  ok(!/aria-hidden=\{blocked\}/.test(walkthrough),
+    'Walkthrough must not have any remaining aria-hidden={blocked} — inert replaces it entirely (OPUS-REVIEW-MODAL16 F2)');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
