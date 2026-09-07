@@ -691,7 +691,10 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     const problems: string[] = [];
     for (const { openTag, body } of extractButtons(src)) {
       if (bodyHasAccessibleText(body)) continue; // real text/content — accessible name comes from there
-      const hasName = hasNonEmptyAttr(openTag, 'aria-label') || hasNonEmptyAttr(openTag, 'title') || /\baria-labelledby=/.test(openTag);
+      // CodeRabbit: aria-labelledby was presence-only (/\baria-labelledby=/),
+      // so aria-labelledby="" or ={''} wrongly counted as a name — reuse the
+      // same hasNonEmptyAttr the other two names already go through.
+      const hasName = hasNonEmptyAttr(openTag, 'aria-label') || hasNonEmptyAttr(openTag, 'title') || hasNonEmptyAttr(openTag, 'aria-labelledby');
       if (!hasName) problems.push(openTag.replace(/\s+/g, ' ').slice(0, 120));
     }
     return problems;
@@ -713,6 +716,9 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
       ['setState-arrow handler, unlabeled (N2)', '<button onClick={() => setShowModal(false)}><X className="w-4 h-4" /></button>', true],
       ['handleClose handler, unlabeled (N2)', '<button onClick={handleClose}><X className="w-4 h-4" /></button>', true],
       ['handleClose handler, labeled', '<button onClick={handleClose} aria-label="Close"><X className="w-4 h-4" /></button>', false],
+      ['empty aria-labelledby="" (CodeRabbit)', '<button onClick={onClose} aria-labelledby=""><X className="w-4 h-4" /></button>', true],
+      ['empty aria-labelledby={\'\'} (CodeRabbit)', '<button onClick={onClose} aria-labelledby={\'\'}><X className="w-4 h-4" /></button>', true],
+      ['non-empty aria-labelledby', '<button onClick={onClose} aria-labelledby="dialog-title"><X className="w-4 h-4" /></button>', false],
     ];
     for (const [label, src, shouldFlag] of fixtures) {
       const problems = findUnlabeledIconButtons(src);
