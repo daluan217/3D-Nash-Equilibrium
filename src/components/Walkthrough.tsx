@@ -211,7 +211,12 @@ export function Walkthrough({
     // the tour and its onEnter replaced the matrix under the dialog — a
     // Save then stored payoffs the user never saw). No key reaches the tour
     // while any ModalSurface is registered open, or while the key was typed
-    // inside any other dialog (the overlays that do not use ModalSurface).
+    // inside any OTHER `role="dialog"` (belt-and-suspenders: every dialog in
+    // the app renders through <ModalSurface> as of round15/round16 — grep
+    // `role="dialog"` outside ModalSurface.tsx and this file's own wrapper
+    // finds none — so `ModalRegistry.isAnyOpen()` alone already covers this
+    // today; this clause is what keeps it covered if a future overlay ever
+    // hand-rolls role="dialog" without going through the registry).
     const insideOtherDialog = (t: EventTarget | Element | null) =>
       t instanceof Element && !!t.closest('[role="dialog"]:not([aria-label="Guided tour"])');
     const onKey = (e: KeyboardEvent) => {
@@ -229,13 +234,31 @@ export function Walkthrough({
   // six surfaces that does — so a real click on the tour's own Next/Back/Skip
   // reaches it right through an open, aria-modal drawer and rewrites the
   // board. Track ModalRegistry's stack (the same subscribe ModalSurface uses)
-  // so the card and the standalone Exit-tour button go `inert` the instant
-  // any surface registers, and come back the moment it closes. OPUS-REVIEW-
-  // MODAL16 F2: an earlier version used aria-hidden + a pointer-events class
-  // swap, which is WCAG 4.1.2 (aria-hidden on a still-tabbable element) —
-  // `inert` removes pointer events, tab order and AT visibility together.
+  // so the WHOLE overlay goes `inert` the instant any surface registers, and
+  // comes back the moment it closes.
+  //
+  // RED-APP-16/001 (regression from the #162 fix below): `inert` on the two
+  // individual descendants (the exit pill, the card) removed THEM from
+  // hit-testing but left the spotlight scrim painted and hit-testable
+  // underneath — a click still fell through to whatever ModalSurface sat
+  // below (silently dismissing it) with nothing telling the user the tour
+  // was disabled, and the scrim visibly dimmed the dialog on top of it.
+  // `inert` is inherited by the whole subtree, so ONE wrapper below now
+  // carries both `inert` (hit-testing, tab order, AT — OPUS-REVIEW-MODAL16
+  // F2: `aria-hidden` on a still-tabbable element is WCAG 4.1.2, `inert`
+  // removes all three together) and `visibility: hidden` (painting) — the
+  // entire overlay (card, exit pill, spotlight, arrow) vanishes as one unit.
+  // Also: the director's independent reproduction of 001 caught the SAME
+  // click landing at a moment `blocked` had not yet updated ("a shorter
+  // settle saw the card NOT yet inert and the click ADVANCED the tour") —
+  // the passive `useEffect` this used to run in fires AFTER paint, so there
+  // was a real frame where a surface was registered but the tour still
+  // painted live. `useLayoutEffect` runs in the same pre-paint commit phase
+  // `ModalSurface`'s own registration effect does (both layout effects), so
+  // React flushes the resulting re-render before the browser ever paints —
+  // no click window in either direction (fall-through OR tour-advance).
   const [blocked, setBlocked] = useState(() => ModalRegistry.isAnyOpen());
-  useEffect(() => {
+  useLayoutEffect(() => {
     const check = () => setBlocked(ModalRegistry.isAnyOpen());
     check();
     return ModalRegistry.subscribe(check);
@@ -365,7 +388,14 @@ export function Walkthrough({
        modality while the page stays live would be a lie to a screen reader.
        Advancing is by the Next button or the arrow keys; a click-to-advance
        backdrop would have fought every drag of the 3D scene. */
-    <div data-print="hide" className="fixed inset-0 z-[60] pointer-events-none" role="dialog" aria-label="Guided tour">
+    <div
+      data-print="hide"
+      inert={blocked}
+      style={blocked ? { visibility: 'hidden' } : undefined}
+      className="fixed inset-0 z-[60] pointer-events-none"
+      role="dialog"
+      aria-label="Guided tour"
+    >
 
       {/* Spotlight: an enormous ring shadow dims everything except the target. */}
       {rect && (
@@ -385,14 +415,12 @@ export function Walkthrough({
           caption card. The card's own X moves with the step, so on a step
           pointing at something near the top of the page it can end up
           somewhere unexpected; this one never moves. */}
-      {/* OPUS-REVIEW-MODAL16 F2: aria-hidden on a still-tabbable button is
-          WCAG 4.1.2 / axe aria-hidden-focus. `inert` removes pointer events,
-          tab order AND AT visibility in one primitive — no class swap needed. */}
+      {/* RED-APP-16/001: `inert` lives on the outer wrapper now (it is
+          inherited by the whole subtree) so it does not need repeating here. */}
       <button
         type="button"
         onClick={close}
         aria-label="Exit tour"
-        inert={blocked}
         className={`pointer-events-auto absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
       >
         <X className="w-4 h-4" /> Exit tour
@@ -415,7 +443,6 @@ export function Walkthrough({
 
       <div
         ref={cardRef}
-        inert={blocked}
         className={`pointer-events-auto absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
           dense ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
         }`}
