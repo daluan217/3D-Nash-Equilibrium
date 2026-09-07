@@ -2050,10 +2050,26 @@ function readAuthToken(token: string): { sub: string; ver: number } | null {
   }
 }
 
-function getAuthUser(req: express.Request): User | null {
+/**
+ * Parse a bearer token out of an Authorization header, matching the scheme
+ * CASE-INSENSITIVELY (RFC 7235 auth-schemes are case-insensitive). Shared by
+ * `getAuthUser` and `hasPresentedToken` so the two never disagree on whether
+ * a token was presented — CodeRabbit CLI on #163: the old exact-case
+ * "Bearer " check meant a lowercase "bearer <dead-token>" header fell
+ * through the SAME "no token at all" path as a genuinely absent header,
+ * silently re-owning it under the local owner exactly like the bug this PR
+ * fixes, for that one narrow spelling.
+ */
+function parseBearerToken(req: express.Request): string | null {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
-  const token = authHeader.slice("Bearer ".length).trim();
+  if (typeof authHeader !== "string") return null;
+  const m = /^bearer\s+(.+)$/i.exec(authHeader);
+  return m ? m[1].trim() || null : null;
+}
+
+function getAuthUser(req: express.Request): User | null {
+  const token = parseBearerToken(req);
+  if (!token) return null;
   const claims = readAuthToken(token);
   if (!claims) return null;
   const user = loadDB().users.find(u => u.id === claims.sub) ?? null;
@@ -2122,8 +2138,7 @@ function ensureLocalOwner(): User | null {
  * "no token" and "a token that didn't resolve").
  */
 function hasPresentedToken(req: express.Request): boolean {
-  const authHeader = req.headers.authorization;
-  return typeof authHeader === "string" && authHeader.startsWith("Bearer ");
+  return parseBearerToken(req) !== null;
 }
 
 /**

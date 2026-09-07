@@ -76,10 +76,16 @@ async function stop(srv) {
   clearTimeout(timer);
 }
 
-async function call(thePort, method, url, { body, token } = {}) {
+// `rawAuth` bypasses the "Bearer " prefix entirely, for the lowercase-scheme
+// regression check below — CodeRabbit CLI on #163 (fixed): getAuthUser and
+// hasPresentedToken must AGREE on a lowercase "bearer" scheme too, or a
+// lowercase-scheme dead token falls through the "no token at all" path,
+// same class of bug as the one this suite exists to guard.
+async function call(thePort, method, url, { body, token, rawAuth } = {}) {
   const headers = {};
   if (body !== undefined) headers['content-type'] = 'application/json';
-  if (token !== undefined && token !== null) headers.authorization = `Bearer ${token}`;
+  if (rawAuth !== undefined) headers.authorization = rawAuth;
+  else if (token !== undefined && token !== null) headers.authorization = `Bearer ${token}`;
   const r = await fetch(`http://127.0.0.1:${thePort}${url}`, {
     method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -125,6 +131,18 @@ try {
   record('THE DEFECT (POST): a garbled token is refused (401), never re-owned by the local owner',
     garbledSave.status === 401 && garbledSave.json?.game === undefined, `status ${garbledSave.status} body ${JSON.stringify(garbledSave.json)}`);
 
+  // Regression (CodeRabbit CLI on #163): the Bearer scheme match must be
+  // case-INSENSITIVE, and getAuthUser/hasPresentedToken must agree on it —
+  // both a VALID and a DEAD outcome, lowercase-scheme, against real routes.
+  const lowerValidSave = await call(port, 'POST', '/api/games', { rawAuth: `bearer ${token}`, body: game('lower-bearer-valid') });
+  record('lowercase "bearer" scheme still resolves a VALID token to the account',
+    lowerValidSave.status === 200 && lowerValidSave.json?.game?.userId && lowerValidSave.json.game.userId !== 'local-owner',
+    `status ${lowerValidSave.status} userId ${lowerValidSave.json?.game?.userId}`);
+  const lowerGarbledSave = await call(port, 'POST', '/api/games', { rawAuth: `bearer ${garbled}`, body: game('lower-bearer-garbled') });
+  record('lowercase "bearer" scheme with a DEAD token is refused (401), never re-owned',
+    lowerGarbledSave.status === 401 && lowerGarbledSave.json?.game === undefined,
+    `status ${lowerGarbledSave.status} body ${JSON.stringify(lowerGarbledSave.json)}`);
+
   // Invalidate the REAL token via the real forgot/reset-password routes —
   // exactly what a password reset from another device does server-side
   // (bumps tokenVersion), never a forged header or a db.json edit.
@@ -168,6 +186,8 @@ try {
   const acctNames = Array.isArray(acctGames.json) ? acctGames.json.map((g) => g.name) : [];
   record('the account still lists its own valid-token save (nothing lost)',
     acctGames.status === 200 && acctNames.includes('DeadToken-valid-token'), `names: ${acctNames.join(', ')}`);
+  record('the account also lists the lowercase-"bearer" valid-token save (case-insensitive scheme works both ways)',
+    acctGames.status === 200 && acctNames.includes('DeadToken-lower-bearer-valid'), `names: ${acctNames.join(', ')}`);
   record('none of the 4 refused writes (garbled/reset-invalidated x POST/PATCH/DELETE/GET) landed on the account',
     !acctNames.some((n) => n.includes('garbled') || n.includes('reset-invalidated')), `names: ${acctNames.join(', ')}`);
 
