@@ -6109,12 +6109,17 @@ try {
       record('FIX (RED-DESKTOP-17/002): the submit button now reads the sign-in action, not "Save Game Profile"',
         /sign in/i.test(await gateSubmitBtn.textContent().catch(() => '')));
       await gateSubmitBtn.click();
-      await dp.waitForTimeout(600);
+      // CodeRabbit: a fixed waitForTimeout bounds the no-POST assertion by
+      // wall-clock time only — a slow runner could POST after the window
+      // and still PASS. Wait for the Account dialog (the gate's own
+      // positive, observable state) first, so the window is a real event,
+      // not a sleep; the no-POST assertion then reads a settled count.
+      const acctDlgAgain = dp.locator('[role="dialog"][aria-label="Account"]');
+      const gateRouted = await acctDlgAgain.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
       record('FIX (RED-DESKTOP-17/002): clicking the SAME Save button again after the token cleared sends NO request',
         secondPostCount === 0, `secondPostCount=${secondPostCount}`);
-      const acctDlgAgain = dp.locator('[role="dialog"][aria-label="Account"]');
       record('FIX (RED-DESKTOP-17/002): the gate routes to the SAME Sign In flow as the banner\'s own button',
-        await acctDlgAgain.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false));
+        gateRouted);
 
       // ── The explicit "Save on this device instead" choice must be the
       // ONLY way a resubmit lands under local-owner. Re-authenticate the
@@ -6198,11 +6203,17 @@ try {
         /sign in/i.test(n1Label), n1Label);
       await saveDlg.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill('N1Reopen');
       await saveDlg.locator('button[type="submit"]').click();
-      await dp.waitForTimeout(600);
+      // CodeRabbit: `n1Label` verifies copy only — it can pass even if the
+      // submit handler no longer routes anywhere. Wait for the Account
+      // dialog (the gate's own positive, observable state) after the REAL
+      // click, the same poll-based ordering as the F1 check above, and
+      // assert app state instead of relying on the button's label.
+      const acctDlgN1 = dp.locator('[role="dialog"][aria-label="Account"]');
+      const n1Routed = await acctDlgN1.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
       record('N1 (OPUS-REVIEW-DESKTOP17): close + reopen + click sends NO request (dead session persists across dialog sessions)',
         n1PostCount === 0, `n1PostCount=${n1PostCount}`);
-      const acctDlgN1 = dp.locator('[role="dialog"][aria-label="Account"]');
-      await acctDlgN1.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      record('N1 (OPUS-REVIEW-DESKTOP17): the reopened dialog\'s gate still routes to Sign In (app state, not just the button\'s label)',
+        n1Routed);
       await dp.keyboard.press('Escape');
       await acctDlgN1.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
       await dp.unroute('**/api/games');
