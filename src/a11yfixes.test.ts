@@ -761,12 +761,18 @@ function extractModalSurfaceBlock(src: string, id: string): string {
    *  never contains the literal `labelFor(...)` value the caller passes,
    *  so it can never match any `htmlFor=` collected from THIS file — that
    *  pairing is cross-file, checked directly below by name for both call
-   *  sites and the forwarded prop). Nothing else spells its own id value
-   *  as the bare identifier `id`, so this exception cannot mask a real
-   *  dangling id. */
-  function placeholderOnlyControls(rawSrc: string): string[] {
+   *  sites and the forwarded prop).
+   *
+   *  CodeRabbit CLI (this review): the `id === 'id'` exemption used to apply
+   *  to EVERY scanned file — a new, unrelated component destructuring a
+   *  prop named `id` and writing `id={id}` on a placeholder-only control
+   *  would pass with no linked label or ARIA name at all. `filePath` scopes
+   *  the exemption to `DescriptionEditor.tsx` specifically, the one file
+   *  this shape is actually verified (by name, below) to be safe in. */
+  function placeholderOnlyControls(rawSrc: string, filePath?: string): string[] {
     const src = stripComments(rawSrc);
     const htmlForValues = collectHtmlForValues(src);
+    const isDescriptionEditor = filePath?.endsWith('DescriptionEditor.tsx') ?? false;
     const violations: string[] = [];
     for (const { tag, attrs, index } of openTags(src, ['input', 'textarea'])) {
       if (!/\bplaceholder=/.test(attrs)) continue;
@@ -774,7 +780,7 @@ function extractModalSurfaceBlock(src: string, id: string): string {
       const idMatch = attrs.match(/\bid=(?:"([^"]+)"|\{([^}]+)\})/);
       if (idMatch) {
         const idValue = (idMatch[1] ?? idMatch[2]).trim();
-        if (idValue === 'id') continue; // DescriptionEditor's forwarded-prop shape
+        if (idValue === 'id' && isDescriptionEditor) continue; // DescriptionEditor's forwarded-prop shape ONLY
         if (htmlForValues.has(idValue)) continue;
         violations.push(`<${tag}${attrs}> at offset ${index} has id=${JSON.stringify(idValue)} but no matching htmlFor= anywhere in the file (dangling)`);
         continue;
@@ -816,8 +822,12 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     'fixture: a label htmlFor pointing at an id that does not exist anywhere in the file must be flagged (dangling htmlFor)');
   ok(placeholderOnlyControls('<input id="missing" placeholder="x" /><label htmlFor="a">Name</label>').length === 1,
     'fixture: a placeholder input\'s id pointing at an htmlFor that does not exist anywhere in the file must be flagged (dangling id)');
-  ok(placeholderOnlyControls('<input id={id} placeholder="x" />').length === 0,
-    'fixture: id={id} — DescriptionEditor\'s own forwarded-prop shape — must NOT be flagged even though nothing in ITS file names that value (checked cross-file, by name, below)');
+  ok(placeholderOnlyControls('<input id={id} placeholder="x" />', 'src/components/DescriptionEditor.tsx').length === 0,
+    'fixture: id={id} in DescriptionEditor.tsx — its own forwarded-prop shape — must NOT be flagged even though nothing in ITS file names that value (checked cross-file, by name, below)');
+  ok(placeholderOnlyControls('<input id={id} placeholder="x" />').length === 1,
+    'fixture: the SAME id={id} shape with NO filePath (or a different file) must be flagged — the exemption is scoped to DescriptionEditor.tsx specifically, not any component that happens to destructure a prop named `id` (CodeRabbit CLI, this review)');
+  ok(placeholderOnlyControls('<input id={id} placeholder="x" />', 'src/components/SomeOtherComponent.tsx').length === 1,
+    'fixture: id={id} in an UNRELATED file must be flagged — the exemption must not accidentally generalize');
 
   // ── The real tree: walk every src/**/*.tsx file, both checkers, 0 violations. ──
   function walkTsx(dir: string): string[] {
@@ -836,7 +846,7 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   for (const file of tsxFiles) {
     const src = readFileSync(file, 'utf8');
     for (const v of unassociatedLabels(src)) allLabelViolations.push(`${file}: ${v}`);
-    for (const v of placeholderOnlyControls(src)) allPlaceholderViolations.push(`${file}: ${v}`);
+    for (const v of placeholderOnlyControls(src, file)) allPlaceholderViolations.push(`${file}: ${v}`);
   }
   ok(allLabelViolations.length === 0, `every <label> in src/**/*.tsx must be associated: ${JSON.stringify(allLabelViolations)}`);
   ok(allPlaceholderViolations.length === 0, `no input's only name source may be placeholder: ${JSON.stringify(allPlaceholderViolations)}`);
