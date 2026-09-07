@@ -112,11 +112,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
               </button>
             )}
             {authed && (
-              // OPUS-REVIEW-MODAL16 N4: Sign out must invalidate the same
-              // generation an in-flight Refresh checks — otherwise a Refresh
-              // started just before Sign out still lands and re-auths the
-              // panel with the stale response.
-              <button onClick={() => { requestGenRef.current += 1; setAuthed(false); setStats(null); setPassword(''); }} className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-500 cursor-pointer">
+              // OPUS-REVIEW-MODAL16 N4 + CodeRabbit CLI (PR #162 follow-up):
+              // Sign out must invalidate the same generation an in-flight
+              // Refresh checks (else a Refresh started just before Sign out
+              // still lands and re-auths the panel), AND reset loading/error
+              // the same way the close effect does — otherwise a Refresh
+              // in flight at Sign-out time skips its own setLoading(false)
+              // (the generation check returns early) and the Login button
+              // stays disabled until the whole panel closes.
+              <button onClick={() => { requestGenRef.current += 1; setAuthed(false); setStats(null); setPassword(''); setLoading(false); setError(''); }} className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-500 cursor-pointer">
                 <LogOut className="w-3.5 h-3.5" /> Sign out
               </button>
             )}

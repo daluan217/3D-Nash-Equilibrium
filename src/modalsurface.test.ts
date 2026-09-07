@@ -530,8 +530,18 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   // or a Refresh started just before Sign out still lands and re-auths the
   // panel after the operator signed out. Mutation: drop the
   // `requestGenRef.current += 1;` from the Sign out handler → this fails.
-  ok(/onClick=\{\(\) => \{ requestGenRef\.current \+= 1; setAuthed\(false\); setStats\(null\); setPassword\(''\); \}\}[^}]*Sign out/.test(admin),
+  ok(/onClick=\{\(\) => \{ requestGenRef\.current \+= 1; setAuthed\(false\); setStats\(null\); setPassword\(''\); setLoading\(false\); setError\(''\); \}\}[^}]*Sign out/.test(admin),
     'AdminDashboard\'s Sign out button must also bump requestGenRef before resetting state (OPUS-REVIEW-MODAL16 N4)');
+  // CodeRabbit (PR #162 follow-up): bumping the generation alone leaves an
+  // in-flight fetchStats' OWN `setLoading(false)` skipped (it bails out on
+  // the generation check first) — Sign out must reset loading/error itself,
+  // the same way the close effect (above) already does, or the Login button
+  // stays disabled until the whole panel closes. Mutation: drop
+  // `setLoading(false); setError('');` from the Sign out handler (leaving the
+  // requestGenRef bump and the other three resets in place) → this fails,
+  // distinctly from the check above.
+  ok(/setPassword\(''\); setLoading\(false\); setError\(''\); \}\}[^}]*Sign out/.test(admin),
+    'AdminDashboard\'s Sign out handler must also reset loading/error (not just bump requestGenRef) — an in-flight fetchStats otherwise leaves the Login button disabled until the panel closes (CodeRabbit CLI)');
 }
 
 // OPUS-REVIEW-MODAL16 F1: the close button is the panel's FIRST focusable —
