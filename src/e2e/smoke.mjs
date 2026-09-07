@@ -4531,16 +4531,36 @@ try {
     // (many Tabs, checking after EVERY press whether the Feedback launcher
     // — behind the drawer's backdrop — ever becomes focused) closes
     // RED-APP-13/004's exact reproduction rather than a paraphrase of it.
-    // Mutation: same as Part C's Tab-trap drop — the Feedback button would
-    // receive focus within a handful of presses and this fails immediately.
+    // BLUE-MODAL-16 (RED-APP-15/001): starting from a REAL control (the old
+    // `closeMenuBtn.focus()`) only ever cycles the already-trapped focusables
+    // set — it cannot fail for the mutation it names, since that set's own
+    // first/last boundary predates this fix. Start from the
+    // `[data-focus-fallback="drawer-games"]` LANDMARK instead — but the
+    // SIGNED-OUT landmark (canOwnGames=false) has its own "Sign In / Sign Up"
+    // button NESTED inside it, so forward Tab lands there and never escapes
+    // even under the mutation (checked by hand). A SIGNED-IN, ZERO-GAMES
+    // account renders the truly childless landmark instead — the exact
+    // precondition RED-APP-15/001 needs. Mutation: revert onKey's
+    // `!focusables.includes(active)` branch to `=== container` only — this
+    // fails within the first press.
     {
       const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
-      await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+      await registerAndLogin(p, 'e67d');
       await p.getByRole('button', { name: /open workspace menu/i }).first().click();
       const closeMenuBtn = p.getByRole('button', { name: /close menu/i }).first();
       await closeMenuBtn.waitFor({ state: 'visible', timeout: 8000 });
-      await closeMenuBtn.focus();
+      await p.getByRole('button', { name: /library/i }).first().click();
+      const landmark = p.locator('[data-focus-fallback="drawer-games"]').first();
+      await landmark.waitFor({ state: 'visible', timeout: 8000 });
+      await landmark.evaluate((e) => e.scrollIntoView({ block: 'center' }));
+      const lb = await landmark.boundingBox();
+      const lx = lb.x + lb.width / 2, ly = lb.y + Math.min(20, lb.height / 2);
+      const landmarkHit = await p.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('[data-focus-fallback="drawer-games"]'), [lx, ly]);
+      record('precondition: the landmark click point is on-screen and hit-tests to the landmark itself (harness sanity)',
+        ly < 900 && landmarkHit, `ly=${ly} hit=${landmarkHit}`);
+      await p.mouse.click(lx, ly);
+      const startedOnLandmark = await p.evaluate(() => document.activeElement?.getAttribute('data-focus-fallback') === 'drawer-games');
+      record('precondition: a real click on the saved-games landmark actually focuses it (harness sanity)', startedOnLandmark, '');
       let feedbackReached = false;
       let reachedAtPress = -1;
       for (let i = 0; i < 60 && !feedbackReached; i++) {
@@ -4548,7 +4568,7 @@ try {
         feedbackReached = await p.evaluate(() => document.activeElement === document.querySelector('button[title="Send feedback"]'));
         if (feedbackReached) reachedAtPress = i + 1;
       }
-      record('drawer open: 60 Tab presses never focus the background Feedback launcher (RED-APP-13/004)',
+      record('drawer open: 60 Tab presses FROM THE LANDMARK never focus the background Feedback launcher (RED-APP-13/004, RED-APP-15/001)',
         !feedbackReached, `reachedAtPress=${reachedAtPress}`);
       // Even if focus somehow landed there, Enter must not be reachable —
       // checked as a real hit-test, not inferred: the point under any
@@ -5572,6 +5592,195 @@ try {
     const ob = db; await p.mouse.click(ob.x + ob.width + 150, ob.y + ob.height / 2);
     await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 5000 }).catch(() => {});
     record('control: a plain click on the backdrop still closes the dialog', !(await dlg.isVisible().catch(() => false)));
+    await p.close();
+  });
+
+  // ══ 75. RED-APP-15/001 — Tab/Shift+Tab from the drawer's saved-games
+  //      landmark (tabIndex={-1}) stays inside and lands on an
+  //      INDEPENDENTLY-computed neighbor (not merely "still inside"), with
+  //      0 games and with 3 games (card-title click), on chromium AND
+  //      webkit. Mutation: revert ModalSurface.tsx's onKey to treat only
+  //      `activeElement === container` as the edge (the pre-BLUE-MODAL-16
+  //      shape) → every "lands on the expected neighbor" check below fails
+  //      (forward Tab escapes the dialog entirely with 0 games).
+  section('75', 'ModalSurface: Tab trap holds from a tabIndex=-1 landmark inside the drawer, in both directions, with 0 and 3 saved games', async () => {
+    // Independent oracle — NOT the app's own focusableAfter/focusableBefore
+    // (ModalSurface.tsx): recomputed here so a reverted fix is caught by a
+    // real behavioral mismatch, not two copies of one algorithm agreeing.
+    const readNeighbor = async (p, csel, lsel, dir) => p.evaluate(([csel, lsel, dir]) => {
+      const c = document.querySelector(csel); const landmark = document.querySelector(lsel);
+      if (!c || !landmark) return null;
+      const all = Array.from(c.querySelectorAll('button, [tabindex]:not([tabindex="-1"]), input, select, textarea, a[href]'))
+        .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+      const bit = dir === 'after' ? Node.DOCUMENT_POSITION_FOLLOWING : Node.DOCUMENT_POSITION_PRECEDING;
+      const seq = dir === 'after' ? all : [...all].reverse();
+      const hit = seq.find((el) => landmark.compareDocumentPosition(el) & bit);
+      const el = hit ?? (dir === 'after' ? all[0] : all[all.length - 1]);
+      return el ? { tag: el.tagName, insideLandmark: landmark.contains(el), idx: all.indexOf(el) } : null;
+    }, [csel, lsel, dir]);
+    const readActive = async (p, lsel) => p.evaluate((lsel) => {
+      const a = document.activeElement; const landmark = document.querySelector(lsel);
+      return a ? { tag: a.tagName, insideLandmark: !!landmark?.contains(a), isLandmark: a === landmark,
+        title: a.getAttribute('title'), aria: a.getAttribute('aria-label') } : null;
+    }, lsel);
+    const DLG = '[role="dialog"][aria-label="Simulator Workspace Center"]';
+    const LM = '[data-focus-fallback="drawer-games"]';
+
+    const dismissTour = async (p) => { try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ } };
+    const openLibrary = async (p) => {
+      await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 8000 });
+      await p.getByRole('button', { name: /library/i }).first().click();
+      await p.locator(LM).first().waitFor({ state: 'visible', timeout: 8000 });
+    };
+    // Clicks the landmark's OWN dead space (0 games) or a card's title text
+    // (3 games) — both are ordinary clicks on ordinary content, never a
+    // synthetic focus() call — and returns whether the click point was
+    // actually on-screen and hit-tested to the landmark (COMMON's pointer rule).
+    const clickLandmarkOrCard = async (p, cardTitleText) => {
+      const target = cardTitleText
+        ? p.locator(`${LM} *`, { hasText: cardTitleText }).first()
+        : p.locator(LM).first();
+      await target.evaluate((e) => e.scrollIntoView({ block: 'center' }));
+      const bb = await target.boundingBox();
+      const cx = bb.x + bb.width / 2, cy = bb.y + (cardTitleText ? bb.height / 2 : Math.min(20, bb.height / 2));
+      const hit = await p.evaluate(([x, y, lsel]) => !!document.elementFromPoint(x, y)?.closest(lsel), [cx, cy, LM]);
+      const onScreen = cy >= 0 && cy < 900;
+      if (onScreen && hit) await p.mouse.click(cx, cy);
+      return { onScreen, hit };
+    };
+    const settleActive = async (p) => { let a = null; for (let i = 0; i < 20; i++) { a = await readActive(p, LM); if (a) break; await p.waitForTimeout(100); } return a; };
+
+    let webkitAvailable = true; let webkitBrowser = null;
+    try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
+    try {
+      for (const [label, engineCtx] of [
+        ['chromium', await browser.newContext({ viewport: { width: 1280, height: 900 } })],
+        ...(webkitAvailable ? [['webkit', await webkitBrowser.newContext({ viewport: { width: 1280, height: 900 } })]] : []),
+      ]) {
+        const p = trackPage(await engineCtx.newPage());
+        // A FRESH account per engine (not shared): the 3-games phase below
+        // creates real saved games, and a shared account would leave the
+        // "0 games" phase seeing an already-populated list on the second
+        // engine to run.
+        const uniq = await registerAndLogin(p, `e75${label[0]}`);
+        const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+        await dismissTour(p);
+
+        // ── 0 games: forward Tab, then (fresh click) Shift+Tab ──
+        await openLibrary(p);
+        let click = await clickLandmarkOrCard(p, null);
+        record(`[${label}, 0 games] precondition: the empty-state landmark click is on-screen and hit-tests to itself`, click.onScreen && click.hit, JSON.stringify(click));
+        let before = await readActive(p, LM);
+        record(`[${label}, 0 games] precondition: the click actually focused the landmark`, before?.isLandmark === true, JSON.stringify(before));
+        const expAfter0 = await readNeighbor(p, DLG, LM, 'after');
+        await p.keyboard.press('Tab');
+        let after = await settleActive(p);
+        record(`[${label}, 0 games] FIX: forward Tab from the landmark lands on the expected neighbor, still inside the dialog (RED-APP-15/001)`,
+          !!after && !after.isLandmark && after.insideLandmark === false && after.tag === expAfter0?.tag, JSON.stringify({ after, expAfter0 }));
+
+        await p.keyboard.press('Escape');
+        await openLibrary(p);
+        click = await clickLandmarkOrCard(p, null);
+        const expBefore0 = await readNeighbor(p, DLG, LM, 'before');
+        await p.keyboard.press('Shift+Tab');
+        after = await settleActive(p);
+        record(`[${label}, 0 games] FIX: Shift+Tab from the landmark lands on the expected neighbor (RED-APP-15/001)`,
+          !!after && !after.isLandmark && after.tag === expBefore0?.tag, JSON.stringify({ after, expBefore0 }));
+
+        // Positive control: from a REAL control (the library tab button
+        // itself), one Tab still moves within the dialog as before — the
+        // fix did not disturb ordinary control-to-control navigation.
+        await p.keyboard.press('Escape');
+        await openLibrary(p);
+        const libTabBtn = p.getByRole('button', { name: /library/i }).first();
+        await libTabBtn.focus();
+        const beforeCtl = await p.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent);
+        await p.keyboard.press('Tab');
+        const afterCtl = await p.evaluate((dlgSel) => ({ moved: true, inDialog: !!document.activeElement?.closest(dlgSel) }), DLG);
+        record(`[${label}] control: Tab from a real control (Library tab button) still stays inside the dialog, unaffected by the fix`,
+          afterCtl.inDialog, JSON.stringify({ beforeCtl, afterCtl }));
+        await p.keyboard.press('Escape');
+
+        // ── 3 games: card-title click, forward Tab must ADVANCE INTO the
+        // list (not wrap past it); Shift+Tab must still land on the same
+        // pre-landmark control as the 0-games case. ──
+        const gameNames = [1, 2, 3].map((n) => `E75-${n}-${uniq}`);
+        for (const n of gameNames) {
+          await fetch(`${BASE}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ name: n, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 } }) });
+        }
+        await p.reload({ waitUntil: 'networkidle' });
+        await dismissTour(p);
+        await openLibrary(p);
+        click = await clickLandmarkOrCard(p, gameNames[0]);
+        record(`[${label}, 3 games] precondition: the first card's title click is on-screen and hit-tests inside the landmark`, click.onScreen && click.hit, JSON.stringify(click));
+        before = await readActive(p, LM);
+        record(`[${label}, 3 games] precondition: the click focused a node inside the landmark (WebKit's mouse-focusable-ancestor behavior)`, before?.insideLandmark === true, JSON.stringify(before));
+        const expAfter3 = await readNeighbor(p, DLG, LM, 'after');
+        await p.keyboard.press('Tab');
+        after = await settleActive(p);
+        record(`[${label}, 3 games] FIX: forward Tab from the landmark ADVANCES INTO the populated list, not past it (RED-APP-15/001)`,
+          !!after && after.insideLandmark === true && after.tag === expAfter3?.tag, JSON.stringify({ after, expAfter3 }));
+
+        await p.keyboard.press('Escape');
+        await openLibrary(p);
+        click = await clickLandmarkOrCard(p, gameNames[0]);
+        const expBefore3 = await readNeighbor(p, DLG, LM, 'before');
+        await p.keyboard.press('Shift+Tab');
+        after = await settleActive(p);
+        record(`[${label}, 3 games] FIX: Shift+Tab from the landmark lands on the same pre-landmark control as the 0-games case (RED-APP-15/001)`,
+          !!after && after.insideLandmark === false && after.tag === expBefore3?.tag, JSON.stringify({ after, expBefore3 }));
+        await p.close();
+        await engineCtx.close();
+      }
+      if (!webkitAvailable) record('webkit unavailable in this environment — chromium ran, webkit case skipped', true, 'guarded per brief');
+    } finally {
+      if (webkitBrowser) await webkitBrowser.close().catch(() => {});
+    }
+  });
+
+  // ══ 76. RED-APP-15/003 — the guided tour's own card (Next/Back/Skip) must
+  //      not be clickable BY POINTER while any ModalSurface is registered
+  //      open — the drawer's z-50 sits under the tour's z-[60], so a real
+  //      click on Next used to advance the tour and rewrite the board right
+  //      through an open, aria-modal drawer. Mutation: remove Walkthrough's
+  //      `blocked` pointer gate (leave the keydown gate in place) → the
+  //      "drawer open: a real click on Next does not advance" check fails.
+  section('76', 'Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003)', async () => {
+    const p = trackPage(await browser.newPage({ viewport: { width: 1280, height: 900 } }));
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tourStep = () => p.evaluate(() => (document.body.innerText.match(/(\d+)\s*\/\s*\d+/) || [])[1] || null);
+    const step0 = await tourStep();
+    record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0}`);
+
+    await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+    await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 8000 });
+    const next = p.locator('button', { hasText: /^Next\s*$/ }).first();
+    const nb = await next.boundingBox();
+    const hit = nb ? await p.evaluate(([x, y]) => {
+      const h = document.elementFromPoint(x, y);
+      return { tag: h?.tagName, isTourButton: h?.closest('button[aria-hidden]') === h || h?.tagName === 'BUTTON' };
+    }, [nb.x + nb.width / 2, nb.y + nb.height / 2]) : null;
+    record('precondition: the tour Next button has a bounding box while the drawer is open (still rendered, just gated)', !!nb, JSON.stringify({ nb }));
+    if (nb) {
+      await p.mouse.click(nb.x + nb.width / 2, nb.y + nb.height / 2);
+      await p.waitForTimeout(400);
+    }
+    const step1 = await tourStep();
+    record('FIX: a real click on the tour\'s Next button does NOT advance the tour while the drawer is open (RED-APP-15/003)', step1 === step0, JSON.stringify({ step0, step1, hit }));
+
+    await p.keyboard.press('Escape');
+    await p.getByRole('button', { name: /close menu/i }).first().click().catch(() => {});
+    await p.waitForFunction(() => !document.querySelector('[aria-label="Close menu"]'), null, { timeout: 8000 }).catch(() => {});
+
+    // Control: with no surface open, the exact same click DOES advance —
+    // proves the tour card and its Next button are otherwise unchanged.
+    const next2 = p.locator('button', { hasText: /^Next\s*$/ }).first();
+    const nb2 = await next2.boundingBox();
+    if (nb2) { await p.mouse.click(nb2.x + nb2.width / 2, nb2.y + nb2.height / 2); await p.waitForTimeout(400); }
+    const step2 = await tourStep();
+    record('control: the same click on Next DOES advance the tour when no surface is open', step2 !== null && step2 !== step1, JSON.stringify({ step1, step2 }));
     await p.close();
   });
 

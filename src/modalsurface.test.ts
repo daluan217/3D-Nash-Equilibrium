@@ -411,4 +411,43 @@ const modalSurfaceSrc = stripComments(readFileSync('src/components/ModalSurface.
     'App.tsx must still have a button with aria-label="Expand simulation log" as a REAL JSX attribute (not just inside the fallbackSelector string) — the expand-log fallbackSelector names this exact string, and nothing else checks that the two agree (OPUS-REVIEW-MODAL2 NOTE 3)');
 }
 
+// RED-APP-15/002 (round16, BLUE-MODAL-16): AdminDashboard.tsx hand-rolled a
+// `fixed inset-0` overlay with a bare `className=` — no role, no Escape, no
+// trap, not in ModalRegistry — reachable by a real triple-click, letting its
+// own keystrokes drive the guided tour underneath it. Scan EVERY .tsx under
+// src/components plus App.tsx for a bare `className="...fixed...inset-0..."`
+// (never `overlayClassName=`, which is a value forwarded INTO a <ModalSurface>
+// caller, not a hand-rolled overlay); the only allowed exception is the
+// guided tour's own non-modal backdrop (Walkthrough.tsx — documented
+// `pointer-events-none`, deliberately not `aria-modal`, gated by
+// `ModalRegistry.isAnyOpen()` for RED-APP-15/003 instead). Known-positive
+// fixture: reverting AdminDashboard.tsx to its pre-fix wrapper divs fails
+// this. Mutation: revert the AdminDashboard.tsx conversion → this fails.
+{
+  const ALLOWED_BARE_OVERLAY_FILES = new Set(['src/components/Walkthrough.tsx']);
+  const walkAll = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+    const p = `${dir}/${f}`;
+    return statSync(p).isDirectory() ? walkAll(p) : (/\.tsx?$/.test(f) && !/\.test\./.test(f) ? [p] : []);
+  });
+  const files = [...walkAll('src/components'), 'src/App.tsx'].filter((f) => f !== 'src/components/ModalSurface.tsx');
+  let scanned = 0;
+  for (const file of files) {
+    // NOT stripComments here: its `/\*...\*\//` regex has no notion of `//`
+    // line comments, so a `//` comment that happens to contain a literal
+    // `/*` substring (DownloadModal.tsx:69, `dist-electron/*.dmg`) makes it
+    // swallow everything up to the next real `*/` — including this file's
+    // own overlayClassName JSX below it. Scanning raw source sidesteps that;
+    // a real JSX attribute value is not fabricated by a stray comment.
+    const src = readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/(overlayClassName|className)\s*=\s*(?:"([^"]*)"|`([^`]*)`)/g)) {
+      const [, attr, dq, bt] = m; const value = dq ?? bt ?? '';
+      if (!(/\bfixed\b/.test(value) && /\binset-0\b/.test(value))) continue;
+      scanned++;
+      const ok1 = attr === 'overlayClassName' || ALLOWED_BARE_OVERLAY_FILES.has(file);
+      ok(ok1, `${file}: a bare className="fixed inset-0..." overlay must render through <ModalSurface> (pass the class via overlayClassName), or be an allow-listed non-interactive backdrop with a stated reason (RED-APP-15/002) — found ${attr}="${value.slice(0, 60)}"`);
+    }
+  }
+  ok(scanned >= 3, `expected at least DownloadModal's, the expand-log's and the guided tour's fixed inset-0 occurrences, found ${scanned}`);
+}
+
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

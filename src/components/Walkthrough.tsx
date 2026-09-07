@@ -224,6 +224,21 @@ export function Walkthrough({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, close, steps.length]);
 
+  // RED-APP-15/003: the keydown gate above has no pointer equivalent, and the
+  // drawer's overlay (z-50) sits BELOW the tour (z-[60]) — the only one of
+  // six surfaces that does — so a real click on the tour's own Next/Back/Skip
+  // reaches it right through an open, aria-modal drawer and rewrites the
+  // board. Track ModalRegistry's stack (the same subscribe ModalSurface uses)
+  // so the card and the standalone Exit-tour button go pointer-events-none
+  // and aria-hidden the instant any surface registers, and come back the
+  // moment it closes.
+  const [blocked, setBlocked] = useState(() => ModalRegistry.isAnyOpen());
+  useEffect(() => {
+    const check = () => setBlocked(ModalRegistry.isAnyOpen());
+    check();
+    return ModalRegistry.subscribe(check);
+  }, []);
+
   if (!open || !step) return null;
 
   const vw = vp.w;
@@ -372,7 +387,8 @@ export function Walkthrough({
         type="button"
         onClick={close}
         aria-label="Exit tour"
-        className={`pointer-events-auto absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
+        aria-hidden={blocked}
+        className={`${blocked ? 'pointer-events-none' : 'pointer-events-auto'} absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
       >
         <X className="w-4 h-4" /> Exit tour
       </button>
@@ -394,7 +410,8 @@ export function Walkthrough({
 
       <div
         ref={cardRef}
-        className={`pointer-events-auto absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
+        aria-hidden={blocked}
+        className={`${blocked ? 'pointer-events-none' : 'pointer-events-auto'} absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
           dense ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
         }`}
         style={{

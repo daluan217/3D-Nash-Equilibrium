@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Users, GamepadIcon, ShieldCheck, ShieldX, TrendingUp, RefreshCw, LogOut, X } from 'lucide-react';
+import { ModalSurface } from './ModalSurface';
 
 interface AdminStats {
   totalUsers: number;
@@ -12,13 +13,20 @@ interface AdminStats {
 }
 
 interface AdminDashboardProps {
+  open: boolean;
   onClose: () => void;
   isDark: boolean;
   isElectron: boolean;
   apiBaseUrl: string;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark, isElectron, apiBaseUrl }) => {
+/** RED-APP-15/002: this overlay used to hand-roll `fixed inset-0` with no
+ *  role, no Escape, no Tab trap and no ModalRegistry membership — reachable
+ *  by a real triple-click on the header icon (App.tsx), it let its own
+ *  keystrokes drive the guided tour underneath it and let a second dialog
+ *  (the drawer) open stacked behind it. Now goes through <ModalSurface> like
+ *  every other overlay in the app (see docs/MODAL-SURFACE.md). */
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, isDark, isElectron, apiBaseUrl }) => {
   const adminUrl = (path: string) =>
     isElectron ? `${apiBaseUrl.trim().replace(/\/$/, '') || 'https://nash-equilibrium-simulator.com'}${path}` : path;
   const [password, setPassword] = useState('');
@@ -57,10 +65,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className={`relative w-full max-w-3xl rounded-2xl border shadow-2xl flex flex-col max-h-[90vh] ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-
+    <ModalSurface
+      id="admin"
+      open={open}
+      onClose={onClose}
+      ariaLabel="Admin dashboard"
+      panelClassName={`relative w-full max-w-3xl rounded-2xl border shadow-2xl flex flex-col max-h-[90vh] ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
+    >
         {/* Header */}
         <div className={`flex items-center justify-between p-4 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
           <div className="flex items-center gap-2">
@@ -156,7 +167,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
             </>
           ) : null}
         </div>
-      </div>
-    </div>
+    </ModalSurface>
   );
 };

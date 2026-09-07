@@ -6486,14 +6486,13 @@ export default function App() {
 
       <OtherAccountsNotice dbMode={dbMode} signedIn={!!authToken} />
 
-      {isAdminOpen && (
-        <AdminDashboard
-          onClose={() => setIsAdminOpen(false)}
-          isDark={darkMode}
-          isElectron={isElectron}
-          apiBaseUrl={apiBaseUrl}
-        />
-      )}
+      <AdminDashboard
+        open={isAdminOpen}
+        onClose={() => setIsAdminOpen(false)}
+        isDark={darkMode}
+        isElectron={isElectron}
+        apiBaseUrl={apiBaseUrl}
+      />
 
       {/* Bottom-left feedback launcher. Hidden during the tour: it floats over
           the corner of the plot the spotlight keeps landing on, and a stray
