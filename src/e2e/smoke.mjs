@@ -6169,6 +6169,92 @@ try {
         /local library/i.test(logText78) && /LocalConfirmed78/.test(logText78));
       await dp.unroute('**/api/games');
 
+      // ── OPUS-REVIEW-DESKTOP17 N1: the gate must persist across a dialog
+      // close+reopen — Cancel (no sign-in, no device choice), then a fresh
+      // "Save Preset" must still block the ordinary submit. Continues from
+      // the CURRENT signed-out state (the local save above signed the
+      // account out again); the mechanism doesn't depend on who is behind
+      // the mocked 401. ──
+      await dp.route('**/api/games', (route) => (route.request().method() === 'POST'
+        ? route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) })
+        : route.continue()));
+      await dp.getByRole('button', { name: /save preset/i }).click();
+      await saveDlg.waitFor({ state: 'visible', timeout: 8000 });
+      await saveDlg.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill('N1CloseReopen');
+      await saveDlg.locator('button[type="submit"]').click();
+      await saveDlg.getByRole('button', { name: /sign in \/ sign up/i }).waitFor({ state: 'visible', timeout: 8000 });
+      await saveDlg.getByRole('button', { name: /^cancel$/i }).click();
+      await saveDlg.waitFor({ state: 'hidden', timeout: 5000 });
+      await dp.unroute('**/api/games');
+      let n1PostCount = 0;
+      await dp.route('**/api/games', (route) => {
+        if (route.request().method() === 'POST') n1PostCount++;
+        route.continue();
+      });
+      await dp.getByRole('button', { name: /save preset/i }).click();
+      await saveDlg.waitFor({ state: 'visible', timeout: 8000 });
+      const n1Label = (await saveDlg.locator('button[type="submit"]').textContent())?.trim() ?? '';
+      record('N1 (OPUS-REVIEW-DESKTOP17): the submit button still reads the sign-in action on a fresh reopen (gate persists)',
+        /sign in/i.test(n1Label), n1Label);
+      await saveDlg.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill('N1Reopen');
+      await saveDlg.locator('button[type="submit"]').click();
+      await dp.waitForTimeout(600);
+      record('N1 (OPUS-REVIEW-DESKTOP17): close + reopen + click sends NO request (dead session persists across dialog sessions)',
+        n1PostCount === 0, `n1PostCount=${n1PostCount}`);
+      const acctDlgN1 = dp.locator('[role="dialog"][aria-label="Account"]');
+      await acctDlgN1.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      await dp.keyboard.press('Escape');
+      await acctDlgN1.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      await dp.unroute('**/api/games');
+
+      // ── OPUS-REVIEW-DESKTOP17 N3: backing out of Sign In from the EDIT
+      // dialog must restore it with the in-progress edits intact — its
+      // banner promises "Your changes will stay right here". Re-signs in to
+      // the SAME account (still 'TestPass123' — the mocked 401s above never
+      // really changed it) to reach the account-owned row saved earlier
+      // ("AcctSession401-78", resumed under the account). ──
+      await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+      const acctDlgN3 = dp.locator('[role="dialog"][aria-label="Account"]');
+      await acctDlgN3.waitFor({ state: 'visible', timeout: 5000 });
+      await acctDlgN3.getByPlaceholder(/example\.com or username/i).fill(email);
+      await acctDlgN3.getByPlaceholder('••••••••').first().fill('TestPass123');
+      await acctDlgN3.getByRole('button', { name: /^login$/i }).click();
+      const offerN3 = dp.locator('[role="dialog"][aria-label="Games saved on this device"]');
+      if (await offerN3.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false)) {
+        await dp.keyboard.press('Escape');
+        await offerN3.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      }
+      await acctDlgN3.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+
+      const acctTargetRow = dp.getByRole('button', { name: 'AcctSession401-78', exact: true });
+      await acctTargetRow.waitFor({ state: 'visible', timeout: 8000 });
+      await dp.locator('div.group', { has: acctTargetRow }).getByTitle(/^Edit /).click();
+      await editDlg.waitFor({ state: 'visible', timeout: 8000 });
+      await editDlg.locator('textarea').first().fill('N3 UNSAVED EDIT');
+      await dp.route('**/api/games/*', (route) => (route.request().method() === 'PATCH'
+        ? route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) })
+        : route.continue()));
+      await editDlg.locator('button[type="submit"]').click();
+      await editDlg.getByRole('button', { name: /sign in \/ sign up/i }).waitFor({ state: 'visible', timeout: 8000 });
+      // Second click of the SAME now-relabelled submit routes to Sign In.
+      await editDlg.locator('button[type="submit"]').click();
+      const acctDlgN3b = dp.locator('[role="dialog"][aria-label="Account"]');
+      record('N3 precondition (OPUS-REVIEW-DESKTOP17): the gate routed the SECOND Edit click to Sign In',
+        await acctDlgN3b.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false));
+      await dp.keyboard.press('Escape');
+      await acctDlgN3b.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      const editDlgRestored = await editDlg.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+      record('N3 (OPUS-REVIEW-DESKTOP17): backing out of Sign In restores the Edit dialog',
+        editDlgRestored);
+      if (editDlgRestored) {
+        const restoredText = await editDlg.locator('textarea').first().inputValue().catch(() => '');
+        record('N3 (OPUS-REVIEW-DESKTOP17): the in-progress edit text survives backing out of Sign In',
+          restoredText === 'N3 UNSAVED EDIT', restoredText);
+      }
+      await dp.unroute('**/api/games/*');
+      await dp.keyboard.press('Escape');
+      await editDlg.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+
       record('no console/page errors through the desktop auth-predicate cycle (the two deliberate drops [ERR_CONNECTION_RESET] and the mocked 401 resource-load error are expected, filtered)',
         deskErrors.filter((t) => !/ERR_CONNECTION_RESET/.test(t) && !/status of 401/.test(t)).length === 0, deskErrors.join(' | ').slice(0, 300));
     } finally {

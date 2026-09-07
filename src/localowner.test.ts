@@ -388,11 +388,15 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   check(`no authToken-ternary/&& render or copy branch anywhere under src/**/*.tsx (found ${violations.length}: ${violations.join(' | ').slice(0, 300)})`,
     violations.length === 0);
 
-  // The two fixed sites read the per-error flag instead.
-  // CodeRabbit CLI: `\s*` (not a literal space) so a formatter's line break
-  // between the flag and `?` still passes.
-  check('Save dialog error render gates on saveErrorNeedsAuth', /saveErrorNeedsAuth\s*\?\s*\(/.test(app));
-  check('Edit dialog error render gates on editErrorNeedsAuth', /editErrorNeedsAuth\s*\?\s*\(/.test(app));
+  // The two fixed sites read the per-error flag (OR'd with `deadSession`
+  // since OPUS-REVIEW-DESKTOP17 F1 — the banner must persist across a
+  // dialog close+reopen, which clears `saveError`/`editError` but not
+  // `deadSession`). CodeRabbit CLI: `\s*` (not a literal space) so a
+  // formatter's line break between the flag and `?` still passes.
+  check('Save dialog error render gates on deadSession === \'save\' OR saveErrorNeedsAuth',
+    /\(deadSession === 'save' \|\| saveErrorNeedsAuth\)\s*\?\s*\(/.test(app));
+  check('Edit dialog error render gates on deadSession === \'edit\' OR editErrorNeedsAuth',
+    /\(deadSession === 'edit' \|\| editErrorNeedsAuth\)\s*\?\s*\(/.test(app));
 
   // CodeRabbit on #158 (outside-diff, 73e5fba): `if (!editGameId ||
   // !canOwnGames) return;` was a SILENT no-op if the token died while the
@@ -401,10 +405,10 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // flag, same as handleSaveGameSubmit's preflight.
   {
     const editFnStart = app.indexOf('const handleEditGameSubmit');
-    // 900, not 700: RED-DESKTOP-17/002 added a needs-auth gate ahead of this
-    // block (its own check, below), pushing !canOwnGames further into the
-    // function body.
-    const editFnSlice = app.slice(editFnStart, editFnStart + 900);
+    // 1100, not 700: RED-DESKTOP-17/002 and OPUS-REVIEW-DESKTOP17 F1 each
+    // added a needs-auth gate/comment ahead of this block, pushing
+    // !canOwnGames further into the function body.
+    const editFnSlice = app.slice(editFnStart, editFnStart + 1100);
     check("handleEditGameSubmit's own !canOwnGames branch sets both editError and editErrorNeedsAuth(true), not a silent return",
       /if \(!canOwnGames\) \{[^}]*setEditError\([^}]*setEditErrorNeedsAuth\(true\)/.test(editFnSlice),
       editFnSlice.replace(/\s+/g, ' ').slice(0, 160));
@@ -794,8 +798,12 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   const app = readFileSync('src/App.tsx', 'utf8');
   const editSlice = app.slice(app.indexOf('const handleEditGameSubmit'), app.indexOf('const handleDeleteGame'));
   const saveSlice = app.slice(app.indexOf('const handleSaveGameSubmit'), app.indexOf('const handleRegenerateScenario'));
-  const editGatePattern = /if \(editError && editErrorNeedsAuth\) \{ beginNeedsAuthSignIn\('edit'\); return; \}/;
-  const saveGatePattern = /if \(!localConfirmed && saveError && saveErrorNeedsAuth\) \{ beginNeedsAuthSignIn\('save'\); return; \}/;
+  // OPUS-REVIEW-DESKTOP17 F1: the gate reads `deadSession`, not the
+  // resettable `saveError && saveErrorNeedsAuth` / `editError &&
+  // editErrorNeedsAuth` pair (that pair is reset by validation branches
+  // below the gate — exactly the hole F1 closed).
+  const editGatePattern = /if \(deadSession === 'edit'\) \{ beginNeedsAuthSignIn\('edit'\); return; \}/;
+  const saveGatePattern = /if \(!localConfirmed && deadSession === 'save'\) \{ beginNeedsAuthSignIn\('save'\); return; \}/;
 
   // Order matters, not just presence: a gate present but placed AFTER the
   // fetch it exists to prevent would satisfy a naive substring check while
@@ -836,7 +844,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
 
   // Known-positive: the gate present but MOVED after the fetch (order, not
   // just presence) must also be caught.
-  const saveGateAfterFetch = `${saveSlice.replace(new RegExp(`${saveGatePattern.source}\\n\\s*`), '')}\n    if (!localConfirmed && saveError && saveErrorNeedsAuth) { beginNeedsAuthSignIn('save'); return; }\n`;
+  const saveGateAfterFetch = `${saveSlice.replace(new RegExp(`${saveGatePattern.source}\\n\\s*`), '')}\n    if (!localConfirmed && deadSession === 'save') { beginNeedsAuthSignIn('save'); return; }\n`;
   check('fixture: the Save gate present but placed AFTER the fetch is still caught (order-sensitive, not a bare substring check)',
     !gatePrecedesFetch(saveGateAfterFetch, saveGatePattern).ok);
 
@@ -865,9 +873,34 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     + '  e.preventDefault();\n  if (!editGameId) return;\n  if (!canOwnGames) {\n'
     + "    setEditError('Sign in or create an account to save changes.');\n"
     + '    setEditErrorNeedsAuth(true);\n    return;\n  }\n'
-    + "  if (editError && editErrorNeedsAuth) { beginNeedsAuthSignIn('edit'); return; }\n";
+    + "  if (deadSession === 'edit') { beginNeedsAuthSignIn('edit'); return; }\n";
   check('fixture: the pre-CodeRabbit-fix Edit ordering (gate AFTER !canOwnGames) is caught',
     !precedesCanOwnGames(editPreflightFirst, editGatePattern));
+
+  // OPUS-REVIEW-DESKTOP17 F1's actual root cause: `deadSession` must be
+  // clearable ONLY by a successful submit (the functional-updater form,
+  // `(d) => (d === 'save' ? null : d)`, used in both handlers' res.ok
+  // branches — see STATE.md) or the sign-in-resume effect — NEVER by a
+  // validation/network/409 branch. A literal `setDeadSession(null)` call
+  // anywhere in either handler's body is exactly that regression (the F1
+  // bug was `setEditErrorNeedsAuth`/`setSaveErrorNeedsAuth`'s equivalent: a
+  // later branch clearing the gate's own state). Mutation: reintroducing
+  // one in the empty-name check must fail THIS check by name.
+  check('handleSaveGameSubmit never hard-clears deadSession outside its functional-updater success path (no literal setDeadSession(null))',
+    !/setDeadSession\(null\)/.test(saveSlice));
+  check('handleEditGameSubmit never hard-clears deadSession outside its functional-updater success path (no literal setDeadSession(null))',
+    !/setDeadSession\(null\)/.test(editSlice));
+  // Known-positive: planting the exact mutation the brief names (a
+  // `setDeadSession(null)` inserted into the empty-name check) must fail
+  // the SAME "never hard-clears" check above, by the same predicate.
+  const saveNameCheckUngated = saveSlice.replace(
+    "setSaveErrorNeedsAuth(false);\n      return;",
+    'setSaveErrorNeedsAuth(false);\n      setDeadSession(null);\n      return;',
+  );
+  check('fixture: a setDeadSession(null) planted in the empty-name check is caught by the same predicate (precondition: the plant actually landed)',
+    saveNameCheckUngated !== saveSlice);
+  check('fixture: a setDeadSession(null) planted in the empty-name check fails the "never hard-clears" check',
+    !(!/setDeadSession\(null\)/.test(saveNameCheckUngated)));
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
