@@ -510,8 +510,16 @@ export default function App() {
   const editSessionRef = useRef(0);
   useEffect(() => { editSessionRef.current += 1; }, [isEditModalOpen, editGameId]);
   const [editError, setEditError] = useState('');
+  // RED-DESKTOP-15/001: whether `editError` is actually the "sign in" case —
+  // set ONLY where the failure is known to be auth-shaped (the pre-flight
+  // `!canOwnGames` check, or a response's `res.status === 401`), never
+  // derived from `!authToken` at render time. A local owner's `authToken` is
+  // always null, so that predicate mislabeled every non-auth failure
+  // (network drop, validation, 404, 409) as "please sign in".
+  const [editErrorNeedsAuth, setEditErrorNeedsAuth] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [saveErrorNeedsAuth, setSaveErrorNeedsAuth] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   /**
    * Set when the visitor jumps from the save modal to sign in. The save modal
@@ -2066,7 +2074,7 @@ export default function App() {
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editGameId || !canOwnGames) return;
-    if (!cleanText(editName)) { setEditError('Please enter a game name.'); return; }
+    if (!cleanText(editName)) { setEditError('Please enter a game name.'); setEditErrorNeedsAuth(false); return; }
     const orig = editOriginalRef.current;
     const same = (x: readonly string[], y: readonly string[]) => x.length === y.length && x.every((v, i) => v === y[i]);
     const editPatchBody: Record<string, unknown> = { allowClear: true };
@@ -2148,6 +2156,7 @@ export default function App() {
         if (activePreset === editGameId) handleLoadPreset('bos');
         void refetchUserGames();
         setEditError('This game was deleted elsewhere; the list has been refreshed.');
+        setEditErrorNeedsAuth(false);
       } else if (res.status === 409) {
         // RED-REGEN-8/002 + RED-APP-12/002: a 409 means another tab/device's
         // colour-term edit collided with this one. The server's own message
@@ -2218,8 +2227,10 @@ export default function App() {
                 ? `Not saved: ${collisionNote}`
                 : (data.error || 'Failed to update game.'),
           );
+          setEditErrorNeedsAuth(false);
         } else {
           setEditError(data.error || 'Failed to update game.');
+          setEditErrorNeedsAuth(false);
         }
       } else {
         // RED-APP-7/001: a validly-signed but EXPIRED token dies mid-session
@@ -2227,13 +2238,18 @@ export default function App() {
         // being told — `authToken` state kept the dead token, so the header
         // still read "Log out" and this dialog had no re-auth affordance at
         // all. Clearing it here on any 401 makes the app's own state agree
-        // with the server's; the header flips to "Sign in" and the
-        // `!authToken` branch on the error render above fires naturally.
-        if (res.status === 401) updateAuthToken(null);
+        // with the server's; the header flips to "Sign in".
+        // RED-DESKTOP-15/001: the invitation render now follows THIS actual
+        // 401, not `!authToken` — a local owner's token is always falsy, so
+        // that predicate fired for every failure reason, not just this one.
+        const wasAuthFailure = res.status === 401;
+        if (wasAuthFailure) updateAuthToken(null);
         setEditError(data.error || 'Failed to update game.');
+        setEditErrorNeedsAuth(wasAuthFailure);
       }
     } catch {
       setEditError('Network error. Failed to update game.');
+      setEditErrorNeedsAuth(false);
     } finally {
       setEditLoading(false);
     }
@@ -2442,14 +2458,16 @@ export default function App() {
     e.preventDefault();
     if (!cleanText(saveName)) {
       setSaveError('Please enter a game name.');
+      setSaveErrorNeedsAuth(false);
       return;
     }
     // Signed out: don't send a doomed request whose 401 surfaces as the
     // baffling "Invalid or expired session." — say what to actually do.
     // The banner renders this case as an invitation with a Sign In button,
-    // not an error (see the !authToken branch at the saveError render).
+    // not an error (see the saveErrorNeedsAuth branch at the saveError render).
     if (!canOwnGames) {
       setSaveError('Sign in or create an account to save this game.');
+      setSaveErrorNeedsAuth(true);
       return;
     }
     setSaveError('');
@@ -2524,13 +2542,20 @@ export default function App() {
         // comment. `authToken` was truthy but dead, so this branch's own
         // `saveError` text ("Invalid or expired session.") used to always
         // take the bare-rose-error render below rather than the friendly
-        // `!authToken` one, even though its own wording is exactly the case
+        // invitation one, even though its own wording is exactly the case
         // that branch exists for.
-        if (res.status === 401) updateAuthToken(null);
+        // RED-DESKTOP-15/001: the invitation now follows THIS actual 401,
+        // not `!authToken` — a local owner's token is always falsy, so that
+        // predicate fired for every failure reason (network, validation),
+        // not just an expired session.
+        const wasAuthFailure = res.status === 401;
+        if (wasAuthFailure) updateAuthToken(null);
         setSaveError(data.error || 'Failed to save game.');
+        setSaveErrorNeedsAuth(wasAuthFailure);
       }
     } catch (err) {
       setSaveError('Network error. Failed to save game.');
+      setSaveErrorNeedsAuth(false);
     } finally {
       setSaveLoading(false);
     }
@@ -6105,12 +6130,12 @@ export default function App() {
               )}
 
               {editError && (
-                // RED-APP-7/001: mirrors the Save dialog's own !authToken
-                // branch below — a mid-session 401 (token expired while the
-                // tab stayed open) now clears authToken (see
-                // handleEditGameSubmit), so this fires instead of leaving
-                // the user with the bare server string and no way forward.
-                !authToken ? (
+                // RED-DESKTOP-15/001: gated on `editErrorNeedsAuth` (set only
+                // where the failure is actually auth-shaped — a real 401),
+                // never on `!authToken`. A local owner's token is always
+                // falsy, so that predicate showed this invitation for every
+                // failure reason, not just an expired/missing session.
+                editErrorNeedsAuth ? (
                   <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                     <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                     <div className="flex flex-col items-start gap-2">
@@ -6180,10 +6205,12 @@ export default function App() {
             </div>
 
             {saveError && (
-              // Signed out, any save problem: the remedy is signing in, so this
-              // renders as an invitation with the door held open — not a red
-              // error about sessions the visitor never had.
-              !authToken ? (
+              // RED-DESKTOP-15/001: gated on `saveErrorNeedsAuth` (set only
+              // where the failure is actually auth-shaped — no account at
+              // all, or a real 401), never on `!authToken`. A local owner's
+              // token is always falsy, so that predicate showed this
+              // invitation for every failure reason, not just this one.
+              saveErrorNeedsAuth ? (
                 <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                   <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                   <div className="flex flex-col items-start gap-2">

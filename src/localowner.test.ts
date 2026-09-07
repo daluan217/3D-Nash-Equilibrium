@@ -178,5 +178,57 @@ for (const [name, src] of MUST_FLAG) {
     !/if \(!canOwnGames\) \{/.test(regressedIfGate));
 }
 
+// RED-DESKTOP-15/001: the Save/Edit error banners decided "does this failure
+// need a sign-in" by asking `!authToken`/`authToken ?` — a boolean that is
+// STRUCTURALLY always false for a local owner (no account at all), so it
+// mislabeled every non-auth failure (network drop, blank name, 404, 409) as
+// "please sign in". The fix reads a per-error flag (`saveErrorNeedsAuth` /
+// `editErrorNeedsAuth`) set only where the failure is actually auth-shaped.
+// This guards the predicate never regresses back to the raw token read in a
+// render branch. `authToken ?` (ternary) is allow-listed for exactly one line
+// — `authHeaders`, which builds an HTTP header, not a UI decision.
+function authTokenTernaryViolations(src: string, allowListed: RegExp[]): string[] {
+  return src.split('\n')
+    .filter((line) => /\bauthToken\s*\?/.test(line))
+    .filter((line) => !allowListed.some((re) => re.test(line)));
+}
+
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  // The ONE legitimate `authToken ?` ternary: it returns an HTTP header
+  // object (`Authorization: Bearer ...`), never JSX, never a copy decision.
+  const ALLOW = [/authHeaders\s*=/];
+
+  const appViolations = authTokenTernaryViolations(app, ALLOW);
+  check(`App.tsx has no authToken-ternary render/copy branch (found ${appViolations.length}: ${appViolations.join(' | ').slice(0, 200)})`,
+    appViolations.length === 0);
+  const drawerViolations = authTokenTernaryViolations(drawer, ALLOW);
+  check(`MenuDrawer.tsx has no authToken-ternary render/copy branch (found ${drawerViolations.length}: ${drawerViolations.join(' | ').slice(0, 200)})`,
+    drawerViolations.length === 0);
+
+  // The two fixed sites read the per-error flag instead.
+  check('Save dialog error render gates on saveErrorNeedsAuth', /saveErrorNeedsAuth \? \(/.test(app));
+  check('Edit dialog error render gates on editErrorNeedsAuth', /editErrorNeedsAuth \? \(/.test(app));
+  // The flag is set at every place saveError/editError is set to a real
+  // message — see handleSaveGameSubmit/handleEditGameSubmit.
+  check('setSaveErrorNeedsAuth is set alongside every non-empty setSaveError call',
+    (app.match(/setSaveError\((?!'')/g) ?? []).length
+    === (app.match(/setSaveErrorNeedsAuth\(/g) ?? []).length);
+  check('setEditErrorNeedsAuth is set alongside every non-empty setEditError call',
+    (app.match(/setEditError\((?!'')/g) ?? []).length
+    === (app.match(/setEditErrorNeedsAuth\(/g) ?? []).length);
+
+  // Known-positive fixture: the historical shape (before this fix) MUST trip
+  // the same check that runs against the real files above.
+  const regressedSave = "{saveError && (\n  !authToken ? (\n    <div>Sign In / Sign Up</div>\n  ) : (\n    <p>{saveError}</p>\n  )\n)}";
+  check('fixture sanity: the REAL ternary check flags the historical !authToken render branch',
+    authTokenTernaryViolations(regressedSave, ALLOW).length > 0);
+  // Control: the header-builder line alone must NOT trip it.
+  const headerOnly = "const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});";
+  check('control: the authHeaders line alone is not flagged',
+    authTokenTernaryViolations(headerOnly, ALLOW).length === 0);
+}
+
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
 console.log(`✓ local owner: ${sites.length} resolver sites — game routes fall back to the device owner, account deletion and /auth/me keep the strict check, provisioning and adoption are desktop-only, adoption re-parents`);
