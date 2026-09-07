@@ -587,6 +587,22 @@ export default function App() {
   const [saveErrorNeedsAuth, setSaveErrorNeedsAuth] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   /**
+   * OPUS-REVIEW-DESKTOP17 F1: "this dialog session already tried as the
+   * account holder and was refused" as its OWN state, independent of
+   * `saveError`/`editError` and their `NeedsAuth` flags — those are reset by
+   * every validation/network/409 branch (by design, for THEIR job: keeping a
+   * stale message off an unrelated new error), which used to also silently
+   * un-gate a still-dead session the moment ANY of those fired (clearing the
+   * name and clicking "Save on this device instead" was one path in; a
+   * failed local save was another). Set ONLY on a genuine 401 for that
+   * dialog; cleared ONLY by that dialog's own successful submit (signed in
+   * for real, or the explicit device choice) or by a successful sign-in
+   * resuming it — never by a validation message. Gate, button label and the
+   * banner's own persistence (N1: survives a dialog close+reopen) all read
+   * THIS, not the resettable pair.
+   */
+  const [deadSession, setDeadSession] = useState<'save' | 'edit' | null>(null);
+  /**
    * Set when the visitor jumps from the save modal to sign in. The save modal
    * has to CLOSE for that jump (both modals sit at the same z-index, z-[65],
    * so the later-rendered save dialog would paint over the auth dialog), and
@@ -605,6 +621,42 @@ export default function App() {
    * Cleared whenever the auth modal is dismissed without signing in.
    */
   const resumeEditAfterAuthRef = useRef(false);
+  /**
+   * RED-DESKTOP-17/002: the ONE place a dialog is sent to Sign In because
+   * ITS OWN attempt was refused for authentication. Consulted by BOTH
+   * submit handlers (before their fetch — a needs-auth session must not
+   * silently resubmit as someone else, e.g. the local owner) and by both
+   * banners' own "Sign In / Sign Up" buttons, so the two paths can never
+   * diverge on what "sign in now" means for this dialog.
+   */
+  const beginNeedsAuthSignIn = (kind: 'save' | 'edit') => {
+    if (kind === 'save') { resumeSaveAfterAuthRef.current = true; setIsSaveModalOpen(false); }
+    else { resumeEditAfterAuthRef.current = true; setIsEditModalOpen(false); }
+    setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
+  };
+  /**
+   * OPUS-REVIEW-DESKTOP17 N3: dismissing the Account dialog WITHOUT signing
+   * in used to just clear both resume refs, stranding an Edit in progress —
+   * its own banner promises "Your changes will stay right here", but
+   * `openEditGame`'s re-prefill (the only way the normal "Edit" button
+   * reopens it) overwrites whatever the user had typed with the stored
+   * game's saved values the next time they click Edit. `editName`/`editDesc`/
+   * `editLabels`/`editTerms` are untouched by the dialog closing (their own
+   * state, not reset here), so reopening it directly — bypassing
+   * `openEditGame` — restores exactly what the user left it with. Save has
+   * no equivalent restore: its own dialog is not reopened here, matching
+   * the reviewed scope (N3 is Edit-only).
+   */
+  const dismissAuthModal = () => {
+    setIsAuthModalOpen(false);
+    setAuthError('');
+    setAuthSuccess('');
+    resumeSaveAfterAuthRef.current = false;
+    if (resumeEditAfterAuthRef.current) {
+      resumeEditAfterAuthRef.current = false;
+      setIsEditModalOpen(true);
+    }
+  };
   // Set when "Save this scenario with the game" routes through the save modal
   // (preset or unsaved matrix): the scenario only becomes real when that save
   // completes, so the explanation regenerates there — from the fields as
@@ -627,6 +679,15 @@ export default function App() {
     // Watching the token rather than any one success handler means the save
     // modal comes back regardless of which path produced the sign-in (login,
     // or register + verification).
+    //
+    // cr review (CLI): a fresh, valid token means the user is signed in for
+    // real, REGARDLESS of which path produced it — clearing `deadSession`
+    // only inside the two resume branches missed every OTHER way to sign in
+    // (the header's own "Sign In / Sign Up" button, e.g., after Cancelling a
+    // gated dialog instead of using its banner). Left uncleared, a stale
+    // `deadSession` would keep routing an already-signed-in user's NEXT
+    // Save/Edit attempt straight back to the Account dialog, forever.
+    if (authToken) setDeadSession(null);
     if (authToken && resumeSaveAfterAuthRef.current) {
       resumeSaveAfterAuthRef.current = false;
       setSaveError('');
@@ -2158,6 +2219,11 @@ export default function App() {
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editGameId) return;
+    // OPUS-REVIEW-DESKTOP17 F1: reads `deadSession`, not `editError &&
+    // editErrorNeedsAuth` (that pair is reset by validation below, which is
+    // exactly the hole this closes) — checked first, matching Save's
+    // ordering, and persists across a close+reopen (N1).
+    if (deadSession === 'edit') { beginNeedsAuthSignIn('edit'); return; }
     // CodeRabbit on #158 (outside-diff, 73e5fba): a silent no-op here left the
     // dialog open with no feedback if the token died (401) WHILE it was open —
     // the user edits and resubmits, canOwnGames is now false, and nothing
@@ -2218,6 +2284,9 @@ export default function App() {
       staleSession = editSessionRef.current !== editSessionAtSubmit;
       if (staleSession) return;
       if (res.ok) {
+        // A successful PATCH only ever happens signed in for real — resolves
+        // any dead-session state this dialog was carrying.
+        setDeadSession((d) => (d === 'edit' ? null : d));
         setUserCustomGames((prev) => prev.map((g) => (g.id === editGameId ? data.game : g)));
         setIsEditModalOpen(false);
         setLogEntries((prev) => [...prev, `✓ Updated "${data.game.name}".`]);
@@ -2355,6 +2424,9 @@ export default function App() {
         const wasAuthFailure = handleDeadSessionResponse(res, requestToken);
         setEditError(data.error || 'Failed to update game.');
         setEditErrorNeedsAuth(wasAuthFailure);
+        // OPUS-REVIEW-DESKTOP17 F1: the gate reads THIS, never reset by a
+        // later validation branch the way editErrorNeedsAuth is.
+        if (wasAuthFailure) setDeadSession('edit');
       }
     } catch {
       staleSession = editSessionRef.current !== editSessionAtSubmit;
@@ -2571,8 +2643,21 @@ export default function App() {
     }
   };
 
-  const handleSaveGameSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  /**
+   * RED-DESKTOP-17/002: `localConfirmed` is the ONLY way past the needs-auth
+   * gate below — set by the "Save on this device instead" button, which
+   * calls this directly (bypassing the gate on purpose: clicking it IS the
+   * decision the gate exists to require). `e` is null on that path (no form
+   * event to prevent); the ordinary submit passes its real FormEvent.
+   */
+  const handleSaveGameSubmit = async (e: React.FormEvent | null, opts?: { localConfirmed?: boolean }) => {
+    e?.preventDefault();
+    const localConfirmed = opts?.localConfirmed ?? false;
+    // OPUS-REVIEW-DESKTOP17 F1: reads `deadSession`, not `saveError &&
+    // saveErrorNeedsAuth` (that pair is reset by the empty-name check below,
+    // which is exactly the hole this closes) — persists across a close+
+    // reopen (N1). `localConfirmed` is the one deliberate bypass.
+    if (!localConfirmed && deadSession === 'save') { beginNeedsAuthSignIn('save'); return; }
     if (!cleanText(saveName)) {
       setSaveError('Please enter a game name.');
       setSaveErrorNeedsAuth(false);
@@ -2632,6 +2717,10 @@ export default function App() {
       staleSession = saveRequestIdRef.current !== clientRequestId;
       if (staleSession) return;
       if (res.ok) {
+        // A successful POST only ever happens signed in for real, or via the
+        // explicit device choice — resolves any dead-session state this
+        // dialog was carrying.
+        setDeadSession((d) => (d === 'save' ? null : d));
         // This attempt is done (successfully) — the NEXT Save Preset click
         // is a new attempt and must mint its own id, not reuse this one.
         saveRequestIdRef.current = null;
@@ -2668,7 +2757,15 @@ export default function App() {
         // no longer exists.
         lastGeneratedFillRef.current = null;
         saveNameBaselineRef.current = '';
-        setLogEntries(prev => [...prev, `✓ Saved custom game "${data.game.name}" successfully!`]);
+        // OPUS-REVIEW-DESKTOP17 F1/N2: derived from where the request
+        // ACTUALLY went (`requestToken`, captured before the fetch) rather
+        // than from `localConfirmed` — a request with no Authorization
+        // header always lands under local-owner regardless of which button
+        // sent it, and `localConfirmed` alone could describe a save that,
+        // in a rotated-token edge case, actually landed under the account.
+        setLogEntries(prev => [...prev, (!requestToken && isElectron && dbMode === 'local')
+          ? `✓ Saved custom game "${data.game.name}" to this device's local library — sign in to move it to your account.`
+          : `✓ Saved custom game "${data.game.name}" successfully!`]);
       } else {
         // RED-APP-7/001: same dead-token cleanup as Edit/Delete — see that
         // comment. `authToken` was truthy but dead, so this branch's own
@@ -2686,6 +2783,9 @@ export default function App() {
         const wasAuthFailure = handleDeadSessionResponse(res, requestToken);
         setSaveError(data.error || 'Failed to save game.');
         setSaveErrorNeedsAuth(wasAuthFailure);
+        // OPUS-REVIEW-DESKTOP17 F1: the gate reads THIS, never reset by a
+        // later validation branch the way saveErrorNeedsAuth is.
+        if (wasAuthFailure) setDeadSession('save');
       }
     } catch (err) {
       staleSession = saveRequestIdRef.current !== clientRequestId;
@@ -5737,7 +5837,7 @@ export default function App() {
       <ModalSurface
         id="account"
         open={isAuthModalOpen}
-        onClose={() => { setIsAuthModalOpen(false); setAuthError(''); setAuthSuccess(''); resumeSaveAfterAuthRef.current = false; resumeEditAfterAuthRef.current = false; }}
+        onClose={dismissAuthModal}
         ariaLabel="Account"
         fallbackSelector='[data-focus-fallback="account"] button, [data-focus-fallback="account"]'
       >
@@ -5751,13 +5851,7 @@ export default function App() {
                 </span>
               </div>
               <button
-                onClick={() => {
-                  setIsAuthModalOpen(false);
-                  setAuthError('');
-                  setAuthSuccess('');
-                  resumeSaveAfterAuthRef.current = false;
-                  resumeEditAfterAuthRef.current = false;
-                }}
+                onClick={dismissAuthModal}
                 aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -6274,24 +6368,24 @@ export default function App() {
                 </div>
               )}
 
-              {editError && (
-                // RED-DESKTOP-15/001: gated on `editErrorNeedsAuth` (set only
-                // where the failure is actually auth-shaped — a real 401),
-                // never on `!authToken`. A local owner's token is always
+              {(editError || deadSession === 'edit') && (
+                // RED-DESKTOP-15/001: gated on `editErrorNeedsAuth`/`deadSession`
+                // (set only where the failure is actually auth-shaped — a real
+                // 401), never on `!authToken`. A local owner's token is always
                 // falsy, so that predicate showed this invitation for every
                 // failure reason, not just an expired/missing session.
-                editErrorNeedsAuth ? (
+                // OPUS-REVIEW-DESKTOP17 N1: `deadSession === 'edit'` keeps
+                // this branch (and the persistent relabel below) showing
+                // across a close+reopen, even before `editError` is set
+                // again by a fresh attempt in the new session.
+                (deadSession === 'edit' || editErrorNeedsAuth) ? (
                   <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                     <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                     <div className="flex flex-col items-start gap-2">
-                      <span>{editError} Your changes will stay right here.</span>
+                      <span>{editError || 'Invalid or expired session.'} Your changes will stay right here.</span>
                       <button
                         type="button"
-                        onClick={() => {
-                          resumeEditAfterAuthRef.current = true;
-                          setIsEditModalOpen(false);
-                          setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
-                        }}
+                        onClick={() => beginNeedsAuthSignIn('edit')}
                         className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
                       >
                         Sign In / Sign Up
@@ -6316,7 +6410,11 @@ export default function App() {
                   disabled={editLoading}
                   className="bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
-                  {editLoading ? 'Saving...' : 'Save Changes'}
+                  {/* RED-DESKTOP-17/002: relabelled while deadSession==='edit'
+                      (persists across a reopen, unlike editErrorNeedsAuth) so
+                      the still-enabled button never reads as "just try
+                      again" — clicking it is gated to Sign In (above). */}
+                  {editLoading ? 'Saving...' : deadSession === 'edit' ? 'Sign In to Save' : 'Save Changes'}
                 </button>
               </div>
             </form>
@@ -6349,28 +6447,51 @@ export default function App() {
               </button>
             </div>
 
-            {saveError && (
-              // RED-DESKTOP-15/001: gated on `saveErrorNeedsAuth` (set only
-              // where the failure is actually auth-shaped — no account at
-              // all, or a real 401), never on `!authToken`. A local owner's
-              // token is always falsy, so that predicate showed this
-              // invitation for every failure reason, not just this one.
-              saveErrorNeedsAuth ? (
+            {(saveError || deadSession === 'save') && (
+              // RED-DESKTOP-15/001: gated on `saveErrorNeedsAuth`/`deadSession`
+              // (set only where the failure is actually auth-shaped — no
+              // account at all, or a real 401), never on `!authToken`. A
+              // local owner's token is always falsy, so that predicate
+              // showed this invitation for every failure reason, not just
+              // this one. OPUS-REVIEW-DESKTOP17 N1: `deadSession === 'save'`
+              // keeps this branch (and the persistent choice below) showing
+              // across a close+reopen, even before `saveError` is set again
+              // by a fresh attempt in the new session.
+              (deadSession === 'save' || saveErrorNeedsAuth) ? (
                 <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                   <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                   <div className="flex flex-col items-start gap-2">
-                    <span>{saveError} Your matrix, name and description will stay right here.</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        resumeSaveAfterAuthRef.current = true;
-                        setIsSaveModalOpen(false);
-                        setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
-                      }}
-                      className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
-                    >
-                      Sign In / Sign Up
-                    </button>
+                    <span>{saveError || 'Invalid or expired session.'} Your matrix, name and description will stay right here.</span>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => beginNeedsAuthSignIn('save')}
+                        className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                      >
+                        Sign In / Sign Up
+                      </button>
+                      {/* RED-DESKTOP-17/002: desktop only, and only a REAL
+                          local owner (isElectron && dbMode==='local') — the
+                          only shape where a save with no Authorization
+                          header actually lands somewhere real. Explicit
+                          choice, never the default: wording names the
+                          device library so it can't be mistaken for the
+                          account save the button next to it offers. Gated
+                          on `deadSession === 'save'` (OPUS F1), not
+                          `saveErrorNeedsAuth` — so a later validation error
+                          in the SAME dead session (e.g. an emptied name)
+                          cannot make this button vanish. */}
+                      {deadSession === 'save' && isElectron && dbMode === 'local' && (
+                        <button
+                          type="button"
+                          disabled={saveLoading}
+                          onClick={() => void handleSaveGameSubmit(null, { localConfirmed: true })}
+                          className="rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white/70 dark:bg-slate-900/40 px-2.5 py-1.5 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 transition hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 cursor-pointer"
+                        >
+                          {saveLoading ? 'Saving...' : 'Save on this device instead'}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -6613,7 +6734,11 @@ export default function App() {
                   disabled={saveLoading}
                   className="bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
-                  {saveLoading ? 'Saving...' : 'Save Game Profile'}
+                  {/* RED-DESKTOP-17/002: relabelled while deadSession==='save'
+                      (persists across a reopen, unlike saveErrorNeedsAuth) so
+                      the still-enabled button never reads as "just try
+                      again" — clicking it is gated to Sign In (above). */}
+                  {saveLoading ? 'Saving...' : deadSession === 'save' ? 'Sign In to Save' : 'Save Game Profile'}
                 </button>
               </div>
             </form>
