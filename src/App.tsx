@@ -2523,6 +2523,16 @@ export default function App() {
         method: 'DELETE',
         headers: authHeaders()
       });
+      // RED-DESKTOP-18/001: a DELETE that was in flight under a PREVIOUS
+      // identity (the user signed out and back in as a different account
+      // while it was held) is not this identity's business, whatever it
+      // says: its 401 used to alert "Invalid or expired session." to the
+      // account that is validly signed in, and refreshing the list from
+      // here would run this handler's stale closure (the OLD token) and
+      // clear the current account's list on the 401 that follows. Discard
+      // it outright, exactly as Save/Edit skip a stale-session response;
+      // `finally` still releases the row's deleting state.
+      if (authTokenRef.current !== requestToken) return;
       if (res.ok) {
         setUserCustomGames(prev => prev.filter(g => g.id !== gameId));
         if (activePreset === gameId) {

@@ -833,6 +833,38 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   check('the Save gate has a named escape for the explicit local-device choice (localConfirmed)',
     /!localConfirmed &&/.test(saveSlice));
 
+  // RED-DESKTOP-18/001: Delete has no dialog, so a response that lands AFTER
+  // the user signed out of A and back in as B (a request sent under A's
+  // token; B validly signed in) used to be handled as if it were B's — its
+  // 401 alerted B "Invalid or expired session." — and the first fix's
+  // "refresh the list instead" ran the handler's STALE closure (A's token),
+  // whose own 401 then cleared B's list (director's regression run of the
+  // red's harness). The invariant is the one Save/Edit already hold: a
+  // stale-identity response is discarded before it touches ANY state —
+  // before `res.ok`'s list edit, before the 404 refetch, before the helper.
+  const deleteSlice = app.slice(app.indexOf('const handleDeleteGame'), app.indexOf('const handleGenerateGame'));
+  const DELETE_STALE_GATE = 'if (authTokenRef.current !== requestToken) return;';
+  const gateIdx = deleteSlice.indexOf(DELETE_STALE_GATE);
+  const okIdx = deleteSlice.indexOf('if (res.ok)');
+  const helperIdx = deleteSlice.indexOf('handleDeadSessionResponse(res, requestToken)');
+  const fetchIdx = deleteSlice.indexOf('await fetch(');
+  check(`handleDeleteGame discards a stale-identity response before ANY state change (fetch@${fetchIdx} gate@${gateIdx} res.ok@${okIdx} helper@${helperIdx})`,
+    gateIdx !== -1 && okIdx !== -1 && helperIdx !== -1 && fetchIdx !== -1
+    && fetchIdx < gateIdx && gateIdx < okIdx && gateIdx < helperIdx);
+  check('handleDeleteGame captures the request identity before the fetch (requestToken = authToken)',
+    (() => { const i = deleteSlice.indexOf('const requestToken = authToken;'); return i !== -1 && i < fetchIdx; })());
+  // Mutation fixtures: the two ways this regresses — the gate removed (the
+  // original defect) and the gate moved below the helper (the alert is gone
+  // but the list edits and the 404 refetch run under the wrong identity).
+  const noGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '');
+  check('fixture: removing the stale-identity gate fails the discard check (precondition: the plant landed)',
+    noGate !== deleteSlice && noGate.indexOf(DELETE_STALE_GATE) === -1);
+  const lateGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '')
+    .replace('handleDeadSessionResponse(res, requestToken);', 'handleDeadSessionResponse(res, requestToken);\n        ' + DELETE_STALE_GATE);
+  const lateIdx = lateGate.indexOf(DELETE_STALE_GATE);
+  check('fixture: a gate placed after the helper fails the discard check (precondition: the plant landed)',
+    lateGate !== deleteSlice && lateIdx !== -1 && !(lateIdx < lateGate.indexOf('if (res.ok)')));
+
   // Known-positive fixtures (mutation: bypass -> fails by name): removing
   // the gate line entirely must be caught, by NAME, for each dialog.
   const editBypassed = editSlice.replace(new RegExp(`${editGatePattern.source}\\n\\s*`), '');
