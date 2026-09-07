@@ -15,11 +15,16 @@
  * end to end (confirmed by mutation: still 45/45 with real separations of
  * 38.8px/30.1px, both > 15). Only a source-level guard catches this class.
  *
- * The multiplier band (1.05, 1.2) is picked from measured geometry, not
- * guessed: the lower bound must clear the ~1x fragment-spread ceiling with
- * real margin; the upper bound must stay under the tightest genuine
- * separation actually observed (~1.25x on CONTROL) — k=1.5 (tried first)
- * sat ABOVE that and rejected known-good output.
+ * The multiplier band (0.65, 0.85) is picked from measured geometry, not
+ * guessed: the lower bound must clear the ~0.6x half-split ceiling with
+ * real margin (the size window already drops fragments smaller than 0.5x
+ * diag, so two surviving fragments of ONE glyph are near-halves whose
+ * centres sit at most ~0.6x diag apart); the upper bound must stay under
+ * the tightest genuine separation measured on the SHIPPING condition — the
+ * GitHub runner at dsf=1 reads 0.898x on CONTROL (CI run 34160015179, and
+ * identically on #164's green run 34147646705), where local dsf=2 reads
+ * 1.25x-1.47x. k=1.5 and k=1.1 (tried first, calibrated locally) both sat
+ * ABOVE the runner's genuine separations and rejected known-good output.
  *
  *   npx tsx src/separationbound.guard.test.ts
  */
