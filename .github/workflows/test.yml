@@ -433,7 +433,7 @@ jobs:
           COLORTERMS_RACE_PORT: '3182'
 
   e2e_smoke:
-    name: e2e smoke (${{ matrix.shard }}/28)
+    name: e2e smoke (${{ matrix.shard }}/29)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: build
@@ -442,7 +442,7 @@ jobs:
       # GitHub's "Re-run failed jobs" then re-runs only the failed matrix child.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
     steps:
       - uses: actions/checkout@v5
 
@@ -460,8 +460,37 @@ jobs:
           name: dist-e2e
           path: dist
 
-      - name: Install headless Chromium
-        run: npx playwright install --with-deps chromium
+      # §70/§75/§83 in smoke.mjs run a real WebKit case, not just chromium
+      # (CodeRabbit outside-diff on #166 — a skipped WebKit case must never
+      # print PASS; the workflow's job is to make sure it does not need to
+      # skip on this shard at all). Sections are packed into shards by
+      # MEASURED duration and can move, so the shard(s) needing WebKit are
+      # computed here from the same packing function (src/e2e/selection.js)
+      # rather than named by hand — e2esharding.test.ts asserts this list
+      # never falls out of sync with where §70/§75/§83 actually land.
+      - name: Determine whether this shard runs a WebKit-guarded section
+        id: webkit_need
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          # CodeRabbit: piping node straight into `if ... | grep` makes the
+          # `if` see grep's exit code, not node's — a webkit-shards.mjs crash
+          # (e.g. a renamed section) would silently fall through to the
+          # chromium-only branch instead of failing the job. Capture first so
+          # a non-zero node exit is caught explicitly. SHARD comes through
+          # env, not inline GitHub-expression interpolation into the script body.
+          if ! webkit_shards="$(node src/e2e/webkit-shards.mjs)"; then
+            echo "::error::webkit-shards.mjs failed to compute which shards need WebKit"
+            exit 1
+          fi
+          if printf '%s\n' "$webkit_shards" | grep -qx "$SHARD"; then
+            echo "browsers=chromium webkit" >> "$GITHUB_OUTPUT"
+          else
+            echo "browsers=chromium" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install headless browsers for this shard
+        run: npx playwright install --with-deps ${{ steps.webkit_need.outputs.browsers }}
 
       - name: Boot the production server and run the smoke suite
         # smoke.mjs retries only the failed named sections once. It never
@@ -481,7 +510,7 @@ jobs:
             echo "smoke_outcome=pass" >> "$GITHUB_OUTPUT"
           fi
         env:
-          E2E_SHARD: ${{ matrix.shard }}/28
+          E2E_SHARD: ${{ matrix.shard }}/29
           E2E_PORT: 309${{ matrix.shard }}
           E2E_BASE: http://localhost:309${{ matrix.shard }}
 
@@ -493,8 +522,8 @@ jobs:
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-28_section-*-attempt-*.png
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-28_section-*-attempt-*.html
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-29_section-*-attempt-*.png
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-29_section-*-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log
           retention-days: 7
           if-no-files-found: ignore
