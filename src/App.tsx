@@ -1196,6 +1196,25 @@ export default function App() {
     const el = e.currentTarget;
     logStuckRef.current[key] = el.scrollHeight - el.scrollTop - el.clientHeight <= LOG_BOTTOM_TOLERANCE_PX;
   }, []);
+  // CodeRabbit CLI (this review): the inline log's container is NOT stable
+  // across a render — `logBelow` (declared below) toggles which of two
+  // mutually exclusive branches renders it, so App.tsx's own layout switch
+  // unmounts the old container and mounts a brand-new one (native
+  // scrollTop=0) with nothing to correct it until the NEXT appended line.
+  // A callback ref fires the moment the new node mounts, so a bottom-pinned
+  // user (logStuckRef.current.inline already true, carried over in the ref
+  // object across the swap) is restored to the bottom immediately — but,
+  // UNLIKE mountLogRegion below, this does NOT force logStuckRef.current
+  // .inline to true on every mount: this remount is not a user-initiated
+  // "open" the way expanding the log is, and a user who had scrolled AWAY
+  // from the bottom when the layout happened to flip (e.g. the run
+  // converged mid-read) must not be snapped back to the bottom by the very
+  // re-render that is not about the log at all — that would reopen
+  // RED-APP-16/004 through a different door.
+  const mountInlineLogRegion = useCallback((el: HTMLDivElement | null) => {
+    logsContainerRef.current = el;
+    if (el && logStuckRef.current.inline) el.scrollTop = el.scrollHeight;
+  }, []);
   /** The "Expand log" button — <ModalSurface>'s opener-tracking already
    *  restores focus here on close via a real click/Enter; kept as the JSX
    *  ref target, not read by any effect any more. */
@@ -4327,7 +4346,7 @@ export default function App() {
         </button>
       </div>
       <div
-        ref={logsContainerRef}
+        ref={mountInlineLogRegion}
         tabIndex={0}
         role="region"
         aria-label="Simulation log"

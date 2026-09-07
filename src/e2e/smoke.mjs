@@ -6028,11 +6028,23 @@ try {
           // not a false pass).
           if (errorVisible) {
             await p.getByRole('button', { name: 'Retry' }).click();
+            // CodeRabbit CLI (this review): the old predicate tested
+            // document.body.innerText for a bare `5` ANYWHERE on the page —
+            // the panel also renders other numbers, user rows and dates,
+            // so an unrelated `5` could satisfy it while Total Users still
+            // showed the stale `1` (mocked verifiedUsers stays 1 in both
+            // responses, so the paired 1->5 change is only observable on
+            // Total Users specifically). Scoped to that one StatCard.
             const updated = await p.waitForFunction(
-              () => /\b5\b/.test(document.body.innerText) && /Total Users/i.test(document.body.innerText),
+              () => {
+                const labelEl = [...document.querySelectorAll('*')]
+                  .find((n) => n.children.length === 0 && /^total users$/i.test((n.textContent || '').trim()));
+                const card = labelEl?.closest('div')?.parentElement;
+                return /\b5\b/.test(card?.innerText || '');
+              },
               null, { timeout: 5000 },
             ).then(() => true).catch(() => false);
-            record('RED-APP-16/005 FIX: clicking Retry re-fetches and renders the UPDATED stat value (not a no-op)', updated);
+            record('RED-APP-16/005 FIX: clicking Retry re-fetches and renders the UPDATED Total Users value (not a no-op)', updated);
             const errorCleared = await p.getByText(/could not refresh the stats/i).isVisible().catch(() => false);
             record('RED-APP-16/005 FIX: a successful Retry clears the error banner', !errorCleared);
           }

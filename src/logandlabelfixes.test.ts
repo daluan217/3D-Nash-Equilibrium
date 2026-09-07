@@ -50,8 +50,8 @@ function openingTagAt(src: string, refIdx: number): string {
 // FINDING 007 — both the compact and expanded Simulation Log containers.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const compactIdx = app.indexOf('ref={logsContainerRef}');
-  ok(compactIdx > 0, 'the compact log container (logsContainerRef) must be found');
+  const compactIdx = app.indexOf('ref={mountInlineLogRegion}');
+  ok(compactIdx > 0, 'the compact log container (mountInlineLogRegion) must be found');
   const compactTag = openingTagAt(app, compactIdx);
   ok(/tabIndex=\{0\}/.test(compactTag), `the compact log container's OWN opening tag must carry tabIndex={0}, got: ${JSON.stringify(compactTag)}`);
   ok(/role="region"/.test(compactTag), 'the compact log container must carry role="region" (a bare div does not support an accessible name)');
@@ -172,7 +172,7 @@ function openingTagAt(src: string, refIdx: number): string {
   // Both log containers wire up the scroll listener that keeps
   // logStuckRef current — isolate each container's OWN opening tag (not a
   // descendant's) the same way FINDING 007's checks above do.
-  const inlineIdx = app.indexOf('ref={logsContainerRef}');
+  const inlineIdx = app.indexOf('ref={mountInlineLogRegion}');
   const inlineTag = openingTagAt(app, inlineIdx);
   ok(/onScroll=\{handleLogScroll\('inline'\)\}/.test(inlineTag),
     `the inline log container must wire up handleLogScroll('inline'), got: ${JSON.stringify(inlineTag)}`);
@@ -207,6 +207,45 @@ function openingTagAt(src: string, refIdx: number): string {
   ok(mutatedEffectBody !== effectBody, 'mutation-test precondition: the guarded assignment must be found and strippable');
   ok(!/if \(container && logStuckRef\.current\[key\]\) container\.scrollTop = container\.scrollHeight;/.test(mutatedEffectBody),
     'mutation-test: restoring the unconditional scrollTop assignment must be caught (the guarded-assignment check above must fail on it)');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CodeRabbit CLI (round16 review of #167): the inline log's container is NOT
+// stable across a render — `logBelow` toggles which of two mutually
+// exclusive branches renders it, unmounting the old container and mounting a
+// brand-new one (native scrollTop=0) with nothing to correct it until the
+// NEXT appended line. Fixed with a callback ref (mountInlineLogRegion,
+// mirroring mountLogRegion's shape) that restores the bottom on mount IF the
+// container was already stuck — but, UNLIKE mountLogRegion, must NOT force
+// logStuckRef.current.inline to true unconditionally: this remount is not a
+// user-initiated "open" the way expanding the log is, and forcing it would
+// snap a user who had deliberately scrolled away back to the bottom on an
+// unrelated layout change (reopening RED-APP-16/004 through a different
+// door). Mutation: making this unconditional (matching mountLogRegion's own
+// shape) must be caught.
+{
+  const inlineMountIdx = app.indexOf('const mountInlineLogRegion = useCallback');
+  ok(inlineMountIdx > 0, 'mountInlineLogRegion must be found');
+  const inlineMountBody = app.slice(inlineMountIdx, app.indexOf('}, []);', inlineMountIdx));
+  ok(/if \(el && logStuckRef\.current\.inline\) el\.scrollTop = el\.scrollHeight;/.test(inlineMountBody),
+    `mountInlineLogRegion must restore the bottom on mount ONLY when logStuckRef.current.inline is already true (not unconditionally), got: ${JSON.stringify(inlineMountBody)}`);
+  ok(!/logStuckRef\.current\.inline = true;/.test(inlineMountBody),
+    'mountInlineLogRegion must NOT force logStuckRef.current.inline to true on mount (unlike mountLogRegion) — this remount is not a user-initiated "open"');
+
+  const inlineRefIdx = app.indexOf('ref={mountInlineLogRegion}');
+  ok(inlineRefIdx > 0, 'the inline log container\'s own div must use the mountInlineLogRegion callback ref');
+
+  // MUTATION TEST — reverting to the unconditional "always reset + always
+  // scroll" shape (mountLogRegion's own shape, wrong for a non-"open"
+  // remount) must be caught by the two checks above.
+  const mutatedInline = inlineMountBody.replace(
+    'if (el && logStuckRef.current.inline) el.scrollTop = el.scrollHeight;',
+    'logStuckRef.current.inline = true;\n    el.scrollTop = el.scrollHeight;',
+  );
+  ok(mutatedInline !== inlineMountBody, 'mutation-test precondition: the conditional restore must be found and strippable');
+  ok(!/if \(el && logStuckRef\.current\.inline\) el\.scrollTop = el\.scrollHeight;/.test(mutatedInline)
+    && /logStuckRef\.current\.inline = true;/.test(mutatedInline),
+    'mutation-test: reverting to an unconditional reset (like mountLogRegion) must be caught — the two checks above must fail on it');
 }
 
 console.log(`logandlabelfixes.test.ts: ${checks} checks passed`);

@@ -629,6 +629,12 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   ok(/onClick=\{\(\) => fetchStats\(password\)\}/.test(authedBranchHead),
     'the authed branch\'s error banner must offer a Retry that calls fetchStats(password) again');
   ok(/Retry/.test(authedBranchHead), 'the authed branch\'s error banner must be labelled Retry');
+  // CodeRabbit CLI (this review): a plain <span>{error}</span> has no
+  // live-region semantics — a screen reader only discovers the message if
+  // it happens to already have focus inside the banner. role="alert" makes
+  // it announced the moment it appears.
+  ok(/<span role="alert">\{error\}<\/span>/.test(authedBranchHead),
+    `the authed branch's error banner must announce via role="alert", got: ${JSON.stringify(authedBranchHead)}`);
 
   // ── MUTATION TEST — removing the authed branch's error banner (leaving
   //    the 401-reset fix in place) must be caught: a 429/network failure
@@ -641,6 +647,14 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   const mutatedHead = mutatedAdmin.slice(authedBranchStart, mutatedAdmin.indexOf('<StatCard icon=', authedBranchStart));
   ok(!/\{error && \(/.test(mutatedHead),
     'mutation-test: removing the authed branch\'s error banner must be caught by the check above');
+
+  // MUTATION TEST — dropping role="alert" (leaving the rest of the banner
+  // intact) must be caught by the check above, independent of the
+  // banner-removal mutation.
+  const noAlertHead = authedBranchHead.replace('<span role="alert">{error}</span>', '<span>{error}</span>');
+  ok(noAlertHead !== authedBranchHead, 'mutation-test precondition: role="alert" must be found and strippable');
+  ok(!/<span role="alert">\{error\}<\/span>/.test(noAlertHead),
+    'mutation-test: dropping role="alert" from the authed branch\'s error banner must be caught by the check above');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);
