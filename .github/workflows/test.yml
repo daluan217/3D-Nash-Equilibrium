@@ -478,7 +478,7 @@ jobs:
           # (e.g. a renamed section) would silently fall through to the
           # chromium-only branch instead of failing the job. Capture first so
           # a non-zero node exit is caught explicitly. SHARD comes through
-          # env, not inline `${{ }}` interpolation into the script body.
+          # env, not inline GitHub-expression interpolation into the script body.
           if ! webkit_shards="$(node src/e2e/webkit-shards.mjs)"; then
             echo "::error::webkit-shards.mjs failed to compute which shards need WebKit"
             exit 1
