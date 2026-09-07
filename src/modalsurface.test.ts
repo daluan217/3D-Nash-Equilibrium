@@ -599,17 +599,30 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // branch instead of being silently dropped.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  ok(/if \(res\.status === 401\) \{\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setStats\(null\); setPassword\(''\);\s*\n\s*setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);\s*\n\s*setLoading\(false\);\s*\n\s*return;\s*\n\s*\}/.test(admin),
+  // CodeRabbit CLI (this review): both checks used to test the WHOLE
+  // `admin` (file) source — they would pass even if `fetchStats` lost this
+  // branch entirely, so long as some OTHER handler in the file happened to
+  // contain byte-identical text. Scoped to `fetchStats`'s own body
+  // (from its declaration to the sibling `const StatCard =` that follows
+  // it), the same isolation technique the authed-branch error-banner check
+  // above already uses.
+  const fetchStatsIdx = admin.indexOf('const fetchStats = async (secret: string) => {');
+  ok(fetchStatsIdx > 0, 'fetchStats must be found');
+  const fetchStatsEnd = admin.indexOf('const StatCard = ', fetchStatsIdx);
+  ok(fetchStatsEnd > fetchStatsIdx, 'the StatCard declaration after fetchStats must be found (used to isolate fetchStats\'s own body)');
+  const fetchStatsBody = admin.slice(fetchStatsIdx, fetchStatsEnd);
+
+  ok(/if \(res\.status === 401\) \{\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setStats\(null\); setPassword\(''\);\s*\n\s*setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);\s*\n\s*setLoading\(false\);\s*\n\s*return;\s*\n\s*\}/.test(fetchStatsBody),
     'a 401 in fetchStats must bump requestGenRef and reset authed/stats/password — mirroring Sign-out\'s own reset — while KEEPING an error message (Sign-out itself clears it) so the password prompt explains why the panel signed back out; the message must be wasAuthed-conditioned so a Refresh 401 does not blame a password the user never typed (RED-APP-16/005, OPUS-REVIEW-APP16 N-2)');
   // MUTATION TEST — collapsing the wasAuthed branch back to a bare
   // 'Incorrect password.' (OPUS-REVIEW-APP16 N-2's exact defect) must fail.
   {
-    const mutatedAdmin401 = admin.replace(
+    const mutatedBody = fetchStatsBody.replace(
       "setError(wasAuthed ? 'Your admin session is no longer valid. Sign in again.' : 'Incorrect password.');",
       "setError('Incorrect password.');",
     );
-    ok(mutatedAdmin401 !== admin, 'mutation-test precondition: the wasAuthed-conditioned 401 message must be found and strippable');
-    ok(!/setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);/.test(mutatedAdmin401),
+    ok(mutatedBody !== fetchStatsBody, 'mutation-test precondition: the wasAuthed-conditioned 401 message must be found and strippable');
+    ok(!/setError\(wasAuthed \? 'Your admin session is no longer valid\. Sign in again\.' : 'Incorrect password\.'\);/.test(mutatedBody),
       'mutation-test: collapsing the 401 message back to unconditional "Incorrect password." must be caught by the check above');
   }
 
