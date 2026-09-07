@@ -252,6 +252,19 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   check('Save dialog error render gates on saveErrorNeedsAuth', /saveErrorNeedsAuth \? \(/.test(app));
   check('Edit dialog error render gates on editErrorNeedsAuth', /editErrorNeedsAuth \? \(/.test(app));
 
+  // CodeRabbit on #158 (outside-diff, 73e5fba): `if (!editGameId ||
+  // !canOwnGames) return;` was a SILENT no-op if the token died while the
+  // Edit dialog stayed open — resubmitting did nothing, no banner. The
+  // handler's own `!canOwnGames` branch must set BOTH the message and the
+  // flag, same as handleSaveGameSubmit's preflight.
+  {
+    const editFnStart = app.indexOf('const handleEditGameSubmit');
+    const editFnSlice = app.slice(editFnStart, editFnStart + 700);
+    check("handleEditGameSubmit's own !canOwnGames branch sets both editError and editErrorNeedsAuth(true), not a silent return",
+      /if \(!canOwnGames\) \{[^}]*setEditError\([^}]*setEditErrorNeedsAuth\(true\)/.test(editFnSlice),
+      editFnSlice.replace(/\s+/g, ' ').slice(0, 160));
+  }
+
   // OPUS-REVIEW-DESKTOP N5: a bare COUNT comparison passes if an unpaired
   // non-empty setter is added anywhere and an extra flag call is added
   // anywhere else, and misreads `setSaveError("")` (double quotes) or a

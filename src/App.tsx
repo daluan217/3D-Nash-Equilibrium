@@ -2086,7 +2086,16 @@ export default function App() {
 
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editGameId || !canOwnGames) return;
+    if (!editGameId) return;
+    // CodeRabbit on #158 (outside-diff, 73e5fba): a silent no-op here left the
+    // dialog open with no feedback if the token died (401) WHILE it was open —
+    // the user edits and resubmits, canOwnGames is now false, and nothing
+    // happens. Same shape as the Save preflight (handleSaveGameSubmit, below): surface the invitation.
+    if (!canOwnGames) {
+      setEditError('Sign in or create an account to save changes.');
+      setEditErrorNeedsAuth(true);
+      return;
+    }
     if (!cleanText(editName)) { setEditError('Please enter a game name.'); setEditErrorNeedsAuth(false); return; }
     const orig = editOriginalRef.current;
     const same = (x: readonly string[], y: readonly string[]) => x.length === y.length && x.every((v, i) => v === y[i]);
