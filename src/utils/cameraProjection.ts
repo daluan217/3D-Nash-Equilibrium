@@ -262,7 +262,9 @@ export function shouldCollapseComponentAtCamera(
 // isolation (fresh page per marker, RED-MATH-16/17's own method) at BOTH
 // RED-MATH-17/001's fixture (CAMERA.overview, real 320px-mobile viewport)
 // and RED-MATH-16/001's fixture (az105, 700x500) — all 6 markers (3 per
-// fixture) land within 0.3 CSS px of this formula's prediction, camera- and
+// fixture) land within 0.4 CSS px of this formula's prediction (OPUS-REVIEW-
+// MATH17 N-1: independently re-derived, worst residual 0.357px, not 0.3 as
+// first stated — still sub-pixel, the conclusion holds), camera- and
 // viewport-independent. The two known-gap real-pixel disagreements this
 // module previously could not resolve are gone at the camera/viewport that
 // exposed them (see the new real-pixel e2e rows, smoke.mjs #71).

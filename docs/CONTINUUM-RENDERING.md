@@ -219,7 +219,12 @@ real-pixel agreement count (`testDynamicCollapseAgreesWithRealPixels`'s own
 BLUE-MATH-17 (below) and will stay open until this specific Node-only test gets a live
 browser**, for the reason explained there: this is the STATIC 24-azimuth PROPERTY SWEEP
 (`payoffhonesty.test.ts`, no browser in the process at all), which cannot use the exact
-live-matrix projection — only the RUNTIME (the actual browser) can.
+live-matrix projection — only the RUNTIME (the actual browser) can. **OPUS-REVIEW-MATH17
+N-3: this sweep, and `FOCAL` itself, are a guard on the FALLBACK path only** — sampled
+across every reachable app state (first paint, payoff edits, container/window resizes,
+camera relayouts), the runtime never once fell back to the estimator once gl-plot3d had
+rendered a frame. Do not re-tune `FOCAL` against this sweep expecting it to change what
+ships; it governs the pre-first-render window only.
 
 **The FOCAL/lookAt estimate is superseded at RUNTIME by an exact live-camera projection
 (BLUE-MATH-17, RED-MATH-17/001 + RED-MATH-16/001, FIXED).** Both of those findings were
@@ -238,13 +243,22 @@ is not a focal-length error.
 `src/utils/cameraProjection.ts`'s `projectPointExact` instead projects through the LIVE
 gl3d camera matrices Plotly itself computed for the frame on screen
 (`gd._fullLayout.scene._scene.glplot.cameraParams` — model/view/projection — plus
-`scene._scene.dataScale` and `glplot.shape`/`pixelRatio`), wired into
-`PlotlyView.tsx`'s `applyContinuumCollapseAtCamera` as the PRIMARY runtime decision path;
-the FOCAL/lookAt estimate remains only as the pre-first-render fallback (before gl-plot3d
-has drawn a frame — `gd.dataset.continuumProjectionPath` records which path decided).
-Verified against real per-marker isolation to within 0.3 CSS px at both fixtures'
-cameras/viewports (round16/notes/BLUE-MATH-17/) and against real rendered pixels in the
-actual e2e harness (smoke.mjs section 71's two new rows). **This fix does NOT reach the
+`scene._scene.dataScale` and `glplot.shape`/`pixelRatio`), gated on the shape ACTUALLY
+matching the plot DIV's current box (OPUS-REVIEW-MATH17 FBM-1: `glplot.shape` can be stale
+mid-resize, or in some rendering environments not update from a bare `Plots.resize` call
+at all — precise math on a stale viewport is worse than the estimate on the current one,
+so the exact path is refused, not merely delayed, whenever freshness cannot be confirmed),
+wired into `PlotlyView.tsx`'s `applyContinuumCollapseAtCamera` as the PRIMARY runtime
+decision path. **The FOCAL/lookAt estimate is fallback-only** — before gl-plot3d has drawn
+a first frame, or whenever the live shape is not (yet) confirmed fresh —
+`gd.dataset.continuumProjectionPath` records which path decided, and OPUS-REVIEW-MATH17's
+own sampling (first paint, after payoff edits, after container/window resizes, after camera
+relayouts, at 1280x900 and 320x700) never observed `"estimate"` once: **the estimator
+governs no decision this app currently ships**, and the static sweep below is a guard ON
+THAT FALLBACK, not on the live product path — do not re-tune `FOCAL` to move it.
+Verified against real per-marker isolation to within 0.4 CSS px (worst measured residual
+0.357px) at both fixtures' cameras/viewports (round16/notes/BLUE-MATH-17/) and against real
+rendered pixels in the actual e2e harness (smoke.mjs section 71's rows). **This fix does NOT reach the
 STATIC 24-azimuth Node-only sweep above** (`testDynamicCollapseAgreesWithRealPixels`
 stays 18/24 agree, 4/24 under-collapse, 2/24 over-collapse — unchanged, not regressed):
 that test runs with no browser process at all, so `cameraParams`/`dataScale` do not exist
