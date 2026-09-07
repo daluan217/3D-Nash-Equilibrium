@@ -711,13 +711,35 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     return out;
   }
 
+  /** Every `id=` VALUE (literal or `{expr}`) anywhere in `src` — used to
+   *  check that an `htmlFor=` actually names a real id, not just that the
+   *  attribute is present (CodeRabbit CLI, this review: "An id alone does
+   *  not give an input an accessible name... a label with
+   *  htmlFor="missing" also passes"). */
+  function collectIdValues(src: string): Set<string> {
+    return new Set([...src.matchAll(/\bid=(?:"([^"]+)"|\{([^}]+)\})/g)].map((m) => (m[1] ?? m[2]).trim()));
+  }
+  /** Every `htmlFor=` VALUE anywhere in `src`, same shape as above. */
+  function collectHtmlForValues(src: string): Set<string> {
+    return new Set([...src.matchAll(/\bhtmlFor=(?:"([^"]+)"|\{([^}]+)\})/g)].map((m) => (m[1] ?? m[2]).trim()));
+  }
+
   /** Every `<label ...>` tag in `src` with no `htmlFor` AND no control
-   *  (input/select/textarea) nested before its own `</label>`. */
+   *  (input/select/textarea) nested before its own `</label>` — OR an
+   *  `htmlFor` whose value does not match any `id=` anywhere in the file
+   *  (a dangling/mismatched pair, CodeRabbit CLI this review). */
   function unassociatedLabels(rawSrc: string): string[] {
     const src = stripComments(rawSrc);
+    const idValues = collectIdValues(src);
     const violations: string[] = [];
     for (const { attrs, index, end } of openTags(src, ['label'])) {
-      if (/\bhtmlFor=/.test(attrs)) continue;
+      const hfMatch = attrs.match(/\bhtmlFor=(?:"([^"]+)"|\{([^}]+)\})/);
+      if (hfMatch) {
+        const hfValue = (hfMatch[1] ?? hfMatch[2]).trim();
+        if (idValues.has(hfValue)) continue;
+        violations.push(`<label${attrs}> at offset ${index} has htmlFor=${JSON.stringify(hfValue)} but no matching id= anywhere in the file (dangling)`);
+        continue;
+      }
       const bodyStart = end;
       const bodyEnd = src.indexOf('</label>', bodyStart);
       const body = bodyEnd > 0 ? src.slice(bodyStart, bodyEnd) : src.slice(bodyStart, bodyStart + 400);
@@ -728,23 +750,35 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   }
 
   /** Every `<input .../>`/`<textarea ...>` opening tag that carries
-   *  `placeholder=` but no `aria-label=`/`aria-labelledby=`/`id=` — i.e.
-   *  nothing that COULD be a real accessible name besides the placeholder
-   *  hint. A non-empty `id=` is accepted at face value here (not required to
-   *  find its `htmlFor=` pair in the same file): `DescriptionEditor`'s
-   *  textarea forwards a caller-supplied `id` prop, so the pairing lives in
-   *  the CALLER's file, not this one — cross-file, which a per-file walker
-   *  cannot see. The real association is instead checked directly below,
-   *  by name, for both `DescriptionEditor` call sites and its own forwarded
-   *  `id` — narrower than a generic walk, but exact rather than guessed. */
+   *  `placeholder=` but no `aria-label=`/`aria-labelledby=`, and either no
+   *  `id=` at all, or an `id=` whose value does not match any `htmlFor=`
+   *  anywhere in the file (dangling/mismatched, CodeRabbit CLI this
+   *  review) — i.e. nothing that COULD be a real accessible name besides
+   *  the placeholder hint.
+   *
+   *  The one exception: `id={id}` — the EXACT shape `DescriptionEditor`'s
+   *  textarea uses to forward a caller-supplied `id` PROP (its own file
+   *  never contains the literal `labelFor(...)` value the caller passes,
+   *  so it can never match any `htmlFor=` collected from THIS file — that
+   *  pairing is cross-file, checked directly below by name for both call
+   *  sites and the forwarded prop). Nothing else spells its own id value
+   *  as the bare identifier `id`, so this exception cannot mask a real
+   *  dangling id. */
   function placeholderOnlyControls(rawSrc: string): string[] {
     const src = stripComments(rawSrc);
+    const htmlForValues = collectHtmlForValues(src);
     const violations: string[] = [];
     for (const { tag, attrs, index } of openTags(src, ['input', 'textarea'])) {
       if (!/\bplaceholder=/.test(attrs)) continue;
       if (/\baria-label=|\baria-labelledby=/.test(attrs)) continue;
       const idMatch = attrs.match(/\bid=(?:"([^"]+)"|\{([^}]+)\})/);
-      if (idMatch) continue;
+      if (idMatch) {
+        const idValue = (idMatch[1] ?? idMatch[2]).trim();
+        if (idValue === 'id') continue; // DescriptionEditor's forwarded-prop shape
+        if (htmlForValues.has(idValue)) continue;
+        violations.push(`<${tag}${attrs}> at offset ${index} has id=${JSON.stringify(idValue)} but no matching htmlFor= anywhere in the file (dangling)`);
+        continue;
+      }
       violations.push(`<${tag}${attrs}> at offset ${index} has placeholder but no aria-label/aria-labelledby/id`);
     }
     return violations;
@@ -773,6 +807,17 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     'fixture: placeholder AFTER an arrow-function handler must still be flagged (the AdminDashboard/Go-to-step shape)');
   ok(placeholderOnlyControls('<input onChange={e => setX(e.target.value)} id="a" placeholder="x" /><label htmlFor="a">Name</label>').length === 0,
     'fixture: the same handler-then-placeholder shape, but WITH a real htmlFor-linked id, must NOT be flagged');
+
+  // CodeRabbit CLI (this review): "An id alone does not give an input an
+  // accessible name... a label with htmlFor="missing" also passes" — both
+  // checkers must verify the VALUE matches, not just that either attribute
+  // is merely present.
+  ok(unassociatedLabels('<label htmlFor="missing">Name</label><input id="a" />').length === 1,
+    'fixture: a label htmlFor pointing at an id that does not exist anywhere in the file must be flagged (dangling htmlFor)');
+  ok(placeholderOnlyControls('<input id="missing" placeholder="x" /><label htmlFor="a">Name</label>').length === 1,
+    'fixture: a placeholder input\'s id pointing at an htmlFor that does not exist anywhere in the file must be flagged (dangling id)');
+  ok(placeholderOnlyControls('<input id={id} placeholder="x" />').length === 0,
+    'fixture: id={id} — DescriptionEditor\'s own forwarded-prop shape — must NOT be flagged even though nothing in ITS file names that value (checked cross-file, by name, below)');
 
   // ── The real tree: walk every src/**/*.tsx file, both checkers, 0 violations. ──
   function walkTsx(dir: string): string[] {
