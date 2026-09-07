@@ -232,6 +232,13 @@ assert.match(e2eSmokeJob, /if ! webkit_shards="\$\(node src\/e2e\/webkit-shards\
   'the e2e_smoke job must decide per-shard WebKit installation FROM webkit-shards.mjs, not a hand-written shard list, and must capture its exit code explicitly (a piped `if node ... | grep` reads grep\'s exit code, not node\'s, and silently falls back to chromium-only on a script crash)');
 assert.match(e2eSmokeJob, /grep -qx "\$SHARD"/,
   'the shard number must reach the script via env (SHARD), not inline `${{ }}` interpolation into the run body');
+// CodeRabbit: the check above only pins that the SCRIPT reads $SHARD — not
+// that the step's `env:` block actually assigns it from matrix.shard. A step
+// that renamed/dropped that env mapping would still match "grep -qx \"$SHARD\""
+// (an always-unset/empty variable) while every shard silently installs
+// chromium only.
+assert.match(e2eSmokeJob, /id: webkit_need\s*\n\s*env:\s*\n\s*SHARD:\s*\$\{\{ matrix\.shard \}\}/,
+  'the webkit_need step\'s env: block must assign SHARD from matrix.shard, not just be read by the script');
 // OPUS-REVIEW-WEBKIT N3: the earlier assertions pin the `if !` capture, the
 // `grep -qx "$SHARD"` match, and that the install step CONSUMES
 // `steps.webkit_need.outputs.browsers` — but never that the POSITIVE branch

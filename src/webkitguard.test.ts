@@ -95,8 +95,14 @@ if (recordSkipMatch) {
 // fail computation (a skip has pass: null, which `!pass` would wrongly count
 // as a failure if summed in with the scored set).
 const summaryMatch = /const finalResults = results\.filter[\s\S]*?process\.exit\(fails\.length \? 1 : 0\);/.exec(smoke);
+// CodeRabbit: checking that `scored` excludes skips is not enough on its own
+// — a mutant that keeps `scored` correct but computes `fails` from
+// `finalResults` (or any set other than `scored`) would still pass this
+// check while skips are right back in the fail tally. Pin both halves.
 check('the final summary computes a scored set that excludes skips before computing fails',
-  !!summaryMatch && /scored = finalResults\.filter\(\(result\) => !result\.skip\)/.test(summaryMatch[0]));
+  !!summaryMatch
+    && /scored = finalResults\.filter\(\(result\) => !result\.skip\)/.test(summaryMatch[0])
+    && /\bfails\s*=\s*scored\.filter\(/.test(summaryMatch[0]));
 
 // A skip must not make runSection's per-section pass/fail (and therefore its
 // retry decision) treat the section as failed — `result.pass` alone is
