@@ -460,8 +460,25 @@ jobs:
           name: dist-e2e
           path: dist
 
-      - name: Install headless Chromium
-        run: npx playwright install --with-deps chromium
+      # §70/§75/§83 in smoke.mjs run a real WebKit case, not just chromium
+      # (CodeRabbit outside-diff on #166 — a skipped WebKit case must never
+      # print PASS; the workflow's job is to make sure it does not need to
+      # skip on this shard at all). Sections are packed into shards by
+      # MEASURED duration and can move, so the shard(s) needing WebKit are
+      # computed here from the same packing function (src/e2e/selection.js)
+      # rather than named by hand — e2esharding.test.ts asserts this list
+      # never falls out of sync with where §70/§75/§83 actually land.
+      - name: Determine whether this shard runs a WebKit-guarded section
+        id: webkit_need
+        run: |
+          if node src/e2e/webkit-shards.mjs | grep -qx "${{ matrix.shard }}"; then
+            echo "browsers=chromium webkit" >> "$GITHUB_OUTPUT"
+          else
+            echo "browsers=chromium" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install headless browsers for this shard
+        run: npx playwright install --with-deps ${{ steps.webkit_need.outputs.browsers }}
 
       - name: Boot the production server and run the smoke suite
         # smoke.mjs retries only the failed named sections once. It never

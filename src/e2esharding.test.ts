@@ -11,6 +11,7 @@ import {
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
 import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
+import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -153,6 +154,38 @@ assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface\]/,
   'the required e2e context must aggregate both smoke and AI-surface jobs');
 assert.match(workflow, new RegExp(`e2e_smoke_failure_shard-\\$\\{\\{ matrix\\.shard \\}\\}-of-${SHARD_COUNT}_section-\\*-attempt-\\*\\.png`),
   'failure evidence must retain every section attempt and remain unique per matrix child');
+
+// ── BLUE-WEBKIT-CI: WebKit must actually run on the runner ──────────────────
+// §70/§75/§83 launch WebKit (CodeRabbit outside-diff on #166 — a skipped
+// WebKit case must never print PASS). Every registered WebKit section id
+// must still exist and be assigned a shard by the CURRENT packing, and the
+// e2e_smoke job must install WebKit conditionally FROM webkit-shards.mjs
+// (not a hand-named shard list, which would silently go stale the next time
+// shard-timings.json is remeasured or a section is added/split).
+for (const id of WEBKIT_SECTION_IDS) {
+  assert(definitions.some((d) => d.id === id), `webkit-shards.mjs names section ${id}, which no longer exists in smoke.mjs`);
+}
+const webkitShards = shardsNeedingWebkit(smoke);
+assert(webkitShards.length > 0, 'at least one shard must be computed as needing WebKit');
+for (const shard of webkitShards) {
+  assert(shard >= 1 && shard <= SHARD_COUNT, `webkit-shards.mjs computed an out-of-range shard ${shard}`);
+}
+// Cross-check against the packing computed directly here (not merely that
+// webkit-shards.mjs runs without throwing): every WEBKIT_SECTION_IDS entry's
+// OWN assigned shard (from this file's own `definitions`/`assignShards` call
+// above) must appear in webkitShards, and nothing else may sneak in.
+const expectedWebkitShards = [...new Set(
+  WEBKIT_SECTION_IDS.map((id) => definitions.find((d) => d.id === id)?.shard),
+)].sort((a, b) => (a ?? 0) - (b ?? 0));
+assert.deepStrictEqual(webkitShards, expectedWebkitShards,
+  'webkit-shards.mjs must compute exactly the shards §70/§75/§83 are packed into — no more, no less');
+const e2eSmokeJob = workflowJob('e2e_smoke');
+assert.match(e2eSmokeJob, /node src\/e2e\/webkit-shards\.mjs \| grep -qx "\$\{\{ matrix\.shard \}\}"/,
+  'the e2e_smoke job must decide per-shard WebKit installation FROM webkit-shards.mjs, not a hand-written shard list');
+assert.match(e2eSmokeJob, /playwright install --with-deps \$\{\{ steps\.webkit_need\.outputs\.browsers \}\}/,
+  'the e2e_smoke job must install exactly the browser set webkit_need computed');
+assert.doesNotMatch(e2eSmokeJob, /playwright install --with-deps chromium\s*$/m,
+  'the e2e_smoke job must not fall back to an unconditional chromium-only install (that would silently skip WebKit again)');
 
 assert.match(workflow, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'the throwaway CI artifact must use the short client timeout');

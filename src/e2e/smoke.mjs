@@ -30,6 +30,14 @@ function record(name, pass, detail) {
   results.push({ name, pass, detail, sectionId: activeSection?.id ?? null, attempt: activeAttempt });
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
+// A skipped check (an engine genuinely unavailable outside CI) is neither a
+// PASS nor a FAIL: `skip: true` excludes it from the pass/fail tally the
+// final summary computes, and it prints its own SKIP line so it can never be
+// read back as a passing check (CodeRabbit outside-diff on #166).
+function recordSkip(name, detail) {
+  results.push({ name, pass: null, skip: true, detail, sectionId: activeSection?.id ?? null, attempt: activeAttempt });
+  console.log(`SKIP ${name}${detail ? ' — ' + detail : ''}`);
+}
 
 // Shards are not named here: selection.js packs sections into shards from the
 // MEASURED durations in shard-timings.json (longest-first), so a new section
@@ -140,6 +148,30 @@ async function newTrackedPage(opts) {
   return trackPage(await browser.newPage(opts));
 }
 
+/**
+ * The single WebKit-launch site for every section that runs a chromium
+ * control plus a WebKit case (CodeRabbit outside-diff on #166,
+ * smoke.mjs:6647 — "Do not mark skipped WebKit coverage as passing"). CI
+ * installs WebKit for the shards that hold these sections (test.yml,
+ * scripts/webkit-shards.mjs), so a launch failure THERE is a real CI defect,
+ * not an environment quirk — it fails the section. Outside CI (a laptop
+ * without WebKit installed) it is a genuine SKIP, reported by `recordSkip`
+ * and counted separately in the summary, never folded into "checks passed".
+ */
+async function launchWebkitOrSkip(label) {
+  try {
+    return { webkitAvailable: true, webkitBrowser: await webkit.launch() };
+  } catch (e) {
+    const detail = String(e?.message ?? e).slice(0, 200);
+    if (process.env.CI) {
+      record(`[${label}] webkit failed to launch in CI — this shard installs webkit and must run it`, false, detail);
+    } else {
+      recordSkip(`[${label}] webkit unavailable in this environment — chromium ran, webkit case skipped`, detail);
+    }
+    return { webkitAvailable: false, webkitBrowser: null };
+  }
+}
+
 const page = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
 page.setDefaultTimeout(120000);
 page.setDefaultNavigationTimeout(120000);
@@ -189,7 +221,11 @@ async function runSection(definition, attempt) {
       'section returned without calling record()');
     attemptResults = results.slice(resultStart);
   }
-  const passed = attemptResults.length > 0 && attemptResults.every((result) => result.pass);
+  // A skip (`recordSkip`, pass: null) is neither a pass nor a failure — it
+  // must not force a section retry or mark it SECTION-FAIL, or a WebKit skip
+  // outside CI would burn a full retry (double the section's wall time) for
+  // no reason and, worse, capture failure evidence for a non-failure.
+  const passed = attemptResults.length > 0 && attemptResults.every((result) => result.skip || result.pass);
   finalAttemptBySection.set(definition.id, attempt);
   console.log(`SECTION-${passed ? 'PASS' : 'FAIL'} ${definition.id} ${definition.name} (${Date.now() - startedAt}ms)`);
   if (!passed) await captureFailureEvidence();
@@ -4972,9 +5008,7 @@ try {
       body: JSON.stringify({ name: n, description: 'opener tracking check', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) }), [gameName, token]);
     await seedCtx.close().catch(() => {});
 
-    let webkitAvailable = true;
-    let webkitBrowser = null;
-    try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
+    const { webkitAvailable, webkitBrowser } = await launchWebkitOrSkip('§70');
     try {
       for (const [label, engineCtx] of [
         ['chromium (control)', await browser.newContext({ viewport: { width: 1280, height: 900 } })],
@@ -5121,7 +5155,6 @@ try {
     } finally {
       if (webkitBrowser) await webkitBrowser.close().catch(() => {});
     }
-    if (!webkitAvailable) record('webkit unavailable in this environment — chromium control ran, webkit case skipped', true, 'guarded per brief');
 
     // ── Part C: OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2 — the expanded log must
     // still open scrolled to the NEWEST lines, not the top. `mountLogRegion`'s
@@ -5682,8 +5715,7 @@ try {
       return a;
     };
 
-    let webkitAvailable = true; let webkitBrowser = null;
-    try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
+    const { webkitAvailable, webkitBrowser } = await launchWebkitOrSkip('§75');
     try {
       for (const [label, engineCtx] of [
         ['chromium', await browser.newContext({ viewport: { width: 1280, height: 900 } })],
@@ -5788,7 +5820,6 @@ try {
         await p.close();
         await engineCtx.close();
       }
-      if (!webkitAvailable) record('webkit unavailable in this environment — chromium ran, webkit case skipped', true, 'guarded per brief');
     } finally {
       if (webkitBrowser) await webkitBrowser.close().catch(() => {});
     }
@@ -6453,8 +6484,7 @@ try {
       },
     ];
 
-    let webkitAvailable = true; let webkitBrowser = null;
-    try { webkitBrowser = await webkit.launch(); } catch { webkitAvailable = false; }
+    const { webkitAvailable, webkitBrowser } = await launchWebkitOrSkip('§83');
     try {
       for (const [engineLabel, engine] of [
         ['chromium', browser],
@@ -6473,7 +6503,6 @@ try {
           }
         }
       }
-      if (!webkitAvailable) record('webkit unavailable in this environment — chromium ran, webkit case skipped', true, 'guarded per brief');
     } finally {
       if (webkitBrowser) await webkitBrowser.close().catch(() => {});
     }
@@ -6685,7 +6714,13 @@ try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effo
 
 const finalResults = results.filter((result) => result.sectionId === null
   || result.attempt === finalAttemptBySection.get(result.sectionId));
-const fails = finalResults.filter((result) => !result.pass);
-console.log(`\n══════ E2E SMOKE: ${finalResults.length - fails.length}/${finalResults.length} checks passed ══════`);
+// A skip is neither scored nor exit-code-relevant, and it must never inflate
+// the "checks passed" count (CodeRabbit outside-diff on #166) — it gets its
+// own count in the summary line instead.
+const skips = finalResults.filter((result) => result.skip);
+const scored = finalResults.filter((result) => !result.skip);
+const fails = scored.filter((result) => !result.pass);
+console.log(`\n══════ E2E SMOKE: ${scored.length - fails.length}/${scored.length} checks passed${skips.length ? `, ${skips.length} skipped` : ''} ══════`);
 if (fails.length) fails.forEach((f) => console.log(`  FAIL ${f.name} — ${f.detail}`));
+if (skips.length) skips.forEach((s) => console.log(`  SKIP ${s.name} — ${s.detail}`));
 process.exit(fails.length ? 1 : 0);
