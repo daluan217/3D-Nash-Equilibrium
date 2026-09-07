@@ -13,7 +13,7 @@
  * the keyboard an account-deletion flow, and every behavioural test would still
  * pass.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -185,49 +185,157 @@ for (const [name, src] of MUST_FLAG) {
 // "please sign in". The fix reads a per-error flag (`saveErrorNeedsAuth` /
 // `editErrorNeedsAuth`) set only where the failure is actually auth-shaped.
 // This guards the predicate never regresses back to the raw token read in a
-// render branch. `authToken ?` (ternary) is allow-listed for exactly one line
+// render/copy decision. `authToken ?` is allow-listed for exactly one line
 // — `authHeaders`, which builds an HTTP header, not a UI decision.
-function authTokenTernaryViolations(src: string, allowListed: RegExp[]): string[] {
-  return src.split('\n')
-    .filter((line) => /\bauthToken\s*\?/.test(line))
-    .filter((line) => !allowListed.some((re) => re.test(line)));
+//
+// OPUS-REVIEW-DESKTOP F1 (2026-09-06): the first version of this guard read
+// two hard-coded files line-by-line, so it could not see (a) the SAME
+// ternary split across lines (what a formatter produces for a long JSX
+// ternary), (b) the `&&`-gate form of the identical decision, or (c) the
+// predicate reappearing in ANY OTHER component (SavedGamesList.tsx, or a
+// future extraction) — a real risk given round 15/16's ModalSurface/
+// SavedGamesList extraction work. Rewritten to scan every `src/**/*.tsx`
+// file on whitespace-NORMALIZED text (so a multi-line ternary reads the same
+// as a one-liner) for both the `? (`/`? <` and `&& (`/`&& <` shapes — the
+// shape this codebase actually authors a JSX consequent in (never `? {`,
+// which is what excludes `authHeaders` structurally, on top of the explicit
+// allow-list kept for defense in depth).
+function findTsxFiles(dir: string): string[] {
+  return readdirSync(dir, { recursive: true } as any)
+    .map((f) => String(f))
+    .filter((f) => f.endsWith('.tsx'))
+    .map((f) => `${dir}/${f}`);
+}
+
+function authTokenRenderViolations(files: string[], allowListed: RegExp[]): string[] {
+  const violations: string[] = [];
+  for (const file of files) {
+    const src = readFileSync(file, 'utf8');
+    // Collapse ALL whitespace (including newlines) to one space: a ternary or
+    // &&-chain split across lines by a formatter reads identically to a
+    // one-liner, so the multi-line escape shape (OPUS F1a) is not a distinct
+    // case to detect — it is the SAME regex match.
+    const norm = src.replace(/\s+/g, ' ');
+    // Ternary: `!?authToken ? (` or `!?authToken ? <` — excludes `? {`, the
+    // authHeaders shape (an object literal, never a JSX/UI branch), and `?.`
+    // (optional chaining) since `.` is neither `(` nor `<`.
+    // &&-gate: `!?authToken && (` or `!?authToken && <` — excludes a plain
+    // boolean combination like `(authToken && user) || localOwnerMode`
+    // (App.tsx's own refetch-gating effect), where nothing JSX-shaped
+    // immediately follows the `&&`.
+    const pattern = /(?<!\w)!?authToken\s*(?:\?|&&)\s*[(<]/g;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(norm))) {
+      const context = norm.slice(Math.max(0, m.index - 40), m.index);
+      if (allowListed.some((re) => re.test(context))) continue;
+      violations.push(`${file}: …${norm.slice(Math.max(0, m.index - 20), m.index + 30)}…`);
+    }
+  }
+  return violations;
 }
 
 {
   const app = readFileSync('src/App.tsx', 'utf8');
-  const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const tsxFiles = findTsxFiles('src');
+  check('src scan includes App.tsx, MenuDrawer.tsx and SavedGamesList.tsx (sanity: the scan reaches the files that matter)',
+    tsxFiles.some((f) => f.endsWith('App.tsx')) && tsxFiles.some((f) => f.endsWith('MenuDrawer.tsx'))
+    && tsxFiles.some((f) => f.endsWith('SavedGamesList.tsx')));
   // The ONE legitimate `authToken ?` ternary: it returns an HTTP header
   // object (`Authorization: Bearer ...`), never JSX, never a copy decision.
   const ALLOW = [/authHeaders\s*=/];
 
-  const appViolations = authTokenTernaryViolations(app, ALLOW);
-  check(`App.tsx has no authToken-ternary render/copy branch (found ${appViolations.length}: ${appViolations.join(' | ').slice(0, 200)})`,
-    appViolations.length === 0);
-  const drawerViolations = authTokenTernaryViolations(drawer, ALLOW);
-  check(`MenuDrawer.tsx has no authToken-ternary render/copy branch (found ${drawerViolations.length}: ${drawerViolations.join(' | ').slice(0, 200)})`,
-    drawerViolations.length === 0);
+  const violations = authTokenRenderViolations(tsxFiles, ALLOW);
+  check(`no authToken-ternary/&& render or copy branch anywhere under src/**/*.tsx (found ${violations.length}: ${violations.join(' | ').slice(0, 300)})`,
+    violations.length === 0);
 
   // The two fixed sites read the per-error flag instead.
   check('Save dialog error render gates on saveErrorNeedsAuth', /saveErrorNeedsAuth \? \(/.test(app));
   check('Edit dialog error render gates on editErrorNeedsAuth', /editErrorNeedsAuth \? \(/.test(app));
-  // The flag is set at every place saveError/editError is set to a real
-  // message — see handleSaveGameSubmit/handleEditGameSubmit.
-  check('setSaveErrorNeedsAuth is set alongside every non-empty setSaveError call',
-    (app.match(/setSaveError\((?!'')/g) ?? []).length
-    === (app.match(/setSaveErrorNeedsAuth\(/g) ?? []).length);
-  check('setEditErrorNeedsAuth is set alongside every non-empty setEditError call',
-    (app.match(/setEditError\((?!'')/g) ?? []).length
-    === (app.match(/setEditErrorNeedsAuth\(/g) ?? []).length);
 
-  // Known-positive fixture: the historical shape (before this fix) MUST trip
-  // the same check that runs against the real files above.
-  const regressedSave = "{saveError && (\n  !authToken ? (\n    <div>Sign In / Sign Up</div>\n  ) : (\n    <p>{saveError}</p>\n  )\n)}";
-  check('fixture sanity: the REAL ternary check flags the historical !authToken render branch',
-    authTokenTernaryViolations(regressedSave, ALLOW).length > 0);
-  // Control: the header-builder line alone must NOT trip it.
+  // OPUS-REVIEW-DESKTOP N5: a bare COUNT comparison passes if an unpaired
+  // non-empty setter is added anywhere and an extra flag call is added
+  // anywhere else, and misreads `setSaveError("")` (double quotes) or a
+  // setter broken across a line as "non-empty". This instead PAIRS each
+  // real (non-empty) call with a flag call inside its own statement — found
+  // by balancing parens from the setter's `(` to its OWN closing `)`, then
+  // requiring the flag setter within a short window after that close, which
+  // is where every real call site puts it (see handleSaveGameSubmit /
+  // handleEditGameSubmit) even when the message itself spans many lines
+  // (the 409 branch's nested ternary).
+  function pairedNonEmptySetters(src: string, setter: string, flag: string): string[] {
+    const unpaired: string[] = [];
+    const re = new RegExp(`${setter}\\(`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src))) {
+      const start = m.index + m[0].length;
+      // A pure reset — setSaveError('') or setSaveError("") — is not a real
+      // message and needs no flag.
+      if (/^\s*(['"])\1\s*\)/.test(src.slice(start, start + 12))) continue;
+      let depth = 1;
+      let i = start;
+      while (i < src.length && depth > 0) {
+        if (src[i] === '(') depth++;
+        else if (src[i] === ')') depth--;
+        i++;
+      }
+      const after = src.slice(i, Math.min(src.length, i + 200));
+      if (!new RegExp(`${flag}\\(`).test(after)) {
+        unpaired.push(src.slice(m.index, Math.min(i, m.index + 80)).replace(/\s+/g, ' '));
+      }
+    }
+    return unpaired;
+  }
+  const unpairedSave = pairedNonEmptySetters(app, 'setSaveError', 'setSaveErrorNeedsAuth');
+  check(`every non-empty setSaveError call sets saveErrorNeedsAuth in its own statement (found ${unpairedSave.length} unpaired: ${unpairedSave.join(' | ').slice(0, 200)})`,
+    unpairedSave.length === 0);
+  const unpairedEdit = pairedNonEmptySetters(app, 'setEditError', 'setEditErrorNeedsAuth');
+  check(`every non-empty setEditError call sets editErrorNeedsAuth in its own statement (found ${unpairedEdit.length} unpaired: ${unpairedEdit.join(' | ').slice(0, 200)})`,
+    unpairedEdit.length === 0);
+
+  // Known-positive fixtures: each escape shape F1 named MUST trip the check.
+  // `authTokenRenderViolations` reads FILES; `violationsInText` drives the
+  // SAME regex and allow-list directly, on an in-memory string, so a fixture
+  // never touches disk while staying in lockstep with the real detector.
+  const multilineTernary = '{saveError && (\n  !authToken\n    ? (\n      <div>Sign In / Sign Up</div>\n    )\n    : (\n      <p>{saveError}</p>\n    )\n)}';
+  function violationsInText(text: string, allowListed: RegExp[]): string[] {
+    const norm = text.replace(/\s+/g, ' ');
+    const pattern = /(?<!\w)!?authToken\s*(?:\?|&&)\s*[(<]/g;
+    const out: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(norm))) {
+      const context = norm.slice(Math.max(0, m.index - 40), m.index);
+      if (allowListed.some((re) => re.test(context))) continue;
+      out.push(norm.slice(m.index, m.index + 30));
+    }
+    return out;
+  }
+  check('fixture (a) multi-line ternary is flagged (OPUS F1a)',
+    violationsInText(multilineTernary, ALLOW).length > 0);
+  // (b) The `&&`-gate form of the identical decision.
+  const andGate = '{saveError && !authToken && (\n  <div>Sign In / Sign Up</div>\n)}';
+  check('fixture (b) &&-gate form is flagged (OPUS F1b)',
+    violationsInText(andGate, ALLOW).length > 0);
+  // (c) The predicate reappearing in a DIFFERENT component the old two-file
+  // guard never read — SavedGamesList.tsx's real "not signed in" branch,
+  // mutated exactly the way F1's own demonstration did (canOwnGames swapped
+  // for the raw token), scanned through the SAME multi-file `findTsxFiles`
+  // path (not a hand-picked file) to prove the scan itself reaches it.
+  const savedGamesListSrc = readFileSync('src/components/SavedGamesList.tsx', 'utf8');
+  const regressedSavedGamesList = savedGamesListSrc.replace('if (!canOwnGames) {',
+    'if (!authToken) {\n  return (\n    <span>{!authToken ? (\n      <em>Sign In / Sign Up</em>\n    ) : null}</span>\n  );\n}\nif (!canOwnGames) {');
+  check('precondition: the REAL SavedGamesList.tsx is clean before mutation', violationsInText(savedGamesListSrc, ALLOW).length === 0);
+  check('fixture (c) the predicate in a DIFFERENT component (SavedGamesList-shaped) is flagged (OPUS F1c)',
+    violationsInText(regressedSavedGamesList, ALLOW).length > 0);
+
+  // Control: the header-builder line alone must NOT trip it (object-literal
+  // consequent `{`, not `(`/`<`, PLUS the explicit allow-list).
   const headerOnly = "const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});";
-  check('control: the authHeaders line alone is not flagged',
-    authTokenTernaryViolations(headerOnly, ALLOW).length === 0);
+  check('control: the authHeaders line alone is not flagged', violationsInText(headerOnly, ALLOW).length === 0);
+  // Control: the legitimate effect-gating `&&` (App.tsx's own refetch guard)
+  // must NOT trip the &&-shape detector — its consequent is `user`, not a
+  // JSX/parenthesized expression.
+  check('control: `(authToken && user) || localOwnerMode` (App.tsx\'s own effect) is not flagged',
+    violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }

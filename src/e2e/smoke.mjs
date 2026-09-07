@@ -5584,10 +5584,17 @@ try {
   //      `saveErrorNeedsAuth`/`editErrorNeedsAuth`, set only where the
   //      failure is actually auth-shaped. The second half closes the
   //      loophole a bare `!canOwnGames` re-check would still have: an
-  //      ACCOUNT user signed in while dbMode stays 'local' whose session
-  //      genuinely 401s clears the token, which flips `localOwnerMode` (and
-  //      so `canOwnGames`) true too — the invitation must still show for
-  //      THAT failure, because it really is an expired session. Mutation:
+  //      ACCOUNT user signed in while dbMode stays 'local', on a session
+  //      401 (mocked here — server.ts:2124's desktop owner resolver,
+  //      `getAuthUser(req) ?? ensureLocalOwner()`, never actually emits one;
+  //      a dead account token there falls through to the local owner
+  //      instead, OPUS-REVIEW-DESKTOP N2/N3 — a separate, pre-existing,
+  //      out-of-scope gap), whose token then clears, which flips
+  //      `localOwnerMode` (and so `canOwnGames`) true too — the invitation
+  //      must still show for THAT failure, because the CLIENT genuinely
+  //      believes the session just expired. This still pins the real
+  //      client-side render decision and would fail under a bare
+  //      `!canOwnGames` fix. Mutation:
   //      reverting App.tsx's fix makes both negative-control FIX checks
   //      below fail (see src/localowner.test.ts for the structural guard and
   //      its own mutation test against the same revert).
@@ -5655,8 +5662,13 @@ try {
       await dp.keyboard.press('Escape');
 
       // ── Positive control: an ACCOUNT user, still on dbMode='local', whose
-      // session genuinely 401s. Closes the loophole a bare `!canOwnGames`
-      // fix would leave open (the cleared token flips localOwnerMode true).
+      // POST gets a session 401 — mocked below (route.fulfill), since the
+      // real desktop resolver (server.ts:2124) never emits one for a dead
+      // account token; it falls through to the local owner instead (a
+      // separate, out-of-scope gap, OPUS-REVIEW-DESKTOP N3). This still
+      // pins the real CLIENT render decision and closes the loophole a bare
+      // `!canOwnGames` fix would leave open (the cleared token flips
+      // localOwnerMode true).
       const email = `d15auth${Date.now().toString(36)}@example.com`;
       const reg = await fetch(deskBase + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: `d15auth${Date.now().toString(36)}`, email, password: 'TestPass123' }) });

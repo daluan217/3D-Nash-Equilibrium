@@ -516,9 +516,22 @@ export default function App() {
   // derived from `!authToken` at render time. A local owner's `authToken` is
   // always null, so that predicate mislabeled every non-auth failure
   // (network drop, validation, 404, 409) as "please sign in".
+  //
+  // OPUS-REVIEW-DESKTOP N6: this flag is NEVER reset by the many places that
+  // clear `editError`/`saveError` back to '' (dialog open/close/retry) — only
+  // the MESSAGE is cleared there. That is safe ONLY because of an invariant
+  // every call site must keep: the flag is read ONLY behind a non-empty
+  // message (`{editError && (editErrorNeedsAuth ? … )}` / the `saveError`
+  // equivalent), and every site that sets a non-empty message sets this flag
+  // in the SAME statement (src/localowner.test.ts asserts both, and mutation-
+  // tests the pairing). A future edit that renders on the flag ALONE, or
+  // that adds a new non-empty setter without its paired flag call, would
+  // silently reintroduce a stale `true` from a previous, unrelated failure.
   const [editErrorNeedsAuth, setEditErrorNeedsAuth] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
+  // Same invariant as `editErrorNeedsAuth` above (never reset alone; always
+  // set alongside a non-empty `saveError`; read only behind one).
   const [saveErrorNeedsAuth, setSaveErrorNeedsAuth] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   /**
