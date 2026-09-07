@@ -54,6 +54,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
 
   const fetchStats = async (secret: string) => {
     const gen = requestGenRef.current;
+    // RED-APP-16/005: distinguishes an initial-login failure from an authed
+    // Refresh failure, captured before either `await` — after the fetch,
+    // `authed` in the closure is still the value from render time, exactly
+    // what tells the two cases apart.
+    const wasAuthed = authed;
     setLoading(true);
     setError('');
     try {
@@ -61,14 +66,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
         headers: { 'x-admin-secret': secret },
       });
       if (gen !== requestGenRef.current) return;
-      if (res.status === 401) { setError('Incorrect password.'); setLoading(false); return; }
+      if (res.status === 401) {
+        // A 401 on an authed Refresh means the secret this session is using
+        // no longer works (rotated/revoked) — mirror Sign-out's reset (same
+        // generation bump, so a concurrent stale Refresh can't re-auth the
+        // panel after this) rather than leaving stale numbers on screen
+        // under a secret the server just rejected. Unlike Sign-out, the
+        // message SURVIVES the reset, so the password prompt it falls back
+        // to explains why the user landed back here.
+        requestGenRef.current += 1;
+        setAuthed(false); setStats(null); setPassword('');
+        setError('Incorrect password.');
+        setLoading(false);
+        return;
+      }
       if (!res.ok) throw new Error('Server error');
       const data = await res.json();
       if (gen !== requestGenRef.current) return;
       setStats(data);
       setAuthed(true);
     } catch {
-      if (gen === requestGenRef.current) setError('Could not reach the server.');
+      // RED-APP-16/005: every non-401 failure (429 rate limit, a dropped
+      // connection) used to be silent when it happened on an authed
+      // Refresh — `error` rendered only in the `!authed` branch, so this
+      // state had nothing to display it. Now rendered in BOTH branches
+      // (below), with wording that names which thing failed rather than
+      // reusing the login-screen copy for a Refresh that never touched a
+      // password.
+      if (gen === requestGenRef.current) setError(wasAuthed ? 'Could not refresh the stats.' : 'Could not reach the server.');
     }
     if (gen === requestGenRef.current) setLoading(false);
   };
@@ -165,6 +190,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, i
             </div>
           ) : stats ? (
             <>
+              {/* RED-APP-16/005: mirrors the `!authed` branch's error slot
+                  above — a failed Refresh (429/network/etc.) used to set
+                  `error` into a state nothing here could render. */}
+              {error && (
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                  <span>{error}</span>
+                  <button onClick={() => fetchStats(password)} disabled={loading} className="font-semibold underline hover:no-underline cursor-pointer shrink-0 disabled:opacity-50">
+                    Retry
+                  </button>
+                </div>
+              )}
               {/* Stat cards */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 <StatCard icon={<Users className="w-4 h-4 text-accent-500" />} label="Total Users" value={stats.totalUsers} />

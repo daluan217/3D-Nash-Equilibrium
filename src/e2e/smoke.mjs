@@ -357,6 +357,70 @@ async function registerAndLogin(p, tag) {
   return uniq;
 }
 
+/* RED-APP-16/003's own instrument, made a fixture (§85): every VISIBLE,
+ * enabled, focusable control's computed accessible name via Chromium's OWN
+ * AX engine (CDP `Accessibility.getPartialAXTree`) — not a hand-rolled name()
+ * predicate, which over-fired on 15 placeholder-named fields when the red
+ * tried one first and discarded it. Returns the controls with an EMPTY name;
+ * a real defect is any non-zero return, not a rate.
+ *
+ * `cdp` is a session created ONCE per page (see `openAxCdp` below) and
+ * reused across every sweep — a fresh `newCDPSession` + `Accessibility.
+ * enable` per call, plus `DOM.getDocument` with `depth: -1, pierce: true`
+ * (eagerly serializing the ENTIRE DOM, including the 3D plot's huge SVG/
+ * canvas subtree, on every single sweep), measured at 20-40s PER SWEEP on
+ * the main page — the whole section blew its 225s shard budget on this
+ * alone. `depth: 0` (the default) returns just the document node; `DOM.
+ * querySelector` resolves relative to it lazily, without pre-walking the
+ * tree, and cut each of those sweeps to well under 2s. */
+async function emptyAccessibleNames(p, cdp) {
+  const n = await p.evaluate(() => {
+    const all = Array.from(document.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])'))
+      .filter((el) => {
+        if (el.hasAttribute('disabled') || el.hasAttribute('inert') || el.closest('[inert]')) return false;
+        const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.01;
+      });
+    all.forEach((el, k) => el.setAttribute('data-ax-probe', String(k)));
+    return all.length;
+  });
+  const { root } = await cdp.send('DOM.getDocument');
+  // ONE DOM.querySelectorAll (plural) instead of N sequential DOM.querySelector
+  // calls, then the N Accessibility.getPartialAXTree lookups IN PARALLEL —
+  // each is an independent CDP round trip, and running them sequentially (the
+  // original shape) measured 20-40s per sweep on this section alone. Document
+  // order is preserved by both DOM.querySelectorAll and the plain JS
+  // querySelectorAll below (same selector), so index `i` names the same
+  // element in both without a separate id-based lookup.
+  const { nodeIds } = await cdp.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: '[data-ax-probe]' });
+  const axNodes = await Promise.all(nodeIds.map((nodeId) =>
+    cdp.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false })
+      .then(({ nodes }) => nodes.find((x) => x.backendDOMNodeId !== undefined) || nodes[0])
+      .catch(() => null)));
+  const emptyIdx = axNodes
+    .map((node, i) => ({ node, i }))
+    .filter(({ node }) => !node?.ignored && (node?.name?.value ?? '').trim() === '')
+    .map(({ i }) => i);
+  const details = emptyIdx.length > 0
+    ? await p.evaluate((idxs) => {
+      const all = Array.from(document.querySelectorAll('[data-ax-probe]'));
+      return idxs.map((i) => { const el = all[i]; return { tag: el.tagName, type: el.getAttribute('type'), value: (el.value || '').slice(0, 24) }; });
+    }, emptyIdx)
+    : [];
+  const hits = emptyIdx.map((i, j) => ({ role: axNodes[i]?.role?.value, ...details[j] }));
+  await p.evaluate(() => document.querySelectorAll('[data-ax-probe]').forEach((e) => e.removeAttribute('data-ax-probe')));
+  return { total: n, hits };
+}
+
+/** One CDP session for the page's whole lifetime, Accessibility domain
+ *  enabled once — see `emptyAccessibleNames`'s comment for why re-creating
+ *  this per sweep was the dominant cost. */
+async function openAxCdp(p, ctx) {
+  const cdp = await ctx.newCDPSession(p);
+  await cdp.send('Accessibility.enable');
+  return cdp;
+}
+
 /* Mock `/api/health` to advertise the regen capability and `/api/scenario/
  * regenerate` with a canned handler — used by every regen section below so
  * none of them needs real credentials or the (not-yet-merged) server route. */
@@ -5913,9 +5977,42 @@ try {
         const focused = await p.evaluate(() => ({ tag: document.activeElement?.tagName, type: document.activeElement?.getAttribute('type') }));
         record('FIX: Admin\'s password input has focus on open (autoFocus wins the trap\'s open-time focus race, OPUS-REVIEW-MODAL16 F1)',
           focused.tag === 'INPUT' && focused.type === 'password', JSON.stringify(focused));
+
+        // RED-APP-16/005 (§76 extension): a real ADMIN_SECRET is not set on
+        // this shared server, so /api/admin/stats always 401s — mocked here
+        // (route.fulfill, same technique mockRegenOn uses elsewhere) so the
+        // FIRST call (the Login click) succeeds and the SECOND (Refresh)
+        // 429s, reaching the authed-branch error path a real secret cannot.
+        let adminCalls = 0;
+        await p.route('**/api/admin/stats', async (route) => {
+          adminCalls++;
+          if (adminCalls === 1) {
+            await route.fulfill({
+              status: 200, contentType: 'application/json',
+              body: JSON.stringify({ totalUsers: 1, verifiedUsers: 1, unverifiedUsers: 0, totalGames: 0, signupsToday: 0, signupsThisWeek: 0, users: [] }),
+            });
+          } else {
+            await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'Too many requests' }) });
+          }
+        });
         await p.keyboard.type('hunter2');
         const typed = await p.evaluate(() => document.querySelector('input[type="password"]')?.value);
         record('FIX: typing right after open reaches the password field, with no click (OPUS-REVIEW-MODAL16 F1)', typed === 'hunter2', `value=${JSON.stringify(typed)}`);
+
+        await p.getByRole('button', { name: /^login$/i }).click();
+        const statsVisible = await p.getByText(/total users/i).first().waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+        record('§76 extension precondition: mocked Login succeeds and shows stats', statsVisible);
+        if (statsVisible) {
+          await p.getByRole('button', { name: /refresh/i }).click();
+          const errorVisible = await p.getByText(/could not refresh the stats/i).waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+          record('RED-APP-16/005 FIX: a 429 on Refresh renders a visible error message beside the stale numbers', errorVisible);
+          record('RED-APP-16/005 FIX: the error banner offers a Retry control',
+            await p.getByRole('button', { name: 'Retry' }).isVisible().catch(() => false));
+          // The stale numbers are still on screen (not blanked) alongside the error.
+          record('RED-APP-16/005 FIX: the stale stat numbers stay visible alongside the error (not cleared)',
+            await p.getByText(/total users/i).first().isVisible().catch(() => false));
+        }
+
         // Exercise the "Close admin dashboard" control itself (control-
         // coverage guard, controlcoverage.test.ts) rather than only closing
         // via Escape — a real click by its own accessible name.
@@ -6258,6 +6355,197 @@ try {
     await oppositePage.close();
   });
 
+  // ══ 85. RED-APP-16/003 — every visible, enabled control across the app has
+  //      a real accessible name (Chromium's own AX engine, the red's own
+  //      instrument, made a fixture). Sweeps the states the brief's invariant
+  //      names — every Account mode and every drawer tab (the red's own probe
+  //      scope: login/signup/forgot, not verify/reset, which need a real
+  //      code) — plus Save Preset and Edit. Every field the sweep visits
+  //      EXCEPT Edit's "Game Name" has a placeholder or aria-label fallback,
+  //      so an htmlFor regression on any of THOSE could never show up as an
+  //      EMPTY Chromium AX name (only as a static finding in
+  //      a11yfixes.test.ts's unassociatedLabels/placeholderOnlyControls walk,
+  //      which covers every field exactly, not sampled). Edit's Game Name
+  //      (no placeholder at all — the red's one REAL hit) is what makes
+  //      reverting ITS htmlFor actually flip this e2e check red too; every
+  //      other sweep here stays green under that same mutation.
+  section('85', 'AX sweep: 0 controls with an empty accessible name across account modes and drawer tabs', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    try {
+      const p = trackPage(await ctx.newPage());
+      const cdp = await openAxCdp(p, ctx);
+      const allHits = [];
+      const sweep = async (label) => {
+        const { total, hits } = await emptyAccessibleNames(p, cdp);
+        allHits.push(...hits.map((h) => ({ label, ...h })));
+        record(`AX sweep: ${label} (${total} controls)`, hits.length === 0, JSON.stringify(hits));
+      };
+
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+      await p.waitForTimeout(300);
+      await sweep('main page (signed out)');
+
+      await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
+      await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
+      await sweep('account/login');
+      await p.getByText(/sign up/i).last().click().catch(async () => {
+        await p.getByRole('button', { name: /create.*account|register/i }).first().click();
+      });
+      await p.waitForTimeout(300);
+      await sweep('account/signup');
+      await p.getByRole('button', { name: /^login$/i }).click().catch(() => {});
+      await p.waitForTimeout(300);
+      await p.getByText(/forgot your password/i).click().catch(() => {});
+      await p.waitForTimeout(300);
+      await sweep('account/forgot-password');
+      await p.keyboard.press('Escape');
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Account"]'), null, { timeout: 5000 }).catch(() => {});
+
+      await registerAndLogin(p, 'e2e85');
+      await sweep('main page (signed in)');
+
+      await p.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await p.waitForSelector('[data-modal-surface="drawer"]', { timeout: 8000 }).catch(() => {});
+      for (const t of [/help guides/i, /library/i, /danger zone/i]) {
+        await p.locator('button', { hasText: t }).first().click().catch(() => {});
+        await p.waitForTimeout(400);
+        await sweep(`drawer/${t}`);
+      }
+      await p.keyboard.press('Escape');
+      await p.waitForTimeout(300);
+
+      await p.getByRole('button', { name: /save preset/i }).click();
+      await p.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      await p.locator('[role="dialog"][aria-label="Save custom game"] input[type="text"]').first().fill('AX sweep game');
+      await p.getByRole('button', { name: /save game profile/i }).click();
+      await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 8000 }).catch(() => {});
+      // The Edit dialog's "Game Name" field is the ONE real hit RED-APP-16/003
+      // found (App.tsx:6112-6118, no placeholder — every OTHER swept field
+      // above has a placeholder/aria-label fallback, so an htmlFor regression
+      // there could never show up as an EMPTY Chromium AX name, only as a
+      // structural finding in a11yfixes.test.ts's static walk). Sweeping this
+      // dialog is what makes THIS check's own mutation test — reverting the
+      // Game Name label's htmlFor — actually go red; every other sweep here
+      // stays green under that same mutation (verified: see REPORT.md).
+      await p.getByRole('button', { name: /^edit /i }).first().click();
+      const editOpened = await p.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 5000 }).then(() => true).catch(() => false);
+      record('precondition: the Edit dialog opened', editOpened);
+      if (editOpened) await sweep('edit-saved-game');
+
+      record('TOTAL: 0 controls with an empty accessible name across every swept state', allHits.length === 0, JSON.stringify(allHits));
+    } finally {
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  // ══ 86. RED-APP-16/004 — the simulation log pins to the bottom only when
+  //      the user was already there; a scroll away (mouse OR keyboard) must
+  //      hold through the next appended line, for BOTH the inline and the
+  //      expanded log. Control arm (still at the bottom) follows.
+  section('86', 'simulation log: a user-set scroll position holds through new lines; at-bottom still follows', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = trackPage(await ctx.newPage());
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+      await p.waitForTimeout(300);
+
+      // The default preset payoffs converge in ~3 steps regardless of start
+      // point or speed — nothing left to append once it settles. RED-APP-16/004's
+      // own repro fixture (a genuine mixed equilibrium: -12, 12, 8, -8, 2, -2,
+      // 0, 0) keeps the run going long enough for this section's scroll/append
+      // races to matter. Own-page equivalent of the shared setSpeed() helper
+      // (that one is hard-bound to the module's shared `page`).
+      const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
+      await matrix.first().waitFor({ state: 'visible', timeout: 15000 });
+      const mixedVals = [-12, 12, 8, -8, 2, -2, 0, 0];
+      for (let i = 0; i < 8; i++) { await matrix.nth(i).fill(String(mixedVals[i])); await matrix.nth(i).blur(); }
+      await p.locator('input[aria-label="Row Start Point (x0)"]').fill('0.05');
+      await p.locator('input[aria-label="Col Start Point (y0)"]').fill('0.95');
+      await p.evaluate(() => {
+        const el = document.querySelector('input[aria-label="Loop Speed"]');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(el, el.min);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await p.getByRole('button', { name: /^(run|resume)$/i }).click();
+
+      const logBox = p.locator('[role="region"][aria-label="Simulation log"]').first();
+      await logBox.waitFor({ state: 'visible', timeout: 5000 });
+      // Wait until the log has overflowed its own box (scrollHeight >
+      // clientHeight) — otherwise there is nothing to scroll away from.
+      await p.waitForFunction(
+        (sel) => { const el = document.querySelector(sel); return !!el && el.scrollHeight > el.clientHeight + 20; },
+        '[role="region"][aria-label="Simulation log"]', { timeout: 15000 },
+      );
+
+      // ── Arm 1: inline log, mouse-wheel scroll away from the bottom ──
+      await logBox.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      const before1 = await logBox.evaluate((el) => el.scrollTop);
+      const lines1 = await p.locator('[role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="region"][aria-label="Simulation log"] > *').length > n,
+        lines1, { timeout: 10000 },
+      );
+      const after1 = await logBox.evaluate((el) => el.scrollTop);
+      record('FIX: inline log holds a user-set scroll-up position through a new line',
+        after1 === before1, `before=${before1} after=${after1}`);
+
+      // ── Control: inline log, AT the bottom, still follows new lines ──
+      await logBox.evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      const lines2 = await p.locator('[role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="region"][aria-label="Simulation log"] > *').length > n,
+        lines2, { timeout: 10000 },
+      );
+      const atBottom = await logBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 4);
+      record('control: inline log AT the bottom still follows new lines', atBottom);
+
+      // ── Arm 2: expanded log, keyboard scroll (Home) away from the bottom ──
+      await p.locator('[aria-label="Expand simulation log"]').click();
+      const expandedBox = p.locator('[role="dialog"] [role="region"][aria-label="Simulation log"]').first();
+      await expandedBox.waitFor({ state: 'visible', timeout: 5000 });
+      await p.waitForFunction(
+        (sel) => { const el = document.querySelector(sel); return !!el && el.scrollHeight > el.clientHeight + 20; },
+        '[role="dialog"] [role="region"][aria-label="Simulation log"]', { timeout: 15000 },
+      );
+      await expandedBox.focus();
+      await p.keyboard.press('Home');
+      // Wait for the Home-triggered scroll to actually SETTLE (two identical
+      // reads in a row) before taking the "before" measurement — the log is
+      // actively appending a new line every ~550ms during this whole
+      // section, and reading scrollTop immediately after the keypress can
+      // catch the browser's own scroll animation mid-flight, not the fix.
+      const stableScrollTop = () => p.waitForFunction(
+        (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return false;
+          if (window.__lastScrollTop === el.scrollTop) return true;
+          window.__lastScrollTop = el.scrollTop;
+          return false;
+        },
+        '[role="dialog"] [role="region"][aria-label="Simulation log"]', { timeout: 8000, polling: 100 },
+      );
+      await p.evaluate(() => { window.__lastScrollTop = -1; });
+      await stableScrollTop();
+      const beforeExp = await expandedBox.evaluate((el) => el.scrollTop);
+      const linesExp = await p.locator('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').count();
+      await p.waitForFunction(
+        (n) => document.querySelectorAll('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').length > n,
+        linesExp, { timeout: 10000 },
+      );
+      const afterExp = await expandedBox.evaluate((el) => el.scrollTop);
+      record('FIX: expanded log holds a keyboard (Home) scroll-up position through a new line',
+        afterExp === beforeExp, `before=${beforeExp} after=${afterExp}`);
+    } finally {
+      await ctx.close().catch(() => {});
+    }
+  });
+
 await executeSections();
 
 } catch (e) {
@@ -6324,6 +6612,10 @@ const EXPECTED_STATUS_NOISE = {
   // dialog's PATCH, one each — the exact behavior the section's own
   // focus-stays-inside assertions verify.
   '66b': [401, 401],
+  // §76 extension (RED-APP-16/005): deliberately mocks a 429 on the admin
+  // panel's Refresh — the exact behavior "a visible error banner + Retry,
+  // stale numbers stay on screen" verifies.
+  '76': [429],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),

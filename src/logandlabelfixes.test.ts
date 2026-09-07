@@ -141,4 +141,72 @@ function openingTagAt(src: string, refIdx: number): string {
     + `got: ${JSON.stringify(matrixGridClasses)}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RED-APP-16/004 — the log auto-scroll effect used to set
+// `container.scrollTop = container.scrollHeight` UNCONDITIONALLY on every
+// appended line, for both the inline and expanded log, yanking a user-set
+// scroll position back to the bottom. Fixed: pin only when a per-container
+// `logStuckRef` flag (kept current by a real `scroll` event, `handleLogScroll`)
+// says the container was already at the bottom.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  // Isolate the auto-scroll effect's own body (between its declaration and
+  // the closing `}, [logEntries, logExpanded]);`) rather than matching
+  // anywhere in the file — the OLD unconditional assignment
+  // (`container.scrollTop = container.scrollHeight;` with no guard) must be
+  // gone from THIS effect specifically, not merely absent from the file by
+  // coincidence of wording elsewhere (e.g. `mountLogRegion`'s own open-time
+  // scroll-to-bottom, which legitimately keeps the unconditional form).
+  const effectStart = app.indexOf('useEffect(() => {\n    const targets: Array<[\'inline\' | \'expanded\', HTMLDivElement | null]>');
+  ok(effectStart > 0, 'the log auto-scroll effect must be found');
+  const effectEnd = app.indexOf('}, [logEntries, logExpanded]);', effectStart);
+  ok(effectEnd > effectStart, 'the log auto-scroll effect\'s dependency array close must be found');
+  const effectBody = app.slice(effectStart, effectEnd);
+
+  ok(/if \(container && logStuckRef\.current\[key\]\) container\.scrollTop = container\.scrollHeight;/.test(effectBody),
+    `the auto-scroll effect must only set scrollTop when logStuckRef.current[key] is true, got: ${JSON.stringify(effectBody)}`);
+  const scrollTopAssignments = [...effectBody.matchAll(/container\.scrollTop = container\.scrollHeight;/g)];
+  ok(scrollTopAssignments.length === 1,
+    `the effect must set scrollTop in exactly ONE place (the guarded one above) — a second, unconditional copy would defeat the guard; found ${scrollTopAssignments.length}`);
+
+  // Both log containers wire up the scroll listener that keeps
+  // logStuckRef current — isolate each container's OWN opening tag (not a
+  // descendant's) the same way FINDING 007's checks above do.
+  const inlineIdx = app.indexOf('ref={logsContainerRef}');
+  const inlineTag = openingTagAt(app, inlineIdx);
+  ok(/onScroll=\{handleLogScroll\('inline'\)\}/.test(inlineTag),
+    `the inline log container must wire up handleLogScroll('inline'), got: ${JSON.stringify(inlineTag)}`);
+  const expandedIdx2 = app.indexOf('ref={mountLogRegion}');
+  const expandedTag2 = openingTagAt(app, expandedIdx2);
+  ok(/onScroll=\{handleLogScroll\('expanded'\)\}/.test(expandedTag2),
+    `the expanded log container must wire up handleLogScroll('expanded'), got: ${JSON.stringify(expandedTag2)}`);
+
+  // handleLogScroll itself must compute "at the bottom" from live DOM
+  // measurements (scrollHeight/scrollTop/clientHeight), not a fixed value.
+  const handlerIdx = app.indexOf('const handleLogScroll = useCallback');
+  ok(handlerIdx > 0, 'handleLogScroll must be found');
+  const handlerBody = app.slice(handlerIdx, app.indexOf('}, []);', handlerIdx));
+  ok(/el\.scrollHeight - el\.scrollTop - el\.clientHeight <= LOG_BOTTOM_TOLERANCE_PX/.test(handlerBody),
+    `handleLogScroll must compute the bottom tolerance from live measurements, got: ${JSON.stringify(handlerBody)}`);
+
+  // mountLogRegion resets the expanded flag to "at the bottom" on every
+  // (re)mount — a reopened dialog must not inherit a stale flag from its
+  // previous, now-unmounted, instance.
+  const mountIdx = app.indexOf('const mountLogRegion = useCallback');
+  ok(mountIdx > 0, 'mountLogRegion must be found');
+  const mountBody = app.slice(mountIdx, app.indexOf('}, []);', mountIdx));
+  ok(/logStuckRef\.current\.expanded = true;/.test(mountBody),
+    `mountLogRegion must reset logStuckRef.current.expanded to true on mount, got: ${JSON.stringify(mountBody)}`);
+
+  // ── MUTATION TEST — restoring the old unconditional assignment inside
+  //    the effect body must make the "only when stuck" check fail. ──
+  const mutatedEffectBody = effectBody.replace(
+    "if (container && logStuckRef.current[key]) container.scrollTop = container.scrollHeight;",
+    "if (container) container.scrollTop = container.scrollHeight;",
+  );
+  ok(mutatedEffectBody !== effectBody, 'mutation-test precondition: the guarded assignment must be found and strippable');
+  ok(!/if \(container && logStuckRef\.current\[key\]\) container\.scrollTop = container\.scrollHeight;/.test(mutatedEffectBody),
+    'mutation-test: restoring the unconditional scrollTop assignment must be caught (the guarded-assignment check above must fail on it)');
+}
+
 console.log(`logandlabelfixes.test.ts: ${checks} checks passed`);

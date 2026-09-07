@@ -12,7 +12,8 @@
  *   npx tsx src/a11yfixes.test.ts
  */
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 let checks = 0;
 function ok(cond: boolean, msg: string) {
@@ -640,6 +641,148 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     'the empty-state card itself (the one that says "No saved custom game presets.") must carry the drawer-games landmark');
   ok(!/data-focus-fallback=/.test(between),
     'no OTHER data-focus-fallback occurrence must sit between this landmark and "No saved custom game presets." — otherwise the nearest-match above could be pinning the WRONG branch\'s landmark');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RED-APP-16/003: every `<label>` in the app must be associated with a real
+// control — `htmlFor`/`id`, or by wrapping the control — and no input's ONLY
+// name source may be `placeholder` (a hint, not a label; it disappears once
+// the user types). 24 of the app's 25 `<label>`s were unassociated and 15
+// fields were placeholder-only; the fix is `src/utils/a11y.ts`'s shared
+// `labelFor(scope, field)` id pairing, used at every text/number/password/
+// email/textarea site, and a plain heading (not a `<label>`) for the few
+// headings that caption a GROUP of buttons rather than one control.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  /** Blanks out `/* ... *\/` block comments and `// ...` line comments
+   *  (replacing with spaces, so byte offsets used in error messages stay
+   *  meaningful) — this file's OWN prose repeatedly says things like
+   *  "a real `<label>`", which a naive scan over raw source would flag as
+   *  an unassociated label in a comment, not in JSX. */
+  function stripComments(src: string): string {
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, ' '));
+  }
+
+  /** Every `<label ...>` tag in `src` with no `htmlFor` AND no control
+   *  (input/select/textarea) nested before its own `</label>`. */
+  function unassociatedLabels(rawSrc: string): string[] {
+    const src = stripComments(rawSrc);
+    const violations: string[] = [];
+    const labelOpen = /<label\b([^>]*)>/g;
+    let m: RegExpExecArray | null;
+    while ((m = labelOpen.exec(src))) {
+      const attrs = m[1];
+      if (/\bhtmlFor=/.test(attrs)) continue;
+      const bodyStart = m.index + m[0].length;
+      const bodyEnd = src.indexOf('</label>', bodyStart);
+      const body = bodyEnd > 0 ? src.slice(bodyStart, bodyEnd) : src.slice(bodyStart, bodyStart + 400);
+      if (/<input\b|<select\b|<textarea\b/.test(body)) continue;
+      violations.push(`<label${attrs}> at offset ${m.index} has no htmlFor and wraps no control`);
+    }
+    return violations;
+  }
+
+  /** Every `<input .../>`/`<textarea ...>` opening tag that carries
+   *  `placeholder=` but no `aria-label=`/`aria-labelledby=`/`id=` — i.e.
+   *  nothing that COULD be a real accessible name besides the placeholder
+   *  hint. A non-empty `id=` is accepted at face value here (not required to
+   *  find its `htmlFor=` pair in the same file): `DescriptionEditor`'s
+   *  textarea forwards a caller-supplied `id` prop, so the pairing lives in
+   *  the CALLER's file, not this one — cross-file, which a per-file walker
+   *  cannot see. The real association is instead checked directly below,
+   *  by name, for both `DescriptionEditor` call sites and its own forwarded
+   *  `id` — narrower than a generic walk, but exact rather than guessed. */
+  function placeholderOnlyControls(rawSrc: string): string[] {
+    const src = stripComments(rawSrc);
+    const violations: string[] = [];
+    const controlOpen = /<(input|textarea)\b([^>]*)>/g;
+    let m: RegExpExecArray | null;
+    while ((m = controlOpen.exec(src))) {
+      const [, tag, attrs] = m;
+      if (!/\bplaceholder=/.test(attrs)) continue;
+      if (/\baria-label=|\baria-labelledby=/.test(attrs)) continue;
+      const idMatch = attrs.match(/\bid=(?:"([^"]+)"|\{([^}]+)\})/);
+      if (idMatch) continue;
+      violations.push(`<${tag}${attrs}> at offset ${m.index} has placeholder but no aria-label/aria-labelledby/id`);
+    }
+    return violations;
+  }
+
+  // ── Known-positive fixtures — both shapes must be CAUGHT, proving the
+  //    checkers do not just pass everything. ──
+  ok(unassociatedLabels('<label className="x">Name</label><input value="" />').length === 1,
+    'fixture: a sibling label+input with no htmlFor/id pair and no wrapping must be flagged (the exact RED-APP-16/003 shape)');
+  ok(unassociatedLabels('<label htmlFor="a">Name</label><input id="a" />').length === 0,
+    'fixture: an htmlFor/id pair must NOT be flagged');
+  ok(unassociatedLabels('<label>Name<input value="" /></label>').length === 0,
+    'fixture: a wrapping label must NOT be flagged (the other valid shape named in the brief)');
+  ok(placeholderOnlyControls('<input placeholder="Game Name" />').length === 1,
+    'fixture: an input named only by placeholder must be flagged (the pre-fix "Game Name" shape had none at all, but placeholder-only is the broader 15-field class)');
+  ok(placeholderOnlyControls('<input id="a" placeholder="x" /><label htmlFor="a">Name</label>').length === 0,
+    'fixture: a placeholder input that ALSO has a real htmlFor-linked label must NOT be flagged');
+  ok(placeholderOnlyControls('<input aria-label="Name" placeholder="x" />').length === 0,
+    'fixture: a placeholder input with its own aria-label must NOT be flagged (Row/Col Start Point keep this shape)');
+
+  // ── The real tree: walk every src/**/*.tsx file, both checkers, 0 violations. ──
+  function walkTsx(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...walkTsx(p));
+      else if (entry.name.endsWith('.tsx')) out.push(p);
+    }
+    return out;
+  }
+  const tsxFiles = walkTsx('src');
+  ok(tsxFiles.length >= 13, `sanity: found a plausible number of .tsx files, got ${tsxFiles.length}`);
+  const allLabelViolations: string[] = [];
+  const allPlaceholderViolations: string[] = [];
+  for (const file of tsxFiles) {
+    const src = readFileSync(file, 'utf8');
+    for (const v of unassociatedLabels(src)) allLabelViolations.push(`${file}: ${v}`);
+    for (const v of placeholderOnlyControls(src)) allPlaceholderViolations.push(`${file}: ${v}`);
+  }
+  ok(allLabelViolations.length === 0, `every <label> in src/**/*.tsx must be associated: ${JSON.stringify(allLabelViolations)}`);
+  ok(allPlaceholderViolations.length === 0, `no input's only name source may be placeholder: ${JSON.stringify(allPlaceholderViolations)}`);
+
+  // ── MUTATION TEST — stripping the new htmlFor from the exact field
+  //    RED-APP-16/003 named (the Edit dialog's "Game Name", which unlike
+  //    the others has no placeholder at all — so on the real pre-fix tree
+  //    this was the one hit an AX sweep actually saw) must be caught. ──
+  const editGameNameSrc = readFileSync('src/App.tsx', 'utf8');
+  const mutated = editGameNameSrc.replace(
+    `htmlFor={labelFor('edit-game', 'name')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name`,
+    `className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name`,
+  );
+  ok(mutated !== editGameNameSrc, 'mutation-test precondition: the Game Name label\'s htmlFor must be found and strippable');
+  ok(unassociatedLabels(mutated).length === 1,
+    'mutation-test: reverting the Edit dialog\'s Game Name htmlFor must be caught by unassociatedLabels');
+
+  // ── DescriptionEditor forwards its `id` prop to the textarea (checked
+  //    generically above via unassociatedLabels/placeholderOnlyControls
+  //    treating any id= as associated), so the CROSS-file half of the pair
+  //    — that both call sites actually PASS a real id, matching their
+  //    label's htmlFor — is checked explicitly here by name. ──
+  const descEditorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  ok(/<textarea\s[\s\S]{0,40}id=\{id\}/.test(descEditorSrc),
+    'DescriptionEditor\'s textarea must forward the id prop it declares (so a caller\'s htmlFor pairing actually reaches the DOM)');
+  const editDescPair = /htmlFor=\{labelFor\('edit-game', 'description'\)\}[\s\S]{0,700}<DescriptionEditor\s[\s\S]{0,80}id=\{labelFor\('edit-game', 'description'\)\}/.test(app);
+  ok(editDescPair, 'the Edit dialog\'s Game Description label and its DescriptionEditor must share the same labelFor id');
+  const saveDescPair = /htmlFor=\{labelFor\('save-game', 'description'\)\}[\s\S]{0,700}<DescriptionEditor\s[\s\S]{0,80}id=\{labelFor\('save-game', 'description'\)\}/.test(app);
+  ok(saveDescPair, 'the Save dialog\'s Game Description label and its DescriptionEditor must share the same labelFor id');
+
+  // ── MUTATION TEST — stripping the `id` from a real placeholder-only field
+  //    (the register form's Username, one of the original 15) must be
+  //    caught by placeholderOnlyControls. ──
+  const usernameMutated = app.replace(
+    `id={labelFor('auth', 'username')}\n                      type="text"`,
+    `type="text"`,
+  );
+  ok(usernameMutated !== app, 'mutation-test precondition: the Username input\'s id must be found and strippable');
+  ok(placeholderOnlyControls(usernameMutated).length === 1,
+    'mutation-test: reverting the Username field\'s id must be caught by placeholderOnlyControls');
 }
 
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

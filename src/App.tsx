@@ -45,6 +45,7 @@ import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
+import { labelFor } from './utils/a11y';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
 import { ModalSurface, ModalRegistry, useModalTabTrap, firstVisible } from './components/ModalSurface';
@@ -1185,6 +1186,16 @@ export default function App() {
   // the auto-scroll would silently follow the wrong one.
   const logsExpandedRef = useRef<HTMLDivElement>(null);
   const [logExpanded, setLogExpanded] = useState(false);
+  // RED-APP-16/004: "is this container currently scrolled to its own
+  // bottom" for each log copy, kept current only by real scroll events
+  // (handleLogScroll) — see the auto-scroll effect below for why this must
+  // be a ref updated on `scroll`, not a value re-derived when a line lands.
+  const LOG_BOTTOM_TOLERANCE_PX = 4;
+  const logStuckRef = useRef<{ inline: boolean; expanded: boolean }>({ inline: true, expanded: true });
+  const handleLogScroll = useCallback((key: 'inline' | 'expanded') => (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    logStuckRef.current[key] = el.scrollHeight - el.scrollTop - el.clientHeight <= LOG_BOTTOM_TOLERANCE_PX;
+  }, []);
   /** The "Expand log" button — <ModalSurface>'s opener-tracking already
    *  restores focus here on close via a real click/Enter; kept as the JSX
    *  ref target, not read by any effect any more. */
@@ -1210,10 +1221,26 @@ export default function App() {
     firstVisible('[data-focus-fallback="account"] button, [data-focus-fallback="account"]')?.focus();
   }, [user]);
 
-  // Auto-scroll the logs browser to the bottom on new entries
+  // RED-APP-16/004: pin to the bottom only when the user was ALREADY at the
+  // bottom (within LOG_BOTTOM_TOLERANCE_PX) at the moment a line arrives —
+  // not unconditionally, which used to yank a user-set scroll position back
+  // down on every appended entry (inline AND expanded log; mouse, keyboard
+  // and scrollbar scrolling all reproduced it). Tracked in a REF, updated
+  // only by a real `scroll` event (handleLogScroll, on both containers) —
+  // recomputing "was I at the bottom" from the DOM inside this same effect
+  // would read the NEW scrollHeight after React has already grown it for
+  // the appended lines, so the old position could never look like "the
+  // bottom" again even for a user who never moved. A scroll event does not
+  // fire just because content grew below the fold, so the ref keeps
+  // reflecting the last REAL scroll (or the initial/reopen default below)
+  // exactly through the append that would otherwise have overwritten it.
   useEffect(() => {
-    for (const container of [logsContainerRef.current, logsExpandedRef.current]) {
-      if (container) container.scrollTop = container.scrollHeight;
+    const targets: Array<['inline' | 'expanded', HTMLDivElement | null]> = [
+      ['inline', logsContainerRef.current],
+      ['expanded', logsExpandedRef.current],
+    ];
+    for (const [key, container] of targets) {
+      if (container && logStuckRef.current[key]) container.scrollTop = container.scrollHeight;
     }
   }, [logEntries, logExpanded]);
 
@@ -1255,6 +1282,10 @@ export default function App() {
   const mountLogRegion = useCallback((el: HTMLDivElement | null) => {
     logsExpandedRef.current = el;
     if (el) {
+      // RED-APP-16/004: every (re)mount is a fresh open of the dialog, so
+      // the expanded copy starts "at the bottom" again regardless of
+      // whatever the PREVIOUS mount's scroll position left in the ref.
+      logStuckRef.current.expanded = true;
       el.scrollTop = el.scrollHeight;
       el.focus();
     }
@@ -4300,6 +4331,7 @@ export default function App() {
         tabIndex={0}
         role="region"
         aria-label="Simulation log"
+        onScroll={handleLogScroll('inline')}
         className={`w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900 ${useFlexLog ? 'flex-1 min-h-0' : (simState.converged ? 'h-44' : 'h-80')}`}
       >
         {logLines}
@@ -4364,6 +4396,7 @@ export default function App() {
           tabIndex={0}
           role="region"
           aria-label="Simulation log"
+          onScroll={handleLogScroll('expanded')}
           className="flex-1 min-h-0 w-full overflow-y-auto bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 rounded-xl p-5 font-mono text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 block leading-relaxed select-text focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:focus:ring-emerald-900"
         >
           {logLines}
@@ -4817,9 +4850,10 @@ export default function App() {
             {/* Starting coordinate fields */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
+                <label htmlFor={labelFor('coords', 'x0')} className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
                 <div className="relative">
                   <input
+                    id={labelFor('coords', 'x0')}
                     type="number"
                     min="0.0"
                     max="1.0"
@@ -4856,9 +4890,10 @@ export default function App() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-player-b-600 dark:text-player-b-400 font-semibold mb-1">Col Start Point (y₀)</label>
+                <label htmlFor={labelFor('coords', 'y0')} className="block text-xs text-player-b-600 dark:text-player-b-400 font-semibold mb-1">Col Start Point (y₀)</label>
                 <div className="relative">
                   <input
+                    id={labelFor('coords', 'y0')}
                     type="number"
                     min="0.0"
                     max="1.0"
@@ -4898,8 +4933,12 @@ export default function App() {
 
             {/* Who moves first choice */}
             <div>
-              <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Who moves first?</label>
-              <div className="grid grid-cols-2 gap-2">
+              {/* RED-APP-16/003: not a single-control label — heading over a
+                  button GROUP, so it is a plain heading (id + aria-labelledby
+                  on the group) rather than a `<label>` with no control to
+                  associate via htmlFor. */}
+              <div id={labelFor('group', 'first-mover')} className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Who moves first?</div>
+              <div role="group" aria-labelledby={labelFor('group', 'first-mover')} className="grid grid-cols-2 gap-2">
                 {(['A', 'B'] as const).map((player) => {
                   const active = firstMover === player;
                   return (
@@ -4922,8 +4961,9 @@ export default function App() {
 
             {/* visual tracking choice */}
             <div>
-              <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Expected Payoff Surface Tracking</label>
-              <div className="grid grid-cols-3 gap-1.5">
+              {/* RED-APP-16/003: group heading, see "Who moves first?" above. */}
+              <div id={labelFor('group', 'tracking')} className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Expected Payoff Surface Tracking</div>
+              <div role="group" aria-labelledby={labelFor('group', 'tracking')} className="grid grid-cols-3 gap-1.5">
                 {(['A', 'B', 'both'] as const).map((m) => {
                   const active = trackingMode === m;
                   return (
@@ -4948,8 +4988,9 @@ export default function App() {
 
             {/* Convergence method */}
             <div data-tour="method">
-              <label className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Convergence Method</label>
-              <div className="grid grid-cols-2 gap-2">
+              {/* RED-APP-16/003: group heading, see "Who moves first?" above. */}
+              <div id={labelFor('group', 'convergence-method')} className="block text-xs text-slate-600 dark:text-slate-300 font-medium mb-1.5">Convergence Method</div>
+              <div role="group" aria-labelledby={labelFor('group', 'convergence-method')} className="grid grid-cols-2 gap-2">
                 {([
                   { key: 'shrink', label: 'Domain Shrink' },
                   { key: 'regret', label: 'Opponent Regret' },
@@ -5781,10 +5822,11 @@ export default function App() {
             <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3.5">
               {authMode === 'register' && (
                 <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Username</label>
+                  <label htmlFor={labelFor('auth', 'username')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Username</label>
                   <div className="relative">
                     <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                     <input
+                      id={labelFor('auth', 'username')}
                       type="text"
                       className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                       placeholder="game_theorist"
@@ -5799,12 +5841,13 @@ export default function App() {
               {(authMode === 'login' || authMode === 'register') && (
                 <>
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
+                    <label htmlFor={labelFor('auth', 'email')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
                       {authMode === 'login' ? 'Email or Username' : 'Email Address'}
                     </label>
                     <div className="relative">
                       <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
+                        id={labelFor('auth', 'email')}
                         type={authMode === 'login' ? 'text' : 'email'}
                         className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={authMode === 'login' ? 'john@example.com or username' : 'john@example.com'}
@@ -5816,10 +5859,11 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Password</label>
+                    <label htmlFor={labelFor('auth', 'password')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Password</label>
                     <div className="relative">
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
+                        id={labelFor('auth', 'password')}
                         type="password"
                         className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder="••••••••"
@@ -5837,10 +5881,11 @@ export default function App() {
 
                   {authMode === 'register' && (
                     <div>
-                      <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Retype Password</label>
+                      <label htmlFor={labelFor('auth', 'confirm-password')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Retype Password</label>
                       <div className="relative">
                         <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                         <input
+                          id={labelFor('auth', 'confirm-password')}
                           type="password"
                           className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-300 dark:focus:ring-slate-700 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                           placeholder="••••••••"
@@ -5866,10 +5911,11 @@ export default function App() {
               {authMode === 'verify' && (
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">6-Digit Confirmation Code</label>
+                    <label htmlFor={labelFor('auth', 'verify-code')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">6-Digit Confirmation Code</label>
                     <div className="relative">
                       <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
+                        id={labelFor('auth', 'verify-code')}
                         type="text"
                         maxLength={6}
                         className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-center text-slate-800 dark:text-slate-200"
@@ -5888,10 +5934,11 @@ export default function App() {
                   <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
                     Enter the email address associated with your account and we'll send you a 6-digit recovery code.
                   </p>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email Address</label>
+                  <label htmlFor={labelFor('auth', 'forgot-email')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email Address</label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                     <input
+                      id={labelFor('auth', 'forgot-email')}
                       type="email"
                       className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                       placeholder="john@example.com"
@@ -5906,10 +5953,11 @@ export default function App() {
               {authMode === 'reset-password' && (
                 <div className="space-y-3.5">
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">6-Digit Recovery Code</label>
+                    <label htmlFor={labelFor('auth', 'recovery-code')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">6-Digit Recovery Code</label>
                     <div className="relative">
                       <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
+                        id={labelFor('auth', 'recovery-code')}
                         type="text"
                         maxLength={6}
                         className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm tracking-widest font-mono font-bold bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100 focus:border-slate-300 text-center text-slate-800 dark:text-slate-200"
@@ -5921,10 +5969,11 @@ export default function App() {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">New Password</label>
+                    <label htmlFor={labelFor('auth', 'reset-new-password')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">New Password</label>
                     <div className="relative">
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
+                        id={labelFor('auth', 'reset-new-password')}
                         type="password"
                         className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder="••••••••"
@@ -5938,10 +5987,11 @@ export default function App() {
                     </p>
                   </div>
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Confirm New Password</label>
+                    <label htmlFor={labelFor('auth', 'reset-confirm-password')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Confirm New Password</label>
                     <div className="relative">
                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
+                        id={labelFor('auth', 'reset-confirm-password')}
                         type="password"
                         className="w-full pl-9 pr-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-100/50 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder="••••••••"
@@ -6109,8 +6159,9 @@ export default function App() {
 
             <form onSubmit={handleEditGameSubmit} className="flex flex-col gap-4">
               <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
+                <label htmlFor={labelFor('edit-game', 'name')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
                 <input
+                  id={labelFor('edit-game', 'name')}
                   type="text"
                   className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   value={editName}
@@ -6126,11 +6177,12 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
+                <label htmlFor={labelFor('edit-game', 'description')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
                 {/* Same 800 as the save modal and the server clamp — an
                     AI-kept description can legitimately be this long, and a
                     lower cap here would lock editing of exactly those games. */}
                 <DescriptionEditor
+                  id={labelFor('edit-game', 'description')}
                   value={editDesc}
                   onChange={setEditDesc}
                   termsA={editTerms.a}
@@ -6145,10 +6197,14 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
+                {/* RED-APP-16/003: group heading over 4 separate inputs, see
+                    "Who moves first?" above — each input below gets its OWN
+                    real <label> (was a bare <span>, named only by
+                    placeholder) instead. */}
+                <div id={labelFor('edit-labels', 'group')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
                   Option Names <span className="font-normal text-muted dark:text-muted-dark">(optional)</span>
-                </label>
-                <div className="grid grid-cols-2 gap-2">
+                </div>
+                <div role="group" aria-labelledby={labelFor('edit-labels', 'group')} className="grid grid-cols-2 gap-2">
                   {([
                     ['row1', "A's Row 1", 'e.g. Undercut'],
                     ['row2', "A's Row 2", 'e.g. Hold price'],
@@ -6156,10 +6212,11 @@ export default function App() {
                     ['col2', "B's Col 2", 'e.g. Ignore'],
                   ] as const).map(([key, label, placeholder]) => (
                     <div key={key}>
-                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                      <label htmlFor={labelFor('edit-labels', key)} className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
                         {label}
-                      </span>
+                      </label>
                       <input
+                        id={labelFor('edit-labels', key)}
                         type="text"
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
@@ -6513,8 +6570,9 @@ export default function App() {
 
             <form onSubmit={handleSaveGameSubmit} className="flex flex-col gap-3.5">
               <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
+                <label htmlFor={labelFor('save-game', 'name')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Name</label>
                 <input
+                  id={labelFor('save-game', 'name')}
                   type="text"
                   className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                   placeholder="e.g. Battle of the Sexes 2.0"
@@ -6531,13 +6589,14 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
+                <label htmlFor={labelFor('save-game', 'description')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Game Description</label>
                 {/* Matches the server's clamp (cleanText(description, 800)).
                     A cap BELOW what prefill can supply locks the field: a
                     controlled textarea already over maxLength rejects every
                     keystroke, which read as "can't edit the description"
                     when an AI-invented scenario prefilled ~300+ chars. */}
                 <DescriptionEditor
+                  id={labelFor('save-game', 'description')}
                   value={saveDesc}
                   onChange={setSaveDesc}
                   termsA={saveTerms.a}
@@ -6557,10 +6616,12 @@ export default function App() {
                   to reuse this game's story instead of inventing a new one, and
                   they replace "Row 1"/"Col 2" in the matrix headers. */}
               <div>
-                <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
+                {/* RED-APP-16/003: group heading, see the Edit dialog's
+                    identical "Option Names" block above. */}
+                <div id={labelFor('save-labels', 'group')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
                   Option Names <span className="font-normal text-muted dark:text-muted-dark">(optional)</span>
-                </label>
-                <div className="grid grid-cols-2 gap-2">
+                </div>
+                <div role="group" aria-labelledby={labelFor('save-labels', 'group')} className="grid grid-cols-2 gap-2">
                   {([
                     ['row1', "A's Row 1", 'e.g. Undercut'],
                     ['row2', "A's Row 2", 'e.g. Hold price'],
@@ -6568,10 +6629,11 @@ export default function App() {
                     ['col2', "B's Col 2", 'e.g. Ignore'],
                   ] as const).map(([key, label, placeholder]) => (
                     <div key={key}>
-                      <span className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
+                      <label htmlFor={labelFor('save-labels', key)} className={`block text-[10px] font-semibold mb-0.5 ${key.startsWith('row') ? 'text-player-a-500' : 'text-player-b-600 dark:text-player-b-400'}`}>
                         {label}
-                      </span>
+                      </label>
                       <input
+                        id={labelFor('save-labels', key)}
                         type="text"
                         className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                         placeholder={placeholder}
@@ -6734,8 +6796,11 @@ export default function App() {
 
                 <form onSubmit={handleFeedbackSubmit} className="flex flex-col gap-3.5">
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1.5">Rating <span className="font-normal text-slate-400">(optional)</span></label>
-                    <div className="flex items-center gap-1">
+                    {/* RED-APP-16/003: group heading over the 5 star
+                        buttons (each already has its own aria-label), see
+                        "Who moves first?" above. */}
+                    <div id={labelFor('feedback', 'rating')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1.5">Rating <span className="font-normal text-slate-400">(optional)</span></div>
+                    <div role="group" aria-labelledby={labelFor('feedback', 'rating')} className="flex items-center gap-1">
                       {[1, 2, 3, 4, 5].map((n) => (
                         <button
                           key={n}
@@ -6759,8 +6824,9 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Your feedback</label>
+                    <label htmlFor={labelFor('feedback', 'text')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Your feedback</label>
                     <textarea
+                      id={labelFor('feedback', 'text')}
                       className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-28 resize-none text-slate-800 dark:text-slate-200"
                       placeholder="Questions, concerns, or feedback…"
                       value={feedbackText}
@@ -6772,8 +6838,9 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email <span className="font-normal text-slate-400">(optional — for a reply)</span></label>
+                    <label htmlFor={labelFor('feedback', 'email')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">Email <span className="font-normal text-slate-400">(optional — for a reply)</span></label>
                     <input
+                      id={labelFor('feedback', 'email')}
                       type="email"
                       className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-800 dark:text-slate-200"
                       placeholder="you@example.com (leave blank to stay anonymous)"

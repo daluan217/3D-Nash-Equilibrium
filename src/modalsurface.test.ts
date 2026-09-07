@@ -344,8 +344,8 @@ const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'u
 // in the SAME ref callback that already solved this ordering problem for
 // focus; the callback is renamed `mountLogRegion` to reflect doing both.
 {
-  ok(/const mountLogRegion = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) \{\s*\n\s*el\.scrollTop = el\.scrollHeight;\s*\n\s*el\.focus\(\);\s*\n\s*\}\s*\n\s*\}, \[\]\);/.test(app),
-    'App.tsx must focus AND scroll-to-bottom the log region via the SAME stable (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2)');
+  ok(/const mountLogRegion = useCallback\(\(el: HTMLDivElement \| null\) => \{\s*\n\s*logsExpandedRef\.current = el;\s*\n\s*if \(el\) \{\s*\n\s*logStuckRef\.current\.expanded = true;\s*\n\s*el\.scrollTop = el\.scrollHeight;\s*\n\s*el\.focus\(\);\s*\n\s*\}\s*\n\s*\}, \[\]\);/.test(app),
+    'App.tsx must focus AND scroll-to-bottom the log region via the SAME stable (useCallback, empty deps) ref callback, not an inline arrow function or a [logExpanded]-keyed effect (OPUS-REVIEW-MODAL FIX-BEFORE-MERGE 2); it must also reset logStuckRef.current.expanded to true on (re)mount (RED-APP-16/004)');
   ok(/ref=\{mountLogRegion\}/.test(app),
     'the log region\'s own div must use the stable mountLogRegion ref callback');
   ok(!/autoFocus/.test((app.match(/aria-label="Simulation log"[\s\S]{0,400}/) ?? [''])[0]),
@@ -523,8 +523,10 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     'fetchStats must bail out immediately after the fetch() await if the generation moved on (CodeRabbit CLI)');
   ok(/const data = await res\.json\(\);\s*\n\s*if \(gen !== requestGenRef\.current\) return;\s*\n\s*setStats\(data\);/.test(admin),
     'fetchStats must re-check the generation after res.json() too, before setStats/setAuthed (CodeRabbit CLI)');
-  ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\('Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
+  ok(/\} catch \{\s*\n\s*if \(gen === requestGenRef\.current\) setError\(wasAuthed \? 'Could not refresh the stats\.' : 'Could not reach the server\.'\);\s*\n\s*\}\s*\n\s*if \(gen === requestGenRef\.current\) setLoading\(false\);/.test(admin),
     'fetchStats must gate its catch-block setError AND the trailing setLoading(false) on the generation too, not just the success path (CodeRabbit CLI)');
+  ok(/const wasAuthed = authed;/.test(admin),
+    'fetchStats must capture `authed` (Refresh vs initial Login) before its own await, same as `gen` (RED-APP-16/005)');
   // OPUS-REVIEW-MODAL16 N4: Sign out is a THIRD site that touches
   // authed/stats/password — the generation ref invariant applies to it too,
   // or a Refresh started just before Sign out still lands and re-auths the
@@ -572,6 +574,51 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     'Walkthrough\'s tour card must use inert={blocked}, not aria-hidden (OPUS-REVIEW-MODAL16 F2)');
   ok(!/aria-hidden=\{blocked\}/.test(walkthrough),
     'Walkthrough must not have any remaining aria-hidden={blocked} — inert replaces it entirely (OPUS-REVIEW-MODAL16 F2)');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RED-APP-16/005 — `error` used to render ONLY in the `!authed` (password
+// prompt) branch; a Refresh failure (401 stale secret, 429 rate limit, a
+// dropped connection) set `error` into a state nothing could display, and the
+// stale stat numbers stayed on screen with no sign anything had failed.
+// Fixed: a 401 on an authed fetch signs the panel back out (mirroring
+// Sign-out's own reset, item (a) of round16/COMMON.md v5's self-adversarial
+// checklist) so the existing `!authed`-branch error slot shows it; every
+// OTHER failure renders a dedicated error banner + Retry in the authed
+// branch instead of being silently dropped.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  ok(/if \(res\.status === 401\) \{\s*\n\s*requestGenRef\.current \+= 1;\s*\n\s*setAuthed\(false\); setStats\(null\); setPassword\(''\);\s*\n\s*setError\('Incorrect password\.'\);\s*\n\s*setLoading\(false\);\s*\n\s*return;\s*\n\s*\}/.test(admin),
+    'a 401 in fetchStats must bump requestGenRef and reset authed/stats/password — mirroring Sign-out\'s own reset — while KEEPING the error message (Sign-out itself clears it) so the password prompt explains why the panel signed back out (RED-APP-16/005)');
+
+  // The authed branch (`stats ? (...)`) must render `error`, with a Retry
+  // that re-issues the SAME request (fetchStats(password)) — isolated to
+  // the authed branch specifically (between `stats ? (` and the stat-cards
+  // comment that already follows it), not merely present somewhere in the
+  // file (the `!authed` branch already renders `error`, so a bare
+  // `/\{error &&/.test(admin)` could never fail even on the pre-fix tree).
+  const authedBranchStart = admin.indexOf('stats ? (');
+  ok(authedBranchStart > 0, 'the authed (stats-present) branch must be found');
+  const statCardsIdx = admin.indexOf('<StatCard icon=', authedBranchStart);
+  ok(statCardsIdx > authedBranchStart, 'the stat cards must be found after the authed branch opens');
+  const authedBranchHead = admin.slice(authedBranchStart, statCardsIdx);
+  ok(/\{error && \(/.test(authedBranchHead),
+    `the authed branch must render {error && (...)} BEFORE the stat cards, got: ${JSON.stringify(authedBranchHead)}`);
+  ok(/onClick=\{\(\) => fetchStats\(password\)\}/.test(authedBranchHead),
+    'the authed branch\'s error banner must offer a Retry that calls fetchStats(password) again');
+  ok(/Retry/.test(authedBranchHead), 'the authed branch\'s error banner must be labelled Retry');
+
+  // ── MUTATION TEST — removing the authed branch's error banner (leaving
+  //    the 401-reset fix in place) must be caught: a 429/network failure
+  //    would once again have nowhere to render. ──
+  const mutatedAdmin = admin.replace(
+    authedBranchHead,
+    authedBranchHead.replace(/\{error && \([\s\S]*?\)\}\s*/, ''),
+  );
+  ok(mutatedAdmin !== admin, 'mutation-test precondition: the authed branch\'s error banner must be found and strippable');
+  const mutatedHead = mutatedAdmin.slice(authedBranchStart, mutatedAdmin.indexOf('<StatCard icon=', authedBranchStart));
+  ok(!/\{error && \(/.test(mutatedHead),
+    'mutation-test: removing the authed branch\'s error banner must be caught by the check above');
 }
 
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

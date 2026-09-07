@@ -35,6 +35,7 @@ import { clampGraphemeSafe, wouldExceedGraphemeBudget } from '../utils/textSafet
  * Shared by the save and edit dialogs so the two cannot drift apart.
  */
 export function DescriptionEditor({
+  id,
   value,
   onChange,
   termsA,
@@ -47,6 +48,10 @@ export function DescriptionEditor({
   placeholder = 'What is this game about?',
   maxLength = 800,
 }: {
+  /** RED-APP-16/003: forwarded to the textarea so a caller's `<label
+   *  htmlFor>` can associate with it — without this the textarea's only
+   *  name source was `placeholder`, which disappears once the user types. */
+  id?: string;
   value: string;
   onChange: (v: string) => void;
   termsA: string[];
@@ -181,6 +186,7 @@ export function DescriptionEditor({
   return (
     <div>
       <textarea
+        id={id}
         ref={taRef}
         className="w-full px-3 py-2 text-xs md:text-sm bg-slate-50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 h-24 resize-none text-slate-800 dark:text-slate-200"
         placeholder={placeholder}

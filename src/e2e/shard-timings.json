@@ -1,4 +1,8 @@
 {
+ "_comment": "Section durations in ms from CI SECTION-PASS lines (scripts/shard-timings-from-run.mjs <run-id>). selection.js packs shards from these; a section with no entry uses _default and fails e2esharding.test.ts until measured.",
+ "_default": 90000,
+ "_overhead_ms": 75000,
+ "_ceiling_ms": 300000,
  "1": 14660,
  "2": 19,
  "3": 14313,
@@ -60,17 +64,15 @@
  "67": 140877,
  "68": 170393,
  "69": 43402,
+ "6b": 30221,
  "70": 165419,
  "71": 17072,
  "74": 146784,
- "_comment": "Section durations in ms from CI SECTION-PASS lines (scripts/shard-timings-from-run.mjs <run-id>). selection.js packs shards from these; a section with no entry uses _default and fails e2esharding.test.ts until measured.",
- "_default": 90000,
- "_overhead_ms": 75000,
- "_ceiling_ms": 300000,
- "6b": 30221,
- "66b": 180203,
  "75": 166674,
  "76": 80000,
  "78": 88043,
- "80": 169728
+ "80": 169728,
+ "85": 128735,
+ "86": 52472,
+ "66b": 180203
 }
