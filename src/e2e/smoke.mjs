@@ -5791,9 +5791,23 @@ try {
             markerSizedControl[i].cy - markerSizedControl[j].cy));
         }
       }
+      // CodeRabbit outside-diff (#168, director-confirmed): the SIZE window
+      // above is self-calibrated (0.5x-1.5x of THIS run's own real corner
+      // diagonal), but this pairwise-SEPARATION bound stayed a flat 15px —
+      // on CI (~42px CONTROL diagonal observed), one glyph's own
+      // anti-alias fragments can sit up to ~1x its bbox diagonal apart,
+      // comfortably clearing a hard-coded 15px and reading as "two
+      // separated markers" when it is really one split glyph. Derive the
+      // bound from the SAME calibrated diagonal, at the window's own 1.5x
+      // safety multiplier (not 1.0x — a single glyph's fragments have been
+      // observed spanning UP TO ~1x the diagonal, so the bound must clear
+      // that ceiling with margin, not sit exactly on it); 15 stays ONLY as
+      // the calibration-failed fallback (never silently widens to "nothing
+      // can pass" — matches controlWindow's own fallback discipline above).
+      const controlSepThreshold = controlCal?.diag ? controlCal.diag * 1.5 : 15;
       record('CONTROL (700x500, default camera): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not stray-UI-inflated, not one glyph\'s own anti-alias fragments)',
-        markerSizedControl.length >= 2 && maxSepControl > 15,
-        JSON.stringify({ spanControl, maxSepControl, markerSizedCount: markerSizedControl.length, controlWindow, calibratedDiag: controlCal?.diag ?? null, ...controlBlobs }));
+        markerSizedControl.length >= 2 && maxSepControl > controlSepThreshold,
+        JSON.stringify({ spanControl, maxSepControl, controlSepThreshold, markerSizedCount: markerSizedControl.length, controlWindow, calibratedDiag: controlCal?.diag ?? null, ...controlBlobs }));
 
       // ── FIX (under-collapse, RED-MATH-15/001 az195): back to the narrow
       //    318x298 outer container (real plot div 276x256), RED's exact
@@ -6318,9 +6332,16 @@ try {
                 markerSized17m[i].cy - markerSized17m[j].cy));
             }
           }
+          // CodeRabbit outside-diff (#168, director-confirmed): same fix as
+          // the CONTROL row above — derive the separation bound from THIS
+          // row's own calibrated diagonal (diag17m) at the window's 1.5x
+          // safety multiplier, not a flat 15px a single glyph's own
+          // fragments (observed spanning up to ~1x the diagonal on CI) can
+          // clear. 15 stays only as the calibration-failed fallback.
+          const sepThreshold17m = diag17m ? diag17m * 1.5 : 15;
           record('FIX (RED-MATH-17/001 variant B): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not one glyph\'s own anti-alias fragments), confirming genuine (not merely undetected) separation',
-            markerSized17m.length >= 2 && maxSep17m > 15,
-            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: diag17m, rawCal17mDiag: cal17m?.diag ?? null, ...scan17m }));
+            markerSized17m.length >= 2 && maxSep17m > sepThreshold17m,
+            JSON.stringify({ maxSep17m, sepThreshold17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: diag17m, rawCal17mDiag: cal17m?.diag ?? null, ...scan17m }));
         } finally { await p17mobile.close().catch(() => {}); }
 
         // RED-MATH-16/001: az105, forced 700x500 (the canonical viewport,
@@ -8259,6 +8280,14 @@ try {
       // ── Arm 1: inline log, mouse-wheel scroll away from the bottom ──
       await logBox.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
       const before1 = await logBox.evaluate((el) => el.scrollTop);
+      // CodeRabbit CLI (this review): before1 alone does not prove the log
+      // was STILL away from the bottom at this instant — the log appends a
+      // new line every ~550ms, so if the pin-to-bottom defect were present,
+      // it could already have snapped scrollTop back before this read,
+      // making before1 itself an "at bottom" value; after1 would then match
+      // it and the check below would pass with the defect present.
+      const away1 = await logBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight > 20);
+      record('§86 precondition: the inline log actually left the bottom before a line appended', away1, `scrollTop=${before1}`);
       const lines1 = await p.locator('[role="region"][aria-label="Simulation log"] > *').count();
       await p.waitForFunction(
         (n) => document.querySelectorAll('[role="region"][aria-label="Simulation log"] > *').length > n,
@@ -8306,6 +8335,10 @@ try {
       await p.evaluate(() => { window.__lastScrollTop = -1; });
       await stableScrollTop();
       const beforeExp = await expandedBox.evaluate((el) => el.scrollTop);
+      // CodeRabbit CLI (this review): same gap as arm 1 — beforeExp settling
+      // does not itself prove the log was away from the bottom; assert it.
+      const awayExp = await expandedBox.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight > 20);
+      record('§86 precondition: the expanded log actually left the bottom before a line appended', awayExp, `scrollTop=${beforeExp}`);
       const linesExp = await p.locator('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').count();
       await p.waitForFunction(
         (n) => document.querySelectorAll('[role="dialog"] [role="region"][aria-label="Simulation log"] > *').length > n,
