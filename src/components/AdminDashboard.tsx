@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Users, GamepadIcon, ShieldCheck, ShieldX, TrendingUp, RefreshCw, LogOut, X } from 'lucide-react';
+import { ModalSurface } from './ModalSurface';
 
 interface AdminStats {
   totalUsers: number;
@@ -12,13 +13,20 @@ interface AdminStats {
 }
 
 interface AdminDashboardProps {
+  open: boolean;
   onClose: () => void;
   isDark: boolean;
   isElectron: boolean;
   apiBaseUrl: string;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark, isElectron, apiBaseUrl }) => {
+/** RED-APP-15/002: this overlay used to hand-roll `fixed inset-0` with no
+ *  role, no Escape, no Tab trap and no ModalRegistry membership — reachable
+ *  by a real triple-click on the header icon (App.tsx), it let its own
+ *  keystrokes drive the guided tour underneath it and let a second dialog
+ *  (the drawer) open stacked behind it. Now goes through <ModalSurface> like
+ *  every other overlay in the app (see docs/MODAL-SURFACE.md). */
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ open, onClose, isDark, isElectron, apiBaseUrl }) => {
   const adminUrl = (path: string) =>
     isElectron ? `${apiBaseUrl.trim().replace(/\/$/, '') || 'https://nash-equilibrium-simulator.com'}${path}` : path;
   const [password, setPassword] = useState('');
@@ -27,22 +35,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // CodeRabbit CLI: the component now stays mounted across opens (ModalSurface
+  // hides it, App.tsx renders it unconditionally) — without this, closing kept
+  // the admin secret in memory and reopening (a triple-click anyone at the
+  // machine can do) showed the cached user table with no password prompt.
+  //
+  // CodeRabbit CLI (PR #162 follow-up): resetting state on close is not
+  // enough on its own — an in-flight fetchStats() started before the close
+  // can still resolve AFTER it and write stats/authed right back in. A
+  // request-generation ref, bumped on close and checked before every
+  // post-await state update, makes a stale continuation a no-op.
+  const requestGenRef = useRef(0);
+  useEffect(() => {
+    if (open) return;
+    requestGenRef.current += 1;
+    setAuthed(false); setPassword(''); setStats(null); setError(''); setLoading(false);
+  }, [open]);
+
   const fetchStats = async (secret: string) => {
+    const gen = requestGenRef.current;
     setLoading(true);
     setError('');
     try {
       const res = await fetch(adminUrl('/api/admin/stats'), {
         headers: { 'x-admin-secret': secret },
       });
+      if (gen !== requestGenRef.current) return;
       if (res.status === 401) { setError('Incorrect password.'); setLoading(false); return; }
       if (!res.ok) throw new Error('Server error');
       const data = await res.json();
+      if (gen !== requestGenRef.current) return;
       setStats(data);
       setAuthed(true);
     } catch {
-      setError('Could not reach the server.');
+      if (gen === requestGenRef.current) setError('Could not reach the server.');
     }
-    setLoading(false);
+    if (gen === requestGenRef.current) setLoading(false);
   };
 
   const StatCard = ({ icon, label, value, sub }: { icon: React.ReactNode; label: string; value: number; sub?: string }) => (
@@ -57,10 +85,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className={`relative w-full max-w-3xl rounded-2xl border shadow-2xl flex flex-col max-h-[90vh] ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
-
+    <ModalSurface
+      id="admin"
+      open={open}
+      onClose={onClose}
+      ariaLabel="Admin dashboard"
+      // OPUS-REVIEW-MODAL16 N3: same as OVERLAY_CLASS (ModalSurface.tsx) MINUS
+      // select-none — this panel's whole reason to exist is a table of user
+      // emails and counts an operator wants to copy. Keeps z-[65] (NOT
+      // DownloadModal's z-50): that is what puts Admin above the guided tour's
+      // z-[60] (OPUS-REVIEW-MODAL16 note 7) — copying DownloadModal's overlay
+      // class verbatim would silently drop Admin back under the tour.
+      overlayClassName="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+      panelClassName={`relative w-full max-w-3xl rounded-2xl border shadow-2xl flex flex-col max-h-[90vh] ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
+    >
         {/* Header */}
         <div className={`flex items-center justify-between p-4 border-b ${isDark ? 'border-slate-800' : 'border-slate-200'}`}>
           <div className="flex items-center gap-2">
@@ -74,11 +112,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
               </button>
             )}
             {authed && (
-              <button onClick={() => { setAuthed(false); setStats(null); setPassword(''); }} className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-500 cursor-pointer">
+              // OPUS-REVIEW-MODAL16 N4 + CodeRabbit CLI (PR #162 follow-up):
+              // Sign out must invalidate the same generation an in-flight
+              // Refresh checks (else a Refresh started just before Sign out
+              // still lands and re-auths the panel), AND reset loading/error
+              // the same way the close effect does — otherwise a Refresh
+              // in flight at Sign-out time skips its own setLoading(false)
+              // (the generation check returns early) and the Login button
+              // stays disabled until the whole panel closes.
+              <button onClick={() => { requestGenRef.current += 1; setAuthed(false); setStats(null); setPassword(''); setLoading(false); setError(''); }} className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-500 cursor-pointer">
                 <LogOut className="w-3.5 h-3.5" /> Sign out
               </button>
             )}
-            <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 cursor-pointer">
+            {/* OPUS-REVIEW-MODAL16 F1: this button is the panel's first
+                focusable (the trap parks open-time focus here), so it needs
+                a real accessible name — an icon-only button announces
+                nothing and a screen-reader user has no idea what it does. */}
+            <button onClick={onClose} aria-label="Close admin dashboard" className="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 cursor-pointer">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -96,6 +146,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
                   onChange={e => setPassword(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && fetchStats(password)}
                   placeholder="Admin password"
+                  // OPUS-REVIEW-MODAL16 F1: without this, the trap's open-time
+                  // focus lands on the close X (first in DOM order) instead —
+                  // autoFocus wins over that because it commits in the SAME
+                  // phase, strictly before the trap's passive effect runs.
+                  autoFocus
                   className={`flex-1 px-3 py-2 text-sm rounded-xl border focus:outline-none focus:ring-2 focus:ring-accent-300 ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-800'}`}
                 />
                 <button
@@ -156,7 +211,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose, isDark,
             </>
           ) : null}
         </div>
-      </div>
-    </div>
+    </ModalSurface>
   );
 };

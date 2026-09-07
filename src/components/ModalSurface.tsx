@@ -47,6 +47,25 @@ export function getModalFocusables(container: HTMLElement): HTMLElement[] {
   ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
 }
 
+/** RED-APP-15/001: the panel itself and any `tabIndex={-1}` landmark inside it
+ *  (e.g. SavedGamesList's `[data-focus-fallback]` wrappers) can become
+ *  `document.activeElement` via a mouse click but are never in `focusables`.
+ *  Route Tab by DOM order relative to `from` rather than a fixed boundary, so
+ *  a landmark with real controls nested after it (a populated list) still
+ *  advances into them; only wrap when there is nothing after/before it. */
+function focusableAfter(focusables: HTMLElement[], from: Node): HTMLElement {
+  for (const el of focusables) {
+    if (from.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) return el;
+  }
+  return focusables[0];
+}
+function focusableBefore(focusables: HTMLElement[], from: Node): HTMLElement {
+  for (let i = focusables.length - 1; i >= 0; i--) {
+    if (from.compareDocumentPosition(focusables[i]) & Node.DOCUMENT_POSITION_PRECEDING) return focusables[i];
+  }
+  return focusables[focusables.length - 1];
+}
+
 /** A real interactive control — never a `tabIndex={-1}` container used only
  *  as a focus-parking landmark or panel (see RED-APP-14/005 below). */
 const REAL_CONTROL_SELECTOR = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -189,19 +208,27 @@ export function useModalTabTrap(open: boolean, containerRef: RefObject<HTMLEleme
       // this finding reproduced: N tabs in, focus lands past `last` on a
       // background element) — not just the two boundary elements, so a
       // focus that has already escaped is pulled back in rather than only
-      // preventing the NEXT escape. OPUS-REVIEW-MODAL BLOCK 1: `Node.contains()`
-      // returns true for the node ITSELF, so `document.activeElement ===
-      // container` (the panel — now mouse-focusable via `tabIndex={-1}`; a
-      // plain click on the dialog's own dead space, e.g. its padding or
-      // heading, focuses it with every control still enabled) used to fall
-      // through all three branches below with no `preventDefault()`, letting
-      // the browser's own backward Tab navigation walk out of the dialog on
-      // Chromium and Firefox (RED-APP-5/002's exact shape). Treat the panel
-      // itself as "at the edge" too: Tab/Shift+Tab from it go to first/last,
-      // same as focus already outside.
-      if (!container.contains(document.activeElement) || document.activeElement === container) {
+      // preventing the NEXT escape (RED-APP-5/002). `Node.contains()` returns
+      // true for the node itself, so this alone does not catch the panel.
+      if (!container.contains(document.activeElement)) {
+        // Already fully outside the dialog — DOM order to a node outside it
+        // is meaningless, so land at the near boundary same as before.
         e.preventDefault();
         (e.shiftKey ? last : first).focus();
+        return;
+      }
+      const active = document.activeElement as HTMLElement;
+      if (!focusables.includes(active)) {
+        // RED-APP-15/001: `active` is not in `focusables` — either the panel
+        // itself (never matched by getModalFocusables' selector, so this
+        // covers OPUS-REVIEW-MODAL BLOCK 1's `=== container` case too) or a
+        // `tabIndex={-1}` landmark inside it (SavedGamesList's
+        // data-focus-fallback wrappers). Route by DOM position instead of a
+        // fixed boundary (see focusableAfter/Before above) — for the
+        // container every focusable already follows it, so this reduces to
+        // the old first/last behaviour unchanged.
+        e.preventDefault();
+        (e.shiftKey ? focusableBefore(focusables, active) : focusableAfter(focusables, active)).focus();
         return;
       }
       if (e.shiftKey && document.activeElement === first) {

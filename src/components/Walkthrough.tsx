@@ -224,6 +224,23 @@ export function Walkthrough({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, close, steps.length]);
 
+  // RED-APP-15/003: the keydown gate above has no pointer equivalent, and the
+  // drawer's overlay (z-50) sits BELOW the tour (z-[60]) — the only one of
+  // six surfaces that does — so a real click on the tour's own Next/Back/Skip
+  // reaches it right through an open, aria-modal drawer and rewrites the
+  // board. Track ModalRegistry's stack (the same subscribe ModalSurface uses)
+  // so the card and the standalone Exit-tour button go `inert` the instant
+  // any surface registers, and come back the moment it closes. OPUS-REVIEW-
+  // MODAL16 F2: an earlier version used aria-hidden + a pointer-events class
+  // swap, which is WCAG 4.1.2 (aria-hidden on a still-tabbable element) —
+  // `inert` removes pointer events, tab order and AT visibility together.
+  const [blocked, setBlocked] = useState(() => ModalRegistry.isAnyOpen());
+  useEffect(() => {
+    const check = () => setBlocked(ModalRegistry.isAnyOpen());
+    check();
+    return ModalRegistry.subscribe(check);
+  }, []);
+
   if (!open || !step) return null;
 
   const vw = vp.w;
@@ -368,10 +385,14 @@ export function Walkthrough({
           caption card. The card's own X moves with the step, so on a step
           pointing at something near the top of the page it can end up
           somewhere unexpected; this one never moves. */}
+      {/* OPUS-REVIEW-MODAL16 F2: aria-hidden on a still-tabbable button is
+          WCAG 4.1.2 / axe aria-hidden-focus. `inert` removes pointer events,
+          tab order AND AT visibility in one primitive — no class swap needed. */}
       <button
         type="button"
         onClick={close}
         aria-label="Exit tour"
+        inert={blocked}
         className={`pointer-events-auto absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
       >
         <X className="w-4 h-4" /> Exit tour
@@ -394,6 +415,7 @@ export function Walkthrough({
 
       <div
         ref={cardRef}
+        inert={blocked}
         className={`pointer-events-auto absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
           dense ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
         }`}
