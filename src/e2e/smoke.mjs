@@ -5179,6 +5179,241 @@ try {
     }
   });
 
+  /**
+   * BLUE-MATH-17 (director-routed, CI: shard 27/28 §71 CONTROL failure --
+   * job 101764850611, run 34129084879): the GitHub-hosted runner's
+   * SwiftShader rasterizes the SAME marker outline noticeably LARGER than
+   * local dev at devicePixelRatio 1 (measured on CI: a desktop corner's own
+   * bbox diagonal ~38-42 CSS px, vs ~30px locally) -- a hard-coded
+   * "marker-sized" window tuned on one machine silently drops real glyphs
+   * on the other. Self-calibrates instead: isolates ONE real CORNER marker
+   * on a FRESH page at the EXACT fixture/camera/viewport the check under
+   * calibration uses, measures its REAL rendered bbox diagonal with the
+   * IDENTICAL blob-scan algorithm (same colour target/tolerance/dsf
+   * normalization -- the window and what it bounds must share units, per
+   * the routed finding), and returns that one number. Every
+   * "marker-sized"/span bound in this section derives from it (0.5x-1.5x
+   * for a pairwise-separation filter, 1.5x as a single-glyph span ceiling)
+   * instead of a number tuned against one environment.
+   *
+   * A CORNER specifically, not the midpoint: `plotting.ts`'s
+   * `continuumShortSize` (the ENLARGED midpoint drawn once a component
+   * collapses) is `diamondSize * 2`, the IDENTICAL formula a corner's own
+   * size uses -- so a corner's real rendered size is the right single
+   * reference for both "are 2+ real corners genuinely separated" (CONTROL,
+   * variant B) and "is this ONE collapsed glyph roughly one marker's own
+   * size" (variant A, RED-MATH-16/001) checks.
+   */
+  async function calibrateMarkerDiagonal({ vals, eye, center = { x: 0, y: 0, z: 0 }, viewport, hasTouch = false, isMobile = false }) {
+    const page = await newTrackedPage({
+      viewport: viewport.mode === 'real' ? { width: viewport.width, height: viewport.height } : { width: 1000, height: 900 },
+      reducedMotion: 'reduce',
+      ...(hasTouch ? { hasTouch, isMobile } : {}),
+    });
+    try {
+      await page.goto(BASE, { waitUntil: 'networkidle' });
+      try { await page.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await page.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+      const matrix = page.locator('input[inputmode="decimal"][class*="text-center"]');
+      await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+      for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
+      await page.waitForFunction(() => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+        return ts.length > 0 ? true : null;
+      }, null, { timeout: 20000 }).catch(() => {});
+      const trackABtn = page.locator('label:has-text("Expected Payoff Surface Tracking")')
+        .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+      await trackABtn.click({ timeout: 5000 }).catch(() => {});
+      await page.waitForFunction(() => {
+        const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+        return mid && mid.x?.length === 1 ? true : null;
+      }, null, { timeout: 10000 }).catch(() => {});
+      if (viewport.mode === 'forced') {
+        await page.evaluate(({ w, h }) => {
+          const el = document.querySelector('[data-tour="plot"]');
+          el.style.setProperty('width', w + 'px', 'important');
+          el.style.setProperty('height', h + 'px', 'important');
+          el.style.setProperty('max-width', w + 'px', 'important');
+          el.style.setProperty('min-width', w + 'px', 'important');
+          el.style.setProperty('flex', 'none', 'important');
+        }, { w: viewport.w, h: viewport.h });
+        await page.waitForFunction((targetW) => {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+          if (!glplot?.shape || !glplot.pixelRatio) return null;
+          return Math.abs(glplot.shape[0] / glplot.pixelRatio - targetW) < 24 ? true : null;
+        }, viewport.w === 700 ? 658 : viewport.w, { timeout: 10000 }).catch(() => {});
+      }
+      const plotId = await page.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+      // cr review (CLI, this branch): the retry loop never recorded whether
+      // any attempt actually settled the camera -- silently proceeding on a
+      // camera that never converged would calibrate against the WRONG
+      // viewing angle. Track it and bail out (no isolation/screenshot spent)
+      // rather than return a diagonal measured under an unverified camera.
+      let camOk = false;
+      for (let attempt = 0; attempt < 3 && !camOk; attempt++) {
+        await page.evaluate(({ id, eye, center }) => window.Plotly.relayout(id, { 'scene.camera': { eye, center, up: { x: 0, y: 0, z: 1 } } }), { id: plotId, eye, center });
+        await page.waitForTimeout(300);
+        const e = await page.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+        camOk = !!e && Math.hypot(e.x - eye.x, e.y - eye.y, e.z - eye.z) < 0.02;
+      }
+      if (!camOk) return { rejected: 'camera-did-not-settle' };
+      // Isolate ONE corner: hide everything else continuum-related plus the
+      // position sphere; force this corner's own visibility true regardless
+      // of what the app's dynamic collapse rule decided for THIS camera
+      // (isolation is about MEASURING the glyph, not about the decision).
+      // Found by hand while building this calibration: hiding only the
+      // OTHER continuum traces (matching the style used elsewhere in this
+      // section, where the payoff surface itself is never a confound
+      // because every check crops to a hand-derived region near the
+      // marker) left the SURFACE traces on screen -- their own red/blue
+      // gradient passes through a purple-ish blend hue (the SAME confound
+      // section 71's own crop comments document), and this calibration
+      // does NOT crop (it cannot: the marker's screen position is the
+      // unknown being measured). Hide EVERY trace except the one target
+      // corner -- including the surfaces -- so nothing else can register
+      // as a false #8E44AD blob.
+      await page.evaluate(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        window.Plotly.relayout(gd, { showlegend: false });
+        const data = gd._fullData ?? gd.data ?? [];
+        const cornerIdx = data.findIndex((t) => t.legendgroup === 'continuumNE' && t.mode === 'markers' && t.meta?.continuumRole === 'corner');
+        const hideIdx = [];
+        data.forEach((t, i) => { if (i !== cornerIdx) hideIdx.push(i); });
+        if (hideIdx.length) window.Plotly.restyle(gd, { visible: false }, hideIdx);
+        if (cornerIdx >= 0) window.Plotly.restyle(gd, { visible: true }, [cornerIdx]);
+        if (!document.getElementById('e2e-hide-feedback-btn')) {
+          const style = document.createElement('style');
+          style.id = 'e2e-hide-feedback-btn';
+          style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+          document.head.appendChild(style);
+        }
+      });
+      // cr review (CLI, this branch): `showlegend === false` only proves the
+      // restyle CALL landed, not that every other trace's own `visible`
+      // flag actually flipped yet -- matching variant A/B's own established
+      // "shown" gate elsewhere in this section, poll for both together.
+      await page.waitForFunction(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        if (!gd || gd._fullLayout?.showlegend !== false) return null;
+        const data = gd._fullData ?? gd.data ?? [];
+        const cornerIdx = data.findIndex((t) => t.legendgroup === 'continuumNE' && t.mode === 'markers' && t.meta?.continuumRole === 'corner');
+        if (cornerIdx < 0) return null;
+        const contaminated = data.some((t, i) => i !== cornerIdx && t.visible !== false);
+        return contaminated ? null : true;
+      }, null, { timeout: 5000 }).catch(() => {});
+      // Director-routed (CI shard 27/28, second run, job 101778098377):
+      // a FIXED 200ms sleep here under-measured a real corner on a loaded
+      // CI runner (calibratedDiag read 14.87 for variant B, well under the
+      // ~28px the SAME marker measured moments later in the row's own real
+      // scan -- a partially-painted frame, the SAME "canvas hasn't caught
+      // up yet" class of bug this whole thread has already been about
+      // elsewhere). A fixed ms sleep cannot adapt to a runner that is
+      // momentarily slower; wait for several REAL animation frames
+      // (naturally throttles to whatever the runner can actually deliver)
+      // before the fixed sleep, not instead of it.
+      await page.evaluate(() => new Promise((resolve) => {
+        let n = 0;
+        const tick = () => { n += 1; if (n >= 6) resolve(); else requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      }));
+      await page.waitForTimeout(300);
+      const shot = await page.locator('[data-tour="plot"]').screenshot();
+      // SAME blob-scan algorithm (colour target #8E44AD, tol=40, dsf
+      // normalization) every check in this section uses -- the calibrated
+      // window must be measured in the SAME units it bounds.
+      const scan = await page.evaluate(async (b64) => {
+        const img = new Image();
+        await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+        const dsf = window.devicePixelRatio || 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const { data } = ctx.getImageData(0, 0, img.width, img.height);
+        const target = [142, 68, 173]; const tol2 = 40 * 40;
+        const w = img.width, h = img.height;
+        const mask = new Uint8Array(w * h);
+        for (let i = 0; i < w * h; i++) {
+          const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+          if (a < 100) continue;
+          const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+          if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+        }
+        const visited = new Uint8Array(w * h);
+        const blobs = [];
+        for (let i = 0; i < w * h; i++) {
+          if (!mask[i] || visited[i]) continue;
+          const stack = [i]; visited[i] = 1; let count = 0;
+          let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+          while (stack.length) {
+            const cur = stack.pop(); count++;
+            const cx = cur % w, cy = (cur / w) | 0;
+            if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+            if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+            for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+              if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+              const ni = ny * w + nx;
+              if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+            }
+          }
+          // cr review (CLI, this branch): minPixels must scale with dsf^2
+          // (pixel COUNT scales with area) -- this copy used a flat 15
+          // regardless of devicePixelRatio, unlike `countPurpleBlobs`'s own
+          // established `15 * dsf * dsf` a few lines above in this same
+          // file. A flat floor is too permissive at a high dsf (real noise
+          // could pass) and too strict at a low one.
+          if (count >= 15 * dsf * dsf) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+        }
+        if (!blobs.length) return null;
+        // Union of every qualifying blob within ONE cluster, NOT just the
+        // largest -- kept deliberately: this is the SAME convention
+        // `spanOf`/every other "one marker's own footprint" measurement in
+        // this file already uses (a genuine diamond outline can
+        // anti-alias-split into >1 connected component at its narrowest
+        // point; using only the largest fragment would UNDER-measure a
+        // split glyph, and this calibration must match what it calibrates
+        // FOR, not diverge from it).
+        //
+        // cr review (CLI, this branch): union blindly across EVERY
+        // qualifying blob risked baking in a stray blob the isolation step
+        // failed to hide (e.g. a not-yet-applied restyle, or a genuinely
+        // separate contaminated pixel region) as if it were part of the
+        // same glyph, inflating the diagonal. Cluster first by AABB
+        // proximity -- anti-alias fragments of one glyph sit within a few
+        // px of each other, a truly separate blob sits much further away --
+        // and reject the whole calibration if more than one cluster
+        // survives, rather than silently union across two different glyphs.
+        const gap = 10;
+        const aabbDist = (a, b) => {
+          const dx = Math.max(0, Math.max(a.minx, b.minx) - Math.min(a.maxx, b.maxx));
+          const dy = Math.max(0, Math.max(a.miny, b.miny) - Math.min(a.maxy, b.maxy));
+          return Math.hypot(dx, dy);
+        };
+        const clusters = blobs.map((b) => ({ minx: b.minx, maxx: b.maxx, miny: b.miny, maxy: b.maxy }));
+        let mergedAny = true;
+        while (mergedAny) {
+          mergedAny = false;
+          for (let i = 0; i < clusters.length && !mergedAny; i++) {
+            for (let j = i + 1; j < clusters.length; j++) {
+              if (aabbDist(clusters[i], clusters[j]) <= gap) {
+                const a = clusters[i], b = clusters[j];
+                clusters.splice(j, 1);
+                clusters[i] = { minx: Math.min(a.minx, b.minx), maxx: Math.max(a.maxx, b.maxx), miny: Math.min(a.miny, b.miny), maxy: Math.max(a.maxy, b.maxy) };
+                mergedAny = true;
+                break;
+              }
+            }
+          }
+        }
+        if (clusters.length > 1) return { rejected: 'multiple-separated-clusters', clusterCount: clusters.length, blobs };
+        const { minx, maxx, miny, maxy } = clusters[0];
+        return { diag: Math.hypot(maxx - minx, maxy - miny), blobs };
+      }, shot.toString('base64'));
+      return scan ?? null;
+    } finally { await page.close().catch(() => {}); }
+  }
+
   // ── BLUE-MATH-15 (RED-MATH-15/001): camera-aware continuum collapse at a
   //    genuinely narrow LIVE viewport, verified against REAL RENDERED PIXELS
   //    (never the module's own `visible`/`marker.size` state — that would
@@ -5422,6 +5657,14 @@ try {
       const DEFAULT_EYE = { x: 1.6, y: -1.6, z: 1.1 };
       const stableDefault = await setEyeVerified(DEFAULT_EYE);
       record('precondition: the camera settled at the default eye (700x500 control)', stableDefault.ok, JSON.stringify(stableDefault));
+      // Self-calibrate the marker-sized window from a REAL isolated corner
+      // at this exact fixture/camera/viewport (director-routed, CI shard
+      // 27/28 job 101764850611 — see `calibrateMarkerDiagonal`'s own
+      // comment above for the full reasoning).
+      const controlCal = await calibrateMarkerDiagonal({
+        vals: [0, 0, 1, 0, 4, 0, 0, 1], eye: DEFAULT_EYE, viewport: { mode: 'forced', w: 700, h: 500 },
+      });
+      record('precondition: a single isolated corner marker was measured to calibrate the marker-sized window', !!controlCal?.diag, JSON.stringify(controlCal));
       const shotControl = await plot.screenshot();
       // Localization ONLY (never the verdict, per RED-MATH-15/001's own
       // methodology): the fixture's own 3 data points, projected through
@@ -5440,8 +5683,46 @@ try {
       // ALSO confirm the combined footprint spans more than one marker's
       // own size, or it could pass while the fusion defect is present.
       const spanControl = spanOf(controlBlobs.blobs);
-      record('CONTROL (700x500, default camera): the pixel scan finds >=3 separate continuum glyphs spanning well past one marker\'s own size',
-        controlBlobs.blobs.length >= 3 && spanControl > 40, JSON.stringify({ spanControl, ...controlBlobs }));
+      // cr review (director-routed, merged tree): the UNION-bbox span above
+      // can be fooled either way — inflated by one real blob plus a stray,
+      // unrelated UI blob elsewhere in the crop (falsely "separated"), or
+      // (less likely here, but not ruled out by span alone) shrunk by a
+      // clustered layout that still spans >40px only by chance. Replace the
+      // inference with a direct measurement: filter to MARKER-SIZED blobs.
+      // Director-routed, CI shard 27/28 job 101764850611: a HARD-CODED
+      // [2,36] window (tuned on local dev, where a whole desktop diamond
+      // measured ~29.7-30.4px) dropped BOTH real corners on the CI runner
+      // (SwiftShader there rasterizes the same marker ~38-42px,
+      // markerSizedCount read 1) — self-calibrated from `controlCal`
+      // (measured on THIS SAME run, THIS SAME environment) instead: [0.5x,
+      // 1.5x] of one real isolated corner's own diagonal. Falls back to the
+      // old [2,36] only if calibration itself failed (never silently widens
+      // to "anything passes" — a null/zero calibration would make EVERY
+      // blob fail the filter under a naive 0.5x-1.5x of 0, so the explicit
+      // fallback keeps this check meaningful even then). Then require >=2
+      // of them and assert the LARGEST pairwise centre-to-centre distance
+      // among them clears a marker's own footprint. MAX (not min) pairwise
+      // distance on purpose: an anti-alias-split diamond's own fragments
+      // sit close together (near-zero apart), so a min-distance check would
+      // fail on a single, genuinely correct glyph; only the presence of
+      // some pair that is FAR apart proves two distinct markers are
+      // actually on screen.
+      const controlWindow = controlCal?.diag ? [controlCal.diag * 0.5, controlCal.diag * 1.5] : [2, 36];
+      const markerSizedControl = controlBlobs.blobs.filter((b) => {
+        const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
+        return diag >= controlWindow[0] && diag <= controlWindow[1];
+      });
+      let maxSepControl = 0;
+      for (let i = 0; i < markerSizedControl.length; i++) {
+        for (let j = i + 1; j < markerSizedControl.length; j++) {
+          maxSepControl = Math.max(maxSepControl, Math.hypot(
+            markerSizedControl[i].cx - markerSizedControl[j].cx,
+            markerSizedControl[i].cy - markerSizedControl[j].cy));
+        }
+      }
+      record('CONTROL (700x500, default camera): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not stray-UI-inflated, not one glyph\'s own anti-alias fragments)',
+        markerSizedControl.length >= 2 && maxSepControl > 15,
+        JSON.stringify({ spanControl, maxSepControl, markerSizedCount: markerSizedControl.length, controlWindow, calibratedDiag: controlCal?.diag ?? null, ...controlBlobs }));
 
       // ── FIX (under-collapse, RED-MATH-15/001 az195): back to the narrow
       //    318x298 outer container (real plot div 276x256), RED's exact
@@ -5516,6 +5797,883 @@ try {
       // PASS this check. Require at least one real blob.
       record('FIX (RED-MATH-15/001 under-collapse, az195@318x298): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=45 CSS px), not two separate diamonds',
         blobs195.blobs.length >= 1 && span195 <= 45, JSON.stringify({ span195, ...blobs195 }));
+
+      // ── BLUE-MATH-17 (RED-MATH-17/001, RED-MATH-16/001): two MORE
+      //    real-pixel-verified rows, at cameras/viewports the OLD FOCAL
+      //    estimate got wrong (round16/findings/RED-MATH-17/001,
+      //    round15/findings/RED-MATH-16/001 — both DIRECTOR-CONFIRMED real
+      //    disagreements, not the harness-artifact "stale pose" class that
+      //    round found and discarded elsewhere). The fix
+      //    (cameraProjection.ts's `projectPointExact`, wired into
+      //    PlotlyView.tsx's `applyContinuumCollapseAtCamera`) now decides
+      //    "collapse" at both — verified against real per-marker isolation
+      //    to sub-pixel agreement offline (round16/notes/BLUE-MATH-17/,
+      //    `_bluescratch/validate_exact.mjs`); here, in the actual e2e
+      //    harness, checked the same way az195 above is: (1) the app's OWN
+      //    decision collapsed the component (never take that on faith —
+      //    CodeRabbit FBM-3's own discipline applies here too), (2) the
+      //    `continuumProjectionPath` dataset marker confirms the EXACT
+      //    matrix path decided it, not a coincidental estimator agreement,
+      //    (3) the real pixel scan finds exactly one clustered glyph
+      //    spanning one marker's own size, not two separate diamonds still
+      //    touching.
+      //
+      //    Mutation: forcing `exactReady` false in PlotlyView.tsx (reverting
+      //    to the FOCAL/lookAt estimate for every camera, not just
+      //    pre-first-render) makes BOTH of these fail by name — the
+      //    estimate keeps deciding "show" at both cameras, so the pixel scan
+      //    finds 2-3 separate glyphs instead of one collapsed cluster
+      //    (round16/notes/BLUE-MATH-17/STATE.md records the exact mutation
+      //    command and failure output).
+      {
+        // RED-MATH-17/001, VARIANT A — a REAL (unforced) 320px-wide
+        // browser window, NO touch emulation. OPUS-REVIEW-MATH17 N-2:
+        // PlotlyView.tsx's `isMobile = navigator.maxTouchPoints > 0 &&
+        // innerWidth < 1400` reads `maxTouchPoints === 0` here regardless of
+        // window width, so this row uses the DESKTOP marker set
+        // (diamondSize 10.5) — a real, reachable scenario in its own right
+        // (a narrow, non-touch desktop browser window), just not "an
+        // ordinary mobile page load" as an earlier draft's comment claimed.
+        // Variant B (below) covers the ACTUAL touch/mobile marker set,
+        // where (confirmed empirically) the SAME camera decides differently
+        // — smaller glyphs, same centre-to-centre distance, genuinely more
+        // clearance.
+        // Declared outside variant A's own try/finally (p17 closes at its
+        // end) so variant B, below, can still reference this run's REAL
+        // desktop-corner calibration and size prop -- needed as a fallback
+        // basis when variant B's own mobile-page calibration looks broken
+        // (see the cr-review-hardening comment in variant B's block).
+        let cal17 = null;
+        let desktopSizes17 = { cornerSize: null, midpointBaseSize: null };
+        const p17 = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce' });
+        try {
+          await p17.goto(BASE, { waitUntil: 'networkidle' });
+          try { await p17.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await p17.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+          const m17 = p17.locator('input[inputmode="decimal"][class*="text-center"]');
+          await m17.first().waitFor({ state: 'visible', timeout: 20000 });
+          // RED-MATH-17/001's own fixture: A=[[-5,1],[-5,6]], B=[[2,-1],[-5,6]].
+          const vals17 = [-5, 2, 1, -1, -5, -5, 6, 6]; // a11,b11,a12,b12,a21,b21,a22,b22
+          for (let i = 0; i < 8; i++) { const c = m17.nth(i); await c.click(); await c.fill(String(vals17[i])); await c.blur(); }
+          const ready17 = await p17.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+            return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
+          }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-17/001 variant A, narrow desktop window): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17);
+          const trackABtn17 = p17.locator('label:has-text("Expected Payoff Surface Tracking")')
+            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          await trackABtn17.click({ timeout: 5000 }).catch(() => {});
+          const trackingIsA17 = await p17.waitForFunction(() => {
+            const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+            return mid && mid.x?.length === 1 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-17/001 variant A, narrow desktop window): tracking mode is Player A only', trackingIsA17);
+          // OPUS-REVIEW-MATH17 N-2: assert the DESKTOP marker sizes are
+          // actually in effect (diamondSize 10.5 -> corner 21, midpoint-base
+          // 8.925) — this variant intentionally has NO touch emulation, so
+          // confirm PlotlyView.tsx's `isMobile` read false here, rather than
+          // assuming it (a touch-emulation change elsewhere in the file
+          // could otherwise silently leak into this page's context).
+          desktopSizes17 = await p17.evaluate(() => {
+            const data = document.querySelector('.js-plotly-plot')?.data ?? [];
+            const corner = data.find((t) => t.meta?.continuumRole === 'corner');
+            const mid = data.find((t) => t.meta?.continuumRole === 'midpoint');
+            return { cornerSize: corner?.marker?.size, midpointBaseSize: mid?.meta?.continuumBaseSize };
+          });
+          record('precondition (RED-MATH-17/001 variant A): desktop marker sizes are in effect (corner=21, midpoint base=8.925, not the mobile 14/5.95)',
+            Math.abs((desktopSizes17.cornerSize ?? 0) - 21) < 1e-6 && Math.abs((desktopSizes17.midpointBaseSize ?? 0) - 8.925) < 1e-6,
+            JSON.stringify(desktopSizes17));
+          // CAMERA.overview IS the app's own default eye — no relayout
+          // needed, but set it explicitly (and verify) so this row does not
+          // silently depend on the idle spin having not yet moved.
+          const plotId17 = await p17.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          let camOk17 = false;
+          for (let attempt = 0; attempt < 3 && !camOk17; attempt++) {
+            await p17.evaluate((id) => window.Plotly.relayout(id, { 'scene.camera': { eye: { x: 1.6, y: -1.6, z: 1.1 }, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), plotId17);
+            await p17.waitForTimeout(300);
+            const e = await p17.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+            camOk17 = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
+          }
+          record('precondition (RED-MATH-17/001 variant A): the camera settled at CAMERA.overview (real 320px viewport)', camOk17);
+          // Self-calibrate (director-routed, CI shard 27/28 job
+          // 101764850611): same fixture/camera/viewport as this row's own
+          // real-pixel check, NO touch emulation (matching this variant's
+          // own desktop marker set).
+          cal17 = await calibrateMarkerDiagonal({
+            vals: [-5, 2, 1, -1, -5, -5, 6, 6], eye: { x: 1.6, y: -1.6, z: 1.1 },
+            viewport: { mode: 'real', width: 320, height: 700 },
+          });
+          record('precondition (RED-MATH-17/001 variant A): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17?.diag, JSON.stringify(cal17));
+          const collapsed17 = await p17.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
+          }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+          record('FIX (RED-MATH-17/001 variant A, narrow desktop window): the app decides to collapse this component at its own default camera (was "show" pre-fix — an under-collapse)', collapsed17);
+          const path17 = await p17.evaluate(() => document.querySelector('.js-plotly-plot')?.dataset?.continuumProjectionPath ?? null);
+          record('FIX (RED-MATH-17/001 variant A): the decision came from the EXACT live-matrix path, not the FOCAL estimate', path17 === 'exact', String(path17));
+          await p17.evaluate(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            window.Plotly.relayout(gd, { showlegend: false });
+            const idx = [];
+            (gd.data ?? []).forEach((t, i) => {
+              if (/^(Starting Point|Current position)/.test(t.name ?? '')) idx.push(i);
+              if (t.legendgroup === 'continuumNE' && t.mode === 'lines') idx.push(i);
+            });
+            if (idx.length) window.Plotly.restyle(gd, { visible: false }, idx);
+            if (!document.getElementById('e2e-hide-feedback-btn')) {
+              const style = document.createElement('style');
+              style.id = 'e2e-hide-feedback-btn';
+              style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+              document.head.appendChild(style);
+            }
+          });
+          // cr review (CLI, this branch): poll for the hide to have actually
+          // applied (Plotly.restyle/relayout resolve asynchronously) instead
+          // of a fixed 250ms sleep -- a stalled CI runner could still
+          // screenshot a contaminated frame.
+          await p17.waitForFunction(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            if (!gd || gd._fullLayout?.showlegend !== false) return null;
+            const contaminated = (gd.data ?? []).some((t) => (
+              (/^(Starting Point|Current position)/.test(t.name ?? '')
+                || (t.legendgroup === 'continuumNE' && t.mode === 'lines'))
+              && t.visible !== false
+            ));
+            return contaminated ? null : true;
+          }, null, { timeout: 5000 }).catch(() => {});
+          const shot17 = await p17.locator('[data-tour="plot"]').screenshot();
+          const scan17 = await p17.evaluate(async (b64) => {
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+            const dsf = window.devicePixelRatio || 1;
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width; canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const { data } = ctx.getImageData(0, 0, img.width, img.height);
+            const target = [142, 68, 173]; const tol2 = 40 * 40;
+            const w = img.width, h = img.height;
+            const mask = new Uint8Array(w * h);
+            for (let i = 0; i < w * h; i++) {
+              const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+              if (a < 100) continue;
+              const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+              if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+            }
+            const visited = new Uint8Array(w * h);
+            const blobs = [];
+            for (let i = 0; i < w * h; i++) {
+              if (!mask[i] || visited[i]) continue;
+              const stack = [i]; visited[i] = 1; let count = 0;
+              let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+              while (stack.length) {
+                const cur = stack.pop(); count++;
+                const cx = cur % w, cy = (cur / w) | 0;
+                if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+                if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+                for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+                  if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                  const ni = ny * w + nx;
+                  if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+                }
+              }
+              // Same discipline as the fixture-level scan above: a real
+              // mobile viewport carries a small, unrelated fixed-position
+              // UI element close enough to #8E44AD to register a false
+              // ~33px blob (found by hand, round16/notes/BLUE-MATH-17/) —
+              // far smaller than any real marker glyph; drop it.
+              if (count >= 100) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+            }
+            if (!blobs.length) return { blobs: [] };
+            const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
+            const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+            return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
+          }, shot17.toString('base64'));
+          // cr review (CLI, this branch) suggested requiring EXACTLY one
+          // blob, sized to a single marker's own bbox. Rejected: this exact
+          // file already rejected that shape for the identical reason at
+          // az195 above (`spanOf`'s own comment, and the "CodeRabbit (this
+          // branch): blob COUNT alone cannot tell 3 genuinely separate
+          // diamonds from 2 fused ones that each anti-alias-split" note) —
+          // a foreshortened diamond outline can break into >1 connected
+          // component at its own narrowest point, so an exact-count
+          // assertion would fail on a genuinely-correct single collapsed
+          // glyph. `span` (this UNION bbox's diagonal) is the established,
+          // already-reviewed way to bound "one marker's own size" here.
+          // Director-routed, CI shard 27/28 job 101764850611: the fixed
+          // 45px ceiling is now a fallback only; the real bound is 1.5x the
+          // isolated corner `cal17` just measured on THIS run/environment
+          // (matches CONTROL's own self-calibration above).
+          const spanBound17 = cal17?.diag ? cal17.diag * 1.5 : 45;
+          record('FIX (RED-MATH-17/001 variant A): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=1.5x the calibrated corner), not two separate diamonds',
+            (scan17.blobs?.length ?? 0) >= 1 && scan17.span <= spanBound17,
+            JSON.stringify({ ...scan17, spanBound17, calibratedDiag: cal17?.diag ?? null }));
+        } finally { await p17.close().catch(() => {}); }
+
+        // ── RED-MATH-17/001, VARIANT B — the SAME fixture/camera/viewport,
+        //    now with REAL touch/mobile marker sizes (OPUS-REVIEW-MATH17
+        //    N-2). Confirmed empirically: with the smaller mobile glyphs
+        //    (corner 14 vs desktop 21, midpoint-base 5.95 vs 8.925) at the
+        //    SAME centre-to-centre distance, this component genuinely does
+        //    NOT overlap — the decision correctly flips to "show", not
+        //    "collapse". This is not a second instance of the same defect;
+        //    it is the CONTROL for variant A's own claim of reach ("a real
+        //    mobile visitor" — RED-MATH-17/001's finding text) discovered
+        //    to not literally apply to touch devices at this exact camera.
+        //    Still worth keeping as a permanent row: it is the only place
+        //    in this suite that exercises the mobile marker set through the
+        //    exact live-matrix path at all.
+        const p17mobile = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce', hasTouch: true, isMobile: true });
+        try {
+          await p17mobile.goto(BASE, { waitUntil: 'networkidle' });
+          try { await p17mobile.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await p17mobile.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+          const m17m = p17mobile.locator('input[inputmode="decimal"][class*="text-center"]');
+          await m17m.first().waitFor({ state: 'visible', timeout: 20000 });
+          const vals17m = [-5, 2, 1, -1, -5, -5, 6, 6];
+          for (let i = 0; i < 8; i++) { const c = m17m.nth(i); await c.click(); await c.fill(String(vals17m[i])); await c.blur(); }
+          const ready17m = await p17mobile.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+            return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
+          }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-17/001 variant B, mobile marker set): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17m);
+          const trackABtn17m = p17mobile.locator('label:has-text("Expected Payoff Surface Tracking")')
+            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          await trackABtn17m.click({ timeout: 5000 }).catch(() => {});
+          const trackingIsA17m = await p17mobile.waitForFunction(() => {
+            const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+            return mid && mid.x?.length === 1 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-17/001 variant B): tracking mode is Player A only', trackingIsA17m);
+          const mobileSizes17 = await p17mobile.evaluate(() => {
+            const data = document.querySelector('.js-plotly-plot')?.data ?? [];
+            const corner = data.find((t) => t.meta?.continuumRole === 'corner');
+            const mid = data.find((t) => t.meta?.continuumRole === 'midpoint');
+            return { cornerSize: corner?.marker?.size, midpointBaseSize: mid?.meta?.continuumBaseSize };
+          });
+          record('precondition (RED-MATH-17/001 variant B): mobile marker sizes are in effect (corner=14, midpoint base=5.95, not the desktop 21/8.925)',
+            Math.abs((mobileSizes17.cornerSize ?? 0) - 14) < 1e-6 && Math.abs((mobileSizes17.midpointBaseSize ?? 0) - 5.95) < 1e-6,
+            JSON.stringify(mobileSizes17));
+          const plotId17m = await p17mobile.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          // cr review (director-routed, GitHub thread): mark BEFORE the
+          // FIRST relayout attempt, not after settlement is confirmed --
+          // the relayout listener's own decision fires essentially
+          // synchronously with the relayout event (within the SAME
+          // `waitForTimeout(300)` below, not after it), so a mark taken
+          // only once `camOk17m` is true would already postdate the real
+          // decision and this check's own poll would time out waiting for
+          // a "fresh" stamp that already happened -- found by hand: the
+          // first draft of this gate always failed by timeout for exactly
+          // this reason.
+          const cameraSetMarkPerf17m = await p17mobile.evaluate(() => performance.now());
+          let camOk17m = false;
+          for (let attempt = 0; attempt < 3 && !camOk17m; attempt++) {
+            await p17mobile.evaluate((id) => window.Plotly.relayout(id, { 'scene.camera': { eye: { x: 1.6, y: -1.6, z: 1.1 }, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), plotId17m);
+            await p17mobile.waitForTimeout(300);
+            const e = await p17mobile.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+            camOk17m = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
+          }
+          record('precondition (RED-MATH-17/001 variant B): the camera settled at CAMERA.overview (real 320px viewport, touch-emulated)', camOk17m);
+          // Self-calibrate (director-routed, CI shard 27/28 job
+          // 101764850611): same fixture/camera/viewport as this row's own
+          // real-pixel check, WITH touch/mobile emulation too, so the
+          // measured corner reflects the SAME mobile marker set this row
+          // actually renders.
+          const cal17m = await calibrateMarkerDiagonal({
+            vals: [-5, 2, 1, -1, -5, -5, 6, 6], eye: { x: 1.6, y: -1.6, z: 1.1 },
+            viewport: { mode: 'real', width: 320, height: 700 }, hasTouch: true, isMobile: true,
+          });
+          record('precondition (RED-MATH-17/001 variant B): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal17m?.diag, JSON.stringify(cal17m));
+          // cr review (director-routed, GitHub thread on smoke.mjs:5785,
+          // Minor -- valid): corner traces default to VISIBLE at first
+          // static render, so reading `visible !== 'legendonly'` as "shown"
+          // the instant corner traces exist can resolve BEFORE
+          // `applyContinuumCollapseAtCamera` has run for THIS camera at all
+          // -- the row would then pass without ever exercising the exact
+          // live-matrix decision path it claims to test. Require BOTH
+          // `continuumProjectionPath === 'exact'` AND `continuumDecidedAt`
+          // newer than `cameraSetMarkPerf17m` (marked before the FIRST
+          // relayout attempt, above) before trusting the corner-visibility
+          // read -- proves a fresh, exact-path evaluation actually ran for
+          // this camera, not merely that nothing has collapsed it yet.
+          const decisionInfo17m = await p17mobile.waitForFunction((markPerf) => {
+            const gd = document.querySelector('.js-plotly-plot');
+            const path = gd?.dataset?.continuumProjectionPath;
+            const decidedAt = gd?.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null;
+            if (path !== 'exact' || decidedAt == null || decidedAt <= markPerf) return null;
+            const ts = (gd.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            const collapse = ts.length > 0 ? (ts.every((t) => t.visible === 'legendonly') ? 'collapsed' : 'shown') : null;
+            return { collapse, path, decidedAt };
+          }, cameraSetMarkPerf17m, { timeout: 3000 }).then((h) => h.jsonValue()).catch(() => null);
+          record('precondition (RED-MATH-17/001 variant B): a fresh exact-path decision was actually computed AFTER the camera settled (not read too early)',
+            !!decisionInfo17m && decisionInfo17m.path === 'exact', JSON.stringify({ decisionInfo17m, cameraSetMarkPerf17m }));
+          const collapsed17m = decisionInfo17m?.collapse ?? null;
+          record('FIX (RED-MATH-17/001 variant B, mobile marker set): the app correctly does NOT collapse this component at its own default camera on a REAL mobile viewport+markers (smaller glyphs, same centres -> genuine clearance, not the desktop-marker defect)',
+            collapsed17m === 'shown', String(collapsed17m));
+          const path17m = await p17mobile.evaluate(() => document.querySelector('.js-plotly-plot')?.dataset?.continuumProjectionPath ?? null);
+          record('FIX (RED-MATH-17/001 variant B): the decision came from the EXACT live-matrix path, not the FOCAL estimate', path17m === 'exact', String(path17m));
+          // Real-pixel confirmation, CONTROL-style (this variant expects
+          // 3 DISTINCT glyphs, not a fused one): hide contamination, screenshot,
+          // scan for >=2 separate blobs (the corner/midpoint diamonds at
+          // mobile size can still anti-alias-split, same discipline as
+          // every other row in this section) with a footprint clearly larger
+          // than one marker's own size.
+          await p17mobile.evaluate(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            window.Plotly.relayout(gd, { showlegend: false });
+            const idx = [];
+            (gd.data ?? []).forEach((t, i) => {
+              if (/^(Starting Point|Current position)/.test(t.name ?? '')) idx.push(i);
+              if (t.legendgroup === 'continuumNE' && t.mode === 'lines') idx.push(i);
+            });
+            if (idx.length) window.Plotly.restyle(gd, { visible: false }, idx);
+            if (!document.getElementById('e2e-hide-feedback-btn')) {
+              const style = document.createElement('style');
+              style.id = 'e2e-hide-feedback-btn';
+              style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+              document.head.appendChild(style);
+            }
+          });
+          // cr review (CLI, this branch): poll for the hide to have applied,
+          // same as variant A's own fix above.
+          await p17mobile.waitForFunction(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            if (!gd || gd._fullLayout?.showlegend !== false) return null;
+            const contaminated = (gd.data ?? []).some((t) => (
+              (/^(Starting Point|Current position)/.test(t.name ?? '')
+                || (t.legendgroup === 'continuumNE' && t.mode === 'lines'))
+              && t.visible !== false
+            ));
+            return contaminated ? null : true;
+          }, null, { timeout: 5000 }).catch(() => {});
+          const shot17m = await p17mobile.locator('[data-tour="plot"]').screenshot();
+          const scan17m = await p17mobile.evaluate(async (b64) => {
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+            const dsf = window.devicePixelRatio || 1;
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width; canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const { data } = ctx.getImageData(0, 0, img.width, img.height);
+            const target = [142, 68, 173]; const tol2 = 40 * 40;
+            const w = img.width, h = img.height;
+            const mask = new Uint8Array(w * h);
+            for (let i = 0; i < w * h; i++) {
+              const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+              if (a < 100) continue;
+              const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+              if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+            }
+            const visited = new Uint8Array(w * h);
+            const blobs = [];
+            for (let i = 0; i < w * h; i++) {
+              if (!mask[i] || visited[i]) continue;
+              const stack = [i]; visited[i] = 1; let count = 0;
+              let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+              while (stack.length) {
+                const cur = stack.pop(); count++;
+                const cx = cur % w, cy = (cur / w) | 0;
+                if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+                if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+                for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+                  if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                  const ni = ny * w + nx;
+                  if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+                }
+              }
+              // Mobile marker sizes are smaller (corner 14 vs desktop 21 CSS
+              // px, ~44% the pixel area) than every OTHER blob-scan in this
+              // section, which were all tuned against desktop-sized glyphs
+              // — a desktop-calibrated minPixels (60, matching variant A's
+              // own single-glyph blobs of ~130) found ZERO blobs here on the
+              // first draft, not because nothing was there.
+              if (count >= 15) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf, cx: (minx + maxx) / 2 / dsf, cy: (miny + maxy) / 2 / dsf });
+            }
+            if (!blobs.length) return { blobs: [], span: 0 };
+            const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
+            const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+            return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
+          }, shot17m.toString('base64'));
+          // cr review (director-routed, merged tree): same robustness the
+          // CONTROL check above now uses, not the union-bbox span this row
+          // still had — filter to marker-sized blobs, require >=2, and
+          // assert the LARGEST pairwise centre-to-centre distance (not the
+          // union span). Director-routed, CI shard 27/28 job 101764850611:
+          // the window is now SELF-CALIBRATED from `cal17m` (measured on
+          // THIS run, THIS environment, WITH the same touch/mobile
+          // emulation), not a hard-coded [2,30] tuned on local dev alone —
+          // 15px (the same bound the CONTROL check uses) still cleanly
+          // separates an anti-alias-split glyph's own close-together
+          // fragments from a genuinely separate second glyph.
+          //
+          // CI reproduction (job 101816691575, run 34145485252): on THIS
+          // runner, `cal17m.diag` measured 14.87 for the size:14 corner —
+          // only ~1.06x the raw size prop. Every OTHER calibration in the
+          // SAME run (CONTROL 42.43 for size 21, variant A 42.43 for size
+          // 21) measures ~2x the size prop, and a real diamond glyph's own
+          // bbox diagonal is size*sqrt(2)=~1.41x at the absolute geometric
+          // MINIMUM (zero anti-alias halo) — 1.06x is smaller than that
+          // minimum, so it cannot be a genuine full render of the corner:
+          // isolating traces on this touch/isMobile page specifically
+          // renders the target corner visibly SMALLER than the SAME corner
+          // renders in the row's own full-scene screenshot moments later
+          // (confirmed: the row's own real corner blob that run had a 21x19
+          // bbox, diag 28.3 — matching cal17.diag * (14/21) = 28.27 almost
+          // exactly). Root cause not fully isolated (likely an
+          // isMobile/hasTouch-specific SwiftShader anti-alias or autorange
+          // interaction with the isolation restyle); the reliable
+          // structural fix is to sanity-check `cal17m.diag` against the
+          // geometric floor and, when it fails, fall back to the ALREADY
+          // reliably-measured desktop corner (`cal17`, same run, same
+          // isolation method, no touch emulation) scaled by the corner-size
+          // ratio actually read from each page's own live data — never a
+          // hard-coded constant.
+          const sizeRatio17m = (desktopSizes17.cornerSize && mobileSizes17.cornerSize)
+            ? mobileSizes17.cornerSize / desktopSizes17.cornerSize : null;
+          const scaledDiag17m = (cal17?.diag && sizeRatio17m) ? cal17.diag * sizeRatio17m : null;
+          const cal17mLooksBroken = !cal17m?.diag || cal17m.diag < (mobileSizes17.cornerSize ?? 14) * 1.3;
+          const diag17m = (!cal17mLooksBroken && cal17m?.diag) ? cal17m.diag : scaledDiag17m;
+          record('precondition (RED-MATH-17/001 variant B): the calibrated diagonal used for the marker-sized window is a plausible full-glyph measurement (>= the geometric minimum for its own size prop), falling back to the desktop calibration scaled by the live size ratio otherwise',
+            diag17m != null, JSON.stringify({ cal17mDiag: cal17m?.diag ?? null, cal17mLooksBroken, sizeRatio17m, scaledDiag17m, diag17m }));
+          const window17m = diag17m ? [diag17m * 0.5, diag17m * 1.5] : [2, 30];
+          const markerSized17m = scan17m.blobs.filter((b) => {
+            const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
+            return diag >= window17m[0] && diag <= window17m[1];
+          });
+          let maxSep17m = 0;
+          for (let i = 0; i < markerSized17m.length; i++) {
+            for (let j = i + 1; j < markerSized17m.length; j++) {
+              maxSep17m = Math.max(maxSep17m, Math.hypot(
+                markerSized17m[i].cx - markerSized17m[j].cx,
+                markerSized17m[i].cy - markerSized17m[j].cy));
+            }
+          }
+          record('FIX (RED-MATH-17/001 variant B): >=2 marker-sized glyphs are found, at least one pair genuinely separated (not one glyph\'s own anti-alias fragments), confirming genuine (not merely undetected) separation',
+            markerSized17m.length >= 2 && maxSep17m > 15,
+            JSON.stringify({ maxSep17m, markerSizedCount: markerSized17m.length, window17m, calibratedDiag: diag17m, rawCal17mDiag: cal17m?.diag ?? null, ...scan17m }));
+        } finally { await p17mobile.close().catch(() => {}); }
+
+        // RED-MATH-16/001: az105, forced 700x500 (the canonical viewport,
+        // reached by the idle spin with no interaction at all).
+        const p16 = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
+        try {
+          await p16.goto(BASE, { waitUntil: 'networkidle' });
+          try { await p16.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await p16.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+          const m16 = p16.locator('input[inputmode="decimal"][class*="text-center"]');
+          await m16.first().waitFor({ state: 'visible', timeout: 20000 });
+          // RED-MATH-16/001's own fixture: A=[[1,-4],[5,-6]], B=[[1,1],[-1,3]].
+          const vals16 = [1, 1, -4, 1, 5, -1, -6, 3]; // a11,b11,a12,b12,a21,b21,a22,b22
+          for (let i = 0; i < 8; i++) { const c = m16.nth(i); await c.click(); await c.fill(String(vals16[i])); await c.blur(); }
+          const ready16 = await p16.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+            return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 1) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 0.16666666666666666) < 1e-6) ? true : null;
+          }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-16/001 row): the fixture\'s continuum midpoint (1, 0.1667) is drawn before reading trace state', ready16);
+          const trackABtn16 = p16.locator('label:has-text("Expected Payoff Surface Tracking")')
+            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          await trackABtn16.click({ timeout: 5000 }).catch(() => {});
+          const trackingIsA16 = await p16.waitForFunction(() => {
+            const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+            return mid && mid.x?.length === 1 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-16/001 row): tracking mode is Player A only', trackingIsA16);
+          await p16.evaluate(() => {
+            const el = document.querySelector('[data-tour="plot"]');
+            el.style.setProperty('width', '700px', 'important');
+            el.style.setProperty('height', '500px', 'important');
+            el.style.setProperty('max-width', '700px', 'important');
+            el.style.setProperty('min-width', '700px', 'important');
+            el.style.setProperty('flex', 'none', 'important');
+          });
+          // CodeRabbit-class staleness guard (this branch's own note on
+          // section 71's `narrowResized`): the CSS box can resize a frame
+          // before gl-plot3d's OWN internal `glplot.shape`/`cameraParams`
+          // catch up — an exactReady evaluation racing that gap would use
+          // the OLD (1000x900 initial) canvas dimensions, silently
+          // corrupting this row regardless of which projection path decided
+          // (found by hand while writing this row: the CSS-rect-only wait
+          // let a stale glplot.shape through once). Poll the REAL rendered
+          // scene geometry, not just the CSS box.
+          const resized16 = await p16.waitForFunction(() => {
+            const gd = document.getElementById('plotly-3d-market-simulation');
+            const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+            if (!glplot?.shape || !glplot.pixelRatio) return null;
+            const cssW = glplot.shape[0] / glplot.pixelRatio;
+            return Math.abs(cssW - 658) < 24 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (RED-MATH-16/001 row): the plot resized to the canonical 700x500 size (live glplot.shape, not just the CSS box)', resized16);
+          const plotId16 = await p16.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          const r105 = Math.hypot(1.6, 1.6), rad105 = 105 * Math.PI / 180;
+          const eye16 = { x: r105 * Math.cos(rad105), y: r105 * Math.sin(rad105), z: 1.1 };
+          let camOk16 = false;
+          for (let attempt = 0; attempt < 3 && !camOk16; attempt++) {
+            await p16.evaluate(({ id, eye }) => window.Plotly.relayout(id, { 'scene.camera': { eye, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), { id: plotId16, eye: eye16 });
+            await p16.waitForTimeout(300);
+            const e = await p16.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+            camOk16 = !!e && Math.hypot(e.x - eye16.x, e.y - eye16.y, e.z - eye16.z) < 0.02;
+          }
+          record('precondition (RED-MATH-16/001 row): the camera settled at az105 (700x500)', camOk16);
+          // Self-calibrate (director-routed, CI shard 27/28 job
+          // 101764850611): same fixture/camera/viewport as this row's own
+          // real-pixel check.
+          const cal16 = await calibrateMarkerDiagonal({
+            vals: [1, 1, -4, 1, 5, -1, -6, 3], eye: eye16, viewport: { mode: 'forced', w: 700, h: 500 },
+          });
+          record('precondition (RED-MATH-16/001 row): a single isolated corner marker was measured to calibrate the marker-sized window', !!cal16?.diag, JSON.stringify(cal16));
+          const collapsed16 = await p16.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
+          }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+          record('FIX (RED-MATH-16/001): the app decides to collapse this component at az105/700x500 (was "show" pre-fix, real pixels touching by ~1.4px)', collapsed16);
+          const path16 = await p16.evaluate(() => document.querySelector('.js-plotly-plot')?.dataset?.continuumProjectionPath ?? null);
+          record('FIX (RED-MATH-16/001): the decision came from the EXACT live-matrix path, not the FOCAL estimate', path16 === 'exact', String(path16));
+          await p16.evaluate(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            window.Plotly.relayout(gd, { showlegend: false });
+            const idx = [];
+            (gd.data ?? []).forEach((t, i) => {
+              if (/^(Starting Point|Current position)/.test(t.name ?? '')) idx.push(i);
+              if (t.legendgroup === 'continuumNE' && t.mode === 'lines') idx.push(i);
+            });
+            if (idx.length) window.Plotly.restyle(gd, { visible: false }, idx);
+            if (!document.getElementById('e2e-hide-feedback-btn')) {
+              const style = document.createElement('style');
+              style.id = 'e2e-hide-feedback-btn';
+              style.textContent = 'button[title="Send feedback"]{display:none!important;}';
+              document.head.appendChild(style);
+            }
+          });
+          // cr review (CLI, this branch): poll for the hide to have applied,
+          // same as variant A's own fix above.
+          await p16.waitForFunction(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            if (!gd || gd._fullLayout?.showlegend !== false) return null;
+            const contaminated = (gd.data ?? []).some((t) => (
+              (/^(Starting Point|Current position)/.test(t.name ?? '')
+                || (t.legendgroup === 'continuumNE' && t.mode === 'lines'))
+              && t.visible !== false
+            ));
+            return contaminated ? null : true;
+          }, null, { timeout: 5000 }).catch(() => {});
+          const shot16 = await p16.locator('[data-tour="plot"]').screenshot();
+          const scan16 = await p16.evaluate(async (b64) => {
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + b64; });
+            const dsf = window.devicePixelRatio || 1;
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width; canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const { data } = ctx.getImageData(0, 0, img.width, img.height);
+            const target = [142, 68, 173]; const tol2 = 40 * 40;
+            const w = img.width, h = img.height;
+            const mask = new Uint8Array(w * h);
+            for (let i = 0; i < w * h; i++) {
+              const r = data[i * 4], g = data[i * 4 + 1], bch = data[i * 4 + 2], a = data[i * 4 + 3];
+              if (a < 100) continue;
+              const dr = r - target[0], dg = g - target[1], db = bch - target[2];
+              if (dr * dr + dg * dg + db * db < tol2) mask[i] = 1;
+            }
+            const visited = new Uint8Array(w * h);
+            const blobs = [];
+            for (let i = 0; i < w * h; i++) {
+              if (!mask[i] || visited[i]) continue;
+              const stack = [i]; visited[i] = 1; let count = 0;
+              let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+              while (stack.length) {
+                const cur = stack.pop(); count++;
+                const cx = cur % w, cy = (cur / w) | 0;
+                if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+                if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+                for (const [nx, ny] of [[cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]]) {
+                  if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                  const ni = ny * w + nx;
+                  if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
+                }
+              }
+              // cr review (CLI, this branch): this row uses DESKTOP marker
+              // sizes (700x500 forced CSS, not a real narrow device
+              // viewport) -- same regime as variant A/CONTROL, whose own
+              // real output measures ~100-140 count per whole diamond. Use
+              // their established floor (100), not variant B's mobile-tuned
+              // 15 (mobile glyphs are ~44% the pixel area and would be
+              // wrongly excluded by 100 -- verified, kept separate there).
+              if (count >= 100) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+            }
+            if (!blobs.length) return { blobs: [] };
+            const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
+            const miny = Math.min(...blobs.map((b) => b.miny)), maxy = Math.max(...blobs.map((b) => b.maxy));
+            return { blobs, span: Math.hypot(maxx - minx, maxy - miny) };
+          }, shot16.toString('base64'));
+          // Director-routed, CI shard 27/28 job 101764850611: the fixed
+          // 45px ceiling (this row's OWN CI run already measured span:42.4
+          // here, only 2.6px of margin) is now a fallback only; the real
+          // bound is 1.5x the isolated corner `cal16` just measured on THIS
+          // run/environment.
+          const spanBound16 = cal16?.diag ? cal16.diag * 1.5 : 45;
+          record('FIX (RED-MATH-16/001): the pixel scan finds >=1 real glyph, spanning one marker\'s own size (<=1.5x the calibrated corner), not two separate diamonds',
+            (scan16.blobs?.length ?? 0) >= 1 && scan16.span <= spanBound16,
+            JSON.stringify({ ...scan16, spanBound16, calibratedDiag: cal16?.diag ?? null }));
+        } finally { await p16.close().catch(() => {}); }
+
+        // ── OPUS-REVIEW-MATH17 FBM-1: a CONTAINER-ONLY resize (a panel
+        //    toggle, no camera change, no React re-render) must end with the
+        //    decision matching the SETTLED shape, not the shape at the
+        //    instant `Plotly.Plots.resize` was called. `Plots.resize` is
+        //    internally debounced (~100ms) and gl-plot3d's own canvas
+        //    resize lands later still -- even `await`ing the resize promise
+        //    reads a STALE `glplot.shape` (measured: [1306,1016] before/
+        //    synchronously-after/awaited, [516,1016] once actually settled).
+        //    Every OTHER trigger in this app (a relayout, a window resize's
+        //    own listener) gets a fresh, correct re-evaluation from a LATER
+        //    event, which is why this needed a container-only resize with
+        //    NOTHING else firing afterward to expose it at all.
+        //
+        //    Mutation: reverting `waitForGlplotShapeSettled(plotId).then(...)`
+        //    to the immediate `applyContinuumCollapseAtCamera(cameraRef.current)`
+        //    call makes this row fail by name -- the decision stays "show"
+        //    at the settled narrow size that should collapse.
+        const p17b = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
+        try {
+          await p17b.goto(BASE, { waitUntil: 'networkidle' });
+          try { await p17b.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await p17b.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
+          const m17b = p17b.locator('input[inputmode="decimal"][class*="text-center"]');
+          await m17b.first().waitFor({ state: 'visible', timeout: 20000 });
+          const vals17b = [-5, 2, 1, -1, -5, -5, 6, 6]; // RED-MATH-17/001's own fixture
+          for (let i = 0; i < 8; i++) { const c = m17b.nth(i); await c.click(); await c.fill(String(vals17b[i])); await c.blur(); }
+          // cr review (director-routed, merged tree): reuse the section's own
+          // fixture-midpoint predicate instead of a fixed sleep -- a slow
+          // CI runner can still be mid-render at 400ms, silently reading a
+          // stale/absent trace.
+          const ready17b = await p17b.waitForFunction(() => {
+            const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint');
+            return ts.some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.8928571428571428) < 1e-6 && Math.abs((t.y?.[0] ?? NaN) - 1) < 1e-6) ? true : null;
+          }, null, { timeout: 20000 }).then(() => true).catch(() => false);
+          record('precondition (FBM-1 row): the fixture\'s continuum midpoint (0.8929, 1) is drawn before reading trace state', ready17b);
+          const trackABtn17b = p17b.locator('label:has-text("Expected Payoff Surface Tracking")')
+            .locator('xpath=following-sibling::*[1]').getByRole('button', { name: 'Player A' });
+          await trackABtn17b.click({ timeout: 5000 }).catch(() => {});
+          // Same tracking-mode predicate the other rows in this section use
+          // (a z-stacked 'both' trace would corrupt the corner-visibility
+          // reads below).
+          const trackingIsA17b = await p17b.waitForFunction(() => {
+            const mid = (document.querySelector('.js-plotly-plot')?.data ?? []).find((t) => t.meta?.continuumRole === 'midpoint');
+            return mid && mid.x?.length === 1 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (FBM-1 row): tracking mode is Player A only', trackingIsA17b);
+
+          // Wide first: force 700x500, set CAMERA.overview via an explicit
+          // relayout (the ONE evaluation this scenario is allowed -- it goes
+          // through the relayout listener, not the ResizeObserver path FBM-1
+          // is about) to establish a known-correct, path='exact' baseline.
+          await p17b.evaluate(() => {
+            const el = document.querySelector('[data-tour="plot"]');
+            el.style.setProperty('width', '700px', 'important');
+            el.style.setProperty('height', '500px', 'important');
+            el.style.setProperty('max-width', '700px', 'important');
+            el.style.setProperty('min-width', '700px', 'important');
+            el.style.setProperty('flex', 'none', 'important');
+          });
+          // cr review (director-routed, GitHub thread PRRT_kwDOSqCH786f60Y5):
+          // ONE shared predicate for "does glplot.shape (device px /
+          // pixelRatio) match the plot DIV's LIVE rect (CSS width, and CSS
+          // height minus the live margin.t)?" -- the same comparison
+          // `applyContinuumCollapseAtCamera`'s own `shapeFresh` gate makes.
+          // Installed once on `window` so both `wideResized17b` below and
+          // `settledAndCollapsed` further down call the SAME logic instead
+          // of two independent inline copies -- an earlier draft had
+          // `wideResized17b` check ONLY `glplot.shape[0]` (width), never
+          // height, exactly the kind of drift a second hand-copied
+          // comparison invites (a width-correct, height-stale canvas could
+          // have passed this precondition and hidden the resize defect).
+          await p17b.evaluate(() => {
+            window.__glplotShapeMatchesRect = () => {
+              const gd = document.getElementById('plotly-3d-market-simulation');
+              const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+              const rect = gd?.getBoundingClientRect();
+              const marginTop = Number(gd?._fullLayout?.margin?.t) || 0;
+              if (!glplot?.shape || !glplot.pixelRatio || !rect) return null;
+              const cssW = glplot.shape[0] / glplot.pixelRatio;
+              const cssH = glplot.shape[1] / glplot.pixelRatio;
+              const matches = Math.abs(cssW - rect.width) < 2 && Math.abs(cssH - (rect.height - marginTop)) < 2;
+              return { cssW, cssH, rectW: rect.width, rectH: rect.height, matches };
+            };
+          });
+          // Live glplot.shape settle check (the SAME predicate the
+          // RED-MATH-16/001 row above and section 71's own `narrowResized`
+          // use) instead of a fixed 900ms sleep -- this row's own FBM-1 fix
+          // is precisely about NOT trusting a fixed delay for this.
+          const wideResized17b = await p17b.waitForFunction(() => {
+            const r = window.__glplotShapeMatchesRect();
+            return r && r.matches && Math.abs(r.rectW - 658) < 24 ? true : null;
+          }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+          record('precondition (FBM-1 row): the plot resized to the canonical 700x500 baseline (live glplot.shape width AND height, not just width)', wideResized17b);
+          const plotId17b = await p17b.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
+          // cr review (director-routed, GitHub thread): mark BEFORE the
+          // FIRST relayout attempt (see variant B's own identical comment
+          // above -- the relayout listener's decision fires within the SAME
+          // `waitForTimeout(300)` below, not after it, so a mark taken only
+          // once settlement is confirmed already postdates the real
+          // decision and this gate's poll would time out for good state).
+          const cameraSetMarkPerf17b = await p17b.evaluate(() => performance.now());
+          let camOk17b = false;
+          for (let attempt = 0; attempt < 3 && !camOk17b; attempt++) {
+            await p17b.evaluate((id) => window.Plotly.relayout(id, { 'scene.camera': { eye: { x: 1.6, y: -1.6, z: 1.1 }, center: { x: 0, y: 0, z: 0 }, up: { x: 0, y: 0, z: 1 } } }), plotId17b);
+            await p17b.waitForTimeout(300);
+            const e = await p17b.evaluate(() => document.querySelector('.js-plotly-plot')?._fullLayout?.scene?.camera?.eye);
+            camOk17b = !!e && Math.hypot(e.x - 1.6, e.y - (-1.6), e.z - 1.1) < 0.02;
+          }
+          record('precondition (FBM-1 row): the camera settled at CAMERA.overview (wide 700x500 baseline)', camOk17b);
+          // cr review (director-routed, GitHub thread on smoke.mjs:5785,
+          // Minor -- same class as variant B's own fix): corner traces
+          // default VISIBLE at first static render, so reading
+          // "not collapsed" the instant traces exist can resolve BEFORE
+          // `applyContinuumCollapseAtCamera` has run for THIS camera at
+          // all -- this precondition would then pass without the exact
+          // path having actually decided anything, silently undermining the
+          // "a narrow-only flip below proves nothing" guarantee it exists
+          // for. Same gate as variant B: require a fresh exact-path
+          // evaluation strictly after `cameraSetMarkPerf17b`.
+          const wideDecisionInfo = await p17b.waitForFunction((markPerf) => {
+            const gd = document.querySelector('.js-plotly-plot');
+            const path = gd?.dataset?.continuumProjectionPath;
+            const decidedAt = gd?.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null;
+            if (path !== 'exact' || decidedAt == null || decidedAt <= markPerf) return null;
+            const ts = (gd.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            return { collapsed: ts.length > 0 && ts.every((t) => t.visible === 'legendonly'), path, decidedAt };
+          }, cameraSetMarkPerf17b, { timeout: 3000 }).then((h) => h.jsonValue()).catch(() => null);
+          record('precondition (FBM-1 row): a fresh exact-path decision was actually computed AFTER the camera settled (not read too early)',
+            !!wideDecisionInfo && wideDecisionInfo.path === 'exact', JSON.stringify({ wideDecisionInfo, cameraSetMarkPerf17b }));
+          const wideCollapsed = wideDecisionInfo?.collapsed ?? null;
+          record('precondition (FBM-1 row): the wide 700x500 baseline does NOT collapse (else a narrow-only flip below proves nothing)', wideCollapsed === false, String(wideCollapsed));
+
+          // Now a CONTAINER-ONLY resize -- CSS only, no relayout, no window
+          // resize event -- to a size that (per the fix's own real-pixel
+          // fixtures) collapses this same component. The ONLY re-evaluation
+          // trigger reachable from here is the ResizeObserver path FBM-1
+          // patched.
+          // cr review (director-routed, merged tree): measure APP-SIDE, not
+          // wall-clock around the Playwright round-trip -- `resizeStartT`
+          // (Date.now(), Node-side) is kept only as a diagnostic; the
+          // ASSERTED delta below is `continuumDecidedAt - resizeStartPerf`,
+          // both `performance.now()` reads taken INSIDE this same page, so
+          // CI-scheduler/IPC jitter around the `evaluate()` calls themselves
+          // never counts against the bound.
+          const resizeStartT = Date.now();
+          const resizeStartPerf = await p17b.evaluate(() => {
+            const el = document.querySelector('[data-tour="plot"]');
+            el.style.setProperty('width', '280px', 'important');
+            el.style.setProperty('height', '320px', 'important');
+            el.style.setProperty('max-width', '280px', 'important');
+            el.style.setProperty('min-width', '280px', 'important');
+            el.style.setProperty('flex', 'none', 'important');
+            return performance.now();
+          });
+          // The ResizeObserver's own debounce is 150ms; give the settle-poll
+          // (bounded 1000ms) room too, then read the decision. No relayout,
+          // no window resize event, no other trigger happens in between.
+          const settledAndCollapsed = await p17b.waitForFunction(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            // Same shared predicate `wideResized17b` above installed on
+            // `window` -- was two independent inline copies before cr
+            // review's routed thread (that drift is exactly how
+            // `wideResized17b` ended up checking only width).
+            const r = window.__glplotShapeMatchesRect();
+            // "shape matches rect" is ALSO trivially true in the OLD
+            // (pre-resize) steady state -- the unsettled window is only the
+            // BRIEF gap while shape lags a rect that has already moved. An
+            // earlier draft of this check resolved instantly on that trivial
+            // old-state match (shape=[1316,896]/rect=658, the WIDE baseline,
+            // not this resize's 280px-wide target) and reported "settled" at
+            // the WRONG size. Require the rect to have actually reached the
+            // narrow target FIRST.
+            const settled = !!r && r.rectW < 400 && r.matches;
+            const ts = gd ? (gd.data ?? []).filter((t) => t.meta?.continuumRole === 'corner') : [];
+            const collapse = ts.length > 0 && ts.every((t) => t.visible === 'legendonly');
+            // Poll until the app has both settled AND actually APPLIED the
+            // collapse decision — its own settle-then-decide chain (the
+            // ResizeObserver's 150ms debounce, then its OWN
+            // `waitForGlplotShapeSettled` poll) runs independently of and
+            // slightly AFTER this check's own "settled" read, so returning
+            // as soon as shape==rect (before FIX-BEFORE-MERGE-3ba1's edit)
+            // could read the app mid-transition, seeing `settled:true` but
+            // `collapse` not yet applied. Generous bound: this fixture is
+            // EXPECTED to end at collapse:true here (RED-MATH-17/001's own
+            // 320px-real-viewport row and the offline validation both
+            // confirm it), so timing out with `collapse:false` is a genuine
+            // failure, not a race in this check.
+            if (!settled || !collapse) return null;
+            // cr review (CLI, this branch): capture `continuumDecidedAt`/
+            // `continuumProjectionPath` HERE, in the SAME poll tick that
+            // verified `collapse:true` on the settled shape -- an earlier
+            // draft read the dataset again in a SEPARATE `evaluate()` call
+            // afterward, which could observe a LATER stamp from some other
+            // evaluation in between (even with reducedMotion, this is the
+            // one place in the row nothing guarantees against it), timing
+            // a different decision than the one this check just verified.
+            return {
+              collapse, cssW: r.cssW, cssH: r.cssH, rectW: r.rectW, rectH: r.rectH,
+              path: gd.dataset?.continuumProjectionPath ?? null,
+              decidedAt: gd.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null,
+            };
+          }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null);
+          // On a genuine failure, capture the LAST known state (not just
+          // "null") so the record's JSON says WHY: never settled at all,
+          // settled but still not collapsed, or something else.
+          const lastKnown = settledAndCollapsed ? null : await p17b.evaluate(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+            const rect = gd?.getBoundingClientRect();
+            const ts = (gd?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            return { shape: glplot?.shape ? Array.from(glplot.shape) : null, rect: rect ? { w: rect.width, h: rect.height } : null, collapse: ts.length > 0 && ts.every((t) => t.visible === 'legendonly') };
+          });
+          // Diagnostic only, per cr review: Node-side wall clock around the
+          // Playwright round-trips (network/IPC/CI-scheduler jitter), never
+          // asserted on.
+          const elapsedMsWallClock = Date.now() - resizeStartT;
+          // path/decidedAt come from `settledAndCollapsed` itself now (the
+          // SAME poll tick that verified collapse:true), not a fresh read.
+          const path17b = settledAndCollapsed?.path ?? null;
+          record('FIX (OPUS-REVIEW-MATH17 FBM-1): a container-only resize (no camera change, no relayout) ends with the decision matching the SETTLED shape, not the stale pre-resize one',
+            // cr review (CLI, this branch): require path17b === 'exact'
+            // explicitly, not just present in the diagnostic JSON -- the
+            // row's whole point is that the EXACT path (not a fallback that
+            // happens to land on the same answer) made this decision.
+            !!settledAndCollapsed && settledAndCollapsed.collapse === true && path17b === 'exact',
+            JSON.stringify({ settledAndCollapsed, lastKnown, path: path17b, elapsedMsWallClock }));
+          // cr review (director-routed, merged tree): assert this actually
+          // settles PROMPTLY (well under `waitForGlplotShapeSettled`'s own
+          // 1000ms bound plus the 150ms debounce), not merely "eventually,
+          // by the time this test's own generous 8000ms poll gives up" — the
+          // two are different claims. Measured APP-SIDE
+          // (`continuumDecidedAt - resizeStartPerf`, both `performance.now()`
+          // reads from inside this same page — see the comment on
+          // `resizeStartPerf` above), so a slow CI runner's OWN scheduling
+          // jitter around the Playwright calls can never trip this bound for
+          // a reason that has nothing to do with the component's real
+          // resize-to-decision latency; wall-clock stays diagnostic-only in
+          // the record above. Mutation: reverting the `marginTop`
+          // subtraction cr review's OWN CLI finding caught in
+          // `waitForGlplotShapeSettled` (PlotlyView.tsx) makes its internal
+          // "settled" comparison never match early, so this row's decision
+          // is only ever reached via that function's timeout fallback —
+          // functionally correct but always slow; this bound catches that
+          // even when the FUNCTIONAL assertion above still happens to pass.
+          // Bound tuned against BOTH ends, not guessed: working code measures
+          // an app-side delta of ~350-500ms here (150ms debounce + a couple
+          // settle-poll rAF frames); the marginTop mutation measures
+          // ~1000ms+ (debounce + its own FULL internal poll timeout). 800ms
+          // sits between the two with margin on both sides.
+          const decidedAt17b = settledAndCollapsed?.decidedAt ?? null;
+          const appSideDeltaMs = decidedAt17b != null ? decidedAt17b - resizeStartPerf : null;
+          record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (app-side delta <800ms: ~150ms debounce + a couple settle-poll frames), not merely by the time a generous test-level wait gives up',
+            appSideDeltaMs != null && appSideDeltaMs >= 0 && appSideDeltaMs < 800,
+            JSON.stringify({ appSideDeltaMs, decidedAt: decidedAt17b, resizeStartPerf, elapsedMsWallClock }));
+        } finally { await p17b.close().catch(() => {}); }
+      }
     } finally { await p.close().catch(() => {}); }
   });
 
