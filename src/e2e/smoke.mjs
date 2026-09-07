@@ -5447,19 +5447,26 @@ try {
       // clustered layout that still spans >40px only by chance. Replace the
       // inference with a direct measurement: filter to MARKER-SIZED blobs
       // (a genuine diamond outline, whole or anti-alias-split, has a bbox
-      // diagonal in roughly [2,30] CSS px at this crop's scale — the
-      // fragment sizes and full-diamond sizes already observed in this
-      // exact check's own real output; anything outside that range is a
-      // stray, not a marker), then require >=2 of them and assert the
-      // LARGEST pairwise centre-to-centre distance among them clears a
-      // marker's own footprint. MAX (not min) pairwise distance on purpose:
-      // an anti-alias-split diamond's own fragments sit close together
-      // (near-zero apart), so a min-distance check would fail on a single,
-      // genuinely correct glyph; only the presence of some pair that is
-      // FAR apart proves two distinct markers are actually on screen.
+      // diagonal in roughly [2,36] CSS px at this crop's scale — cr review
+      // (CLI, this branch): a WHOLE unsplit desktop diamond (21px marker)
+      // already measures ~29.7-30.4px in this exact check's own real
+      // output, right at a 30px cutoff's edge; one of the 3 real blobs was
+      // silently excluded by that tighter bound (markerSizedCount read 2,
+      // not 3, though the check still passed on the remaining pair) —
+      // 36px keeps every whole real diamond comfortably inside with room
+      // for anti-alias/DPR growth, while a mutation-tested single collapsed
+      // glyph (~31.8px) still fails via the COUNT requirement below, not
+      // this size filter; anything above 36 is a stray, not a marker), then
+      // require >=2 of them and assert the LARGEST pairwise centre-to-centre
+      // distance among them clears a marker's own footprint. MAX (not min)
+      // pairwise distance on purpose: an anti-alias-split diamond's own
+      // fragments sit close together (near-zero apart), so a min-distance
+      // check would fail on a single, genuinely correct glyph; only the
+      // presence of some pair that is FAR apart proves two distinct markers
+      // are actually on screen.
       const markerSizedControl = controlBlobs.blobs.filter((b) => {
         const diag = Math.hypot(b.maxx - b.minx, b.maxy - b.miny);
-        return diag >= 2 && diag <= 30;
+        return diag >= 2 && diag <= 36;
       });
       let maxSepControl = 0;
       for (let i = 0; i < markerSizedControl.length; i++) {
@@ -6037,7 +6044,14 @@ try {
                   if (mask[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni); }
                 }
               }
-              if (count >= 15) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
+              // cr review (CLI, this branch): this row uses DESKTOP marker
+              // sizes (700x500 forced CSS, not a real narrow device
+              // viewport) -- same regime as variant A/CONTROL, whose own
+              // real output measures ~100-140 count per whole diamond. Use
+              // their established floor (100), not variant B's mobile-tuned
+              // 15 (mobile glyphs are ~44% the pixel area and would be
+              // wrongly excluded by 100 -- verified, kept separate there).
+              if (count >= 100) blobs.push({ count, minx: minx / dsf, maxx: maxx / dsf, miny: miny / dsf, maxy: maxy / dsf });
             }
             if (!blobs.length) return { blobs: [] };
             const minx = Math.min(...blobs.map((b) => b.minx)), maxx = Math.max(...blobs.map((b) => b.maxx));
@@ -6222,7 +6236,19 @@ try {
             // confirm it), so timing out with `collapse:false` is a genuine
             // failure, not a race in this check.
             if (!settled || !collapse) return null;
-            return { collapse, shape: Array.from(glplot.shape), rectW: rect.width, rectH: rect.height };
+            // cr review (CLI, this branch): capture `continuumDecidedAt`/
+            // `continuumProjectionPath` HERE, in the SAME poll tick that
+            // verified `collapse:true` on the settled shape -- an earlier
+            // draft read the dataset again in a SEPARATE `evaluate()` call
+            // afterward, which could observe a LATER stamp from some other
+            // evaluation in between (even with reducedMotion, this is the
+            // one place in the row nothing guarantees against it), timing
+            // a different decision than the one this check just verified.
+            return {
+              collapse, shape: Array.from(glplot.shape), rectW: rect.width, rectH: rect.height,
+              path: gd.dataset?.continuumProjectionPath ?? null,
+              decidedAt: gd.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null,
+            };
           }, null, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null);
           // On a genuine failure, capture the LAST known state (not just
           // "null") so the record's JSON says WHY: never settled at all,
@@ -6238,11 +6264,9 @@ try {
           // Playwright round-trips (network/IPC/CI-scheduler jitter), never
           // asserted on.
           const elapsedMsWallClock = Date.now() - resizeStartT;
-          const decidedInfo17b = await p17b.evaluate(() => {
-            const gd = document.querySelector('.js-plotly-plot');
-            return { path: gd?.dataset?.continuumProjectionPath ?? null, decidedAt: gd?.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null };
-          });
-          const path17b = decidedInfo17b.path;
+          // path/decidedAt come from `settledAndCollapsed` itself now (the
+          // SAME poll tick that verified collapse:true), not a fresh read.
+          const path17b = settledAndCollapsed?.path ?? null;
           record('FIX (OPUS-REVIEW-MATH17 FBM-1): a container-only resize (no camera change, no relayout) ends with the decision matching the SETTLED shape, not the stale pre-resize one',
             !!settledAndCollapsed && settledAndCollapsed.collapse === true, JSON.stringify({ settledAndCollapsed, lastKnown, path: path17b, elapsedMsWallClock }));
           // cr review (director-routed, merged tree): assert this actually
@@ -6268,10 +6292,11 @@ try {
           // settle-poll rAF frames); the marginTop mutation measures
           // ~1000ms+ (debounce + its own FULL internal poll timeout). 800ms
           // sits between the two with margin on both sides.
-          const appSideDeltaMs = decidedInfo17b.decidedAt != null ? decidedInfo17b.decidedAt - resizeStartPerf : null;
+          const decidedAt17b = settledAndCollapsed?.decidedAt ?? null;
+          const appSideDeltaMs = decidedAt17b != null ? decidedAt17b - resizeStartPerf : null;
           record('FIX (OPUS-REVIEW-MATH17 FBM-1, timing): the decision is reached PROMPTLY (app-side delta <800ms: ~150ms debounce + a couple settle-poll frames), not merely by the time a generous test-level wait gives up',
             appSideDeltaMs != null && appSideDeltaMs >= 0 && appSideDeltaMs < 800,
-            JSON.stringify({ appSideDeltaMs, decidedAt: decidedInfo17b.decidedAt, resizeStartPerf, elapsedMsWallClock }));
+            JSON.stringify({ appSideDeltaMs, decidedAt: decidedAt17b, resizeStartPerf, elapsedMsWallClock }));
         } finally { await p17b.close().catch(() => {}); }
       }
     } finally { await p.close().catch(() => {}); }
