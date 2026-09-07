@@ -5667,7 +5667,20 @@ try {
               document.head.appendChild(style);
             }
           });
-          await p17.waitForTimeout(250);
+          // cr review (CLI, this branch): poll for the hide to have actually
+          // applied (Plotly.restyle/relayout resolve asynchronously) instead
+          // of a fixed 250ms sleep -- a stalled CI runner could still
+          // screenshot a contaminated frame.
+          await p17.waitForFunction(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            if (!gd || gd._fullLayout?.showlegend !== false) return null;
+            const contaminated = (gd.data ?? []).some((t) => (
+              (/^(Starting Point|Current position)/.test(t.name ?? '')
+                || (t.legendgroup === 'continuumNE' && t.mode === 'lines'))
+              && t.visible !== false
+            ));
+            return contaminated ? null : true;
+          }, null, { timeout: 5000 }).catch(() => {});
           const shot17 = await p17.locator('[data-tour="plot"]').screenshot();
           const scan17 = await p17.evaluate(async (b64) => {
             const img = new Image();
@@ -5845,7 +5858,18 @@ try {
               document.head.appendChild(style);
             }
           });
-          await p17mobile.waitForTimeout(250);
+          // cr review (CLI, this branch): poll for the hide to have applied,
+          // same as variant A's own fix above.
+          await p17mobile.waitForFunction(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            if (!gd || gd._fullLayout?.showlegend !== false) return null;
+            const contaminated = (gd.data ?? []).some((t) => (
+              (/^(Starting Point|Current position)/.test(t.name ?? '')
+                || (t.legendgroup === 'continuumNE' && t.mode === 'lines'))
+              && t.visible !== false
+            ));
+            return contaminated ? null : true;
+          }, null, { timeout: 5000 }).catch(() => {});
           const shot17m = await p17mobile.locator('[data-tour="plot"]').screenshot();
           const scan17m = await p17mobile.evaluate(async (b64) => {
             const img = new Image();
@@ -6007,7 +6031,18 @@ try {
               document.head.appendChild(style);
             }
           });
-          await p16.waitForTimeout(250);
+          // cr review (CLI, this branch): poll for the hide to have applied,
+          // same as variant A's own fix above.
+          await p16.waitForFunction(() => {
+            const gd = document.querySelector('.js-plotly-plot');
+            if (!gd || gd._fullLayout?.showlegend !== false) return null;
+            const contaminated = (gd.data ?? []).some((t) => (
+              (/^(Starting Point|Current position)/.test(t.name ?? '')
+                || (t.legendgroup === 'continuumNE' && t.mode === 'lines'))
+              && t.visible !== false
+            ));
+            return contaminated ? null : true;
+          }, null, { timeout: 5000 }).catch(() => {});
           const shot16 = await p16.locator('[data-tour="plot"]').screenshot();
           const scan16 = await p16.evaluate(async (b64) => {
             const img = new Image();
@@ -6282,7 +6317,12 @@ try {
           // SAME poll tick that verified collapse:true), not a fresh read.
           const path17b = settledAndCollapsed?.path ?? null;
           record('FIX (OPUS-REVIEW-MATH17 FBM-1): a container-only resize (no camera change, no relayout) ends with the decision matching the SETTLED shape, not the stale pre-resize one',
-            !!settledAndCollapsed && settledAndCollapsed.collapse === true, JSON.stringify({ settledAndCollapsed, lastKnown, path: path17b, elapsedMsWallClock }));
+            // cr review (CLI, this branch): require path17b === 'exact'
+            // explicitly, not just present in the diagnostic JSON -- the
+            // row's whole point is that the EXACT path (not a fallback that
+            // happens to land on the same answer) made this decision.
+            !!settledAndCollapsed && settledAndCollapsed.collapse === true && path17b === 'exact',
+            JSON.stringify({ settledAndCollapsed, lastKnown, path: path17b, elapsedMsWallClock }));
           // cr review (director-routed, merged tree): assert this actually
           // settles PROMPTLY (well under `waitForGlplotShapeSettled`'s own
           // 1000ms bound plus the 150ms debounce), not merely "eventually,
