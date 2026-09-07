@@ -444,6 +444,29 @@ export default function App() {
     }
   };
 
+  /**
+   * The ONE place that decides "did this /api/games response mean the
+   * session died". A 401 on any of the four game routes (GET/POST/PATCH/
+   * DELETE) means `resolveGameOwner` refused a presented-but-dead token
+   * (server.ts) — clears it here so the header flips to signed-out and the
+   * #158 sign-in invitation can show; returns whether it fired so each call
+   * site can also drive its own UI (a banner's needsAuth flag, an emptied
+   * list, an alert).
+   *
+   * OPUS-REVIEW-DESKTOP16 N3: before this, only POST/PATCH/DELETE checked
+   * `res.status === 401` themselves (three separate inline copies), and GET
+   * (`refetchUserGames`) did not check it at all — a dead token left the
+   * list showing the account's last-loaded rows and the header still
+   * `@username` until the next write. All four now route through here so a
+   * future 401 handler cannot forget to clear the token or diverge on which
+   * status counts.
+   */
+  const handleDeadSessionResponse = (res: Response): boolean => {
+    const wasAuthFailure = res.status === 401;
+    if (wasAuthFailure) updateAuthToken(null);
+    return wasAuthFailure;
+  };
+
   const handleSwitchDbMode = (mode: 'local' | 'cloud') => {
     setDbMode(mode);
     safeSetItem('nash_sim_db_mode', mode);
@@ -804,6 +827,16 @@ export default function App() {
     const seq = ++gamesFetchSeqRef.current;
     try {
       const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });
+      // OPUS-REVIEW-DESKTOP16 N3: a 401 here means the session died (dead
+      // token) — unlike a transient 500 (the #142 guard right below, which
+      // must NOT wipe the list), a dead session's list genuinely is not this
+      // identity's any more, so it is cleared, not left stale. Guarded by
+      // `seq` like the success path, so a stale late 401 can't clobber a
+      // newer request's still-in-flight result.
+      if (handleDeadSessionResponse(res)) {
+        if (seq === gamesFetchSeqRef.current) setUserCustomGames([]);
+        return undefined;
+      }
       // A failed request is not an empty library (CodeRabbit on #142): a
       // transient 500 during the 409 recovery must not wipe the saved list.
       if (!res.ok) return undefined;
@@ -2290,8 +2323,10 @@ export default function App() {
         // RED-DESKTOP-15/001: the invitation render now follows THIS actual
         // 401, not `!authToken` — a local owner's token is always falsy, so
         // that predicate fired for every failure reason, not just this one.
-        const wasAuthFailure = res.status === 401;
-        if (wasAuthFailure) updateAuthToken(null);
+        // OPUS-REVIEW-DESKTOP16 N3: routed through the shared helper (also
+        // used by GET/POST/DELETE) so the token-clearing logic lives in ONE
+        // place.
+        const wasAuthFailure = handleDeadSessionResponse(res);
         setEditError(data.error || 'Failed to update game.');
         setEditErrorNeedsAuth(wasAuthFailure);
       }
@@ -2363,7 +2398,11 @@ export default function App() {
         // RED-APP-7/001: same dead-token cleanup as Save/Edit — an expired
         // token must not keep asserting "signed in" (header, Save/Edit's own
         // re-auth affordances) after the server has stopped honoring it.
-        if (res.status === 401) updateAuthToken(null);
+        // OPUS-REVIEW-DESKTOP16 N3/N4: routed through the shared helper (also
+        // used by GET/POST/PATCH); the server now answers this case with the
+        // same "Invalid or expired session." wording the other three routes
+        // use (server.ts's DELETE handler, was "Unauthorized access.").
+        handleDeadSessionResponse(res);
         const data = await res.json();
         alert(data.error || 'Failed to delete game.');
       }
@@ -2611,8 +2650,10 @@ export default function App() {
         // not `!authToken` — a local owner's token is always falsy, so that
         // predicate fired for every failure reason (network, validation),
         // not just an expired session.
-        const wasAuthFailure = res.status === 401;
-        if (wasAuthFailure) updateAuthToken(null);
+        // OPUS-REVIEW-DESKTOP16 N3: routed through the shared helper (also
+        // used by GET/PATCH/DELETE) so the token-clearing logic lives in ONE
+        // place.
+        const wasAuthFailure = handleDeadSessionResponse(res);
         setSaveError(data.error || 'Failed to save game.');
         setSaveErrorNeedsAuth(wasAuthFailure);
       }

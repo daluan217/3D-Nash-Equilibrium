@@ -92,7 +92,7 @@ check('the adopt-local route commits the candidate through a confirmed write and
 /* ------------------------------------------------------ known positives */
 const MUST_FLAG: Array<[string, string]> = [
   ['deletion falling back to the game owner',
-   'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const { owner: user } = resolveGameOwner(req);\n});'],
+   'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const user = resolveGameOwner(req);\n});'],
   ['a game route left on the strict check',
    'app.get("/api/games", h, (req, res) => {\n  const user = getAuthUser(req);\n});'],
 ];
@@ -104,7 +104,7 @@ for (const [name, src] of MUST_FLAG) {
 }
 // Control: the correct shape must not be flagged.
 {
-  const good = 'app.get("/api/games", h, (req, res) => {\n  const { owner: user } = resolveGameOwner(req);\n});\n'
+  const good = 'app.get("/api/games", h, (req, res) => {\n  const user = resolveGameOwner(req);\n});\n'
     + 'app.post("/api/auth/delete-confirm", h, (req, res) => {\n  const user = getAuthUser(req);\n});';
   const found = resolverByRoute(good);
   const bad = found.some((f) => (STRICT_ROUTES.includes(f.route) && f.resolver !== 'getAuthUser')
@@ -127,22 +127,100 @@ check('fixture: a planted old expression is flagged by the same regex',
 // didn't resolve" rather than collapsing both to the same fallback — the
 // actual mechanism of the fix, not just the absence of the old text (a
 // rewrite that reintroduced the bug under new names would still pass the
-// text-absence check above).
+// text-absence check above). OPUS-REVIEW-DESKTOP16 N2: the return shape is
+// now a bare `User | null` — the earlier `{ owner, presentedDeadToken }`
+// wrapper had a second field nothing ever read, so it was dropped rather
+// than kept as documented-but-unenforced dead code.
 {
   const fnStart = server.indexOf('function resolveGameOwner(req');
   check('resolveGameOwner is defined', fnStart >= 0);
   const fnSrc = server.slice(fnStart, server.indexOf('\n}', fnStart) + 2);
   check('resolveGameOwner checks getAuthUser(req) first',
-    /const user = getAuthUser\(req\);\s*\n\s*if \(user\) return \{ owner: user, presentedDeadToken: false \};/.test(fnSrc));
-  check('resolveGameOwner refuses (owner: null) when a token WAS presented but did not resolve',
-    /if \(hasPresentedToken\(req\)\) return \{ owner: null, presentedDeadToken: true \};/.test(fnSrc));
+    /const user = getAuthUser\(req\);\s*\n\s*if \(user\) return user;/.test(fnSrc));
+  check('resolveGameOwner refuses (null) when a token WAS presented but did not resolve',
+    /if \(hasPresentedToken\(req\)\) return null;/.test(fnSrc));
   check('resolveGameOwner falls back to the local owner ONLY when no token was presented at all',
-    /return \{ owner: ensureLocalOwner\(\), presentedDeadToken: false \};/.test(fnSrc));
+    /return ensureLocalOwner\(\);/.test(fnSrc));
   // Known-positive: a regression back to unconditional fallback (the old bug,
   // renamed) must be caught by the same three checks above going false.
-  const regressed = 'function resolveGameOwner(req) {\n  return { owner: getAuthUser(req) ?? ensureLocalOwner(), presentedDeadToken: false };\n}';
+  const regressed = 'function resolveGameOwner(req) {\n  return getAuthUser(req) ?? ensureLocalOwner();\n}';
   check('fixture: a regression to unconditional fallback fails the "presented token refused" check',
-    !/if \(hasPresentedToken\(req\)\) return \{ owner: null, presentedDeadToken: true \};/.test(regressed));
+    !/if \(hasPresentedToken\(req\)\) return null;/.test(regressed));
+}
+
+// OPUS-REVIEW-DESKTOP16 (residual): the unit file previously had NO pin on
+// `parseBearerToken`/`hasPresentedToken` themselves — a mutant that hardcoded
+// `hasPresentedToken` to always return `false` would restore the exact bug
+// this PR fixes (every dead token falls back to the local owner again) with
+// every check ABOVE still green, because they only assert resolveGameOwner's
+// OWN source shape, not what the two helpers underneath it actually compute.
+// Only the integration suite would have caught that mutant before this.
+//
+// This file has no way to IMPORT server.ts (it is the app entrypoint, not a
+// module anything else here requires) and re-implementing the regex by hand
+// would test the fixture, not the source — exactly the "check that cannot
+// fail for the reason it claims" class. Instead: (1) pin hasPresentedToken's
+// body to an EXACT literal — a hardcoded `return false;`/`true;` fails this
+// immediately, by name; (2) extract parseBearerToken's regex PATTERN AND
+// FLAGS textually from the live `server` string and build a real `RegExp`
+// from them (no eval, no hand copy) — the case matrix below runs against
+// THAT object, so a mutated pattern/flag in server.ts changes what the
+// matrix actually exercises and the affected cases fail for the real reason.
+{
+  check('hasPresentedToken is exactly `return parseBearerToken(req) !== null;` (no hardcoded shortcut)',
+    /function hasPresentedToken\(req: express\.Request\): boolean \{\s*\n\s*return parseBearerToken\(req\) !== null;\s*\n\}/.test(server));
+
+  const parseFnStart = server.indexOf('function parseBearerToken(req');
+  check('parseBearerToken is defined', parseFnStart >= 0);
+  const parseFnSrc = server.slice(parseFnStart, server.indexOf('\n}', parseFnStart) + 2);
+  const regexMatch = parseFnSrc.match(/const m = \/(.*)\/([a-z]*)\.exec\(authHeader\);/);
+  check('parseBearerToken\'s regex literal is found in source (the matrix below runs THIS pattern, not a copy)',
+    regexMatch !== null);
+  const liveRegex = regexMatch ? new RegExp(regexMatch[1], regexMatch[2]) : null;
+  check('the extracted regex is case-insensitive (has the "i" flag)', (liveRegex?.flags ?? '').includes('i'));
+
+  const cases: Array<[string, string | undefined, string | null]> = [
+    ['undefined header (no token at all)', undefined, null],
+    ['empty string header', '', null],
+    ['"Bearer " with nothing after (whitespace-only token)', 'Bearer ', null],
+    ['"Bearer" with no space/token at all', 'Bearer', null],
+    ['lowercase "bearer abc123"', 'bearer abc123', 'abc123'],
+    ['mixed-case "BeArEr abc123"', 'BeArEr abc123', 'abc123'],
+    ['tab between scheme and token', 'Bearer\tabc123', 'abc123'],
+    ['a literal "null" token string ("Bearer null")', 'Bearer null', 'null'],
+    ['a 10 KB token', `Bearer ${'a'.repeat(10_000)}`, 'a'.repeat(10_000)],
+    ['a non-Bearer scheme ("Basic xyz")', 'Basic xyz', null],
+  ];
+  for (const [name, header, expected] of cases) {
+    let got: string | null = null;
+    if (liveRegex && typeof header === 'string') {
+      const m = liveRegex.exec(header);
+      got = m ? (m[1].trim() || null) : null;
+    }
+    check(`parseBearerToken (live source regex) fixture: ${name}`, got === expected,
+      `got ${got === null ? 'null' : `"${String(got).slice(0, 20)}${got.length > 20 ? '…' : ''}"`}`);
+    check(`hasPresentedToken (via the live regex) fixture: ${name}`, (got !== null) === (expected !== null));
+  }
+
+  // Known-positives: both mechanisms above, demonstrated against a PLANTED
+  // mutation rather than only exercised (once, out-of-band) against the real
+  // file during development — round16/COMMON.md v5(e): a structural-guard
+  // fixture needs a known-positive for each shape it claims to catch.
+  const regressedHasPresentedToken = 'function hasPresentedToken(req: express.Request): boolean {\n  return false;\n}';
+  check('fixture: a hardcoded-false hasPresentedToken fails the exact-body-text pin',
+    !/function hasPresentedToken\(req: express\.Request\): boolean \{\s*\n\s*return parseBearerToken\(req\) !== null;\s*\n\}/.test(regressedHasPresentedToken));
+
+  const mutatedParseFnSrc = 'function parseBearerToken(req: express.Request): string | null {\n'
+    + '  const authHeader = req.headers.authorization;\n'
+    + '  if (typeof authHeader !== "string") return null;\n'
+    + '  const m = /^bearer\\s+(.+)$/.exec(authHeader);\n' // the "i" flag dropped
+    + '  return m ? m[1].trim() || null : null;\n}';
+  const mutatedMatch = mutatedParseFnSrc.match(/const m = \/(.*)\/([a-z]*)\.exec\(authHeader\);/);
+  const mutatedRegex = mutatedMatch ? new RegExp(mutatedMatch[1], mutatedMatch[2]) : null;
+  check('fixture: a regex missing the "i" flag fails the case-insensitivity check',
+    !(mutatedRegex?.flags ?? '').includes('i'));
+  check('fixture: that same extracted (flag-mutated) regex fails to match a mixed-case "BeArEr" header',
+    mutatedRegex !== null && !mutatedRegex.test('BeArEr abc123'));
 }
 
 // RED-DESKTOP-13/001 (director-reproduced), now closed structurally
@@ -546,6 +624,60 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // JSX/parenthesized expression.
   check('control: `(authToken && user) || localOwnerMode` (App.tsx\'s own effect) is not flagged',
     violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
+}
+
+// OPUS-REVIEW-DESKTOP16 N3: all FOUR client call sites for the game routes
+// (GET refetchUserGames, POST/PATCH/DELETE handlers) must route their 401
+// through the ONE shared `handleDeadSessionResponse` helper, not a separate
+// inline `res.status === 401` check each — the GET site originally had NO
+// check at all (a dead token left the list stale and the header lying until
+// the next write). Each site is sliced out of App.tsx by its own stable
+// start/end markers (the same markers the staleness-guard checks above
+// already use for the Save/Edit handlers) and scanned independently, so a
+// regression in ONE site is named, not just "something in App.tsx broke".
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const idx = (marker: string): number => {
+    const i = app.indexOf(marker);
+    if (i < 0) throw new Error(`marker not found: ${marker}`);
+    return i;
+  };
+  const FOUR_SITES: Array<[string, string, string]> = [
+    ['GET /api/games (refetchUserGames)', 'const refetchUserGames = useCallback',
+      '}, [authToken, apiBaseUrl, dbMode, canOwnGames]);'],
+    ['POST /api/games (handleSaveGameSubmit)', 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async'],
+    ['PATCH /api/games/:id (handleEditGameSubmit)', 'const handleEditGameSubmit = async', 'const handleDeleteGame = async'],
+    ['DELETE /api/games/:id (handleDeleteGame)', 'const handleDeleteGame = async', 'const handleGenerateGame = async'],
+  ];
+  for (const [name, startMarker, endMarker] of FOUR_SITES) {
+    const slice = app.slice(idx(startMarker), idx(endMarker));
+    check(`${name} routes its 401 through handleDeadSessionResponse`,
+      /handleDeadSessionResponse\(res\)/.test(slice));
+    // A site that checks `res.status === 401` DIRECTLY, bypassing the
+    // helper, is exactly the pre-fix shape (three independent inline copies
+    // plus one site with no check at all) — must not reappear in any of the
+    // four slices.
+    check(`${name} has no bypassing inline \`res.status === 401\` check`,
+      !/res\.status === 401/.test(slice));
+  }
+
+  // Known-positive (the mutation OPUS-REVIEW-DESKTOP16 N3 names by example):
+  // revert the GET site to its pre-fix shape (no dead-session check at all)
+  // and confirm the FIRST check above fails BY NAME for that site only.
+  const regressedRefetch = "const refetchUserGames = useCallback(async () => {\n"
+    + "  const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "  if (!res.ok) return undefined;\n"
+    + "  const rows = await res.json();\n"
+    + "  setUserCustomGames(rows);\n"
+    + "  return rows;\n"
+    + "}, [authToken, apiBaseUrl, dbMode, canOwnGames]);";
+  check('fixture: the pre-fix GET site (no dead-session check) fails the routing check',
+    !/handleDeadSessionResponse\(res\)/.test(regressedRefetch));
+  // And a regression back to the OLD inline three-copies shape (still bypassing
+  // the helper) must be flagged by the second check.
+  const regressedInline = "const wasAuthFailure = res.status === 401;\nif (wasAuthFailure) updateAuthToken(null);";
+  check('fixture: the pre-fix inline `res.status === 401` shape is flagged by the bypass check',
+    /res\.status === 401/.test(regressedInline));
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }

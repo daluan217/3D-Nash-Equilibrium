@@ -2154,14 +2154,18 @@ function hasPresentedToken(req: express.Request): boolean {
  * 200/"Saved successfully" and no error anywhere (RED-DESKTOP-16/001 — the
  * account's own prior games can simultaneously vanish from the same list,
  * and the misfiled game is unrecoverable without knowing to check the
- * signed-out local-owner bucket). Every caller must turn `owner === null`
+ * signed-out local-owner bucket). Every caller must turn a `null` result
  * into a 401, exactly as the strict `getAuthUser` callers already do.
+ *
+ * OPUS-REVIEW-DESKTOP16 N2: an earlier version returned
+ * `{ owner, presentedDeadToken }`; nothing ever read the second field, so it
+ * is dropped rather than kept as documented-but-unenforced dead code.
  */
-function resolveGameOwner(req: express.Request): { owner: User | null; presentedDeadToken: boolean } {
+function resolveGameOwner(req: express.Request): User | null {
   const user = getAuthUser(req);
-  if (user) return { owner: user, presentedDeadToken: false };
-  if (hasPresentedToken(req)) return { owner: null, presentedDeadToken: true };
-  return { owner: ensureLocalOwner(), presentedDeadToken: false };
+  if (user) return user;
+  if (hasPresentedToken(req)) return null;
+  return ensureLocalOwner();
 }
 
 /** How many games on this device belong to the local owner (0 off the desktop). */
@@ -4209,7 +4213,7 @@ async function startServer() {
 
   // Get User's Custom Games
   app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
-    const { owner: user } = resolveGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4221,7 +4225,7 @@ async function startServer() {
 
   // Create/Save a Custom Game
   app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const { owner: user } = resolveGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4325,7 +4329,7 @@ async function startServer() {
   // invalidate the description, which is the exact mismatch this feature exists
   // to prevent. Editing a matrix stays a save-as-new operation.
   app.patch("/api/games/:id", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const { owner: user } = resolveGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
@@ -4473,9 +4477,13 @@ async function startServer() {
   }));
 
   app.delete("/api/games/:id", rateLimit("games-delete", 30, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
-    const { owner: user } = resolveGameOwner(req);
+    const user = resolveGameOwner(req);
     if (!user) {
-      return res.status(401).json({ error: "Unauthorized access." });
+      // OPUS-REVIEW-DESKTOP16 N4: was "Unauthorized access." — the only one
+      // of the 4 game routes with different wording, and App.tsx alerts it
+      // verbatim with no sign-in affordance. Unified with GET/POST/PATCH so
+      // the message is the same regardless of which route hit it.
+      return res.status(401).json({ error: "Invalid or expired session." });
     }
     const gameId = req.params.id;
 

@@ -170,6 +170,11 @@ try {
   const deadDelete = await call(port, 'DELETE', '/api/games/nonexistent-id', { token });
   record('THE DEFECT (DELETE): the reset-invalidated token is refused (401) before any DB lookup',
     deadDelete.status === 401, `status ${deadDelete.status} body ${JSON.stringify(deadDelete.json)}`);
+  // OPUS-REVIEW-DESKTOP16 N4: DELETE used to answer "Unauthorized access."
+  // here, the only one of the 4 routes with different wording (the other 3
+  // all say "Invalid or expired session."), and App.tsx alerted it verbatim.
+  record('DELETE\'s dead-session wording matches GET/POST/PATCH ("Invalid or expired session.")',
+    deadDelete.json?.error === 'Invalid or expired session.', `error: ${deadDelete.json?.error}`);
 
   const deadGet = await call(port, 'GET', '/api/games', { token });
   record('GET with the reset-invalidated token also refuses (401), not a local-owner-scoped list',
