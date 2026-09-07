@@ -6121,18 +6121,40 @@ try {
             el.style.setProperty('min-width', '700px', 'important');
             el.style.setProperty('flex', 'none', 'important');
           });
+          // cr review (director-routed, GitHub thread PRRT_kwDOSqCH786f60Y5):
+          // ONE shared predicate for "does glplot.shape (device px /
+          // pixelRatio) match the plot DIV's LIVE rect (CSS width, and CSS
+          // height minus the live margin.t)?" -- the same comparison
+          // `applyContinuumCollapseAtCamera`'s own `shapeFresh` gate makes.
+          // Installed once on `window` so both `wideResized17b` below and
+          // `settledAndCollapsed` further down call the SAME logic instead
+          // of two independent inline copies -- an earlier draft had
+          // `wideResized17b` check ONLY `glplot.shape[0]` (width), never
+          // height, exactly the kind of drift a second hand-copied
+          // comparison invites (a width-correct, height-stale canvas could
+          // have passed this precondition and hidden the resize defect).
+          await p17b.evaluate(() => {
+            window.__glplotShapeMatchesRect = () => {
+              const gd = document.getElementById('plotly-3d-market-simulation');
+              const glplot = gd?._fullLayout?.scene?._scene?.glplot;
+              const rect = gd?.getBoundingClientRect();
+              const marginTop = Number(gd?._fullLayout?.margin?.t) || 0;
+              if (!glplot?.shape || !glplot.pixelRatio || !rect) return null;
+              const cssW = glplot.shape[0] / glplot.pixelRatio;
+              const cssH = glplot.shape[1] / glplot.pixelRatio;
+              const matches = Math.abs(cssW - rect.width) < 2 && Math.abs(cssH - (rect.height - marginTop)) < 2;
+              return { cssW, cssH, rectW: rect.width, rectH: rect.height, matches };
+            };
+          });
           // Live glplot.shape settle check (the SAME predicate the
           // RED-MATH-16/001 row above and section 71's own `narrowResized`
           // use) instead of a fixed 900ms sleep -- this row's own FBM-1 fix
           // is precisely about NOT trusting a fixed delay for this.
           const wideResized17b = await p17b.waitForFunction(() => {
-            const gd = document.getElementById('plotly-3d-market-simulation');
-            const glplot = gd?._fullLayout?.scene?._scene?.glplot;
-            if (!glplot?.shape || !glplot.pixelRatio) return null;
-            const cssW = glplot.shape[0] / glplot.pixelRatio;
-            return Math.abs(cssW - 658) < 24 ? true : null;
+            const r = window.__glplotShapeMatchesRect();
+            return r && r.matches && Math.abs(r.rectW - 658) < 24 ? true : null;
           }, null, { timeout: 10000 }).then(() => true).catch(() => false);
-          record('precondition (FBM-1 row): the plot resized to the canonical 700x500 baseline (live glplot.shape)', wideResized17b);
+          record('precondition (FBM-1 row): the plot resized to the canonical 700x500 baseline (live glplot.shape width AND height, not just width)', wideResized17b);
           const plotId17b = await p17b.evaluate(() => document.querySelector('.js-plotly-plot')?.id ?? null);
           // cr review (director-routed, GitHub thread): mark BEFORE the
           // FIRST relayout attempt (see variant B's own identical comment
@@ -6199,18 +6221,11 @@ try {
           // no window resize event, no other trigger happens in between.
           const settledAndCollapsed = await p17b.waitForFunction(() => {
             const gd = document.querySelector('.js-plotly-plot');
-            const glplot = gd?._fullLayout?.scene?._scene?.glplot;
-            const rect = gd?.getBoundingClientRect();
-            const marginTop = Number(gd?._fullLayout?.margin?.t) || 0;
-            if (!glplot?.shape || !glplot.pixelRatio || !rect) return null;
-            const cssW = glplot.shape[0] / glplot.pixelRatio, cssH = glplot.shape[1] / glplot.pixelRatio;
-            // Same comparison PlotlyView.tsx's own freshness gate makes
-            // (`shapeFresh`): the gl3d canvas is `margin.t` px SHORTER than
-            // the plot DIV, not the same height — comparing raw `rect.height`
-            // here (an earlier draft of this row did) makes "settled" NEVER
-            // true (off by exactly `marginTop`), a self-inflicted timeout
-            // that looked like the fix not working when it was this check's
-            // own bug.
+            // Same shared predicate `wideResized17b` above installed on
+            // `window` -- was two independent inline copies before cr
+            // review's routed thread (that drift is exactly how
+            // `wideResized17b` ended up checking only width).
+            const r = window.__glplotShapeMatchesRect();
             // "shape matches rect" is ALSO trivially true in the OLD
             // (pre-resize) steady state -- the unsettled window is only the
             // BRIEF gap while shape lags a rect that has already moved. An
@@ -6219,9 +6234,8 @@ try {
             // not this resize's 280px-wide target) and reported "settled" at
             // the WRONG size. Require the rect to have actually reached the
             // narrow target FIRST.
-            const reachedTarget = rect.width < 400;
-            const settled = reachedTarget && Math.abs(cssW - rect.width) < 2 && Math.abs(cssH - (rect.height - marginTop)) < 2;
-            const ts = (gd.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
+            const settled = !!r && r.rectW < 400 && r.matches;
+            const ts = gd ? (gd.data ?? []).filter((t) => t.meta?.continuumRole === 'corner') : [];
             const collapse = ts.length > 0 && ts.every((t) => t.visible === 'legendonly');
             // Poll until the app has both settled AND actually APPLIED the
             // collapse decision — its own settle-then-decide chain (the
@@ -6245,7 +6259,7 @@ try {
             // one place in the row nothing guarantees against it), timing
             // a different decision than the one this check just verified.
             return {
-              collapse, shape: Array.from(glplot.shape), rectW: rect.width, rectH: rect.height,
+              collapse, cssW: r.cssW, cssH: r.cssH, rectW: r.rectW, rectH: r.rectH,
               path: gd.dataset?.continuumProjectionPath ?? null,
               decidedAt: gd.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null,
             };
