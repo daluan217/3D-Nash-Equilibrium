@@ -833,6 +833,71 @@ function testAppTsxUsesContinuumAwareLogAndDisplay() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// 5e. RED-REGEN-13/001 — a saved description must belong to the payoffs it is
+//     saved with. The Save dialog's name / description / actor nouns used to
+//     survive a close, a payoff change and a reopen (only the labels were
+//     re-prefilled), so a story kept for matrix P1 was persisted against P2
+//     (validateProseDirectionsDetailed: 0 issues vs P1, 4/4 backwards vs P2).
+//     Structural: every path that opens the Save dialog reconciles the form
+//     with the CURRENT board through ONE helper keyed on saveFormBoardRef.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testSaveFormReconciledWithBoard() {
+  const src = readFileSync('src/App.tsx', 'utf8');
+  /** The contract, as one function so the mutants below exercise the same checks. */
+  const contract = (app: string) => {
+    ok(/const saveFormBoardRef = useRef<string \| null>\(null\);/.test(app),
+      'App.tsx must keep saveFormBoardRef — the board the Save form\'s text was written for (RED-REGEN-13/001)');
+    const helperStart = app.indexOf('const reconcileSaveFormWithBoard = () => {');
+    ok(helperStart !== -1, 'App.tsx must define reconcileSaveFormWithBoard (RED-REGEN-13/001)');
+    const helper = app.slice(helperStart, app.indexOf('};', helperStart) + 2);
+    ok(/saveFormBoardRef\.current !== key/.test(helper) && /setSaveName\(''\)/.test(helper) && /setSaveDesc\(''\)/.test(helper)
+      && /setSaveTerms\(\{ a: \[\], b: \[\] \}\)/.test(helper) && /saveNameBaselineRef\.current = ''/.test(helper)
+      && helper.indexOf('saveFormBoardRef.current = key;') > helper.indexOf('setSaveTerms('),
+      'reconcileSaveFormWithBoard must clear name, name baseline, description and actor nouns when the board differs, THEN record the current board (RED-REGEN-13/001)');
+    // Fresh "Save Preset" open: reconcile before the dialog opens.
+    const presetAttr = app.indexOf('data-focus-fallback="save-preset"');
+    ok(presetAttr !== -1, 'the Save Preset button must exist');
+    const presetHandler = app.slice(app.lastIndexOf('onClick={() => {', presetAttr), presetAttr);
+    const rIdx = presetHandler.indexOf('reconcileSaveFormWithBoard();');
+    const oIdx = presetHandler.indexOf('setIsSaveModalOpen(true);');
+    ok(rIdx !== -1 && oIdx !== -1 && rIdx < oIdx,
+      `the Save Preset click must reconcile the form with the board BEFORE opening the dialog (reconcile@${rIdx} open@${oIdx}) — RED-REGEN-13/001`);
+    // Resume after sign-in: the board may have changed while the sign-in was up.
+    const resumeStart = app.indexOf('if (authToken && resumeSaveAfterAuthRef.current) {');
+    ok(resumeStart !== -1, 'the resume-after-sign-in branch must exist');
+    const resume = app.slice(resumeStart, resumeStart + 600);
+    ok(resume.indexOf('reconcileSaveFormWithBoard();') !== -1 && resume.indexOf('reconcileSaveFormWithBoard();') < resume.indexOf('setIsSaveModalOpen(true);'),
+      'the resume-after-sign-in reopen must reconcile the form with the board before opening (RED-REGEN-13/001)');
+    // Report → save-as-new prefill: the story is for the board on screen — record it.
+    const prefill = app.indexOf('setSaveDesc(description.slice(0, 800));');
+    const prefillSlice = app.slice(prefill, app.indexOf('setIsSaveModalOpen(true);', prefill));
+    ok(/saveFormBoardRef\.current = boardKeyOf\(payoffs\);/.test(prefillSlice),
+      'the report prefill path must record the board its story was written for (RED-REGEN-13/001)');
+    // After a successful save the form is blank: no board.
+    ok(/setSaveTerms\(\{ a: \[\], b: \[\] \}\);\s*setSaveLabels\(\{ row1: '', row2: '', col1: '', col2: '' \}\);\s*saveFormBoardRef\.current = null;/.test(app),
+      'a successful save must clear saveFormBoardRef with the fields (RED-REGEN-13/001)');
+  };
+  contract(src);
+
+  // Mutants — each must make the SAME contract throw (plant asserted to land).
+  const mustThrow = (label: string, mutated: string) => {
+    ok(mutated !== src, `fixture precondition: the plant "${label}" landed`);
+    let threw = false;
+    try { contract(mutated); } catch { threw = true; }
+    ok(threw, `fixture: ${label} must be rejected by the Save-form contract`);
+  };
+  const presetAttr = src.indexOf('data-focus-fallback="save-preset"');
+  const handlerStart = src.lastIndexOf('onClick={() => {', presetAttr);
+  const handler = src.slice(handlerStart, presetAttr);
+  mustThrow('Save Preset open no longer reconciles', src.slice(0, handlerStart) + handler.replace('reconcileSaveFormWithBoard();\n', '') + src.slice(presetAttr));
+  mustThrow('reconcile keeps the stale description', src.replace("      setSaveDesc('');\n      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;", "      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;"));
+  mustThrow('board recorded before the clear (never clears)', src.replace("    saveFormBoardRef.current = key;\n  };", "  };").replace('    const key = boardKeyOf(payoffs);\n', '    const key = boardKeyOf(payoffs);\n    saveFormBoardRef.current = key;\n'));
+  mustThrow('successful save leaves the board recorded', src.replace("        saveFormBoardRef.current = null; // RED-REGEN-13/001: blank form, no board\n", ''));
+  console.log('✓ RED-REGEN-13/001: every Save-dialog open path reconciles the form with the current board through reconcileSaveFormWithBoard; four mutants rejected');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // 6. RED-MATH-8/001 — buildGroundingPayload's continuum branch must never
 //    offer a DISJOINT, isolated equilibrium as a "valid choice" representative
 //    point for the continuum claim; every offered point must be an actual
@@ -1867,6 +1932,7 @@ testPlottingSkipsIsolatedDiamondsOnContinuum();
 testContinuumSettledPointAlwaysOnDrawnGlyph();
 testSimLogNamesContinuumOnRealRuns();
 testAppTsxUsesContinuumAwareLogAndDisplay();
+testSaveFormReconciledWithBoard();
 testStrayPointsNotOfferedAsContinuumRepresentatives();
 testValidateReportAcceptsCompliantContinuumClaims();
 testClaimOnContinuumUsesCoordTolerance();
