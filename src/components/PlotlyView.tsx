@@ -623,6 +623,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
+  const holdSpinRef = useRef<() => void>(() => {});
   const holdSpinForCameraControl = () => {
     // OPUS-REVIEW-170/A: mirror the spin effect's own gates. Under reduced
     // motion (or with the spin off) the effect never runs, so nothing would
@@ -639,6 +640,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     }
     pauseSpin(false);
   };
+  holdSpinRef.current = holdSpinForCameraControl;
 
   /**
    * Deadline until which the idle spin must stay quiet because the container
@@ -814,6 +816,18 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     const onTouchStart = (e: Event) => {
       const te = e as TouchEvent;
       if (te.touches.length !== 2 || !insidePlot(te.touches)) return;
+      // RED-MATH-19/001: a pinch is a camera WRITER like Reset View (#170). If
+      // the tour's step glide is mid-flight, its next frame would overwrite
+      // every pinch relayout for the rest of the glide — the gesture became a
+      // silent no-op — and once the glide ended, the idle spin resumed at ITS
+      // stored radius and erased the pinch a second time (director timeline:
+      // glide ~150 ms, then the spin turning at the original radius). The
+      // latest intent wins: stop the glide where it is and hold the spin, the
+      // two things Reset View does before writing the camera (#170). The hold
+      // goes through a ref because this effect has no deps and the helper reads
+      // render state (reducedMotion / idleSpin / spinAutoResumeMs).
+      cancelCameraGlide();
+      holdSpinRef.current();
       pinchStartDist.current = dist(te.touches);
       const eye = (document.getElementById(plotId) as any)?._fullLayout?.scene?.camera?.eye;
       pinchStartEye.current = eye ? { x: eye.x, y: eye.y, z: eye.z } : { x: 1.5, y: 1.5, z: 1.5 };

@@ -754,8 +754,14 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
     // collapse into the single "continuum" claim; a stray gets its own
     // separate claim instead of being folded in.
     const { onContinuum, stray } = splitEquilibriaByContinuum(g);
+    // RED-MATH-19/002: coordinates handed to the model are echoed verbatim, so
+    // they go through the SAME formatter as the panel, log and tieProse —
+    // fmtProb applies the sub-resolution rule ("more than 0.999", never a raw
+    // 0.9999999999999987) to mixed coordinates; pure ones are exact 0/1.
+    const coord = (e: { type: string; x: number; y: number }) =>
+      `(x=${e.type === 'mixed' ? fmtProb(e.x) : e.x}, y=${e.type === 'mixed' ? fmtProb(e.y) : e.y})`;
     const validPoints = onContinuum.length
-      ? onContinuum.map((e) => `(x=${e.x}, y=${e.y})`).join(', ')
+      ? onContinuum.map(coord).join(', ')
       : 'any point where neither player can gain by deviating';
     const strayLines = stray.length
       ? [
@@ -763,7 +769,7 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
           stray.length === 1
             ? 'In ADDITION to the continuum, this game also has an isolated equilibrium point that is NOT part of it:'
             : 'In ADDITION to the continuum, this game also has isolated equilibrium points that are NOT part of it:',
-          ...stray.map((e) => `  (x=${e.x}, y=${e.y}), type "${e.type}"`),
+          ...stray.map((e) => `  ${coord(e)}, type "${e.type}"`),
           'Report each of these as its OWN separate claim (type "pure" or "mixed" as appropriate) —',
           'never use one of these points to illustrate the continuum claim, and never omit them.',
         ]
