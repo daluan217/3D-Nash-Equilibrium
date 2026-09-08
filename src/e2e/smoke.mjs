@@ -2867,9 +2867,18 @@ try {
       // the two themes, which differ on every run. (This bit me: the first version
       // of the check below "found" six dark preset buttons that were really six
       // mid-transition samples.) Poll until two consecutive reads agree.
+      // CodeRabbit CLI (this branch): the gate must watch the SAME elements and
+      // the SAME properties the comparison below reads. The first version
+      // sampled `button, span, label, div` capped at 400 elements while the
+      // comparison walks every element and four colour fields — so anything
+      // outside that sample could still be in flight when the gate said
+      // "settled", which is precisely the bug the gate exists to prevent.
       await pg.waitForFunction(() => {
-        const sig = () => [...document.querySelectorAll('button, span, label, div')]
-          .slice(0, 400).map((e) => { const c = getComputedStyle(e); return `${c.color}|${c.backgroundColor}`; }).join(';');
+        const sig = () => [...document.querySelectorAll('*')]
+          .map((e) => {
+            const c = getComputedStyle(e);
+            return `${c.color}|${c.backgroundColor}|${c.borderTopColor}|${c.borderBottomColor}`;
+          }).join(';');
         const now = sig();
         const prev = window.__printSig;
         window.__printSig = now;
