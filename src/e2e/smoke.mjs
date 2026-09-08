@@ -8737,7 +8737,13 @@ try {
     // way a browser minimum-font-size does. Applied through a stylesheet so it
     // reaches both without the test knowing which is which.
     await p.addStyleTag({ content: '[role="dialog"][aria-label="Guided tour"] p { font-size: 30px !important; line-height: 1.65 !important; }' });
-    await p.waitForTimeout(600);
+    // CodeRabbit CLI: wait for the condition to be REAL, not for a fixed 600 ms.
+    // The section's whole premise is that the captions actually render at 30px;
+    // poll the rendered caption until they do (and fail loudly if they never do).
+    await p.waitForFunction(() => {
+      const cap = document.querySelector('[role="dialog"][aria-label="Guided tour"] p');
+      return !!cap && Math.round(parseFloat(getComputedStyle(cap).fontSize)) === 30;
+    }, null, { timeout: 5000 });
     const read = () => p.evaluate(() => {
       const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]');
       if (!dlg) return null;
@@ -8822,6 +8828,12 @@ try {
     const missing = steps.filter((s) => s.hasSpot && !s.hasCard);
     record('precondition: every step with a spotlight also has a readable card', missing.length === 0,
       missing.map((s) => `step ${s.step}`).join(', ') || 'all present');
+    // CodeRabbit CLI: both assertions below filter for steps that HAVE a
+    // spotlight, so a tree where no step ever renders one would satisfy them by
+    // matching nothing. Assert the subject exists before asserting about it.
+    const withSpot = steps.filter((s) => s.hasSpot).length;
+    record('precondition: steps with a spotlight actually exist, so the two assertions below cannot pass by matching nothing',
+      withSpot > 0, `${withSpot} of ${steps.length} steps render a spotlight`);
     const covering = steps.filter((s) => s.cover !== null && !s.isSheet && s.cover > 0.25);
     record('STRUCT-APP-19/001: no floating card covers more than a quarter of its own spotlight, with captions enlarged',
       covering.length === 0,
