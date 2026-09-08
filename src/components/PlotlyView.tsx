@@ -299,6 +299,21 @@ export function moveCamera(pose: CameraPose, duration = 900): void {
 }
 
 /**
+ * Stop a step glide where it is — for any control that sets the camera itself
+ * while a glide may be running. `moveCamera` cancels a PRIOR glide at its own
+ * start (above) but cannot know about an interrupting click, so the click has
+ * to cancel the glide first. Releases `cameraBusy`; the CALLER re-binds input
+ * (`rebindPlotInput`) AFTER its own camera relayout — a dragmode relayout
+ * issued before the camera one made Plotly re-apply the pose it had recorded
+ * and the reset never landed (director probe, RED-MATH-18/001 first attempt).
+ */
+export function cancelCameraGlide(): void {
+  cancelAnimationFrame(cameraAnim);
+  cameraAnim = 0;
+  cameraBusy = false;
+}
+
+/**
  * OPUS-REVIEW-MATH17 FBM-1: waits for gl-plot3d's OWN rendered canvas
  * (`glplot.shape`, device px) to actually match the plot DIV's current CSS
  * box, rather than trusting `Plotly.Plots.resize`'s promise (measured: still
@@ -546,11 +561,14 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    *  animation loop can read it without being torn down and rebuilt. */
   const [spinPaused, setSpinPaused] = useState(false);
   const spinPausedRef = useRef(false);
-  const pauseSpin = () => {
+  /** `rebind` false: the caller is about to set the camera itself and re-binds
+   *  AFTER its own relayout (RED-MATH-18/001 — a dragmode relayout issued
+   *  before a camera relayout made Plotly re-apply its recorded pose). */
+  const pauseSpin = (rebind = true) => {
     if (spinPausedRef.current) return;
     spinPausedRef.current = true;
     setSpinPaused(true);
-    rebindPlotInput();
+    if (rebind) rebindPlotInput();
   };
   const resumeSpin = () => {
     spinPausedRef.current = false;
@@ -568,6 +586,19 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    *  so the rAF loop and event handlers can flip it without re-render races. */
   const [spinWaiting, setSpinWaiting] = useState(false);
   const spinWaitingRef = useRef(false);
+  /**
+   * RED-MATH-18/001: an explicit camera control is the visitor taking the
+   * wheel. The document-capture detectors below deliberately ignore presses
+   * on buttons (`pressOnUnrelatedUi` — a toolbar click must not pause a
+   * running simulation), so "Reset View" never registered as activity: the
+   * idle spin — on from the first frame during the tour, and after 10 s of
+   * idleness otherwise — kept turning FROM the reset pose, and the camera was
+   * at the default for exactly one frame (director probe: eye 0.49 from the
+   * default 1.5 s after the click; the tour's glide, if one is in flight,
+   * would overwrite it as well). Same effect as a press on the picture:
+   * take-over mode pauses until Resume; auto-resume mode restarts the
+   * countdown. Declared below `reducedMotion`, which gates it.
+   */
   /**
    * `prefers-reduced-motion: reduce`, tracked reactively (RED-APP-4, round 4).
    *
@@ -592,6 +623,22 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
+  const holdSpinForCameraControl = () => {
+    // OPUS-REVIEW-170/A: mirror the spin effect's own gates. Under reduced
+    // motion (or with the spin off) the effect never runs, so nothing would
+    // ever clear the flags set below — the Resume button would advertise a
+    // spin that cannot run and stick for the whole session.
+    if (reducedMotion || !idleSpin) return;
+    if (spinAutoResumeMs > 0) {
+      nextSpinAtRef.current = performance.now() + spinAutoResumeMs;
+      if (!spinWaitingRef.current) {
+        spinWaitingRef.current = true;
+        setSpinWaiting(true);
+      }
+      return;
+    }
+    pauseSpin(false);
+  };
 
   /**
    * Deadline until which the idle spin must stay quiet because the container
@@ -831,7 +878,17 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // never move the camera on the app's own initiative under this
     // preference. Early-return rather than starting the rAF loop and holding
     // it still: no frame, no relayout, no main-thread cost at all.
-    if (reducedMotion) return;
+    if (reducedMotion) {
+      // CodeRabbit on #170: a pause or auto-resume countdown entered BEFORE
+      // the preference flipped on would otherwise keep the Resume button up
+      // for a spin that can no longer run (same family as OPUS-REVIEW-170/A).
+      // Under reduced motion no spin flag may stay set.
+      spinPausedRef.current = false;
+      setSpinPaused(false);
+      spinWaitingRef.current = false;
+      setSpinWaiting(false);
+      return;
+    }
     const Plotly = (window as any).Plotly;
     const container = containerRef.current;
     if (!Plotly || !container) return;
@@ -1579,7 +1636,14 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
             // overwritten by the rotated live pose (CodeRabbit, #129).
             const Plotly = (window as any).Plotly;
             const gd = document.getElementById(plotId) as any;
+            // RED-MATH-18/001: a running tour glide or the idle spin would
+            // move the camera off the default on its next frame — stop both
+            // before setting it, re-bind input after (order matters; see
+            // cancelCameraGlide / holdSpinForCameraControl).
+            cancelCameraGlide();
+            holdSpinForCameraControl();
             if (Plotly && gd) Plotly.relayout(gd, { 'scene.camera': DEFAULT_CAMERA });
+            rebindPlotInput();
             cameraRef.current = DEFAULT_CAMERA;
             setUiRevision(prev => prev + 1);
           }}

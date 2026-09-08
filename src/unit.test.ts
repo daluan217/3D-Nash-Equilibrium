@@ -3562,3 +3562,124 @@ function testGeometryDegenerateShelf() {
 
   console.log('✓ geometry degenerate shelf: a board that is entirely a shelf, and an interior flat LINE, are both stated truthfully without being demoted — and negating either claim is still caught');
 }
+
+// ── RED-MATH-18/001: "Reset View" must land on the default pose and STAY there ──
+// Director probe on main 498c7d0: the click relayouted to DEFAULT_CAMERA, and the
+// next frame moved the camera off it again — the idle spin (on from the first
+// frame during the tour; after 10 s of idleness otherwise) ignores presses on
+// buttons by design (pressOnUnrelatedUi), so it kept turning FROM the reset
+// pose; a tour glide in flight overwrites it as well. Distance from the default
+// 1.5 s after the click: 0.49–0.88 before, 0 after. The handler must (1) cancel
+// a glide, (2) hold the spin the way a press on the picture does, (3) set the
+// camera, (4) re-bind input AFTER the camera relayout — a dragmode relayout
+// issued BEFORE it made Plotly re-apply its recorded pose and the reset never
+// landed at all (the first attempt, caught by the same probe). Static, on the
+// real file, because the order is the whole fix and a substring test cannot see
+// order. The contract is one function, run on the real handler AND on each
+// mutated copy (CodeRabbit CLI: the fixtures must exercise the checks, not
+// merely inspect text).
+{
+  const plot = readFileForContract('src/components/PlotlyView.tsx', 'utf8');
+  const RELAYOUT = "Plotly.relayout(gd, { 'scene.camera': DEFAULT_CAMERA })";
+  /** Throws with the named reason when the Reset View handler source violates the contract. */
+  const resetHandlerContract = (handler: string) => {
+    const idx = (needle: string) => handler.indexOf(needle);
+    const cancelIdx = idx('cancelCameraGlide();');
+    const holdIdx = idx('holdSpinForCameraControl();');
+    const relayoutIdx = idx(RELAYOUT);
+    const rebindIdx = idx('rebindPlotInput();');
+    assert(cancelIdx !== -1 && holdIdx !== -1 && relayoutIdx !== -1 && rebindIdx !== -1,
+      `RED-MATH-18/001: Reset View must cancel the glide, hold the spin, relayout to DEFAULT_CAMERA and re-bind input (cancel@${cancelIdx} hold@${holdIdx} relayout@${relayoutIdx} rebind@${rebindIdx})`);
+    assert(cancelIdx < relayoutIdx && holdIdx < relayoutIdx,
+      `RED-MATH-18/001: the glide cancel and the spin hold must come BEFORE the camera relayout (cancel@${cancelIdx} hold@${holdIdx} relayout@${relayoutIdx})`);
+    assert(rebindIdx > relayoutIdx,
+      `RED-MATH-18/001: rebindPlotInput must come AFTER the camera relayout — before it, the dragmode relayout re-applied the old pose (rebind@${rebindIdx} relayout@${relayoutIdx})`);
+  };
+  const resetStart = plot.indexOf('title="Reset 3D camera to default perspective"');
+  assert(resetStart !== -1, 'RED-MATH-18/001: the Reset View button (title "Reset 3D camera to default perspective") must exist');
+  // The onClick body precedes the title attribute inside the same <button>.
+  const handler = plot.slice(plot.lastIndexOf('<button', resetStart), resetStart);
+  resetHandlerContract(handler);
+
+  // cancelCameraGlide must not re-bind (the caller does, after its relayout) and
+  // must release cameraBusy so the spin's own gate reopens.
+  const cancelStart = plot.indexOf('export function cancelCameraGlide()');
+  const cancelFn = plot.slice(cancelStart, plot.indexOf('}', cancelStart) + 1);
+  assert(/cancelAnimationFrame\(cameraAnim\);/.test(cancelFn) && /cameraBusy = false;/.test(cancelFn) && !/rebindPlotInput\(\)/.test(cancelFn),
+    'RED-MATH-18/001: cancelCameraGlide cancels the glide frame, releases cameraBusy and does NOT re-bind input itself');
+  // The spin hold acts in BOTH modes — auto-resume (restart the countdown) and
+  // take-over (pause) — and pauses WITHOUT re-binding (pauseSpin(false)): in
+  // take-over mode pauseSpin's own rebind would otherwise run before the
+  // camera relayout (CodeRabbit CLI on this fix).
+  const holdStart = plot.indexOf('const holdSpinForCameraControl = () => {');
+  const holdFn = plot.slice(holdStart, plot.indexOf('};', holdStart) + 2);
+  assert(/nextSpinAtRef\.current = performance\.now\(\) \+ spinAutoResumeMs;/.test(holdFn) && /spinWaitingRef\.current = true;/.test(holdFn) && /pauseSpin\(false\);/.test(holdFn),
+    'RED-MATH-18/001: holdSpinForCameraControl restarts the auto-resume countdown AND pauses a take-over-mode spin without re-binding (pauseSpin(false))');
+  // OPUS-REVIEW-170/A: the hold mirrors the spin effect's own gates. Under
+  // reduced motion (or idleSpin off) the effect never runs, so the flags the
+  // hold sets would never clear — a dead, sticky "Resume spinning" button.
+  // The gate must be the FIRST statement (stripped of comments), before any
+  // flag is touched; the hold must be declared after `reducedMotion`.
+  const holdContract = (fn: string) => {
+    const body = fn.slice(fn.indexOf('{') + 1).replace(/^\s*\/\/.*$/gm, '').trimStart();
+    assert(body.startsWith('if (reducedMotion || !idleSpin) return;'),
+      'OPUS-REVIEW-170/A: holdSpinForCameraControl must early-return under reducedMotion or with idleSpin off BEFORE touching any spin flag');
+  };
+  holdContract(holdFn);
+  assert(plot.indexOf('const [reducedMotion, setReducedMotion] = useState<boolean>(') < holdStart,
+    'OPUS-REVIEW-170/A: holdSpinForCameraControl must be declared after the reducedMotion state it reads');
+  // CodeRabbit on #170: the spin EFFECT's reduced-motion exit must clear every
+  // spin flag (a pause or countdown entered before the preference flipped on),
+  // so no path can leave the Resume button up while the spin cannot run.
+  const effectRmContract = (src: string) => {
+    // Scope to the idle-spin EFFECT: the first `if (reducedMotion) {` AFTER its
+    // `if (!idleSpin) return;` gate (CodeRabbit on #170: an earlier match
+    // elsewhere in the file must not satisfy the check).
+    const effectStart = src.indexOf('    if (!idleSpin) return;');
+    assert(effectStart !== -1, 'CodeRabbit #170: the idle-spin effect must start with the `if (!idleSpin) return;` gate');
+    const m = /if \(reducedMotion\) \{([\s\S]{0,900}?)\n\s*return;\n\s*\}/.exec(src.slice(effectStart));
+    assert(m !== null, 'CodeRabbit #170: the idle-spin effect must exit under reducedMotion through a block that ends in `return;`');
+    // The block must consist of EXACTLY the four unconditional flag resets —
+    // nothing wrapped in a condition, nothing missing, nothing extra — so no
+    // entry path (paused, waiting, both) can return with a flag still set.
+    const stmts = m![1].replace(/^\s*\/\/.*$/gm, '').split('\n').map(l => l.trim()).filter(Boolean);
+    const expected = ['spinPausedRef.current = false;', 'setSpinPaused(false);', 'spinWaitingRef.current = false;', 'setSpinWaiting(false);'];
+    assert(stmts.length === expected.length && expected.every(e => stmts.includes(e)),
+      `CodeRabbit #170: the effect's reduced-motion exit must be exactly the four unconditional flag resets (found: ${JSON.stringify(stmts)})`);
+  };
+  effectRmContract(plot);
+  {
+    let threw = false;
+    try { effectRmContract(plot.replace(/if \(reducedMotion\) \{[\s\S]*?\n\s*return;\n\s*\}/, 'if (reducedMotion) return;')); } catch { threw = true; }
+    assert(threw, 'fixture: the bare `if (reducedMotion) return;` exit (no flag reset) must be rejected');
+    threw = false;
+    try { effectRmContract(plot.replace('      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      return;', '      return;')); } catch { threw = true; }
+    assert(threw, 'fixture: an exit that clears the pause flags but not the waiting flags must be rejected');
+    threw = false;
+    try { effectRmContract(plot.replace('      spinPausedRef.current = false;\n      setSpinPaused(false);\n      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      return;', '      if (spinPausedRef.current) {\n        spinPausedRef.current = false;\n        setSpinPaused(false);\n        spinWaitingRef.current = false;\n        setSpinWaiting(false);\n      }\n      return;')); } catch { threw = true; }
+    assert(threw, 'fixture: flag resets wrapped in a condition (an entry path can still return with a flag set) must be rejected');
+  }
+  {
+    let threw = false;
+    try { holdContract(holdFn.replace('if (reducedMotion || !idleSpin) return;\n', '')); } catch { threw = true; }
+    assert(threw, 'fixture: a hold without the reduced-motion gate must be rejected');
+    threw = false;
+    try { holdContract(holdFn.replace('if (reducedMotion || !idleSpin) return;\n', '').replace('pauseSpin(false);', 'if (reducedMotion || !idleSpin) return;\n    pauseSpin(false);')); } catch { threw = true; }
+    assert(threw, 'fixture: a hold that gates only the take-over branch (auto-resume flags already set) must be rejected');
+  }
+  assert(/const pauseSpin = \(rebind = true\) => \{[\s\S]{0,400}?if \(rebind\) rebindPlotInput\(\);/.test(plot),
+    'RED-MATH-18/001: pauseSpin takes a `rebind` flag (default true) and only re-binds when it is set');
+
+  // Mutation fixtures: each regression shape must make the SAME contract throw.
+  const mustThrow = (label: string, mutated: string) => {
+    assert(mutated !== handler, `fixture precondition: the plant "${label}" landed`);
+    let threw = false;
+    try { resetHandlerContract(mutated); } catch { threw = true; }
+    assert(threw, `fixture: ${label} must be rejected by the Reset View contract`);
+  };
+  mustThrow('spin hold removed', handler.replace('holdSpinForCameraControl();\n', ''));
+  mustThrow('glide cancel removed', handler.replace('cancelCameraGlide();\n', ''));
+  mustThrow('rebind moved before the relayout', handler.replace('rebindPlotInput();\n', '').replace('cancelCameraGlide();', 'cancelCameraGlide();\n            rebindPlotInput();'));
+  mustThrow('glide cancel moved after the relayout', handler.replace('cancelCameraGlide();\n', '').replace('cameraRef.current = DEFAULT_CAMERA;', 'cancelCameraGlide();\n            cameraRef.current = DEFAULT_CAMERA;'));
+  console.log('✓ RED-MATH-18/001: Reset View cancels the glide and holds the spin before the relayout, re-binds after; four mutants rejected by the same contract');
+}
