@@ -217,7 +217,8 @@ function republishGuarded(yml: string): boolean {
   return /gcloud storage cat "gs:\/\/\$BUCKET\/app-version\.json"/.test(yml)
     && /\[ "\$PUBLISHED" = "\$VERSION" \][\s\S]{0,400}exit 1/.test(yml)
     && /BUILD_SHA="\$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}"/.test(yml)
-    && /"build":"%s"[\s\S]{0,80}"\$BUILD_SHA"/.test(yml);
+    && /"build":"%s"[\s\S]{0,80}"\$BUILD_SHA"/.test(yml)
+    && /throw new Error\('app-version\.json has no version'\)/.test(yml) && !/catch\{''\}/.test(yml);
 }
 {
   const yml = read('release-desktop.yml');
@@ -230,6 +231,9 @@ function republishGuarded(yml: string): boolean {
   const mainHead = yml.replace('BUILD_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"', 'BUILD_SHA="$GITHUB_SHA"');
   if (mainHead === yml) fail('known-positive fixture for the build sha source did not land');
   if (republishGuarded(mainHead)) fail('known-positive fixture "build sha taken from GITHUB_SHA (main head, not the verified commit)" was NOT flagged');
+  const lenient = yml.replace(/node -e "const v=JSON\.parse[^"]*"/, `node -p "try{JSON.parse(require('fs').readFileSync(0,'utf8')).version||''}catch{''}"`);
+  if (lenient === yml) fail('known-positive fixture for the strict manifest parse did not land');
+  if (republishGuarded(lenient)) fail('known-positive fixture "malformed manifest read as unpublished" was NOT flagged');
 }
 
 console.log(

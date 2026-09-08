@@ -114,7 +114,8 @@ jobs:
           BUILD_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
           PUBLISHED=""
           if manifest="$(gcloud storage cat "gs://$BUCKET/app-version.json" 2>&1)"; then
-            PUBLISHED="$(printf '%s' "$manifest" | node -p "try{JSON.parse(require('fs').readFileSync(0,'utf8')).version||''}catch{''}")"
+            # A manifest that exists but cannot be parsed is a broken release state, not "unpublished".
+            PUBLISHED="$(printf '%s' "$manifest" | node -e "const v=JSON.parse(require('fs').readFileSync(0,'utf8')).version; if(typeof v!=='string'||!v) throw new Error('app-version.json has no version'); process.stdout.write(v)")"
           elif printf '%s' "$manifest" | grep -qiE 'not found|no such object|does not exist|404'; then
             echo "no app-version.json published yet — first desktop release"
           else
