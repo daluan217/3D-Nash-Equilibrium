@@ -2518,8 +2518,8 @@ function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength:
  */
 function saveDB(db: DB): boolean {
   if (localFileSaveBlocked()) return false;
-  inMemoryDb = db;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+    inMemoryDb = db;
     scheduleGcsSave(); // #85's coalescing pump; the GCS write is async, so the caller's boolean cannot reflect it
     return true;
   } else {
@@ -2529,6 +2529,18 @@ function saveDB(db: DB): boolean {
         fs.mkdirSync(dbDir, { recursive: true });
       }
       writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+      // STRUCT-DESKTOP-19: commit in memory only once the bytes are on disk.
+      // This assignment used to happen BEFORE the write, so a failed write on
+      // desktop (a read-only ELECTRON_USER_DATA_PATH) left the process serving
+      // a state no restart could reproduce: `/api/auth/delete-confirm` wiped
+      // the account in memory, answered 200 "successfully deleted from our
+      // records", and the account and every game came back on the next launch.
+      // `saveDBAwaited` (the game routes) already had this order; every caller
+      // that hands over a CANDIDATE database now gets the same guarantee, and
+      // a caller that mutates the shared object in place is unaffected either
+      // way. The hosted/GCS branch keeps committing first: the coalescing pump
+      // reads `inMemoryDb`, and its write is deliberately not per-request.
+      inMemoryDb = db;
       return true;
     } catch (err) {
       console.error("Error writing db.json:", err);
@@ -4111,11 +4123,26 @@ async function startServer() {
       });
     }
 
-    user.passwordHash = hashPassword(newPassword);
-    user.recoveryCode = undefined;
-    user.recoveryCodeExpires = undefined;
-    user.tokenVersion = (user.tokenVersion ?? 0) + 1; // invalidate existing sessions
-    saveDB(db);
+    // STRUCT-DESKTOP-19: "you can now log in with your new password" is a
+    // claim about what is on DISK, and it used to be made whatever happened to
+    // the write. On an unwritable data directory the new hash lived only in
+    // this process: the next launch refused the new password and accepted the
+    // OLD one — the password the user reset precisely because they wanted it
+    // dead — and the sessions this bumps `tokenVersion` to kill came back with
+    // it. `_gen/d19b4-resetpassword-false-success.mjs` walks exactly that.
+    // Same shape as delete-confirm: a CANDIDATE, committed only once written.
+    const updated: User = {
+      ...user,
+      passwordHash: hashPassword(newPassword),
+      recoveryCode: undefined,
+      recoveryCodeExpires: undefined,
+      tokenVersion: (user.tokenVersion ?? 0) + 1, // invalidate existing sessions
+    };
+    if (!saveDB({ users: db.users.map(u => (u.id === user.id ? updated : u)), games: db.games })) {
+      return res.status(500).json({
+        error: "Your password could not be changed — nothing was written, so your OLD password still works. Please try again."
+      });
+    }
 
     res.json({ success: true, message: "Password reset successfully! You can now log in with your new password." });
   });
@@ -4195,13 +4222,29 @@ async function startServer() {
 
     const userEmail = user.email.toLowerCase().trim();
 
-    // Clean up corresponding games saved by team space
-    db.games = db.games.filter(g => g.userId !== user.id);
+    // STRUCT-DESKTOP-19: this is the one route that promises destruction, so
+    // it is the one route that must never report a write it did not make.
+    // It used to mutate the shared in-memory database in place, call `saveDB`
+    // without reading its boolean, and answer "successfully deleted from our
+    // records" unconditionally. With an unwritable data directory that 200 was
+    // a lie in both directions at once: nothing was removed from disk, and the
+    // running process behaved as though the account were gone (its own
+    // `/api/auth/me` answered 401) until the next launch brought the account
+    // and every saved game back. `_gen/d19b3-deleteconfirm-false-destruction.mjs`
+    // walks that end to end. The post-deletion database is now a CANDIDATE
+    // that `saveDB` commits only after the bytes land, and a failure says so.
+    const remaining: DB = {
+      // Both wipes come from the same snapshot: the games saved by this user,
+      // and every user record sharing this id or this email address.
+      users: db.users.filter(u => u.email.toLowerCase().trim() !== userEmail && u.id !== user.id),
+      games: db.games.filter(g => g.userId !== user.id),
+    };
 
-    // Completely wipe out any user records matching this email or user ID
-    db.users = db.users.filter(u => u.email.toLowerCase().trim() !== userEmail && u.id !== user.id);
-
-    saveDB(db);
+    if (!saveDB(remaining)) {
+      return res.status(500).json({
+        error: "Your account could not be deleted right now — nothing was removed and your saved games are untouched. Please try again."
+      });
+    }
 
     res.json({
       success: true,
