@@ -6,7 +6,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
-import { EA, EB, r3, fmtPayoffProse } from '../utils/gameEngine';
+import { EA, EB, r3, payoffProseRhs } from '../utils/gameEngine';
 import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera, shouldCollapseComponentAtCameraExact } from '../utils/cameraProjection';
 import { Rotate3d, Move, RefreshCw } from 'lucide-react';
 
@@ -1203,8 +1203,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // padded one — this is a label on a picture, and `fmtPayoffProse` trims
       // the trailing zeros `r3` never added, so every integer/2-dp payoff the
       // tour's presets produce is unchanged (verified in unit.test.ts).
-      const labelA = fmtPayoffProse(zAraw);
-      const labelB = fmtPayoffProse(zBraw);
+      // Relation included ("A < 0.001", never "A = less than 0.001"): the
+      // prose twin of payoffTexRhs; integer/2-dp presets still read "A = 2".
+      const labelA = payoffProseRhs(zAraw);
+      const labelB = payoffProseRhs(zBraw);
       // Two accents, chosen per step:
       // - 'purple' (mixed act): TEXT-ONLY in the Mixed-NE purple. The
       //   equilibrium diamonds already mark the spot, so a second glyph on the
@@ -1227,7 +1229,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           traces.push({
             type: 'scatter3d', mode: 'text',
             x: [pt.x], y: [pt.y], z: [z],
-            text: [`${who} = ${label}`], textposition: pos,
+            text: [`${who} ${label}`], textposition: pos,
             textfont: { size: 13, color: callout, family: 'ui-monospace, monospace' },
             hoverinfo: 'skip', showlegend: false, cliponaxis: false,
           } as any);
@@ -1282,7 +1284,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           hoverinfo: 'skip', showlegend: false,
         } as any);
         const goldPts: [number, string, boolean][] =
-          [[zGa, `A = ${labelA}`, true], [zGb, `B = ${labelB}`, false]];
+          [[zGa, `A ${labelA}`, true], [zGb, `B ${labelB}`, false]];  // relation is inside the label
         for (const [z, label, isA] of goldPts) {
           // The labels are scene ANNOTATIONS, not trace text: gl3d perspective-
           // scales trace text glyphs with depth, so on the two-corner step the
