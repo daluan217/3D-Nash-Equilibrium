@@ -19,6 +19,7 @@ import {
   keepFill,
   shouldReplaceName,
   regenErrorFromResponse,
+  regenDroppedNote,
   codepointSafeSlice,
   REGEN_NAME_MAX,
   REGEN_LABEL_MAX,
@@ -347,6 +348,77 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   } else {
     console.warn('  (bank not available in this environment — bank-avoidance checks skipped, not failed)');
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRUCT-REGEN-19/002 + /003c. Two structural changes, each with its mutation map.
+//
+//   m1 keepFill stops computing `shadowed`            -> "shadowed names the kept chip…"
+//   m2 shadowedNote ignores its player/plural         -> "shadowedNote agrees in number…"
+//   m3 regenDroppedNote drops the `shadowed` argument -> "regenDroppedNote names a shadowed chip…"
+//   m4 keepRegen loses its session check              -> "keepRegen refuses an outcome…"
+//   m5 regenView stops gating on the dialog key       -> "regenView is gated on…"
+{
+  // VERBATIM from STRUCT-REGEN-19/002's live repro — real draw #32 of the
+  // 34-draw corpus, typography included (the U+2019 apostrophe in "resort’s"):
+  // the user's chip "crew" for Player A, under Player B's option labels
+  // "Early Crew" / "Late Crew". The words ARE on screen; they are BLUE.
+  const shadowDraw = {
+    description: 'A ski resort’s operations manager and its grooming contractor are coordinating '
+      + 'preparation for a high-profile lift corridor. The manager chooses Full Grooming or Selective '
+      + 'Grooming, and the contractor books an Early Crew or a Late Crew.',
+    row1: 'Full Grooming', row2: 'Selective Grooming', col1: 'Early Crew', col2: 'Late Crew',
+  };
+  const shadowKept = keepFill(shadowDraw, false, { a: ['crew'], b: [] });
+  check('STRUCT-REGEN-19/002: shadowed names the kept chip and the phrase that took its colour',
+    shadowKept.shadowed.a.length === 1
+    && shadowKept.shadowed.a[0].term === 'crew'
+    && shadowKept.shadowed.a[0].by === 'Early Crew'
+    && shadowKept.shadowed.a[0].bySide === 'B',
+    `got shadowed=${JSON.stringify(shadowKept.shadowed)}`);
+  check('STRUCT-REGEN-19/002: a shadowed chip is STILL KEPT (Keep never destroys highlights)',
+    shadowKept.terms.a.includes('crew'), `got terms.a=${JSON.stringify(shadowKept.terms.a)}`);
+  check('STRUCT-REGEN-19/002: a shadowed chip is not ALSO reported as orphaned (its phrase is there)',
+    shadowKept.orphaned.a.length === 0, `got orphaned=${JSON.stringify(shadowKept.orphaned)}`);
+  // CONTROL: the same chip under labels that do not contain it paints normally.
+  const notShadowed = keepFill({ ...shadowDraw, col1: 'Early Slot', col2: 'Late Slot',
+    description: shadowDraw.description.replace(/Early Crew/, 'Early Slot').replace(/Late Crew/, 'Late Slot') },
+    false, { a: ['crew'], b: [] });
+  check('STRUCT-REGEN-19/002 (control): with no other-player phrase over it, the chip is not shadowed',
+    notShadowed.shadowed.a.length === 0 && notShadowed.orphaned.a.length === 1,
+    `got shadowed=${JSON.stringify(notShadowed.shadowed)} orphaned=${JSON.stringify(notShadowed.orphaned)}`);
+  // CONTROL: same-side shadowing is NOT a lie — the words really are this
+  // player's colour, just claimed by the longer phrase.
+  const sameSide = keepFill({ ...shadowDraw, row1: 'Early Crew', row2: 'Late Crew', col1: 'Full Grooming', col2: 'Selective Grooming' },
+    false, { a: ['crew'], b: [] });
+  check('STRUCT-REGEN-19/002 (control): a chip swallowed by a phrase of its OWN player is not shadowed',
+    sameSide.shadowed.a.length === 0, `got shadowed=${JSON.stringify(sameSide.shadowed)}`);
+  // CONTROL: a draw's own actor noun is not a "kept chip" and is never reported.
+  const drawNoun = keepFill({ ...shadowDraw, actorA: ['crew'] }, false, { a: [], b: [] });
+  check('STRUCT-REGEN-19/002 (control): the draw’s own noun is not reported as a shadowed KEPT chip',
+    drawNoun.shadowed.a.length === 0, `got shadowed=${JSON.stringify(drawNoun.shadowed)}`);
+
+  const shadowOne = regenDroppedNote({ a: [], b: [] }, { a: [], b: [] }, shadowKept.shadowed) ?? '';
+  check('STRUCT-REGEN-19/002: regenDroppedNote names a shadowed chip, the phrase that took it, and that player',
+    /"crew"/.test(shadowOne) && /"Early Crew"/.test(shadowOne) && /Player B/.test(shadowOne)
+    && /Player A's highlight /.test(shadowOne), shadowOne);
+  check('STRUCT-REGEN-19/002: shadowedNote agrees in number (singular)',
+    / highlight /.test(shadowOne) && / is shown /.test(shadowOne) && /remove the chip,/.test(shadowOne), shadowOne);
+  const shadowTwo = regenDroppedNote({ a: [], b: [] }, { a: [], b: [] },
+    { a: [{ term: 'crew', by: 'Early Crew', bySide: 'B' }, { term: 'slot', by: 'Late Slot', bySide: 'B' }], b: [] }) ?? '';
+  check('STRUCT-REGEN-19/002: shadowedNote agrees in number (plural: highlights … are … the chips)',
+    / highlights /.test(shadowTwo) && / are shown /.test(shadowTwo) && /remove the chips,/.test(shadowTwo), shadowTwo);
+  check('STRUCT-REGEN-19/002 (control): nothing dropped, orphaned or shadowed still reads as no note at all',
+    regenDroppedNote({ a: [], b: [] }, { a: [], b: [] }, { a: [], b: [] }) === null);
+
+  // 003c: a regenerate outcome belongs to the dialog session that asked for it.
+  const appSrcRegen = readFileSync('src/App.tsx', 'utf8');
+  check('STRUCT-REGEN-19/003c: keepRegen refuses an outcome drawn for another dialog session',
+    /if \(!regen\.preview \|\| !regen\.key \|\| !regenKeyEquals\(regen\.key, key\)\) return;/.test(appSrcRegen));
+  check('STRUCT-REGEN-19/003c: regenView is gated on regen.key matching the dialog on screen',
+    /regen\.key && currentDialogKey && regenKeyEquals\(regen\.key, currentDialogKey\)/.test(appSrcRegen));
+  check('STRUCT-REGEN-19/003c: every regen outcome records the key it was drawn for',
+    !/setRegen\(\{[^}]*\}\)/.test(appSrcRegen.replace(/setRegen\(\{[^}]*key[^}]*\}\)/g, '')));
 }
 
 if (failures > 0) {

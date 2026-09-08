@@ -805,8 +805,21 @@ if (failures > 0) {
   check('termOccursIn: regex metacharacters are literal', termOccursIn('the price (net) rises', '(net)') && !termOccursIn('the price net rises', '(net)'));
   check('termOccursIn: a 1-character chip never matches (ColorCoded drops it too)', !termOccursIn('a b', 'a'));
   const colourSrc = readFileSync('src/components/ColorCoded.tsx', 'utf8');
-  check('ColorCoded builds its term regex through termBoundaryRegExp (one rule for painting and for chip state)',
-    /termBoundaryRegExp\(entries\.map\(/.test(colourSrc) && !/new RegExp\(`\$\{left\}/.test(colourSrc) && !/Script=Han/.test(colourSrc));
+  // STRUCT-REGEN-19/002 rewrites m3 against the new structure: the boundary rule
+  // was already shared, but ColorCoded still SORTED the entries itself and chose
+  // each span's class with `entries.find(e => e.t.toLowerCase() === hit.toLowerCase())`
+  // — a second case rule beside the regex's own `iu` folding. The whole term pass
+  // is now `paintPlan`, which names the term that claimed each range; this checks
+  // ColorCoded owns none of it any more.
+  check('ColorCoded paints its terms from paintPlan (one pass for painting and for chip state)',
+    /paintPlan\(text, aTerms, bTerms\)/.test(colourSrc)
+    && !/termBoundaryRegExp\(/.test(colourSrc)   // a mention in a comment is fine; a CALL is not
+    && !/new RegExp\(`\$\{left\}/.test(colourSrc)
+    && !/Script=Han/.test(colourSrc)
+    && !/toLowerCase\(\) === /.test(colourSrc));
+  const editorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  check('DescriptionEditor decides a chip\'s state from chipPaintStates, not from a lone occurrence test',
+    /chipPaintStates\(value, merged\.a, merged\.b\)/.test(editorSrc) && !/termOccursIn\(/.test(editorSrc));
 
   const story = 'The miller and the ferry crew bargain over the toll.';
   const kept = regenKeptColorTerms([], [], ['orchard keeper', 'the miller'], ['ferry crew', 'harbour master'], story);

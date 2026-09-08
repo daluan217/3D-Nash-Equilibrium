@@ -4,7 +4,7 @@
  */
 
 import React, { useMemo } from 'react';
-import { termBoundaryRegExp } from '../utils/colorTerms';
+import { paintPlan } from '../utils/colorTerms';
 
 // Matte ink classes (defined in index.css): player hue knocked toward slate
 // so highlights read as part of the sentence, not stickers on it. Terms
@@ -75,44 +75,25 @@ export function ColorCoded({ text, aTerms = [], bTerms = [] }: { text: string; a
         return out;
       });
 
-    // Caller-supplied terms first (longest first, so "Issue Fast Ticket"
-    // beats "Ticket"): they carry scenario meaning and outrank notation.
-    const entries = [
-      ...aTerms.map((t) => ({ t, cls: A_TERM_CLS })),
-      ...bTerms.map((t) => ({ t, cls: B_TERM_CLS })),
-    ]
-      // Single characters ("A") are ambiguous with articles; require 2+ chars.
-      .filter((e) => e.t && e.t.trim().length >= 2)
-      .sort((p, q) => q.t.length - p.t.length);
+    // STRUCT-REGEN-19/002: caller-supplied terms are painted from `paintPlan`
+    // (colorTerms.ts) — the ONE pass that decides which range gets which
+    // player's colour, and the same one the editor's chip state reads. This
+    // component no longer sorts, builds a regex, or looks a class up by
+    // `toLowerCase()`; the plan names the term that claimed each range, so the
+    // match rule and the colour rule cannot disagree. Boundary rule + the
+    // no-boundary-script carve-out live in `termBoundaryRegExp`, docs §(c).
     let out: React.ReactNode[] = [text];
-    if (entries.length > 0) {
-      // RED-REGEN-8/001: `\w` is ASCII-only (no `u` flag) — it does not include
-      // é/ñ/ö/å/etc, so the old lookaround treated the join between an ASCII
-      // letter and an adjacent accented letter as a word boundary, splitting
-      // one real word ("se|ñor", "tr|ès"). `\p{L}|\p{N}|_` is Unicode-aware,
-      // but CJK/kana script has no spaces between words at all — requiring a
-      // real boundary there would make a CJK chip nearly unmatchable inside
-      // real prose, so those scripts are carved back OUT of the "word" class
-      // for boundary purposes only (docs/COLOUR-TERMS.md §(c) CJK decision).
-      // `\p{M}` (combining marks, CodeRabbit on this PR): an NFD-normalized
-      // "café" is "cafe" + COMBINING ACUTE ACCENT — without `\p{M}` here, a
-      // chip matching exactly the base letters ("cafe") would pass the RIGHT
-      // boundary check (a combining mark is not `\p{L}`) and leave the accent
-      // rendered outside the coloured span, splitting the same grapheme this
-      // fix exists to keep whole.
-      // RED-REGEN-9/002: the carve-out is about WRITING SYSTEMS, not "CJK":
-      // Thai, Lao, Khmer and Myanmar also write with no spaces between words
-      // (a Thai chip could never match inside Thai prose — a regression from
-      // the ASCII-only days, when any non-ASCII neighbour counted as a
-      // boundary), and Hangul attaches case particles to nouns with no space
-      // ("농부와" = farmer + particle), so the ordinary Korean sentence has
-      // the same shape. All of them join the no-boundary class; every
-      // space-delimited script keeps the real boundary (docs §(c)).
-      // RED-REGEN-14/002: the boundary regex itself now lives in
-      // `termBoundaryRegExp` (colorTerms.ts) — the editor's chip state asks
-      // the same function whether a chip paints anything at all.
-      const termRe = termBoundaryRegExp(entries.map((e) => e.t));
-      if (termRe) out = applyRule(out, termRe, (hit) => entries.find((e) => e.t.toLowerCase() === hit.toLowerCase())?.cls);
+    const plan = paintPlan(text, aTerms, bTerms);
+    if (plan.length > 0) {
+      const painted: React.ReactNode[] = [];
+      let last = 0;
+      for (const sp of plan) {
+        if (sp.start > last) painted.push(text.slice(last, sp.start));
+        painted.push(<span key={k++} className={sp.side === 'A' ? A_TERM_CLS : B_TERM_CLS}>{sp.text}</span>);
+        last = sp.end;
+      }
+      painted.push(text.slice(last));
+      out = painted;
     }
     for (const rule of TOKEN_RULES) out = applyRule(out, rule.re, () => rule.cls);
     return out;

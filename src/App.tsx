@@ -778,7 +778,13 @@ export default function App() {
     preview: RegenPreview | null;
     error: RegenErrorKind | null;
     note: string;
-  }>({ status: 'idle', preview: null, error: null, note: '' });
+    /** STRUCT-REGEN-19/003c: the dialog session this outcome was drawn FOR. A
+     *  preview is shown, and Keepable, only while that session is the one on
+     *  screen (`regenView`), so an outcome stranded by a session that ended some
+     *  other way — a needs-auth jump the user then cancelled leaves the reset
+     *  effect below unable to fire — can never be offered against another board. */
+    key: RegenKey | null;
+  }>({ status: 'idle', preview: null, error: null, note: '', key: null });
   // SEPARATE from requestGenerationRef (see the doc comment on that ref
   // above): bumping the shared counter from a dialog would leave an
   // in-flight "Explain this game" spinner permanently stuck, because its own
@@ -799,12 +805,11 @@ export default function App() {
    * still describes what's on screen. `null` when neither dialog is open.
    */
   const regenCurrentKeyRef = useRef<RegenKey | null>(null);
+  // `currentDialogKey` (the ONE definition of "which dialog session is on
+  // screen") is declared right after `payoffs`, which it reads; this ref is
+  // filled from it before paint, and `regenView` gates on the same value.
   useLayoutEffect(() => {
-    regenCurrentKeyRef.current = isEditModalOpen && editGameId
-      ? { kind: 'edit', gameId: editGameId }
-      : isSaveModalOpen
-      ? { kind: 'save', payoffs }
-      : null;
+    regenCurrentKeyRef.current = currentDialogKey;
   });
   /**
    * DIRECTOR'S DECISION (2026-09-03): Keep replaces the game NAME too, unless
@@ -1024,6 +1029,14 @@ export default function App() {
     a11: 2, b11: 1, a12: 0, b12: 0,
     a21: 0, b21: 0, a22: 1, b22: 2,
   });
+
+  const currentDialogKey = useMemo<RegenKey | null>(() => (
+    isEditModalOpen && editGameId
+      ? { kind: 'edit', gameId: editGameId }
+      : isSaveModalOpen
+      ? { kind: 'save', payoffs }
+      : null
+  ), [isEditModalOpen, editGameId, isSaveModalOpen, payoffs]);
   // Always the LATEST payoffs, readable from inside an async callback whose
   // own closure captured an OLDER value. RED-APP-3 finding 001:
   // `fetchLlmExplanation`'s closure captures `payoffs` at the moment the
@@ -2329,7 +2342,7 @@ export default function App() {
     regenGenerationRef.current += 1;
     regenControllerRef.current?.abort();
     regenInFlightRef.current = false;
-    setRegen({ status: 'idle', preview: null, error: null, note: '' });
+    setRegen({ status: 'idle', preview: null, error: null, note: '', key: null });
     setIsEditModalOpen(true);
   };
 
@@ -2685,7 +2698,7 @@ export default function App() {
       regenGenerationRef.current += 1;
       regenControllerRef.current?.abort();
       regenInFlightRef.current = false;
-      setRegen({ status: 'idle', preview: null, error: null, note: '' });
+      setRegen({ status: 'idle', preview: null, error: null, note: '', key: null });
     }
   }, [isSaveModalOpen, isEditModalOpen]);
 
@@ -2725,7 +2738,7 @@ export default function App() {
     regenGenerationRef.current += 1;
     regenControllerRef.current?.abort();
     regenInFlightRef.current = false;
-    setRegen({ status: 'idle', preview: null, error: null, note: '' });
+    setRegen({ status: 'idle', preview: null, error: null, note: '', key: null });
     const g = generateRandomGame(generateKind);
     // Mirror handleLoadPreset: board payoffs, their editable string twins,
     // preset highlight off, sim rebuilt from the start point.
@@ -2976,7 +2989,7 @@ export default function App() {
     if (regenInFlightRef.current) return;
     regenInFlightRef.current = true;
     const myGen = (regenGenerationRef.current += 1);
-    setRegen({ status: 'loading', preview: null, error: null, note: REGEN_ANNOUNCE.loading });
+    setRegen({ status: 'loading', preview: null, error: null, note: REGEN_ANNOUNCE.loading, key });
 
     const requestPayoffs = key.kind === 'edit'
       ? userCustomGames.find((g) => g.id === key.gameId)?.payoffs
@@ -2987,7 +3000,7 @@ export default function App() {
       // rather than a silent no-op or a thrown exception.
       if (myGen === regenGenerationRef.current) {
         regenInFlightRef.current = false;
-        setRegen({ status: 'error', preview: null, error: 'network', note: REGEN_ERROR_MESSAGES.network() });
+        setRegen({ status: 'error', preview: null, error: 'network', note: REGEN_ERROR_MESSAGES.network(), key });
       }
       return;
     }
@@ -3040,10 +3053,10 @@ export default function App() {
     regenInFlightRef.current = false;
 
     if (status === 200 && body?.scenario) {
-      setRegen({ status: 'ready', preview: cleanPreview(body.scenario), error: null, note: REGEN_ANNOUNCE.ready });
+      setRegen({ status: 'ready', preview: cleanPreview(body.scenario), error: null, note: REGEN_ANNOUNCE.ready, key });
     } else {
       const kind = regenErrorFromResponse(status, body ?? null, caught);
-      setRegen({ status: 'error', preview: null, error: kind, note: REGEN_ERROR_MESSAGES[kind](body?.error) });
+      setRegen({ status: 'error', preview: null, error: kind, note: REGEN_ERROR_MESSAGES[kind](body?.error), key });
     }
   };
 
@@ -3052,7 +3065,8 @@ export default function App() {
    *  the server, so every clamp/cleanText/cleanLabels/cleanColorTerms the
    *  submit already runs still applies unchanged. */
   const keepRegen = (key: RegenKey) => {
-    if (!regen.preview) return;
+    // STRUCT-REGEN-19/003c: only the session the draw was made for may Keep it.
+    if (!regen.preview || !regen.key || !regenKeyEquals(regen.key, key)) return;
     const baselineRef = key.kind === 'edit' ? editNameBaselineRef : saveNameBaselineRef;
     const liveName = key.kind === 'edit' ? editName : saveName;
     const replaceName = shouldReplaceName(liveName !== baselineRef.current);
@@ -3084,11 +3098,12 @@ export default function App() {
     // RED-REGEN-11/001: a draw's own actor noun silently truncated by the
     // per-side cap must say so, same as a manual highlight already does —
     // `dropNote` is null on every draw that fit, which is the common case.
-    const dropNote = regenDroppedNote(kept.dropped, kept.orphaned);
+    const dropNote = regenDroppedNote(kept.dropped, kept.orphaned, kept.shadowed);
     const keptNote = key.kind === 'edit' ? REGEN_ANNOUNCE.keptEdit : REGEN_ANNOUNCE.keptSave;
     setRegen({
       status: 'idle', preview: null, error: null,
       note: dropNote ? `${dropNote} ${keptNote}` : keptNote,
+      key,
     });
     regenButtonRef.current?.focus();
   };
@@ -3096,7 +3111,7 @@ export default function App() {
   /** Discard: clear the preview only. The six fields and the colour chips
    *  were never written to, so there is nothing to undo. */
   const discardRegen = () => {
-    setRegen({ status: 'idle', preview: null, error: null, note: REGEN_ANNOUNCE.discarded });
+    setRegen({ status: 'idle', preview: null, error: null, note: REGEN_ANNOUNCE.discarded, key: regen.key });
     regenButtonRef.current?.focus();
   };
 
@@ -3586,13 +3601,27 @@ export default function App() {
   // Keep never wipes them, it only adds any actor nouns the draw supplies.
   // Only one dialog is ever open at a time, so `isEditModalOpen` alone picks
   // the right existing-chip source.
+  /**
+   * STRUCT-REGEN-19/003c: what the OPEN dialog may show. An outcome belongs to
+   * the dialog session that asked for it; anything else reads as idle. A preview
+   * stranded by a session that ended some other way (a needs-auth jump the user
+   * then cancelled — `dismissAuthModal` clears the resume ref without reopening
+   * the dialog, and the reset effect is keyed on the modal flags, so it never
+   * runs) is therefore never offered against whatever board comes next.
+   */
+  const regenView = useMemo(() => (
+    regen.key && currentDialogKey && regenKeyEquals(regen.key, currentDialogKey)
+      ? regen
+      : { status: 'idle' as const, preview: null, error: null, note: '', key: null }
+  ), [regen, currentDialogKey]);
+
   const regenPreviewTerms = useMemo(() => {
-    if (!regen.preview) return { a: [], b: [] };
+    if (!regenView.preview) return { a: [], b: [] };
     const existing = isEditModalOpen ? editTerms : saveTerms;
     return regenPreviewColorTerms(
-      regen.preview, regen.preview.actorA ?? [], regen.preview.actorB ?? [], existing.a, existing.b,
+      regenView.preview, regenView.preview.actorA ?? [], regenView.preview.actorB ?? [], existing.a, existing.b,
     );
-  }, [regen.preview, isEditModalOpen, editTerms, saveTerms]);
+  }, [regenView.preview, isEditModalOpen, editTerms, saveTerms]);
 
 
   // Clamp a whole matrix through the one cell parser, and derive its editable
@@ -6523,7 +6552,7 @@ export default function App() {
                   affordance, right under the immutability note above: this
                   rewrites the STORY only, the numbers on the board never move. */}
               {capabilities.scenarioRegen && (
-                <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regen.status === 'loading'}>
+                <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regenView.status === 'loading'}>
                   <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 shrink-0" />
                     Rewrite the story for these payoffs
@@ -6533,37 +6562,37 @@ export default function App() {
                       ref={regenButtonRef}
                       type="button"
                       aria-label="Regenerate scenario"
-                      aria-disabled={regen.status === 'loading'}
+                      aria-disabled={regenView.status === 'loading'}
                       title="Have the AI write a new description and option names for these exact payoffs. You preview it first; nothing changes until you Keep it."
-                      onClick={() => { if (regen.status !== 'loading' && editGameId) void handleRegenerateScenario({ kind: 'edit', gameId: editGameId }); }}
+                      onClick={() => { if (regenView.status !== 'loading' && editGameId) void handleRegenerateScenario({ kind: 'edit', gameId: editGameId }); }}
                       className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors cursor-pointer"
                     >
-                      {regen.status === 'loading' ? 'Regenerating…' : regen.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
+                      {regenView.status === 'loading' ? 'Regenerating…' : regenView.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
                     </button>
                   </div>
-                  {regen.note && (
+                  {regenView.note && (
                     <p role="status" aria-live="polite" className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
-                      {regen.note}
+                      {regenView.note}
                     </p>
                   )}
-                  {regen.status === 'ready' && regen.preview && (
+                  {regenView.status === 'ready' && regenView.preview && (
                     <div className="mt-1 rounded-lg border border-indigo-200 bg-white/70 dark:border-indigo-900/60 dark:bg-slate-950/30 p-2.5">
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
                         New scenario (preview)
                       </p>
                       <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words text-xs">
-                        {regen.preview.name}
+                        {regenView.preview.name}
                       </p>
                       <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300 break-words">
-                        <ColorCoded text={regen.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
+                        <ColorCoded text={regenView.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
                       </p>
                       <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
                         <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
-                          A: {regen.preview.row1} / {regen.preview.row2}
+                          A: {regenView.preview.row1} / {regenView.preview.row2}
                         </span>
                         {'  ·  '}
                         <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
-                          B: {regen.preview.col1} / {regen.preview.col2}
+                          B: {regenView.preview.col1} / {regenView.preview.col2}
                         </span>
                       </p>
                       <div className="mt-2 flex gap-2">
@@ -6745,7 +6774,7 @@ export default function App() {
                 generatefill.test.ts locates it with a plain indexOf, and an
                 earlier verbatim match up here breaks the locator. */}
             {capabilities.scenarioRegen && !generateLoading && (
-              <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regen.status === 'loading'}>
+              <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regenView.status === 'loading'}>
                 <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 shrink-0" />
                   Rewrite the story for these payoffs
@@ -6755,37 +6784,37 @@ export default function App() {
                     ref={regenButtonRef}
                     type="button"
                     aria-label="Regenerate scenario"
-                    aria-disabled={regen.status === 'loading'}
+                    aria-disabled={regenView.status === 'loading'}
                     title="Have the AI write a new description and option names for these exact payoffs. You preview it first; nothing changes until you Keep it."
-                    onClick={() => { if (regen.status !== 'loading') void handleRegenerateScenario({ kind: 'save', payoffs }); }}
+                    onClick={() => { if (regenView.status !== 'loading') void handleRegenerateScenario({ kind: 'save', payoffs }); }}
                     className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors cursor-pointer"
                   >
-                    {regen.status === 'loading' ? 'Regenerating…' : regen.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
+                    {regenView.status === 'loading' ? 'Regenerating…' : regenView.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
                   </button>
                 </div>
-                {regen.note && (
+                {regenView.note && (
                   <p role="status" aria-live="polite" className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
-                    {regen.note}
+                    {regenView.note}
                   </p>
                 )}
-                {regen.status === 'ready' && regen.preview && (
+                {regenView.status === 'ready' && regenView.preview && (
                   <div className="mt-1 rounded-lg border border-indigo-200 bg-white/70 dark:border-indigo-900/60 dark:bg-slate-950/30 p-2.5">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
                       New scenario (preview)
                     </p>
                     <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words text-xs">
-                      {regen.preview.name}
+                      {regenView.preview.name}
                     </p>
                     <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300 break-words">
-                      <ColorCoded text={regen.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
+                      <ColorCoded text={regenView.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
                     </p>
                     <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
                       <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
-                        A: {regen.preview.row1} / {regen.preview.row2}
+                        A: {regenView.preview.row1} / {regenView.preview.row2}
                       </span>
                       {'  ·  '}
                       <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
-                        B: {regen.preview.col1} / {regen.preview.col2}
+                        B: {regenView.preview.col1} / {regenView.preview.col2}
                       </span>
                     </p>
                     <div className="mt-2 flex gap-2">
