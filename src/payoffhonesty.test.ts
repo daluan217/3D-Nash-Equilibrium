@@ -878,12 +878,15 @@ function testSaveFormReconciledWithBoard() {
     // Every write to the form, in source order. A NEW entry point fails this
     // list until its author has added it here — which is the point: the class
     // was six writers nobody was counting.
-    const dispatched = [...app.matchAll(/dispatchSaveForm\(\{\s*type: '([a-zA-Z]+)'/g)].map((m) => m[1]);
+    // Every action LITERAL, in source order — including `const boardAction = {…}`,
+    // which is dispatched by name because STRUCT-REGEN-19/006 also runs the reducer
+    // on it to count what it discards.
+    const dispatched = [...app.matchAll(/(?:dispatchSaveForm\(|const boardAction = )\{\s*type: '([a-zA-Z]+)'/g)].map((m) => m[1]);
     ok(dispatched.join(',') === ['typed', 'typed', 'typedLabel', 'typedTerms',
       'openForBoard', 'story', 'boardChanged', 'story', 'saved', 'story'].join(','),
       `the save form's entry points must be exactly the ten enumerated here, in order — found ${dispatched.join(',')} (STRUCT-REGEN-19/001)`);
     ok((app.match(/dispatchSaveForm\(/g) || []).length === dispatched.length,
-      'every dispatchSaveForm call must be a literal action object the ledger above can see (STRUCT-REGEN-19/001)');
+      `every dispatchSaveForm call must dispatch an action literal the ledger above can see — ${(app.match(/dispatchSaveForm\(/g) || []).length} calls vs ${dispatched.length} literals (STRUCT-REGEN-19/001)`);
     // ── one open path ────────────────────────────────────────────────────
     const helperStart = app.indexOf('const openSaveFormForBoard = () => {');
     ok(helperStart !== -1, 'App.tsx must define openSaveFormForBoard (RED-REGEN-13/001)');
@@ -935,7 +938,8 @@ function testSaveFormReconciledWithBoard() {
     const preFetch = app.slice(genStart, genFetch);
     ok(/const boardKey = boardKeyOf\(gc\);/.test(preFetch)
       && /const keepUserText = !generatedFillIsSafe\(saveFormRef\.current, lastGeneratedFillRef\.current, boardLabelsIfAppsOwn\(saveFormRef\.current\)\);/.test(preFetch)
-      && /dispatchSaveForm\(\{ type: 'boardChanged', boardKey, keepUserText \}\);/.test(preFetch)
+      && /const boardAction = \{ type: 'boardChanged', boardKey, keepUserText \} as const;/.test(preFetch)
+      && /dispatchSaveForm\(boardAction\);/.test(preFetch)
       // STRUCT-REGEN-19/005: which option names are the APP's own is the reducer's
       // provenance, not a second guess from the strings.
       && /const boardLabelsIfAppsOwn = \(f: SaveFormState\) => \(f\.provenance\.labels === 'from-board' \? f\.labels : null\);/.test(app),
@@ -1038,9 +1042,11 @@ function testSaveFormReconciledWithBoard() {
   mustThrow('boardKeyOf returns a constant (N2)',
     src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', "JSON.stringify(['board'])"));
   mustThrow('generate reconciles after the report call (N1 falsifier: retention decided by HTTP)',
-    src.replace("    dispatchSaveForm({ type: 'boardChanged', boardKey, keepUserText });", '')
+    src.replace("    dispatchSaveForm(boardAction);", '')
       .replace("      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n",
-        "      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n      dispatchSaveForm({ type: 'boardChanged', boardKey, keepUserText });\n"));
+        "      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n      dispatchSaveForm(boardAction);\n"));
+  mustThrow('generate stops reconciling the form with the new board at all (N1)',
+    src.replace("    const boardAction = { type: 'boardChanged', boardKey, keepUserText } as const;", ''));
   mustThrow('generate keys the reconcile on the OLD board (N1)',
     src.replace('const boardKey = boardKeyOf(gc);', 'const boardKey = boardKeyOf(g);'));
   mustThrow('generate stops passing the safety judgement (a typed draft silently cleared)',
@@ -1080,7 +1086,7 @@ function testSaveFormReconciledWithBoard() {
   mustThrow('an eighth Edit entry point appears unexamined',
     src.replace("  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });",
       "  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });\n  const clearEditDesc = () => dispatchEditForm({ type: 'typed', field: 'desc', value: '' });"));
-  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001 + /004: BOTH dialog forms are ONE reducer value (ten enumerated save entry points, seven edit); every open path goes through openSaveFormForBoard; the report prefill carries no stale chips into either; boardKeyOf separates all eight cells; the app is told which option names it wrote itself; 25 mutants rejected');
+  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001 + /004: BOTH dialog forms are ONE reducer value (ten enumerated save entry points, seven edit); every open path goes through openSaveFormForBoard; the report prefill carries no stale chips into either; boardKeyOf separates all eight cells; the app is told which option names it wrote itself; 26 mutants rejected');
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -95,6 +95,8 @@ import { ColorCoded } from './components/ColorCoded';
 import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { saveFormReducer, EMPTY_SAVE_FORM, type LabelKey, type SaveFormState } from './utils/saveFormModel';
+// aliased: `generateNote` is also the name of the state holding the rendered text.
+import { generateNote as renderGenerateNote } from './utils/generateNote';
 import {
   regenKeyEquals,
   regenResponseIsCurrent,
@@ -2832,7 +2834,16 @@ export default function App() {
     // pending report request changes nothing about either.
     const keepUserText = !generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));
     if (saveForm.boardKey !== boardKey && !keepUserText) lastGeneratedFillRef.current = null;
-    dispatchSaveForm({ type: 'boardChanged', boardKey, keepUserText });
+    const boardAction = { type: 'boardChanged', boardKey, keepUserText } as const;
+    // STRUCT-REGEN-19/006: how many of the user's colour highlights this click
+    // discards, asked of the REDUCER (which decides it) rather than re-derived
+    // here — a second copy of that decision is how the note came to be silent
+    // about the one thing it destroys. `saveFormReducer` is pure, so running it
+    // to read the answer costs nothing and cannot drift from the dispatch below.
+    const chipsBefore = saveFormRef.current.terms.a.length + saveFormRef.current.terms.b.length;
+    const afterBoard = saveFormReducer(saveFormRef.current, boardAction);
+    const chipsRemoved = chipsBefore - (afterBoard.terms.a.length + afterBoard.terms.b.length);
+    dispatchSaveForm(boardAction);
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
     try {
       const res = await fetch(getApiUrl('/api/report'), {
@@ -2864,16 +2875,16 @@ export default function App() {
             labels: { row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 },
           });
           lastGeneratedFillRef.current = gen;
-          setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
+          setGenerateNote(renderGenerateNote(generateKind, 'filled', chipsRemoved));
         } else {
-          setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/option names you'd already typed — the AI wrote a scenario too, but didn't touch your text. Clear ALL of those fields (not just one) to let it fill them in on the next Generate.`);
+          setGenerateNote(renderGenerateNote(generateKind, 'kept', chipsRemoved));
         }
       } else {
-        setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+        setGenerateNote(renderGenerateNote(generateKind, 'unavailable', chipsRemoved));
       }
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium.`]);
     } catch {
-      setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+      setGenerateNote(renderGenerateNote(generateKind, 'unavailable', chipsRemoved));
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
     } finally {
       setGenerateLoading(false);
