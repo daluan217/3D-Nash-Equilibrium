@@ -212,17 +212,16 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
   // expression) must independently carry all three handlers wired to ITS
   // OWN setter.
   const clampLabelInputCall = /clampLabelInput\(e\.target\.value\)/;
-  // STRUCT-REGEN-19/001: the two dialogs write a label differently now — the
-  // Edit dialog still owns a `useState` object and updates it functionally,
-  // while the Save dialog dispatches ONE field into the save-form reducer
-  // (there is no bulk label setter left to update four at a time). Both must
-  // still clamp on the same three events, so the CLAMP contract is checked
-  // per-dialog against that dialog's own writer shape rather than a shared
-  // regex that would have to be loosened to span both.
+  // STRUCT-REGEN-19/001 + /004: both dialogs now dispatch ONE field into the
+  // shared save-form reducer (`setSaveLabel` / `setEditLabel`); there is no bulk
+  // label setter left in App.tsx to update four at a time. The CLAMP contract is
+  // still checked per-dialog against that dialog's own writer shape — the two
+  // shapes happen to match again, but keeping them separate is what caught the
+  // regression when only one of them moved.
   for (const [setter, anchorText, onChangeShape, onCompEndShape] of [
-    ['setEditLabels', 'value={editLabels[key]}',
-      `onChange=\\{\\(e\\) => setEditLabels\\(\\(prev\\) => \\(\\{\\s*\\.\\.\\.prev,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\[key\\]: \\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\}\\)\\)\\}`,
-      'setEditLabels\\(\\(prev\\) => \\(\\{ \\.\\.\\.prev, \\[key\\]: clamped \\}\\)\\)'],
+    ['setEditLabel', 'value={editLabels[key]}',
+      `onChange=\\{\\(e\\) => setEditLabel\\(\\s*key,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\)\\}`,
+      'setEditLabel\\(key, clamped\\)'],
     ['setSaveLabel', 'value={saveLabels[key]}',
       `onChange=\\{\\(e\\) => setSaveLabel\\(\\s*key,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\)\\}`,
       'setSaveLabel\\(key, clamped\\)'],

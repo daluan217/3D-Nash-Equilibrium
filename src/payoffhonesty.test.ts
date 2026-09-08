@@ -949,11 +949,57 @@ function testSaveFormReconciledWithBoard() {
       'keepRegen (save dialog) must write the kept draw as ONE story, chips included (STRUCT-REGEN-19/001)');
     ok(/terms: kept\.terms,[\s\S]{0,500}?lastGeneratedFillRef\.current = \{/.test(keepFn),
       'keepRegen (save dialog) must register the kept draw as the last generated fill (OPUS-REVIEW-171/N1)');
-    ok(/const baseline = key\.kind === 'edit' \? editNameBaselineRef\.current : saveForm\.nameBaseline;/.test(keepFn),
-      'keepRegen must read the save form\'s name baseline from the form itself, not a parallel ref (STRUCT-REGEN-19/001)');
+    ok(/const baseline = key\.kind === 'edit' \? editForm\.nameBaseline : saveForm\.nameBaseline;/.test(keepFn),
+      'keepRegen must read BOTH dialogs\' name baselines from the form itself, not a parallel ref that can drift (STRUCT-REGEN-19/001, /004)');
+    ok(/dispatchEditForm\(\{\s*type: 'story',\s*boardKey: editGameId \?\? '',\s*name: kept\.name,\s*desc: kept\.desc,\s*labels: kept\.labels,\s*terms: kept\.terms,\s*\}\);/.test(keepFn),
+      'keepRegen (edit dialog) must write the kept draw as ONE story, chips included (STRUCT-REGEN-19/004)');
     // ── after a successful save ──────────────────────────────────────────
     ok(/setIsSaveModalOpen\(false\);[\s\S]{0,300}?dispatchSaveForm\(\{ type: 'saved' \}\);/.test(app),
       'a successful save must blank the form and its board in one action (RED-REGEN-13/001)');
+
+    // ══ STRUCT-REGEN-19/004 — the EDIT dialog is the same five pieces ══════
+    // It held four independent useStates plus a name-baseline ref, and broke the
+    // same way: "Save this scenario with the game" on an ALREADY-SAVED game
+    // replaced the description and all four option names with a brand-new AI
+    // story and left the game's OWN colour chips attached. The PATCH then diffed
+    // those chips against editOriginalRef (the same values), omitted them, and
+    // the server kept them — a stored record naming highlight phrases absent
+    // from its own description (findings/STRUCT-REGEN-19/004, live PATCH body +
+    // GET /api/games read-back, with a control run that reports PASS).
+    ok(/const \[editForm, dispatchEditForm\] = useReducer\(saveFormReducer, EMPTY_SAVE_FORM\);/.test(app),
+      'App.tsx must hold the Edit form as ONE reducer value, the SAME reducer as the save form (STRUCT-REGEN-19/004)');
+    for (const [name, expr] of [['editName', 'editForm.name'], ['editDesc', 'editForm.desc'],
+      ['editLabels', 'editForm.labels'], ['editTerms', 'editForm.terms']] as const) {
+      ok(new RegExp(`const ${name} = ${expr.replace('.', '\\.')};`).test(app),
+        `${name} must be DERIVED from editForm, not a second copy of it (STRUCT-REGEN-19/004)`);
+      ok(!new RegExp(`\\[${name}, set[A-Za-z]+\\] = useState`).test(app),
+        `${name} must not be its own useState — that is the second source of truth (STRUCT-REGEN-19/004)`);
+    }
+    ok(!/setEditLabels\(/.test(app),
+      'App.tsx must not write the Edit dialog\'s four option labels in bulk — one field, one action (STRUCT-REGEN-19/004)');
+    ok(!/editNameBaselineRef/.test(app),
+      'the Edit name baseline must live in editForm.nameBaseline, not a parallel ref that can drift from the name (STRUCT-REGEN-19/004)');
+    const editDispatched = [...app.matchAll(/dispatchEditForm\(\{\s*type: '([a-zA-Z]+)'/g)].map((m) => m[1]);
+    ok(editDispatched.join(',') === ['typed', 'typed', 'typedLabel', 'typedTerms', 'story', 'story', 'story'].join(','),
+      `the Edit form's entry points must be exactly the seven enumerated here, in order — found ${editDispatched.join(',')} (STRUCT-REGEN-19/004)`);
+    ok((app.match(/dispatchEditForm\(/g) || []).length === editDispatched.length,
+      'every dispatchEditForm call must be a literal action object the ledger above can see (STRUCT-REGEN-19/004)');
+    // THE fix for 004: the report's story arrives with NO terms, so the game's
+    // own chips — which described the text being replaced — go with it.
+    const reportEdit = app.indexOf('const prefillName = (sc.name ?? existing.name).slice(0, 40);');
+    ok(reportEdit !== -1, 'the report → EDIT prefill branch must exist');
+    const reportEditSlice = app.slice(reportEdit, app.indexOf('setIsEditModalOpen(true);', reportEdit));
+    ok(/dispatchEditForm\(\{\s*type: 'story',\s*boardKey: existing\.id,\s*name: prefillName,\s*desc: description\.slice\(0, 800\),\s*labels: \{/.test(reportEditSlice),
+      'the report prefill into the Edit dialog must arrive as ONE story action keyed on the saved game (STRUCT-REGEN-19/004)');
+    ok(!/terms:/.test(reportEditSlice),
+      'the report prefill into the Edit dialog must carry NO colour terms — the game\'s own chips described the description this story replaces (STRUCT-REGEN-19/004)');
+    ok((reportEditSlice.match(/dispatchEditForm\(/g) || []).length === 1,
+      'the report → EDIT prefill must write the form exactly once (STRUCT-REGEN-19/004)');
+    // Opening a saved game loads its five pieces together, chips included.
+    const openEdit = app.indexOf('const openEditGame = (game: any) => {');
+    const openEditSlice = app.slice(openEdit, app.indexOf('setIsEditModalOpen(true);', openEdit));
+    ok(/dispatchEditForm\(\{\s*type: 'story',\s*boardKey: game\.id,[\s\S]{0,400}?terms: \{ a: game\.colorTermsA \?\? \[\], b: game\.colorTermsB \?\? \[\] \},/.test(openEditSlice),
+      'openEditGame must load the saved game as ONE story, its own chips included (STRUCT-REGEN-19/004)');
   };
   contract(src);
 
@@ -1000,11 +1046,32 @@ function testSaveFormReconciledWithBoard() {
     src.replace("      lastGeneratedFillRef.current = {\n        name: kept.name !== undefined ? kept.name : liveName,",
       "      void {\n        name: kept.name !== undefined ? kept.name : liveName,"));
   mustThrow('keepRegen reads the name baseline from a parallel ref again',
-    src.replace("const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveForm.nameBaseline;",
+    src.replace("const baseline = key.kind === 'edit' ? editForm.nameBaseline : saveForm.nameBaseline;",
       "const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveNameBaselineRef.current;"));
+  mustThrow('keepRegen (edit) writes four fifths of the kept draw',
+    src.replace("        labels: kept.labels,\n        terms: kept.terms,\n      });\n    } else {",
+      "        labels: kept.labels,\n      });\n    } else {"));
   mustThrow('successful save leaves the form holding its board',
     src.replace("        dispatchSaveForm({ type: 'saved' });\n", ''));
-  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001: the save form is ONE reducer value with ten enumerated entry points; every open path goes through openSaveFormForBoard; boardKeyOf separates all eight cells; generate reconciles before the report call; fifteen mutants rejected');
+  // STRUCT-REGEN-19/004 — the Edit half.
+  mustThrow('the report prefill carries the game\'s old chips into the new story (the shipped defect)',
+    src.replace("        name: prefillName,\n        desc: description.slice(0, 800),",
+      "        name: prefillName,\n        terms: { a: existing.colorTermsA ?? [], b: existing.colorTermsB ?? [] },\n        desc: description.slice(0, 800),"));
+  mustThrow('the report prefill into Edit stops recording the game it is for',
+    src.replace('        boardKey: existing.id,\n        name: prefillName,', '        name: prefillName,'));
+  mustThrow('the Edit form regrows a second source of truth',
+    src.replace('  const editTerms = editForm.terms;', "  const [editTerms, setEditTermsState] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });"));
+  mustThrow('a bulk Edit label writer comes back',
+    src.replace('    setEditError(\'\');\n    // A different game must never inherit', "    setEditLabels({ row1: '', row2: '', col1: '', col2: '' });\n    setEditError('');\n    // A different game must never inherit"));
+  mustThrow('the Edit name baseline moves back into a parallel ref',
+    src.replace('    const baseline = key.kind === \'edit\' ? editForm.nameBaseline : saveForm.nameBaseline;',
+      "    const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveForm.nameBaseline;"));
+  mustThrow('opening a saved game drops its own chips',
+    src.replace('      terms: { a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] },\n', ''));
+  mustThrow('an eighth Edit entry point appears unexamined',
+    src.replace("  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });",
+      "  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });\n  const clearEditDesc = () => dispatchEditForm({ type: 'typed', field: 'desc', value: '' });"));
+  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001 + /004: BOTH dialog forms are ONE reducer value (ten enumerated save entry points, seven edit); every open path goes through openSaveFormForBoard; the report prefill carries no stale chips into either; boardKeyOf separates all eight cells; twenty-two mutants rejected');
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -560,10 +560,32 @@ export default function App() {
   // one set of fields would let a half-typed new game leak into an edit.
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editGameId, setEditGameId] = useState<string | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editDesc, setEditDesc] = useState('');
-  const [editLabels, setEditLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
-  const [editTerms, setEditTerms] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });
+  /**
+   * STRUCT-REGEN-19/004: the Edit dialog's form is the SAME five pieces as the
+   * Save dialog's — name, description, four option labels, the user's colour
+   * chips — describing ONE story, so it is the SAME reducer
+   * (src/utils/saveFormModel.ts). Its `boardKey` is the saved game's id: the
+   * thing the story is written for.
+   *
+   * It used to be four independent useStates plus a name-baseline ref, and it
+   * broke exactly the way the Save form did: "Save this scenario with the game"
+   * on an ALREADY-SAVED game replaced the description and all four option names
+   * with a brand-new AI story and left the game's own colour chips in place —
+   * chips that described the text just replaced. `handleEditGameSubmit` then
+   * diffed those chips against `editOriginalRef` (the same values), so the PATCH
+   * omitted them, the server kept them, and the stored record named highlight
+   * phrases absent from its own description. One story, one action, and that
+   * cannot be written.
+   */
+  const [editForm, dispatchEditForm] = useReducer(saveFormReducer, EMPTY_SAVE_FORM);
+  const editName = editForm.name;
+  const editDesc = editForm.desc;
+  const editLabels = editForm.labels;
+  const editTerms = editForm.terms;
+  const setEditName = (v: string) => dispatchEditForm({ type: 'typed', field: 'name', value: v });
+  const setEditDesc = (v: string) => dispatchEditForm({ type: 'typed', field: 'desc', value: v });
+  const setEditLabel = (field: LabelKey, v: string) => dispatchEditForm({ type: 'typedLabel', field, value: v });
+  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });
   // Mirrors for the 409 recovery's continuation (CodeRabbit on #142): the
   // dialog can close, or open another game, while the refetch is in flight.
   const editTermsRef = useRef(editTerms);
@@ -867,7 +889,8 @@ export default function App() {
       },
     });
   };
-  const editNameBaselineRef = useRef('');
+  // (the Edit form's name baseline lives in `editForm.nameBaseline` — same
+  //  field, same rule, as the Save form's; see src/utils/saveFormModel.ts)
 
   // Feedback Modal States
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
@@ -1733,19 +1756,21 @@ export default function App() {
         row1: existing.row1Label ?? '', row2: existing.row2Label ?? '', col1: existing.col1Label ?? '', col2: existing.col2Label ?? '',
         a: existing.colorTermsA ?? [], b: existing.colorTermsB ?? [],
       };
-      // The dialog's chips must be THIS game's — this path never reset them, so a
-      // previous dialog's chips could have been diffed and sent as an edit
-      // (CodeRabbit, #126).
-      setEditTerms({ a: existing.colorTermsA ?? [], b: existing.colorTermsB ?? [] });
-      setEditName(prefillName);
-      // This IS an auto-prefill (the report's invention, not the user's own
-      // typing) — the name-replace baseline moves with it, same as any other
-      // programmatic name write. See the ref's own doc comment above.
-      editNameBaselineRef.current = prefillName;
-      setEditDesc(description.slice(0, 800));
-      setEditLabels({
-        row1: sc.row1 ?? '', row2: sc.row2 ?? '',
-        col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+      // STRUCT-REGEN-19/004: ONE story arrives, so all five pieces move together
+      // and the name-replace baseline moves with the name in the same statement.
+      // No `terms`: the game's own chips described the description this AI story
+      // is replacing, and carrying them across is what persisted a record naming
+      // highlight phrases its own text did not contain. (It also subsumes
+      // CodeRabbit #126 — the chips can no longer be a PREVIOUS dialog's either.)
+      dispatchEditForm({
+        type: 'story',
+        boardKey: existing.id,
+        name: prefillName,
+        desc: description.slice(0, 800),
+        labels: {
+          row1: sc.row1 ?? '', row2: sc.row2 ?? '',
+          col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+        },
       });
       setEditError('');
       regenExplanationAfterSaveRef.current = true;
@@ -2348,15 +2373,20 @@ export default function App() {
       row1: game.row1Label ?? '', row2: game.row2Label ?? '', col1: game.col1Label ?? '', col2: game.col2Label ?? '',
       a: game.colorTermsA ?? [], b: game.colorTermsB ?? [],
     };
-    setEditName(game.name ?? '');
-    // The name on screen is the SAVED name, not user typing — Keep may
-    // replace it (director's decision) as long as the user leaves it alone.
-    editNameBaselineRef.current = game.name ?? '';
-    setEditDesc(game.description ?? '');
-    setEditTerms({ a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] });
-    setEditLabels({
-      row1: game.row1Label ?? '', row2: game.row2Label ?? '',
-      col1: game.col1Label ?? '', col2: game.col2Label ?? '',
+    // The saved game IS one story: its five pieces load together, and the name
+    // on screen is the SAVED name, not user typing — so it becomes the baseline
+    // and Keep may replace it (director's decision) as long as the user leaves
+    // it alone (STRUCT-REGEN-19/004).
+    dispatchEditForm({
+      type: 'story',
+      boardKey: game.id,
+      name: game.name ?? '',
+      desc: game.description ?? '',
+      labels: {
+        row1: game.row1Label ?? '', row2: game.row2Label ?? '',
+        col1: game.col1Label ?? '', col2: game.col2Label ?? '',
+      },
+      terms: { a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] },
     });
     setEditError('');
     // A different game must never inherit another game's regen preview.
@@ -2517,7 +2547,7 @@ export default function App() {
           const afterA = adoptedA ? freshA : nowTerms.a;
           const afterB = adoptedB ? freshB : nowTerms.b;
           if (adoptedA || adoptedB) {
-            setEditTerms((prev) => ({ a: adoptedA ? freshA : prev.a, b: adoptedB ? freshB : prev.b }));
+            setEditTerms({ a: afterA, b: afterB });
             // Keep the mirror current before React re-renders (CodeRabbit CLI):
             // nothing below may read a pre-adoption snapshot.
             editTermsRef.current = { a: afterA, b: afterB };
@@ -3079,7 +3109,7 @@ export default function App() {
   const keepRegen = (key: RegenKey) => {
     // STRUCT-REGEN-19/003c: only the session the draw was made for may Keep it.
     if (!regen.preview || !regen.key || !regenKeyEquals(regen.key, key)) return;
-    const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveForm.nameBaseline;
+    const baseline = key.kind === 'edit' ? editForm.nameBaseline : saveForm.nameBaseline;
     const liveName = key.kind === 'edit' ? editName : saveName;
     const replaceName = shouldReplaceName(liveName !== baseline);
     // The user's EXISTING chips for whichever dialog Keep is running in — Keep
@@ -3088,10 +3118,16 @@ export default function App() {
     const existingTerms = key.kind === 'edit' ? editTerms : saveTerms;
     const kept = keepFill(regen.preview, replaceName, existingTerms);
     if (key.kind === 'edit') {
-      if (kept.name !== undefined) { setEditName(kept.name); editNameBaselineRef.current = kept.name; }
-      setEditDesc(kept.desc);
-      setEditLabels(kept.labels);
-      setEditTerms(kept.terms);
+      // One story, one action — the name baseline moves with it, exactly as in
+      // the save branch below (STRUCT-REGEN-19/001, /004).
+      dispatchEditForm({
+        type: 'story',
+        boardKey: editGameId ?? '',
+        name: kept.name,
+        desc: kept.desc,
+        labels: kept.labels,
+        terms: kept.terms,
+      });
     } else {
       // One story, one action — the name baseline moves with it, so the two
       // can never drift (STRUCT-REGEN-19/001).
@@ -6509,13 +6545,13 @@ export default function App() {
                         placeholder={placeholder}
                         value={editLabels[key]}
                         onBeforeInput={clampLabelBeforeInput}
-                        onChange={(e) => setEditLabels((prev) => ({
-                          ...prev,
+                        onChange={(e) => setEditLabel(
+                          key,
                           // RED-APP-8/002: never clamp WHILE an IME composition is
                           // open (the DOM value is correct as-is; onBeforeInput
                           // cannot block insertCompositionText).
-                          [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
-                        }))}
+                          (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
+                        )}
                         onCompositionEnd={(e) => {
                           // The commit's own trailing `input` event often carries
                           // the SAME string the last mid-composition `input` event
@@ -6528,7 +6564,7 @@ export default function App() {
                           // is the one place guaranteed to see the committed value.
                           const v = e.currentTarget.value;
                           const clamped = clampLabelInput(v);
-                          if (clamped !== v) setEditLabels((prev) => ({ ...prev, [key]: clamped }));
+                          if (clamped !== v) setEditLabel(key, clamped);
                         }}
                       />
                     </div>
