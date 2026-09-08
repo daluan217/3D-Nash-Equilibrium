@@ -352,6 +352,115 @@ try {
   rmSync(userData3, { recursive: true, force: true });
 }
 
+// ── PHASE 4 (STRUCT-DESKTOP-19): the OTHER route whose message is a safety
+// claim. `POST /api/auth/reset-password` assigned `user.passwordHash` on the
+// shared record, bumped `tokenVersion` to kill live sessions, called `saveDB`
+// without reading its boolean, and answered 200 "Password reset successfully!
+// You can now log in with your new password." On an unwritable data directory
+// that sentence was false in the way that matters most: the new hash lived
+// only in that process, so the next launch refused the new password and
+// accepted the OLD one — the password the user reset precisely because they
+// wanted it dead — and the sessions the version bump had killed came back with
+// it. Walked end to end before the fix by
+// _gen/d19b4-resetpassword-false-success.mjs.
+//
+// This phase reads the SAME PROCESS rather than restarting it, which is the
+// stronger statement: with the candidate committed only on a confirmed write,
+// the running server must not accept the new password either, because nothing
+// about the reset happened. Mutations that fail it: drop the
+// `if (!saveDB({ users: db.users.map(...) }))` check (check 2 sees a 200 that
+// claims the password changed); assign `user.passwordHash` in place again
+// (checks 3 and 4 see the new password working in a process that wrote
+// nothing).
+const userData4 = mkdtempSync(path.join(tmpdir(), 'nash-unwritable4-'));
+const PORT4 = process.env.UNWRITABLE_SAVE_PORT4 || '3122';
+const BASE4 = `http://localhost:${PORT4}`;
+async function call4(method, url, body) {
+  const r = await fetch(`${BASE4}${url}`, {
+    method,
+    headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let json = null;
+  try { json = await r.json(); } catch { /* non-JSON */ }
+  return { status: r.status, json };
+}
+async function waitReady4() {
+  for (let i = 0; i < 60; i++) {
+    try {
+      // Bounded — see waitReady's own comment above.
+      const r = await fetch(`${BASE4}/api/health`, { signal: AbortSignal.timeout(2000) });
+      if (r.ok) return true;
+    } catch { /* not up yet, or the health check itself timed out */ }
+    await new Promise((res) => setTimeout(res, 500));
+  }
+  return false;
+}
+const server4 = spawn('node', [BUNDLE], {
+  cwd: userData4,
+  env: {
+    PATH: process.env.PATH,
+    HOME: userData4,
+    NODE_ENV: 'production',
+    PORT: PORT4,
+    IS_ELECTRON: 'true',
+    ELECTRON_USER_DATA_PATH: userData4,
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+try {
+  if (!(await waitReady4())) {
+    console.error('FAIL server4 never became ready');
+    process.exit(2);
+  }
+  const who4 = `rst${Date.now().toString().slice(-6)}`;
+  const email4 = `${who4}@example.com`;
+  const OLD_PASSWORD = 'OldPassw0rd!23';
+  const NEW_PASSWORD = 'NewPassw0rd!45';
+  const reg4 = await call4('POST', '/api/auth/register', { username: who4, email: email4, password: OLD_PASSWORD });
+  const login4 = await call4('POST', '/api/auth/login', { email: email4, password: OLD_PASSWORD });
+  record('phase 4 setup: an account exists and its password works while the directory is writable',
+    reg4.status === 200 && login4.status === 200, `register=${reg4.status} login=${login4.status}`);
+  const forgot4 = await call4('POST', '/api/auth/forgot-password', { email: email4 });
+  const recoveryCode = forgot4.json?.recoveryCode;
+  record('phase 4 setup: the desktop build returned a recovery code',
+    forgot4.status === 200 && !!recoveryCode, `status=${forgot4.status}`);
+
+  chmodSync(userData4, 0o555);
+  const reset4 = await call4('POST', '/api/auth/reset-password', { email: email4, code: recoveryCode, newPassword: NEW_PASSWORD });
+  record('reset-password on an unwritable data directory responds 500, not 200',
+    reset4.status === 500, `status=${reset4.status} body=${JSON.stringify(reset4.json)}`);
+  record('the 500 does not claim the password changed, and says the old one still works',
+    reset4.json?.success !== true
+      && !/reset successfully/i.test(String(reset4.json?.message ?? ''))
+      && /OLD password still works/i.test(String(reset4.json?.error ?? '')),
+    `body=${JSON.stringify(reset4.json)}`);
+  const withNew = await call4('POST', '/api/auth/login', { email: email4, password: NEW_PASSWORD });
+  record('the NEW password does not work in the process that failed to write it',
+    withNew.status === 401, `status=${withNew.status}`);
+  const withOld = await call4('POST', '/api/auth/login', { email: email4, password: OLD_PASSWORD });
+  record('the OLD password still works, exactly as the refusal said',
+    withOld.status === 200, `status=${withOld.status}`);
+
+  // CONTROL: the route can still really reset a password. Without this, every
+  // check above would also pass on a build where the reset never works at all.
+  chmodSync(userData4, 0o755);
+  const forgotAgain = await call4('POST', '/api/auth/forgot-password', { email: email4 });
+  const reallyReset = await call4('POST', '/api/auth/reset-password',
+    { email: email4, code: forgotAgain.json?.recoveryCode, newPassword: NEW_PASSWORD });
+  record('CONTROL: with the directory writable again the same request really resets the password',
+    reallyReset.status === 200 && reallyReset.json?.success === true, `status=${reallyReset.status}`);
+  const newWorks = await call4('POST', '/api/auth/login', { email: email4, password: NEW_PASSWORD });
+  const oldDead = await call4('POST', '/api/auth/login', { email: email4, password: OLD_PASSWORD });
+  record('CONTROL: after the real reset the new password works and the old one is dead',
+    newWorks.status === 200 && oldDead.status === 401, `new=${newWorks.status} old=${oldDead.status}`);
+} finally {
+  server4.kill('SIGKILL');
+  await reaped(server4);
+  chmodSync(userData4, 0o755);
+  rmSync(userData4, { recursive: true, force: true });
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DESKTOP UNWRITABLE-SAVE: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {
