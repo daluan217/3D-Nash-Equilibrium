@@ -312,3 +312,87 @@ for (const bad of [undefined, '', '0', '99', '22001', '5000ms', '1e3']) {
 }
 
 console.log(`✓ e2e sharding contract: ${definitions.length} named sections across ${SHARD_COUNT} shards, required context preserved`);
+
+// ── A double-activation guard dispatches both activations in ONE page task.
+//
+// WHY (STRUCT-DESKTOP-19). Section 53 held its DELETE on a 1500 ms timer and
+// bet that Playwright's second `.click()` would land inside that window. On a
+// loaded runner it does not: a probe here measured 2.4 s from `.click()` to
+// the request reaching the wire, so the second click arrived after the first
+// request had already failed and the section reported two legitimate requests
+// and two legitimate alerts as a product defect (it failed exactly that way on
+// CI run 34238169411 and locally, on trees whose delete guard was intact).
+// The same shape hid the opposite error: the real second click was swallowed
+// by the button's `disabled` attribute, so the section stayed GREEN against a
+// build with the `deletingGamesRef` check deleted — the very mutation its
+// comment claimed would fail it. Both directions vanish when the two
+// activations are dispatched inside one `page.evaluate`: React has not
+// re-rendered between them, so the second reaches a live handler, and no timer
+// can settle the first request underneath it. §29 already worked this way
+// after the same discovery; this contract keeps every such section there.
+const daCode = (body: string): string =>
+  body.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+function daSectionBodies(source: string): Map<string, string> {
+  const starts: Array<{ id: string; at: number }> = [];
+  for (const m of source.matchAll(/^ {2}section\('([^']+)'/gm)) starts.push({ id: m[1], at: m.index ?? 0 });
+  const bodies = new Map<string, string>();
+  starts.forEach((s, i) => bodies.set(s.id, source.slice(s.at, i + 1 < starts.length ? starts[i + 1].at : source.length)));
+  return bodies;
+}
+/** Sections whose invariant is "two activations in ONE tick produce one effect". */
+const DOUBLE_ACTIVATION_SECTIONS: Record<string, string> = {
+  '29': 'regenerate: a double-click issues exactly one request',
+  '53': 'delete: a double-click sends one DELETE and shows one alert',
+};
+const daExactlyOne = (code: string): boolean => /record\(\s*['"`][^'"`]*exactly (?:one|ONE)\b/.test(code);
+const daSameTick = (code: string): boolean => /evaluate\([\s\S]{0,600}?\.click\(\);[\s\S]{0,300}?\.click\(\);/.test(code);
+const daAwaitedRepeats = (code: string): string[] => {
+  const counts = new Map<string, number>();
+  for (const m of code.matchAll(/await\s+(\w+)\s*\.click\(/g)) counts.set(m[1], (counts.get(m[1]) ?? 0) + 1);
+  return [...counts].filter(([, n]) => n >= 2).map(([n]) => n);
+};
+export function doubleActivationFailures(bodies: Map<string, string>): string[] {
+  const out: string[] = [];
+  for (const [id, what] of Object.entries(DOUBLE_ACTIVATION_SECTIONS)) {
+    const body = bodies.get(id);
+    if (body === undefined) { out.push(`section ${id} (${what}) is registered here but no longer exists in the suite`); continue; }
+    const code = daCode(body);
+    if (!daSameTick(code)) out.push(`section ${id} (${what}) must dispatch both activations inside one page.evaluate, not as two awaited Playwright clicks`);
+    const repeats = daAwaitedRepeats(code);
+    if (repeats.length > 0) out.push(`section ${id} (${what}) awaits ${repeats.join(', ')}.click() twice — that race is what this contract exists to stop`);
+  }
+  for (const [id, body] of bodies) {
+    if (id in DOUBLE_ACTIVATION_SECTIONS) continue;
+    const code = daCode(body);
+    if (/double[- ]click/i.test(code) && daExactlyOne(code)) {
+      out.push(`section ${id} asserts an "exactly one" invariant about a double-click but is not registered in DOUBLE_ACTIVATION_SECTIONS`);
+    }
+  }
+  return out;
+}
+const daReal = daSectionBodies(smoke);
+assert.deepStrictEqual(doubleActivationFailures(daReal), [],
+  'every double-activation guard must dispatch its two activations in one page task');
+// The extractor fires, and fires for the right reason. Each mutant below is a
+// real edit someone could make to the suite.
+const da53 = daReal.get('53') ?? '';
+assert.match(da53, /seen\.push\(!b\.disabled\); b\.click\(\);/,
+  'section 53 must still read the button state at each of its two same-tick clicks');
+const daReverted = new Map(daReal).set('53', da53.replace(
+  /const enabledAt = await del\.evaluate\([\s\S]*?\n {6}\}\);/,
+  'await del.click();\n      await del.click({ force: true }).catch(() => {});'));
+assert(doubleActivationFailures(daReverted).some((f) => f.startsWith('section 53')),
+  'reverting section 53 to two awaited Playwright clicks must fail this contract');
+const daUnregistered = new Map(daReal).set('999',
+  "  section('999', 'a double-click on something new', async () => {\n    await b.click();\n    record('FIX: exactly one request was sent', n === 1);\n  });");
+assert(doubleActivationFailures(daUnregistered).some((f) => f.includes('section 999')),
+  'a new double-click guard must be registered before it can ship');
+const daMissing = new Map(daReal); daMissing.delete('29');
+assert(doubleActivationFailures(daMissing).some((f) => f.includes('section 29')),
+  'a registered section that disappears must fail this contract, not pass vacuously');
+// And it stays quiet on ordinary sections: §50 awaits the same button three
+// times and asserts "exactly one POST", but each click is a separate user
+// step, not a same-tick pair — the registry, not a heuristic, decides.
+assert.strictEqual(doubleActivationFailures(daReal).length, 0, 'no false positives on the real suite');
+
+console.log(`✓ double-activation contract: ${Object.keys(DOUBLE_ACTIVATION_SECTIONS).length} same-tick guards, ${daReal.size} sections scanned`);
