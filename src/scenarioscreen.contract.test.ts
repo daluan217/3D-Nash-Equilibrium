@@ -378,6 +378,42 @@ for (const s of SCENARIO_SCREENS) {
 
 {
   /**
+   * A CLAIM SPELLED IN A SECOND UNICODE ALPHABET IS THE SAME CLAIM.
+   *
+   * `scenarioIsClaimFree` matches a written word list, and a word list read off
+   * unfolded text is evadable one code point at a time: "ｂetter" (U+FF42, a
+   * fullwidth Latin b that renders as an ordinary wide "better") passed the
+   * screen while the identical ASCII sentence was refused. The fix folds the
+   * text the RULES read (NFKC) and leaves the text anyone is served alone.
+   * STRUCT-CLOUD-19 red pass 3, `_gen/cloud19_unicode.ts`.
+   */
+  const g: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const quota = {
+    name: 'Quota Talks', row1: 'Hold Quota', row2: 'Raise Quota', col1: 'Open Season', col2: 'Short Season',
+    description: 'Two fleets set a seasonal quota. Hold Quota is better against Open Season.',
+  } as SuggestedScenario;
+  const ascii = screenScenario(JSON.parse(JSON.stringify(quota)), g, opts());
+  check('claim-free baseline: the ASCII claim is refused', !ascii.ok && ascii.screen === 'claim-free',
+    `ok=${ascii.ok} screen=${ascii.screen}`);
+  const fullwidth = JSON.parse(JSON.stringify({
+    ...quota, description: quota.description!.replace('better', '\uFF42etter'),
+  })) as SuggestedScenario;
+  const wide = screenScenario(fullwidth, g, opts());
+  check('...and the identical claim with one fullwidth letter is refused by the SAME screen',
+    !wide.ok && wide.screen === 'claim-free', `ok=${wide.ok} screen=${wide.screen} reason=${wide.reason}`);
+  // The control: folding must not turn ordinary prose into a claim. A fullwidth
+  // letter in a word no rule lists is not a refusal.
+  const harmless = JSON.parse(JSON.stringify({
+    ...quota,
+    description: 'Two \uFF46leets set a seasonal quota. One picks Hold Quota or Raise Quota; the other picks Open Season or Short Season.',
+  })) as SuggestedScenario;
+  const plain = screenScenario(harmless, g, opts());
+  check('control: a fullwidth letter in a NON-claim word passes the whole table', plain.ok,
+    `refused by ${plain.screen}: ${plain.reason}`);
+}
+
+{
+  /**
    * THE ACTOR-NOUN SAFETY PASS IS NOT A PER-ROUTE OPTION. `validateScenario`
    * drops a declared noun pair `actorNounsOk` refuses and KEEPS the story
    * (RED-CLOUD-9/001) — in place, on the object the later screens then read,

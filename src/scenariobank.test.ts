@@ -559,6 +559,32 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   }
 
   /**
+   * WHY FOLDING THE CLAIM RULES' INPUT CHANGED NO VERDICT (STRUCT-CLOUD-19 red
+   * pass 3). `scenarioIsClaimFree` now NFKC-folds the text its word rules read,
+   * which can only change an outcome for text that is not already NFKC-stable.
+   * The artifact has none: every authored field of every shipped row equals its
+   * own NFKC form, so the fold is a no-op here and the change is containment
+   * against a model that spells a claim in a second alphabet, not a reweighting
+   * of what ships. If this ever fails, the fold is no longer free and the
+   * claim-free reach has to be re-measured on the new rows.
+   */
+  {
+    const rows = allBankRows();
+    let unstable = 0; let firstUnstable = '';
+    for (const e of rows) {
+      const sc = e.s as { name?: string; row1?: string; row2?: string; col1?: string; col2?: string; description?: string };
+      for (const v of [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description]) {
+        if (typeof v === 'string' && v.normalize('NFKC') !== v) {
+          unstable++;
+          if (!firstUnstable) firstUnstable = `"${sc.name}": ${JSON.stringify(v.slice(0, 60))}`;
+        }
+      }
+    }
+    check('every authored field of every shipped row is already NFKC-stable', unstable === 0,
+      `${unstable} fields differ from their NFKC form — first: ${firstUnstable}`);
+  }
+
+  /**
    * KNOWN-POSITIVE for scenarioIsColourable itself: a row whose labels the
    * description never states verbatim, and which declares no actor nouns,
    * must fail — the same shape the finding's real "Cider Press Bookings"-
