@@ -24,10 +24,18 @@ on:
     branches: [main]   # see deploy-site.yml — filters noise, the `if:` gates
   workflow_dispatch:
 
-# Only one release build at a time; newer pushes cancel in-flight ones.
+# Only one release build at a time. A newer push QUEUES behind an in-flight
+# release instead of cancelling it (CodeRabbit on #176, twice): the publish
+# step is two GCS writes — the fixed-name DMG, then app-version.json — and a
+# cancel between them leaves a DMG newer than the manifest says. The
+# duplicate-version guard then makes the queued run refuse the same version.
+# Only the NEWEST pending run is retained (GitHub keeps one pending run per
+# group): a release that was overtaken while waiting is dropped on purpose —
+# the newer one builds the newer verified commit, and the older would have
+# been refused by the duplicate-version guard or shipped a stale build.
 concurrency:
   group: release-desktop
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -103,11 +111,34 @@ jobs:
           DMG_PATH="${dmgs[0]}"
 
           VERSION="$(node -p "require('./package.json').version")"
-          echo "Uploading '$DMG_PATH' (v$VERSION) -> gs://$BUCKET/Nash Equilibrium Simulator.dmg"
+
+          # RED-DESKTOP-19/002: the DMG and the manifest live at FIXED object names and the
+          # installed app only ever compares version strings, so publishing a second build
+          # under an unchanged version silently overwrites the first and no installed copy
+          # of it will ever be offered the update (0.0.193 shipped twice on 2026-09-08).
+          # Refuse to republish a version that is already live; the fix is a bump.
+          # The built commit is the one Live smoke verified (workflow_run head), never
+          # GITHUB_SHA, which under workflow_run is whatever main's head is right now.
+          BUILD_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          PUBLISHED=""
+          if manifest="$(gcloud storage cat "gs://$BUCKET/app-version.json" 2>&1)"; then
+            # A manifest that exists but cannot be parsed is a broken release state, not "unpublished".
+            PUBLISHED="$(printf '%s' "$manifest" | node -e "const v=JSON.parse(require('fs').readFileSync(0,'utf8')).version; if(typeof v!=='string'||!v) throw new Error('app-version.json has no version'); process.stdout.write(v)")"
+          elif printf '%s' "$manifest" | grep -qiE 'not found|no such object|does not exist|no urls matched|404'; then
+            echo "no app-version.json published yet — first desktop release"
+          else
+            echo "::error::could not read gs://$BUCKET/app-version.json: $manifest" >&2
+            exit 1
+          fi
+          if [ -n "$PUBLISHED" ] && [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "::error::version $VERSION is already published (app-version.json); bump package.json before shipping another desktop build" >&2
+            exit 1
+          fi
+          echo "Uploading '$DMG_PATH' (v$VERSION, build ${BUILD_SHA::7}) -> gs://$BUCKET/Nash Equilibrium Simulator.dmg"
 
           gcloud storage cp "$DMG_PATH" "gs://$BUCKET/Nash Equilibrium Simulator.dmg" \
             --cache-control="no-cache, max-age=0"
 
-          printf '{"version":"%s"}' "$VERSION" > app-version.json
+          printf '{"version":"%s","build":"%s"}' "$VERSION" "$BUILD_SHA" > app-version.json
           gcloud storage cp app-version.json "gs://$BUCKET/app-version.json" \
             --cache-control="no-store"

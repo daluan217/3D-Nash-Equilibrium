@@ -906,16 +906,38 @@ export default function App() {
     // Bounded like the report request (RED-APP-6/003): a stalled connection
     // must not leave the dialog's buttons disabled forever (CodeRabbit on #132).
     const controller = new AbortController();
+    const requestToken = localGamesOffer.token;
     const { promise, clear } = fetchWithTimeout(getApiUrl('/api/games/adopt-local'), {
       method: 'POST',
       // The token travels explicitly: this runs right after sign-in, before the
       // authToken state (and authHeaders()) is guaranteed to have caught up.
-      headers: { 'Authorization': `Bearer ${localGamesOffer.token}` },
+      headers: { 'Authorization': `Bearer ${requestToken}` },
     }, controller);
     try {
       const res = await promise;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // RED-DESKTOP-19/001: this was the one account-scoped route that never
+        // told the shared dead-session helper about its 401, so a session the
+        // server had already killed kept the header claiming "signed in" while
+        // the dialog said "Sign in to move…". The offer's token IS the login
+        // token, so the helper clears the same session the other routes do;
+        // the offer closes with it (it is re-offered at the next sign-in).
+        // CodeRabbit (#176, twice): a 401 for a token that is no longer current
+        // (the user signed in again while this request was in flight) is stale —
+        // the helper leaves the new session alone, and so must this branch:
+        // only the offer that still carries THIS request's token is closed.
+        // Decided BEFORE the helper runs: `updateAuthToken(null)` reaches
+        // `authTokenRef` on the next render, not synchronously, so a
+        // comparison after the call reads the same value either way.
+        const wasCurrent = authTokenRef.current === requestToken;
+        if (handleDeadSessionResponse(res, requestToken)) {
+          if (wasCurrent) {
+            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));
+            setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);
+          }
+          return;
+        }
         // Whatever the server said, the user must hear that nothing was lost
         // (RED-DESKTOP-12/001: a generic server message reached the dialog
         // verbatim and the reassurance below was never shown).
