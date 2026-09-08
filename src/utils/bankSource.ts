@@ -42,6 +42,54 @@ import rows from '../data/scenarioBank.json';
 const bank: BankEntry[] = (rows as unknown as BankEntry[]) ?? [];
 
 /**
+ * THE ARTIFACT IS READ-ONLY, and this is what enforces it rather than hoping.
+ *
+ * `pickFromBank` returns `pool[i].s` verbatim, so what the request pipeline
+ * held used to BE the module-global row. The pipeline then mutates what it is
+ * given by design: `validateScenario` deletes `actorA`/`actorB` in place when
+ * `actorNounsOk` fails, keeping the story (STRUCT-CLOUD-19/001). Composed, one
+ * request that drew a row the gate did not like stripped BOTH noun lists off
+ * the shipped artifact for the whole life of the process — on Cloud Run's one
+ * warm instance, for every later, unrelated user, silently, until a redeploy.
+ * Reproduced with one planted row in `_gen/cloud19_bankalias.ts`: the row is
+ * unattributable for every subsequent request. It takes no live instances
+ * today (0 of 2,442 rows fail `actorNounsOk`) because of a property of the
+ * ARTIFACT, which a separate build pipeline regenerates — not of this code.
+ *
+ * So: freeze the rows (nothing can write to the artifact, ever), and hand every
+ * caller its own copy below (the gate's in-place strip keeps working, on the
+ * request's private object). Two independent defences, one CI check each.
+ */
+for (const e of bank) {
+  const sc = e.s as Record<string, unknown>;
+  for (const v of Object.values(sc)) if (Array.isArray(v)) Object.freeze(v);
+  Object.freeze(sc);
+  Object.freeze(e);
+}
+Object.freeze(bank);
+
+/**
+ * Which artifact row served a given copy. A WeakMap keyed on the copy, not a
+ * name lookup: `isSameStory` compares by NAME when both sides have one, and 176
+ * of the bank's 1,119 names span more than one stakes band, so a name lookup
+ * would resolve to the wrong row's band exactly where it matters. Weak keys, so
+ * a served copy is collected normally.
+ */
+const servedFrom = new WeakMap<object, BankEntry>();
+
+/** The artifact row a served scenario was copied from, or undefined. */
+export function bankRowFor(sc: object | null | undefined): BankEntry | undefined {
+  return sc ? servedFrom.get(sc) : undefined;
+}
+
+/** One private, mutable copy per caller. See the freeze comment above. */
+function serveCopy(sc: SuggestedScenario, hit: BankEntry | undefined): SuggestedScenario {
+  const copy = structuredClone(sc) as SuggestedScenario;
+  if (hit) servedFrom.set(copy, hit);
+  return copy;
+}
+
+/**
  * Rows already shown this run. In memory only and deliberately so: a desktop
  * launch is the natural scope for "don't repeat yourself", and persisting it
  * would mean a long-lived install eventually exhausting the bank and falling
@@ -83,7 +131,7 @@ export function bankScenario(g: GamePayoffs, domain: string, seenOverride?: Set<
   // rejected row should not come back on the retry.
   const hit = bank.find((e) => e.s === sc);
   if (hit) activeSeen.add(bankKey(hit));
-  return sc;
+  return serveCopy(sc, hit);
 }
 
 /**
@@ -138,7 +186,7 @@ export function bankScenarioAvoiding(
   // avoidKeys is non-empty) — writing into unionSeen there would silently
   // drop the record on the floor for that call shape.
   if (hit) baseSeen.add(bankKey(hit));
-  return sc;
+  return serveCopy(sc, hit);
 }
 
 /** The shipped rows, so a test can re-screen the artifact against today's gates. */

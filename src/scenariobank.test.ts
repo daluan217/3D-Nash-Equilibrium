@@ -9,12 +9,13 @@
  * silently returns nothing, repeats itself, or reaches into the wrong stakes
  * band, the product regresses in a way no existing test would notice.
  */
-import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, __resetBankSeen } from './utils/bankSource';
+import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, bankRowFor, __resetBankSeen } from './utils/bankSource';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
 import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, type BankEntry } from './utils/scenarioBank';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
 import { readFileSync } from 'node:fs';
 import { scenarioRenderability } from './utils/scenarioRenderability';
+import { screenScenario } from './utils/scenarioScreen';
 import { colorTermKey, colorTermsFor, mergeDescriptionTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import type { GamePayoffs, SuggestedScenario } from './types';
 
@@ -238,17 +239,18 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const trueBand = stakesBand(FALLBACK_GAME);
   check('fixture sanity: FALLBACK_GAME true stakes band is 1', trueBand === 1, `${trueBand}`);
 
-  // Matched by OBJECT REFERENCE, not by name: names repeat across (domain,
+  // Matched by the SERVING RECORD, not by name: names repeat across (domain,
   // band) cells by design (that is the whole reason `pickFromBank`'s ladder
-  // tracks `seenNames` separately from `seen` entries), so a name-only
-  // lookup can silently resolve to the WRONG row's band — `sc` returned by
-  // `bankScenario` IS the exact `.s` object of whichever row was picked
-  // (`pickFromBank`'s `take()` returns `pool[i].s` verbatim), so reference
-  // equality is the only correct way to recover which row served it.
+  // tracks `seenNames` separately from `seen` entries) — 176 of the bank's
+  // 1,119 names span more than one band — so a name lookup can silently
+  // resolve to the WRONG row's band, which would make every number below
+  // meaningless. `bankScenario` now hands back a private COPY of the row
+  // (STRUCT-CLOUD-19/008: the artifact is frozen and never leaves the module
+  // by reference), so `e.s === sc` no longer identifies anything; `bankRowFor`
+  // is the WeakMap the copy was registered in, which is exact.
   const bandOfPick = (sc: { name?: string } | null | undefined): number | null => {
     if (!sc) return null;
-    const hit = allBankRows().find((e) => e.s === sc);
-    return hit ? hit.b : null;
+    return bankRowFor(sc)?.b ?? null;
   };
   const classify = (band: number | null): 'exact' | 'near' | 'far' | 'miss' => {
     if (band === null) return 'miss';
@@ -866,6 +868,75 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
         }));
     }
   }
+}
+
+/* ============================================================================
+ * THE ARTIFACT CANNOT BE WRITTEN TO BY SERVING IT (STRUCT-CLOUD-19/008).
+ *
+ * `pickFromBank` returned `pool[i].s` verbatim, so the request pipeline held
+ * the module-global row itself — and the pipeline mutates what it holds by
+ * design: `validateScenario` deletes `actorA`/`actorB` in place when
+ * `actorNounsOk` fails (001). One request that drew a row the gate disliked
+ * therefore stripped BOTH noun lists off the shipped artifact for the rest of
+ * the process — on one warm Cloud Run instance, for every later unrelated user.
+ * Reproduction with one planted row: `_gen/cloud19_bankalias.ts`.
+ *
+ * Two independent defences, one check each, so a mutation is attributable:
+ * freeze (nothing can write to a row at all) and copy-on-serve (the gate's
+ * in-place strip still works, on the request's own object).
+ * ==========================================================================*/
+{
+  const rows = allBankRows();
+  const withNouns = rows.find((e) => (e.s as SuggestedScenario).actorA?.length
+    && (e.s as SuggestedScenario).actorB?.length);
+  check('fixture sanity: the artifact has a row carrying both noun lists', !!withNouns);
+  if (withNouns) {
+    // 1. FREEZE. The pre-fix corruption, attempted directly on the artifact.
+    let threw = false;
+    try { delete (withNouns.s as { actorA?: unknown }).actorA; } catch { threw = true; }
+    check('a bank row cannot be written to: deleting actorA on the artifact throws and changes nothing',
+      threw && ((withNouns.s as SuggestedScenario).actorA?.length ?? 0) > 0,
+      `threw=${threw} actorA=${JSON.stringify((withNouns.s as SuggestedScenario).actorA)}`);
+
+    // 2. COPY-ON-SERVE, read through the SHIPPING gate rather than by hand: a
+    //    served copy given a noun the story does not contain must lose BOTH
+    //    lists (so the gate is demonstrably still doing the in-place strip —
+    //    this check cannot pass by the gate having become inert) while the
+    //    artifact row it came from keeps them.
+    const g: GamePayoffs = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 3, b12: 0, b21: 0, b22: 2 };
+    const served = bankScenario(g, withNouns.d, new Set<string>());
+    check('a served scenario is not the artifact object', !!served && !rows.some((e) => e.s === served));
+    if (served) {
+      const row = bankRowFor(served)!;
+      const beforeA = JSON.stringify((row.s as SuggestedScenario).actorA);
+      const beforeB = JSON.stringify((row.s as SuggestedScenario).actorB);
+      let plantThrew = false;
+      try { served.actorA = ['the harbourmaster of Vellenbrook']; } catch { plantThrew = true; }
+      check('a served copy is writable (the gate is allowed to strip ITS object)', !plantThrew);
+      screenScenario(served, g, { directionChecks: true });
+      check('the gate really stripped the copy (so the next check is not vacuous)',
+        served.actorA === undefined && served.actorB === undefined,
+        `actorA=${JSON.stringify(served.actorA)} actorB=${JSON.stringify(served.actorB)}`);
+      check('serving a row and letting the gate strip it leaves the artifact row untouched',
+        JSON.stringify((row.s as SuggestedScenario).actorA) === beforeA
+        && JSON.stringify((row.s as SuggestedScenario).actorB) === beforeB,
+        `artifact now actorA=${JSON.stringify((row.s as SuggestedScenario).actorA)} (was ${beforeA})`);
+      // 3. `bankRowFor` is the serving record, NOT a name lookup — 176 of the
+      //    bank's names span more than one band, so a name match would resolve
+      //    the wrong row and every band number in this file would be fiction.
+      check('bankRowFor resolves the row that actually served the copy', row.s.name === served.name);
+      check('bankRowFor is not a name lookup: an identical-looking object it never served is unknown',
+        bankRowFor({ ...served }) === undefined);
+    }
+  }
+  /**
+   * MUTATION. Remove the freeze loop in `src/utils/bankSource.ts` and exactly
+   * one check fails: "a bank row cannot be written to". Remove `serveCopy`'s
+   * `structuredClone` (return `sc`) and three fail: "a served scenario is not
+   * the artifact object", "a served copy is writable" (it is now the frozen
+   * row) and "the gate really stripped the copy". Neither mutation touches the
+   * 2,000-draw band-drift numbers above, which is what makes them separable.
+   */
 }
 
 // The exit check must be the LAST thing in the file. It was above the shipped-artifact
