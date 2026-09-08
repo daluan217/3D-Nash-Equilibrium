@@ -923,12 +923,16 @@ export default function App() {
         // the dialog said "Sign in to move…". The offer's token IS the login
         // token, so the helper clears the same session the other routes do;
         // the offer closes with it (it is re-offered at the next sign-in).
-        // CodeRabbit (#176): a 401 for a token that is no longer current (the
-        // user signed in again while this request was in flight) is stale —
+        // CodeRabbit (#176, twice): a 401 for a token that is no longer current
+        // (the user signed in again while this request was in flight) is stale —
         // the helper leaves the new session alone, and so must this branch:
         // only the offer that still carries THIS request's token is closed.
+        // Decided BEFORE the helper runs: `updateAuthToken(null)` reaches
+        // `authTokenRef` on the next render, not synchronously, so a
+        // comparison after the call reads the same value either way.
+        const wasCurrent = authTokenRef.current === requestToken;
         if (handleDeadSessionResponse(res, requestToken)) {
-          if (authTokenRef.current !== requestToken) {
+          if (wasCurrent) {
             setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));
             setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);
           }
