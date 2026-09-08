@@ -127,29 +127,29 @@ const CASES: Case[] = [
   // The #163 delayed-401 matrix, unchanged in meaning, now run on the real client.
   { name: 'matching token, 401 -> session died AND cleared',
     committed: 'tok-A', requestToken: 'tok-A', transport: { kind: 'status', status: 401 },
-    expect: { sessionDied: true, sessionCleared: true, stale: false, cleared: true } },
+    expect: { unauthorized: true, sessionDied: true, sessionCleared: true, stale: false, cleared: true } },
   { name: 'STALE token (delayed response after re-auth), 401 -> died, but the CURRENT session is left alone',
     committed: 'tok-B', requestToken: 'tok-A', transport: { kind: 'status', status: 401 },
-    expect: { sessionDied: true, sessionCleared: false, cleared: false } },
+    expect: { unauthorized: true, sessionDied: true, sessionCleared: false, cleared: false } },
   // A request that attached NO credential cannot prove one died: the desktop
   // local owner lists and saves games with no token at all, and a 401 there is
   // the server declining an anonymous caller, not a session expiring. Before
   // this, the first of these cleared a session that never existed, and both
   // reported `sessionDied` to callers whose alert reads "Invalid or expired
   // session." (CodeRabbit CLI on this branch).
-  { name: 'no token sent, none committed, 401 -> nothing died and nothing is cleared',
+  { name: 'no token sent, none committed, 401 -> unauthorized, but nothing died and nothing is cleared',
     committed: null, requestToken: null, transport: { kind: 'status', status: 401 },
-    expect: { sessionDied: false, sessionCleared: false, cleared: false } },
-  { name: 'no token sent but one has since been committed, 401 -> says nothing about it',
+    expect: { unauthorized: true, sessionDied: false, sessionCleared: false, cleared: false } },
+  { name: 'no token sent but one has since been committed, 401 -> unauthorized, and says nothing about it',
     committed: 'tok-B', requestToken: null, transport: { kind: 'status', status: 401 },
-    expect: { sessionDied: false, sessionCleared: false, cleared: false } },
+    expect: { unauthorized: true, sessionDied: false, sessionCleared: false, cleared: false } },
   { name: 'matching token, 200 -> not an auth failure, nothing cleared',
     committed: 'tok-A', requestToken: 'tok-A', transport: { kind: 'status', status: 200, body: { ok: 1 } },
-    expect: { ok: true, sessionDied: false, sessionCleared: false, cleared: false } },
+    expect: { ok: true, unauthorized: false, sessionDied: false, sessionCleared: false, cleared: false } },
   // STRUCT-DESKTOP-19/001: the three that used to destroy the credential.
-  { name: '503 (backend redeploying) -> NOT a dead session, credential kept',
+  { name: '503 (backend redeploying) -> NOT a dead session, NOT unauthorized, credential kept',
     committed: 'tok-A', transport: { kind: 'status', status: 503, body: { error: 'Service Unavailable' } },
-    expect: { ok: false, status: 503, sessionDied: false, sessionCleared: false, cleared: false } },
+    expect: { ok: false, status: 503, unauthorized: false, sessionDied: false, sessionCleared: false, cleared: false } },
   { name: '500 -> NOT a dead session, credential kept',
     committed: 'tok-A', transport: { kind: 'status', status: 500 },
     expect: { sessionDied: false, cleared: false } },
@@ -158,14 +158,14 @@ const CASES: Case[] = [
     expect: { sessionDied: false, cleared: false } },
   { name: 'network failure (offline / refused) -> kind network, credential kept',
     committed: 'tok-A', transport: { kind: 'reject', error: new TypeError('Failed to fetch') },
-    expect: { kind: 'network', ok: false, status: 0, sessionDied: false, cleared: false } },
+    expect: { kind: 'network', ok: false, status: 0, unauthorized: false, sessionDied: false, cleared: false } },
   { name: 'our own deadline fired -> kind timeout, credential kept',
     committed: 'tok-A', transport: { kind: 'reject', error: abortError() },
     expect: { kind: 'timeout', ok: false, sessionDied: false, cleared: false } },
   // The context-generation gate (RED-DESKTOP-18/001 + STRUCT-DESKTOP-19/001 C).
-  { name: 'context moved during the body read, 401 -> stale, and NOTHING is cleared',
+  { name: 'context moved during the body read, 401 -> stale, claims NOTHING, and nothing is cleared',
     committed: 'tok-A', requestToken: 'tok-A', transport: { kind: 'status', status: 401 }, contextMoves: true,
-    expect: { stale: true, sessionDied: false, sessionCleared: false, cleared: false } },
+    expect: { stale: true, unauthorized: false, sessionDied: false, sessionCleared: false, cleared: false } },
   { name: 'context moved during the body read, 200 -> stale (the caller must act on nothing)',
     committed: 'tok-A', transport: { kind: 'status', status: 200, body: { game: 1 } }, contextMoves: true,
     expect: { stale: true, ok: true, cleared: false } },
@@ -483,6 +483,25 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
     !IDENTITY_PIN.test('      if (res.ok) { setUser(res.data); return; }'));
   check('fixture: the old unguarded list commit would be caught',
     !LIST_PIN.test('      if (!res.ok) return undefined;\n      const rows = res.data;'));
+}
+
+// Which flag each caller reads is the whole point of splitting them. The gate
+// sites ask "did the server demand an account?" (`unauthorized`, true for a
+// signed-out desktop user's 401 — e2e §78's close-and-reopen block turned red
+// the moment they read `sessionDied` instead); only the sites that clear, log
+// or word a message about "your session" read the narrower flag.
+{
+  const appSrc = codeOnly(readFileSync('src/App.tsx', 'utf8'));
+  const gateSites = appSrc.match(/const wasAuthFailure = res\.unauthorized;/g) ?? [];
+  check('both Save and Edit gates read `unauthorized`', gateSites.length === 2, `${gateSites.length} site(s)`);
+  check('no gate still reads `sessionDied`', !/const wasAuthFailure = res\.sessionDied;/.test(appSrc));
+  check('the saved-game list clears on `unauthorized` too', /if \(res\.unauthorized\) \{\n\s*if \(seq === gamesFetchSeqRef\.current\) setUserCustomGames\(\[\]\);/.test(appSrc));
+  check('the identity probe still reads the narrower `sessionDied`', /setUser\(null\);\s*if \(res\.sessionDied\) return;/.test(appSrc));
+  // Known-positives: the pre-fix shape of each pin is refused.
+  check('fixture: a gate reading sessionDied would be caught',
+    /const wasAuthFailure = res\.sessionDied;/.test('        const wasAuthFailure = res.sessionDied;'));
+  check('fixture: a list clearing only on sessionDied would be caught',
+    !/if \(res\.unauthorized\) \{/.test('      if (res.sessionDied) {\n        if (seq === gamesFetchSeqRef.current) setUserCustomGames([]);'));
 }
 
 if (failures > 0) { console.error(`✗ api client: ${failures} failed`); process.exit(1); }

@@ -999,7 +999,10 @@ export default function App() {
       // identity's any more, so it is cleared, not left stale. Guarded by
       // `seq` like the success path, so a stale late 401 can't clobber a
       // newer request's still-in-flight result.
-      if (res.sessionDied) {
+      // `unauthorized`, not `sessionDied`: on the desktop this request often
+      // attaches no token at all, and a 401 there still means these rows are
+      // not this caller's to show.
+      if (res.unauthorized) {
         if (seq === gamesFetchSeqRef.current) setUserCustomGames([]);
         return undefined;
       }
@@ -2567,7 +2570,11 @@ export default function App() {
         // OPUS-REVIEW-DESKTOP16 N3 / STRUCT-DESKTOP-19: the verdict comes from
         // the ONE client, which already applied the stale-token rule and
         // cleared the session if that was the right thing to do.
-        const wasAuthFailure = res.sessionDied;
+        // `unauthorized`, not `sessionDied`: the gate asks whether the SERVER
+        // demanded an account, which it does whether or not this request
+        // carried a token — a signed-out desktop user's 401 must still offer
+        // the way in (e2e §78's close-and-reopen block).
+        const wasAuthFailure = res.unauthorized;
         setEditError(data.error || 'Failed to update game.');
         setEditErrorNeedsAuth(wasAuthFailure);
         // OPUS-REVIEW-DESKTOP17 F1: the gate reads THIS, never reset by a
@@ -2981,7 +2988,11 @@ export default function App() {
         // OPUS-REVIEW-DESKTOP16 N3 / STRUCT-DESKTOP-19: the verdict comes
         // from the ONE client, which already applied the stale-token rule and
         // cleared the session if that was the right thing to do.
-        const wasAuthFailure = res.sessionDied;
+        // `unauthorized`, not `sessionDied`: the gate asks whether the SERVER
+        // demanded an account, which it does whether or not this request
+        // carried a token — a signed-out desktop user's 401 must still offer
+        // the way in (e2e §78's close-and-reopen block).
+        const wasAuthFailure = res.unauthorized;
         setSaveError(data.error || 'Failed to save game.');
         setSaveErrorNeedsAuth(wasAuthFailure);
         // OPUS-REVIEW-DESKTOP17 F1: the gate reads THIS, never reset by a

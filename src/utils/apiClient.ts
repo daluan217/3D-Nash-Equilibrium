@@ -117,8 +117,16 @@ export interface AccountResponse {
   dataParsed: boolean;
   /** This response is no longer this context's business — act on nothing. */
   stale: boolean;
-  /** The server rejected this request's credential (401), and it was current
-   *  enough to matter. NEVER true for a 5xx, a timeout or a network failure. */
+  /** The server refused this request as unauthenticated (401). TRUE whether or
+   *  not a credential was attached: the sign-in gate and the "this library is
+   *  not yours" reset are about what the SERVER refused, not about whose token
+   *  it was. NEVER true for a 5xx, a timeout or a network failure. */
+  unauthorized: boolean;
+  /** The narrower claim: a credential was actually presented and refused, so
+   *  the session behind it is dead. A request that attached nothing cannot
+   *  prove the stored token died. Callers that clear, log or word a message
+   *  about "your session" read THIS; callers that ask the user to sign in read
+   *  `unauthorized`. NEVER true for a 5xx, a timeout or a network failure. */
   sessionDied: boolean;
   /** ...and the token it used was still the committed one, so it was cleared
    *  here. False when a newer session has since been committed. */
@@ -166,7 +174,7 @@ export function createAccountApi(deps: AccountApiDeps): AccountApi {
       init.timeoutMs ?? ACCOUNT_REQUEST_TIMEOUT_MS,
     );
 
-    const base = { requestToken, sessionDied: false, sessionCleared: false } as const;
+    const base = { requestToken, unauthorized: false, sessionDied: false, sessionCleared: false } as const;
     try {
       const res = await promise;
       // The body is a SECOND await: read it first, then judge staleness, or a
@@ -181,14 +189,18 @@ export function createAccountApi(deps: AccountApiDeps): AccountApi {
       }
       // ONLY a 401 is a dead session, and only for a token that is still the
       // committed one. Everything else leaves the credential untouched.
-      // A request that attached NO credential cannot prove the stored one
-      // died either (CodeRabbit CLI on this branch): the desktop local owner
-      // lists and writes games with no token at all, and a 401 there is the
-      // server declining an anonymous caller, not a session expiring.
-      const sessionDied = res.status === 401 && requestToken !== null;
+      // The two halves are reported separately because they answer different
+      // questions. A 401 on a request that attached NO credential cannot prove
+      // the stored one died (CodeRabbit CLI) — the desktop local owner lists
+      // and writes games with no token at all — but it IS still the server
+      // saying "not without an account", which is what raises the sign-in
+      // gate. Collapsing them either clears a credential the server never saw
+      // or leaves a signed-out user staring at a plain error with no way in.
+      const unauthorized = res.status === 401;
+      const sessionDied = unauthorized && requestToken !== null;
       const sessionCleared = sessionDied && deps.currentToken() === requestToken;
       if (sessionCleared) deps.clearSession();
-      return { ...base, kind: 'response', status: res.status, ok: res.ok, data, dataParsed, stale: false, sessionDied, sessionCleared, error: null };
+      return { ...base, kind: 'response', status: res.status, ok: res.ok, data, dataParsed, stale: false, unauthorized, sessionDied, sessionCleared, error: null };
     } catch (error) {
       const kind = error instanceof DOMException && error.name === 'AbortError' ? 'timeout' : 'network';
       // A request that never reached the server says NOTHING about the
