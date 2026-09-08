@@ -7124,6 +7124,12 @@ try {
       const t = document.querySelector(sel);
       return (t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null;
     }, TOUR_SEL);
+    // Wait for the tour dialog itself before the first read: the tour opens
+    // after mount, and reading the counter straight after networkidle raced
+    // it on the runner (CI 2026-09-08 shard 30 on #175: step0=null while the
+    // very next read of the same page said "1"). The waitFor makes step0 a
+    // real reading of the opened tour, not of the page's load timing.
+    await p.locator(TOUR_SEL).waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
     const step0 = await tourStep();
     record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0}`);
 
@@ -8375,23 +8381,18 @@ try {
       );
       await expandedBox.focus();
       await p.keyboard.press('Home');
-      // Wait for the Home-triggered scroll to actually SETTLE (two identical
-      // reads in a row) before taking the "before" measurement — the log is
-      // actively appending a new line every ~550ms during this whole
-      // section, and reading scrollTop immediately after the keypress can
-      // catch the browser's own scroll animation mid-flight, not the fix.
-      const stableScrollTop = () => p.waitForFunction(
-        (sel) => {
-          const el = document.querySelector(sel);
-          if (!el) return false;
-          if (window.__lastScrollTop === el.scrollTop) return true;
-          window.__lastScrollTop = el.scrollTop;
-          return false;
-        },
-        '[role="dialog"] [role="region"][aria-label="Simulation log"]', { timeout: 8000, polling: 100 },
+      // Wait for Home's DESTINATION (scrollTop === 0), not for two identical
+      // reads. Chromium animates keyboard scrolls, and under runner load a
+      // smooth-scroll frame can repeat across a 100 ms poll, so the old
+      // "settled" heuristic read the animation mid-flight (CI 2026-09-08 on
+      // #173 and #174, both untouched here: before=36 / before=3, after=0 —
+      // the after value was simply where Home ends). The pin defect this arm
+      // guards would snap the log back to the BOTTOM after the next line, so
+      // reading 0 before and 0 after still separates fix from defect.
+      await p.waitForFunction(
+        (sel) => { const el = document.querySelector(sel); return !!el && el.scrollTop === 0; },
+        '[role="dialog"] [role="region"][aria-label="Simulation log"]', { timeout: 8000, polling: 50 },
       );
-      await p.evaluate(() => { window.__lastScrollTop = -1; });
-      await stableScrollTop();
       const beforeExp = await expandedBox.evaluate((el) => el.scrollTop);
       // CodeRabbit CLI (this review): same gap as arm 1 — beforeExp settling
       // does not itself prove the log was away from the bottom; assert it.
