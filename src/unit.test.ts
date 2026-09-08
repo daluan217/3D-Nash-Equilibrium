@@ -3693,6 +3693,8 @@ function testWalkthroughInputContracts() {
   assert(contractFails(source.replace('rect?.documentTop, rect?.left, rect?.width, rect?.height, vp.w, vp.h', 'rect?.documentTop, rect?.left, rect?.width, rect?.height, 0, 0')),
     'H5 fixture: ignoring a portrait viewport resize must fail the named source contract');
   console.log('✓ Walkthrough input contracts: pointer origin is a root-level gate, header controls own their vertical band, sheet placement tracks real layout, and both JS scroll paths honor reduced motion');
+}
+
 // ── RED-MATH-18/001: "Reset View" must land on the default pose and STAY there ──
 // Director probe on main 498c7d0: the click relayouted to DEFAULT_CAMERA, and the
 // next frame moved the camera off it again — the idle spin (on from the first
@@ -3811,4 +3813,5 @@ function testWalkthroughInputContracts() {
   mustThrow('glide cancel removed', handler.replace('cancelCameraGlide();\n', ''));
   mustThrow('rebind moved before the relayout', handler.replace('rebindPlotInput();\n', '').replace('cancelCameraGlide();', 'cancelCameraGlide();\n            rebindPlotInput();'));
   mustThrow('glide cancel moved after the relayout', handler.replace('cancelCameraGlide();\n', '').replace('cameraRef.current = DEFAULT_CAMERA;', 'cancelCameraGlide();\n            cameraRef.current = DEFAULT_CAMERA;'));
-  console.log('✓ RED-MATH-18/001: Reset View cancels the glide and holds the spin before the relayout, re-binds after; four mutants rejected by the same contract');}
+  console.log('✓ RED-MATH-18/001: Reset View cancels the glide and holds the spin before the relayout, re-binds after; four mutants rejected by the same contract');
+}
