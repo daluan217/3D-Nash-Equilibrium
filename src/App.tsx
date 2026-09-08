@@ -20,6 +20,7 @@ import {
   splitEquilibriaByContinuum,
   continuumSettledDescription,
   fmtProb,
+  fmtProbFixed,
   resolveProfile,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
@@ -1198,6 +1199,9 @@ export default function App() {
   const stepStartPoint = (axis: 'x' | 'y', dir: 1 | -1) => {
     const base = commitStartCoordinate(axis === 'x' ? x0 : y0);
     const next = Math.max(0, Math.min(1, Math.round((base + dir * 0.01) * 1000) / 1000));
+    // not-a-rendering: canonicalising the INPUT FIELD's own text after the
+    // stepper already rounded to the 3-dp grid — not a display of a computed
+    // probability (which goes through fmtProbFixed).
     (axis === 'x' ? setX0 : setY0)(next.toFixed(3));
     setInitialized(false);
   };
@@ -1226,6 +1230,8 @@ export default function App() {
     // then wipe a finished run. That is the same hazard handlePayoffBlur guards
     // with its value inequality; this is its sibling, and it was mine.
     if (parseNumericInput(raw) !== committed) {
+      // not-a-rendering: rewriting the INPUT FIELD when it misrepresents the
+      // committed value; the readout beside it formats through fmtProbFixed.
       (axis === 'x' ? setX0 : setY0)(committed.toFixed(3));
     }
   };
@@ -2179,7 +2185,11 @@ export default function App() {
 
       setInitialized(true);
       setRunCtx({ payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE });
-      setLogEntries([`Start (${startValX.toFixed(3)}, ${startValY.toFixed(3)}) — Player ${firstMover} moves first`]);
+      // STRUCT-MATH-19/001: fmtProbFixed, not `.toFixed(3)`. `commitStartCoordinate`
+      // clamps to [0,1] but does not quantise to the 3-dp grid, so a typed 0.0004
+      // opened the log "Start (0.000, 0.217)" — a PURE strategy asserted for a
+      // strictly interior probability, while the panel said "less than 0.001".
+      setLogEntries([`Start (${fmtProbFixed(startValX)}, ${fmtProbFixed(startValY)}) — Player ${firstMover} moves first`]);
       initStateRef.current = initState;
       neSnapshotRef.current = null;
       setNeSnapshot(null);
@@ -5350,11 +5360,14 @@ export default function App() {
                     if (numericInputProblem(shrinkStepRaw)) {
                       const snap = stepFieldSnapshotRef.current ?? shrinkStep;
                       setShrinkStep(snap);
+                      // not-a-rendering: the step-size FIELD's own text, a setting, not
+                      // a probability or a payoff.
                       setShrinkStepRaw(snap.toFixed(3));
                       return; // the hint stays until the next edit
                     }
                     const clamped = commitStepSize(shrinkStepRaw, shrinkStep);
                     setShrinkStep(clamped);
+                    // not-a-rendering: the step-size FIELD's own text (setting).
                     setShrinkStepRaw(clamped.toFixed(3));
                   }}
                   aria-label={stepMode === 'regret' ? 'Regret Step Weight (lambda)' : 'Initial Domain Shrink Step Size'}
@@ -5372,7 +5385,7 @@ export default function App() {
                 max="0.999"
                 step="0.001"
                 value={shrinkStep}
-                onChange={(e) => { const v = commitStepSize(e.target.value, shrinkStep); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); setStepInputHint(null); }}
+                /* not-a-rendering: the step-size FIELD's own text (setting). */ onChange={(e) => { const v = commitStepSize(e.target.value, shrinkStep); setShrinkStep(v); setShrinkStepRaw(v.toFixed(3)); setStepInputHint(null); }}
                 aria-label={stepMode === 'regret' ? 'Regret Step Weight (lambda) slider' : 'Initial Domain Shrink Step Size slider'}
                 className="w-full accent-accent-600 h-1 bg-slate-100 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
               />
@@ -5594,7 +5607,10 @@ export default function App() {
                   x: P(A playing Row 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
-                  {simState.cx.toFixed(3)}
+                  {/* STRUCT-MATH-19/001: the shared probability formatter, the same
+                      contract the E[A]/E[B] boxes beside this one already use. A bare
+                      `.toFixed(3)` printed "0.000" for a start point of 0.0004. */}
+                  {fmtProbFixed(simState.cx)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -5602,7 +5618,7 @@ export default function App() {
                   y: P(B playing Col 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
-                  {simState.cy.toFixed(3)}
+                  {fmtProbFixed(simState.cy)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
