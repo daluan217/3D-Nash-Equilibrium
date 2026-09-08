@@ -757,9 +757,16 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
     // RED-MATH-19/002: coordinates handed to the model are echoed verbatim, so
     // they go through the SAME formatter as the panel, log and tieProse —
     // fmtProb applies the sub-resolution rule ("more than 0.999", never a raw
-    // 0.9999999999999987) to mixed coordinates; pure ones are exact 0/1.
+    // 0.9999999999999987) to mixed coordinates.
+    // STRUCT-MATH-19 class 1: the `type === 'mixed' ? fmtProb(x) : x` ternary
+    // that stood here was a BYPASS with a precondition — it printed a pure
+    // equilibrium's coordinate raw, and was safe only while `computeAllNE`
+    // guarantees a pure NE's x/y is exactly 0 or 1. `fmtProb(0)` is "0" and
+    // `fmtProb(1)` is "1", so dropping the branch is byte-identical today
+    // (unit.test.ts asserts it) and leaves no door that a later change to the
+    // pure-NE representation could walk through.
     const coord = (e: { type: string; x: number; y: number }) =>
-      `(x=${e.type === 'mixed' ? fmtProb(e.x) : e.x}, y=${e.type === 'mixed' ? fmtProb(e.y) : e.y})`;
+      `(x=${fmtProb(e.x)}, y=${fmtProb(e.y)})`;
     const validPoints = onContinuum.length
       ? onContinuum.map(coord).join(', ')
       : 'any point where neither player can gain by deviating';
@@ -828,7 +835,9 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
           // equilibriumPanel.ts's neValues already does for the on-screen panel,
           // so the payload can never assert a falsehood the panel would refuse
           // to print for the same quantity.
-          const base = `  ${e.type} at x=${e.type === 'mixed' ? fmtProb(e.x) : e.x}, y=${e.type === 'mixed' ? fmtProb(e.y) : e.y} (payoffs A=${fmtPayoff(EA(e.x, e.y, g))}, B=${fmtPayoff(EB(e.x, e.y, g))})`;
+          // STRUCT-MATH-19: same bypass removed as in `coord` above — every
+          // coordinate in the payload goes through fmtProb, pure ones included.
+          const base = `  ${e.type} at x=${fmtProb(e.x)}, y=${fmtProb(e.y)} (payoffs A=${fmtPayoff(EA(e.x, e.y, g))}, B=${fmtPayoff(EB(e.x, e.y, g))})`;
           if (e.type === 'pure') {
             return `${base} — that is: A plays Row ${e.x === 1 ? 1 : 2}, B plays Col ${e.y === 1 ? 1 : 2}`;
           }

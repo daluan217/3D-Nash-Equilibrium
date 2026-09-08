@@ -8619,6 +8619,102 @@ try {
     await p.close();
   });
 
+  // ── §89 — one probability formatter, three renderings (STRUCT-MATH-19/001) ──
+  // The coordinate readout and the log's own opening line must never assert a
+  // PURE strategy for a probability that is merely close to one. Repro on
+  // origin/main 124c815: `commitStartCoordinate` clamps a typed start point to
+  // [0,1] but does not quantise it to the 3-dp grid the way `commitPayoffInput`
+  // does, so 0.0004 survived into `simState.cx` and `{simState.cx.toFixed(3)}`
+  // printed "0.000" while the panel/prose/payload said "less than 0.001".
+  //
+  // Oracle: the RENDERED text of the readout element and of the log line, never
+  // the input box (which legitimately keeps what was typed). The 0.4 arm is the
+  // control: identical selectors, identical path, and it must read "0.400" — so
+  // a dead locator fails the control first rather than passing this section.
+  section('89', 'readout and log render an interior probability honestly, never as 0.000/1.000', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = trackPage(await ctx.newPage());
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await exitTour.click();
+        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
+      }
+      // The readout value sits in the mono <span> next to the "x: P(A playing
+      // Row 1)" label; read it by walking from the label, not by nth-child.
+      const readX = () => p.evaluate(() => {
+        for (const s of document.querySelectorAll('span')) {
+          if ((s.textContent || '').trim().startsWith('x: P(A')) {
+            const v = s.parentElement?.querySelector('span.font-mono');
+            return (v?.textContent || '').trim();
+          }
+        }
+        return null;
+      });
+      const startLine = () => p.evaluate(() => {
+        for (const el of document.querySelectorAll('[role="region"][aria-label="Simulation log"] *')) {
+          const t = (el.textContent || '').trim();
+          if (el.childElementCount === 0 && t.startsWith('Start (')) return t;
+        }
+        return null;
+      });
+
+      const x0 = p.locator('#field-coords-x0');
+      for (const [typed, expected, label] of [
+        ['0.0004', 'less than 0.001', 'below the display grid'],
+        ['0.9997', 'more than 0.999', 'above the display grid'],
+        ['0.4', '0.400', 'CONTROL, an ordinary 3-dp value'],
+      ]) {
+        await x0.fill(typed);
+        await x0.blur();
+        await p.waitForFunction((want) => {
+          for (const s of document.querySelectorAll('span')) {
+            if ((s.textContent || '').trim().startsWith('x: P(A')) {
+              return ((s.parentElement?.querySelector('span.font-mono')?.textContent) || '').trim() === want;
+            }
+          }
+          return false;
+        }, expected, { timeout: 8000 }).catch(() => {});
+        const shown = await readX();
+        record(`§89 readout for x₀=${typed} (${label}) reads ${JSON.stringify(expected)}`,
+          shown === expected, `got ${JSON.stringify(shown)}`);
+        // The box itself must still hold what the user typed — if the field
+        // silently quantised, the readout would be honest for a reason this
+        // section is not testing, and the check would pass vacuously.
+        const kept = await x0.inputValue();
+        record(`§89 the x₀ field still holds the typed ${typed} (the readout, not the input, is what changed)`,
+          kept === typed, `field=${JSON.stringify(kept)}`);
+
+        await p.getByRole('button', { name: /^step$/i }).first().click();
+        // Poll the rendered log rather than sleeping a fixed 400 ms (CodeRabbit
+        // CLI on this branch). The wait swallows its own timeout, so the record
+        // below still reads the real line and still FAILS on a wrong one — the
+        // poll only removes the flake, it does not become the assertion.
+        await p.waitForFunction((want) => {
+          for (const el of document.querySelectorAll('[role="region"][aria-label="Simulation log"] *')) {
+            if (el.childElementCount === 0 && (el.textContent || '').trim().startsWith(`Start (${want},`)) return true;
+          }
+          return false;
+        }, expected, { timeout: 8000 }).catch(() => {});
+        const line = await startLine();
+        record(`§89 the log's Start line for x₀=${typed} carries ${JSON.stringify(expected)}`,
+          typeof line === 'string' && line.startsWith(`Start (${expected},`), `line=${JSON.stringify(line)}`);
+        await p.getByRole('button', { name: /^reset$/i }).first().click().catch(() => {});
+        // Reset restores exactly this line (src/App.tsx:3698); waiting for it
+        // means the next iteration types into a settled page.
+        await p.waitForFunction(() => {
+          for (const el of document.querySelectorAll('[role="region"][aria-label="Simulation log"] *')) {
+            if (el.childElementCount === 0 && (el.textContent || '').trim().startsWith('Set starting point')) return true;
+          }
+          return false;
+        }, null, { timeout: 8000 }).catch(() => {});
+      }
+    } finally {
+      await ctx.close().catch(() => {});
+    }
+  });
+
 await executeSections();
 
 } catch (e) {

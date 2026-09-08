@@ -28,6 +28,10 @@ export interface TieLabels { row1?: string; row2?: string; col1?: string; col2?:
  *
  * It is NOT safe on a DERIVED quantity — see `payoff` below.
  */
+// not-a-rendering: see the docstring above — a MATRIX CELL, which server.ts's
+// `cleanPayoffs` and the UI's `commitPayoffInput` both quantise to the 3-dp
+// grid before it can reach this module, so toFixed(3) round-trips it exactly.
+// Every DERIVED quantity in this file goes through `payoff` -> fmtPayoff.
 const num = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/\.?0+$/, ''));
 
 /**
