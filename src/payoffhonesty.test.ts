@@ -895,13 +895,11 @@ function testSaveFormReconciledWithBoard() {
     ok(genStart !== -1 && genFetch > genStart, 'handleGenerateGame must commit gc then call /api/report');
     const preFetch = app.slice(genStart, genFetch);
     ok(/const boardKey = boardKeyOf\(gc\);/.test(preFetch)
-      && /if \(saveFormBoardRef\.current !== boardKey && generatedFillIsSafe\(saveFieldsRef\.current, lastGeneratedFillRef\.current\)\) \{[\s\S]{0,400}?setSaveName\(''\);[\s\S]{0,400}?setSaveDesc\(''\);[\s\S]{0,400}?setSaveTerms\(\{ a: \[\], b: \[\] \}\);[\s\S]{0,200}?saveFormBoardRef\.current = boardKey;\s*\}/.test(preFetch),
-      'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call, clearing only generated/empty text (OPUS-REVIEW-171/N1)');
+      && /if \(saveFormBoardRef\.current !== boardKey\) \{\s*if \(generatedFillIsSafe\(saveFieldsRef\.current, lastGeneratedFillRef\.current\)\) \{[\s\S]{0,400}?setSaveName\(''\);\s*saveNameBaselineRef\.current = '';\s*setSaveDesc\(''\);\s*setSaveLabels\(\{ row1: '', row2: '', col1: '', col2: '' \}\);\s*setSaveTerms\(\{ a: \[\], b: \[\] \}\);\s*lastGeneratedFillRef\.current = null;\s*\}[\s\S]{0,600}?saveFormBoardRef\.current = boardKey;\s*\}/.test(preFetch),
+      'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call: clear all six fields (option names included) when the text is generated/empty, and record the board either way (OPUS-REVIEW-171/N1, CodeRabbit)');
     const postFetch = app.slice(genFetch, app.indexOf('setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario', genFetch));
-    ok(/lastGeneratedFillRef\.current = gen;\s*(\/\/[^\n]*\n\s*)?saveFormBoardRef\.current = boardKey;/.test(postFetch),
-      'the applied AI fill must record the generated board as the form\'s board (RED-REGEN-13/001)');
-    ok(!/saveFormBoardRef\.current = boardKeyOf\(g\);/.test(app) && (postFetch.match(/saveFormBoardRef\.current = /g) || []).length === 1,
-      'handleGenerateGame must not record the board unconditionally after the awaits (OPUS-REVIEW-171/N1)');
+    ok(!/saveFormBoardRef\.current = boardKeyOf\(g\);/.test(app) && (postFetch.match(/saveFormBoardRef\.current = /g) || []).length === 0,
+      'handleGenerateGame must not record the board after the awaits — the board is recorded before the report call, so a failed or pending request changes nothing (OPUS-REVIEW-171/N1, CodeRabbit)');
     // A kept regenerated draw is generated text: the safety rule may replace it.
     const keepStart = app.indexOf('const keepRegen = (key: RegenKey) => {');
     const keepFn = app.slice(keepStart, app.indexOf('regenButtonRef.current?.focus();', keepStart));
@@ -930,9 +928,11 @@ function testSaveFormReconciledWithBoard() {
   mustThrow('boardKeyOf ignores Player B (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', 'JSON.stringify([p.a11, p.a12, p.a21, p.a22])'));
   mustThrow('boardKeyOf returns a constant (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', "JSON.stringify(['board'])"));
   mustThrow('generate records the board unconditionally after the awaits (N1)', src.replace("      if (sc) {\n        const gen: GeneratedFill = {", "      saveFormBoardRef.current = boardKeyOf(g);\n      if (sc) {\n        const gen: GeneratedFill = {"));
-  mustThrow('generate reconciles after the report call (N1 falsifier: retention decided by HTTP)', src.replace("    const boardKey = boardKeyOf(gc);\n    if (saveFormBoardRef.current !== boardKey", "    if (saveFormBoardRef.current !== boardKeyOf(gc)").replace("      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n", "      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n      const boardKey = boardKeyOf(gc);\n"));
+  mustThrow('generate reconciles after the report call (N1 falsifier: retention decided by HTTP)', src.replace("    const boardKey = boardKeyOf(gc);\n    if (saveFormBoardRef.current !== boardKey) {", "    if (false) {").replace("      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n", "      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n      const boardKey = boardKeyOf(gc);\n      saveFormBoardRef.current = boardKey;\n"));
+  mustThrow('generate clears the story but keeps the old option names (CodeRabbit)', src.replace("        setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });\n        setSaveTerms({ a: [], b: [] });\n        lastGeneratedFillRef.current = null;", "        setSaveTerms({ a: [], b: [] });\n        lastGeneratedFillRef.current = null;"));
+  mustThrow('generate records the board only when it cleared the text (a kept typed draft cleared on reopen)', src.replace("        lastGeneratedFillRef.current = null;\n      }\n", "        lastGeneratedFillRef.current = null;\n        saveFormBoardRef.current = boardKey;\n      }\n").replace("      // pending report request changes nothing about that.\n      saveFormBoardRef.current = boardKey;\n", "      // pending report request changes nothing about that.\n"));
   mustThrow('kept draw not registered as generated text (N1)', src.replace("      lastGeneratedFillRef.current = {\n        name: kept.name !== undefined ? kept.name : liveName,", "      void {\n        name: kept.name !== undefined ? kept.name : liveName,"));
-  console.log('✓ RED-REGEN-13/001: every Save-dialog open path reconciles the form with the current board through reconcileSaveFormWithBoard; boardKeyOf separates all eight cells; generate reconciles before the report call; nine mutants rejected');
+  console.log('✓ RED-REGEN-13/001: every Save-dialog open path reconciles the form with the current board through reconcileSaveFormWithBoard; boardKeyOf separates all eight cells; generate reconciles before the report call; eleven mutants rejected');
 }
 
 // ════════════════════════════════════════════════════════════════════════════

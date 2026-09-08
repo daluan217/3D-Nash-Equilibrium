@@ -2719,12 +2719,22 @@ export default function App() {
     // depends on whether that call succeeds; and keyed on `gc` (what is on the
     // board), not `g`.
     const boardKey = boardKeyOf(gc);
-    if (saveFormBoardRef.current !== boardKey && generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current)) {
-      setSaveName('');
-      saveNameBaselineRef.current = '';
-      setSaveDesc('');
-      setSaveTerms({ a: [], b: [] });
-      lastGeneratedFillRef.current = null;
+    if (saveFormBoardRef.current !== boardKey) {
+      if (generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current)) {
+        // Generated (or empty) text: it was written for the old board. All six
+        // fields go, option names included (CodeRabbit on #171: a P2 save
+        // with P1's option names otherwise).
+        setSaveName('');
+        saveNameBaselineRef.current = '';
+        setSaveDesc('');
+        setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });
+        setSaveTerms({ a: [], b: [] });
+        lastGeneratedFillRef.current = null;
+      }
+      // Whatever the form holds now is for THIS board: cleared above, or the
+      // user's own text which the note below explicitly keeps for it — so a
+      // close-and-reopen keeps it too (CodeRabbit on #171), and a failed or
+      // pending report request changes nothing about that.
       saveFormBoardRef.current = boardKey;
     }
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
@@ -2755,8 +2765,6 @@ export default function App() {
           setSaveDesc(gen.desc);
           setSaveLabels({ row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 });
           lastGeneratedFillRef.current = gen;
-          // The AI fill replaced the form: its text is for THIS board.
-          saveFormBoardRef.current = boardKey;
           setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
         } else {
           setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/option names you'd already typed — the AI wrote a scenario too, but didn't touch your text. Clear ALL of those fields (not just one) to let it fill them in on the next Generate.`);
