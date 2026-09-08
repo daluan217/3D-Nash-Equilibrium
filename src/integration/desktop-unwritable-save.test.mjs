@@ -37,6 +37,18 @@ const BASE = `http://localhost:${PORT}`;
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
 
+/** Wait for a killed child to be reaped, but never hang: a process that had
+ *  already exited emits nothing more, and `once('exit')` would then wait for
+ *  an event that will never come (CodeRabbit CLI on this branch). */
+function reaped(child, ms = 5000) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((res) => {
+    const done = () => { clearTimeout(t); res(); };
+    const t = setTimeout(done, ms);
+    child.once('exit', done);
+  });
+}
+
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -133,7 +145,7 @@ try {
   //      directory so we get a real game id to PATCH/DELETE.
 } finally {
   server?.kill('SIGKILL');
-  await new Promise((res) => server?.once('exit', res) ?? res());
+  await reaped(server);
   chmodSync(userData, 0o755); // restore so rmSync can clean up
   rmSync(userData, { recursive: true, force: true });
 }
@@ -224,9 +236,120 @@ try {
     `status=${afterFailedDelete.status} ids=${JSON.stringify((afterFailedDelete.json ?? []).map((g) => g.id))}`);
 } finally {
   server2.kill('SIGKILL');
-  await new Promise((res) => server2.once('exit', res) ?? res());
+  await reaped(server2);
   chmodSync(userData2, 0o755);
   rmSync(userData2, { recursive: true, force: true });
+}
+
+// ── PHASE 3 (STRUCT-DESKTOP-19): the same failure on the one route that
+// promises DESTRUCTION. `POST /api/auth/delete-confirm` wiped the account and
+// its games from the shared in-memory database in place, called `saveDB`
+// without reading its boolean, and answered 200 "Your account and all saved
+// game profiles have been successfully deleted from our records" — on an
+// unwritable data directory that sentence was false twice over: nothing left
+// the disk, and the running process behaved as though the account were gone
+// (its own GET /api/auth/me answered 401) until the next launch brought the
+// account and every saved game back. Reproduced end to end before the fix by
+// _gen/d19b3-deleteconfirm-false-destruction.mjs.
+//
+// Mutations that fail this phase: drop the `if (!saveDB(remaining))` check in
+// delete-confirm (check 3 sees a 200 that claims destruction); move
+// `inMemoryDb = db` back ABOVE the write in `saveDB` (checks 4 and 5 see the
+// session and the games gone from a process that never wrote anything).
+const userData3 = mkdtempSync(path.join(tmpdir(), 'nash-unwritable3-'));
+const PORT3 = process.env.UNWRITABLE_SAVE_PORT3 || '3121';
+const BASE3 = `http://localhost:${PORT3}`;
+async function call3(method, url, body, token) {
+  const r = await fetch(`${BASE3}${url}`, {
+    method,
+    headers: {
+      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let json = null;
+  try { json = await r.json(); } catch { /* non-JSON */ }
+  return { status: r.status, json };
+}
+async function waitReady3() {
+  for (let i = 0; i < 60; i++) {
+    try {
+      // Bounded — see waitReady's own comment above.
+      const r = await fetch(`${BASE3}/api/health`, { signal: AbortSignal.timeout(2000) });
+      if (r.ok) return true;
+    } catch { /* not up yet, or the health check itself timed out */ }
+    await new Promise((res) => setTimeout(res, 500));
+  }
+  return false;
+}
+const server3 = spawn('node', [BUNDLE], {
+  cwd: userData3,
+  env: {
+    PATH: process.env.PATH,
+    HOME: userData3,
+    NODE_ENV: 'production',
+    PORT: PORT3,
+    IS_ELECTRON: 'true',
+    ELECTRON_USER_DATA_PATH: userData3,
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+try {
+  if (!(await waitReady3())) {
+    console.error('FAIL server3 never became ready');
+    process.exit(2);
+  }
+  // Setup, all of it while the directory is still writable: a real account,
+  // a real saved game, and a real deletion code (the desktop build hands the
+  // code back in the response because it has no SMTP to mail it with).
+  const who = `del${Date.now().toString().slice(-6)}`;
+  const email = `${who}@example.com`;
+  const password = 'Passw0rd!23';
+  const reg = await call3('POST', '/api/auth/register', { username: who, email, password });
+  const login = await call3('POST', '/api/auth/login', { email, password });
+  const token = login.json?.token;
+  record('phase 3 setup: an account exists and is signed in while the directory is writable',
+    reg.status === 200 && login.status === 200 && !!token, `register=${reg.status} login=${login.status}`);
+  const mine = await call3('POST', '/api/games', { name: 'Keepsake', payoffs: MP }, token);
+  record('phase 3 setup: that account has a saved game', mine.status === 200, `status=${mine.status}`);
+  const askedToDelete = await call3('POST', '/api/auth/delete-request', undefined, token);
+  const deleteCode = askedToDelete.json?.deleteCode;
+  record('phase 3 setup: the desktop build returned a deletion code',
+    askedToDelete.status === 200 && !!deleteCode, `status=${askedToDelete.status}`);
+
+  chmodSync(userData3, 0o555);
+  const confirmed = await call3('POST', '/api/auth/delete-confirm', { code: deleteCode }, token);
+  record('delete-confirm on an unwritable data directory responds 500, not 200',
+    confirmed.status === 500, `status=${confirmed.status} body=${JSON.stringify(confirmed.json)}`);
+  record('the 500 does not claim the account was deleted, and says nothing was removed',
+    confirmed.json?.success !== true
+      && !/successfully deleted/i.test(String(confirmed.json?.message ?? ''))
+      && /nothing was removed/i.test(String(confirmed.json?.error ?? '')),
+    `body=${JSON.stringify(confirmed.json)}`);
+  // The other half of the lie: the process must not act deleted either.
+  const meAfter = await call3('GET', '/api/auth/me', undefined, token);
+  record('the session still works right after the refused deletion (nothing was committed in memory)',
+    meAfter.status === 200 && meAfter.json?.email === email, `status=${meAfter.status} body=${JSON.stringify(meAfter.json).slice(0, 120)}`);
+  const gamesAfter = await call3('GET', '/api/games', undefined, token);
+  record('the account\'s saved game is still listed after the refused deletion',
+    gamesAfter.status === 200 && (gamesAfter.json ?? []).some((g) => g.name === 'Keepsake'),
+    `status=${gamesAfter.status} names=${JSON.stringify((gamesAfter.json ?? []).map((g) => g.name))}`);
+
+  // CONTROL: the route can still really delete. Without this, every check
+  // above would also pass on a build where deletion never works at all.
+  chmodSync(userData3, 0o755);
+  const askedAgain = await call3('POST', '/api/auth/delete-request', undefined, token);
+  const reallyGone = await call3('POST', '/api/auth/delete-confirm', { code: askedAgain.json?.deleteCode }, token);
+  record('CONTROL: with the directory writable again the same request really deletes',
+    reallyGone.status === 200 && reallyGone.json?.success === true, `status=${reallyGone.status}`);
+  const meGone = await call3('GET', '/api/auth/me', undefined, token);
+  record('CONTROL: the session is dead once the deletion actually happened', meGone.status === 401, `status=${meGone.status}`);
+} finally {
+  server3.kill('SIGKILL');
+  await reaped(server3);
+  chmodSync(userData3, 0o755);
+  rmSync(userData3, { recursive: true, force: true });
 }
 
 const fails = results.filter((r) => !r.pass);

@@ -46,6 +46,7 @@ import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
+import { createAccountApi, describeRequestFailure, type AccountApi } from './utils/apiClient';
 import { labelFor } from './utils/a11y';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
@@ -432,7 +433,6 @@ export default function App() {
   // message and saved games never listed.
   const localOwnerMode = isElectron && dbMode === 'local' && !authToken;
   const canOwnGames = !!authToken || localOwnerMode;
-  const authHeaders = (): Record<string, string> => (authToken ? { 'Authorization': `Bearer ${authToken}` } : {});
   const gamesFetchSeqRef = useRef(0);
   // CodeRabbit on #163 (src/App.tsx:466): readable from inside an async
   // fetch continuation, same pattern as `payoffsRef` below — a response for
@@ -466,38 +466,41 @@ export default function App() {
   };
 
   /**
-   * The ONE place that decides "did this /api/games response mean the
-   * session died". A 401 on any of the four game routes (GET/POST/PATCH/
-   * DELETE) means `resolveGameOwner` refused a presented-but-dead token
-   * (server.ts) — clears it here so the header flips to signed-out and the
-   * #158 sign-in invitation can show; returns whether it fired so each call
-   * site can also drive its own UI (a banner's needsAuth flag, an emptied
-   * list, an alert).
+   * WHERE THE DEAD-SESSION RULE LIVES NOW (STRUCT-DESKTOP-19).
    *
-   * OPUS-REVIEW-DESKTOP16 N3: before this, only POST/PATCH/DELETE checked
-   * `res.status === 401` themselves (three separate inline copies), and GET
-   * (`refetchUserGames`) did not check it at all — a dead token left the
-   * list showing the account's last-loaded rows and the header still
-   * `@username` until the next write. All four now route through here so a
-   * future 401 handler cannot forget to clear the token or diverge on which
-   * status counts.
+   * It used to be this component's `handleDeadSessionResponse(res,
+   * requestToken)`, which each account-scoped call site had to remember to
+   * call — and every round found the site that had not:
+   * RED-DESKTOP-16/001 (GET had no check at all), CodeRabbit on #163 (a 401
+   * for an OLD token cleared the CURRENT one), RED-DESKTOP-18/001 (DELETE
+   * acted on a previous context's response), RED-DESKTOP-19/001 (adopt-local
+   * never called it), STRUCT-DESKTOP-19/001 (`/api/auth/me` treated EVERY
+   * failure as a dead session and DELETED the stored token), and
+   * STRUCT-DESKTOP-19/002 (a second, weaker copy in the menu drawer).
    *
-   * CodeRabbit on #163 (src/App.tsx:466): a request sent under token A that
-   * comes back 401 AFTER the app has already moved on to a DIFFERENT,
-   * CURRENTLY VALID token B (re-authenticated while A's request was still in
-   * flight) must not clear B — A's own guards (the GET `seq` ref, POST/
-   * PATCH's session refs) only protect against a NEWER same-route request
-   * clobbering state, not against a token rotation with no such request in
-   * flight. `requestToken` is the token the CALLER actually attached to
-   * THIS fetch (captured before it went out, not read again afterward,
-   * which would just see the CURRENT value); the token is only cleared when
-   * it still matches what is now committed.
+   * A rule a caller can forget is not a rule. It now lives in
+   * `src/utils/apiClient.ts`, which owns the URL, the credential, the
+   * deadline, the body read and the verdict, and hands each call site a
+   * result it did not compute: `stale`, `sessionDied`, `sessionCleared`.
+   * `src/apiclient.contract.test.ts` fails the build if a request outside
+   * that module attaches a credential.
+   *
+   * Stable for the life of the component: every moving part is read through a
+   * ref at request time, so `api` can sit in a `useCallback` dependency list
+   * without re-creating the callback on every render (which would re-fire the
+   * effects that depend on it).
    */
-  const handleDeadSessionResponse = (res: Response, requestToken: string | null): boolean => {
-    const wasAuthFailure = res.status === 401;
-    if (wasAuthFailure && authTokenRef.current === requestToken) updateAuthToken(null);
-    return wasAuthFailure;
-  };
+  const getApiUrlRef = useRef(getApiUrl);
+  useLayoutEffect(() => { getApiUrlRef.current = getApiUrl; });
+  const updateAuthTokenRef = useRef(updateAuthToken);
+  useLayoutEffect(() => { updateAuthTokenRef.current = updateAuthToken; });
+  const api = useMemo(() => createAccountApi({
+    getApiUrl: (p) => getApiUrlRef.current(p),
+    currentToken: () => authTokenRef.current,
+    currentGen: () => gamesContextGenRef.current,
+    clearSession: () => updateAuthTokenRef.current(null),
+    fetchWithTimeout,
+  }), []);
 
   const handleSwitchDbMode = (mode: 'local' | 'cloud') => {
     setDbMode(mode);
@@ -874,25 +877,40 @@ export default function App() {
 
   // Fetch Session User and Games
   useEffect(() => {
-    if (authToken) {
-      fetch(getApiUrl('/api/auth/me'), {
-        headers: { 'Authorization': `Bearer ${authToken}` }
-      })
-        .then((res) => {
-          if (res.ok) return res.json();
-          throw new Error('Session invalid');
-        })
-        .then((data) => {
-          setUser(data);
-        })
-        .catch(() => {
-          updateAuthToken(null);
-          setUser(null);
-        });
-    } else {
+    if (!authToken) { setUser(null); return; }
+    let cancelled = false;
+    void (async () => {
+      const res = await api.request('/api/auth/me');
+      if (cancelled || res.stale) return;
+      // `dataParsed` matters as much as `ok`: a 200 whose body did not parse
+      // (a captive portal's HTML, a truncated response) would commit `{}` as
+      // the signed-in identity and render a user with no name. Save and Edit
+      // have always required both; so does this (CodeRabbit CLI on this branch).
+      if (res.ok && res.dataParsed) { setUser(res.data); return; }
+      // Either way the identity is unconfirmed, so nothing may keep claiming
+      // one: a database-mode switch re-runs this probe with a DIFFERENT stored
+      // token, and leaving `user` set would show the previous account's name in
+      // the header under the new session's credential.
       setUser(null);
-    }
-  }, [authToken, dbMode, apiBaseUrl]);
+      if (res.sessionDied) return;
+      /**
+       * STRUCT-DESKTOP-19/001: everything that is NOT a 401 lands here, and
+       * before this fix it ran `updateAuthToken(null)` — which does not merely
+       * forget the token, it DELETES it from localStorage. So a transient 503
+       * while the backend redeployed, or one launch of the desktop app in
+       * cloud mode with no network (the shell is served by the app's own local
+       * server, so it loads fine while `/api/auth/me` cannot be reached),
+       * signed the user out permanently: the credential was gone when
+       * connectivity came back. The sibling route has said the right thing
+       * since #142 — "a failed request is not an empty library" — and the same
+       * holds of the credential itself. An unverifiable session is kept, not
+       * destroyed; `user` stays unset until a launch that can actually reach
+       * the server, so nothing downstream claims an identity we did not
+       * confirm. Harness: `_gen/d19a2-cloudmode-offline-session-loss.mjs`.
+       */
+    })();
+    return () => { cancelled = true; };
+  }, [authToken, dbMode, apiBaseUrl, api]);
 
   /**
    * RED-APP-9/001: a 404 from PATCH/DELETE /api/games/:id (another tab,
@@ -909,19 +927,22 @@ export default function App() {
     if (!localGamesOffer || localGamesBusy) return;
     setLocalGamesBusy(true);
     setLocalGamesError('');
-    // Bounded like the report request (RED-APP-6/003): a stalled connection
-    // must not leave the dialog's buttons disabled forever (CodeRabbit on #132).
-    const controller = new AbortController();
     const requestToken = localGamesOffer.token;
-    const { promise, clear } = fetchWithTimeout(getApiUrl('/api/games/adopt-local'), {
-      method: 'POST',
-      // The token travels explicitly: this runs right after sign-in, before the
-      // authToken state (and authHeaders()) is guaranteed to have caught up.
-      headers: { 'Authorization': `Bearer ${requestToken}` },
-    }, controller);
     try {
-      const res = await promise;
-      const data = await res.json().catch(() => ({}));
+      // Bounded like the report request (RED-APP-6/003): a stalled connection
+      // must not leave the dialog's buttons disabled forever (CodeRabbit on
+      // #132) — the client owns the deadline and the body read. The token
+      // travels explicitly: this runs right after sign-in, before the
+      // authToken state is guaranteed to have caught up.
+      const res = await api.request('/api/games/adopt-local', { method: 'POST', token: requestToken });
+      if (res.stale) return;
+      if (res.kind !== 'response') {
+        setLocalGamesError(res.kind === 'timeout'
+          ? 'The server did not answer in time. Your games are still on this device.'
+          : 'Connection error. Your games are still on this device.');
+        return;
+      }
+      const data = res.data;
       if (!res.ok) {
         // RED-DESKTOP-19/001: this was the one account-scoped route that never
         // told the shared dead-session helper about its 401, so a session the
@@ -933,12 +954,12 @@ export default function App() {
         // (the user signed in again while this request was in flight) is stale —
         // the helper leaves the new session alone, and so must this branch:
         // only the offer that still carries THIS request's token is closed.
-        // Decided BEFORE the helper runs: `updateAuthToken(null)` reaches
-        // `authTokenRef` on the next render, not synchronously, so a
-        // comparison after the call reads the same value either way.
-        const wasCurrent = authTokenRef.current === requestToken;
-        if (handleDeadSessionResponse(res, requestToken)) {
-          if (wasCurrent) {
+        // STRUCT-DESKTOP-19: `sessionCleared` IS "the 401 was for the token
+        // that is still committed" — the client decides it before it clears,
+        // so this branch no longer has to reason about when `authTokenRef`
+        // catches up.
+        if (res.sessionDied) {
+          if (res.sessionCleared) {
             setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));
             setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);
           }
@@ -955,12 +976,7 @@ export default function App() {
       setLogEntries(prev => [...prev, `✓ Moved ${moved} saved game${moved === 1 ? '' : 's'} from this device into your account.`]);
       setLocalGamesOffer(null);
       await refetchUserGames();
-    } catch (err) {
-      setLocalGamesError(err instanceof DOMException && err.name === 'AbortError'
-        ? 'The server did not answer in time. Your games are still on this device.'
-        : 'Connection error. Your games are still on this device.');
     } finally {
-      clear();
       setLocalGamesBusy(false);
     }
   };
@@ -972,26 +988,33 @@ export default function App() {
     // not overwrite the current list with the other database's rows
     // (CodeRabbit, RED-DESKTOP-10/001 review).
     const seq = ++gamesFetchSeqRef.current;
-    // CodeRabbit on #163: the token THIS request is actually attached to,
-    // captured before the fetch — not re-read afterward, which would just
-    // see whatever is current by then.
-    const requestToken = authToken;
     try {
-      const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });
+      // STRUCT-DESKTOP-19: the token this request attaches, the dead-session
+      // rule and the stale-context rule all live in the client now
+      // (src/utils/apiClient.ts) — this site states only what the LIST does.
+      const res = await api.request('/api/games');
+      if (res.stale) return undefined;
       // OPUS-REVIEW-DESKTOP16 N3: a 401 here means the session died (dead
       // token) — unlike a transient 500 (the #142 guard right below, which
       // must NOT wipe the list), a dead session's list genuinely is not this
       // identity's any more, so it is cleared, not left stale. Guarded by
       // `seq` like the success path, so a stale late 401 can't clobber a
       // newer request's still-in-flight result.
-      if (handleDeadSessionResponse(res, requestToken)) {
+      // `unauthorized`, not `sessionDied`: on the desktop this request often
+      // attaches no token at all, and a 401 there still means these rows are
+      // not this caller's to show.
+      if (res.unauthorized) {
         if (seq === gamesFetchSeqRef.current) setUserCustomGames([]);
         return undefined;
       }
       // A failed request is not an empty library (CodeRabbit on #142): a
       // transient 500 during the 409 recovery must not wipe the saved list.
-      if (!res.ok) return undefined;
-      const rows = await res.json();
+      // `kind !== 'response'` (offline, timeout) is the same story.
+      // Same rule for the library, and one more: `res.data` is `{}` when the
+      // body did not parse, and committing that replaces the ARRAY every
+      // renderer maps over (CodeRabbit CLI on this branch).
+      if (!res.ok || !res.dataParsed || !Array.isArray(res.data)) return undefined;
+      const rows = res.data;
       if (seq !== gamesFetchSeqRef.current) return undefined;
       setUserCustomGames(rows);
       // RED-REGEN-8/002: the 409 branch needs the FRESH row right away, not
@@ -1004,7 +1027,7 @@ export default function App() {
     }
     // dbMode: a desktop database switch can keep the same token and base URL
     // while changing where /api/games resolves (CodeRabbit, #119).
-  }, [authToken, apiBaseUrl, dbMode, canOwnGames]);
+  }, [authToken, apiBaseUrl, dbMode, canOwnGames, api]);
 
   useEffect(() => {
     if ((authToken && user) || localOwnerMode) {
@@ -2412,20 +2435,29 @@ export default function App() {
     // might make, so `finally` sees the same verdict as the response branch.
     const editSessionAtSubmit = editSessionRef.current;
     let staleSession = false;
-    // CodeRabbit on #163: the token THIS request is actually attached to.
-    const requestToken = authToken;
     try {
-      const res = await fetch(getApiUrl(`/api/games/${editGameId}`), {
+      // STRUCT-DESKTOP-19: one client owns the credential, the deadline, the
+      // body read and the session verdict; this site owns only the dialog's
+      // own staleness (a close/reopen is a new session) and what each status
+      // means for the FORM.
+      const res = await api.request(`/api/games/${editGameId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         // Only the fields that CHANGED since the dialog opened (RED-APP-10/001);
         // a cleared field is a change and goes out as '' under allowClear.
         // cleanText, not .trim() alone: RED-PUBLIC D (src/utils/textSafety.ts).
-        body: JSON.stringify(editPatchBody),
+        json: editPatchBody,
+        isStale: () => editSessionRef.current !== editSessionAtSubmit,
       });
-      const data = await res.json();
-      staleSession = editSessionRef.current !== editSessionAtSubmit;
+      staleSession = res.stale;
       if (staleSession) return;
+      // No response at all, or a success whose body did not parse: the same
+      // story the pre-client `catch` told, and never a session verdict.
+      if (res.kind !== 'response' || (res.ok && !res.dataParsed)) {
+        setEditError('Network error. Failed to update game.');
+        setEditErrorNeedsAuth(false);
+        return;
+      }
+      const data = res.data;
       if (res.ok) {
         // A successful PATCH only ever happens signed in for real — resolves
         // any dead-session state this dialog was carrying.
@@ -2561,10 +2593,14 @@ export default function App() {
         // RED-DESKTOP-15/001: the invitation render now follows THIS actual
         // 401, not `!authToken` — a local owner's token is always falsy, so
         // that predicate fired for every failure reason, not just this one.
-        // OPUS-REVIEW-DESKTOP16 N3: routed through the shared helper (also
-        // used by GET/POST/DELETE) so the token-clearing logic lives in ONE
-        // place.
-        const wasAuthFailure = handleDeadSessionResponse(res, requestToken);
+        // OPUS-REVIEW-DESKTOP16 N3 / STRUCT-DESKTOP-19: the verdict comes from
+        // the ONE client, which already applied the stale-token rule and
+        // cleared the session if that was the right thing to do.
+        // `unauthorized`, not `sessionDied`: the gate asks whether the SERVER
+        // demanded an account, which it does whether or not this request
+        // carried a token — a signed-out desktop user's 401 must still offer
+        // the way in (e2e §78's close-and-reopen block).
+        const wasAuthFailure = res.unauthorized;
         setEditError(data.error || 'Failed to update game.');
         setEditErrorNeedsAuth(wasAuthFailure);
         // OPUS-REVIEW-DESKTOP17 F1: the gate reads THIS, never reset by a
@@ -2572,6 +2608,7 @@ export default function App() {
         if (wasAuthFailure) setDeadSession('edit');
       }
     } catch {
+      // Defensive net: the client reports a connection failure, never throws.
       staleSession = editSessionRef.current !== editSessionAtSubmit;
       if (staleSession) return;
       setEditError('Network error. Failed to update game.');
@@ -2609,14 +2646,11 @@ export default function App() {
     if (deletingGamesRef.current.has(gameId)) return;
     deletingGamesRef.current.add(gameId);
     setDeletingGameIds(Array.from(deletingGamesRef.current));
-    // CodeRabbit on #163: the token THIS request is actually attached to.
-    const requestToken = authToken;
-    const requestGen = gamesContextGenRef.current;
     try {
-      const res = await fetch(getApiUrl(`/api/games/${gameId}`), {
-        method: 'DELETE',
-        headers: authHeaders()
-      });
+      // STRUCT-DESKTOP-19: the client captures the token AND the request
+      // context before the fetch, reads the body, and only then reports
+      // `stale` — so this handler no longer keeps its own copies of either.
+      const res = await api.request(`/api/games/${gameId}`, { method: 'DELETE' });
       // RED-DESKTOP-18/001: a DELETE that was in flight under a PREVIOUS
       // context (the user signed out and back in as a different account, or
       // switched database mode, while it was held) is not this context's
@@ -2627,7 +2661,11 @@ export default function App() {
       // current account's list; a 404 there would load the other mode's
       // rows. Discard it outright, exactly as Save/Edit skip a stale-session
       // response; `finally` still releases the row's deleting state.
-      if (gamesContextGenRef.current !== requestGen) return;
+      if (res.stale) return;
+      if (res.kind !== 'response') {
+        alert('Network error. Failed to delete game. Check your connection and try again.');
+        return;
+      }
       if (res.ok) {
         setUserCustomGames(prev => prev.filter(g => g.id !== gameId));
         if (activePreset === gameId) {
@@ -2657,24 +2695,20 @@ export default function App() {
         // used by GET/POST/PATCH); the server now answers this case with the
         // same "Invalid or expired session." wording the other three routes
         // use (server.ts's DELETE handler, was "Unauthorized access.").
-        // The body read is a second await: the context can move on between
-        // the response and its body (CodeRabbit CLI on the fix) — so read it,
-        // re-check, and only THEN act. OPUS-REVIEW-169/A: the helper itself
-        // moves the generation on a same-account dead session (it clears the
-        // token, and the token is a dependency of the generation), so no gate
-        // may follow it — with the gate after the helper, the legitimate
-        // "Invalid or expired session." alert never showed.
-        const data = await res.json().catch(() => ({}));
-        if (gamesContextGenRef.current !== requestGen) return;
-        handleDeadSessionResponse(res, requestToken);
-        alert(data.error || 'Failed to delete game.');
+        // STRUCT-DESKTOP-19: the client reads the body BEFORE judging
+        // staleness (the context can move on during that second await —
+        // CodeRabbit CLI on #169's fix) and applies the dead-session rule
+        // only after that gate, which is exactly the ordering
+        // OPUS-REVIEW-169/A required: a gate placed AFTER the token is
+        // cleared can never fire, and the legitimate "Invalid or expired
+        // session." alert then never showed.
+        alert(res.data.error || 'Failed to delete game.');
       }
     } catch {
       // RED-APP-10/003: offline, the click used to do nothing visible at all.
-      // The alert IS the report (no console noise: Save/Edit report the same way).
-      // A network failure of a request from a previous context is not this
-      // context's to report either.
-      if (gamesContextGenRef.current !== requestGen) return;
+      // The alert IS the report (no console noise: Save/Edit report the same
+      // way) — the client reports a connection failure rather than throwing,
+      // so this is now a defensive net for an unexpected throw above.
       alert('Network error. Failed to delete game. Check your connection and try again.');
     } finally {
       deletingGamesRef.current.delete(gameId);
@@ -2878,13 +2912,16 @@ export default function App() {
     // branch's own `saveRequestIdRef.current = null` (below) cannot flip
     // this verdict for `finally`.
     let staleSession = false;
-    // CodeRabbit on #163: the token THIS request is actually attached to.
-    const requestToken = authToken;
+    // OPUS-REVIEW-DESKTOP17 F1/N2 reads this below: the token the request
+    // ACTUALLY attached, reported back by the client rather than re-read.
+    let requestToken: string | null = null;
     try {
-      const res = await fetch(getApiUrl('/api/games'), {
+      const res = await api.request('/api/games', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({
+        // `saveRequestIdRef` is reset on every fresh open (and on success), so
+        // a mismatch means this response belongs to a session already gone.
+        isStale: () => saveRequestIdRef.current !== clientRequestId,
+        json: {
           // cleanText, not .trim() alone: RED-PUBLIC D — see the matching
           // comment in handleEditGameSubmit above.
           name: cleanText(saveName),
@@ -2899,14 +2936,19 @@ export default function App() {
           colorTermsA: saveTerms.a,
           colorTermsB: saveTerms.b,
           clientRequestId
-        })
+        },
       });
-      const data = await res.json();
-      // `saveRequestIdRef` is reset on every fresh open (and on success), so
-      // a mismatch here means this response belongs to a session that is
-      // already gone; touch nothing.
-      staleSession = saveRequestIdRef.current !== clientRequestId;
+      requestToken = res.requestToken;
+      staleSession = res.stale;
       if (staleSession) return;
+      // No response at all, or a success whose body did not parse: the same
+      // story the pre-client `catch` told, and never a session verdict.
+      if (res.kind !== 'response' || (res.ok && !res.dataParsed)) {
+        setSaveError('Network error. Failed to save game.');
+        setSaveErrorNeedsAuth(false);
+        return;
+      }
+      const data = res.data;
       if (res.ok) {
         // A successful POST only ever happens signed in for real, or via the
         // explicit device choice — resolves any dead-session state this
@@ -2969,17 +3011,22 @@ export default function App() {
         // not `!authToken` — a local owner's token is always falsy, so that
         // predicate fired for every failure reason (network, validation),
         // not just an expired session.
-        // OPUS-REVIEW-DESKTOP16 N3: routed through the shared helper (also
-        // used by GET/PATCH/DELETE) so the token-clearing logic lives in ONE
-        // place.
-        const wasAuthFailure = handleDeadSessionResponse(res, requestToken);
+        // OPUS-REVIEW-DESKTOP16 N3 / STRUCT-DESKTOP-19: the verdict comes
+        // from the ONE client, which already applied the stale-token rule and
+        // cleared the session if that was the right thing to do.
+        // `unauthorized`, not `sessionDied`: the gate asks whether the SERVER
+        // demanded an account, which it does whether or not this request
+        // carried a token — a signed-out desktop user's 401 must still offer
+        // the way in (e2e §78's close-and-reopen block).
+        const wasAuthFailure = res.unauthorized;
         setSaveError(data.error || 'Failed to save game.');
         setSaveErrorNeedsAuth(wasAuthFailure);
         // OPUS-REVIEW-DESKTOP17 F1: the gate reads THIS, never reset by a
         // later validation branch the way saveErrorNeedsAuth is.
         if (wasAuthFailure) setDeadSession('save');
       }
-    } catch (err) {
+    } catch {
+      // Defensive net: the client reports a connection failure, never throws.
       staleSession = saveRequestIdRef.current !== clientRequestId;
       if (staleSession) return;
       setSaveError('Network error. Failed to save game.');
@@ -7039,7 +7086,7 @@ export default function App() {
         onClose={() => setIsMenuOpen(false)}
         user={user}
         authToken={authToken}
-        updateAuthToken={updateAuthToken}
+        api={api}
         canOwnGames={canOwnGames}
         userCustomGames={userCustomGames}
         deletingGameIds={deletingGameIds}
