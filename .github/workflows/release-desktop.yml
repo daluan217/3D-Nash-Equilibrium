@@ -24,10 +24,14 @@ on:
     branches: [main]   # see deploy-site.yml — filters noise, the `if:` gates
   workflow_dispatch:
 
-# Only one release build at a time; newer pushes cancel in-flight ones.
+# Only one release build at a time. A newer push QUEUES behind an in-flight
+# release instead of cancelling it (CodeRabbit on #176, twice): the publish
+# step is two GCS writes — the fixed-name DMG, then app-version.json — and a
+# cancel between them leaves a DMG newer than the manifest says. The
+# duplicate-version guard then makes the queued run refuse the same version.
 concurrency:
   group: release-desktop
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
