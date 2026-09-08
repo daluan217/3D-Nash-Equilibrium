@@ -28,13 +28,27 @@
  */
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { createAccountApi, describeRequestFailure, type AccountApiDeps, type AccountResponse } from './utils/apiClient';
+import { createAccountApi, describeRequestFailure, ACCOUNT_REQUEST_TIMEOUT_MS, type AccountApiDeps, type AccountResponse } from './utils/apiClient';
+import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from './utils/fetchTimeout';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
   if (ok) console.log(`  ✓ ${name}`);
   else { console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`); failures++; }
 };
+
+/**
+ * Drop whole-line comments. A comment is not code, and App.tsx's own prose
+ * mentions `res.status === 401` while explaining why that check moved into the
+ * client — scanning raw text would flag the explanation of the fix. Only lines
+ * that are ENTIRELY a comment are removed, so a `//` inside a URL literal is
+ * never touched.
+ */
+function codeOnly(src: string): string {
+  return src.split('\n')
+    .map((l) => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l))
+    .join('\n');
+}
 
 // ───────────────────────── Part A — the rule, executed ─────────────────────
 
@@ -47,6 +61,7 @@ interface Harness {
   cleared: () => boolean;
   lastInit: () => RequestInit | null;
   lastUrl: () => string | null;
+  lastTimeout: () => number | undefined;
   setCommitted: (t: string | null) => void;
   bumpGen: () => void;
   /** Bump the generation the instant the body is read — models the context
@@ -60,14 +75,15 @@ function harness(transport: Transport, committed: string | null, build = createA
   let bumpDuringBody = false;
   let lastInit: RequestInit | null = null;
   let lastUrl: string | null = null;
+  let lastTimeout: number | undefined;
   let token = committed;
   const deps: AccountApiDeps = {
     getApiUrl: (p) => `http://server${p}`,
     currentToken: () => token,
     currentGen: () => gen,
     clearSession: () => { cleared = true; token = null; },
-    fetchWithTimeout: (url, init) => {
-      lastUrl = url; lastInit = init;
+    fetchWithTimeout: (url, init, _c, timeoutMs) => {
+      lastUrl = url; lastInit = init; lastTimeout = timeoutMs;
       if (transport.kind === 'reject') return { promise: Promise.reject(transport.error), clear: () => {} };
       const body = transport.bodyText !== undefined ? transport.bodyText : JSON.stringify(transport.body ?? {});
       const res = new Response(body, { status: transport.status, headers: { 'Content-Type': 'application/json' } });
@@ -88,6 +104,7 @@ function harness(transport: Transport, committed: string | null, build = createA
     cleared: () => cleared,
     lastInit: () => lastInit,
     lastUrl: () => lastUrl,
+    lastTimeout: () => lastTimeout,
     setCommitted: (t) => { token = t; },
     bumpGen: () => { gen += 1; },
     bumpGenDuringBodyRead: (on) => { bumpDuringBody = on; },
@@ -198,6 +215,36 @@ for (const c of CASES) {
   check('a GET without a body sets no Content-Type', !('Content-Type' in hdr2));
 }
 
+/**
+ * REGRESSION PROBE (STRUCT-DESKTOP-19, self-caught before the single push).
+ *
+ * Routing the games routes through `fetchWithTimeout` gave them a deadline they
+ * never had — and if that deadline were the caller's DEFAULT, it would be
+ * App.tsx's `REPORT_FETCH_TIMEOUT_MS`, which CI's e2e bundle compiles down to
+ * 5 s (`VITE_E2E_FETCH_TIMEOUT_MS: '5000'` in .github/workflows/test.yml) so two
+ * report-stall tests need not each wait 22 real seconds. Every save, edit,
+ * delete and list in CI would then abort after 5 s on a loaded runner, while the
+ * server had already done the write. The client passes its OWN number on every
+ * request instead, so that knob cannot reach an account route.
+ */
+{
+  const h = harness({ kind: 'status', status: 200 }, 'tok-A');
+  await h.api.request('/api/games');
+  check('an account request carries an explicit deadline (never "whatever the caller defaults to")',
+    typeof h.lastTimeout() === 'number', String(h.lastTimeout()));
+  check('that deadline is the constant, not the CI-overridable report timeout',
+    h.lastTimeout() === ACCOUNT_REQUEST_TIMEOUT_MS && ACCOUNT_REQUEST_TIMEOUT_MS === DEFAULT_REPORT_FETCH_TIMEOUT_MS
+    && ACCOUNT_REQUEST_TIMEOUT_MS === 22_000, `${h.lastTimeout()} / ${ACCOUNT_REQUEST_TIMEOUT_MS}`);
+  const h2 = harness({ kind: 'status', status: 200 }, 'tok-A');
+  await h2.api.request('/api/games', { timeoutMs: 1234 });
+  check('a caller may still name its own deadline', h2.lastTimeout() === 1234, String(h2.lastTimeout()));
+  const client = readFileSync('src/utils/apiClient.ts', 'utf8');
+  check('the client never reads the CI-overridable variable itself',
+    !/VITE_E2E_FETCH_TIMEOUT_MS|import\.meta\.env/.test(codeOnly(client)));
+  check('fixture: omitting the explicit deadline would hand the request the caller\'s default',
+    /init\.timeoutMs \?\? ACCOUNT_REQUEST_TIMEOUT_MS,/.test(client));
+}
+
 // User-facing copy for a request that never produced a response — the browser's
 // own text must never reach the user (STRUCT-DESKTOP-19/002).
 {
@@ -276,19 +323,6 @@ function browserSources(): Array<{ path: string; src: string }> {
   };
   walk('src');
   return out;
-}
-
-/**
- * Drop whole-line comments. A comment is not code, and App.tsx's own prose
- * mentions `res.status === 401` while explaining why that check moved into the
- * client — scanning raw text would flag the explanation of the fix. Only lines
- * that are ENTIRELY a comment are removed, so a `//` inside a URL literal is
- * never touched.
- */
-function codeOnly(src: string): string {
-  return src.split('\n')
-    .map((l) => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l))
-    .join('\n');
 }
 
 /**

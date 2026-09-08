@@ -43,6 +43,23 @@
  * appears that has not been classified as authenticated or not.
  */
 
+import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from './fetchTimeout';
+
+/**
+ * The deadline every account request gets unless its caller names another.
+ *
+ * It is the CONSTANT, deliberately — not App.tsx's `REPORT_FETCH_TIMEOUT_MS`,
+ * which CI's e2e bundle compiles down to 5 s (`VITE_E2E_FETCH_TIMEOUT_MS`) so
+ * two report-stall tests need not each wait 22 real seconds. Before this
+ * client, the games routes used a bare `fetch` with no bound at all, so that
+ * knob could not reach them; routing them through `fetchWithTimeout` without
+ * an explicit value would have handed every save, edit, delete and list in CI
+ * a 5-second deadline on a loaded runner — a request that timed out while the
+ * server had already written. The account client passes its own number every
+ * time, so the report knob cannot reach it.
+ */
+export const ACCOUNT_REQUEST_TIMEOUT_MS = DEFAULT_REPORT_FETCH_TIMEOUT_MS;
+
 /** What the caller must supply once, from the component that owns the state. */
 export interface AccountApiDeps {
   /** Resolves a path against the server this context talks to. */
@@ -74,7 +91,7 @@ export interface AccountRequestInit {
    * Authorization header at all (the desktop's local owner).
    */
   token?: string | null;
-  /** Abort after this many ms. Omit for the caller's default deadline. */
+  /** Abort after this many ms. Omit for ACCOUNT_REQUEST_TIMEOUT_MS. */
   timeoutMs?: number;
   /**
    * An ADDITIONAL staleness test for a caller that owns a narrower session
@@ -146,7 +163,7 @@ export function createAccountApi(deps: AccountApiDeps): AccountApi {
         ...(init.json !== undefined ? { body: JSON.stringify(init.json) } : {}),
       },
       controller,
-      init.timeoutMs,
+      init.timeoutMs ?? ACCOUNT_REQUEST_TIMEOUT_MS,
     );
 
     const base = { requestToken, sessionDied: false, sessionCleared: false } as const;

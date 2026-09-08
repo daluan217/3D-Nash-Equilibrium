@@ -754,8 +754,10 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     check('/api/auth/me goes through the client', /await api\.request\('\/api\/auth\/me'\)/.test(slice));
     check('/api/auth/me no longer treats a non-401 failure as a dead session (no updateAuthToken(null) anywhere in it)',
       !/updateAuthToken\(/.test(codeOnly(slice)), codeOnly(slice).replace(/\s+/g, ' ').slice(0, 200));
-    check('/api/auth/me clears the user only on the client\'s own dead-session verdict',
-      /if \(res\.sessionDied\) \{ setUser\(null\); return; \}/.test(slice));
+    check('/api/auth/me stops claiming an identity it could not confirm, whatever the failure was',
+      /setUser\(null\);\s*if \(res\.sessionDied\) return;/.test(slice));
+    check('/api/auth/me sets the user ONLY from a response it accepted',
+      /if \(res\.ok\) \{ setUser\(res\.data\); return; \}/.test(slice));
     check('/api/auth/me ignores a stale response', /if \(cancelled \|\| res\.stale\) return;/.test(slice));
   }
 

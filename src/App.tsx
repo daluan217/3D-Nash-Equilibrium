@@ -882,7 +882,12 @@ export default function App() {
       const res = await api.request('/api/auth/me');
       if (cancelled || res.stale) return;
       if (res.ok) { setUser(res.data); return; }
-      if (res.sessionDied) { setUser(null); return; }
+      // Either way the identity is unconfirmed, so nothing may keep claiming
+      // one: a database-mode switch re-runs this probe with a DIFFERENT stored
+      // token, and leaving `user` set would show the previous account's name in
+      // the header under the new session's credential.
+      setUser(null);
+      if (res.sessionDied) return;
       /**
        * STRUCT-DESKTOP-19/001: everything that is NOT a 401 lands here, and
        * before this fix it ran `updateAuthToken(null)` — which does not merely
