@@ -5,7 +5,10 @@
  *   npx tsx src/generatenote.test.ts
  */
 import { readFileSync } from 'node:fs';
-import { generateNote, highlightsRemovedClause, type GenerateOutcome, type EquilibriumKind } from './utils/generateNote';
+import {
+  generateNote, highlightsRemovedClause, keptFieldsOf, keptList,
+  type GenerateResult, type KeptFields, type EquilibriumKind,
+} from './utils/generateNote';
 
 let failures = 0;
 let cases = 0;
@@ -14,13 +17,17 @@ function check(name: string, cond: boolean, detail = ''): void {
   if (!cond) { console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`); failures++; }
 }
 
-const OUTCOMES: GenerateOutcome[] = ['filled', 'kept', 'unavailable'];
+const ALL_KEPT: KeptFields = { name: true, desc: true, labels: true, terms: true };
+/** The three outcomes, each with the payload its sentence needs. */
+const OUTCOMES: GenerateResult[] = [
+  { outcome: 'filled' }, { outcome: 'kept', kept: ALL_KEPT }, { outcome: 'unavailable' },
+];
 const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
 
 // ── 1. THE defect: a click that removes highlights must say so ───────────────
 {
-  const silent = generateNote('pure', 'filled', 0);
-  const spoken = generateNote('pure', 'filled', 1);
+  const silent = generateNote('pure', { outcome: 'filled' }, 0);
+  const spoken = generateNote('pure', { outcome: 'filled' }, 1);
   check('STRUCT-REGEN-19/006: a Generate that removed a highlight does not print the note for one that removed none',
     silent !== spoken, JSON.stringify(silent));
   check('STRUCT-REGEN-19/006: the note names what was removed',
@@ -35,9 +42,9 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
   // to prevent.
   for (const o of OUTCOMES) {
     for (const k of KINDS) {
-      check(`${k}/${o}: two removed highlights are reported`,
+      check(`${k}/${o.outcome}: two removed highlights are reported`,
         /2 colour highlights/.test(generateNote(k, o, 2)), generateNote(k, o, 2));
-      check(`${k}/${o}: none removed means no removal clause at all`,
+      check(`${k}/${o.outcome}: none removed means no removal clause at all`,
         !/went with the story/.test(generateNote(k, o, 0)), generateNote(k, o, 0));
     }
   }
@@ -72,11 +79,117 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
   // The 'kept' branch keeps EVERY field, chips included (verified live:
   // notes/STRUCT-REGEN-19/h5_run7_ctl_typed.log), so its sentence must say so —
   // the shipped one listed three fields and omitted the fourth.
-  const kept = generateNote('pure', 'kept', 0);
+  const kept = generateNote('pure', { outcome: 'kept', kept: ALL_KEPT }, 0);
   check('the "kept" note lists the colour highlights among what it kept',
     /colour highlights/.test(kept), kept);
   for (const field of ['name', 'description', 'option names']) {
     check(`the "kept" note still lists ${field}`, kept.includes(field), kept);
+  }
+}
+
+// ── 3b. STRUCT-REGEN-19/008: the kept note names ONLY what was kept ──────────
+{
+  const FIELDS: (keyof KeptFields)[] = ['name', 'desc', 'labels', 'terms'];
+  const PHRASE: Record<keyof KeptFields, string> = {
+    name: 'the name', desc: 'the description',
+    labels: 'the option names', terms: 'the colour highlights',
+  };
+  const subsets: KeptFields[] = [];
+  for (let m = 0; m < 16; m++) {
+    subsets.push({
+      name: !!(m & 1), desc: !!(m & 2), labels: !!(m & 4), terms: !!(m & 8),
+    });
+  }
+  // chipsRemoved = 0 throughout: the removal clause would otherwise put
+  // "colour highlight" into every sentence and the absence checks below could
+  // not fail for their own reason.
+  const note = (k: KeptFields) => generateNote('pure', { outcome: 'kept', kept: k }, 0);
+
+  // THE defect, stated as its own case: one option name typed and nothing else.
+  const oneField = note({ name: false, desc: false, labels: true, terms: false });
+  check('STRUCT-REGEN-19/008: with only an option name, the note does not claim a name',
+    !oneField.includes('the name'), oneField);
+  check('STRUCT-REGEN-19/008: …nor a description', !oneField.includes('the description'), oneField);
+  check('STRUCT-REGEN-19/008: …nor colour highlights', !oneField.includes('the colour highlights'), oneField);
+  check('STRUCT-REGEN-19/008: …and it does say the option names', oneField.includes('the option names'), oneField);
+  check('STRUCT-REGEN-19/008: with one field kept the instruction names it rather than "ALL of them"',
+    /Clear the option names to let/.test(oneField) && !/ALL of them/.test(oneField), oneField);
+
+  for (const k of subsets) {
+    const n = note(k);
+    const present = FIELDS.filter((f) => k[f]);
+    const absent = FIELDS.filter((f) => !k[f]);
+    const tag = present.join('+') || 'nothing';
+    check(`${tag}: every kept field is named`, present.every((f) => n.includes(PHRASE[f])), n);
+    check(`${tag}: no field the user did not have is named`, absent.every((f) => !n.includes(PHRASE[f])), n);
+    if (present.length === 0) {
+      check('nothing kept: the sentence lists nothing and does not say "Kept"', !/Kept /.test(n), n);
+    } else if (present.length === 1) {
+      check(`${tag}: the instruction repeats the noun instead of pronominalising it`,
+        n.includes(`Clear ${PHRASE[present[0]]} to let`), n);
+    } else {
+      check(`${tag}: two or more kept -> "ALL of them (not just one)"`, /ALL of them \(not just one\)/.test(n), n);
+      check(`${tag}: the list is joined with "and" before the last item`,
+        n.includes(` and ${PHRASE[present[present.length - 1]]} you'd already added`), n);
+    }
+  }
+  check('the four phrases are listed in a fixed order (name, description, option names, highlights)',
+    keptList(ALL_KEPT).join('|') === 'the name|the description|the option names|the colour highlights',
+    keptList(ALL_KEPT).join('|'));
+
+  // `keptFieldsOf` reads the form, and whitespace is not text the user "added".
+  const form = (o: Partial<{ name: string; desc: string; row1: string; a: string[] }>) => ({
+    name: o.name ?? '', desc: o.desc ?? '',
+    labels: { row1: o.row1 ?? '', row2: '', col1: '', col2: '' },
+    terms: { a: o.a ?? [], b: [] as string[] },
+  });
+  check('keptFieldsOf: an empty form kept nothing',
+    keptList(keptFieldsOf(form({}))).length === 0);
+  check('keptFieldsOf: a whitespace-only name is not a kept name',
+    keptFieldsOf(form({ name: '   ' })).name === false);
+  check('keptFieldsOf: a whitespace-only option name is not a kept option name',
+    keptFieldsOf(form({ row1: ' \t ' })).labels === false);
+  check('keptFieldsOf: one chip counts as kept highlights',
+    keptFieldsOf(form({ a: ['harbour ferry'] })).terms === true);
+  check('keptFieldsOf: a real name counts', keptFieldsOf(form({ name: 'My game' })).name === true);
+}
+
+// ── 3c. Mutants of the kept renderer — each killed by the probe that NAMES it ─
+{
+  type Render = (k: KeptFields) => string;
+  const real: Render = (k) => generateNote('pure', { outcome: 'kept', kept: k }, 0);
+  const ONE: KeptFields = { name: false, desc: false, labels: true, terms: false };
+  const TWO: KeptFields = { name: true, desc: false, labels: true, terms: false };
+  const NONE: KeptFields = { name: false, desc: false, labels: false, terms: false };
+  const probes: [string, (r: Render) => boolean][] = [
+    ['a field the user does not have is never named',
+      (r) => !r(ONE).includes('the name') && !r(ONE).includes('the description') && !r(TWO).includes('the description')],
+    ['every field the user does have is named',
+      (r) => r(TWO).includes('the name') && r(TWO).includes('the option names')],
+    ['one kept field: the instruction repeats the noun, never "ALL of them"',
+      (r) => /Clear the option names to let/.test(r(ONE)) && !/ALL of them/.test(r(ONE))],
+    ['nothing kept: no list and no "Kept"', (r) => !/Kept /.test(r(NONE))],
+  ];
+  for (const [name, p] of probes) check(`the real renderer satisfies "${name}"`, p(real));
+
+  const FIXED = 'New pure-strategy game is on the board. Kept the name, the description, the option names and the colour highlights you\'d already added — the AI wrote a scenario too, but didn\'t touch your text. Clear ALL of them (not just one) to let it fill them in on the next Generate.';
+  const mutants: [string, Render, string][] = [
+    ['M6 the enumeration goes back to a fixed four (the shipped defect)',
+      () => FIXED, 'a field the user does not have is never named'],
+    ['M7 only the FIRST kept field is listed',
+      (k) => real({ name: k.name, desc: false, labels: k.name ? false : k.labels, terms: false }),
+      'every field the user does have is named'],
+    ['M8 the instruction always says "ALL of them"',
+      (k) => real(k).replace(/Clear the [a-z ]+ to let the AI fill the form on the next Generate\./,
+        'Clear ALL of them (not just one) to let it fill them in on the next Generate.'),
+      'one kept field: the instruction repeats the noun, never "ALL of them"'],
+    ['M9 an empty KeptFields falls back to the fixed list',
+      (k) => (Object.values(k).some(Boolean) ? real(k) : FIXED), 'nothing kept: no list and no "Kept"'],
+  ];
+  for (const [label, fake, named] of mutants) {
+    const failed = probes.filter(([, p]) => !p(fake)).map(([n]) => n);
+    check(`${label} -> killed by "${named}"`, failed.includes(named),
+      failed.length === 0 ? 'NOT KILLED (the mutated renderer satisfied every probe)' : `killed instead by: ${failed.join('; ')}`);
   }
 }
 
@@ -88,7 +201,7 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
   // branch adds the chips the story itself is about to clear (see below). The
   // shape check is "the renderer, with the kind and one of the three outcomes";
   // the count is pinned separately, by its own check.
-  const rendered = app.match(/setGenerateNote\(renderGenerateNote\(generateKind, '(filled|kept|unavailable)',[\s\S]{0,200}?\)\)/g) || [];
+  const rendered = app.match(/setGenerateNote\(renderGenerateNote\(\s*generateKind, \{ outcome: '(filled|kept|unavailable)'[\s\S]{0,220}?\)\)/g) || [];
   const blanks = app.match(/setGenerateNote\(''\)/g) || [];
   check('every Generate note comes from the one renderer (or is a blank reset)',
     rendered.length + blanks.length === calls.length,
@@ -97,6 +210,16 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
     ['filled', 'kept', 'unavailable'].every((o) => rendered.some((r) => r.includes(`'${o}'`))));
   check('App.tsx must not build a Generate sentence itself',
     !/setGenerateNote\(`New \$\{/.test(app));
+  // STRUCT-REGEN-19/008: what the kept sentence may claim is read off the form
+  // model, live, at the moment the note is printed — a literal here would be a
+  // second copy of "what the user had", which is the defect itself.
+  check('the kept note asks the FORM MODEL what was kept',
+    /\{ outcome: 'kept', kept: keptFieldsOf\(saveFormRef\.current\) \}/.test(app),
+    "App.tsx must pass keptFieldsOf(saveFormRef.current), not a literal KeptFields");
+  check('fixture: that check rejects a hard-coded all-four payload',
+    !/\{ outcome: 'kept', kept: keptFieldsOf\(saveFormRef\.current\) \}/.test(
+      app.replace("{ outcome: 'kept', kept: keptFieldsOf(saveFormRef.current) }",
+        "{ outcome: 'kept', kept: { name: true, desc: true, labels: true, terms: true } }")));
   // The count is asked of the reducer, not re-derived — a second copy of that
   // decision is exactly how the note came to disagree with what happened.
   check('the removed-highlight count is computed by running the reducer itself',
@@ -110,10 +233,10 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
   // be reached with chips still on the form — the note must count those as well,
   // read from the live ref, or it undercounts and goes quiet again.
   check('the filled note counts the chips the story itself is about to clear, from the LIVE ref',
-    /renderGenerateNote\(generateKind, 'filled',\s*chipsRemoved \+ saveFormRef\.current\.terms\.a\.length \+ saveFormRef\.current\.terms\.b\.length\)\)/.test(app));
+    /renderGenerateNote\(generateKind, \{ outcome: 'filled' \},\s*chipsRemoved \+ saveFormRef\.current\.terms\.a\.length \+ saveFormRef\.current\.terms\.b\.length\)\)/.test(app));
   check('fixture: that check rejects the reconcile-time-only count',
-    !/renderGenerateNote\(generateKind, 'filled',\s*chipsRemoved \+ saveFormRef\.current\.terms\.a\.length \+ saveFormRef\.current\.terms\.b\.length\)\)/.test(
-      app.replace(/renderGenerateNote\(generateKind, 'filled',[\s\S]*?\)\);/, "renderGenerateNote(generateKind, 'filled', chipsRemoved));")));
+    !/renderGenerateNote\(generateKind, \{ outcome: 'filled' \},\s*chipsRemoved \+ saveFormRef\.current\.terms\.a\.length \+ saveFormRef\.current\.terms\.b\.length\)\)/.test(
+      app.replace(/renderGenerateNote\(generateKind, \{ outcome: 'filled' \},[\s\S]*?\)\);/, "renderGenerateNote(generateKind, { outcome: 'filled' }, chipsRemoved));")));
 }
 
 // ── 5. Mutants — each must break the check that NAMES it, not some other ─────
@@ -151,4 +274,4 @@ if (failures > 0) {
   console.error(`\n✗ ${failures} failure(s) of ${cases} checks`);
   process.exit(1);
 }
-console.log(`✓ generatenote.test.ts: ${cases} checks — one renderer for three outcomes, number agreement 1..12, App.tsx builds no sentence of its own, 5 mutants rejected`);
+console.log(`✓ generatenote.test.ts: ${cases} checks — one renderer for three outcomes, number agreement 1..12, the kept sentence over all 16 subsets, App.tsx builds no sentence of its own, 9 mutants rejected`);

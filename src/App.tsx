@@ -96,7 +96,7 @@ import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseC
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { saveFormReducer, EMPTY_SAVE_FORM, type LabelKey, type SaveFormState } from './utils/saveFormModel';
 // aliased: `generateNote` is also the name of the state holding the rendered text.
-import { generateNote as renderGenerateNote } from './utils/generateNote';
+import { generateNote as renderGenerateNote, keptFieldsOf } from './utils/generateNote';
 import {
   regenKeyEquals,
   regenResponseIsCurrent,
@@ -2882,17 +2882,21 @@ export default function App() {
           // Read the live ref (that is what it is for) rather than trusting the
           // count taken at reconcile time — a note that undercounts is the same
           // silence STRUCT-REGEN-19/006 removed.
-          setGenerateNote(renderGenerateNote(generateKind, 'filled',
+          setGenerateNote(renderGenerateNote(generateKind, { outcome: 'filled' },
             chipsRemoved + saveFormRef.current.terms.a.length + saveFormRef.current.terms.b.length));
         } else {
-          setGenerateNote(renderGenerateNote(generateKind, 'kept', chipsRemoved));
+          // STRUCT-REGEN-19/008: what the sentence may claim it kept is read
+          // off the form model itself, live, at the moment the note is printed
+          // — never a fixed list of all four fields.
+          setGenerateNote(renderGenerateNote(
+            generateKind, { outcome: 'kept', kept: keptFieldsOf(saveFormRef.current) }, chipsRemoved));
         }
       } else {
-        setGenerateNote(renderGenerateNote(generateKind, 'unavailable', chipsRemoved));
+        setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));
       }
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium.`]);
     } catch {
-      setGenerateNote(renderGenerateNote(generateKind, 'unavailable', chipsRemoved));
+      setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
     } finally {
       setGenerateLoading(false);
