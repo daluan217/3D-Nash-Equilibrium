@@ -884,21 +884,32 @@ if (failures > 0) {
     check(`editor (falsifier): ${JSON.stringify(raw)} is still absent when the phrase is not in the text`,
       /data-suppressed-cause="absent"/.test(chip), chip || 'no A chip');
   }
-  // Mutation, on the real module: keyed by the raw term again, the first check
-  // above fails. Proves it is not passing for some unrelated reason.
+  // The KEY RULE itself, stated so that keying the maps by the raw term fails
+  // here rather than somewhere downstream. A mixed-case phrase is the
+  // discriminator: `cleanUserColorTermPair` leaves the case alone, so the
+  // cleaned term and its `colorTermKey` differ, and a raw-keyed map cannot be
+  // read by the key rule the rest of this surface uses.
   {
-    const src = readFileSync('src/utils/colorTerms.ts', 'utf8');
-    const mutated = src.replace("a: new Map(aTerms.map((t) => [colorTermKey(t), stateFor(t, 'A')])),",
-      "a: new Map(aTerms.map((t) => [t, stateFor(t, 'A')])),");
-    check('mutation precondition: the raw-key plant lands on colorTerms.ts', mutated !== src);
-    // Re-implement the lookup the component performs, against both key rules.
-    const merged = mergeDescriptionTerms({ a: [], b: [] }, ['orchard keeper '], [], { a: [], b: [] });
-    const states = chipPaintStates('The orchard keeper bargains.', merged.a, merged.b);
-    check('mutation: keyed by the RAW term, the component\'s lookup misses (this is the defect)',
-      states.a.get('orchard keeper ') === undefined);
-    check('mutation: keyed by colorTermKey, the same lookup finds the painted state',
-      states.a.get(colorTermKey('orchard keeper '))?.state === 'painted',
+    const merged = mergeDescriptionTerms({ a: [], b: [] }, ['Harbour Ferry '], [], { a: [], b: [] });
+    check('fixture precondition: the cleaned term keeps its capitals, so cleaned !== colorTermKey(cleaned)',
+      merged.a[0] === 'Harbour Ferry' && colorTermKey(merged.a[0]) !== merged.a[0], JSON.stringify(merged.a));
+    const states = chipPaintStates('The Harbour Ferry departs.', merged.a, merged.b);
+    check('chipPaintStates keys BOTH maps by colorTermKey, never by the raw or merely-cleaned term',
+      [...states.a.keys()].every((k) => k === colorTermKey(k)) && [...states.b.keys()].every((k) => k === colorTermKey(k)),
+      JSON.stringify([...states.a.keys()]));
+    check('and the component\'s own lookup finds the painted state through that key',
+      states.a.get(colorTermKey('Harbour Ferry '))?.state === 'painted',
       JSON.stringify([...states.a.entries()]));
+  }
+  // …and end to end, through the real component: a mixed-case chip the user
+  // created with a trailing space is painted, not called absent.
+  {
+    const chip = chipA(editorHtml('The Harbour Ferry departs.', ['Harbour Ferry ']));
+    check('editor: a mixed-case chip whose raw text has a trailing space is painted, not called absent',
+      chip !== '' && !/data-suppressed=/.test(chip), chip || 'no A chip');
+    const gone = chipA(editorHtml('The miller bargains.', ['Harbour Ferry ']));
+    check('editor (falsifier): the same mixed-case chip is absent when its phrase is not in the text',
+      /data-suppressed-cause="absent"/.test(gone), gone || 'no A chip');
   }
 }
 
