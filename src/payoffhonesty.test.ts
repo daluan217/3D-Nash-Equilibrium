@@ -946,9 +946,11 @@ function testSaveFormReconciledWithBoard() {
       'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call, passing the all-or-nothing safety judgement to the reducer (OPUS-REVIEW-171/N1)');
     // The window must END somewhere real: the marker used to be the inline
     // "AI scenario isn't available" sentence, which STRUCT-REGEN-19/006 replaced
-    // with a call to the one renderer. indexOf returned -1 and the slice
-    // silently became "the rest of the file" (CodeRabbit CLI on this branch).
-    const postFetchEnd = app.indexOf("setGenerateNote(renderGenerateNote(generateKind, 'unavailable', chipsRemoved));", genFetch);
+    // with a call to the one renderer, and 008 then changed the outcome from a
+    // bare string to `{ outcome: … }`. Both times indexOf would have returned -1
+    // and the slice silently become "the rest of the file"; the ok() below is
+    // what turned each into a loud failure (CodeRabbit CLI on this branch).
+    const postFetchEnd = app.indexOf("setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));", genFetch);
     ok(postFetchEnd > genFetch, 'the post-report window must end at the unavailable-note call, not at a marker that no longer exists');
     const postFetch = app.slice(genFetch, postFetchEnd);
     ok(!/boardKeyOf\(g\)/.test(app) && !/'boardChanged'/.test(postFetch),

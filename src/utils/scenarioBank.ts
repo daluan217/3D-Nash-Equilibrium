@@ -34,6 +34,7 @@
  */
 import type { GamePayoffs, SuggestedScenario } from '../types';
 import { describeStakes } from './scenarioStakes';
+import { termOccursIn } from './colorTerms';
 
 export interface BankEntry {
   /** 0 tiny · 1 modest · 2 substantial · 3 very large — the stakes band. */
@@ -258,29 +259,37 @@ export const SERVE_PROBES: GamePayoffs[] = (() => {
  * best-effort trim (see CLAUDE.md's `no-rewriting-rung3-ceiling`).
  */
 /**
- * Whether ColorCoded would ACTUALLY highlight `term` inside `desc` — the
- * IDENTICAL regex `ColorCoded.tsx` builds from a caller-supplied term (raw,
- * unnormalized term against the raw, unnormalized description; only regex
- * metacharacters escaped; word-boundary lookarounds; `gi` flags; no
- * `.normalize()` anywhere). Extracted to module scope (RED-DESKTOP-9/001) so
- * `scenarioIsColourable` and `actorNounsOk` can share one predicate rather
- * than each growing its own subtly different idea of "verbatim" — exactly the
- * failure this project has hit before (`.toLowerCase()` folds U+212A KELVIN
- * SIGN to ASCII "k" where a plain `gi` regex does not; a bare `.includes()`
- * ignores word boundaries and would accept "vendor" inside "prevendors").
- * Building the identical regex here makes this predicate and the real
- * highlighter's decision provably the same by construction. The term is used
- * RAW, not `.trim()`'d, for the same reason: `ColorCoded.tsx` never trims
- * either, so incidental whitespace in a term changes what its word-boundary
- * lookarounds see.
+ * Whether the highlighter would ACTUALLY paint `term` inside `desc`. One
+ * predicate for `scenarioIsColourable` and `actorNounsOk` (RED-DESKTOP-9/001),
+ * so neither grows its own idea of "verbatim" — the failure this project has
+ * hit before (`.toLowerCase()` folds U+212A KELVIN SIGN to ASCII "k" where a
+ * plain `gi` regex does not; a bare `.includes()` would accept "vendor" inside
+ * "prevendors").
+ *
+ * STRUCT-REGEN-19/009. This used to build its own regex —
+ * `(?<![\w])(?:term)(?![\w])` with flags `gi` — which is a SECOND boundary
+ * rule beside the painter's. `\w` is ASCII, so it saw a word boundary inside
+ * "cafétier" where `\p{L}` does not, and there was no `u` flag; it also
+ * accepted one-character terms the painter drops. Every divergence found ran
+ * the same way — the gate promising a highlight the painter would never paint
+ * — which is a scenario shipped with an actor-noun chip that renders as "not
+ * highlighted" (the RED-REGEN-14/002 shape), reached through the gate.
+ *
+ * Measured before the change on the shipped bank: 2442 scenarios, 4200 (actor
+ * noun, description) pairs, ZERO disagreements — so this is a hole being closed,
+ * not a live defect, and closing it changes nothing about what ships today
+ * (`_gen/sr19_p5_boundary_differential.ts`; the guard in
+ * `src/scenariobank.test.ts` pins that equality on the real corpus).
+ *
+ * It now asks `colorTerms.ts` — the module that owns the rule the highlighter
+ * actually renders from — so "would this be highlighted?" has exactly one
+ * answer in this codebase. The term is still used RAW, not trimmed:
+ * `termBoundaryRegExp` trims only to decide usability, and `ColorCoded` never
+ * trims either, so incidental whitespace changes what the lookarounds see.
  */
-export function escapeForColourRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 export function highlightWouldMatch(term: string, desc: string): boolean {
   if (!term) return false;
-  const re = new RegExp(`(?<![\\w])(?:${escapeForColourRegex(term)})(?![\\w])`, 'gi');
-  return re.test(desc);
+  return termOccursIn(desc, term);
 }
 
 export function actorNounsOk(sc: {
@@ -342,7 +351,7 @@ export function actorNounsOk(sc: {
   // because the real regex's word-boundary lookarounds see the space
   // character as part of the match, not the caller's convenience trim.
   //
-  // `highlightWouldMatch`/`escapeForColourRegex` now live at module scope
+  // `highlightWouldMatch` now lives at module scope
   // (RED-DESKTOP-9/001) so `scenarioIsColourable` shares this exact
   // predicate instead of growing its own.
   const rawDesc = sc.description ?? '';

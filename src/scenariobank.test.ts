@@ -11,7 +11,8 @@
  */
 import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, __resetBankSeen } from './utils/bankSource';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
-import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, type BankEntry } from './utils/scenarioBank';
+import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, highlightWouldMatch, type BankEntry } from './utils/scenarioBank';
+import { paintPlan } from './utils/colorTerms';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
 import { readFileSync } from 'node:fs';
 import type { GamePayoffs } from './types';
@@ -674,18 +675,25 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
           description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
           actorA: ['A farmer'], actorB: ['a rival grower'],
         }));
-      // CodeRabbit (this review): a hand-rolled `.toLowerCase().includes()`
-      // is NOT equivalent to the real highlighter's `gi`-flagged (no `u`)
-      // regex. `.toLowerCase()` folds U+212A KELVIN SIGN to ASCII "k", but
-      // `/k/i` (no `u` flag) does not fold it back the other way -- a noun
-      // spelled with the Kelvin sign can look like a literal match under
-      // `.includes()` while the real ColorCoded.tsx regex would never match
-      // it. Must be rejected by the SAME guard as the ZWSP/NFKC fixtures.
-      check('actorNounsOk: a noun using U+212A KELVIN SIGN in place of "K" is rejected even though .toLowerCase() would fold it to a match (RED-REGEN-2/001 CodeRabbit follow-up)',
-        !actorNounsOk({
+      // U+212A KELVIN SIGN. This check used to assert REJECTION, because the
+      // highlighter of the day built a `gi` regex with no `u` flag and would
+      // never have painted it. Since STRUCT-REGEN-19/002 `ColorCoded.tsx`
+      // renders from `paintPlan`, whose flags are `giu`, and Unicode case
+      // folding makes U+212A and "K" the same letter -- so the phrase IS
+      // painted, on screen, in the player's colour. The invariant was never
+      // "reject the Kelvin sign"; it is "the gate agrees with the painter"
+      // (RED-REGEN-2/001). Assert the invariant and show the painter's own
+      // verdict, so this cannot drift again without a failure.
+      const kelvinDesc = 'A lab technician tracks the room’s Kelvin reading, while a facilities engineer decides whether to log it.';
+      const kelvinNoun = 'Kelvin reading';
+      check('the painter DOES paint a U+212A noun against an ASCII "K" (the fact this case now turns on)',
+        paintPlan(kelvinDesc, [kelvinNoun], []).some((sp) => sp.term === kelvinNoun),
+        JSON.stringify(paintPlan(kelvinDesc, [kelvinNoun], [])));
+      check('actorNounsOk: a U+212A noun is accepted exactly because the painter paints it (STRUCT-REGEN-19/009)',
+        actorNounsOk({
           row1: 'Raise Temp', row2: 'Hold Temp', col1: 'Log Reading', col2: 'Skip Reading',
-          description: 'A lab technician tracks the room’s Kelvin reading, while a facilities engineer decides whether to log it.',
-          actorA: ['Kelvin reading'], actorB: ['a facilities engineer'],
+          description: kelvinDesc,
+          actorA: [kelvinNoun], actorB: ['a facilities engineer'],
         }));
       // Same review: the highlighter's regex requires a WORD BOUNDARY on
       // both sides (`(?<!\w)...(?!\w)`), so a noun that is merely a raw
@@ -716,6 +724,79 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
         }));
     }
   }
+}
+
+// ── STRUCT-REGEN-19/009: ONE boundary rule — the gate must agree with the painter ──
+// `highlightWouldMatch` is the gate (`actorNounsOk`, `scenarioIsColourable`) that
+// decides whether a scenario ships with actor-noun highlights; `paintPlan` is what
+// `ColorCoded.tsx` actually renders. They used to be two regexes: the gate's `\w` is
+// ASCII and had no `u` flag, so it promised highlights the painter would never paint.
+// Every real instance would be a chip on screen reading "not highlighted".
+{
+  const paints = (desc: string, term: string) =>
+    paintPlan(desc, [term], []).some((sp) => sp.term === term);
+
+  // 1. The whole shipped artifact. 0 disagreements before the fix as well — this is a
+  //    hole being held shut, so the corpus alone CANNOT kill a mutant, which is why the
+  //    constructed cases below exist and are the ones named in the mutation test.
+  let pairs = 0;
+  const corpusDisagreements: string[] = [];
+  for (const e of allBankRows()) {
+    const desc = e.s.description ?? '';
+    for (const t of [...(e.s.actorA ?? []), ...(e.s.actorB ?? [])]) {
+      pairs++;
+      if (highlightWouldMatch(t, desc) !== paints(desc, t)) corpusDisagreements.push(`${JSON.stringify(t)} in ${JSON.stringify(desc.slice(0, 60))}`);
+    }
+  }
+  check(`the gate and the painter agree on all ${pairs} shipped (actor noun, description) pairs`,
+    corpusDisagreements.length === 0, corpusDisagreements.slice(0, 3).join(' | '));
+  check('the corpus sweep actually had pairs to judge (a 0-pair sweep would pass vacuously)', pairs > 2000, String(pairs));
+
+  // 2. The cases where the two rules USED to differ. Each is here because the ASCII-\w
+  //    gate says true and the painter says false; they are what fails when the second
+  //    rule comes back, so they carry this guard's whole mutation-killing weight.
+  const divergent: [string, string, string][] = [
+    ['tier', 'The cafétier and the porter split the tips.',
+      'é is not \\w, so an ASCII gate finds a word boundary INSIDE a word'],
+    ['ller', 'The Müller depot and the barge trade slots.',
+      'same, at the other end of the accent'],
+    ['x', 'The x factor and the y factor decide it.',
+      'one character: the painter drops terms under two, an ASCII gate does not'],
+  ];
+  for (const [term, desc, why] of divergent) {
+    check(`gate === painter for ${JSON.stringify(term)} in ${JSON.stringify(desc.slice(0, 28))}… (${why})`,
+      highlightWouldMatch(term, desc) === paints(desc, term),
+      `gate=${highlightWouldMatch(term, desc)} painter=${paints(desc, term)}`);
+    // …and each of these really is a case the OLD rule got wrong, so the check above
+    // cannot be passing because the case is uninteresting.
+    const asciiGate = new RegExp(`(?<![\\w])(?:${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\\w])`, 'gi').test(desc);
+    check(`fixture: the retired ASCII rule really did disagree here (${JSON.stringify(term)})`,
+      asciiGate !== paints(desc, term), `asciiGate=${asciiGate} painter=${paints(desc, term)}`);
+  }
+
+  // 3. Ordinary English must still agree, or the guard would be satisfied by a gate
+  //    that simply always returns false.
+  for (const [term, desc] of [
+    ['crew', 'The crew and the dock split the haul.'],
+    ['co-op board', 'The co-op board and the tenants vote on the roof.'],
+    ['harbour', 'The harbourmaster logs it.'],
+  ] as [string, string][]) {
+    check(`gate === painter for ordinary English ${JSON.stringify(term)}`,
+      highlightWouldMatch(term, desc) === paints(desc, term));
+  }
+  check('the gate is not vacuously false: it accepts a plain noun that is really there',
+    highlightWouldMatch('crew', 'The crew and the dock split the haul.'));
+  check('the gate is not vacuously true: it rejects a noun that is not there',
+    !highlightWouldMatch('crew', 'The dock and the barge split the haul.'));
+
+  // 4. The source itself: no second regex may reappear in the gate's module.
+  const bankSrc = readFileSync('src/utils/scenarioBank.ts', 'utf8')
+    .split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+  check('scenarioBank.ts builds no colour-boundary regex of its own',
+    !/\(\?<!\[\\\\w\]\)|\(\?<!\\\\w\)/.test(bankSrc),
+    'the boundary rule lives in src/utils/colorTerms.ts and nowhere else');
+  check('fixture: that source check fires on the retired implementation',
+    /\(\?<!\[\\\\w\]\)/.test('const re = new RegExp(`(?<![\\\\w])(?:${esc(term)})(?![\\\\w])`, \'gi\');'));
 }
 
 // The exit check must be the LAST thing in the file. It was above the shipped-artifact
