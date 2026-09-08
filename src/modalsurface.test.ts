@@ -325,7 +325,12 @@ const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'u
     if (CREDENTIAL_IN_CODE.test(code)) offenders.push(`${file}: builds its own Authorization header`);
     // x-admin-secret is a DIFFERENT credential (the admin panel's shared
     // secret, not a user session) and keeps its own 401 handling by design.
-    if (/status === 401/.test(code) && !/x-admin-secret/.test(code)) offenders.push(`${file}: re-implements the 401 session rule`);
+    // …but only AT the 401 site (±600 chars), so a file that also holds the admin
+    // secret cannot launder a second session rule elsewhere in its body.
+    for (const m of code.matchAll(/status === 401/g)) {
+      const near = code.slice(Math.max(0, (m.index ?? 0) - 600), (m.index ?? 0) + 600);
+      if (!/x-admin-secret/.test(near)) offenders.push(`${file}: re-implements the 401 session rule`);
+    }
     if (/clearTokenIfExpired/.test(code)) offenders.push(`${file}: still carries the pre-fix dead-session copy`);
   }
   ok(offenders.length === 0,

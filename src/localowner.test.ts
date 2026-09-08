@@ -853,7 +853,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     !/const sessionDied = unauthorized && requestToken !== null;/.test(anonymousDead));
   check('fixture: treating any failure as a dead session actually landed', anyFailureDead !== client);
   check('fixture: the STRUCT-DESKTOP-19/001 shape (any failure is a dead session) fails the 401-only pin',
-    !/const sessionDied = res\.status === 401;/.test(anyFailureDead));
+    !/const sessionDied = unauthorized && requestToken !== null;/.test(anyFailureDead));
 }
 
 // RED-DESKTOP-17/002: a SECOND click of the SAME still-enabled submit

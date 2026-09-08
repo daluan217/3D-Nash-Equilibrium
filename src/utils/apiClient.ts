@@ -156,7 +156,10 @@ export function describeRequestFailure(res: AccountResponse, subject: string): s
 
 export function createAccountApi(deps: AccountApiDeps): AccountApi {
   const request = async (path: string, init: AccountRequestInit = {}): Promise<AccountResponse> => {
-    const requestToken = 'token' in init ? (init.token ?? null) : deps.currentToken();
+    // An EMPTY string is not a credential: it attaches no header, so it must not
+    // count as "a credential was presented" either (CodeRabbit CLI on 3809048 —
+    // '' !== null would have marked a session dead and cleared it).
+    const requestToken = ('token' in init ? (init.token ?? null) : deps.currentToken()) || null;
     const requestGen = deps.currentGen();
     const headers: Record<string, string> = {};
     if (requestToken) headers['Authorization'] = `Bearer ${requestToken}`;

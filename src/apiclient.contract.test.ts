@@ -27,6 +27,7 @@
  * account-scoped route cannot quietly grow its own session handling again.
  */
 import { readFileSync, readdirSync } from 'fs';
+import { execSync } from 'child_process';
 import { join } from 'path';
 import { createAccountApi, describeRequestFailure, ACCOUNT_REQUEST_TIMEOUT_MS, type AccountApiDeps, type AccountResponse } from './utils/apiClient';
 import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from './utils/fetchTimeout';
@@ -143,6 +144,16 @@ const CASES: Case[] = [
   { name: 'no token sent but one has since been committed, 401 -> unauthorized, and says nothing about it',
     committed: 'tok-B', requestToken: null, transport: { kind: 'status', status: 401 },
     expect: { unauthorized: true, sessionDied: false, sessionCleared: false, cleared: false } },
+  // An EMPTY string committed or passed is no credential at all: no header is
+  // attached, so a 401 must read exactly like the anonymous case above — the
+  // pre-fix `requestToken !== null` called '' "presented" and CLEARED it
+  // (CodeRabbit CLI on 3809048).
+  { name: 'empty-string token committed, 401 -> unauthorized only; not presented, nothing cleared',
+    committed: '', transport: { kind: 'status', status: 401 },
+    expect: { unauthorized: true, sessionDied: false, sessionCleared: false, requestToken: null, cleared: false } },
+  { name: 'empty-string token passed explicitly, 401 -> the same',
+    committed: 'tok-A', requestToken: '', transport: { kind: 'status', status: 401 },
+    expect: { unauthorized: true, sessionDied: false, sessionCleared: false, requestToken: null, cleared: false } },
   { name: 'matching token, 200 -> not an auth failure, nothing cleared',
     committed: 'tok-A', requestToken: 'tok-A', transport: { kind: 'status', status: 200, body: { ok: 1 } },
     expect: { ok: true, unauthorized: false, sessionDied: false, sessionCleared: false, cleared: false } },
@@ -382,7 +393,11 @@ const API_PATH = /['"`](\/api\/[A-Za-z0-9/_.-]*)/;
  * comment stripping is not enough on its own: a JSX comment's continuation lines
  * start with ordinary text. A header key is always quoted or followed by a colon.
  */
-const CREDENTIAL_IN_CODE = /['"]Authorization['"]|\bAuthorization\s*:|authHeaders/;
+// Case-insensitive: HTTP header names are, and `headers.set('authorization', …)`
+// is a header too (Opus review of #183).
+const CREDENTIAL_IN_CODE = /['"]authorization['"]|\bauthorization\s*:|authHeaders/i;
+/** ±600 chars around a `status === 401`, for the admin-secret exemption. */
+const near401 = (code: string, idx: number) => code.slice(Math.max(0, idx - 600), idx + 600);
 
 /**
  * Endpoints reached by a raw `fetch` OUTSIDE the client, each one deliberately
@@ -422,6 +437,13 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
       if (apiPath) paths.add(apiPath.replace(/\/$/, ''));
       if (CREDENTIAL_IN_CODE.test(site.text)) credentialed.push(`${path}:${line}`);
     }
+    // WHOLE-FILE too: a header object built above the `fetch(` and passed by
+    // variable never enters a site window (Opus review of #183).
+    const code = codeOnly(src);
+    for (const m of code.matchAll(new RegExp(CREDENTIAL_IN_CODE.source, 'gi'))) {
+      const line = code.slice(0, m.index).split('\n').length;
+      if (!credentialed.includes(`${path}:${line}`)) credentialed.push(`${path}:${line}`);
+    }
   }
   check('no request outside src/utils/apiClient.ts attaches an Authorization header',
     credentialed.length === 0, credentialed.join(', '));
@@ -455,17 +477,33 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
 // under another name (the `clearTokenIfExpired` shape, STRUCT-DESKTOP-19/002).
 {
   const offenders: string[] = [];
-  for (const { path, src } of browserSources()) {
-    for (const site of fetchSites(src)) {
-      if (!/status === 401/.test(site.text)) continue;
-      if (OTHER_CREDENTIAL.test(site.text)) continue;   // the admin secret, not a session
-      offenders.push(`${path}:${src.slice(0, site.index).split('\n').length}`);
+  // Whole-file, not per-site: the pre-fix `clearTokenIfExpired` helper was
+  // DEFINED above its call sites, outside every 700-char fetch window, so a
+  // per-site scan of 71f655d's MenuDrawer flagged nothing (Opus review of #183).
+  const scan401 = (src: string): number[] => {
+    const code = codeOnly(src); const hits: number[] = [];
+    for (const m of code.matchAll(/status === 401/g)) {
+      if (OTHER_CREDENTIAL.test(near401(code, m.index ?? 0))) continue;   // the admin secret, not a session
+      hits.push(code.slice(0, m.index).split('\n').length);
     }
-  }
+    return hits;
+  };
+  for (const { path, src } of browserSources()) for (const line of scan401(src)) offenders.push(`${path}:${line}`);
   check('no request outside the client decides session-death from a raw 401 status',
     offenders.length === 0, offenders.join(', '));
-  check('fixture: the deleted `clearTokenIfExpired` shape would be caught by that scan',
-    /res\.status === 401/.test('const clearTokenIfExpired = (res) => { if (res.status === 401) updateAuthToken(null); };'));
+  // Known-positive on the REAL pre-fix file, through the SAME scanner: the
+  // MenuDrawer that shipped the defect (main 71f655d) must be flagged.
+  const preFixDrawer = execSync('git show 71f655d:src/components/MenuDrawer.tsx', { encoding: 'utf8' });
+  check('fixture: the pre-fix MenuDrawer (71f655d) is flagged by the whole-file 401 scan', scan401(preFixDrawer).length > 0);
+  check('fixture: the pre-fix MenuDrawer (71f655d) is flagged by the whole-file credential scan',
+    new RegExp(CREDENTIAL_IN_CODE.source, 'i').test(codeOnly(preFixDrawer)));
+  const wholeFileCred = (src: string) => new RegExp(CREDENTIAL_IN_CODE.source, 'i').test(codeOnly(src));
+  check('fixture: a lower-case `authorization:` header key is flagged', wholeFileCred("headers: { authorization: `Bearer ${t}` }"));
+  check("fixture: `headers.set('authorization', …)` is flagged", wholeFileCred("h.set('authorization', `Bearer ${t}`)"));
+  check('fixture: a header object built above the fetch and passed by variable is flagged',
+    wholeFileCred("const h = { 'Authorization': `Bearer ${t}` };\n\n\n" + 'x'.repeat(800) + "\nfetch(getApiUrl('/api/games'), { headers: h })"));
+  check('control: the admin panel\'s own 401 handling next to x-admin-secret is not an offender',
+    scan401("headers: { 'x-admin-secret': s }\nif (res.status === 401) setBad(true);").length === 0);
 }
 
 // An unreadable 2xx is neither an identity nor a library. Both commit sites in
