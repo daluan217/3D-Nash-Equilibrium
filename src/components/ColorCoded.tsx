@@ -4,6 +4,7 @@
  */
 
 import React, { useMemo } from 'react';
+import { termBoundaryRegExp } from '../utils/colorTerms';
 
 // Matte ink classes (defined in index.css): player hue knocked toward slate
 // so highlights read as part of the sentence, not stickers on it. Terms
@@ -85,7 +86,6 @@ export function ColorCoded({ text, aTerms = [], bTerms = [] }: { text: string; a
       .sort((p, q) => q.t.length - p.t.length);
     let out: React.ReactNode[] = [text];
     if (entries.length > 0) {
-      const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // RED-REGEN-8/001: `\w` is ASCII-only (no `u` flag) — it does not include
       // é/ñ/ö/å/etc, so the old lookaround treated the join between an ASCII
       // letter and an adjacent accented letter as a word boundary, splitting
@@ -108,13 +108,11 @@ export function ColorCoded({ text, aTerms = [], bTerms = [] }: { text: string; a
       // ("농부와" = farmer + particle), so the ordinary Korean sentence has
       // the same shape. All of them join the no-boundary class; every
       // space-delimited script keeps the real boundary (docs §(c)).
-      const CJK = '\\p{Script=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}'
-        + '\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Thai}\\p{Script_Extensions=Lao}'
-        + '\\p{Script_Extensions=Khmer}\\p{Script_Extensions=Myanmar}';
-      const left = `(?:(?<![\\p{L}\\p{N}\\p{M}_])|(?<=[${CJK}]))`;
-      const right = `(?:(?![\\p{L}\\p{N}\\p{M}_])|(?=[${CJK}]))`;
-      const termRe = new RegExp(`${left}(?:${entries.map((e) => esc(e.t)).join('|')})${right}`, 'giu');
-      out = applyRule(out, termRe, (hit) => entries.find((e) => e.t.toLowerCase() === hit.toLowerCase())?.cls);
+      // RED-REGEN-14/002: the boundary regex itself now lives in
+      // `termBoundaryRegExp` (colorTerms.ts) — the editor's chip state asks
+      // the same function whether a chip paints anything at all.
+      const termRe = termBoundaryRegExp(entries.map((e) => e.t));
+      if (termRe) out = applyRule(out, termRe, (hit) => entries.find((e) => e.t.toLowerCase() === hit.toLowerCase())?.cls);
     }
     for (const rule of TOKEN_RULES) out = applyRule(out, rule.re, () => rule.cls);
     return out;

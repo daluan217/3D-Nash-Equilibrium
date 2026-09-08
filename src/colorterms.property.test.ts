@@ -30,6 +30,7 @@ import {
   crossPlayerUserTerms,
   mergeDescriptionTerms,
   regenKeptColorTerms,
+  termOccursIn,
   regenPreviewColorTerms,
   savedGameColorTerms,
   capHitMessage,
@@ -781,6 +782,69 @@ if (failures > 0) {
     `movedFromIdx=${movedFromIdx} capGuardIdx=${capGuardIdx}`);
   check('DescriptionEditor (N1): the cap-guard branch names a MOVE differently from a fresh add ("already has N highlights — remove one to move it")',
     /is highlighted for Player \$\{movedFrom\}; Player \$\{player\} already has \$\{USER_TERMS_MAX\} highlights — remove one to move it/.test(editorSrc));
+}
+
+
+// PART 12 — RED-REGEN-14/002: a highlight chip whose phrase no longer occurs in
+// the story (a kept regenerated draw replaced the text; the user edited it
+// away) used to sit in the editor and in the saved record as an inert chip
+// that said nothing. The chip is STILL kept (2026-09-03: Keep never destroys
+// highlights) — but it must SAY it paints nothing, decided by the SAME
+// boundary rule ColorCoded paints with, and Keep must name it in its note.
+// Mutation map (each named check fails on exactly that plant):
+//   m1 DescriptionEditor `absent` forced false      → "editor: a chip absent…"
+//   m2 regenKeptColorTerms `orphaned` always empty  → "orphaned names the A chip…", "…B chip…"
+//   m3 ColorCoded rebuilds its own inline regex     → "ColorCoded builds its term regex…"
+//   m4 termOccursIn without the boundary wrappers   → "termOccursIn: no hit inside a longer word"
+//   m5 regenDroppedNote ignores `orphaned`          → "regenDroppedNote names an orphaned A chip…"
+{
+  check('termOccursIn: case-insensitive whole-phrase hit', termOccursIn('The Orchard Keeper waits.', 'orchard keeper'));
+  check('termOccursIn: no hit inside a longer word (word boundary, same as the painter)', !termOccursIn('concatenate the ropes', 'cat'));
+  check('termOccursIn: an accented neighbour is not a boundary (RED-REGEN-8/001 rule)', !termOccursIn('el señor llega', 'se'));
+  check('termOccursIn: a CJK chip matches inside CJK prose (no-boundary script)', termOccursIn('农夫和商人讨价还价', '农夫'));
+  check('termOccursIn: regex metacharacters are literal', termOccursIn('the price (net) rises', '(net)') && !termOccursIn('the price net rises', '(net)'));
+  check('termOccursIn: a 1-character chip never matches (ColorCoded drops it too)', !termOccursIn('a b', 'a'));
+  const colourSrc = readFileSync('src/components/ColorCoded.tsx', 'utf8');
+  check('ColorCoded builds its term regex through termBoundaryRegExp (one rule for painting and for chip state)',
+    /termBoundaryRegExp\(entries\.map\(/.test(colourSrc) && !/new RegExp\(`\$\{left\}/.test(colourSrc) && !/Script=Han/.test(colourSrc));
+
+  const story = 'The miller and the ferry crew bargain over the toll.';
+  const kept = regenKeptColorTerms([], [], ['orchard keeper', 'the miller'], ['ferry crew', 'harbour master'], story);
+  check('orphaned names the A chip absent from the new story', kept.orphaned.a.length === 1 && kept.orphaned.a[0] === 'orchard keeper', JSON.stringify(kept.orphaned));
+  check('orphaned names the B chip absent from the new story', kept.orphaned.b.length === 1 && kept.orphaned.b[0] === 'harbour master', JSON.stringify(kept.orphaned));
+  check('a chip present in the story is not orphaned (control)', !kept.orphaned.a.includes('the miller') && !kept.orphaned.b.includes('ferry crew'));
+  check('an orphaned chip is STILL KEPT in the stored terms (2026-09-03: Keep never destroys highlights)',
+    kept.a.includes('orchard keeper') && kept.b.includes('harbour master'), JSON.stringify({ a: kept.a, b: kept.b }));
+  const noDesc = regenKeptColorTerms([], [], ['orchard keeper'], [], undefined);
+  check('without a description nothing is reported as orphaned (the preview-card composition)', noDesc.orphaned.a.length === 0 && noDesc.orphaned.b.length === 0);
+  check('a draw\'s NEW actor noun is never "orphaned" (only existing chips are judged)',
+    regenKeptColorTerms(['ghost'], [], [], [], story).orphaned.a.length === 0);
+  check('orphaned is judged case-insensitively, whole phrase (no false orphan on a case change)',
+    regenKeptColorTerms([], [], ['THE MILLER'], [], story).orphaned.a.length === 0);
+
+  const note = regenDroppedNote({ a: [], b: [] }, { a: ['orchard keeper'], b: [] });
+  check('regenDroppedNote names an orphaned A chip and says it is shown as not highlighted',
+    note !== null && note.includes('"orchard keeper"') && /Player A/.test(note) && /not highlighted/.test(note), note ?? 'null');
+  check('regenDroppedNote stays null with nothing dropped or orphaned', regenDroppedNote({ a: [], b: [] }, { a: [], b: [] }) === null);
+  const both = regenDroppedNote({ a: ['the lighthouse keeper'], b: [] }, { a: [], b: ['ferry crew'] });
+  check('a cap drop and an orphan in the same Keep are both named, each on its own player',
+    both !== null && /"the lighthouse keeper"/.test(both) && /"ferry crew"/.test(both) && /Player B/.test(both), both ?? 'null');
+  const plural = regenDroppedNote({ a: [], b: [] }, { a: ['x one', 'y two'], b: [] }) ?? '';
+  check('two orphans on one side read as a plural throughout (highlights … do not appear … they are … chips)',
+    /highlights "x one", "y two" do not appear/.test(plural) && /they are shown/.test(plural) && /remove the chips/.test(plural), plural);
+
+  const editorHtml = (value: string, termsA: string[]) => renderToStaticMarkup(React.createElement(DescriptionEditor, {
+    value, onChange: () => {}, termsA, termsB: [], onTermsChange: () => {},
+  }));
+  const chipA = (h: string) => (h.match(/<button[^>]*data-player="A"[^>]*>/) ?? [''])[0];
+  const absentChip = chipA(editorHtml('The miller bargains.', ['orchard keeper']));
+  check('editor: a chip absent from the text is rendered (not deleted) and marked data-suppressed-cause="absent" with the (not highlighted) pill',
+    absentChip !== '' && /data-suppressed="true"/.test(absentChip) && /data-suppressed-cause="absent"/.test(absentChip) && /does not appear in the story/.test(absentChip),
+    absentChip || 'no A chip');
+  const presentChip = chipA(editorHtml('The orchard keeper bargains.', ['orchard keeper']));
+  check('editor (control): the same chip with its phrase present is not suppressed', presentChip !== '' && !/data-suppressed=/.test(presentChip), presentChip);
+  check('editor: a chip present only inside a longer word is absent (same boundary as the painter)',
+    /data-suppressed-cause="absent"/.test(chipA(editorHtml('The cattle graze.', ['cat']))));
 }
 
 if (failures > 0) {
