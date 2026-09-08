@@ -691,9 +691,49 @@ export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
     // differs at dp=3) would print "-0.000". Collapse that sign artifact the
     // same way the `p === q` branch already does.
     const sp = collapseNegZeroDisplay(p.toFixed(dp)), sq = collapseNegZeroDisplay(q.toFixed(dp));
-    if (sp !== sq) return { p: sp, q: sq };
+    if (sp !== sq && !isFalseZeroAt(sp, p) && !isFalseZeroAt(sq, q)) return { p: sp, q: sq };
   }
   return { p: p.toExponential(2), q: q.toExponential(2) };
+}
+
+/**
+ * STRUCT-MATH-19/002 — "this string is all zeros and the value it stands for
+ * is not."
+ *
+ * Telling two values apart is not the same as stating either one honestly, and
+ * `fmtPayoffPair` used to stop the moment the two strings differed. When one
+ * side is sub-resolution and the other is ordinary, 3 dp already separates
+ * them, so no widening happened and the small side was printed as an exact
+ * zero: MEASURED on the shipping condition (54,981 equilibrium panels rendered
+ * from runs driven to convergence — `_gen/probe_panel_reachable.ts`), 8 real
+ * panels read
+ *
+ *   E[Row 1] = 0.000 < E[Row 2] = 0.009        (E[Row 1] is 0.00012)
+ *   E[Row 1] = 0.000 < E[Row 2] = 0.005        (E[Row 1] is -0.000264)
+ *
+ * while the panel's OWN headline, three lines above, printed "< 0.001" /
+ * "> -0.001" for the same kind of quantity through `payoffTexRhs`. The sign
+ * was erased as well. Widening one more digit states both sides truthfully
+ * AND keeps them distinct, which the operator-swap alternative did not: giving
+ * the small side "< 0.001" collided with an ordinary 0.001362 rendered as
+ * "0.001" and tripped `equilibriumpanel.test.ts`'s "a strict line must never
+ * print the same digits twice".
+ *
+ * THE BAND. A magnitude below 5e-9 cannot be shown as a nonzero digit at the
+ * widest precision this function offers (dp = 8), so calling it a false zero
+ * would only push the pair into the exponential fallback — "1.00e-16 vs
+ * 6.00e-1" on a panel — for a quantity that IS zero: nothing that started as a
+ * real 0.001-resolution matrix entry lands there, only float dust from
+ * cancelling arithmetic. The bound is therefore derived from dp's own limit,
+ * not chosen: it is exactly the smallest magnitude `toFixed(8)` can render.
+ */
+function isFalseZeroAt(s: string, v: number): boolean {
+  // No `-?` in the pattern, and that is not an oversight: the only call site
+  // passes strings that `collapseNegZeroDisplay` has already sign-stripped, so
+  // an all-zero string can never arrive with a leading "-". Written with the
+  // alternation first, it was a branch whose deletion changed no result — the
+  // exact shape this file's own `fmtPayoff` note warns about — so it is gone.
+  return /^0(\.0+)?$/.test(s) && v !== 0 && Math.abs(v) >= 5e-9;
 }
 
 // NOTE (adversarial round 1, 2026-08-29): the mixed NE is reported at 3-dp

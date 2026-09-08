@@ -49,7 +49,8 @@
  *   npx tsx src/numberdoors.test.ts
  */
 import { readFileSync } from 'node:fs';
-import { fmtProb, fmtProbFixed, fmtProbInterval, fmtPayoff, fmtPayoffProse, r3 } from './utils/gameEngine';
+import { fmtProb, fmtProbFixed, fmtProbInterval, fmtPayoff, fmtPayoffProse, fmtPayoffPair, r3 } from './utils/gameEngine';
+import { indifferenceLines } from './components/equilibriumPanel';
 
 let checks = 0;
 let failures = 0;
@@ -156,6 +157,64 @@ function testPayoffLabelRegister(): void {
   ok(fmtPayoffProse(0.00025) === 'less than 0.001', 'A5 a sub-resolution expected payoff no longer prints as "0"', fmtPayoffProse(0.00025));
   ok(String(r3(0.00025)) === '0', 'A5 the OLD label really did print "0" there (this check is not vacuous)');
   ok(fmtPayoff(0) === '0' && fmtPayoffProse(0) === '0', 'A5 an exact zero payoff still prints as 0');
+}
+
+
+function testStrictPairNeverPrintsAFalseZero(): void {
+  // A6 — STRUCT-MATH-19/002. `fmtPayoffPair` is the STRICT-relation renderer
+  // for the equilibrium panel's two indifference lines. It used to stop the
+  // moment the two strings differed, so a sub-resolution side beside an
+  // ordinary one printed an exact zero it does not have.
+  //
+  // The defect's own panel, verbatim from the shipping-condition sweep
+  // (`_gen/probe_panel_reachable.ts`, run on origin/main 124c815): a converged
+  // run on this continuum game resolves to (0, 0.97) and the A line read
+  //   \mathbb{E}[Row 1] = 0.000 < \mathbb{E}[Row 2] = 0.009
+  // while E[Row 1] is 0.00012 — and the panel's own headline prints "< 0.001"
+  // for that same quantity through `payoffTexRhs`.
+  const g = { a11: 0, a12: 0.004, a21: 0.01, a22: -0.008, b11: 0, b12: -0.01, b21: -0.01, b22: -0.01 };
+  const line = indifferenceLines(g, 0, 0.97).a;
+  ok(Math.abs(line.p - 0.00012) < 1e-9, 'A6 the fixture really does carry a sub-resolution payoff', `p=${line.p}`);
+  ok(!line.indifferent, 'A6 the fixture really is a STRICT line (this is the strict branch)', `rel=${line.relation}`);
+  ok(!/^-?0(\.0+)?$/.test(line.pStr), 'A6 the panel no longer prints an exact zero for 0.00012', `pStr=${JSON.stringify(line.pStr)}`);
+  ok(line.pStr !== line.qStr, 'A6 the two sides of a strict line still read differently', `${line.pStr} / ${line.qStr}`);
+  ok(line.tex.includes('= 0.0001 < ') && line.tex.includes('= 0.0095'),
+    'A6 the fixture renders at the precision that states BOTH sides truthfully', line.tex);
+
+  // The negative sign must survive too — the second measured shape.
+  const gNeg = { a11: 0.006, a12: -0.002, a21: 0.003, a22: 0.006, b11: -0.006, b12: -0.003, b21: 0.003, b22: 0.003 };
+  const neg = indifferenceLines(gNeg, 0, 0.217).a;
+  ok(neg.p < 0 && Math.abs(neg.p) < 5e-4, 'A6 the negative fixture is a sub-resolution NEGATIVE payoff', `p=${neg.p}`);
+  ok(/^-/.test(neg.pStr), 'A6 a tiny negative payoff keeps its sign instead of collapsing to "0.000"', `pStr=${JSON.stringify(neg.pStr)}`);
+
+  // A6b — the invariant, swept. Neither returned string may be all zeros while
+  // the value it stands for is representable and nonzero; and the pair must
+  // still be told apart, which is the contract fmtPayoffPair exists for.
+  let pairs = 0, falseZeros = 0, collisions = 0, exponentials = 0;
+  const vals = [0, 5e-9, 1e-8, 1e-6, 0.00012, 0.000458, 0.0004999, 0.001, 0.001362, 0.009, 0.5, 3, 99.999, -0.00012, -0.000264, -0.0005, -0.009, -7];
+  for (const a of vals) {
+    for (const b of vals) {
+      if (Math.abs(a - b) < 5e-4) continue;      // the panel would print ≈, not this branch
+      pairs++;
+      const r = fmtPayoffPair(a, b);
+      for (const [s, v] of [[r.p, a], [r.q, b]] as Array<[string, number]>) {
+        if (/^-?0(\.0+)?$/.test(s) && v !== 0 && Math.abs(v) >= 5e-9) { falseZeros++; }
+      }
+      if (r.p === r.q) collisions++;
+      if (/e[+-]/i.test(r.p) || /e[+-]/i.test(r.q)) exponentials++;
+    }
+  }
+  ok(pairs > 200, 'A6b the pair sweep ran', `${pairs} pairs`);
+  ok(falseZeros === 0, 'A6b no side of a strict pair prints an exact zero for a representable nonzero value', `${falseZeros}`);
+  ok(collisions === 0, 'A6b every strict pair still reads as two different numbers', `${collisions}`);
+  ok(exponentials === 0, 'A6b widening never has to fall back to exponential notation on these values', `${exponentials}`);
+
+  // A6c — float noise is a GENUINE zero and must keep the plain 3-dp string,
+  // never be widened into "1.00e-16". This is the branch the 5e-9 band exists
+  // for; without it the sweep above would push such a pair to exponential.
+  const noise = fmtPayoffPair(2.220446049250313e-16, 0.6);
+  ok(noise.p === '0.000' && noise.q === '0.600',
+    'A6c float dust beside an ordinary payoff still prints "0.000", not exponential', JSON.stringify(noise));
 }
 
 // ────────────────────────── B. the source gate ───────────────────────────────
@@ -371,6 +430,7 @@ testSubResolutionNeverClaimsAPureStrategy();
 testFixedAndProseRegistersAgree();
 testCorridorBracket();
 testPayoffLabelRegister();
+testStrictPairNeverPrintsAFalseZero();
 testRenderingFileListIsReal();
 testTheFixedSitesRenderThroughTheFamily();
 testNoUnannotatedDoors();
