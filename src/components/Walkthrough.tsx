@@ -102,13 +102,13 @@ function headerOffset(): number {
 const FLOAT_H_EST = 420;
 const FLOAT_W_EST = 520;
 
-/** Would a floating card fit on some side of this rect? */
-function floatingFits(r: Rect, vw: number, vh: number): boolean {
+/** Would a floating card fit on some side of this spotlight rect? */
+export const tourFloatingFits = (r: { top: number; left: number; width: number; height: number }, vw: number, vh: number): boolean => {
   return (vh - (r.top + r.height) - GAP) >= FLOAT_H_EST
       || (r.top - GAP) >= FLOAT_H_EST
       || (vw - (r.left + r.width) - GAP) >= FLOAT_W_EST
       || (r.left - GAP) >= FLOAT_W_EST;
-}
+};
 
 const readRect = (el: Element): Rect => {
   const r = el.getBoundingClientRect();
@@ -214,17 +214,13 @@ export function Walkthrough({
       const el = document.querySelector(`[data-tour="${step.target}"]`);
       if (!el) return;
       const r0 = el.getBoundingClientRect();
-      const asRect: Rect = {
-        top: r0.top,
-        left: r0.left,
-        width: r0.width,
-        height: r0.height,
-        documentTop: r0.top + window.scrollY,
-      };
+      // Match the highlighted geometry used by render to choose the layout
+      // family. The raw target remains correct for the eventual scroll delta.
+      const paddedRect = readRect(el);
       const isLand = window.innerWidth > window.innerHeight;
       const behavior = tourScrollBehavior(!!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
       const willSheet = !isLand && (window.innerWidth < COMPACT_MAX
-        || !floatingFits(asRect, window.innerWidth, window.innerHeight));
+        || !tourFloatingFits(paddedRect, window.innerWidth, window.innerHeight));
       if (!willSheet && !isLand) {
         el.scrollIntoView({ behavior, block: 'center' });
         return;
@@ -400,7 +396,7 @@ export function Walkthrough({
    * wherever a floating card cannot fit, the free-floating card otherwise.
    */
   const landscape = vw > vh;
-  const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !floatingFits(rect, vw, vh)));
+  const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));
 
   /** Landscape card width: whatever the roomier side offers, clamped sane. */
   const sideAvail = rect

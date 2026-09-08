@@ -24,7 +24,7 @@ import {
   numericInputProblem,
 } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
-import { tourBlockedOriginAfterPointerDown, tourClickSharesBlockedOrigin, tourControlClickAllowed, tourScrollBehavior, tourTargetPlacementKey, tourTargetScrollDelta } from './components/Walkthrough';
+import { tourBlockedOriginAfterPointerDown, tourClickSharesBlockedOrigin, tourControlClickAllowed, tourFloatingFits, tourScrollBehavior, tourTargetPlacementKey, tourTargetScrollDelta } from './components/Walkthrough';
 import {
   isAgentRouterEndpoint,
   buildChatRequestBody,
@@ -3598,6 +3598,12 @@ function testWalkthroughInputContracts() {
     'H5 strip control: a 320px plot that fits a 332px usable strip must be centred inside that strip, not offset under its sheet');
   assert(tourTargetScrollDelta(264.71875, 360, 211.03125, 332) === 53.6875,
     'H5 tall-target control: a target larger than its usable strip must align at the header edge without spending an unavailable top gap');
+  const rawFloatingBoundary = { top: 400, left: 327, width: 50, height: 400 };
+  const paddedFloatingBoundary = { top: 392, left: 319, width: 66, height: 416 };
+  assert(tourFloatingFits(rawFloatingBoundary, 920, 1200),
+    'H5 boundary control: the unpadded target reports a 527px right-side floating fit');
+  assert(!tourFloatingFits(paddedFloatingBoundary, 920, 1200),
+    'H5 boundary guard: the 8px spotlight expansion removes that fit, so render and scroll must both select the sheet');
   const contract = (source: string) => {
     assert(/blockedPointerOriginRef\.current = tourBlockedOriginAfterPointerDown\(blockedRef\.current, origin\);/.test(source)
       && /window\.addEventListener\('pointerdown', notePointerDown, true\)/.test(source)
@@ -3633,6 +3639,8 @@ function testWalkthroughInputContracts() {
       && /\}, \[open, placementKey\]\);/.test(scrollEffect)
       && !source.includes('document.body.style.paddingBottom'),
     'H5 target placement must rerun with the actual one-gap usable strip when measured card height or document geometry changes, without mutating global body padding');
+    assert(/const paddedRect = readRect\(el\);[\s\S]{0,300}?tourFloatingFits\(paddedRect, window\.innerWidth, window\.innerHeight\)/.test(scrollEffect),
+      'H5 scroll layout must use the same padded spotlight rect as render at the floating-card boundary');
   };
   const source = readFileForContract('src/components/Walkthrough.tsx', 'utf8');
   contract(source);
@@ -3653,6 +3661,8 @@ function testWalkthroughInputContracts() {
     'H2 fixture: returning the pill to a viewport-top offset must fail the named source contract');
   assert(contractFails(source.replace('window.innerHeight - sheetH - GAP - top', 'window.innerHeight - sheetH - GAP * 2 - top')),
     'H5 fixture: budgeting a second gap inside the measured strip must fail the named source contract');
+  assert(contractFails(source.replace('tourFloatingFits(paddedRect, window.innerWidth, window.innerHeight)', 'tourFloatingFits(r0, window.innerWidth, window.innerHeight)')),
+    'H5 fixture: deciding scroll layout from the unpadded target while render uses the spotlight must fail the named source contract');
   assert(contractFails(source.replace('rect?.documentTop, rect?.left, rect?.width, rect?.height', '0, 0, 0, 0')),
     'H5 fixture: ignoring a post-onEnter target document-position shift must fail the named source contract');
   assert(contractFails(source.replace('rect?.documentTop, rect?.left, rect?.width, rect?.height, vp.w, vp.h', 'rect?.documentTop, rect?.left, rect?.width, rect?.height, 0, 0')),
