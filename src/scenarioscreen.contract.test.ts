@@ -515,16 +515,21 @@ for (const neg of NEGATIVES) {
     if (!ev) continue;
     let fires = 0; let of = 0; let firstFire = '';
     const o = opts();
+    // SCREEN A COPY. `declarations` runs `validateScenario(..., actorNouns:
+    // true)`, which DELETES actorA/actorB in place on a row it dislikes, and the
+    // artifact is frozen (STRUCT-CLOUD-19/008) — so handing it a row directly
+    // would turn "this row no longer passes" into a TypeError instead of the
+    // count this section exists to print. Copying is also what a request does.
     if (matrixDependent.has(s.id)) {
       for (const e of rows) for (const g of probes) {
         of++;
-        const r = s.run(e.s as SuggestedScenario, g, o);
+        const r = s.run(structuredClone(e.s) as SuggestedScenario, g, o);
         if (r !== null) { fires++; if (!firstFire) firstFire = `"${e.s.name}": ${r}`; }
       }
     } else {
       for (const e of rows) {
         of++;
-        const r = s.run(e.s as SuggestedScenario, probes[0], o);
+        const r = s.run(structuredClone(e.s) as SuggestedScenario, probes[0], o);
         if (r !== null) { fires++; if (!firstFire) firstFire = `"${e.s.name}": ${r}`; }
       }
     }

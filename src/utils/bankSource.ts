@@ -60,12 +60,17 @@ const bank: BankEntry[] = (rows as unknown as BankEntry[]) ?? [];
  * caller its own copy below (the gate's in-place strip keeps working, on the
  * request's private object). Two independent defences, one CI check each.
  */
-for (const e of bank) {
-  const sc = e.s as Record<string, unknown>;
-  for (const v of Object.values(sc)) if (Array.isArray(v)) Object.freeze(v);
-  Object.freeze(sc);
-  Object.freeze(e);
+function deepFreeze(v: unknown): void {
+  if (v === null || typeof v !== 'object' || Object.isFrozen(v)) return;
+  Object.freeze(v);
+  for (const child of Object.values(v as Record<string, unknown>)) deepFreeze(child);
 }
+// RECURSIVE, not one level (CodeRabbit on this branch): a row's `storyClaims`
+// holds arrays OF OBJECTS, and a one-level freeze leaves those writable while
+// the comment above promises they are not. No shipped row carries storyClaims
+// today (0 of 2,442 — rung 3 omits them), so this costs nothing now and is true
+// for the artifact that does.
+for (const e of bank) deepFreeze(e);
 Object.freeze(bank);
 
 /**

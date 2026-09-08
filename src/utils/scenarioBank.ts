@@ -501,8 +501,11 @@ export function actorNounsOk(sc: {
  * description? A row can fail this while being a perfectly good, honest,
  * claim-free story — it is a colourability screen, not a truthfulness one.
  *
- * Uses `highlightWouldMatch`, the SAME predicate `actorNounsOk` uses, so it
- * cannot disagree with the real highlighter about whether a given TERM matches.
+ * Uses `highlightWouldMatch`, which delegates to `termOccursIn`, so it cannot
+ * disagree with the real highlighter about whether a given TERM matches.
+ * `actorNounsOk` deliberately does NOT share this predicate any more — it asks
+ * the VERBATIM question through `occursAsRawSubstring`; its own comment above
+ * carries the proof that the two questions are different ones.
  *
  * IT IS NOT, HOWEVER, WHAT THE RENDERER WILL PAINT, and this comment used to
  * claim it was ("can never disagree with what the real highlighter would

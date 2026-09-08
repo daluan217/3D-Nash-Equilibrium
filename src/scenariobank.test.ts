@@ -937,6 +937,28 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     check('a bank row cannot be written to: deleting actorA on the artifact throws and changes nothing',
       threw && ((withNouns.s as SuggestedScenario).actorA?.length ?? 0) > 0,
       `threw=${threw} actorA=${JSON.stringify((withNouns.s as SuggestedScenario).actorA)}`);
+    let pushThrew = false;
+    try { (withNouns.s as SuggestedScenario).actorA!.push('smuggled'); } catch { pushThrew = true; }
+    check('the freeze reaches INSIDE a row: pushing onto actorA throws too', pushThrew,
+      `actorA=${JSON.stringify((withNouns.s as SuggestedScenario).actorA)}`);
+
+    // AND AT EVERY DEPTH (CodeRabbit on this branch): a one-level freeze leaves
+    // `storyClaims.cellCitations[i]` writable while the comment in bankSource.ts
+    // promises the artifact is read-only. No shipped row carries storyClaims
+    // today, so a live mutation attempt cannot reach that far — walk the object
+    // graph and require every node frozen, which stays true for the artifact
+    // that does carry them.
+    const unfrozen: string[] = [];
+    const walk = (v: unknown, path: string): void => {
+      if (v === null || typeof v !== 'object') return;
+      if (!Object.isFrozen(v)) unfrozen.push(path);
+      for (const [k, child] of Object.entries(v as Record<string, unknown>)) walk(child, `${path}.${k}`);
+    };
+    for (let i = 0; i < rows.length; i++) walk(rows[i], `row[${i}]`);
+    check('every node of every artifact row is frozen, at every depth',
+      unfrozen.length === 0, `${unfrozen.length} writable nodes — first: ${unfrozen[0]}`);
+    check('the depth walk is not vacuous: it visited nested nodes',
+      rows.some((e) => Array.isArray((e.s as SuggestedScenario).actorA)));
 
     // 2. COPY-ON-SERVE, read through the SHIPPING gate rather than by hand: a
     //    served copy given a noun the story does not contain must lose BOTH
