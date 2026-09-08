@@ -15,6 +15,7 @@ import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenario
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
 import { readFileSync } from 'node:fs';
 import { scenarioRenderability } from './utils/scenarioRenderability';
+import { colorTermKey, colorTermsFor, mergeDescriptionTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import type { GamePayoffs, SuggestedScenario } from './types';
 
 let failures = 0;
@@ -556,6 +557,56 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
       + 'RED-DESKTOP-9/001 back in the artifact, not the benign shared-label case');
     check('the disagreement is not vacuous: the renderer paints strictly fewer rows than the screen admits',
       disagree > 0, `disagree=${disagree}`);
+  }
+
+  /**
+   * NO ROW IS PAINTED FOR THE WRONG PLAYER (STRUCT-CLOUD-19/001, self-check on
+   * the fix). The card now paints the actor nouns, and a noun is a phrase the
+   * model wrote — nothing stops it from being the OTHER player's option label.
+   * RED-REGEN/002 is exactly that defect: with `mergeDescriptionTerms` given no
+   * label-ownership list, a colliding noun was painted as its declarer's while
+   * belonging to the opponent's move. The composition that ships neutralises it;
+   * this pins that over the whole artifact, and the canary below is the same
+   * check run against the pre-RED-REGEN/002 composition so that a zero here is a
+   * result rather than a probe that cannot fire.
+   */
+  {
+    const rows = allBankRows();
+    const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []);
+    const crossPaints = (sc: SuggestedScenario, build: (s: SuggestedScenario, a: string[], b: string[]) => { a: string[]; b: string[] }): string[] => {
+      const aN = strs(sc.actorA); const bN = strs(sc.actorB);
+      const painted = build(sc, aN, bN);
+      // OWNERSHIP IS THE OPTION LABELS, not the declared nouns. A noun is a
+      // phrase the model chose; if it happens to be the opponent's move, the
+      // opponent owns it and declaring it cannot transfer it. Counting nouns as
+      // ownership would make this check unable to see RED-REGEN/002 at all —
+      // measured: the planted canary below then reads 0 under both compositions.
+      const aOwn = new Set([sc.row1, sc.row2].filter(Boolean).map((t) => colorTermKey(t as string)));
+      const bOwn = new Set([sc.col1, sc.col2].filter(Boolean).map((t) => colorTermKey(t as string)));
+      const bad: string[] = [];
+      for (const t of painted.a) if (bOwn.has(colorTermKey(t)) && !aOwn.has(colorTermKey(t))) bad.push(`A paints B's "${t}"`);
+      for (const t of painted.b) if (aOwn.has(colorTermKey(t)) && !bOwn.has(colorTermKey(t))) bad.push(`B paints A's "${t}"`);
+      return bad;
+    };
+    const shipping = (sc: SuggestedScenario, a: string[], b: string[]) => regenPreviewColorTerms(sc, a, b, [], []);
+    let crossed = 0; let firstCross = '';
+    for (const e of rows) {
+      const bad = crossPaints(e.s as SuggestedScenario, shipping);
+      if (bad.length) { crossed++; if (!firstCross) firstCross = `"${e.s.name}": ${bad.join(', ')}`; }
+    }
+    check('no shipped row paints a phrase for the player who does not own it', crossed === 0,
+      `${crossed} of ${rows.length} — first: ${firstCross}`);
+
+    const planted = {
+      name: 'Planted', row1: 'Hold Price', row2: 'Cut Price', col1: 'Stock Wide', col2: 'Stock Narrow',
+      description: 'Stock Wide is how the first party describes its own stance, and the other picks Hold Price or Cut Price.',
+      actorA: ['Stock Wide'],
+    } as SuggestedScenario;
+    check('the check can fire: the same planted collision is a cross-player paint under the pre-RED-REGEN/002 composition',
+      crossPaints(planted, (sc, a, b) => mergeDescriptionTerms(colorTermsFor(sc), a, b)).length === 1
+      && crossPaints(planted, shipping).length === 0,
+      `pre-fix=${JSON.stringify(crossPaints(planted, (sc, a, b) => mergeDescriptionTerms(colorTermsFor(sc), a, b)))} `
+      + `shipping=${JSON.stringify(crossPaints(planted, shipping))}`);
   }
 
   /**
