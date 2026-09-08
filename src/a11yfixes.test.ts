@@ -25,7 +25,7 @@ const app = readFileSync('src/App.tsx', 'utf8');
 const css = readFileSync('src/index.css', 'utf8');
 
 /** RED-APP-17/001: dark print must use the light paper palette. */
-function assertDarkPrintPalette(source: string): void {
+function extractPrintBlock(source: string): string {
   const start = source.indexOf('@media print');
   let printBlock = '';
   if (start >= 0) {
@@ -39,21 +39,146 @@ function assertDarkPrintPalette(source: string): void {
       }
     }
   }
+  return printBlock;
+}
+
+function assertDarkPrintPalette(source: string): void {
+  const printBlock = extractPrintBlock(source);
   assert(printBlock, 'src/index.css must contain an @media print block');
-  assert(/html\.dark[\s\S]{0,260}color-scheme:\s*light\s*!important/.test(printBlock),
-    '@media print must force color-scheme: light for html.dark');
-  assert(/html\.dark\s+\[class\*="dark:bg-"\][\s\S]{0,120}background-color:\s*var\(--color-white\)\s*!important/.test(printBlock),
-    '@media print must neutralise every dark background utility');
-  assert(/html\.dark\s+\[class\*="dark:text-"\][\s\S]{0,120}color:\s*var\(--color-slate-900\)\s*!important/.test(printBlock),
-    '@media print must neutralise every dark text utility');
+  const rootRule = [...printBlock.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .find(([selector]) => selector.includes('html.dark') && selector.includes('html.dark body'));
+  assert(rootRule, '@media print must contain the html.dark root palette rule');
+  assert(/color-scheme:\s*light\s*!important/.test(rootRule[2]),
+    '@media print must force color-scheme: light in the html.dark root rule');
+  const variantFamilies = {
+    background: ['dark:bg-', 'dark:hover:bg-', 'dark:disabled:bg-', 'dark:disabled:!bg-'],
+    text: ['dark:text-', 'dark:hover:text-', 'dark:disabled:text-', 'dark:disabled:!text-'],
+    border: ['dark:border-', 'dark:hover:border-', 'dark:disabled:border-', 'dark:disabled:!border-', 'dark:focus-within:border-'],
+  } as const;
+  const assertFamilyRule = (prefix: string, property: string, expected: string): void => {
+    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+    let matched = false;
+    for (const match of printBlock.matchAll(ruleRe)) {
+      if (!match[1].includes(`[class*="${prefix}"]`)) continue;
+      matched = true;
+      assert(new RegExp(`${property}:\\s*${expected}\\s*!important`).test(match[2]),
+        `@media print ${prefix} rule must set ${property} to ${expected}`);
+    }
+    assert(matched, `@media print must neutralise ${prefix}`);
+  };
+  for (const [kind, prefixes] of Object.entries(variantFamilies)) {
+    for (const prefix of prefixes) {
+      const property = kind === 'background' ? 'background-color' : kind === 'text' ? 'color' : 'border-color';
+      const expected = kind === 'background' ? 'var\\(--color-white\\)' : kind === 'text' ? 'var\\(--color-slate-900\\)' : 'var\\(--color-slate-200\\)';
+      assertFamilyRule(prefix, property, expected);
+    }
+  }
+  assert(/background-color:\s*var\(--color-white\)\s*!important/.test(printBlock),
+    '@media print must force a white paper background for dark backgrounds');
+  assert(/color:\s*var\(--color-slate-900\)\s*!important/.test(printBlock),
+    '@media print must force dark readable ink for dark text');
+  assert(/border-color:\s*var\(--color-slate-200\)\s*!important/.test(printBlock),
+    '@media print must force light borders on paper');
 }
 
 assertDarkPrintPalette(css);
-const printPaletteMutant = css.replace(/\n  html\.dark\s+\[class\*="dark:text-"\][\s\S]*?\n  \}/, '');
-assert.notStrictEqual(printPaletteMutant, css,
-  'mutation-test precondition: the dark-print text rule must be removable');
-assert.throws(() => assertDarkPrintPalette(printPaletteMutant),
-  /dark text utility/, 'mutation-test: removing the dark-print text rule must fail the named guard');
+function assertRuntimeProgressPrintPalette(source: string, appSource: string): void {
+  const printBlock = extractPrintBlock(source);
+  const runtimeStart = printBlock.indexOf('html.dark [class~="bg-slate-900"][class~="border-slate-800"]');
+  const runtimeEnd = printBlock.indexOf('/* The one `position: sticky`', runtimeStart);
+  const runtimeBlock = runtimeEnd > runtimeStart ? printBlock.slice(runtimeStart, runtimeEnd) : '';
+  assert(printBlock && runtimeStart >= 0,
+    'the print block must scope runtime-dark simulation styles to the uniquely identified runtime simulation panel');
+  assert(/darkMode\s*\?\s*'bg-slate-900 border-slate-800'\s*:\s*'bg-slate-50 border-slate-200'/.test(appSource),
+    'the runtime-dark simulation panel fixture must still be present in App.tsx');
+  assert(/darkMode\s*\?\s*'border-ne-mixed-700 text-ne-mixed-400 hover:bg-ne-mixed-900\/30 cursor-pointer'\s*:\s*'border-ne-mixed-300 text-ne-mixed-700 hover:bg-ne-mixed-50 cursor-pointer'/.test(appSource),
+    'the runtime-dark mixed-NE control fixture must still be present in App.tsx');
+  const runtimeMappings = [
+    ['bg-slate-900', 'background-color', 'var\\(--color-slate-50\\)'],
+    ['bg-slate-800', 'background-color', 'var\\(--color-white\\)'],
+    ['bg-slate-700', 'background-color', 'var\\(--color-slate-200\\)'],
+    ['border-slate-800', 'border-color', 'var\\(--color-slate-200\\)'],
+    ['border-slate-700', 'border-color', 'var\\(--color-slate-300\\)'],
+    ['text-slate-400', 'color', 'var\\(--color-slate-700\\)'],
+    ['text-slate-200', 'color', 'var\\(--color-slate-700\\)'],
+    ['text-slate-600', 'color', 'var\\(--color-slate-600\\)'],
+    ['border-ne-mixed-700', 'border-color', 'var\\(--color-ne-mixed-300\\)'],
+    ['text-ne-mixed-400', 'color', 'var\\(--color-ne-mixed-700\\)'],
+    ['hover:bg-ne-mixed-900/30', 'background-color', 'var\\(--color-ne-mixed-50\\)'],
+  ] as const;
+  for (const [token, property, expected] of runtimeMappings) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = runtimeBlock.match(new RegExp(`[^{}]*\\[class~="${escaped}"\\][^{}]*\\{([^{}]*)\\}`));
+    assert(match, `runtime-dark print mapping must cover ${token}`);
+    assert(new RegExp(`${property}:\\s*${expected}\\s*!important`).test(match[1]),
+      `runtime-dark print mapping for ${token} must set ${property} to ${expected}`);
+  }
+}
+
+assertRuntimeProgressPrintPalette(css, app);
+const runtimePaletteMutant = css.replace(/\n  \/\* The simulation progress panel[\s\S]*?\n  \/\* The one `position: sticky`/, '\n  /* The one `position: sticky`');
+assert.notStrictEqual(runtimePaletteMutant, css,
+  'mutation-test precondition: runtime-dark print mapping must be removable');
+assert.throws(() => assertRuntimeProgressPrintPalette(runtimePaletteMutant, app),
+  /scope runtime-dark simulation/, 'mutation-test: removing runtime-dark print mapping must fail the named guard');
+const runtimeBlockMatch = css.match(/\n  \/\* The simulation progress panel[\s\S]*?\n  \/\* The one `position: sticky`/);
+assert(runtimeBlockMatch, 'mutation-test precondition: runtime-dark print mapping block must be movable');
+const runtimeMovedOutsideMedia = css
+  .replace(runtimeBlockMatch[0], '\n  /* The one `position: sticky`')
+  .replace('@media print {', `${runtimeBlockMatch[0]}\n@media print {`);
+assert.throws(() => assertRuntimeProgressPrintPalette(runtimeMovedOutsideMedia, app),
+  /scope runtime-dark simulation/, 'mutation-test: moving runtime-dark print mapping outside @media must fail the named guard');
+const runtimeIdentityMutant = app.replace('bg-slate-900 border-slate-800', 'bg-slate-900 border-slate-700');
+assert.notStrictEqual(runtimeIdentityMutant, app,
+  'mutation-test precondition: runtime-dark panel identity fixture must be mutable');
+assert.throws(() => assertRuntimeProgressPrintPalette(css, runtimeIdentityMutant),
+  /runtime-dark simulation panel fixture/, 'mutation-test: breaking the runtime-dark panel identity fixture must fail the named guard');
+const runtimePropertyMutant = css.replace(
+  /(html\.dark \[class~="bg-slate-900"\]\[class~="border-slate-800"\][\s\S]*?\{)[\s\S]*?background-color:\s*var\(--color-slate-50\)\s*!important;/,
+  '$1',
+);
+assert.notStrictEqual(runtimePropertyMutant, css,
+  'mutation-test precondition: runtime-dark background declaration must be removable');
+assert.throws(() => assertRuntimeProgressPrintPalette(runtimePropertyMutant, app),
+  /bg-slate-900.*background-color/, 'mutation-test: removing the runtime-dark background declaration must fail the named guard');
+
+const composedFixtures = [
+  ['background', ['dark:hover:bg-', 'dark:disabled:!bg-'], 'dark:hover:bg-slate-800 dark:disabled:!bg-slate-950'],
+  ['text', ['dark:hover:text-', 'dark:disabled:!text-'], 'dark:hover:text-slate-200 dark:disabled:!text-slate-100'],
+  ['border', ['dark:hover:border-', 'dark:disabled:!border-'], 'dark:hover:border-slate-700 dark:disabled:!border-slate-600'],
+] as const;
+for (const [kind, prefixes, classNames] of composedFixtures) {
+  assert(classNames.includes('dark:') && prefixes.every((prefix) => classNames.includes(prefix)),
+    `mutation fixture precondition: ${kind} composed dark utility tokens must be represented`);
+  const printBlock = extractPrintBlock(css);
+  for (const prefix of prefixes) assert(printBlock.includes(`[class*="${prefix}"]`),
+    `@media print must structurally cover composed ${kind} fixture ${prefix}`);
+}
+
+for (const [kind, suffix, message] of [
+  ['background', 'bg', /dark:bg-|background utility family/],
+  ['text', 'text', /dark:text-|text utility family/],
+  ['border', 'border', /dark:border-|border utility family/],
+] as const) {
+  const mutant = css.replace(new RegExp(`\\n  html\\.dark \\[[^\\n]*\"dark:${suffix}-\"\\],[\\s\\S]*?\\n  \\}`), '');
+  assert.notStrictEqual(mutant, css, `mutation-test precondition: the composed dark-${kind} rule must be removable`);
+  assert.throws(() => assertDarkPrintPalette(mutant), message,
+    `mutation-test: removing the composed dark-${kind} rule must fail the named guard`);
+}
+
+for (const [kind, suffix, property, message] of [
+  ['background', 'bg', 'background-color', /dark:bg-|background utility family/],
+  ['text', 'text', 'color', /dark:text-|text utility family/],
+  ['border', 'border', 'border-color', /dark:border-|border utility family/],
+] as const) {
+  const mutant = css.replace(
+    new RegExp(`(\\n  html\\.dark \\[[^\\n]*"dark:${suffix}-"\\],[\\s\\S]*?\\{[\\s\\S]*?)${property}:\\s*var\\([^;]+\\)\\s*!important;`),
+    '$1',
+  );
+  assert.notStrictEqual(mutant, css, `mutation-test precondition: the composed dark-${kind} declaration must be removable`);
+  assert.throws(() => assertDarkPrintPalette(mutant), message,
+    `mutation-test: removing the composed dark-${kind} declaration must fail the named guard`);
+}
 
 /**
  * The full text of the `<div>` block that OPENS at `startMarker`, found by
