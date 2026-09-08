@@ -7124,6 +7124,12 @@ try {
       const t = document.querySelector(sel);
       return (t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null;
     }, TOUR_SEL);
+    // Wait for the tour dialog itself before the first read: the tour opens
+    // after mount, and reading the counter straight after networkidle raced
+    // it on the runner (CI 2026-09-08 shard 30 on #175: step0=null while the
+    // very next read of the same page said "1"). The waitFor makes step0 a
+    // real reading of the opened tour, not of the page's load timing.
+    await p.locator(TOUR_SEL).waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
     const step0 = await tourStep();
     record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0}`);
 
