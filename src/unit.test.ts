@@ -3633,7 +3633,7 @@ function testWalkthroughInputContracts() {
     const scrollEffect = scrollStart >= 0 && scrollEnd > scrollStart ? source.slice(scrollStart, scrollEnd) : '';
     assert(/const placementKey = tourTargetPlacementKey\(\s*step\?\.target, cardH, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, vp\.w, vp\.h,\s*\);/.test(source)
       && /documentTop: r\.top \+ window\.scrollY - PAD/.test(source)
-      && /\}, \[i, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, open, vp\.w, vp\.h\]\);/.test(source)
+      && /\}, \[i, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, open, vp\.w, vp\.h, portraitSheet\]\);/.test(source)
       && /const room = Math\.max\(120, window\.innerHeight - sheetH - GAP - top\);/.test(scrollEffect)
       && /const delta = tourTargetScrollDelta\(r0\.top, r0\.height, top, room\);/.test(scrollEffect)
       && /\}, \[open, placementKey\]\);/.test(scrollEffect)
@@ -3643,8 +3643,19 @@ function testWalkthroughInputContracts() {
     // spotlight's POST-centring position, through the same predicate render uses.
     assert(/const paddedRect = readRect\(el\);[\s\S]{0,400}?tourPortraitUsesSheet\(\s*tourRectAfterCentering\(paddedRect, window\.innerHeight\), window\.innerWidth, window\.innerHeight,?\s*\)/.test(scrollEffect),
       'H5/CR scroll layout must use the padded spotlight rect AS IT WILL SIT AFTER CENTRING, through tourPortraitUsesSheet(tourRectAfterCentering(...))');
-    assert(/const sheet = !landscape && \(!rect \? vw < COMPACT_MAX : tourPortraitUsesSheet\(rect, vw, vh\)\);/.test(source),
-      'CR #173: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect');
+    assert(/const portraitSheet = !\(vp\.w > vp\.h\) && \(!rect \? vp\.w < COMPACT_MAX : tourPortraitUsesSheet\(rect, vp\.w, vp\.h\)\);/.test(source)
+      && /const sheet = portraitSheet;/.test(source),
+      'CR #173: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect (portraitSheet)');
+    // OPUS-REVIEW-173/C2: the card measurement must re-run on a layout-family flip.
+    assert(/if \(cardRef\.current\) setCardH\(cardRef\.current\.offsetHeight\);\s*\}, \[i, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, open, vp\.w, vp\.h, portraitSheet\]\);/.test(source),
+      'OPUS-173/C2: the card-height measure effect must key on the rendered layout family (portraitSheet) — a sheet positioned with the floating card\'s height sat 223px above the bottom at 950x1000');
+    // OPUS-REVIEW-173/C4: the two gate handlers must be EXACTLY these bodies —
+    // a dropped `if (allowed) return;` killed every tour control with the old
+    // regex still green; an accepted blocked-origin click is RED-APP-17/002.
+    assert(/const onTourPointerDownCapture = \(e: ReactPointerEvent<HTMLDivElement>\) => \{\s*const resumedAtSamePoint = tourClickSharesBlockedOrigin\(resumedPointerOriginRef\.current, e\.clientX, e\.clientY\);\s*if \(resumedAtSamePoint\) resumedPointerOriginRef\.current = null;\s*pointerDownOnVisibleTourRef\.current = !blocked && !resumedAtSamePoint;\s*\};/.test(source),
+      'OPUS-173/C4: onTourPointerDownCapture must be exactly: clear a resumed origin at the same point, then arm only when NOT blocked and NOT resumed');
+    assert(/const onTourClickCapture = \(e: ReactMouseEvent<HTMLDivElement>\) => \{\s*const allowed = e\.detail === 0 \|\| tourControlClickAllowed\(pointerDownOnVisibleTourRef\.current\);\s*pointerDownOnVisibleTourRef\.current = false;\s*if \(allowed\) return;\s*e\.preventDefault\(\);\s*e\.stopPropagation\(\);\s*\};/.test(source),
+      'OPUS-173/C4: onTourClickCapture must be exactly: allowed = keyboard or armed pointer; disarm; return when allowed; otherwise preventDefault + stopPropagation');
   };
   const source = readFileForContract('src/components/Walkthrough.tsx', 'utf8');
   contract(source);
@@ -3669,8 +3680,16 @@ function testWalkthroughInputContracts() {
     'CR #173 fixture: deciding the scroll layout from the PRE-centring spotlight (the shape CodeRabbit found) must fail the named source contract');
   assert(contractFails(source.replace('tourRectAfterCentering(paddedRect, window.innerHeight)', 'tourRectAfterCentering(r0, window.innerHeight)')),
     'H5 fixture: deciding scroll layout from the unpadded target while render uses the spotlight must fail the named source contract');
-  assert(contractFails(source.replace('const sheet = !landscape && (!rect ? vw < COMPACT_MAX : tourPortraitUsesSheet(rect, vw, vh));', 'const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));')),
+  assert(contractFails(source.replace('const sheet = portraitSheet;', 'const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));')),
     'CR #173 fixture: render bypassing the shared predicate must fail the named source contract');
+  assert(contractFails(source.replace('open, vp.w, vp.h, portraitSheet]);', 'open, vp.w, vp.h]);')),
+    'OPUS-173/C2 fixture: dropping the layout family from the measure deps (the 950x1000 regression) must fail the named source contract');
+  assert(contractFails(source.replace('    if (allowed) return;\n', '')),
+    'OPUS-173/C4 fixture: dropping `if (allowed) return;` (every tour control dead) must fail the named source contract');
+  assert(contractFails(source.replace('pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;', 'pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint || (e.target as HTMLElement).closest(\'[aria-label="Exit tour"]\') !== null;')),
+    'OPUS-173/C4 fixture: accepting a blocked-origin click on the Exit pill (RED-APP-17/002) must fail the named source contract');
+  assert(contractFails(source.replace('    if (resumedAtSamePoint) resumedPointerOriginRef.current = null;\n', '')),
+    'OPUS-173/C4 fixture: dropping the resumed-origin clear must fail the named source contract');
   // Behavioural: the 3D plot at 920x1200 (480px tall, spotlight 496) fits a floating
   // card only because of the room ABOVE its pre-scroll position; centred, it fits
   // nowhere — so the effect must take the sheet path from the start.

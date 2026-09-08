@@ -264,9 +264,19 @@ export function Walkthrough({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, placementKey]);
 
+  /**
+   * OPUS-REVIEW-173/C2: the rendered layout FAMILY (bottom sheet vs floating
+   * card) is decided from the live spotlight, which changes with scrolling —
+   * the effect below deliberately keys on scroll-invariant primitives, so a
+   * family flip after a scroll left `cardH` holding the OTHER family's height
+   * (462, the floating card) and the sheet was positioned 223px above the
+   * bottom of a 950x1000 screen, over 25% of the plot. The family itself is a
+   * boolean, so keying on it re-measures exactly once per flip.
+   */
+  const portraitSheet = !(vp.w > vp.h) && (!rect ? vp.w < COMPACT_MAX : tourPortraitUsesSheet(rect, vp.w, vp.h));
   useLayoutEffect(() => {
     if (cardRef.current) setCardH(cardRef.current.offsetHeight);
-  }, [i, rect?.documentTop, rect?.left, rect?.width, rect?.height, open, vp.w, vp.h]);
+  }, [i, rect?.documentTop, rect?.left, rect?.width, rect?.height, open, vp.w, vp.h, portraitSheet]);
 
   useEffect(() => {
     if (!open) return;
@@ -416,7 +426,7 @@ export function Walkthrough({
    * wherever a floating card cannot fit, the free-floating card otherwise.
    */
   const landscape = vw > vh;
-  const sheet = !landscape && (!rect ? vw < COMPACT_MAX : tourPortraitUsesSheet(rect, vw, vh));
+  const sheet = portraitSheet;
 
   /** Landscape card width: whatever the roomier side offers, clamped sane. */
   const sideAvail = rect
