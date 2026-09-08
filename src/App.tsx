@@ -442,6 +442,16 @@ export default function App() {
   // changed it.
   const authTokenRef = useRef(authToken);
   useLayoutEffect(() => { authTokenRef.current = authToken; });
+  // RED-DESKTOP-18/001 (+ CodeRabbit CLI on its fix): the request CONTEXT a
+  // games-route response must still match before a handler acts on it. The
+  // token alone cannot tell contexts apart — both database modes can be
+  // signed out (token null in each), yet the mode decides which server
+  // (`getApiUrl`) and which library the response belongs to. Bumped whenever
+  // identity, mode or API base commits; a handler captures the value before
+  // its fetch and discards any response whose generation has moved on
+  // (identity changes are covered: `authToken` is a dependency).
+  const gamesContextGenRef = useRef(0);
+  useLayoutEffect(() => { gamesContextGenRef.current += 1; }, [authToken, apiBaseUrl, dbMode]);
 
   const updateAuthToken = (token: string | null) => {
     setAuthToken(token);
@@ -2548,11 +2558,23 @@ export default function App() {
     setDeletingGameIds(Array.from(deletingGamesRef.current));
     // CodeRabbit on #163: the token THIS request is actually attached to.
     const requestToken = authToken;
+    const requestGen = gamesContextGenRef.current;
     try {
       const res = await fetch(getApiUrl(`/api/games/${gameId}`), {
         method: 'DELETE',
         headers: authHeaders()
       });
+      // RED-DESKTOP-18/001: a DELETE that was in flight under a PREVIOUS
+      // context (the user signed out and back in as a different account, or
+      // switched database mode, while it was held) is not this context's
+      // business, whatever it says: its 401 used to alert "Invalid or
+      // expired session." to the account that is validly signed in, and
+      // refreshing the list from here would run this handler's stale closure
+      // (the OLD token, the OLD mode's server) — a 401 there cleared the
+      // current account's list; a 404 there would load the other mode's
+      // rows. Discard it outright, exactly as Save/Edit skip a stale-session
+      // response; `finally` still releases the row's deleting state.
+      if (gamesContextGenRef.current !== requestGen) return;
       if (res.ok) {
         setUserCustomGames(prev => prev.filter(g => g.id !== gameId));
         if (activePreset === gameId) {
@@ -2582,13 +2604,24 @@ export default function App() {
         // used by GET/POST/PATCH); the server now answers this case with the
         // same "Invalid or expired session." wording the other three routes
         // use (server.ts's DELETE handler, was "Unauthorized access.").
+        // The body read is a second await: the context can move on between
+        // the response and its body (CodeRabbit CLI on the fix) — so read it,
+        // re-check, and only THEN act. OPUS-REVIEW-169/A: the helper itself
+        // moves the generation on a same-account dead session (it clears the
+        // token, and the token is a dependency of the generation), so no gate
+        // may follow it — with the gate after the helper, the legitimate
+        // "Invalid or expired session." alert never showed.
+        const data = await res.json().catch(() => ({}));
+        if (gamesContextGenRef.current !== requestGen) return;
         handleDeadSessionResponse(res, requestToken);
-        const data = await res.json();
         alert(data.error || 'Failed to delete game.');
       }
     } catch {
       // RED-APP-10/003: offline, the click used to do nothing visible at all.
       // The alert IS the report (no console noise: Save/Edit report the same way).
+      // A network failure of a request from a previous context is not this
+      // context's to report either.
+      if (gamesContextGenRef.current !== requestGen) return;
       alert('Network error. Failed to delete game. Check your connection and try again.');
     } finally {
       deletingGamesRef.current.delete(gameId);

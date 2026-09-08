@@ -833,6 +833,74 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   check('the Save gate has a named escape for the explicit local-device choice (localConfirmed)',
     /!localConfirmed &&/.test(saveSlice));
 
+  // RED-DESKTOP-18/001: Delete has no dialog, so a response that lands AFTER
+  // the user signed out of A and back in as B (a request sent under A's
+  // token; B validly signed in) used to be handled as if it were B's — its
+  // 401 alerted B "Invalid or expired session." — and the first fix's
+  // "refresh the list instead" ran the handler's STALE closure (A's token),
+  // whose own 401 then cleared B's list (director's regression run of the
+  // red's harness). The invariant is the one Save/Edit already hold: a
+  // stale-identity response is discarded before it touches ANY state —
+  // before `res.ok`'s list edit, before the 404 refetch, before the helper.
+  //
+  // CodeRabbit CLI on the fix: identity is not the whole context — both
+  // database modes can be signed out (token null in each), and the mode
+  // decides which server the response came from — so the gate compares a
+  // request-context GENERATION bumped on every identity / mode / API-base
+  // commit, captured before the fetch.
+  const deleteSlice = app.slice(app.indexOf('const handleDeleteGame'), app.indexOf('const handleGenerateGame'));
+  const DELETE_STALE_GATE = 'if (gamesContextGenRef.current !== requestGen) return;';
+  const gateIdx = deleteSlice.indexOf(DELETE_STALE_GATE);
+  const okIdx = deleteSlice.indexOf('if (res.ok)');
+  const helperIdx = deleteSlice.indexOf('handleDeadSessionResponse(res, requestToken)');
+  const fetchIdx = deleteSlice.indexOf('await fetch(');
+  check(`handleDeleteGame discards a stale-context response before ANY state change (fetch@${fetchIdx} gate@${gateIdx} res.ok@${okIdx} helper@${helperIdx})`,
+    gateIdx !== -1 && okIdx !== -1 && helperIdx !== -1 && fetchIdx !== -1
+    && fetchIdx < gateIdx && gateIdx < okIdx && gateIdx < helperIdx);
+  check('handleDeleteGame captures the request generation before the fetch (requestGen = gamesContextGenRef.current)',
+    (() => { const i = deleteSlice.indexOf('const requestGen = gamesContextGenRef.current;'); return i !== -1 && i < fetchIdx; })());
+  check('the games-context generation is bumped on every identity, API-base and database-mode commit',
+    /useLayoutEffect\(\(\) => \{ gamesContextGenRef\.current \+= 1; \}, \[authToken, apiBaseUrl, dbMode\]\);/.test(app));
+  // Every await is a chance for the context to move on: the body read before
+  // the server-error alert, and the catch before the network alert.
+  const jsonIdx = deleteSlice.indexOf('const data = await res.json()');
+  const errAlertIdx = deleteSlice.indexOf("alert(data.error || 'Failed to delete game.')");
+  const netAlertIdx = deleteSlice.indexOf("alert('Network error. Failed to delete game.");
+  const gateAfter = (from: number, before: number) => { const i = deleteSlice.indexOf(DELETE_STALE_GATE, from); return i !== -1 && i < before; };
+  check(`handleDeleteGame re-checks the generation after the body read, before the server-error alert (json@${jsonIdx} alert@${errAlertIdx})`,
+    jsonIdx !== -1 && errAlertIdx !== -1 && gateAfter(jsonIdx, errAlertIdx));
+  // OPUS-REVIEW-169/A: the dead-session helper clears the token on a
+  // same-account 401, and the token is a dependency of the generation — so a
+  // gate placed AFTER the helper sees a moved generation and swallows the
+  // legitimate "Invalid or expired session." alert (confirmed A/B on main vs
+  // the first fix). The helper must run after the LAST gate and with no
+  // await between it and the alert: body read → gate → helper → alert.
+  const lastGateBeforeErrAlert = deleteSlice.lastIndexOf(DELETE_STALE_GATE, errAlertIdx);
+  check(`handleDeleteGame runs the dead-session helper AFTER the last generation gate and after the body read (json@${jsonIdx} gate@${lastGateBeforeErrAlert} helper@${helperIdx} alert@${errAlertIdx})`,
+    helperIdx !== -1 && lastGateBeforeErrAlert !== -1 && jsonIdx < lastGateBeforeErrAlert && lastGateBeforeErrAlert < helperIdx && helperIdx < errAlertIdx
+    && !/await/.test(deleteSlice.slice(helperIdx, errAlertIdx)));
+  const helperFirst = deleteSlice.replace('handleDeadSessionResponse(res, requestToken);\n', '')
+    .replace('const data = await res.json()', 'handleDeadSessionResponse(res, requestToken);\n        const data = await res.json()');
+  check('fixture: the helper moved back before the body read and the gate is rejected (precondition: the plant landed)',
+    helperFirst !== deleteSlice && helperFirst.indexOf('handleDeadSessionResponse(res, requestToken)') < helperFirst.lastIndexOf(DELETE_STALE_GATE, helperFirst.indexOf("alert(data.error")));
+  check(`handleDeleteGame re-checks the generation in the catch, before the network alert (alert@${netAlertIdx})`,
+    netAlertIdx !== -1 && gateAfter(errAlertIdx, netAlertIdx));
+  // Mutation fixtures: the two ways this regresses — the gate removed (the
+  // original defect) and the gate moved below the helper (the alert is gone
+  // but the list edits and the 404 refetch run under the wrong identity).
+  // (The gate string recurs after the later awaits; removing the FIRST one
+  // leaves only gates that sit after `if (res.ok)`, which the discard check
+  // rejects.)
+  const noGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '');
+  const noGateFirst = noGate.indexOf(DELETE_STALE_GATE);
+  check('fixture: removing the stale-identity gate fails the discard check (precondition: the plant landed)',
+    noGate !== deleteSlice && (noGateFirst === -1 || noGateFirst > noGate.indexOf('if (res.ok)')));
+  const lateGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '')
+    .replace('handleDeadSessionResponse(res, requestToken);', 'handleDeadSessionResponse(res, requestToken);\n        ' + DELETE_STALE_GATE);
+  const lateIdx = lateGate.indexOf(DELETE_STALE_GATE);
+  check('fixture: a gate placed after the helper fails the discard check (precondition: the plant landed)',
+    lateGate !== deleteSlice && lateIdx !== -1 && !(lateIdx < lateGate.indexOf('if (res.ok)')));
+
   // Known-positive fixtures (mutation: bypass -> fails by name): removing
   // the gate line entirely must be caught, by NAME, for each dialog.
   const editBypassed = editSlice.replace(new RegExp(`${editGatePattern.source}\\n\\s*`), '');
