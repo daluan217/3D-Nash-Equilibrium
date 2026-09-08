@@ -81,6 +81,8 @@ export const tourTargetScrollDelta = (targetTop: number, targetHeight: number, s
 
 /** Bottom edge of the sticky header, which overlays the top of the page. */
 function headerOffset(): number {
+  // Called during render (the Exit pill's top): no DOM outside a browser.
+  if (typeof document === 'undefined') return 0;
   const el = document.querySelector('header');
   if (!el) return 0;
   const r = el.getBoundingClientRect();
