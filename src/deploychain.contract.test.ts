@@ -207,6 +207,41 @@ if (unpinnedCheckout('on:\n  push:\n    branches: [main]\njobs:\n  a:\n    steps
   fail('a push-triggered workflow was flagged; only workflow_run resets GITHUB_SHA');
 }
 
+/* ---------------------------------------------------------------- check 5
+ * RED-DESKTOP-19/002: the DMG job refuses to republish a version that is already
+ * live (fixed GCS object names + a version-string-only update check mean a
+ * second build under one version is invisible to every installed copy of the
+ * first), and the manifest records the build sha.
+ */
+function republishGuarded(yml: string): boolean {
+  return /gcloud storage cat "gs:\/\/\$BUCKET\/app-version\.json"/.test(yml)
+    && /\[ "\$PUBLISHED" = "\$VERSION" \][\s\S]{0,400}exit 1/.test(yml)
+    && /BUILD_SHA="\$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}"/.test(yml)
+    && /"build":"%s"[\s\S]{0,80}"\$BUILD_SHA"/.test(yml)
+    && /throw new Error\('app-version\.json has no version'\)/.test(yml) && !/catch\{''\}/.test(yml)
+    // CodeRabbit on #176 (CLI, twice): the publish step is two GCS writes; a
+    // newer push must QUEUE, never cancel a release between them.
+    && /concurrency:\s*\n\s*group: release-desktop\s*\n\s*cancel-in-progress: false/.test(yml);
+}
+{
+  const yml = read('release-desktop.yml');
+  if (!republishGuarded(yml)) fail('release-desktop.yml must refuse to republish an already-published version and write the build sha into app-version.json (RED-DESKTOP-19/002)');
+  const unguarded = yml.replace(/\n\s*if \[ -n "\$PUBLISHED" \] && \[ "\$PUBLISHED" = "\$VERSION" \][\s\S]*?exit 1\n\s*fi\n/, '\n');
+  if (unguarded === yml) fail('known-positive fixture for the republish guard did not land (the guard text moved)');
+  if (republishGuarded(unguarded)) fail('known-positive fixture "release-desktop without the republish guard" was NOT flagged');
+  const cancelling = yml.replace('cancel-in-progress: false', 'cancel-in-progress: true');
+  if (cancelling === yml) fail('known-positive fixture for the no-cancel rule did not land (the concurrency block moved)');
+  if (republishGuarded(cancelling)) fail('known-positive fixture "a newer push cancels an in-flight release" was NOT flagged');
+  const noBuild = yml.replace('"build":"%s"', '');
+  if (republishGuarded(noBuild)) fail('known-positive fixture "manifest without the build sha" was NOT flagged');
+  const mainHead = yml.replace('BUILD_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"', 'BUILD_SHA="$GITHUB_SHA"');
+  if (mainHead === yml) fail('known-positive fixture for the build sha source did not land');
+  if (republishGuarded(mainHead)) fail('known-positive fixture "build sha taken from GITHUB_SHA (main head, not the verified commit)" was NOT flagged');
+  const lenient = yml.replace(/node -e "const v=JSON\.parse[^"]*"/, `node -p "try{JSON.parse(require('fs').readFileSync(0,'utf8')).version||''}catch{''}"`);
+  if (lenient === yml) fail('known-positive fixture for the strict manifest parse did not land');
+  if (republishGuarded(lenient)) fail('known-positive fixture "malformed manifest read as unpublished" was NOT flagged');
+}
+
 console.log(
   `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on Deploy site's merged-head check gate (no Test rerun on main), workflow_run triggers filtered to main, `
   + `${MUST_FLAG.length} known-positive fixtures flagged, 2 controls clean`,
