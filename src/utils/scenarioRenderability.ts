@@ -129,9 +129,9 @@ export function scenarioIsAttributable(
   const r = scenarioRenderability(sc, audience);
   if (r.a && r.b) return { ok: true };
   if (r.ambiguityOnly) return { ok: true };
-  const side = !r.a && !r.b ? 'neither player' : !r.a ? 'player A' : 'player B';
+  const side = !r.a && !r.b ? 'either player' : !r.a ? 'player A' : 'player B';
   return {
     ok: false,
-    reason: `the description names no term of ${side} that the ${audience} would highlight`,
+    reason: `the description names nothing the ${audience} would highlight for ${side}`,
   };
 }
