@@ -18,7 +18,7 @@
  * nothing — see `resolveTarget`.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, X } from 'lucide-react';
 import { ModalRegistry } from './ModalSurface';
 
@@ -31,7 +31,8 @@ export interface TourStep {
   onEnter?: () => void;
 }
 
-interface Rect { top: number; left: number; width: number; height: number }
+interface Rect { top: number; left: number; width: number; height: number; documentTop: number }
+interface PointerOrigin { x: number; y: number }
 
 /** Gap between the spotlight and the caption card. */
 const GAP = 16;
@@ -47,6 +48,36 @@ const SHEET_MAX_VH = 0.38;
 const SHEET_MAX_VH_SHORT = 0.32;
 const SHORT_VH = 720;
 const sheetMaxVh = (vh: number) => (vh < SHORT_VH ? SHEET_MAX_VH_SHORT : SHEET_MAX_VH);
+
+/** A pointer click may act on the tour only when its pointerdown reached it visibly. */
+export const tourControlClickAllowed = (pointerDownWasVisible: boolean) => pointerDownWasVisible;
+
+export const tourClickSharesBlockedOrigin = (origin: PointerOrigin | null, x: number, y: number) =>
+  !!origin && origin.x === x && origin.y === y;
+
+/** A canceled/finished blocked gesture must not arm a later fresh gesture. */
+export const tourBlockedOriginAfterPointerDown = (blocked: boolean, origin: PointerOrigin) =>
+  blocked ? origin : null;
+
+/** JavaScript scrolling must not override the visitor's reduced-motion preference. */
+export const tourScrollBehavior = (reducedMotion: boolean): ScrollBehavior => reducedMotion ? 'auto' : 'smooth';
+
+/** A measured sheet-height change is a new target-placement situation. */
+export const tourTargetPlacementKey = (
+  target: string | undefined,
+  measuredCardHeight: number,
+  targetDocumentTop = 0,
+  targetDocumentLeft = 0,
+  targetWidth = 0,
+  targetHeight = 0,
+  viewportWidth = 0,
+  viewportHeight = 0,
+) => `${target ?? ''}:${measuredCardHeight}:${targetDocumentTop}:${targetDocumentLeft}:${targetWidth}:${targetHeight}:${viewportWidth}:${viewportHeight}`;
+
+export const tourTargetScrollDelta = (targetTop: number, targetHeight: number, stripTop: number, stripHeight: number) =>
+  targetHeight > stripHeight
+    ? targetTop - stripTop
+    : (targetTop + targetHeight / 2) - (stripTop + stripHeight / 2);
 
 /** Bottom edge of the sticky header, which overlays the top of the page. */
 function headerOffset(): number {
@@ -81,7 +112,16 @@ function floatingFits(r: Rect, vw: number, vh: number): boolean {
 
 const readRect = (el: Element): Rect => {
   const r = el.getBoundingClientRect();
-  return { top: r.top - PAD, left: r.left - PAD, width: r.width + PAD * 2, height: r.height + PAD * 2 };
+  return {
+    top: r.top - PAD,
+    left: r.left - PAD,
+    width: r.width + PAD * 2,
+    height: r.height + PAD * 2,
+    // This is deliberately document-relative. `top` changes as smooth scrolling
+    // proceeds, but a parent layout change after a step's onEnter moves this value
+    // and requires one fresh placement without restarting scrolling every frame.
+    documentTop: r.top + window.scrollY - PAD,
+  };
 };
 
 export function Walkthrough({
@@ -117,7 +157,9 @@ export function Walkthrough({
 
   const step = steps[i];
   const last = i === steps.length - 1;
-
+  const placementKey = tourTargetPlacementKey(
+    step?.target, cardH, rect?.documentTop, rect?.left, rect?.width, rect?.height, vp.w, vp.h,
+  );
   const close = useCallback(() => { setI(0); onClose(); }, [onClose]);
 
   // Fire the step's side effect once per step, not on every re-measure.
@@ -144,7 +186,7 @@ export function Walkthrough({
       const el = document.querySelector(`[data-tour="${step.target}"]`);
       if (el) {
         const r = readRect(el);
-        const key = `${r.top}|${r.left}|${r.width}|${r.height}`;
+        const key = `${r.top}|${r.left}|${r.width}|${r.height}|${r.documentTop}`;
         if (key !== prev) { prev = key; setRect(r); }
       } else if (prev !== 'none') {
         prev = 'none';
@@ -154,9 +196,7 @@ export function Walkthrough({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-    // Keyed on the TARGET, not the step object: App rebuilds the step array on
-    // every render (so the steps' closures stay current), and depending on the
-    // object identity would tear down and restart this loop each time.
+    // Keyed on the target, not the rebuilt step object.
   }, [open, step?.target]);
 
   /**
@@ -167,42 +207,50 @@ export function Walkthrough({
    * before this fix: the card covered 85-90% of the very element it was
    * pointing at. Small screens instead centre the target in the strip of
    * screen left above the sheet.
-   */
+  */
   useEffect(() => {
     if (!open || !step) return;
-    const el = document.querySelector(`[data-tour="${step.target}"]`);
-    if (!el) return;
-    const r0 = el.getBoundingClientRect();
-    const asRect: Rect = { top: r0.top, left: r0.left, width: r0.width, height: r0.height };
-    const isLand = window.innerWidth > window.innerHeight;
-    const willSheet = !isLand && (window.innerWidth < COMPACT_MAX
-      || !floatingFits(asRect, window.innerWidth, window.innerHeight));
-    if (!willSheet && !isLand) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
-    }
-    // The sticky header sits OVER the top of the page, so the usable strip
-    // starts below it. Without this the target was scrolled to the top of the
-    // viewport and the header covered 123-137px of it on a phone.
-    const top = headerOffset();
-    // In landscape the card sits BESIDE the target, so the whole below-header
-    // strip is available; only the portrait sheet eats vertical room.
-    const sheetH = isLand ? 0 : (cardH || Math.round(window.innerHeight * sheetMaxVh(window.innerHeight)));
-    const room = Math.max(120, window.innerHeight - sheetH - top - GAP * 2);
-    // Centre it when it fits; when the target is TALLER than the strip -- the
-    // 3D plot on a phone is -- centring pushes its bottom under the sheet and
-    // its top off screen at once. Align the top instead, so the part of the
-    // picture being described is the part that stays visible.
-    const delta = r0.height > room
-      ? r0.top - top - GAP
-      : (r0.top + r0.height / 2) - (top + room / 2);
-    window.scrollBy({ top: delta, behavior: 'smooth' });
+    const frame = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-tour="${step.target}"]`);
+      if (!el) return;
+      const r0 = el.getBoundingClientRect();
+      const asRect: Rect = {
+        top: r0.top,
+        left: r0.left,
+        width: r0.width,
+        height: r0.height,
+        documentTop: r0.top + window.scrollY,
+      };
+      const isLand = window.innerWidth > window.innerHeight;
+      const behavior = tourScrollBehavior(!!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+      const willSheet = !isLand && (window.innerWidth < COMPACT_MAX
+        || !floatingFits(asRect, window.innerWidth, window.innerHeight));
+      if (!willSheet && !isLand) {
+        el.scrollIntoView({ behavior, block: 'center' });
+        return;
+      }
+      // The sticky header sits OVER the top of the page, so the usable strip
+      // starts below it. Without this the target was scrolled to the top of the
+      // viewport and the header covered 123-137px of it on a phone.
+      const top = headerOffset();
+      // In landscape the card sits BESIDE the target, so the whole below-header
+      // strip is available; only the portrait sheet eats vertical room.
+      const sheetH = isLand ? 0 : (cardH || Math.round(window.innerHeight * sheetMaxVh(window.innerHeight)));
+      const room = Math.max(120, window.innerHeight - sheetH - GAP - top);
+      // Centre it when it fits; when the target is TALLER than the strip -- the
+      // 3D plot on a phone is -- centring pushes its bottom under the sheet and
+      // its top off screen at once. Align the top instead, so the part of the
+      // picture being described is the part that stays visible.
+      const delta = tourTargetScrollDelta(r0.top, r0.height, top, room);
+      window.scrollBy({ top: delta, behavior });
+    });
+    return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, step?.target]);
+  }, [open, placementKey]);
 
   useLayoutEffect(() => {
     if (cardRef.current) setCardH(cardRef.current.offsetHeight);
-  }, [i, rect, open]);
+  }, [i, rect?.documentTop, rect?.left, rect?.width, rect?.height, open, vp.w, vp.h]);
 
   useEffect(() => {
     if (!open) return;
@@ -257,17 +305,88 @@ export function Walkthrough({
   // `ModalSurface`'s own registration effect does (both layout effects), so
   // React flushes the resulting re-render before the browser ever paints —
   // no click window in either direction (fall-through OR tour-advance).
+  const tourRef = useRef<HTMLDivElement>(null);
+  const pointerDownOnVisibleTourRef = useRef(false);
+  const blockedPointerOriginRef = useRef<PointerOrigin | null>(null);
+  const resumedPointerOriginRef = useRef<PointerOrigin | null>(null);
   const [blocked, setBlocked] = useState(() => ModalRegistry.isAnyOpen());
   useLayoutEffect(() => {
     const check = () => setBlocked(ModalRegistry.isAnyOpen());
     check();
     return ModalRegistry.subscribe(check);
   }, []);
+  const blockedRef = useRef(blocked);
+  useLayoutEffect(() => { blockedRef.current = blocked; }, [blocked]);
+  useEffect(() => {
+    const clearGestureState = () => {
+      pointerDownOnVisibleTourRef.current = false;
+      blockedPointerOriginRef.current = null;
+      resumedPointerOriginRef.current = null;
+    };
+    if (!open) {
+      clearGestureState();
+      return;
+    }
+    let active = true;
+    let releaseFrame = 0;
+    const notePointerDown = (e: PointerEvent) => {
+      pointerDownOnVisibleTourRef.current = false;
+      const origin = { x: e.clientX, y: e.clientY };
+      blockedPointerOriginRef.current = tourBlockedOriginAfterPointerDown(blockedRef.current, origin);
+      if (blockedRef.current) {
+        return;
+      }
+      const isTourTarget = e.target instanceof Node && !!tourRef.current?.contains(e.target);
+      if (!isTourTarget || !tourClickSharesBlockedOrigin(resumedPointerOriginRef.current, e.clientX, e.clientY)) {
+        resumedPointerOriginRef.current = null;
+      }
+    };
+    const noteClick = () => {
+      const origin = blockedPointerOriginRef.current;
+      blockedPointerOriginRef.current = null;
+      if (!origin) return;
+      queueMicrotask(() => {
+        // ModalSurface unregisters during React's close commit, which can land
+        // after this click's microtask. Read it on the following frame so the
+        // second press of a close double-click inherits the just-closed origin.
+        if (!active) return;
+        releaseFrame = requestAnimationFrame(() => {
+          if (active && !ModalRegistry.isAnyOpen()) resumedPointerOriginRef.current = origin;
+        });
+      });
+    };
+    const cancelPendingBlockedPointer = () => { blockedPointerOriginRef.current = null; };
+    window.addEventListener('pointerdown', notePointerDown, true);
+    window.addEventListener('pointercancel', cancelPendingBlockedPointer, true);
+    window.addEventListener('click', noteClick, true);
+    return () => {
+      active = false;
+      cancelAnimationFrame(releaseFrame);
+      clearGestureState();
+      window.removeEventListener('pointerdown', notePointerDown, true);
+      window.removeEventListener('pointercancel', cancelPendingBlockedPointer, true);
+      window.removeEventListener('click', noteClick, true);
+    };
+  }, [open]);
+
+  const onTourPointerDownCapture = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const resumedAtSamePoint = tourClickSharesBlockedOrigin(resumedPointerOriginRef.current, e.clientX, e.clientY);
+    if (resumedAtSamePoint) resumedPointerOriginRef.current = null;
+    pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;
+  };
+  const onTourClickCapture = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const allowed = e.detail === 0 || tourControlClickAllowed(pointerDownOnVisibleTourRef.current);
+    pointerDownOnVisibleTourRef.current = false;
+    if (allowed) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   if (!open || !step) return null;
 
   const vw = vp.w;
   const vh = vp.h;
+  const exitTop = headerOffset() + GAP;
   /**
    * Orientation decides the layout FAMILY, and it is the viewport's aspect —
    * never the device class. A phone rotated sideways, an iPad in landscape and
@@ -390,10 +509,13 @@ export function Walkthrough({
        backdrop would have fought every drag of the 3D scene. */
     <div
       data-print="hide"
+      ref={tourRef}
       inert={blocked}
       style={blocked ? { visibility: 'hidden' } : undefined}
       className="fixed inset-0 z-[60] pointer-events-none"
       role="dialog"
+      onPointerDownCapture={onTourPointerDownCapture}
+      onClickCapture={onTourClickCapture}
       aria-label="Guided tour"
     >
 
@@ -421,7 +543,8 @@ export function Walkthrough({
         type="button"
         onClick={close}
         aria-label="Exit tour"
-        className={`pointer-events-auto absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
+        style={{ top: exitTop, right: GAP }}
+        className={`pointer-events-auto absolute z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
       >
         <X className="w-4 h-4" /> Exit tour
       </button>
