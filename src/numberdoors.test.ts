@@ -291,12 +291,15 @@ function blankComments(src: string): string[] {
       line = ' '.repeat(end + 2) + line.slice(end + 2);
       inBlock = false;
     }
-    // strip complete /* ... */ spans, then an opening one that runs on
+    // strip complete /* ... */ spans, then whichever of `//` and `/*` comes
+    // FIRST decides the rest of the line: a `/*` inside a line comment must not
+    // open a block, or it would hide every following line from the scan
+    // (CodeRabbit CLI on 5ef5b6d; fixture B3c below).
     line = line.replace(/\/\*[\s\S]*?\*\//g, ' ');
     const open = line.indexOf('/*');
-    if (open !== -1) { line = line.slice(0, open); inBlock = true; }
     const slash = line.indexOf('//');
-    if (slash !== -1) line = line.slice(0, slash);
+    if (slash !== -1 && (open === -1 || slash < open)) line = line.slice(0, slash);
+    else if (open !== -1) { line = line.slice(0, open); inBlock = true; }
     out.push(line);
   }
   return out;
@@ -395,6 +398,15 @@ function testNoUnannotatedDoors(): void {
     if (line.includes('simState.cx.toFixed(')) caught = true;
   });
   ok(caught, 'B3 mutation: reverting the readout to a bare toFixed is seen by the same scan');
+
+  // A `/*` inside a `//` comment must not open a block: with the old
+  // first-check-`/*` order the second line below vanished from the scan, and
+  // with it every line to the end of the file (CodeRabbit CLI on 5ef5b6d).
+  const swallowed = blankComments(['// see /* the spec', 'const z = v.toFixed(3);', 'const w = u.toFixed(3);'].join('\n'));
+  ok(swallowed[1].includes('.toFixed(') && swallowed[2].includes('.toFixed('),
+    'B3c a "/*" inside a line comment does not swallow the lines after it', JSON.stringify(swallowed));
+  ok(!swallowed[0].includes('.toFixed(') && blankComments(['/* open // not a line comment', 'hidden.toFixed(3) */ shown.toFixed(3)'].join('\n'))[1].trim() === 'shown.toFixed(3)',
+    'B3c a real block comment still hides its body and a "//" inside it does not end it');
 
   // …and removing an annotation must also be caught, so the exemption is not
   // a blanket pass.
