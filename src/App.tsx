@@ -2875,7 +2875,15 @@ export default function App() {
             labels: { row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 },
           });
           lastGeneratedFillRef.current = gen;
-          setGenerateNote(renderGenerateNote(generateKind, 'filled', chipsRemoved));
+          // A `story` clears the chips too, and this branch can be reached with
+          // chips still on the form: `keepUserText` was decided BEFORE the report
+          // call, and the user may have cleared their text during it, so the
+          // reconcile above kept the chips and this fill is about to take them.
+          // Read the live ref (that is what it is for) rather than trusting the
+          // count taken at reconcile time — a note that undercounts is the same
+          // silence STRUCT-REGEN-19/006 removed.
+          setGenerateNote(renderGenerateNote(generateKind, 'filled',
+            chipsRemoved + saveFormRef.current.terms.a.length + saveFormRef.current.terms.b.length));
         } else {
           setGenerateNote(renderGenerateNote(generateKind, 'kept', chipsRemoved));
         }

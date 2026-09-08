@@ -1064,8 +1064,7 @@ function testSaveFormReconciledWithBoard() {
     src.replace("const boardLabelsIfAppsOwn = (f: SaveFormState) => (f.provenance.labels === 'from-board' ? f.labels : null);",
       'const boardLabelsIfAppsOwn = (f: SaveFormState) => f.labels;'));
   mustThrow('the kept draw is not registered as generated text (N1)',
-    src.replace("      lastGeneratedFillRef.current = {\n        name: kept.name !== undefined ? kept.name : liveName,",
-      "      void {\n        name: kept.name !== undefined ? kept.name : liveName,"));
+    src.replace('      lastGeneratedFillRef.current = {\n', '      void {\n'));
   mustThrow('keepRegen reads the name baseline from a parallel ref again',
     src.replace("const baseline = key.kind === 'edit' ? editForm.nameBaseline : saveForm.nameBaseline;",
       "const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveNameBaselineRef.current;"));

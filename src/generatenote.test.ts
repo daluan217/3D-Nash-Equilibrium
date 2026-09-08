@@ -84,7 +84,11 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
 {
   const app = readFileSync('src/App.tsx', 'utf8');
   const calls = app.match(/setGenerateNote\(/g) || [];
-  const rendered = app.match(/setGenerateNote\(renderGenerateNote\(generateKind, '(filled|kept|unavailable)', chipsRemoved\)\)/g) || [];
+  // The third argument is a COUNT EXPRESSION, not a fixed name: the 'filled'
+  // branch adds the chips the story itself is about to clear (see below). The
+  // shape check is "the renderer, with the kind and one of the three outcomes";
+  // the count is pinned separately, by its own check.
+  const rendered = app.match(/setGenerateNote\(renderGenerateNote\(generateKind, '(filled|kept|unavailable)',[\s\S]{0,200}?\)\)/g) || [];
   const blanks = app.match(/setGenerateNote\(''\)/g) || [];
   check('every Generate note comes from the one renderer (or is a blank reset)',
     rendered.length + blanks.length === calls.length,
@@ -101,6 +105,15 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
     'App.tsx must derive chipsRemoved from saveFormReducer(boardAction), not from its own copy of the rule');
   check('the same action object is the one dispatched',
     /dispatchSaveForm\(boardAction\);/.test(app));
+  // The 'filled' branch runs AFTER the report await, and a `story` clears the
+  // chips too. `keepUserText` was decided before that await, so this branch can
+  // be reached with chips still on the form — the note must count those as well,
+  // read from the live ref, or it undercounts and goes quiet again.
+  check('the filled note counts the chips the story itself is about to clear, from the LIVE ref',
+    /renderGenerateNote\(generateKind, 'filled',\s*chipsRemoved \+ saveFormRef\.current\.terms\.a\.length \+ saveFormRef\.current\.terms\.b\.length\)\)/.test(app));
+  check('fixture: that check rejects the reconcile-time-only count',
+    !/renderGenerateNote\(generateKind, 'filled',\s*chipsRemoved \+ saveFormRef\.current\.terms\.a\.length \+ saveFormRef\.current\.terms\.b\.length\)\)/.test(
+      app.replace(/renderGenerateNote\(generateKind, 'filled',[\s\S]*?\)\);/, "renderGenerateNote(generateKind, 'filled', chipsRemoved));")));
 }
 
 // ── 5. Mutants — each must break the check that NAMES it, not some other ─────
