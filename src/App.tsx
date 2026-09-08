@@ -702,6 +702,10 @@ export default function App() {
     if (authToken && resumeSaveAfterAuthRef.current) {
       resumeSaveAfterAuthRef.current = false;
       setSaveError('');
+      // RED-REGEN-13/001: the board may have changed while the sign-in was
+      // up (Cancel, edit, sign in from the header) — same reconciliation as
+      // a fresh open.
+      reconcileSaveFormWithBoard();
       setIsSaveModalOpen(true);
     }
     if (authToken && resumeEditAfterAuthRef.current) {
@@ -815,6 +819,29 @@ export default function App() {
    * the moment it differs, the user's own typing wins and Keep leaves it.
    */
   const saveNameBaselineRef = useRef('');
+  /**
+   * RED-REGEN-13/001: the board the Save form's text was written FOR. The
+   * dialog's name / description / actor nouns used to survive a close, a
+   * payoff change and a reopen unchanged (only the labels were re-prefilled),
+   * so a story kept for matrix P1 was saved against matrix P2 — the app's own
+   * validateProseDirectionsDetailed flags 4/4 directional claims backwards
+   * against the matrix it is persisted with. Every path that opens the Save
+   * dialog reconciles the form with the CURRENT board: same board, the draft
+   * stays; different board, the text is cleared (labels are re-prefilled by
+   * the caller as before). Null after a successful save (the fields are blank).
+   */
+  const saveFormBoardRef = useRef<string | null>(null);
+  const boardKeyOf = (p: GamePayoffs) => JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22]);
+  const reconcileSaveFormWithBoard = () => {
+    const key = boardKeyOf(payoffs);
+    if (saveFormBoardRef.current !== null && saveFormBoardRef.current !== key) {
+      setSaveName('');
+      saveNameBaselineRef.current = '';
+      setSaveDesc('');
+      setSaveTerms({ a: [], b: [] });
+    }
+    saveFormBoardRef.current = key;
+  };
   const editNameBaselineRef = useRef('');
 
   // Feedback Modal States
@@ -1689,6 +1716,9 @@ export default function App() {
       col1: sc.col1 ?? '', col2: sc.col2 ?? '',
     });
     setSaveError('');
+    // RED-REGEN-13/001: the report's story was written for the board on
+    // screen — record it, so a later reopen after a payoff change clears it.
+    saveFormBoardRef.current = boardKeyOf(payoffs);
     regenExplanationAfterSaveRef.current = true;
     // A fresh save attempt for a different scenario — never reuse a
     // clientRequestId minted for whatever the dialog last tried to save.
@@ -2682,6 +2712,21 @@ export default function App() {
     setPayoffs(gc);
     setRawPayoffs(rawOf(gc));
     handleReset();
+    // RED-REGEN-13/001 + OPUS-REVIEW-171/N1: the board is now `gc`. Text the
+    // form holds for the OLD board is stale — unless the user typed or edited it
+    // (the all-or-nothing safety rule below keeps that and the note says so).
+    // Decided HERE, before the report call, so what the form keeps never
+    // depends on whether that call succeeds; and keyed on `gc` (what is on the
+    // board), not `g`.
+    const boardKey = boardKeyOf(gc);
+    if (saveFormBoardRef.current !== boardKey && generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current)) {
+      setSaveName('');
+      saveNameBaselineRef.current = '';
+      setSaveDesc('');
+      setSaveTerms({ a: [], b: [] });
+      lastGeneratedFillRef.current = null;
+      saveFormBoardRef.current = boardKey;
+    }
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
     try {
       const res = await fetch(getApiUrl('/api/report'), {
@@ -2710,6 +2755,8 @@ export default function App() {
           setSaveDesc(gen.desc);
           setSaveLabels({ row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 });
           lastGeneratedFillRef.current = gen;
+          // The AI fill replaced the form: its text is for THIS board.
+          saveFormBoardRef.current = boardKey;
           setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
         } else {
           setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/option names you'd already typed — the AI wrote a scenario too, but didn't touch your text. Clear ALL of those fields (not just one) to let it fill them in on the next Generate.`);
@@ -2834,6 +2881,7 @@ export default function App() {
         setSaveDesc('');
         setSaveTerms({ a: [], b: [] });
         setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });
+        saveFormBoardRef.current = null; // RED-REGEN-13/001: blank form, no board
         // The fields are blank again, so any earlier Generate fill is spent —
         // the empty-field branch of handleGenerateGame's guard already covers
         // this, but clearing the ref too keeps it from describing content that
@@ -2988,6 +3036,15 @@ export default function App() {
       setSaveDesc(kept.desc);
       setSaveLabels(kept.labels);
       setSaveTerms(kept.terms);
+      // OPUS-REVIEW-171/N1: a kept draw is GENERATED text, not the user's own —
+      // "…or generate a new game" may replace it (unedited) exactly as it may
+      // replace its own previous fill, instead of keeping a story written for
+      // the old board and telling the user it was "text you'd already typed".
+      lastGeneratedFillRef.current = {
+        name: kept.name !== undefined ? kept.name : liveName,
+        desc: kept.desc,
+        row1: kept.labels.row1, row2: kept.labels.row2, col1: kept.labels.col1, col2: kept.labels.col2,
+      };
     }
     // RED-REGEN-11/001: a draw's own actor noun silently truncated by the
     // per-side cap must say so, same as a manual highlight already does —
@@ -4747,6 +4804,9 @@ export default function App() {
                 <button
                   onClick={() => {
                     setSaveError('');
+                    // RED-REGEN-13/001: a draft written for another board must
+                    // not be offered for this one (see saveFormBoardRef).
+                    reconcileSaveFormWithBoard();
                     // Prefill from whatever the current game already calls its
                     // options, so saving a copy of a named game keeps the names.
                     // Read from scenarioForReport, not activeLabels, because the
