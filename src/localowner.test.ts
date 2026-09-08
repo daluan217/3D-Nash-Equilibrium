@@ -999,10 +999,10 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   const real = familyCheck(app);
   check('App.tsx: at least 6 account-scoped request sites are found (the family, not one instance)', real.sites >= 6, `sites=${real.sites}`);
   check('App.tsx: every account-scoped request reports its 401 to handleDeadSessionResponse (adoptLocalGames included)', real.unreported.length === 0, real.unreported.join(' | '));
-  check('adoptLocalGames closes the offer once the helper cleared the dead session',
-    /handleDeadSessionResponse\(res, localGamesOffer\.token\)\) \{\s*setLocalGamesOffer\(null\);/.test(app));
+  check('adoptLocalGames closes ONLY the offer that still carries this request\'s token (a stale 401 after a re-login leaves the new offer alone)',
+    /handleDeadSessionResponse\(res, requestToken\)\) \{\s*if \(authTokenRef\.current !== requestToken\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);/.test(app));
   // Known-positive: the exact shipped defect — adoptLocalGames without the helper call.
-  const mutant = app.replace(/        if \(handleDeadSessionResponse\(res, localGamesOffer\.token\)\) \{[\s\S]*?\n        \}\n/, '');
+  const mutant = app.replace(/        if \(handleDeadSessionResponse\(res, requestToken\)\) \{[\s\S]*?\n        \}\n/, '');
   check('fixture: removing adoptLocalGames\'s helper call actually landed', mutant !== app);
   check('fixture: the unfixed adoptLocalGames is flagged by the family check', familyCheck(mutant).unreported.length === 1, familyCheck(mutant).unreported.join(' | '));
 }

@@ -906,11 +906,12 @@ export default function App() {
     // Bounded like the report request (RED-APP-6/003): a stalled connection
     // must not leave the dialog's buttons disabled forever (CodeRabbit on #132).
     const controller = new AbortController();
+    const requestToken = localGamesOffer.token;
     const { promise, clear } = fetchWithTimeout(getApiUrl('/api/games/adopt-local'), {
       method: 'POST',
       // The token travels explicitly: this runs right after sign-in, before the
       // authToken state (and authHeaders()) is guaranteed to have caught up.
-      headers: { 'Authorization': `Bearer ${localGamesOffer.token}` },
+      headers: { 'Authorization': `Bearer ${requestToken}` },
     }, controller);
     try {
       const res = await promise;
@@ -922,9 +923,15 @@ export default function App() {
         // the dialog said "Sign in to move…". The offer's token IS the login
         // token, so the helper clears the same session the other routes do;
         // the offer closes with it (it is re-offered at the next sign-in).
-        if (handleDeadSessionResponse(res, localGamesOffer.token)) {
-          setLocalGamesOffer(null);
-          setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);
+        // CodeRabbit (#176): a 401 for a token that is no longer current (the
+        // user signed in again while this request was in flight) is stale —
+        // the helper leaves the new session alone, and so must this branch:
+        // only the offer that still carries THIS request's token is closed.
+        if (handleDeadSessionResponse(res, requestToken)) {
+          if (authTokenRef.current !== requestToken) {
+            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));
+            setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);
+          }
           return;
         }
         // Whatever the server said, the user must hear that nothing was lost
