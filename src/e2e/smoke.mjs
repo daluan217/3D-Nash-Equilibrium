@@ -2835,9 +2835,42 @@ try {
     record('page.pdf() produces a non-empty PDF with no exception', pdfThrew === null && pdfBytes > 1000,
       pdfThrew ?? `bytes=${pdfBytes}`);
 
+    // RED-APP-18/004 (regression from #172): the printout is the LIGHT surface
+    // in both themes. Invariant: under print media, every Player A / Player B
+    // coloured element computes the SAME colour with and without html.dark.
+    // Fails on the unfixed tree (dark: Player B's blue → slate-900, 20 inks → 5).
+    const inksOf = async (theme) => {
+      const pg = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+      await pg.addInitScript((t) => { try { localStorage.setItem('nash_sim_theme', t); } catch {} }, theme);
+      await pg.goto(BASE, { waitUntil: 'networkidle' });
+      const exit = pg.getByRole('button', { name: /exit tour/i });
+      if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) { await exit.click(); await exit.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); }
+      // CodeRabbit CLI (#179): wait for the print media to actually apply, not a fixed delay.
+      await pg.emulateMedia({ media: 'print' });
+      await pg.waitForFunction(() => window.matchMedia('print').matches, null, { timeout: 4000 });
+      const out = await pg.evaluate(() => {
+        const isDark = document.documentElement.classList.contains('dark');
+        const pick = (sel) => [...document.querySelectorAll(sel)].filter((e) => e.textContent.trim()).map((e) => getComputedStyle(e).color);
+        const uniq = (a) => [...new Set(a)].sort();
+        return { isDark, a: uniq(pick('[class*="text-player-a"]')), b: uniq(pick('[class*="text-player-b"]')), nB: pick('[class*="text-player-b"]').length };
+      });
+      await pg.close();
+      return out;
+    };
+    const light = await inksOf('light'), dark = await inksOf('dark');
+    record('precondition: the two print pages really are light and dark, with Player B text present',
+      !light.isDark && dark.isDark && light.nB > 0, JSON.stringify({ light: light.isDark, dark: dark.isDark, nB: light.nB }));
+    // CodeRabbit CLI: the light baseline must itself be the expected colour-coded set
+    // (Player B's ink present and distinct from Player A's) before dark is compared to it.
+    record('precondition: the light print baseline is colour-coded (Player B ink present, distinct from Player A)',
+      light.b.length >= 1 && light.a.length >= 1 && light.b.every((c) => !light.a.includes(c)), `a=${JSON.stringify(light.a)} b=${JSON.stringify(light.b)}`);
+    record('FIX RED-APP-18/004: Player B prints in the same ink set in dark theme as in light (the dark variant is inert on paper)',
+      JSON.stringify(light.b) === JSON.stringify(dark.b), `light=${JSON.stringify(light.b)} dark=${JSON.stringify(dark.b)}`);
+    record('FIX RED-APP-18/004: Player A too (control for the family, and half of the matrix)',
+      JSON.stringify(light.a) === JSON.stringify(dark.a), `light=${JSON.stringify(light.a)} dark=${JSON.stringify(dark.a)}`);
+
     await printPage.close();
   });
-
   // ══ 42. RED-DESKTOP-9/002 -- a comma in a payoff cell is REJECTED, not
   //      reinterpreted as a decimal separator and not silently truncated to
   //      its leading digits (bare parseFloat made "3,5" -> 3). Repro from the
@@ -8423,6 +8456,127 @@ try {
     } finally {
       await ctx.close().catch(() => {});
     }
+  });
+
+  // ══ 87. RED-APP-18/001+002 — the tour's window keydown leaves Enter and the
+  //      arrows to whatever control has focus. Oracles are model-derived: the
+  //      step counter from the tour dialog's textContent, the board from the
+  //      eight payoff inputs (re-rendered from the payoff model). Fails on the
+  //      unfixed tree: ArrowLeft in a focused payoff box moved the tour 3→2 and
+  //      the typed 73 became 3; Enter on a focused Exit tour closed the tour AND
+  //      loaded the next step's game.
+  section('87', 'tour keys belong to the focused control', async () => {
+    const p = await newTrackedPage({ viewport: { width: 1440, height: 900 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
+    await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(600);
+    const stepOf = async () => { const t = (await tour.textContent().catch(() => '')) || ''; const m = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(t); return m ? Number(m[1]) : null; };
+    const boardOf = async () => { const v = []; for (const pl of ['A', 'B']) for (let i = 0; i < 4; i++) v.push(await p.locator(`input[aria-label$="Player ${pl} payoff"]`).nth(i).inputValue()); return v.join(','); };
+    // CodeRabbit CLI: state-based waits — poll for the expected step (or for the step to
+    // stay put over a settle window when the assertion is "did NOT move"), never a fixed sleep.
+    const waitStep = async (n, ms = 4000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if ((await stepOf()) === n) return true; await p.waitForTimeout(50); } return false; };
+    // CodeRabbit CLI (#179): sampled THROUGH the settle window, not once at its end — a
+    // navigation that lands mid-window is a change, not a coincidence.
+    const settled = async (ms = 600) => { const a = await stepOf(); const t0 = Date.now(); while (Date.now() - t0 < ms) { await p.waitForTimeout(50); if ((await stepOf()) !== a) return null; } return a; };
+    const boardStable = async (b, ms = 800) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if ((await boardOf()) !== b) return false; await p.waitForTimeout(50); } return true; };
+    // CodeRabbit CLI (#179): the precondition claims focus is ON the tour — SET it (the
+    // tour's own Next button: buttons pass arrows through to the tour) and assert it,
+    // rather than assume where the browser left focus after load.
+    const next = tour.getByRole('button', { name: /^next$/i }).first();
+    await next.focus();
+    const focusInTour = await p.evaluate(() => { const d = document.querySelector('[role="dialog"][aria-label="Guided tour"]'); return !!d && d.contains(document.activeElement); });
+    record('precondition: focus is inside the tour dialog (on its Next button) before the first ArrowRight', focusInTour);
+    await p.keyboard.press('ArrowRight'); await waitStep(2); await p.keyboard.press('ArrowRight'); await waitStep(3);
+    const s0 = await settled();
+    record('precondition: ArrowRight with focus on the tour itself still steps it (arrows are not owned by a button)', s0 === 3, `step=${s0}`);
+    const inp = p.locator('input[aria-label$="Player A payoff"]').first();
+    await inp.click(); await inp.press('End'); await p.keyboard.type('7'); const typed = await inp.inputValue();
+    await p.keyboard.press('ArrowLeft');
+    record('FIX 001: ArrowLeft in a focused payoff box does not move the tour and keeps the typed value',
+      (await settled()) === s0 && (await inp.inputValue()) === typed, `step=${await stepOf()} value=${await inp.inputValue()} typed=${typed}`);
+    await p.keyboard.press('Enter');
+    record('FIX 001: Enter in a focused payoff box does not move the tour', (await settled()) === s0, `step=${await stepOf()}`);
+    const slider = p.locator('input[type="range"]').first();
+    // CodeRabbit CLI: a missing slider is a failed precondition, not silent coverage.
+    record('precondition: the page has a range slider to test', (await slider.count()) >= 1, `sliders=${await slider.count()}`);
+    if (await slider.count()) {
+      await slider.focus(); const v0 = await slider.inputValue(); await p.keyboard.press('ArrowRight');
+      await p.waitForFunction((v) => document.activeElement?.value !== v, v0, { timeout: 3000 }).catch(() => {});
+      record('FIX 001: ArrowRight on a focused range slider moves the slider, not the tour (WCAG 2.1.1)',
+        (await settled()) === s0 && (await slider.inputValue()) !== v0, `step=${await stepOf()} slider ${v0}→${await slider.inputValue()}`);
+    }
+    await p.evaluate(() => { const a = document.activeElement; if (a && a !== document.body) a.blur(); });
+    await p.keyboard.press('ArrowRight');
+    record('control: with nothing focused, ArrowRight still drives the tour', await waitStep(s0 + 1), `step=${await stepOf()}`);
+    await next.focus(); const s1 = await settled(); await p.keyboard.press('Enter');
+    record('FIX 002: Enter on a focused Next advances exactly one step', (await waitStep(s1 + 1)) && (await settled()) === s1 + 1, `${s1}→${await stepOf()}`);
+    await next.focus(); const s2 = await settled(); await p.keyboard.press('ArrowRight');
+    record('control: ArrowRight on a focused Next still advances one step (buttons pass arrows through)', (await waitStep(s2 + 1)) && (await settled()) === s2 + 1, `${s2}→${await stepOf()}`);
+    const b0 = await boardOf();
+    await p.getByRole('button', { name: /exit tour/i }).first().focus(); await p.keyboard.press('Enter');
+    await tour.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {});
+    // CodeRabbit CLI (#179): a deferred game load could start after a single sample; watch the board over a window.
+    const boardKept = await boardStable(b0);
+    record('FIX 002: Enter on a focused Exit tour closes the tour and leaves the board alone',
+      !(await tour.isVisible().catch(() => false)) && boardKept, `open=${await tour.isVisible().catch(() => false)} boardChanged=${(await boardOf()) !== b0}`);
+    await p.close();
+  });
+
+  // ══ 88. RED-APP-18/003 — at 912x1368 (Surface Pro portrait, dsf 2) the
+  //      floating-card fit test said "fits" from a 420px estimate while the
+  //      measured card was 432-515px, and placement centred the card INSIDE
+  //      its own spotlight on 10 of 19 steps. Geometric oracle: card rect vs
+  //      spotlight rect (the element carrying the 9999px box-shadow) via
+  //      getBoundingClientRect; a floating card may never cover more than 25%
+  //      of its spotlight. Fails on the unfixed tree (51-59% on ten steps).
+  section('88', 'tour card never sits inside its own spotlight (912x1368 dsf2)', async () => {
+    const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
+    await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(800);
+    const steps = [];
+    // CodeRabbit CLI: wait for STABLE geometry (two identical reads 300ms apart, after the
+    // glide/scroll), bounded, instead of a fixed sleep.
+    const readGeometry = () => p.evaluate(() => {
+        const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]'); if (!dlg) return null;
+        const mm = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(dlg.textContent || '');
+        const spot = [...document.querySelectorAll('div')].find((d) => /9999px/.test(getComputedStyle(d).boxShadow));
+        // The card: the dialog's direct-child DIV that accepts pointer events (the spotlight div is
+        // pointer-events:none; the Exit pill is a button) — label-independent, so the closing step's
+        // "Finish"/"Done" wording cannot hide the card from the oracle.
+        const card = [...dlg.children].filter((el) => el.tagName === 'DIV' && getComputedStyle(el).pointerEvents === 'auto')
+          .sort((a, b) => (b.getBoundingClientRect().width * b.getBoundingClientRect().height) - (a.getBoundingClientRect().width * a.getBoundingClientRect().height))[0] || null;
+        const r = (e) => { const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
+        const inter = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+        const s = spot ? r(spot) : null, c = card ? r(card) : null;
+        return { step: mm ? Number(mm[1]) : null, total: mm ? Number(mm[2]) : null, overlap: s && c && s.w * s.h > 0 ? inter(s, c) / (s.w * s.h) : null,
+          isSheet: c ? (c.w >= window.innerWidth - 40 && c.y + c.h >= window.innerHeight - 4) : null, cardH: c ? Math.round(c.h) : null,
+          hasSpot: !!spot, hasCard: !!card,
+          key: [s ? [s.x, s.y, s.w, s.h] : 'nospot', c ? [c.x, c.y, c.w, c.h] : 'nocard'].flat().map((v) => (typeof v === 'number' ? Math.round(v) : v)).join(',') };
+      });
+    const stableGeometry = async (ms = 6000) => {
+      const t0 = Date.now(); let last = await readGeometry();
+      while (Date.now() - t0 < ms) { await p.waitForTimeout(300); const cur = await readGeometry(); if (cur && last && cur.key === last.key && cur.step === last.step) return cur; last = cur; }
+      return last;
+    };
+    for (let k = 0; k < 25; k++) {
+      const m = await stableGeometry();
+      if (!m || m.step === null) break;
+      steps.push(m);
+      if (m.step >= m.total) break;
+      await p.keyboard.press('ArrowRight');
+      await p.waitForFunction((prev) => { const d = document.querySelector('[role="dialog"][aria-label="Guided tour"]'); const mm = /(\d+)\s*(?:\/|of)/.exec(d?.textContent || ''); return mm && Number(mm[1]) !== prev; }, m.step, { timeout: 4000 }).catch(() => {});
+    }
+    // CodeRabbit CLI: missing geometry is a failure, and the walk must be 1..N without gaps or repeats.
+    // A step without a spotlight (no target — the closing step) has nothing to overlap; a
+    // step WITH a spotlight must have a readable card, or it is a failure.
+    const bad = steps.filter((s) => (s.hasSpot && (!s.hasCard || s.overlap === null)) || (s.overlap !== null && !s.isSheet && s.overlap > 0.25));
+    const contiguous = steps.length > 0 && steps.every((s, idx) => s.step === idx + 1) && steps[steps.length - 1].step === steps[steps.length - 1].total;
+    record('precondition: the whole tour was walked, step 1..N with no gaps or repeats, geometry read on every step',
+      steps.length >= 15 && contiguous, `walked ${steps.length}: ${steps.map((s) => s.step).join(',')}`);
+    record('FIX RED-APP-18/003: no floating card covers more than 25% of its own spotlight on any step',
+      bad.length === 0, bad.map((s) => `step ${s.step}: ${s.overlap === null ? 'no card/spotlight geometry' : `${(s.overlap * 100).toFixed(0)}% (card ${s.cardH}px)`}`).join('; ') || 'all clean');
+    await p.close();
   });
 
 await executeSections();
