@@ -2867,19 +2867,60 @@ try {
       // the two themes, which differ on every run. (This bit me: the first version
       // of the check below "found" six dark preset buttons that were really six
       // mid-transition samples.) Poll until two consecutive reads agree.
-      // CodeRabbit CLI (this branch): the gate must watch the SAME elements and
-      // the SAME properties the comparison below reads. The first version
-      // sampled `button, span, label, div` capped at 400 elements while the
-      // comparison walks every element and four colour fields — so anything
-      // outside that sample could still be in flight when the gate said
-      // "settled", which is precisely the bug the gate exists to prevent.
+      // CodeRabbit CLI (this branch): the gate must watch exactly what the
+      // assertion reads, so install the collector ONCE and have both call it.
+      // Two earlier versions drifted: the first sampled `button, span, label,
+      // div` capped at 400 elements (things in flight outside the sample were
+      // missed); the second walked every element in the document, including the
+      // display:none, zero-box and print-hidden ones the comparison skips — it
+      // waited on pixels that never reach paper.
+      await pg.evaluate(() => {
+        const hidden = (el) => !!el.closest('[data-print="hide"], [data-modal-surface], [data-tour="plot"]');
+        const path = (el) => {
+          const parts = [];
+          for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+            parts.push(`${n.tagName.toLowerCase()}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+          }
+          return parts.reverse().join('/');
+        };
+        // The gate's signature: the SAME element filter and the SAME four
+        // colour properties the assertion compares, with none of the keying.
+        // (Polling the full keyed surface was correct but cost a `path()`
+        // ancestor walk plus a JSON encode of ~400 objects every 250 ms, which
+        // took §41 from 24 s to a 42-79 s spread — unpackable in a shard.)
+        window.__printInk = () => {
+          let sig = '';
+          for (const el of document.querySelectorAll('*')) {
+            if (hidden(el)) continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            const bx = el.getBoundingClientRect();
+            if (bx.width === 0 || bx.height === 0) continue;
+            sig += `${cs.color}|${cs.backgroundColor}|${cs.borderTopColor}|${cs.borderBottomColor};`;
+          }
+          return sig;
+        };
+        window.__printSurface = () => {
+          const surface = {};
+          for (const el of document.querySelectorAll('*')) {
+            if (hidden(el)) continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            const bx = el.getBoundingClientRect();
+            if (bx.width === 0 || bx.height === 0) continue;
+            surface[path(el)] = {
+              tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 32),
+              // The class attribute makes a failure actionable: it names WHICH
+              // utility (or JS-chosen class) let the screen theme reach paper.
+              cls: (el.getAttribute('class') || '').slice(0, 120),
+              color: cs.color, bg: cs.backgroundColor, bt: cs.borderTopColor, bb: cs.borderBottomColor,
+            };
+          }
+          return surface;
+        };
+      });
       await pg.waitForFunction(() => {
-        const sig = () => [...document.querySelectorAll('*')]
-          .map((e) => {
-            const c = getComputedStyle(e);
-            return `${c.color}|${c.backgroundColor}|${c.borderTopColor}|${c.borderBottomColor}`;
-          }).join(';');
-        const now = sig();
+        const now = window.__printInk();
         const prev = window.__printSig;
         window.__printSig = now;
         return prev !== undefined && prev === now;
@@ -2894,29 +2935,9 @@ try {
         // compared element-for-element. Any mechanism that lets the screen theme
         // reach paper — a `dark:` utility, a runtime `darkMode ? …` class, an
         // inline style, a variable — shows up here as a differing computed value.
-        const hidden = (el) => !!el.closest('[data-print="hide"], [data-modal-surface], [data-tour="plot"]');
-        const path = (el) => {
-          const parts = [];
-          for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
-            parts.push(`${n.tagName.toLowerCase()}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
-          }
-          return parts.reverse().join('/');
-        };
-        const surface = {};
-        for (const el of document.querySelectorAll('*')) {
-          if (hidden(el)) continue;
-          const cs = getComputedStyle(el);
-          if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-          const bx = el.getBoundingClientRect();
-          if (bx.width === 0 || bx.height === 0) continue;
-          surface[path(el)] = {
-            tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 32),
-            // The class attribute makes a failure actionable: it names WHICH
-            // utility (or JS-chosen class) let the screen theme reach paper.
-            cls: (el.getAttribute('class') || '').slice(0, 120),
-            color: cs.color, bg: cs.backgroundColor, bt: cs.borderTopColor, bb: cs.borderBottomColor,
-          };
-        }
+        // The SAME collector the stability gate above waited on — one
+        // definition, so the gate and this assertion cannot disagree.
+        const surface = window.__printSurface();
         // The panel this check exists for must actually be on the page.
         const hasSimPanel = [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress');
         return { isDark, hasSimPanel, surface, a: uniq(pick('[class*="text-player-a"]')), b: uniq(pick('[class*="text-player-b"]')), nB: pick('[class*="text-player-b"]').length };
