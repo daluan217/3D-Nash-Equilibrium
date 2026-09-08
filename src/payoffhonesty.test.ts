@@ -1982,8 +1982,8 @@ function testPayloadCoordinatesUseFmtProb() {
   const payload = buildGroundingPayload(g);
   const toks = tokensOf(payload);
   ok(toks.length >= 2, `fixture: the continuum payload must state at least one (x, y) point; payload="${payload.slice(0, 300)}"`);
-  ok(toks.some((tok) => /more than 0\.999|less than 0\.001/.test(tok) || tok === fmtProb(0.9999999999999987)),
-    `fixture: the near-boundary coordinate must print fmtProb's phrase; tokens=${JSON.stringify(toks)}`);
+  ok(toks.includes('more than 0.999'),
+    `fixture: the near-boundary coordinate (y=0.9999999999999987) must print exactly "more than 0.999"; tokens=${JSON.stringify(toks)}`);
   ok(!toks.some(rawFloat), `fixture: no raw solver float may reach the payload; tokens=${JSON.stringify(toks)}`);
   // Sweep: 4000 random 3dp games — every coordinate token the payload states is fmtProb-shaped.
   const rnd = mk(0x19f0);
