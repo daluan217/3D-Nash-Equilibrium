@@ -833,55 +833,88 @@ function testAppTsxUsesContinuumAwareLogAndDisplay() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5e. RED-REGEN-13/001 — a saved description must belong to the payoffs it is
-//     saved with. The Save dialog's name / description / actor nouns used to
-//     survive a close, a payoff change and a reopen (only the labels were
-//     re-prefilled), so a story kept for matrix P1 was persisted against P2
-//     (validateProseDirectionsDetailed: 0 issues vs P1, 4/4 backwards vs P2).
-//     Structural: every path that opens the Save dialog reconciles the form
-//     with the CURRENT board through ONE helper keyed on saveFormBoardRef.
+// 5e. RED-REGEN-13/001 + RED-REGEN-14/001 + STRUCT-REGEN-19/001 — a saved
+//     description must belong to the payoffs it is saved with, and the five
+//     pieces of the save form (name, description, four option labels, colour
+//     chips) must always describe ONE story written for ONE board.
+//
+//     RED-REGEN-13/001: the form used to survive a close, a payoff change and a
+//     reopen (only the labels were re-prefilled), so a story kept for matrix P1
+//     was persisted against P2 (validateProseDirectionsDetailed: 0 issues vs
+//     P1, 4/4 backwards vs P2). RED-REGEN-14/001: the fix's re-prefill then
+//     blanked the labels under a kept draft. STRUCT-REGEN-19/001: SIX places
+//     wrote the form, each a different subset, so "Save this scenario with the
+//     game" could write four fifths of a story and leave an abandoned draft's
+//     colour chips under a brand-new AI description.
+//
+//     The RULE now lives in ONE reducer (src/utils/saveFormModel.ts) and is
+//     tested behaviourally — every branch, five properties over 4000 random
+//     action sequences, eleven mutants — in src/saveformmodel.test.ts. What
+//     THIS block guards is App.tsx's half: every entry point goes through that
+//     reducer, no second copy of the state exists, and the set of entry points
+//     is enumerated so a seventh cannot appear unexamined.
 // ════════════════════════════════════════════════════════════════════════════
 
 function testSaveFormReconciledWithBoard() {
   const src = readFileSync('src/App.tsx', 'utf8');
   /** The contract, as one function so the mutants below exercise the same checks. */
   const contract = (app: string) => {
-    ok(/const saveFormBoardRef = useRef<string \| null>\(null\);/.test(app),
-      'App.tsx must keep saveFormBoardRef — the board the Save form\'s text was written for (RED-REGEN-13/001)');
-    const helperStart = app.indexOf('const reconcileSaveFormWithBoard = (): boolean => {');
-    ok(helperStart !== -1, 'App.tsx must define reconcileSaveFormWithBoard (RED-REGEN-13/001)');
+    // ── ONE source of truth ──────────────────────────────────────────────
+    ok(/const \[saveForm, dispatchSaveForm\] = useReducer\(saveFormReducer, EMPTY_SAVE_FORM\);/.test(app),
+      'App.tsx must hold the save form as ONE reducer value (STRUCT-REGEN-19/001)');
+    for (const [name, expr] of [['saveName', 'saveForm.name'], ['saveDesc', 'saveForm.desc'],
+      ['saveLabels', 'saveForm.labels'], ['saveTerms', 'saveForm.terms']] as const) {
+      ok(new RegExp(`const ${name} = ${expr.replace('.', '\\.')};`).test(app),
+        `${name} must be DERIVED from saveForm, not a second copy of it (STRUCT-REGEN-19/001)`);
+      ok(!new RegExp(`\\[${name}, set[A-Za-z]+\\] = useState`).test(app),
+        `${name} must not be its own useState — that is the second source of truth (STRUCT-REGEN-19/001)`);
+    }
+    // The bulk label setter is gone: a writer that replaces all four labels at
+    // once bypasses per-field provenance, which is how a generated fill used to
+    // overwrite option names the user had typed.
+    ok(!/setSaveLabels\(/.test(app),
+      'App.tsx must not write the four option labels in bulk — one field, one action (STRUCT-REGEN-19/001)');
+    // ── the entry-point ledger ───────────────────────────────────────────
+    // Every write to the form, in source order. A NEW entry point fails this
+    // list until its author has added it here — which is the point: the class
+    // was six writers nobody was counting.
+    const dispatched = [...app.matchAll(/dispatchSaveForm\(\{\s*type: '([a-zA-Z]+)'/g)].map((m) => m[1]);
+    ok(dispatched.join(',') === ['typed', 'typed', 'typedLabel', 'typedTerms',
+      'openForBoard', 'story', 'boardChanged', 'story', 'saved', 'story'].join(','),
+      `the save form's entry points must be exactly the ten enumerated here, in order — found ${dispatched.join(',')} (STRUCT-REGEN-19/001)`);
+    ok((app.match(/dispatchSaveForm\(/g) || []).length === dispatched.length,
+      'every dispatchSaveForm call must be a literal action object the ledger above can see (STRUCT-REGEN-19/001)');
+    // ── one open path ────────────────────────────────────────────────────
+    const helperStart = app.indexOf('const openSaveFormForBoard = () => {');
+    ok(helperStart !== -1, 'App.tsx must define openSaveFormForBoard (RED-REGEN-13/001)');
     const helper = app.slice(helperStart, app.indexOf('};', helperStart) + 2);
-    ok(/saveFormBoardRef\.current !== key/.test(helper) && /setSaveName\(''\)/.test(helper) && /setSaveDesc\(''\)/.test(helper)
-      && /setSaveTerms\(\{ a: \[\], b: \[\] \}\)/.test(helper) && /saveNameBaselineRef\.current = ''/.test(helper)
-      && helper.indexOf('saveFormBoardRef.current = key;') > helper.indexOf('setSaveTerms('),
-      'reconcileSaveFormWithBoard must clear name, name baseline, description and actor nouns when the board differs, THEN record the current board (RED-REGEN-13/001)');
-    // Fresh "Save Preset" open: reconcile before the dialog opens.
+    ok(/type: 'openForBoard',/.test(helper) && /boardKey: boardKeyOf\(payoffs\),/.test(helper),
+      'openSaveFormForBoard must dispatch openForBoard keyed on the LIVE payoffs (RED-REGEN-13/001)');
+    ok(/row1: scenarioForReport\?\.row1 \?\? '',/.test(helper),
+      'openSaveFormForBoard must offer the board\'s own option names, read from scenarioForReport (RED-REGEN-14/001)');
     const presetAttr = app.indexOf('data-focus-fallback="save-preset"');
     ok(presetAttr !== -1, 'the Save Preset button must exist');
     const presetHandler = app.slice(app.lastIndexOf('onClick={() => {', presetAttr), presetAttr);
-    const rIdx = presetHandler.indexOf('reconcileSaveFormWithBoard();');
+    const rIdx = presetHandler.indexOf('openSaveFormForBoard();');
     const oIdx = presetHandler.indexOf('setIsSaveModalOpen(true);');
     ok(rIdx !== -1 && oIdx !== -1 && rIdx < oIdx,
-      `the Save Preset click must reconcile the form with the board BEFORE opening the dialog (reconcile@${rIdx} open@${oIdx}) — RED-REGEN-13/001`);
-    // RED-REGEN-14/001: a kept draft keeps the option labels it was written
-    // with — the prefill from scenarioForReport runs only for a fresh form.
-    ok(/const draftKept = reconcileSaveFormWithBoard\(\);/.test(presetHandler)
-      && /if \(!draftKept \|\| labelsBlank\) \{\s*setSaveLabels\(\{/.test(presetHandler)
-      && (presetHandler.match(/setSaveLabels\(/g) || []).length === 1,
-      'the Save Preset click must prefill option labels ONLY when no draft was kept for this board, or the labels are all blank (RED-REGEN-14/001)');
-    ok(/const kept = saveFormBoardRef\.current === key;/.test(helper) && /return kept;/.test(helper),
-      'reconcileSaveFormWithBoard must report whether the draft for this board survived (RED-REGEN-14/001)');
+      `the Save Preset click must open the form for the board BEFORE showing the dialog (open@${rIdx} show@${oIdx}) — RED-REGEN-13/001`);
+    ok(!/dispatchSaveForm\(/.test(presetHandler),
+      'the Save Preset click must have no reconcile rule of its own — openForBoard IS the rule (RED-REGEN-14/001, STRUCT-REGEN-19/001)');
     // Resume after sign-in: the board may have changed while the sign-in was up.
     const resumeStart = app.indexOf('if (authToken && resumeSaveAfterAuthRef.current) {');
     ok(resumeStart !== -1, 'the resume-after-sign-in branch must exist');
-    const resume = app.slice(resumeStart, resumeStart + 600);
-    ok(resume.indexOf('reconcileSaveFormWithBoard();') !== -1 && resume.indexOf('reconcileSaveFormWithBoard();') < resume.indexOf('setIsSaveModalOpen(true);'),
-      'the resume-after-sign-in reopen must reconcile the form with the board before opening (RED-REGEN-13/001)');
-    // Report → save-as-new prefill: the story is for the board on screen — record it.
-    const prefill = app.indexOf('setSaveDesc(description.slice(0, 800));');
+    const resume = app.slice(resumeStart, resumeStart + 700);
+    ok(resume.indexOf('openSaveFormForBoard();') !== -1 && resume.indexOf('openSaveFormForBoard();') < resume.indexOf('setIsSaveModalOpen(true);'),
+      'the resume-after-sign-in reopen must open the form for the current board first (RED-REGEN-13/001)');
+    // ── the report card's prefill: ONE story, all five pieces ────────────
+    const prefill = app.indexOf("const prefillName = (sc.name ?? '').slice(0, 40);");
+    ok(prefill !== -1, 'the report → save-as-new prefill must exist');
     const prefillSlice = app.slice(prefill, app.indexOf('setIsSaveModalOpen(true);', prefill));
-    ok(/saveFormBoardRef\.current = boardKeyOf\(payoffs\);/.test(prefillSlice),
-      'the report prefill path must record the board its story was written for (RED-REGEN-13/001)');
+    ok(/dispatchSaveForm\(\{\s*type: 'story',\s*boardKey: boardKeyOf\(payoffs\),\s*name: prefillName,\s*desc: description\.slice\(0, 800\),\s*labels: \{/.test(prefillSlice),
+      'the report prefill must arrive as ONE story action carrying the board it was written for — writing four fifths of it left the previous draft\'s colour chips attached (STRUCT-REGEN-19/001)');
+    ok((prefillSlice.match(/dispatchSaveForm\(/g) || []).length === 1,
+      'the report prefill must write the form exactly once (STRUCT-REGEN-19/001)');
     // OPUS-REVIEW-171/N2: boardKeyOf must actually distinguish boards — run it.
     const keyFnSrc = /const boardKeyOf = \(p: GamePayoffs\) => (JSON\.stringify\([^;]*\));/.exec(app);
     ok(keyFnSrc !== null, 'App.tsx must define boardKeyOf as a JSON.stringify over the payoffs (RED-REGEN-13/001)');
@@ -892,30 +925,35 @@ function testSaveFormReconciledWithBoard() {
       ok(keyOf({ ...base, [cell]: base[cell] + 1 }) !== keyOf(base),
         `boardKeyOf: a board differing only in ${cell} (Player ${cell.startsWith('b') ? 'B' : 'A'}) must key differently (OPUS-REVIEW-171/N2)`);
     }
-    ok(/const key = boardKeyOf\(payoffs\);/.test(helper), 'reconcileSaveFormWithBoard must key on the live payoffs (RED-REGEN-13/001)');
-    // "Generate a new game" replaces the board from inside the dialog
-    // (OPUS-REVIEW-171/N1): reconcile against the NEW board BEFORE the report
-    // call — keyed on gc (what is on the board) — clearing only text the
-    // safety rule deems generated/empty; the AI fill records the board when it
-    // lands; nothing records the board unconditionally.
+    // ── "Generate a new game" replaces the board from inside the dialog ──
+    // (OPUS-REVIEW-171/N1): decided against the NEW board (gc, not g) BEFORE
+    // the report call, so what the form keeps never depends on whether that
+    // call succeeds.
     const genStart = app.indexOf('const gc = commitPayoffs(g);');
     const genFetch = app.indexOf("await fetch(getApiUrl('/api/report')", genStart);
     ok(genStart !== -1 && genFetch > genStart, 'handleGenerateGame must commit gc then call /api/report');
     const preFetch = app.slice(genStart, genFetch);
     ok(/const boardKey = boardKeyOf\(gc\);/.test(preFetch)
-      && /if \(saveFormBoardRef\.current !== boardKey\) \{\s*if \(generatedFillIsSafe\(saveFieldsRef\.current, lastGeneratedFillRef\.current\)\) \{[\s\S]{0,400}?setSaveName\(''\);\s*saveNameBaselineRef\.current = '';\s*setSaveDesc\(''\);\s*setSaveLabels\(\{ row1: '', row2: '', col1: '', col2: '' \}\);\s*setSaveTerms\(\{ a: \[\], b: \[\] \}\);\s*lastGeneratedFillRef\.current = null;\s*\}[\s\S]{0,600}?saveFormBoardRef\.current = boardKey;\s*\}/.test(preFetch),
-      'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call: clear all six fields (option names included) when the text is generated/empty, and record the board either way (OPUS-REVIEW-171/N1, CodeRabbit)');
+      && /const keepUserText = !generatedFillIsSafe\(saveFieldsRef\.current, lastGeneratedFillRef\.current\);/.test(preFetch)
+      && /dispatchSaveForm\(\{ type: 'boardChanged', boardKey, keepUserText \}\);/.test(preFetch),
+      'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call, passing the all-or-nothing safety judgement to the reducer (OPUS-REVIEW-171/N1)');
     const postFetch = app.slice(genFetch, app.indexOf('setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario', genFetch));
-    ok(!/saveFormBoardRef\.current = boardKeyOf\(g\);/.test(app) && (postFetch.match(/saveFormBoardRef\.current = /g) || []).length === 0,
-      'handleGenerateGame must not record the board after the awaits — the board is recorded before the report call, so a failed or pending request changes nothing (OPUS-REVIEW-171/N1, CodeRabbit)');
-    // A kept regenerated draw is generated text: the safety rule may replace it.
+    ok(!/boardKeyOf\(g\)/.test(app) && !/'boardChanged'/.test(postFetch),
+      'handleGenerateGame must not re-key the form after the awaits — the board is settled before the report call, so a failed or pending request changes nothing (OPUS-REVIEW-171/N1)');
+    ok(/dispatchSaveForm\(\{\s*type: 'story',\s*boardKey,\s*name: gen\.name,/.test(postFetch),
+      'the AI fill must arrive as ONE story action for the board already settled above (STRUCT-REGEN-19/001)');
+    // ── Regenerate → Keep ────────────────────────────────────────────────
     const keepStart = app.indexOf('const keepRegen = (key: RegenKey) => {');
     const keepFn = app.slice(keepStart, app.indexOf('regenButtonRef.current?.focus();', keepStart));
-    ok(/setSaveTerms\(kept\.terms\);[\s\S]{0,500}?lastGeneratedFillRef\.current = \{/.test(keepFn),
+    ok(/dispatchSaveForm\(\{\s*type: 'story',\s*boardKey: boardKeyOf\(payoffs\),\s*name: kept\.name,\s*desc: kept\.desc,\s*labels: kept\.labels,\s*terms: kept\.terms,\s*\}\);/.test(keepFn),
+      'keepRegen (save dialog) must write the kept draw as ONE story, chips included (STRUCT-REGEN-19/001)');
+    ok(/terms: kept\.terms,[\s\S]{0,500}?lastGeneratedFillRef\.current = \{/.test(keepFn),
       'keepRegen (save dialog) must register the kept draw as the last generated fill (OPUS-REVIEW-171/N1)');
-    // After a successful save the form is blank: no board.
-    ok(/setSaveTerms\(\{ a: \[\], b: \[\] \}\);\s*setSaveLabels\(\{ row1: '', row2: '', col1: '', col2: '' \}\);\s*saveFormBoardRef\.current = null;/.test(app),
-      'a successful save must clear saveFormBoardRef with the fields (RED-REGEN-13/001)');
+    ok(/const baseline = key\.kind === 'edit' \? editNameBaselineRef\.current : saveForm\.nameBaseline;/.test(keepFn),
+      'keepRegen must read the save form\'s name baseline from the form itself, not a parallel ref (STRUCT-REGEN-19/001)');
+    // ── after a successful save ──────────────────────────────────────────
+    ok(/setIsSaveModalOpen\(false\);[\s\S]{0,300}?dispatchSaveForm\(\{ type: 'saved' \}\);/.test(app),
+      'a successful save must blank the form and its board in one action (RED-REGEN-13/001)');
   };
   contract(src);
 
@@ -929,20 +967,44 @@ function testSaveFormReconciledWithBoard() {
   const presetAttr = src.indexOf('data-focus-fallback="save-preset"');
   const handlerStart = src.lastIndexOf('onClick={() => {', presetAttr);
   const handler = src.slice(handlerStart, presetAttr);
-  mustThrow('Save Preset open no longer reconciles', src.slice(0, handlerStart) + handler.replace('reconcileSaveFormWithBoard();\n', '') + src.slice(presetAttr));
-  mustThrow('reconcile keeps the stale description', src.replace("      setSaveDesc('');\n      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;", "      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;"));
-  mustThrow('board recorded before the clear (never clears)', src.replace("    saveFormBoardRef.current = key;\n    return kept;\n  };", "    return kept;\n  };").replace('    const key = boardKeyOf(payoffs);\n', '    const key = boardKeyOf(payoffs);\n    saveFormBoardRef.current = key;\n'));
-  mustThrow('successful save leaves the board recorded', src.replace("        saveFormBoardRef.current = null; // RED-REGEN-13/001: blank form, no board\n", ''));
-  mustThrow('Save Preset prefills labels over a kept draft (RED-REGEN-14/001)', src.replace('if (!draftKept || labelsBlank) {\n                      setSaveLabels({', '{\n                      setSaveLabels({'));
-  mustThrow('reconcile reports every draft as fresh (RED-REGEN-14/001)', src.replace('const kept = saveFormBoardRef.current === key;', 'const kept = false;'));
-  mustThrow('boardKeyOf ignores Player B (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', 'JSON.stringify([p.a11, p.a12, p.a21, p.a22])'));
-  mustThrow('boardKeyOf returns a constant (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', "JSON.stringify(['board'])"));
-  mustThrow('generate records the board unconditionally after the awaits (N1)', src.replace("      if (sc) {\n        const gen: GeneratedFill = {", "      saveFormBoardRef.current = boardKeyOf(g);\n      if (sc) {\n        const gen: GeneratedFill = {"));
-  mustThrow('generate reconciles after the report call (N1 falsifier: retention decided by HTTP)', src.replace("    const boardKey = boardKeyOf(gc);\n    if (saveFormBoardRef.current !== boardKey) {", "    if (false) {").replace("      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n", "      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n      const boardKey = boardKeyOf(gc);\n      saveFormBoardRef.current = boardKey;\n"));
-  mustThrow('generate clears the story but keeps the old option names (CodeRabbit)', src.replace("        setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });\n        setSaveTerms({ a: [], b: [] });\n        lastGeneratedFillRef.current = null;", "        setSaveTerms({ a: [], b: [] });\n        lastGeneratedFillRef.current = null;"));
-  mustThrow('generate records the board only when it cleared the text (a kept typed draft cleared on reopen)', src.replace("        lastGeneratedFillRef.current = null;\n      }\n", "        lastGeneratedFillRef.current = null;\n        saveFormBoardRef.current = boardKey;\n      }\n").replace("      // pending report request changes nothing about that.\n      saveFormBoardRef.current = boardKey;\n", "      // pending report request changes nothing about that.\n"));
-  mustThrow('kept draw not registered as generated text (N1)', src.replace("      lastGeneratedFillRef.current = {\n        name: kept.name !== undefined ? kept.name : liveName,", "      void {\n        name: kept.name !== undefined ? kept.name : liveName,"));
-  console.log('✓ RED-REGEN-13/001: every Save-dialog open path reconciles the form with the current board through reconcileSaveFormWithBoard; boardKeyOf separates all eight cells; generate reconciles before the report call; eleven mutants rejected');
+  mustThrow('Save Preset open no longer reconciles',
+    src.slice(0, handlerStart) + handler.replace('openSaveFormForBoard();\n', '') + src.slice(presetAttr));
+  mustThrow('Save Preset regrows a reconcile rule of its own',
+    src.slice(0, handlerStart) + handler.replace('openSaveFormForBoard();',
+      "openSaveFormForBoard();\n                    dispatchSaveForm({ type: 'typedTerms', a: [], b: [] });") + src.slice(presetAttr));
+  mustThrow('resume after sign-in no longer reconciles',
+    src.replace('      openSaveFormForBoard();\n      setIsSaveModalOpen(true);', '      setIsSaveModalOpen(true);'));
+  mustThrow('the report prefill writes the story without its board',
+    src.replace('      boardKey: boardKeyOf(payoffs),\n      name: prefillName,', '      name: prefillName,'));
+  mustThrow('the report prefill writes four fifths of the story (the shipped defect)',
+    src.replace("    dispatchSaveForm({\n      type: 'story',\n      boardKey: boardKeyOf(payoffs),\n      name: prefillName,",
+      "    setSaveName(prefillName);\n    setSaveDesc(description.slice(0, 800));\n    dispatchSaveForm({\n      type: 'openForBoard',\n      boardKey: boardKeyOf(payoffs),\n      unusedName: prefillName,"));
+  mustThrow('the save form regrows a second source of truth',
+    src.replace('  const saveTerms = saveForm.terms;', "  const [saveTerms, setSaveTermsState] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });"));
+  mustThrow('a bulk label writer comes back (four labels at once, no per-field provenance)',
+    src.replace("        dispatchSaveForm({ type: 'saved' });",
+      "        dispatchSaveForm({ type: 'saved' });\n        setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });"));
+  mustThrow('boardKeyOf ignores Player B (N2)',
+    src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', 'JSON.stringify([p.a11, p.a12, p.a21, p.a22])'));
+  mustThrow('boardKeyOf returns a constant (N2)',
+    src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', "JSON.stringify(['board'])"));
+  mustThrow('generate reconciles after the report call (N1 falsifier: retention decided by HTTP)',
+    src.replace("    dispatchSaveForm({ type: 'boardChanged', boardKey, keepUserText });", '')
+      .replace("      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n",
+        "      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n      dispatchSaveForm({ type: 'boardChanged', boardKey, keepUserText });\n"));
+  mustThrow('generate keys the reconcile on the OLD board (N1)',
+    src.replace('const boardKey = boardKeyOf(gc);', 'const boardKey = boardKeyOf(g);'));
+  mustThrow('generate stops passing the safety judgement (a typed draft silently cleared)',
+    src.replace('const keepUserText = !generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current);', 'const keepUserText = false;'));
+  mustThrow('the kept draw is not registered as generated text (N1)',
+    src.replace("      lastGeneratedFillRef.current = {\n        name: kept.name !== undefined ? kept.name : liveName,",
+      "      void {\n        name: kept.name !== undefined ? kept.name : liveName,"));
+  mustThrow('keepRegen reads the name baseline from a parallel ref again',
+    src.replace("const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveForm.nameBaseline;",
+      "const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveNameBaselineRef.current;"));
+  mustThrow('successful save leaves the form holding its board',
+    src.replace("        dispatchSaveForm({ type: 'saved' });\n", ''));
+  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001: the save form is ONE reducer value with ten enumerated entry points; every open path goes through openSaveFormForBoard; boardKeyOf separates all eight cells; generate reconciles before the report call; fifteen mutants rejected');
 }
 
 // ════════════════════════════════════════════════════════════════════════════

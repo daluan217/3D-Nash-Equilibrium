@@ -172,9 +172,14 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
   const elseSafe = fn.indexOf('} else {', ifSafe);
   ok(ifSafe > 0 && elseSafe > ifSafe, 'the safe/unsafe branch must exist');
   const safeBranch = fn.slice(ifSafe, elseSafe);
-  ok(/setSaveName\(gen\.name\)/.test(safeBranch) && /setSaveDesc\(gen\.desc\)/.test(safeBranch)
-    && /setSaveLabels\(\{[^}]*row1:\s*gen\.row1/.test(safeBranch),
-    'the guarded branch must apply name, description AND labels together — all six fields, all-or-nothing');
+  // STRUCT-REGEN-19/001: all-or-nothing is now STRUCTURAL — the fill is ONE
+  // story action, so a later edit cannot split it into three setters and let
+  // the labels (or the chips) fall out of the guard.
+  const oneStory = /dispatchSaveForm\(\{\s*type: 'story',\s*boardKey,\s*name: gen\.name,\s*desc: gen\.desc,\s*labels: \{ row1: gen\.row1, row2: gen\.row2, col1: gen\.col1, col2: gen\.col2 \},\s*\}\);/;
+  ok(oneStory.test(safeBranch),
+    'the guarded branch must apply name, description AND labels as ONE story action carrying the board (STRUCT-REGEN-19/001)');
+  ok((safeBranch.match(/dispatchSaveForm\(/g) || []).length === 1,
+    'the guarded branch must write the save form exactly once — a second write is a second rule');
   ok(/lastGeneratedFillRef\.current\s*=\s*gen/.test(safeBranch),
     'a successful fill must update the "own prior fill" ref, or the next re-roll would wrongly be treated as user-edited');
 
@@ -193,6 +198,10 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
       } else {`;
   ok(!fn.includes(preFixShape), 'the shipped handler must no longer contain the unconditional pre-fix write');
   ok(!/generatedFillIsSafe/.test(preFixShape), 'the pre-fix text must not accidentally already contain the guard call (fixture sanity check)');
+  // …and the one-story predicate above must REJECT that pre-fix shape, so it
+  // is not passing for a reason unrelated to what it claims to check.
+  ok(!oneStory.test(preFixShape) && (preFixShape.match(/dispatchSaveForm\(/g) || []).length === 0,
+    'fixture: the one-story predicate must reject the pre-fix three-setter write');
 
   // The in-dialog copy must actually say the fields are protected, not only
   // the code — the report's other half of the defect was misleading copy.

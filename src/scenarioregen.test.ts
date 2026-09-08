@@ -141,12 +141,12 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const app = readFileSync('src/App.tsx', 'utf8');
   const handler = app.match(/const handleRegenerateScenario = [\s\S]*?\n  \};\n/)?.[0] ?? '';
   check('the fetch success branch of the regen handler never calls a save-field setter directly',
-    !/setSaveName\(|setSaveDesc\(|setSaveLabels\(|setSaveTerms\(|setEditName\(|setEditDesc\(|setEditLabels\(|setEditTerms\(/.test(handler),
+    !/setSaveName\(|setSaveDesc\(|setSaveLabel\(|setSaveTerms\(|dispatchSaveForm\(|setEditName\(|setEditDesc\(|setEditLabels\(|setEditTerms\(/.test(handler),
     'only setRegen(...) may run on a successful draw; the six form fields must be untouched until Keep runs');
   const discard = app.match(/const discardRegen = [\s\S]*?\n  \};\n/);
   check('discardRegen exists and is a short, pure reset', !!discard);
   check('discardRegen never calls a save/edit field setter',
-    !/(setSaveName|setSaveDesc|setSaveLabels|setSaveTerms|setEditName|setEditDesc|setEditLabels|setEditTerms)\(/.test(discard?.[0] ?? ''));
+    !/(setSaveName|setSaveDesc|setSaveLabel|setSaveTerms|dispatchSaveForm|setEditName|setEditDesc|setEditLabels|setEditTerms)\(/.test(discard?.[0] ?? ''));
 }
 
 /* ───────────────────────────────────────────────── H-clamp: keepFill */
