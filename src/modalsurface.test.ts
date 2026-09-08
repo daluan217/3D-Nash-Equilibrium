@@ -931,4 +931,66 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     'mutation-test: dropping role="alert" from the authed branch\'s error banner must be caught by the check above');
 }
 
+// ── STRUCT-DESKTOP-19: which surfaces may set innerHTML, and what feeds them.
+//
+// WHY HERE. unit.test.ts pins the App.tsx description card: a CUSTOM game's
+// description (user- and model-authored, stored with its markup byte-for-byte)
+// renders through <ColorCoded> as React text nodes, and only a BUILT-IN
+// preset's description takes the `dangerouslySetInnerHTML` arm. The drawer has
+// a second innerHTML site with no pin at all, and its own Library tab lists
+// saved games a few hundred lines away — the day someone folds those into the
+// preset list, stored markup reaches innerHTML inside an Electron app. That is
+// a hole with no instance today (this check verifies exactly that), not a found
+// defect, and this is the ratchet that keeps it one.
+{
+  const walkSrc = (dir: string, out: string[] = []): string[] => {
+    for (const entry of readdirSync(dir)) {
+      const full = `${dir}/${entry}`;
+      if (statSync(full).isDirectory()) walkSrc(full, out);
+      else if (/\.tsx?$/.test(entry)) out.push(full);
+    }
+    return out;
+  };
+  const innerHtmlSites: Array<[string, string]> = [];
+  for (const file of walkSrc('src')) {
+    if (/\.test\.tsx?$/.test(file)) continue;
+    const src = stripComments(readFileSync(file, 'utf8'));
+    for (const m of src.matchAll(/dangerouslySetInnerHTML=\{\{\s*__html:\s*([^}]+?)\s*\}\}/g)) {
+      innerHtmlSites.push([file.replace(/\\/g, '/'), m[1].trim()]);
+    }
+  }
+  /** Every place that sets innerHTML, and the reason its input is app-authored. */
+  const ALLOWED: Record<string, string> = {
+    'src/App.tsx::html': 'the ColorCoded-free helper span, fed only by callers below',
+    'src/App.tsx::selectedPreset.desc': 'built-in preset copy from gameEngine.ts; the custom-game arm goes to <ColorCoded> (pinned in unit.test.ts)',
+    'src/components/MenuDrawer.tsx::preset.desc': 'built-in preset copy only — defaultPresets is derived from PRESETS, pinned below',
+  };
+  const seen = innerHtmlSites.map(([f, expr]) => `${f}::${expr}`).sort();
+  const allowed = Object.keys(ALLOWED).sort();
+  ok(JSON.stringify(seen) === JSON.stringify(allowed),
+    'every dangerouslySetInnerHTML site must be listed with the reason its input is app-authored — '
+    + `found ${JSON.stringify(seen)}, allowed ${JSON.stringify(allowed)}`);
+
+  // What feeds the drawer's site: PRESETS, and nothing a user or a model wrote.
+  const defaultPresetsBlock = drawer.slice(
+    drawer.indexOf('const defaultPresets = useMemo('),
+    drawer.indexOf('const defaultPresets = useMemo(') > -1
+      ? drawer.indexOf('}, [', drawer.indexOf('const defaultPresets = useMemo('))
+      : 0);
+  ok(defaultPresetsBlock.length > 40, 'could not locate the drawer\'s defaultPresets memo');
+  ok(/Object\.keys\(PRESETS\)/.test(defaultPresetsBlock),
+    'the drawer\'s preset list must be built from PRESETS — it is the only reason its `desc` may be set as HTML');
+  ok(!/customGames|userCustomGames|savedGames|games\b/.test(defaultPresetsBlock),
+    'the drawer\'s preset list must not fold in saved games: their descriptions are user- and model-authored '
+    + 'and would reach innerHTML with the payload already stored');
+
+  // Known-positives: both rules fire on the edit that would reopen the hole.
+  const withNewSite = seen.concat('src/components/Something.tsx::game.description').sort();
+  ok(JSON.stringify(withNewSite) !== JSON.stringify(allowed),
+    'mutation-test: a NEW innerHTML site must not match the pinned allowlist');
+  const mergedList = defaultPresetsBlock.replace('Object.keys(PRESETS)', 'Object.keys(PRESETS).concat(userCustomGames)');
+  ok(/userCustomGames/.test(mergedList) && /customGames|userCustomGames|savedGames|games\b/.test(mergedList),
+    'mutation-test: a preset list merged with saved games must trip the predicate above');
+}
+
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

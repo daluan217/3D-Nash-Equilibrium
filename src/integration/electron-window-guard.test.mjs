@@ -105,6 +105,50 @@ function run(mode) {
     /will not choose, merge, rename, or delete it/.test(detail), detail);
 }
 
+// ══ 4. WHAT MAY BE HANDED TO THE OPERATING SYSTEM (STRUCT-DESKTOP-19).
+//      `setWindowOpenHandler` receives its URL from the RENDERER and used to
+//      pass it straight to `shell.openExternal`, which launches the default
+//      handler for whatever it is given — `file://` opens Finder on an
+//      arbitrary path, `smb://` reaches for a network share, and macOS
+//      resolves any custom scheme an installed app has registered. No document
+//      in this app contains a link today (not one `href` in src/), so this is
+//      a hole with no instance rather than a found defect — but two of the
+//      three `dangerouslySetInnerHTML` sites render preset descriptions, and
+//      the day a link appears in one the renderer chooses the scheme.
+//      These probes EXECUTE the real handler; nothing here is a source scan.
+//      Mutation that fails it: call `shell.openExternal(url)` directly again
+//      in the handler — every hostile probe below reports opened=true.
+{
+  const { raw, parsed } = run('openexternal');
+  record('runner completed cleanly (openexternal)', raw.status === 0, `status=${raw.status} stderr=${(raw.stderr || '').slice(0, 300)}`);
+  record('the window-open handler is installed at all', parsed?.handlerInstalled === true, `handlerInstalled=${parsed?.handlerInstalled}`);
+  const by = Object.fromEntries((parsed?.probes ?? []).map((x) => [x.url, x]));
+  const hostile = [
+    'file:///etc/passwd',
+    'javascript:alert(document.domain)',
+    'data:text/html,<script>alert(1)</script>',
+    'smb://attacker.example/share',
+    'vscode://file/etc/passwd',
+    'not a url at all',
+  ];
+  for (const url of hostile) {
+    record(`a renderer-supplied ${url.split(':')[0]} URL never reaches the operating system`,
+      by[url]?.opened === false, JSON.stringify(by[url]));
+  }
+  record('every window-open request is denied in-app, whatever its scheme',
+    (parsed?.probes ?? []).every((x) => x.action === 'deny'),
+    JSON.stringify((parsed?.probes ?? []).map((x) => x.action)));
+  // CONTROL: the two schemes the app itself uses must still work, or this
+  // guard would pass just as well on a build that opens nothing at all.
+  record('CONTROL: the app\'s own https link still opens externally',
+    by['https://nash-equilibrium-simulator.com/api/download/dmg']?.opened === true,
+    JSON.stringify(by['https://nash-equilibrium-simulator.com/api/download/dmg']));
+  record('CONTROL: an http link (the app\'s own local server) still opens externally',
+    by['http://localhost:3001/help']?.opened === true, JSON.stringify(by['http://localhost:3001/help']));
+  record('nothing but those two ever reached shell.openExternal',
+    (parsed?.openedUrls ?? []).length === 2, JSON.stringify(parsed?.openedUrls));
+}
+
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length > 0) {

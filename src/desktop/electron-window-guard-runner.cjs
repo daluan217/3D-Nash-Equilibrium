@@ -50,13 +50,15 @@ const path = require('path');
 
 const mainCjsPath = process.argv[2];
 const mode = process.argv[3];
-const VALID_MODES = ['lockfail', 'data-conflict', 'data-conflict-single', 'slowboot-normal'];
+const VALID_MODES = ['lockfail', 'data-conflict', 'data-conflict-single', 'slowboot-normal', 'openexternal'];
 if (!mainCjsPath || !VALID_MODES.includes(mode)) {
   console.log(`usage: electron-window-guard-runner.cjs <mainCjsPath> <${VALID_MODES.join('|')}>`);
   process.exit(2);
 }
 
 let windowCount = 0;
+let capturedOpenHandler = null;
+const openedUrls = [];
 let dialogShown = 0;
 let dialogOptions = null;
 const onHandlers = {};
@@ -81,7 +83,8 @@ function totalStub(name) {
 class FakeBrowserWindow {
   constructor() {
     windowCount++;
-    this.webContents = { setZoomFactor() {}, executeJavaScript: () => Promise.resolve(), setWindowOpenHandler() {} };
+    this.webContents = { setZoomFactor() {}, executeJavaScript: () => Promise.resolve(),
+      setWindowOpenHandler(h) { capturedOpenHandler = h; } };
   }
   loadURL() {}
   on() {}
@@ -123,7 +126,15 @@ Module._load = function (request, parent, isMain) {
       BrowserWindow: FakeBrowserWindow,
       ipcMain: { on() {} },
       dialog: fakeDialog,
-      shell: totalStub('shell'),
+      shell: new Proxy({}, {
+        get(_t, prop) {
+          // Record what the app actually asks the OS to open; everything else
+          // on `shell` keeps the total-stub behaviour.
+          if (prop === 'openExternal') return (u) => { openedUrls.push(String(u)); return Promise.resolve(); };
+          return totalStub(`shell.${String(prop)}`);
+        },
+        has() { return true; },
+      }),
       nativeTheme: { shouldUseDarkColors: false, on() {} },
       Menu: totalStub('Menu'),
       autoUpdater: totalStub('autoUpdater'),
@@ -156,6 +167,34 @@ if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-s
       process.exit(0);
     }, 50);
   }, 900); // past the 800ms fallback
+} else if (mode === 'openexternal') {
+  // Drive the REAL window-open handler with the URLs a renderer could hand it.
+  // Nothing here is a source scan: each probe is executed and what reached
+  // `shell.openExternal` is reported.
+  if (typeof onHandlers.ready === 'function') onHandlers.ready();
+  setTimeout(() => {
+    const probes = [
+      'https://nash-equilibrium-simulator.com/api/download/dmg',
+      'http://localhost:3001/help',
+      'file:///etc/passwd',
+      'javascript:alert(document.domain)',
+      'data:text/html,<script>alert(1)</script>',
+      'smb://attacker.example/share',
+      'vscode://file/etc/passwd',
+      'not a url at all',
+    ];
+    const probeResults = probes.map((url) => {
+      const before = openedUrls.length;
+      let action = 'NO_HANDLER';
+      if (typeof capturedOpenHandler === 'function') {
+        try { action = (capturedOpenHandler({ url }) || {}).action ?? null; }
+        catch (err) { action = `THREW ${err && err.message}`; }
+      }
+      return { url, action, opened: openedUrls.length > before };
+    });
+    console.log(`RUNNER_RESULT ${JSON.stringify({ handlerInstalled: typeof capturedOpenHandler === 'function', probes: probeResults, openedUrls })}`);
+    process.exit(0);
+  }, 900);
 } else {
   // Genuine slow boot: no lock failure at all.
   if (typeof onHandlers.ready === 'function') onHandlers.ready();

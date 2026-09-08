@@ -20,6 +20,26 @@ function compareVersions(a, b) {
   return 0;
 }
 
+// The ONLY schemes that may be handed to the operating system.
+// `shell.openExternal` launches the default handler for whatever it is given:
+// `file://` opens Finder on an arbitrary path, `smb://` reaches for a network
+// share, and macOS resolves any custom scheme an installed app has registered.
+// The window-open handler below receives its URL from the RENDERER, so the
+// renderer must not be able to choose the scheme — today no document in this
+// app contains a link at all (there is not one `href` in src/), which is
+// exactly why this is worth pinning before one appears.
+const EXTERNAL_URL_SCHEMES = new Set(['https:', 'http:']);
+function openExternalIfSafe(rawUrl) {
+  let parsed = null;
+  try { parsed = new URL(String(rawUrl)); } catch { /* not a URL at all */ }
+  if (!parsed || !EXTERNAL_URL_SCHEMES.has(parsed.protocol)) {
+    console.warn(`Refused to open an external URL with an unsupported scheme: ${String(rawUrl).slice(0, 120)}`);
+    return false;
+  }
+  shell.openExternal(parsed.toString());
+  return true;
+}
+
 // Ask the public site for the latest version; if newer than this build, offer the download.
 async function checkForUpdates(parentWindow) {
   try {
@@ -42,7 +62,7 @@ async function checkForUpdates(parentWindow) {
       detail: `You're on ${current}. Download the latest version and reinstall to update.`,
     });
     if (choice.response === 0) {
-      shell.openExternal(`${UPDATE_BASE_URL}/api/download/dmg`);
+      openExternalIfSafe(`${UPDATE_BASE_URL}/api/download/dmg`);
     }
   } catch (err) {
     // Offline or endpoint unavailable should never disrupt the app.
@@ -319,7 +339,7 @@ if (!gotTheLock) {
 
     // Open external links (e.g. documentation, help pages) in standard Safari/default browser
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-      shell.openExternal(url);
+      openExternalIfSafe(url);
       return { action: 'deny' };
     });
 
