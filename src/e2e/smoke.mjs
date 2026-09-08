@@ -3730,8 +3730,24 @@ try {
 
   // ── RED-APP-11/003: Delete has an in-flight guard — a rapid double-click
   // while offline sends ONE request and shows ONE alert. Counts network
-  // requests and dialog events, not the button's state. Mutation that fails
-  // it: remove the deletingGamesRef check — two DELETEs, two alerts.
+  // requests and dialog events, not the button's state. Mutations that fail
+  // it: remove the deletingGamesRef check in handleDeleteGame — two DELETEs,
+  // two alerts; drop `disabled={deletingGameIds.includes(game.id)}` from the
+  // row's Delete button — the in-flight check below reads false.
+  //
+  // STRUCT-DESKTOP-19: this section used to hold the DELETE on a 1500 ms TIMER
+  // and then bet that Playwright's second click would land inside that window.
+  // On a loaded runner it does not — a probe here measured 2.4 s from
+  // `.click()` to the request reaching the wire — so the second click landed
+  // AFTER the first request had already failed, and two legitimate requests
+  // with two legitimate alerts were reported as a product defect that was not
+  // there (CI run 34238169411 on another branch, and locally; the mechanism is
+  // reproduced on demand with HOLD_MS=1 in _gen/d19b1-doubledelete-timing.mjs).
+  // Two changes make the premise unlosable rather than lucky: the hold is
+  // released BY THIS SECTION, never by a timer, and both clicks are dispatched
+  // inside ONE page task (§29 learned the same lesson), so the second click is
+  // guaranteed to land while the first request is still pending. §29's note
+  // explains why two awaited Playwright clicks cannot do that.
   section('53', 'a double-click on Delete while offline sends one request and one alert', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
@@ -3750,26 +3766,46 @@ try {
       const del = row.getByTitle('Delete this saved game');
       const dialogs = []; p.on('dialog', async (d) => { dialogs.push(d.message()); await d.accept(); });
       const deletes = []; p.on('request', (rq) => { if (rq.method() === 'DELETE' && rq.url().includes('/api/games/')) deletes.push(rq.url()); });
-      // Hold the DELETE in flight for a moment, then fail it like a dead
-      // connection: the second click must land WHILE the first request is
-      // pending, which a bare setOffline() cannot guarantee (the failure is
-      // instant and the guard would legitimately be clear again).
+      // The DELETE stays pending until THIS section releases it, then fails
+      // like a dead connection. A timer here is a race the fixture can lose.
+      let release = () => {};
+      const held = new Promise((r) => { release = r; });
+      let firstSettled = false;
       await p.route('**/api/games/**', async (route) => {
         if (route.request().method() !== 'DELETE') return route.continue();
-        await new Promise((r) => setTimeout(r, 1500));
+        await held;
+        firstSettled = true;
         await route.abort('internetdisconnected');
       });
-      await del.click();
-      await del.click({ force: true }).catch(() => {});
-      // Bounded poll: the held request fails after 1.5 s, the alert follows,
-      // and the button re-enables in `finally`; give up after 6 s.
-      for (let i = 0; i < 60 && (dialogs.length === 0 || await del.isDisabled()); i++) await p.waitForTimeout(100);
-      // A second click's request/alert would follow the first within the held request's own delay; poll that window too.
-      for (let i = 0; i < 20 && deletes.length < 2 && dialogs.length < 2; i++) await p.waitForTimeout(100);
+      // Both clicks inside ONE page task: React has not re-rendered between
+      // them, so the second reaches a still-ENABLED button and only the
+      // in-flight ref can stop it — which is the guard this section is about.
+      const enabledAt = await del.evaluate((b) => {
+        const seen = [];
+        seen.push(!b.disabled); b.click();
+        seen.push(!b.disabled); b.click();
+        return seen;
+      });
+      // A broken guard issues its second DELETE in that same task; give it a
+      // bounded window to reach the wire before anything is asserted.
+      for (let i = 0; i < 30 && deletes.length < 2; i++) await p.waitForTimeout(100);
+      // The premise, checked instead of assumed: both clicks reached a live
+      // handler and the first request had NOT settled under the second. A
+      // fixture that loses this now says so, rather than reporting the two
+      // legitimate requests that follow as a product defect.
+      record('precondition: both clicks hit an enabled button while the first DELETE was still in flight',
+        enabledAt[0] === true && enabledAt[1] === true && deletes.length >= 1 && !firstSettled,
+        JSON.stringify({ enabledAt, requests: deletes.length, firstSettled }));
+      record('the Delete button is disabled while its own DELETE is in flight', await del.isDisabled());
       record('FIX: exactly one DELETE request was sent', deletes.length === 1, JSON.stringify(deletes));
+      release();
+      for (let i = 0; i < 80 && dialogs.length === 0; i++) await p.waitForTimeout(100);
+      // A second alert would follow its own request's failure; watch for it.
+      for (let i = 0; i < 15 && dialogs.length < 2; i++) await p.waitForTimeout(100);
       record('FIX: exactly one alert was shown', dialogs.length === 1, JSON.stringify(dialogs));
       record('the row is still listed (nothing was deleted)', await p.getByRole('button', { name, exact: true }).isVisible());
       await p.unroute('**/api/games/**');
+      for (let i = 0; i < 30 && (await del.isDisabled()); i++) await p.waitForTimeout(100);
       record('the Delete button is usable again once the request has settled', !(await del.isDisabled()));
     } finally { await ctx.close().catch(() => {}); }
   });
