@@ -13,6 +13,7 @@ import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoidin
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
 import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, type BankEntry } from './utils/scenarioBank';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
+import { describeStakes, exactSizeBand, STAKES_SWING_CUTS } from './utils/scenarioStakes';
 import { readFileSync } from 'node:fs';
 import { scenarioRenderability } from './utils/scenarioRenderability';
 import { screenScenario } from './utils/scenarioScreen';
@@ -52,6 +53,45 @@ check('band cuts match stakesHint: <1 tiny', stakesBand(G(0.3)) === 0, `${stakes
 check('band cuts: <10 modest', stakesBand(G(4)) === 1, `${stakesBand(G(4))}`);
 check('band cuts: <50 substantial', stakesBand(G(20)) === 2, `${stakesBand(G(20))}`);
 check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60))}`);
+
+/**
+ * "MATCH THE HINT" MEANS THE HINT, not four numbers that agree with a copy of
+ * the same ladder (STRUCT-CLOUD-19/009). The four lines above are named for an
+ * agreement between two functions and call only one of them: they passed
+ * identically while `stakesBand` and `exactSizeBand` each carried their own
+ * literal cuts and could drift apart silently, which for a bank INDEXED on the
+ * band means serving a very-large story to a tiny game with nothing red.
+ *
+ * The cuts now have one source, `STAKES_SWING_CUTS`, and this sweeps both
+ * derivations across it — including each cut exactly, one ULP either side, and
+ * every band interior — so re-inlining a different literal in either function
+ * fails here. `SIZE_BOUNDARIES_LOG` (the boundary blend's third derivation) is
+ * checked through `stakesHint` itself in `src/scenariostakes.test.ts`.
+ */
+{
+  const cuts = [...STAKES_SWING_CUTS];
+  const swings: number[] = [0, 1e-9, 0.5];
+  for (const c of cuts) {
+    swings.push(c, c * (1 - Number.EPSILON), c * (1 + Number.EPSILON), c / 2, c * 2);
+  }
+  swings.push(1e6);
+  let disagree = 0; let firstDisagree = '';
+  for (const swing of swings) {
+    // A game whose A-swing IS this number, so `describeStakes` reports it back:
+    // one row 0, the other `swing`, both players symmetric.
+    const g: GamePayoffs = { a11: swing, a12: swing, a21: 0, a22: 0, b11: swing, b12: 0, b21: swing, b22: 0 };
+    const viaBank = stakesBand(g);
+    const viaHint = exactSizeBand(describeStakes(g).swing);
+    if (viaBank !== viaHint) { disagree++; if (!firstDisagree) firstDisagree = `swing=${swing}: bank=${viaBank} hint=${viaHint}`; }
+  }
+  check(`the bank's band and the hint's band agree on every cut and interior (${swings.length} swings)`,
+    disagree === 0, `${disagree} disagreements — first: ${firstDisagree}`);
+  check('the sweep actually crosses every band (otherwise it agrees vacuously)',
+    new Set(swings.map((swing) => stakesBand({ a11: swing, a12: swing, a21: 0, a22: 0, b11: swing, b12: 0, b21: swing, b22: 0 }))).size
+      === cuts.length + 1);
+  check('there is one cut list, and it is the one both bands are built from',
+    cuts.length === 3 && cuts[0] === 1 && cuts[1] === 10 && cuts[2] === 50, JSON.stringify(cuts));
+}
 
 /* --------------------------------------------- without replacement */
 {

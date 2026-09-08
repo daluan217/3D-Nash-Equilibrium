@@ -33,7 +33,7 @@
  * inference at display time.
  */
 import type { GamePayoffs, SuggestedScenario } from '../types';
-import { describeStakes } from './scenarioStakes';
+import { describeStakes, exactSizeBand } from './scenarioStakes';
 import { termOccursIn } from './colorTerms';
 
 export interface BankEntry {
@@ -44,10 +44,16 @@ export interface BankEntry {
   s: SuggestedScenario;
 }
 
-/** The four bands, matching `stakesHint`'s cuts exactly. */
+/**
+ * The four bands. DELEGATES to `exactSizeBand` rather than restating the cuts:
+ * this function used to carry its own copy of `< 1 / < 10 / < 50` under a
+ * comment claiming it matched `stakesHint` "exactly", which nothing checked
+ * (STRUCT-CLOUD-19/009). A bank row is drawn by THIS band and the prompt's
+ * register is chosen by that one, so a drift between them serves a very-large
+ * story to a tiny game with no gate able to notice.
+ */
 export function stakesBand(g: GamePayoffs): number {
-  const swing = describeStakes(g).swing;
-  return swing < 1 ? 0 : swing < 10 ? 1 : swing < 50 ? 2 : 3;
+  return exactSizeBand(describeStakes(g).swing);
 }
 
 /**
