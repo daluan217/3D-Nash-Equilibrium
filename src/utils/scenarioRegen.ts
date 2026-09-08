@@ -167,6 +167,10 @@ export interface KeptFill {
   desc: string;
   labels: { row1: string; row2: string; col1: string; col2: string };
   terms: { a: string[]; b: string[] };
+  /** RED-REGEN-14/002: EXISTING chip(s), kept in `terms`, whose phrase does
+   *  not occur in `desc` any more (per `termOccursIn`) — the editor shows
+   *  them as "not highlighted"; the Keep note names them. */
+  orphaned: { a: string[]; b: string[] };
   /** RED-REGEN-11/001: actor noun(s) the draw offered but the per-side
    *  `USER_TERMS_MAX` cap kept out of `terms` — empty on both sides for
    *  every draw that fit. `keepRegen` turns this into the same cap-hit
@@ -227,10 +231,14 @@ export function keepFill(
     },
     terms: { a: [], b: [] },
     dropped: { a: [], b: [] },
+    orphaned: { a: [], b: [] },
   };
-  const kept = regenKeptColorTerms(preview.actorA ?? [], preview.actorB ?? [], existingTerms.a, existingTerms.b);
+  // RED-REGEN-14/002: judged against the CLAMPED description — the text the
+  // dialog will actually hold and render, not the raw draw.
+  const kept = regenKeptColorTerms(preview.actorA ?? [], preview.actorB ?? [], existingTerms.a, existingTerms.b, out.desc);
   out.terms = { a: kept.a, b: kept.b };
   out.dropped = kept.dropped;
+  out.orphaned = kept.orphaned;
   if (replaceName) out.name = codepointSafeSlice(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
   return out;
 }
@@ -244,11 +252,26 @@ export function keepFill(
  * dropped (the common case — a Keep note falls back to
  * `REGEN_ANNOUNCE.keptEdit`/`keptSave` unchanged).
  */
-export function regenDroppedNote(dropped: { a: readonly string[]; b: readonly string[] }): string | null {
+export function regenDroppedNote(
+  dropped: { a: readonly string[]; b: readonly string[] },
+  orphaned: { a: readonly string[]; b: readonly string[] } = { a: [], b: [] },
+): string | null {
   const notes: string[] = [];
   if (dropped.a.length > 0) notes.push(capHitMessage(dropped.a, 'A'));
   if (dropped.b.length > 0) notes.push(capHitMessage(dropped.b, 'B'));
+  // RED-REGEN-14/002: a kept chip the new story no longer contains is not
+  // deleted (2026-09-03: Keep never destroys highlights) — but a silent inert
+  // chip was the defect, so Keep says which ones and what to do.
+  if (orphaned.a.length > 0) notes.push(orphanedNote(orphaned.a, 'A'));
+  if (orphaned.b.length > 0) notes.push(orphanedNote(orphaned.b, 'B'));
   return notes.length > 0 ? notes.join(' ') : null;
+}
+
+export function orphanedNote(terms: readonly string[], player: 'A' | 'B'): string {
+  const quoted = terms.map((t) => `"${t}"`).join(', ');
+  const one = terms.length === 1;
+  // CodeRabbit CLI (this branch): noun, verb and pronoun agree in number.
+  return `Player ${player}'s highlight${one ? '' : 's'} ${quoted} ${one ? 'does' : 'do'} not appear in the new story, so ${one ? 'it is' : 'they are'} shown as not highlighted — reuse the ${one ? 'phrase' : 'phrases'} in the text or remove the ${one ? 'chip' : 'chips'}.`;
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────

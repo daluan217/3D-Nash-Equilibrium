@@ -416,13 +416,53 @@ export function mergeDescriptionTerms(
  * `newA`/`newB` in the first place, so it can never appear here either; the
  * two causes stay distinguishable by construction, not by re-deriving them.
  */
+/**
+ * RED-REGEN-14/002: the ONE definition of "this phrase occurs in this text as
+ * a highlightable term" — exactly the boundary rule `ColorCoded` paints with
+ * (case-insensitive; a real word boundary in space-delimited scripts, none in
+ * the scripts that write without spaces — see the comment in ColorCoded.tsx
+ * and docs/COLOUR-TERMS.md §(c)). `ColorCoded` builds its regex through
+ * `termBoundaryRegExp`, and the editor's chip state asks `termOccursIn`, so
+ * "the chip paints nothing" and "the chip says it paints nothing" can never
+ * be decided by two different rules. Callers pass terms longest-first when
+ * the order matters (ColorCoded does); terms under 2 characters are dropped
+ * here, the same rule ColorCoded always applied.
+ */
+const NO_BOUNDARY_SCRIPTS = '\\p{Script=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}'
+  + '\\p{Script_Extensions=Hangul}\\p{Script_Extensions=Thai}\\p{Script_Extensions=Lao}'
+  + '\\p{Script_Extensions=Khmer}\\p{Script_Extensions=Myanmar}';
+const TERM_LEFT = `(?:(?<![\\p{L}\\p{N}\\p{M}_])|(?<=[${NO_BOUNDARY_SCRIPTS}]))`;
+const TERM_RIGHT = `(?:(?![\\p{L}\\p{N}\\p{M}_])|(?=[${NO_BOUNDARY_SCRIPTS}]))`;
+export function termBoundaryRegExp(terms: readonly string[], flags = 'giu'): RegExp | null {
+  const usable = terms.filter((t) => t && t.trim().length >= 2);
+  if (usable.length === 0) return null;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`${TERM_LEFT}(?:${usable.map(esc).join('|')})${TERM_RIGHT}`, flags);
+}
+/** True when `term` would be painted somewhere in `text` (see termBoundaryRegExp). */
+export function termOccursIn(text: string, term: string): boolean {
+  const re = termBoundaryRegExp([term], 'iu');
+  return re !== null && re.test(text);
+}
+
 export function regenKeptColorTerms(
   actorA: readonly string[],
   actorB: readonly string[],
   existingA: readonly string[],
   existingB: readonly string[],
-): { a: string[]; b: string[]; dropped: { a: string[]; b: string[] } } {
+  /** RED-REGEN-14/002: the description the kept chips will be rendered
+   *  against. When given, every EXISTING chip whose phrase no longer occurs
+   *  in it (per `termOccursIn`) is named in `orphaned` — still KEPT (the
+   *  2026-09-03 rule: an AI action never destroys a user's highlights; the
+   *  editor shows such a chip as "not highlighted", and the user may reuse
+   *  the phrase or remove the chip), but no longer silently. Omitted (the
+   *  preview-card composition, which has no Keep note) reports none. */
+  description?: string,
+): { a: string[]; b: string[]; dropped: { a: string[]; b: string[] }; orphaned: { a: string[]; b: string[] } } {
   const existing = cleanUserColorTermPair(existingA, existingB);
+  const orphaned = description === undefined
+    ? { a: [] as string[], b: [] as string[] }
+    : { a: existing.a.filter((t) => !termOccursIn(description, t)), b: existing.b.filter((t) => !termOccursIn(description, t)) };
   const ownedA = new Set(existing.a.map(colorTermKey));
   const ownedB = new Set(existing.b.map(colorTermKey));
   // A generated actor noun may add a NEW highlight, but may never claim a
@@ -452,6 +492,7 @@ export function regenKeptColorTerms(
       a: newA.filter((t) => !resultAKeys.has(colorTermKey(t)) && !resultBKeys.has(colorTermKey(t))),
       b: newB.filter((t) => !resultBKeys.has(colorTermKey(t)) && !resultAKeys.has(colorTermKey(t))),
     },
+    orphaned,
   };
 }
 

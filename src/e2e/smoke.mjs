@@ -7801,8 +7801,12 @@ try {
     await controlPage.getByRole('button', { name: 'Keep' }).click();
     await controlPage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
     const note2 = await dialog2.locator('p[role="status"]').innerText().catch(() => '');
-    record('control: below the cap, Keep\'s note is the plain "Kept" message with no cap wording',
-      /^Kept/.test(note2) && !/highlights already/.test(note2), note2);
+    // RED-REGEN-14/002 (#178): the seeded chips are not phrases of the mocked
+    // story, so the note now OPENS with the orphan sentence naming them and
+    // the "Kept —" message follows; "plain" here means NO cap wording — the
+    // cap-specific claim this control exists for is unchanged.
+    record('control: below the cap, Keep\'s note carries the "Kept" message with no cap wording',
+      /Kept —/.test(note2) && !/highlights already/.test(note2), note2);
     record('control: below the cap, Keep actually ADDS the noun as a 12th chip',
       await dialog2.locator('button[data-player="A"]:has-text("the lighthouse keeper")').isVisible().catch(() => false));
     await controlPage.close();
@@ -7837,8 +7841,8 @@ try {
     await oppositePage.getByRole('button', { name: 'Keep' }).click();
     await oppositePage.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
     const note3 = await dialog3.locator('p[role="status"]').innerText().catch(() => '');
-    record('FIX (opposite-side control): Player A is not capped by Player B\'s 12 chips -- the note is the plain "Kept" message',
-      /^Kept/.test(note3) && !/highlights already/.test(note3), note3);
+    record('FIX (opposite-side control): Player A is not capped by Player B\'s 12 chips -- the note carries the "Kept" message with no cap wording',
+      /Kept —/.test(note3) && !/highlights already/.test(note3), note3);
     record('FIX (opposite-side control): Keep actually ADDS "the lighthouse keeper" for Player A',
       await dialog3.locator('button[data-player="A"]:has-text("the lighthouse keeper")').isVisible().catch(() => false));
     await oppositePage.close();
