@@ -910,7 +910,6 @@ if (failures > 0) {
     noNounMismatched === NOUNLESS_CARD_DISAGREEMENTS,
     `${noNounMismatched} of ${rows.length} (pinned ${NOUNLESS_CARD_DISAGREEMENTS}). If this is 0 the two compositions `
     + 'have collapsed into one and the check above can no longer fail; if it moved, the artifact changed.');
-  cases += 2;
 
   // The App-side contract: both halves of the pairing above still exist.
   const appSrc10 = readFileSync('src/App.tsx', 'utf8');
@@ -924,7 +923,6 @@ if (failures > 0) {
     && /setEditTerms\(\{ a: keptA\.a, b: keptA\.b \}\)/.test(appSrc10)
     && /setSaveTerms\(\{ a: keptNew\.a, b: keptNew\.b \}\)/.test(appSrc10),
     'without this the nouns die at the save and the card colours more than the game ever will');
-  cases += 2;
 }
 
 if (failures > 0) {

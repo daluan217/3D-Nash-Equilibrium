@@ -63,18 +63,16 @@ async function call(method, url, { body } = {}) {
 }
 
 // ── Stub model: ALWAYS drops the gate ───────────────────────────────────────
-// A syntactically clean scenario, distinct labels, no debris — the ONLY thing
-// wrong with it is the literal "Player A" in the description, which
-// `scenarioIsClaimFree`'s META_PROMPT_CAST check rejects unconditionally
-// (nashValidator.ts ~1454). Every draw the ladder makes gets this same
-// content, so every attempt gate-drops the same real way production does.
+// A syntactically clean scenario, distinct labels, no debris. The literal
+// "Player A" in the description is what refuses it: `scenarioIsClaimFree`'s
+// META_PROMPT_CAST check rejects that unconditionally (nashValidator.ts ~1454),
+// and `claim-free` runs before `attributable` in `SCENARIO_SCREENS`, so that is
+// the reason the drop log carries. This story ALSO names neither pair of option
+// labels, so `attributable` would refuse it too — deliberately left that way:
+// the fixture's whole job is that every draw the ladder makes gate-drops, the
+// same way production drops one, and being refused twice over makes it more
+// robust to a screen changing, not less. Every draw gets this same content.
 let stubCallCount = 0;
-// STRUCT-CLOUD-19/001: these stub descriptions now STATE their option
-// labels. `SCENARIO_SCREENS`'s `attributable` entry refuses a story the
-// reader cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud
-// path that finding never covered); this prose named neither pair, so every
-// draw of it was dropped and these suites measured the reroll ladder instead
-// of what they are about. Only the descriptions changed.
 const droppableScenario = {
   name: 'Stub Scenario',
   row1: 'Take the Contract', row2: 'Decline the Contract',
@@ -215,6 +213,13 @@ try {
   //    the harness").
   // ═══════════════════════════════════════════════════════════════════════
   {
+    // STRUCT-CLOUD-19/001: this control's description STATES its option labels.
+    // `SCENARIO_SCREENS`'s `attributable` entry refuses a story the reader
+    // cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud path
+    // that finding never covered), and this fixture is the one that has to
+    // PASS the gates — prose naming neither pair would have been dropped like
+    // the stub above, and the suite would have measured the reroll ladder
+    // instead of the clean path it is about. Only the description changed.
     const cleanScenario = {
       name: 'Clean Stub Scenario',
       row1: 'Ship Early', row2: 'Ship Late',

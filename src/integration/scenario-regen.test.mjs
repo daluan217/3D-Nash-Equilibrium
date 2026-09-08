@@ -466,12 +466,15 @@ try {
       } else {
         const osc = ordinary.json.scenario;
         // Same test as the regenerate route above, on the route that used to
-        // strip them: nouns present AND stated verbatim in the description, so
-        // this cannot pass on an empty array or on a noun the highlighter
-        // would never find.
+        // strip them: nouns present AND stated in the description, so this
+        // cannot pass on an empty array or on a noun the highlighter would
+        // never find. Case-folded, like `termOccursIn` (the real predicate) and
+        // like the timeout section below — a row states its noun as the
+        // sentence starts it ("A small microbrewery ...") while declaring it
+        // lower case, and a case-SENSITIVE test misses those (CodeRabbit CLI).
+        const inDesc = (term) => (osc.description ?? '').toLowerCase().includes(String(term).toLowerCase());
         if (osc.actorA?.length && osc.actorB?.length
-          && osc.actorA.every((term) => osc.description.includes(term))
-          && osc.actorB.every((term) => osc.description.includes(term))) ordinaryActorRows++;
+          && osc.actorA.every(inDesc) && osc.actorB.every(inDesc)) ordinaryActorRows++;
       }
     }
     record('desktop: 25 regenerate calls, never a 429 (hosted-only rate limit lifted under IS_ELECTRON)', none429);
