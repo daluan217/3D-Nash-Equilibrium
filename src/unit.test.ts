@@ -24,6 +24,7 @@ import {
   numericInputProblem,
 } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
+import { tourBlockedOriginAfterPointerDown, tourClickSharesBlockedOrigin, tourControlClickAllowed, tourFloatingFits, tourPortraitUsesSheet, tourRectAfterCentering, tourScrollBehavior, tourTargetPlacementKey, tourTargetScrollDelta } from './components/Walkthrough';
 import {
   isAgentRouterEndpoint,
   buildChatRequestBody,
@@ -2363,6 +2364,7 @@ function runUnitTests() {
   testModelDebris();
   testOracleGateHoles();
   testGeometryDegenerateShelf();
+  testWalkthroughInputContracts();
   console.log('All unit tests passed.');
 }
 
@@ -3561,6 +3563,155 @@ function testGeometryDegenerateShelf() {
   }
 
   console.log('✓ geometry degenerate shelf: a board that is entirely a shelf, and an interior flat LINE, are both stated truthfully without being demoted — and negating either claim is still caught');
+}
+
+function testWalkthroughInputContracts() {
+  assert(tourControlClickAllowed(true),
+    'H1 visible-pointer control: a normal pointerdown on a visible tour control must permit its click');
+  assert(!tourControlClickAllowed(false),
+    'H1 hidden-pointer guard: a click without a visible-tour pointerdown must be ignored');
+  assert(tourClickSharesBlockedOrigin({ x: 40, y: 80 }, 40, 80),
+    'H1 resumed-gesture control: the follow-up pointer at the blocking pointer origin must remain blocked');
+  assert(!tourClickSharesBlockedOrigin({ x: 40, y: 80 }, 41, 80),
+    'H1 resumed-gesture control: a fresh pointer at a different point must remain available to the visible tour');
+  assert(!tourClickSharesBlockedOrigin({ x: 40, y: 80 }, 40, 81),
+    'H1 resumed-gesture control: a y-only difference must also count as a fresh pointer');
+  assert(!tourClickSharesBlockedOrigin(null, 40, 80),
+    'H1 unarmed-gesture control: with no blocked origin recorded, every pointer must remain available to the visible tour');
+  assert(tourBlockedOriginAfterPointerDown(true, { x: 40, y: 80 })?.x === 40,
+    'H1 blocked-pointer control: an active ModalSurface may arm only its current blocking gesture');
+  assert(tourBlockedOriginAfterPointerDown(false, { x: 40, y: 80 }) === null,
+    'H1 canceled-pointer control: a fresh pointer after the ModalSurface closes must erase any stale blocked origin');
+  assert(tourScrollBehavior(false) === 'smooth',
+    'H4 motion control: without reduced motion, the tour must preserve smooth scrolling');
+  assert(tourScrollBehavior(true) === 'auto',
+    'H4 reduced-motion guard: the tour must use an immediate scroll instead of overriding the preference');
+  assert(tourTargetPlacementKey('plot', 0) !== tourTargetPlacementKey('plot', 285),
+    'H5 measured-height control: a settled sheet height must invalidate target placement even when the target is unchanged');
+  assert(tourTargetPlacementKey('plot', 285) !== tourTargetPlacementKey('matrix', 285),
+    'H5 target control: a different target must still invalidate placement at the same card height');
+  assert(tourTargetPlacementKey('plot', 285, 1200, 8, 336, 320) !== tourTargetPlacementKey('plot', 285, 1268, 8, 336, 320),
+    'H5 directional-entry control: a post-onEnter document-position shift must trigger one fresh target placement without keying on smooth-scroll viewport motion');
+  assert(tourTargetPlacementKey('plot', 285, 1200, 8, 336, 320, 390, 844) !== tourTargetPlacementKey('plot', 285, 1200, 8, 336, 320, 500, 844),
+    'H5 portrait-resize control: a changed viewport must invalidate target placement and measured sheet geometry even when the target document rect is unchanged');
+  assert(tourTargetScrollDelta(264.71875, 320, 211.03125, 332) === 47.6875,
+    'H5 strip control: a 320px plot that fits a 332px usable strip must be centred inside that strip, not offset under its sheet');
+  assert(tourTargetScrollDelta(264.71875, 360, 211.03125, 332) === 53.6875,
+    'H5 tall-target control: a target larger than its usable strip must align at the header edge without spending an unavailable top gap');
+  const rawFloatingBoundary = { top: 400, left: 327, width: 50, height: 400 };
+  const paddedFloatingBoundary = { top: 392, left: 319, width: 66, height: 416 };
+  assert(tourFloatingFits(rawFloatingBoundary, 920, 1200),
+    'H5 boundary control: the unpadded target reports a 527px right-side floating fit');
+  assert(!tourFloatingFits(paddedFloatingBoundary, 920, 1200),
+    'H5 boundary guard: the 8px spotlight expansion removes that fit, so render and scroll must both select the sheet');
+  const contract = (source: string) => {
+    assert(/blockedPointerOriginRef\.current = tourBlockedOriginAfterPointerDown\(blockedRef\.current, origin\);/.test(source)
+      && /window\.addEventListener\('pointerdown', notePointerDown, true\)/.test(source)
+      && /window\.addEventListener\('pointercancel', cancelPendingBlockedPointer, true\)/.test(source)
+      && /window\.addEventListener\('click', noteClick, true\)/.test(source)
+      && /if \(!open\) \{\s*clearGestureState\(\);\s*return;\s*\}/.test(source)
+      && /let active = true;/.test(source)
+      && /if \(active && !ModalRegistry\.isAnyOpen\(\)\) resumedPointerOriginRef\.current = origin;/.test(source)
+      && /active = false;\s*cancelAnimationFrame\(releaseFrame\);\s*clearGestureState\(\);/.test(source)
+      && /\}, \[open\]\);/.test(source),
+    'H1 root gate must exist only while the tour is open, clear canceled gesture state on lifecycle changes, and make an already-queued close click inert after cleanup');
+    assert(/const onTourPointerDownCapture = \(e: ReactPointerEvent<HTMLDivElement>\) => \{\s*const resumedAtSamePoint = tourClickSharesBlockedOrigin\(resumedPointerOriginRef\.current, e\.clientX, e\.clientY\);[\s\S]{0,180}?pointerDownOnVisibleTourRef\.current = !blocked && !resumedAtSamePoint;/.test(source)
+      && /ref=\{tourRef\}[\s\S]{0,320}?onPointerDownCapture=\{onTourPointerDownCapture\}/.test(source),
+      'H1 root gate must distinguish the blocked gesture origin from a fresh visible-tour pointerdown, covering the pill and every card control together');
+    assert(/const onTourClickCapture = \(e: ReactMouseEvent<HTMLDivElement>\) => \{\s*const allowed = e\.detail === 0 \|\| tourControlClickAllowed\(pointerDownOnVisibleTourRef\.current\);[\s\S]{0,240}?e\.preventDefault\(\);\s*e\.stopPropagation\(\);/.test(source)
+      && /onClickCapture=\{onTourClickCapture\}/.test(source),
+      'H1 root gate must suppress a pointer-origin-less click before any descendant tour handler, while preserving keyboard activation');
+    assert(/const behavior = tourScrollBehavior\(!!window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches\);/.test(source)
+      && /scrollIntoView\(\{ behavior, block: 'center' \}\)/.test(source)
+      && /scrollBy\(\{ top: delta, behavior \}\)/.test(source),
+    'H4 both tour-scroll paths must share the reduced-motion policy rather than hard-code smooth behavior');
+    assert(/const exitTop = headerOffset\(\) \+ GAP;/.test(source)
+      && /aria-label="Exit tour"[\s\S]{0,160}?style=\{\{ top: exitTop, right: GAP \}\}/.test(source),
+    'H2 Exit pill must yield vertically to the measured header bottom, not rely on a viewport top offset');
+    const scrollStart = source.indexOf('Bring the target into view when the step changes.');
+    const scrollEnd = source.indexOf('if (cardRef.current) setCardH(cardRef.current.offsetHeight);');
+    const scrollEffect = scrollStart >= 0 && scrollEnd > scrollStart ? source.slice(scrollStart, scrollEnd) : '';
+    assert(/const placementKey = tourTargetPlacementKey\(\s*step\?\.target, cardH, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, vp\.w, vp\.h,\s*\);/.test(source)
+      && /documentTop: r\.top \+ window\.scrollY - PAD/.test(source)
+      && /\}, \[i, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, open, vp\.w, vp\.h, portraitSheet\]\);/.test(source)
+      && /const room = Math\.max\(120, window\.innerHeight - sheetH - GAP - top\);/.test(scrollEffect)
+      && /const delta = tourTargetScrollDelta\(r0\.top, r0\.height, top, room\);/.test(scrollEffect)
+      && /\}, \[open, placementKey\]\);/.test(scrollEffect)
+      && !source.includes('document.body.style.paddingBottom'),
+    'H5 target placement must rerun with the actual one-gap usable strip when measured card height or document geometry changes, without mutating global body padding');
+    // CodeRabbit on #173: the scroll effect decides the layout family from the
+    // spotlight's POST-centring position, through the same predicate render uses.
+    assert(/const paddedRect = readRect\(el\);[\s\S]{0,400}?tourPortraitUsesSheet\(\s*tourRectAfterCentering\(paddedRect, window\.innerHeight\), window\.innerWidth, window\.innerHeight,?\s*\)/.test(scrollEffect),
+      'H5/CR scroll layout must use the padded spotlight rect AS IT WILL SIT AFTER CENTRING, through tourPortraitUsesSheet(tourRectAfterCentering(...))');
+    assert(/const portraitSheet = !\(vp\.w > vp\.h\) && \(!rect \? vp\.w < COMPACT_MAX : tourPortraitUsesSheet\(rect, vp\.w, vp\.h\)\);/.test(source)
+      && /const sheet = portraitSheet;/.test(source),
+      'CR #173: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect (portraitSheet)');
+    // OPUS-REVIEW-173/C2: the card measurement must re-run on a layout-family flip.
+    assert(/if \(cardRef\.current\) setCardH\(cardRef\.current\.offsetHeight\);\s*\}, \[i, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, open, vp\.w, vp\.h, portraitSheet\]\);/.test(source),
+      'OPUS-173/C2: the card-height measure effect must key on the rendered layout family (portraitSheet) — a sheet positioned with the floating card\'s height sat 223px above the bottom at 950x1000');
+    // OPUS-REVIEW-173/C4: the two gate handlers must be EXACTLY these bodies —
+    // a dropped `if (allowed) return;` killed every tour control with the old
+    // regex still green; an accepted blocked-origin click is RED-APP-17/002.
+    assert(/const onTourPointerDownCapture = \(e: ReactPointerEvent<HTMLDivElement>\) => \{\s*const resumedAtSamePoint = tourClickSharesBlockedOrigin\(resumedPointerOriginRef\.current, e\.clientX, e\.clientY\);\s*if \(resumedAtSamePoint\) resumedPointerOriginRef\.current = null;\s*pointerDownOnVisibleTourRef\.current = !blocked && !resumedAtSamePoint;\s*\};/.test(source),
+      'OPUS-173/C4: onTourPointerDownCapture must be exactly: clear a resumed origin at the same point, then arm only when NOT blocked and NOT resumed');
+    assert(/const onTourClickCapture = \(e: ReactMouseEvent<HTMLDivElement>\) => \{\s*const allowed = e\.detail === 0 \|\| tourControlClickAllowed\(pointerDownOnVisibleTourRef\.current\);\s*pointerDownOnVisibleTourRef\.current = false;\s*if \(allowed\) return;\s*e\.preventDefault\(\);\s*e\.stopPropagation\(\);\s*\};/.test(source),
+      'OPUS-173/C4: onTourClickCapture must be exactly: allowed = keyboard or armed pointer; disarm; return when allowed; otherwise preventDefault + stopPropagation');
+  };
+  const source = readFileForContract('src/components/Walkthrough.tsx', 'utf8');
+  contract(source);
+  const contractFails = (candidate: string) => {
+    try { contract(candidate); return false; } catch { return true; }
+  };
+  assert(contractFails(source.replace('onClickCapture={onTourClickCapture}', 'data-click-capture={onTourClickCapture}')),
+    'H1 fixture: removing the root click gate must fail the named source contract');
+  assert(contractFails(source.replace('tourBlockedOriginAfterPointerDown(blockedRef.current, origin)', 'origin')),
+    'H1 fixture: retaining a canceled blocked origin through a fresh pointerdown must fail the named source contract');
+  assert(contractFails(source.replace('if (!open) {', 'if (false) {')),
+    'H1 fixture: leaving pointer listeners live while the tour is closed must fail the lifecycle contract');
+  assert(contractFails(source.replace('cancelAnimationFrame(releaseFrame);', '')),
+    'H1 fixture: allowing a queued release frame to survive cleanup must fail the lifecycle contract');
+  assert(contractFails(source.replace("scrollIntoView({ behavior, block: 'center' })", "scrollIntoView({ behavior: 'smooth', block: 'center' })")),
+    'H4 fixture: restoring an unconditional smooth scroll must fail the named source contract');
+  assert(contractFails(source.replace('style={{ top: exitTop, right: GAP }}', 'style={{ top: GAP, right: GAP }}')),
+    'H2 fixture: returning the pill to a viewport-top offset must fail the named source contract');
+  assert(contractFails(source.replace('window.innerHeight - sheetH - GAP - top', 'window.innerHeight - sheetH - GAP * 2 - top')),
+    'H5 fixture: budgeting a second gap inside the measured strip must fail the named source contract');
+  assert(contractFails(source.replace('tourRectAfterCentering(paddedRect, window.innerHeight)', 'paddedRect')),
+    'CR #173 fixture: deciding the scroll layout from the PRE-centring spotlight (the shape CodeRabbit found) must fail the named source contract');
+  assert(contractFails(source.replace('tourRectAfterCentering(paddedRect, window.innerHeight)', 'tourRectAfterCentering(r0, window.innerHeight)')),
+    'H5 fixture: deciding scroll layout from the unpadded target while render uses the spotlight must fail the named source contract');
+  assert(contractFails(source.replace('const sheet = portraitSheet;', 'const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));')),
+    'CR #173 fixture: render bypassing the shared predicate must fail the named source contract');
+  assert(contractFails(source.replace('open, vp.w, vp.h, portraitSheet]);', 'open, vp.w, vp.h]);')),
+    'OPUS-173/C2 fixture: dropping the layout family from the measure deps (the 950x1000 regression) must fail the named source contract');
+  assert(contractFails(source.replace('    if (allowed) return;\n', '')),
+    'OPUS-173/C4 fixture: dropping `if (allowed) return;` (every tour control dead) must fail the named source contract');
+  assert(contractFails(source.replace('pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;', 'pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint || (e.target as HTMLElement).closest(\'[aria-label="Exit tour"]\') !== null;')),
+    'OPUS-173/C4 fixture: accepting a blocked-origin click on the Exit pill (RED-APP-17/002) must fail the named source contract');
+  assert(contractFails(source.replace('    if (resumedAtSamePoint) resumedPointerOriginRef.current = null;\n', '')),
+    'OPUS-173/C4 fixture: dropping the resumed-origin clear must fail the named source contract');
+  // Behavioural: the 3D plot at 920x1200 (480px tall, spotlight 496) fits a floating
+  // card only because of the room ABOVE its pre-scroll position; centred, it fits
+  // nowhere — so the effect must take the sheet path from the start.
+  const tallPreScroll = { top: 612, left: 8, width: 904, height: 496 };
+  assert(tourFloatingFits(tallPreScroll, 920, 1200) && !tourPortraitUsesSheet(tallPreScroll, 920, 1200),
+    'CR #173 precondition: the pre-scroll spotlight reports a floating fit (room above)');
+  const tallCentred = tourRectAfterCentering(tallPreScroll, 1200);
+  assert(tallCentred.top === 352 && tallCentred.height === 496 && tallCentred.left === 8,
+    'CR #173: tourRectAfterCentering places the spotlight at (vh - height) / 2 and keeps the other fields');
+  assert(tourPortraitUsesSheet(tallCentred, 920, 1200),
+    'CR #173: the same spotlight, centred, has no floating fit — the layout family is the sheet');
+  // A short target keeps its floating fit after centring: the centre path is still taken.
+  const shortPreScroll = { top: 700, left: 8, width: 300, height: 160 };
+  assert(!tourPortraitUsesSheet(tourRectAfterCentering(shortPreScroll, 1200), 920, 1200),
+    'CR #173 control: a short spotlight still fits a floating card after centring');
+  assert(tourPortraitUsesSheet(shortPreScroll, 800, 1200),
+    'CR #173: below COMPACT_MAX the sheet is used regardless of fit');
+  assert(contractFails(source.replace('rect?.documentTop, rect?.left, rect?.width, rect?.height', '0, 0, 0, 0')),
+    'H5 fixture: ignoring a post-onEnter target document-position shift must fail the named source contract');
+  assert(contractFails(source.replace('rect?.documentTop, rect?.left, rect?.width, rect?.height, vp.w, vp.h', 'rect?.documentTop, rect?.left, rect?.width, rect?.height, 0, 0')),
+    'H5 fixture: ignoring a portrait viewport resize must fail the named source contract');
+  console.log('✓ Walkthrough input contracts: pointer origin is a root-level gate, header controls own their vertical band, sheet placement tracks real layout, and both JS scroll paths honor reduced motion');
 }
 
 // ── RED-MATH-18/001: "Reset View" must land on the default pose and STAY there ──
