@@ -920,7 +920,7 @@ if (failures > 0) {
     'the card must paint what regenPreviewColorTerms returns — the one builder whose composition the save reproduces');
   check("App.tsx: useSuggestedScenario carries the suggestion's actor nouns into BOTH dialogs as chips",
     (appSrc10.match(/regenKeptColorTerms\(\s*\n?\s*sc\.actorA/g) ?? []).length >= 2
-    && /setEditTerms\(\{ a: keptA\.a, b: keptA\.b \}\)/.test(appSrc10)
+    && /setEditTerms\(\{ a: keptEdit\.a, b: keptEdit\.b \}\)/.test(appSrc10)
     && /setSaveTerms\(\{ a: keptNew\.a, b: keptNew\.b \}\)/.test(appSrc10),
     'without this the nouns die at the save and the card colours more than the game ever will');
 }

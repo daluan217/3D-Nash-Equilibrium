@@ -1712,12 +1712,12 @@ export default function App() {
       // never destroyed, nouns added, per-side cap honoured), so a story whose
       // only term for a player is its actor noun still colours that player after
       // the save — which is what the card promised (STRUCT-CLOUD-19/001).
-      const keptA = regenKeptColorTerms(
+      const keptEdit = regenKeptColorTerms(
         sc.actorA ?? [], sc.actorB ?? [],
         existing.colorTermsA ?? [], existing.colorTermsB ?? [],
         description.slice(0, 800),
       );
-      setEditTerms({ a: keptA.a, b: keptA.b });
+      setEditTerms({ a: keptEdit.a, b: keptEdit.b });
       setEditName(prefillName);
       // This IS an auto-prefill (the report's invention, not the user's own
       // typing) — the name-replace baseline moves with it, same as any other
