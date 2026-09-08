@@ -264,7 +264,7 @@ export function keepFill(
     const found: ShadowedChip[] = [];
     for (const t of chips) {
       if (!existingKeys.has(colorTermKey(t))) continue; // the draw's own nouns are not kept chips
-      const st = (side === 'a' ? states.a : states.b).get(t);
+      const st = (side === 'a' ? states.a : states.b).get(colorTermKey(t));
       if (st && st.state === 'shadowed') found.push({ term: t, by: st.by, bySide: st.bySide });
     }
     return found;

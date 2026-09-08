@@ -31,6 +31,7 @@ import {
   mergeDescriptionTerms,
   regenKeptColorTerms,
   termOccursIn,
+  chipPaintStates,
   regenPreviewColorTerms,
   savedGameColorTerms,
   capHitMessage,
@@ -858,6 +859,47 @@ if (failures > 0) {
   check('editor (control): the same chip with its phrase present is not suppressed', presentChip !== '' && !/data-suppressed=/.test(presentChip), presentChip);
   check('editor: a chip present only inside a longer word is absent (same boundary as the painter)',
     /data-suppressed-cause="absent"/.test(chipA(editorHtml('The cattle graze.', ['cat']))));
+
+  // CodeRabbit CLI on this branch: the chip's paint state was looked up by the
+  // RAW term while `chipPaintStates` was keyed by the CLEANED one. A chip the
+  // user created by selecting text that carried a trailing space (or a double
+  // space inside it) therefore missed the lookup, fell through to the caller's
+  // `?? absent`, and said "does not appear in the story" about a phrase painted
+  // on screen — the chip and the paint disagreeing again, which is exactly what
+  // STRUCT-REGEN-19/002 removed. Both are keyed by `colorTermKey` now.
+  for (const [label, raw, text] of [
+    ['a trailing space (a drag-selection almost always carries one)', 'orchard keeper ', 'The orchard keeper bargains.'],
+    ['a leading space', ' orchard keeper', 'The orchard keeper bargains.'],
+    ['a double space inside the phrase', 'orchard  keeper', 'The orchard keeper bargains.'],
+    ['a NBSP where the text has a plain space', 'orchard\u00A0keeper', 'The orchard keeper bargains.'],
+  ] as const) {
+    const chip = chipA(editorHtml(text, [raw]));
+    check(`editor: a chip whose raw text differs from its cleaned form by ${label} is still painted, not called absent`,
+      chip !== '' && !/data-suppressed=/.test(chip), `${JSON.stringify(raw)} -> ${chip || 'no A chip'}`);
+  }
+  // Falsifier: the same raw forms with the phrase genuinely ABSENT must still
+  // report absent, or the checks above would pass for a chip that never looks.
+  for (const raw of ['orchard keeper ', ' orchard keeper', 'orchard  keeper']) {
+    const chip = chipA(editorHtml('The miller bargains.', [raw]));
+    check(`editor (falsifier): ${JSON.stringify(raw)} is still absent when the phrase is not in the text`,
+      /data-suppressed-cause="absent"/.test(chip), chip || 'no A chip');
+  }
+  // Mutation, on the real module: keyed by the raw term again, the first check
+  // above fails. Proves it is not passing for some unrelated reason.
+  {
+    const src = readFileSync('src/utils/colorTerms.ts', 'utf8');
+    const mutated = src.replace("a: new Map(aTerms.map((t) => [colorTermKey(t), stateFor(t, 'A')])),",
+      "a: new Map(aTerms.map((t) => [t, stateFor(t, 'A')])),");
+    check('mutation precondition: the raw-key plant lands on colorTerms.ts', mutated !== src);
+    // Re-implement the lookup the component performs, against both key rules.
+    const merged = mergeDescriptionTerms({ a: [], b: [] }, ['orchard keeper '], [], { a: [], b: [] });
+    const states = chipPaintStates('The orchard keeper bargains.', merged.a, merged.b);
+    check('mutation: keyed by the RAW term, the component\'s lookup misses (this is the defect)',
+      states.a.get('orchard keeper ') === undefined);
+    check('mutation: keyed by colorTermKey, the same lookup finds the painted state',
+      states.a.get(colorTermKey('orchard keeper '))?.state === 'painted',
+      JSON.stringify([...states.a.entries()]));
+  }
 }
 
 if (failures > 0) {

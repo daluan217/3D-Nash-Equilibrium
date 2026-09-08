@@ -167,7 +167,7 @@ export function DescriptionEditor({
   // stating; the paint causes are reported for a chip that would otherwise paint.
   const chip = (term: string, player: 'A' | 'B') => {
     const byRule = !(player === 'A' ? renderedA : renderedB).has(colorTermKey(term));
-    const paint = (player === 'A' ? paintStates.a : paintStates.b).get(term) ?? { state: 'absent' as const };
+    const paint = (player === 'A' ? paintStates.a : paintStates.b).get(colorTermKey(term)) ?? { state: 'absent' as const };
     const absent = !byRule && paint.state === 'absent';
     const shadowed = !byRule && paint.state === 'shadowed' ? paint : null;
     const suppressed = byRule || absent || !!shadowed;

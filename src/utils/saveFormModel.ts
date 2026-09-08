@@ -110,9 +110,10 @@ export type SaveFormAction =
     }
   /**
    * The board changed under an open form. `keepUserText` is the caller's
-   * all-or-nothing judgement (`generatedFillIsSafe`): false means the text is
-   * the user's own and stays with the new board; true means it was generated
-   * for the old one and goes.
+   * all-or-nothing judgement (the negation of `generatedFillIsSafe`): TRUE
+   * means the text is the user's own, so all five pieces stay and now belong
+   * to the new board; FALSE means the app itself wrote them for the OLD board,
+   * so the form is emptied and only the new board key remains.
    */
   | { type: 'boardChanged'; boardKey: string; keepUserText: boolean }
   /** The save succeeded: the form is blank and belongs to no board. */

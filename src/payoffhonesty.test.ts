@@ -944,7 +944,13 @@ function testSaveFormReconciledWithBoard() {
       // provenance, not a second guess from the strings.
       && /const boardLabelsIfAppsOwn = \(f: SaveFormState\) => \(f\.provenance\.labels === 'from-board' \? f\.labels : null\);/.test(app),
       'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call, passing the all-or-nothing safety judgement to the reducer (OPUS-REVIEW-171/N1)');
-    const postFetch = app.slice(genFetch, app.indexOf('setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario', genFetch));
+    // The window must END somewhere real: the marker used to be the inline
+    // "AI scenario isn't available" sentence, which STRUCT-REGEN-19/006 replaced
+    // with a call to the one renderer. indexOf returned -1 and the slice
+    // silently became "the rest of the file" (CodeRabbit CLI on this branch).
+    const postFetchEnd = app.indexOf("setGenerateNote(renderGenerateNote(generateKind, 'unavailable', chipsRemoved));", genFetch);
+    ok(postFetchEnd > genFetch, 'the post-report window must end at the unavailable-note call, not at a marker that no longer exists');
+    const postFetch = app.slice(genFetch, postFetchEnd);
     ok(!/boardKeyOf\(g\)/.test(app) && !/'boardChanged'/.test(postFetch),
       'handleGenerateGame must not re-key the form after the awaits — the board is settled before the report call, so a failed or pending request changes nothing (OPUS-REVIEW-171/N1)');
     ok(/dispatchSaveForm\(\{\s*type: 'story',\s*boardKey,\s*name: gen\.name,/.test(postFetch),

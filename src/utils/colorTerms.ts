@@ -528,6 +528,19 @@ export type ChipPaint =
   | { state: 'absent' }
   | { state: 'shadowed'; by: string; bySide: 'A' | 'B' };
 
+/**
+ * Both maps are keyed by `colorTermKey(term)`, NOT by the raw string
+ * (CodeRabbit CLI on this branch). A caller holds the user's chips as the user
+ * created them — a selection can carry a trailing space or a double space —
+ * while the lists passed in here have been through `cleanUserColorTermPair`,
+ * which collapses exactly those. Keyed raw, `get('  crew  ')` missed, the
+ * caller's `?? absent` fallback took over, and the chip said "does not appear
+ * in the story" about a phrase painted on screen — the very disagreement
+ * between the chip and the paint that this function exists to make impossible.
+ * `colorTermKey` is what `DescriptionEditor` already uses for every other
+ * membership test (`renderedA`, `crossPlayerKeys`), so this makes one key rule
+ * for the whole surface.
+ */
 export function chipPaintStates(
   text: string,
   aTerms: readonly string[],
@@ -560,8 +573,8 @@ export function chipPaintStates(
     return { state: 'shadowed', by: shadower.term, bySide: shadower.side };
   };
   return {
-    a: new Map(aTerms.map((t) => [t, stateFor(t, 'A')])),
-    b: new Map(bTerms.map((t) => [t, stateFor(t, 'B')])),
+    a: new Map(aTerms.map((t) => [colorTermKey(t), stateFor(t, 'A')])),
+    b: new Map(bTerms.map((t) => [colorTermKey(t), stateFor(t, 'B')])),
   };
 }
 
