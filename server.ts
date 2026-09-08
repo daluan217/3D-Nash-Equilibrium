@@ -4123,11 +4123,26 @@ async function startServer() {
       });
     }
 
-    user.passwordHash = hashPassword(newPassword);
-    user.recoveryCode = undefined;
-    user.recoveryCodeExpires = undefined;
-    user.tokenVersion = (user.tokenVersion ?? 0) + 1; // invalidate existing sessions
-    saveDB(db);
+    // STRUCT-DESKTOP-19: "you can now log in with your new password" is a
+    // claim about what is on DISK, and it used to be made whatever happened to
+    // the write. On an unwritable data directory the new hash lived only in
+    // this process: the next launch refused the new password and accepted the
+    // OLD one — the password the user reset precisely because they wanted it
+    // dead — and the sessions this bumps `tokenVersion` to kill came back with
+    // it. `_gen/d19b4-resetpassword-false-success.mjs` walks exactly that.
+    // Same shape as delete-confirm: a CANDIDATE, committed only once written.
+    const updated: User = {
+      ...user,
+      passwordHash: hashPassword(newPassword),
+      recoveryCode: undefined,
+      recoveryCodeExpires: undefined,
+      tokenVersion: (user.tokenVersion ?? 0) + 1, // invalidate existing sessions
+    };
+    if (!saveDB({ users: db.users.map(u => (u.id === user.id ? updated : u)), games: db.games })) {
+      return res.status(500).json({
+        error: "Your password could not be changed — nothing was written, so your OLD password still works. Please try again."
+      });
+    }
 
     res.json({ success: true, message: "Password reset successfully! You can now log in with your new password." });
   });

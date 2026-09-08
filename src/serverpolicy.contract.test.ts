@@ -75,7 +75,6 @@ const UNCHECKED_WRITE_ROUTES: Record<string, string> = {
   'POST /api/auth/verify': 'a failed write loses the verified flag; the user is asked to verify again',
   'POST /api/auth/login': 'writes only the last-login bookkeeping; nothing the user is told depends on it',
   'POST /api/auth/forgot-password': 'a failed write loses the reset token; the emailed link then reports an invalid token instead of silently working',
-  'POST /api/auth/reset-password': 'a failed write leaves the OLD password working, which is what the user would discover on the next login',
   'POST /api/auth/delete-request': 'a failed write loses the deletion code, and delete-confirm then refuses it — the destructive step is the one that is checked',
 };
 
@@ -105,6 +104,16 @@ export function policyFailures(src: string): string[] {
   // record, and the account came back on the next launch (STRUCT-DESKTOP-19,
   // reproduced by _gen/d19b3-deleteconfirm-false-destruction.mjs and guarded
   // at runtime by src/integration/desktop-unwritable-save.test.mjs phase 3).
+  // The password reset makes the same kind of claim — the old password is
+  // dead — and made it after an unchecked, in-place write: the next launch
+  // accepted the old password and refused the new one.
+  const resetPassword = bodies.get('POST /api/auth/reset-password') ?? '';
+  if (!/if \(!saveDB\(/.test(resetPassword)) {
+    out.push('POST /api/auth/reset-password must refuse (500) when the write fails — its success message says the old password no longer works');
+  }
+  if (/user\.passwordHash\s*=/.test(resetPassword)) {
+    out.push('POST /api/auth/reset-password must build the updated user as a candidate, not assign passwordHash on the shared record — an in-place change survives a failed write');
+  }
   const deleteConfirm = bodies.get('POST /api/auth/delete-confirm') ?? '';
   if (!/if \(!saveDB\(/.test(deleteConfirm)) {
     out.push('POST /api/auth/delete-confirm must refuse (500) when the deletion write fails — it is the one route whose success message asserts that records are gone');
@@ -188,6 +197,16 @@ for (const [what, snippet, expected] of mutants) {
     .replace(/\n      inMemoryDb = db;\n      return true;/, '\n      return true;');
   if (!policyFailures(committedFirst).some((f) => /saveDB must assign inMemoryDb only after/.test(f))) {
     fail('mutant not caught (saveDB committing in memory before the write)');
+  }
+  const resetUnchecked = server.replace(
+    /    if \(!saveDB\(\{ users: db\.users\.map[\s\S]*?\n    \}\n/,
+    '    saveDB(db);\n');
+  if (!policyFailures(resetUnchecked).some((f) => /reset-password must refuse \(500\)/.test(f))) {
+    fail('mutant not caught (reset-password stops checking its write)');
+  }
+  const resetInPlace = server.replace('    const updated: User = {', '    user.passwordHash = hashPassword(newPassword);\n    const updated: User = {');
+  if (!policyFailures(resetInPlace).some((f) => /reset-password must build the updated user as a candidate/.test(f))) {
+    fail('mutant not caught (reset-password assigning passwordHash in place)');
   }
   const newUnchecked = policyFailures(server + `\n  app.post("/api/auth/nickname", (req, res) => {\n    const user = getAuthUser(req);\n    const db = loadDB();\n    saveDB(db);\n    res.json({ success: true });\n  });\n`);
   if (!newUnchecked.some((f) => /POST \/api\/auth\/nickname persists with an unchecked saveDB/.test(f))) {
