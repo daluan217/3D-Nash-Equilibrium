@@ -149,6 +149,52 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 4b. STRUCT-REGEN-19/005 — the app writes into this form from TWO places.
+//     The dialog prefills the four option names FROM THE BOARD every time it
+//     opens (openSaveFormForBoard). Knowing only `prevFill`, the predicate read
+//     those as the user's own typing, so the very first Generate click on any
+//     preset refused to fill and told the user it had "kept the
+//     name/description/option names you'd already typed" — text the user had
+//     never touched. Reproduced on origin/main 0.0.197; the dialog opens with
+//     labels ["Cooperate","Defect","Cooperate","Defect"] and name/desc empty.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const boardLabels = { row1: 'Cooperate', row2: 'Defect', col1: 'Cooperate', col2: 'Defect' };
+  const asOpened: SaveFormFields = { name: '', desc: '', labels: { ...boardLabels } };
+
+  // THE defect, as a one-line assertion: without the board-derived source the
+  // predicate says "the user typed this".
+  ok(generatedFillIsSafe(asOpened, null) === false,
+    'fixture precondition: with only prevFill known, a freshly-opened dialog reads as user-typed (the shipped defect)');
+  ok(generatedFillIsSafe(asOpened, null, boardLabels) === true,
+    'a form holding nothing but the option names the dialog itself prefilled from the board is safe to fill (STRUCT-REGEN-19/005)');
+
+  // Controls — RED-APP-4 must not be weakened by the new source.
+  const typedOne: SaveFormFields = { name: '', desc: '', labels: { ...boardLabels, col2: 'My own option' } };
+  ok(generatedFillIsSafe(typedOne, null, boardLabels) === false,
+    'one option name the user typed still blocks the whole fill, board-derived siblings or not (RED-APP-4)');
+  const typedDesc: SaveFormFields = { name: '', desc: 'my own description', labels: { ...boardLabels } };
+  ok(generatedFillIsSafe(typedDesc, null, boardLabels) === false,
+    'a typed description still blocks the fill even when every label is the board\'s (RED-APP-4)');
+  const typedName: SaveFormFields = { name: 'My game', desc: '', labels: { ...boardLabels } };
+  ok(generatedFillIsSafe(typedName, null, boardLabels) === false,
+    'a typed name still blocks the fill even when every label is the board\'s (RED-APP-4)');
+  // A DIFFERENT board's names are not this board's prefill.
+  const otherBoard: SaveFormFields = { name: '', desc: '', labels: { row1: 'Undercut', row2: 'Hold', col1: 'Match', col2: 'Ignore' } };
+  ok(generatedFillIsSafe(otherBoard, null, boardLabels) === false,
+    'labels that are NOT what this dialog prefilled are still the user\'s (STRUCT-REGEN-19/005)');
+  // Passing null (the caller\'s way of saying "these are the user\'s now") is
+  // exactly the old behaviour — this is what App.tsx does the moment
+  // provenance.labels flips to \'typed\'.
+  ok(generatedFillIsSafe(asOpened, null, null) === generatedFillIsSafe(asOpened, null),
+    'omitting the board-derived source must mean exactly what it meant before it existed');
+  // The two sources compose: a previous fill\'s name plus this board\'s labels.
+  const mixed: SaveFormFields = { name: fillA.name, desc: fillA.desc, labels: { ...boardLabels } };
+  ok(generatedFillIsSafe(mixed, fillA, boardLabels) === true,
+    'a form holding the last fill\'s text and the board\'s option names is all the app\'s own work (STRUCT-REGEN-19/005)');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 5. THE WIRING — App.tsx must actually call the guard, not just import it.
 // Same style as equilibriumpanel.test.ts §6: presence of an import proves
 // nothing about whether its result gates anything.
@@ -163,8 +209,10 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
   ok(start > 0 && end > start, 'handleGenerateGame must be found in App.tsx');
   const fn = app.slice(start, end);
 
-  ok(fn.includes('generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current)'),
-    'handleGenerateGame must call the guard with the LIVE form ref and the last-fill ref, not stale closure values');
+  ok((fn.match(/generatedFillIsSafe\(saveFormRef\.current, lastGeneratedFillRef\.current, boardLabelsIfAppsOwn\(saveFormRef\.current\)\)/g) || []).length === 2,
+    'handleGenerateGame must call the guard, at BOTH decision points, with the LIVE form ref, the last-fill ref and the board-derived labels — not stale closure values, and not a subset of what the app itself wrote (RED-APP-4, STRUCT-REGEN-19/005)');
+  ok(/const boardLabelsIfAppsOwn = \(f: SaveFormState\) => \(f\.provenance\.labels === 'from-board' \? f\.labels : null\);/.test(app),
+    'the board-derived labels must be identified by the reducer\'s own provenance, not re-derived from the strings (STRUCT-REGEN-19/005)');
   // The guarded branch must gate ALL SIX setters, not just some of them —
   // catches a fix that guards the name/desc but leaves the labels
   // unconditional (or vice versa).
@@ -220,7 +268,7 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
 // A passive `useEffect` runs asynchronously after paint, leaving a real
 // window between React committing a keystroke's state update and the ref
 // actually catching up. If `handleGenerateGame`'s report response resolves
-// inside that window it would read a STALE `saveFieldsRef.current` and could
+// inside that window it would read a STALE `saveFormRef.current` and could
 // approve overwriting text the user just typed — the exact defect class this
 // ref exists to close (finding 001). `useLayoutEffect` fires synchronously
 // right after the commit, before the browser paints and long before any
@@ -230,25 +278,25 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
 // directly (same reason src/reportrace.test.ts's `payoffsRef` guard is
 // checked structurally, not by actually racing a network response — see its
 // own comment) — this is the checkable, decidable half: the ref-sync effect
-// that guards saveFieldsRef must be a layout effect.
+// that guards saveFormRef must be a layout effect.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const app = readFileSync(join(here, 'App.tsx'), 'utf8');
-  const refDeclIdx = app.indexOf('const saveFieldsRef = useRef(');
-  ok(refDeclIdx > 0, 'saveFieldsRef must be declared');
+  const refDeclIdx = app.indexOf('const saveFormRef = useRef(');
+  ok(refDeclIdx > 0, 'saveFormRef must be declared');
   // The very next non-comment statement after the declaration must be the
   // layout-effect sync — anchored tightly so a LATER, unrelated
   // useLayoutEffect elsewhere in the file cannot satisfy this by accident.
   const nextChunk = app.slice(refDeclIdx, refDeclIdx + 400);
-  ok(/useLayoutEffect\(\(\) => \{\s*saveFieldsRef\.current = \{ name: saveName, desc: saveDesc, labels: saveLabels \};\s*\}, \[saveName, saveDesc, saveLabels\]\);/.test(nextChunk),
-    `saveFieldsRef must be synced inside useLayoutEffect (not useEffect), got: ${JSON.stringify(nextChunk)}`);
-  ok(!/useEffect\(\(\) => \{\s*saveFieldsRef\.current/.test(app),
-    'saveFieldsRef must never be synced from a plain (passive) useEffect anywhere in the file');
+  ok(/useLayoutEffect\(\(\) => \{\s*saveFormRef\.current = saveForm;\s*\}, \[saveForm\]\);/.test(nextChunk),
+    `saveFormRef must be synced inside useLayoutEffect (not useEffect), got: ${JSON.stringify(nextChunk)}`);
+  ok(!/useEffect\(\(\) => \{\s*saveFormRef\.current/.test(app),
+    'saveFormRef must never be synced from a plain (passive) useEffect anywhere in the file');
 
   // Mutation: the pre-fix (CodeRabbit-flagged) shape must actually match the
   // negative predicate above, or that predicate is vacuous.
-  const preFixShape = `useEffect(() => {\n    saveFieldsRef.current = { name: saveName, desc: saveDesc, labels: saveLabels };\n  }, [saveName, saveDesc, saveLabels]);`;
-  ok(/useEffect\(\(\) => \{\s*saveFieldsRef\.current/.test(preFixShape),
+  const preFixShape = `useEffect(() => {\n    saveFormRef.current = saveForm;\n  }, [saveForm]);`;
+  ok(/useEffect\(\(\) => \{\s*saveFormRef\.current/.test(preFixShape),
     'the pre-fix fixture text must itself match the forbidden pattern (fixture sanity check)');
 }
 

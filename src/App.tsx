@@ -94,7 +94,7 @@ import { SavedGamesList, formatSavedGames } from './components/SavedGamesList';
 import { ColorCoded } from './components/ColorCoded';
 import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
-import { saveFormReducer, EMPTY_SAVE_FORM, type LabelKey } from './utils/saveFormModel';
+import { saveFormReducer, EMPTY_SAVE_FORM, type LabelKey, type SaveFormState } from './utils/saveFormModel';
 import {
   regenKeyEquals,
   regenResponseIsCurrent,
@@ -762,7 +762,7 @@ export default function App() {
    * — same shape as `payoffsRef` above). A PASSIVE effect runs asynchronously
    * after paint, so there is a real window — between React committing a
    * keystroke's state update and that effect actually running — during which
-   * `saveFieldsRef.current` is STALE. If `handleGenerateGame`'s report
+   * `saveFormRef.current` is STALE. If `handleGenerateGame`'s report
    * response happens to resolve inside that window, it reads the OLD field
    * values and can approve overwriting text the user just typed, which is
    * exactly the class of bug this ref exists to close. `useLayoutEffect`
@@ -770,10 +770,24 @@ export default function App() {
    * long before any network response can possibly resolve, so there is no
    * window left for an async callback to land in.
    */
-  const saveFieldsRef = useRef({ name: saveName, desc: saveDesc, labels: saveLabels });
+  const saveFormRef = useRef(saveForm);
   useLayoutEffect(() => {
-    saveFieldsRef.current = { name: saveName, desc: saveDesc, labels: saveLabels };
-  }, [saveName, saveDesc, saveLabels]);
+    saveFormRef.current = saveForm;
+  }, [saveForm]);
+  /**
+   * The option names the dialog itself prefilled FROM THE BOARD, or null once any
+   * of them is the user's own (STRUCT-REGEN-19/005). `generatedFillIsSafe` needs
+   * this because the app writes into the save form from TWO places, not one: a
+   * Generate fill, and the prefill `openSaveFormForBoard` does on every open.
+   * Knowing only the first was a shipped defect — every preset carries option
+   * names, so the very first Generate click read them as the user's own typing,
+   * refused to fill, and told the user it had "kept the name/description/option
+   * names you'd already typed" (verified against origin/main 0.0.197). The
+   * reducer is the one thing that knows which they are: `provenance.labels` is
+   * 'from-board' until the first keystroke flips it to 'typed'. So this reads
+   * that, rather than re-deriving "did the user type this" from the strings.
+   */
+  const boardLabelsIfAppsOwn = (f: SaveFormState) => (f.provenance.labels === 'from-board' ? f.labels : null);
   /**
    * What the LAST successful Generate call itself wrote into the save form —
    * `null` until the first fill. Lets a re-roll ("Generate" clicked again,
@@ -2816,7 +2830,7 @@ export default function App() {
     // names otherwise). The user's own text stays and now belongs to THIS board,
     // so a close-and-reopen keeps it (CodeRabbit on #171) — and a failed or
     // pending report request changes nothing about either.
-    const keepUserText = !generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current);
+    const keepUserText = !generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));
     if (saveForm.boardKey !== boardKey && !keepUserText) lastGeneratedFillRef.current = null;
     dispatchSaveForm({ type: 'boardChanged', boardKey, keepUserText });
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
@@ -2839,8 +2853,8 @@ export default function App() {
           col1: sc.col1 ?? '', col2: sc.col2 ?? '',
         };
         // Read the LIVE form values, not this closure's — the user may have
-        // typed during the await above (see the doc comment on saveFieldsRef).
-        const safe = generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current);
+        // typed during the await above (see the doc comment on saveFormRef).
+        const safe = generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));
         if (safe) {
           dispatchSaveForm({
             type: 'story',

@@ -934,8 +934,11 @@ function testSaveFormReconciledWithBoard() {
     ok(genStart !== -1 && genFetch > genStart, 'handleGenerateGame must commit gc then call /api/report');
     const preFetch = app.slice(genStart, genFetch);
     ok(/const boardKey = boardKeyOf\(gc\);/.test(preFetch)
-      && /const keepUserText = !generatedFillIsSafe\(saveFieldsRef\.current, lastGeneratedFillRef\.current\);/.test(preFetch)
-      && /dispatchSaveForm\(\{ type: 'boardChanged', boardKey, keepUserText \}\);/.test(preFetch),
+      && /const keepUserText = !generatedFillIsSafe\(saveFormRef\.current, lastGeneratedFillRef\.current, boardLabelsIfAppsOwn\(saveFormRef\.current\)\);/.test(preFetch)
+      && /dispatchSaveForm\(\{ type: 'boardChanged', boardKey, keepUserText \}\);/.test(preFetch)
+      // STRUCT-REGEN-19/005: which option names are the APP's own is the reducer's
+      // provenance, not a second guess from the strings.
+      && /const boardLabelsIfAppsOwn = \(f: SaveFormState\) => \(f\.provenance\.labels === 'from-board' \? f\.labels : null\);/.test(app),
       'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call, passing the all-or-nothing safety judgement to the reducer (OPUS-REVIEW-171/N1)');
     const postFetch = app.slice(genFetch, app.indexOf('setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario', genFetch));
     ok(!/boardKeyOf\(g\)/.test(app) && !/'boardChanged'/.test(postFetch),
@@ -1041,7 +1044,13 @@ function testSaveFormReconciledWithBoard() {
   mustThrow('generate keys the reconcile on the OLD board (N1)',
     src.replace('const boardKey = boardKeyOf(gc);', 'const boardKey = boardKeyOf(g);'));
   mustThrow('generate stops passing the safety judgement (a typed draft silently cleared)',
-    src.replace('const keepUserText = !generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current);', 'const keepUserText = false;'));
+    src.replace('const keepUserText = !generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));', 'const keepUserText = false;'));
+  mustThrow('generate forgets that the app wrote the option names itself (STRUCT-REGEN-19/005)',
+    src.replace('const keepUserText = !generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));',
+      'const keepUserText = !generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current);'));
+  mustThrow('the board-derived labels are re-derived from the strings instead of the provenance (STRUCT-REGEN-19/005)',
+    src.replace("const boardLabelsIfAppsOwn = (f: SaveFormState) => (f.provenance.labels === 'from-board' ? f.labels : null);",
+      'const boardLabelsIfAppsOwn = (f: SaveFormState) => f.labels;'));
   mustThrow('the kept draw is not registered as generated text (N1)',
     src.replace("      lastGeneratedFillRef.current = {\n        name: kept.name !== undefined ? kept.name : liveName,",
       "      void {\n        name: kept.name !== undefined ? kept.name : liveName,"));
@@ -1071,7 +1080,7 @@ function testSaveFormReconciledWithBoard() {
   mustThrow('an eighth Edit entry point appears unexamined',
     src.replace("  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });",
       "  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });\n  const clearEditDesc = () => dispatchEditForm({ type: 'typed', field: 'desc', value: '' });"));
-  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001 + /004: BOTH dialog forms are ONE reducer value (ten enumerated save entry points, seven edit); every open path goes through openSaveFormForBoard; the report prefill carries no stale chips into either; boardKeyOf separates all eight cells; twenty-two mutants rejected');
+  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001 + /004: BOTH dialog forms are ONE reducer value (ten enumerated save entry points, seven edit); every open path goes through openSaveFormForBoard; the report prefill carries no stale chips into either; boardKeyOf separates all eight cells; the app is told which option names it wrote itself; 25 mutants rejected');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
