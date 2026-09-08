@@ -2308,9 +2308,22 @@ function testModelDebris() {
     }
     // The other direction: the report path must still gate, or the assertion
     // above is satisfied by a server that validates nothing at all.
+    //
+    // STRUCT-CLOUD-19 moved the screens out of a closure in server.ts into
+    // `SCENARIO_SCREENS` (src/utils/scenarioScreen.ts), so this half is now two
+    // hops: the report path runs the table, and the table runs both gates.
+    // Checking only the first hop would make this vacuous again in a different
+    // way — a table that screens nothing would satisfy it — so both are asserted
+    // and each one is its own mutant (drop `screenScenario` from the report path,
+    // or drop either gate from the table, and this fails).
     const reportRegion = server.slice(0, firstGames);
-    assert(reportRegion.includes('validateScenario(') && reportRegion.includes('scenarioIsClaimFree('),
-      'DEBRIS CONTRACT: the report path must still call both scenario gates — otherwise the save-path assertion above is vacuous');
+    assert(reportRegion.includes('screenScenario('),
+      'DEBRIS CONTRACT: the report path must still run the scenario screen table — otherwise the save-path assertion above is vacuous');
+    const screenTable = readFileForContract(new URL('./utils/scenarioScreen.ts', import.meta.url), 'utf-8');
+    for (const fn of ['validateScenario(', 'scenarioIsClaimFree(']) {
+      assert(screenTable.includes(fn),
+        `DEBRIS CONTRACT: SCENARIO_SCREENS must still run ${fn} — the report path's screening is only as real as the table it runs`);
+    }
   }
 
   console.log('✓ model-internal debris: 3 rules, 5 of 4,088 user-reaching draws newly rejected across 67 corpora + the shipping bank, 0 false positives; each rule isolated by its own fixture');

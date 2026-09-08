@@ -21,9 +21,15 @@ const PORT = Number(process.env.COB_TEST_PORT || 3180);
 const STUB_PORT = Number(process.env.COB_STUB_PORT || 3181);
 const BASE = `http://127.0.0.1:${PORT}`;
 const payoffs = { a11: 3, a12: -1, a21: -2, a22: 4, b11: -1, b12: 3, b21: 4, b22: -2 };
+// STRUCT-CLOUD-19/001: these stub descriptions now STATE their option
+// labels. `SCENARIO_SCREENS`'s `attributable` entry refuses a story the
+// reader cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud
+// path that finding never covered); this prose named neither pair, so every
+// draw of it was dropped and these suites measured the reroll ladder instead
+// of what they are about. Only the descriptions changed.
 const valid = {
   name: 'Seasonal Exhibition', row1: 'Take Route', row2: 'Wait', col1: 'Open Gate', col2: 'Close Gate',
-  description: 'The coastal studio prepares a seasonal exhibition. A venue manager considers a program for the coming season.',
+  description: 'The coastal studio prepares a seasonal exhibition. The studio chooses Take Route or Wait, while the venue manager chooses Open Gate or Close Gate.',
 };
 const longDescription = Array.from({ length: 18 }, () => valid.description).join(' ');
 const invalids = [

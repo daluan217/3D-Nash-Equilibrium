@@ -49,10 +49,16 @@ let mode = 'nullscenario';
 // default 2). A single fixed `mode` can only ever prove "always bad" or
 // "always good"; the sequence is what lets a test say "bad, bad, THEN good".
 let sequence = null;
+// STRUCT-CLOUD-19/001: these stub descriptions now STATE their option
+// labels. `SCENARIO_SCREENS`'s `attributable` entry refuses a story the
+// reader cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud
+// path that finding never covered); this prose named neither pair, so every
+// draw of it was dropped and these suites measured the reroll ladder instead
+// of what they are about. Only the descriptions changed.
 const STORY = {
   name: 'Mock Harbor Run', row1: 'Load Now', row2: 'Load Later',
   col1: 'Send Tug', col2: 'Hold Tug', storyClaims: null,
-  description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week.',
+  description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week. The harbor operator chooses Load Now or Load Later, while the tug company chooses Send Tug or Hold Tug.',
 };
 // Well formed but fails the claim-free screen: the description cites a number.
 const CLAIMY = { ...STORY, description: 'A harbor operator and a tug company settle a berth handover, and the operator earns 4 when the tug arrives early.' };

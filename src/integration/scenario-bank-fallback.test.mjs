@@ -69,6 +69,12 @@ async function call(method, url, { body } = {}) {
 // (nashValidator.ts ~1454). Every draw the ladder makes gets this same
 // content, so every attempt gate-drops the same real way production does.
 let stubCallCount = 0;
+// STRUCT-CLOUD-19/001: these stub descriptions now STATE their option
+// labels. `SCENARIO_SCREENS`'s `attributable` entry refuses a story the
+// reader cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud
+// path that finding never covered); this prose named neither pair, so every
+// draw of it was dropped and these suites measured the reroll ladder instead
+// of what they are about. Only the descriptions changed.
 const droppableScenario = {
   name: 'Stub Scenario',
   row1: 'Take the Contract', row2: 'Decline the Contract',
@@ -213,7 +219,7 @@ try {
       name: 'Clean Stub Scenario',
       row1: 'Ship Early', row2: 'Ship Late',
       col1: 'Small Batch', col2: 'Large Batch',
-      description: 'A small manufacturer weighs shipping timing against batch size for its next production run.',
+      description: 'A small manufacturer and its packer plan the next production run. The manufacturer chooses Ship Early or Ship Late, while the packer chooses Small Batch or Large Batch.',
     };
     let cleanCalls = 0;
     const cleanStub = createServer((req, res) => {

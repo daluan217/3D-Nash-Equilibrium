@@ -34,6 +34,7 @@
  */
 import type { GamePayoffs, SuggestedScenario } from '../types';
 import { describeStakes } from './scenarioStakes';
+import { termOccursIn } from './colorTerms';
 
 export interface BankEntry {
   /** 0 tiny · 1 modest · 2 substantial · 3 very large — the stakes band. */
@@ -277,10 +278,43 @@ export const SERVE_PROBES: GamePayoffs[] = (() => {
 export function escapeForColourRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+/**
+ * DELEGATED, not re-implemented (STRUCT-REGEN-19/003a, routed 2026-09-08).
+ *
+ * The comment above says "building the identical regex here makes this
+ * predicate and the real highlighter's decision provably the same by
+ * construction" — and it stopped being true when the renderer's boundary rule
+ * moved on. This built `(?<![\w])…(?![\w])` with `gi`: ASCII `\w`, no `u` flag,
+ * no minimum length. `termBoundaryRegExp` in `src/utils/colorTerms.ts` — the one
+ * the renderer and the chip editor both use — builds
+ * `(?<![\p{L}\p{N}\p{M}_])…` with `u`, and skips any term shorter than two
+ * characters because such a term is never painted. So an accented or CJK
+ * neighbour, and a one-character term, were decided differently by the screen
+ * and by the page (STRUCT-REGEN-19 measured 4 of 10 constructed pairs
+ * disagreeing; 0 real instances so far, which is why this is a hole and not a
+ * defect — but a screen and a renderer that disagree is exactly the shape
+ * STRUCT-CLOUD-19/002 found already shipping).
+ *
+ * "Provably the same by construction" is now literally true: there is one
+ * construction, in colorTerms.ts, and this function calls it.
+ */
 export function highlightWouldMatch(term: string, desc: string): boolean {
   if (!term) return false;
-  const re = new RegExp(`(?<![\\w])(?:${escapeForColourRegex(term)})(?![\\w])`, 'gi');
-  return re.test(desc);
+  return termOccursIn(desc, term);
+}
+/**
+ * THE VERBATIM QUESTION, deliberately NOT the highlighter's (see
+ * `actorNounsOk`'s own comment for the full argument). "Is this the author's
+ * word, literally present in the text?" is answered without Unicode case
+ * folding — `u` + `i` folds U+212A KELVIN SIGN onto "k", so the highlighter's
+ * rule would accept a noun the author never wrote. Raw string, raw description,
+ * only regex metacharacters escaped, ASCII word boundaries: exactly the
+ * predicate this guard has always meant, now under a name that says which
+ * question it answers so the two cannot be re-unified by accident.
+ */
+function occursAsRawSubstring(term: string, desc: string): boolean {
+  if (!term) return false;
+  return new RegExp(`(?<![\\w])(?:${escapeForColourRegex(term)})(?![\\w])`, 'gi').test(desc);
 }
 
 export function actorNounsOk(sc: {
@@ -342,11 +376,24 @@ export function actorNounsOk(sc: {
   // because the real regex's word-boundary lookarounds see the space
   // character as part of the match, not the caller's convenience trim.
   //
-  // `highlightWouldMatch`/`escapeForColourRegex` now live at module scope
-  // (RED-DESKTOP-9/001) so `scenarioIsColourable` shares this exact
-  // predicate instead of growing its own.
+  // THIS IS NO LONGER THE HIGHLIGHTER'S PREDICATE, AND MUST NOT BE
+  // (STRUCT-CLOUD-19, folding in STRUCT-REGEN-19/003a). It used to call
+  // `highlightWouldMatch` on the argument that the two questions were the same
+  // one; they are not, and the argument above is the proof. The paragraph
+  // reasons that a KELVIN-SIGN noun "can never actually highlight" because
+  // ColorCoded builds `gi` — but the renderer's rule is now
+  // `termBoundaryRegExp`'s `giu`, and `u`+`i` applies UNICODE CASE FOLDING,
+  // which does fold U+212A to "k". Under the renderer's rule such a noun WOULD
+  // paint, so borrowing it here would have flipped this guard from rejecting to
+  // accepting — which `src/scenariobank.test.ts` caught the moment
+  // `highlightWouldMatch` was delegated.
+  //
+  // The guard's real subject is the VERBATIM contract of RED-REGEN-2/001: a
+  // declared actor noun must be the author's own word, literally present in the
+  // description. That question is answered by a raw, unfolded, ASCII-boundary
+  // match, and it stays here under its own name so nobody re-unifies the two.
   const rawDesc = sc.description ?? '';
-  if (all.some((t) => !highlightWouldMatch(t, rawDesc))) return false;
+  if (all.some((t) => !occursAsRawSubstring(t, rawDesc))) return false;
   const aSet = new Set((a as string[]).map(norm));
   const bSet = new Set((b as string[]).map(norm));
   if ([...aSet].some((t) => bSet.has(t))) return false;

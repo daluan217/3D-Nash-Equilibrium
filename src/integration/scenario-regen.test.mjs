@@ -49,10 +49,16 @@ let sequence = null; // per-call mode, consumed by index, clamped past the end
 let lastProviderRequest = null;
 // H1 changes the regenerate call site's schema only. The report schema remains
 // frozen; actor-bearing fixtures below exercise the new, strict regen shape.
+// STRUCT-CLOUD-19/001: these stub descriptions now STATE their option
+// labels. `SCENARIO_SCREENS`'s `attributable` entry refuses a story the
+// reader cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud
+// path that finding never covered); this prose named neither pair, so every
+// draw of it was dropped and these suites measured the reroll ladder instead
+// of what they are about. Only the descriptions changed.
 const STORY = {
   name: 'Mock Harbor Run', row1: 'Load Now', row2: 'Load Later',
   col1: 'Send Tug', col2: 'Hold Tug',
-  description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week.',
+  description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week. The harbor operator chooses Load Now or Load Later, while the tug company chooses Send Tug or Hold Tug.',
 };
 const STORY_WITH_ACTORS = {
   ...STORY,
@@ -62,7 +68,7 @@ const STORY_WITH_ACTORS = {
 const STORY2 = {
   name: 'Mock Kiln Slot', row1: 'Fire Early', row2: 'Fire Late',
   col1: 'Book Glaze', col2: 'Book Bisque',
-  description: 'A potter and a kiln co-op are settling a shared firing slot for the week ahead.',
+  description: 'A potter and a kiln co-op are settling a shared firing slot for the week ahead. The potter chooses Fire Early or Fire Late, while the kiln co-op chooses Book Glaze or Book Bisque.',
 };
 // Well-formed but repeats the SAME story every draw — the avoid gate's target.
 const SAME_AS_STORY = { ...STORY, description: STORY.description + ' Scheduling stays informal between them.' };
@@ -77,7 +83,7 @@ const SAME_AS_STORY = { ...STORY, description: STORY.description + ' Scheduling 
 const ZWSP_STORY = {
   name: 'Mock Farm Plot', row1: 'Plant Early', row2: 'Plant Late',
   col1: 'Harvest Soon', col2: 'Harvest Late',
-  description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
+  description: 'A farmer chooses Plant Early or Plant Late for a plot, while a rival grower down the road chooses Harvest Soon or Harvest Late for their own.',
   actorA: ['A far' + '​' + 'mer'], actorB: ['a rival grower'],
 };
 
