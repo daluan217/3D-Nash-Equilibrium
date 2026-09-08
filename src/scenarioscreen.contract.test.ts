@@ -32,6 +32,7 @@
  */
 import { SCENARIO_SCREENS, screenScenario, type ScreenOptions } from './utils/scenarioScreen';
 import { allBankRows } from './utils/bankSource';
+import { colorTermKey } from './utils/colorTerms';
 import { SERVE_PROBES } from './utils/scenarioBank';
 import type { GamePayoffs, SuggestedScenario } from './types';
 
@@ -560,6 +561,102 @@ for (const neg of NEGATIVES) {
     `${strippedFires} of ${rows.length} (pinned 84) — first: ${firstStripped}. `
     + 'If this is 0 the screen has stopped working; if it moved, the artifact changed and '
     + '_gen/cloud19_colour3.ts re-derives it.');
+}
+
+/* ============================================================================
+ * 6. ONE QUESTION, TWO COMPARATORS — label distinctness (STRUCT-CLOUD-19/007).
+ *
+ * "Are this player's two options distinct?" was answered by `nashValidator`'s
+ * own `base` (parentheticals out, whitespace collapsed, lower-cased) while the
+ * renderer answered it with `colorTermKey`, which ALSO folds dash, quote and
+ * apostrophe glyphs, NFKC and invisibles. Between the two answers sits a served
+ * scenario whose two rows ColorCoded paints as one phrase. Same class as
+ * RED-REGEN-4/5: one question, two comparators, no shared key.
+ *
+ * The fixture is hand-read negative #145 with row2 respelled using an EN DASH —
+ * one codepoint from real gate-passing output, and a spelling a model reaches
+ * for by itself. It cannot be refused by coincidence: only `declarations` fires
+ * on it, its reason names the row labels, and control C below is the SAME
+ * scenario with the second row given different words, which the whole table
+ * serves.
+ *
+ * MUTATION: drop the `colorTermKey` half of `sameLabel` in
+ * `src/utils/nashValidator.ts` and exactly three checks here fail — "the
+ * en-dash row pair is refused", "…refused by declarations and nothing else"
+ * (nothing fires at all) and "the trailing-period column pair is refused".
+ * Drop the `base` half instead and exactly one fails: "the parenthetical pair
+ * stays refused". Neither mutation touches the control, which is the point.
+ * ==========================================================================*/
+{
+  const G: GamePayoffs = { a11: 0.2, a12: 0, a21: 0, a22: 0.1, b11: 0.2, b12: 0, b21: 0, b22: 0.1 };
+  const EN = '\u2013';
+  const enDashRows = {
+    name: 'Orchard Frost Watch', row1: 'Pre-Dusk Watch', row2: `Pre${EN}Dusk Watch`,
+    col1: 'Sprinkler Run', col2: 'Wind Machine',
+    description: `A north-orchard grower chooses between Pre-Dusk Watch and Pre${EN}Dusk Watch for a coming frost night. A south-orchard grower chooses between a Sprinkler Run and a Wind Machine for the same night.`,
+    actorA: ['A north-orchard grower'], actorB: ['a south-orchard grower'],
+  } as SuggestedScenario;
+  const periodCols = {
+    ...enDashRows, row2: 'Pre-Dawn Watch', col2: 'Sprinkler Run.',
+    description: 'A north-orchard grower chooses between Pre-Dusk Watch and Pre-Dawn Watch for a coming frost night. A south-orchard grower chooses between a Sprinkler Run and a Sprinkler Run. for the same night.',
+  } as SuggestedScenario;
+  const differentWords = {
+    ...enDashRows, row2: 'Pre-Dawn Watch',
+    description: 'A north-orchard grower chooses between Pre-Dusk Watch and Pre-Dawn Watch for a coming frost night. A south-orchard grower chooses between a Sprinkler Run and a Wind Machine for the same night.',
+  } as SuggestedScenario;
+  const parenthetical = {
+    ...enDashRows, row1: 'Watch (early)', row2: 'Watch (late)',
+    description: 'A north-orchard grower chooses between Watch (early) and Watch (late) for a coming frost night. A south-orchard grower chooses between a Sprinkler Run and a Wind Machine for the same night.',
+  } as SuggestedScenario;
+
+  // The fixture is a collision for the RENDERER and a distinct pair for the old
+  // comparator — asserted, not asserted-about, so a change to either fold makes
+  // this file say so instead of silently testing nothing.
+  check('the en-dash pair is ONE term to the renderer',
+    colorTermKey(enDashRows.row1!) === colorTermKey(enDashRows.row2!),
+    `${colorTermKey(enDashRows.row1!)} vs ${colorTermKey(enDashRows.row2!)}`);
+  check('the en-dash pair is TWO labels to the old comparator (no parenthesis, differs when lower-cased)',
+    !enDashRows.row1!.includes('(') && !enDashRows.row2!.includes('(')
+      && enDashRows.row1!.toLowerCase().replace(/\s+/g, ' ') !== enDashRows.row2!.toLowerCase().replace(/\s+/g, ' '));
+
+  const vRows = screenScenario(enDashRows, G, opts());
+  check('the en-dash row pair is refused', !vRows.ok && /row labels are not distinct/.test(vRows.reason ?? ''),
+    vRows.ok ? 'SERVED' : `${vRows.screen}: ${vRows.reason}`);
+  check('the en-dash row pair is refused by "declarations" and nothing else', 
+    SCENARIO_SCREENS.filter((s) => s.run(enDashRows, G, opts()) !== null).map((s) => s.id).join(',') === 'declarations');
+
+  const vCols = screenScenario(periodCols, G, opts());
+  check('the trailing-period column pair is refused', !vCols.ok && /column labels are not distinct/.test(vCols.reason ?? ''),
+    vCols.ok ? 'SERVED' : `${vCols.screen}: ${vCols.reason}`);
+
+  const vOk = screenScenario(differentWords, G, opts());
+  check('control: the same scenario with genuinely different second labels passes the whole table',
+    vOk.ok, vOk.ok ? '' : `refused by ${vOk.screen}: ${vOk.reason}`);
+
+  const vParen = screenScenario(parenthetical, G, opts());
+  check('control: the parenthetical pair stays refused (the `base` half is still doing its half)',
+    !vParen.ok && /row labels are not distinct/.test(vParen.reason ?? ''),
+    vParen.ok ? 'SERVED' : `${vParen.screen}: ${vParen.reason}`);
+
+  /**
+   * WHAT THE ADDED HALF COSTS on output this project already judged good: the
+   * rows where the two comparators disagree. Zero means the union rejects
+   * nothing that ships and only closes a channel; a non-zero number here means
+   * it has started refusing real scenarios and this file fails first.
+   */
+  const flat = (t?: string): string => (t ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  let disagree = 0; let firstDisagree = '';
+  for (const e of allBankRows()) {
+    const sc = e.s as SuggestedScenario;
+    for (const [x, y] of [[sc.row1, sc.row2], [sc.col1, sc.col2]] as Array<[string?, string?]>) {
+      if (!x || !y) continue;
+      if (flat(x) !== flat(y) && colorTermKey(x) === colorTermKey(y)) {
+        disagree++; if (!firstDisagree) firstDisagree = `"${e.s.name}": ${x} / ${y}`;
+      }
+    }
+  }
+  check('no shipped bank row has a label pair the validator calls distinct and the renderer reads as one term',
+    disagree === 0, `${disagree} pairs — first: ${firstDisagree}`);
 }
 
 if (failures > 0) { console.error(`✗ scenario screens: ${failures} failed`); process.exit(1); }

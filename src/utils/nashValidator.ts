@@ -43,6 +43,7 @@ import { computeAllNE, computeIndifference, regretA, regretB, equilibriumSet, ha
 // module dependency-free in the sense the header means.
 import { describeGeometry } from './geometry';
 import { actorNounsOk } from './scenarioBank';
+import { colorTermKey } from './colorTerms';
 
 /** Matches the solver's own r3 rounding, so tolerance is consistent. */
 const COORD_TOL = 0.0015;
@@ -1756,8 +1757,29 @@ export function validateScenario(
         issues.push(`option label ${key} is missing — every option must be named`);
       }
     }
-    if (base(sc.row1) && base(sc.row1) === base(sc.row2)) issues.push(`row labels are not distinct ("${sc.row1}" / "${sc.row2}")`);
-    if (base(sc.col1) && base(sc.col1) === base(sc.col2)) issues.push(`column labels are not distinct ("${sc.col1}" / "${sc.col2}")`);
+    /**
+     * DISTINCT UNDER BOTH COMPARATORS, because two of them answer this one
+     * question. `base` above is this file's own: parentheticals out, whitespace
+     * collapsed, lower-cased. `colorTermKey` is the RENDERER's, and it also
+     * folds quote/dash/apostrophe glyphs, NFKC and invisibles — so "Fire Early"
+     * and "Fire Early." are two options to the validator and ONE term to the
+     * highlighter, which paints the player's two rows as the same phrase. Same
+     * class as RED-REGEN-4/5 (one equality, two comparators); the remedy on
+     * record is the shared key function, used by every comparison.
+     *
+     * The two are UNIONED, never swapped: `base` strips parentheticals and
+     * `colorTermKey` does not, so "Ship (fast)" / "Ship (slow)" is rejected
+     * today and must stay rejected. A pair is distinct only if BOTH agree.
+     *
+     * Reach of the added half on real output: 0 of 2,442 shipped bank rows and
+     * 0 of 316 live draws have a pair the validator calls distinct and the
+     * renderer reads as one term (`_gen/cloud19_comparators.ts`). It rejects
+     * nothing anyone has written; it closes a channel a model can still take.
+     */
+    const sameLabel = (x?: string, y?: string) =>
+      (!!base(x) && base(x) === base(y)) || (!!x && !!y && colorTermKey(x) === colorTermKey(y));
+    if (sameLabel(sc.row1, sc.row2)) issues.push(`row labels are not distinct ("${sc.row1}" / "${sc.row2}")`);
+    if (sameLabel(sc.col1, sc.col2)) issues.push(`column labels are not distinct ("${sc.col1}" / "${sc.col2}")`);
     const cells = [[g.a11, g.b11], [g.a12, g.b12], [g.a21, g.b21], [g.a22, g.b22]];
     const pairsFor = {
       row1: [...cells, [g.a11, g.a12], [g.b11, g.b12]],
