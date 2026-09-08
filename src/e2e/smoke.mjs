@@ -2859,6 +2859,10 @@ try {
     const light = await inksOf('light'), dark = await inksOf('dark');
     record('precondition: the two print pages really are light and dark, with Player B text present',
       !light.isDark && dark.isDark && light.nB > 0, JSON.stringify({ light: light.isDark, dark: dark.isDark, nB: light.nB }));
+    // CodeRabbit CLI: the light baseline must itself be the expected colour-coded set
+    // (Player B's ink present and distinct from Player A's) before dark is compared to it.
+    record('precondition: the light print baseline is colour-coded (Player B ink present, distinct from Player A)',
+      light.b.length >= 1 && light.a.length >= 1 && light.b.every((c) => !light.a.includes(c)), `a=${JSON.stringify(light.a)} b=${JSON.stringify(light.b)}`);
     record('FIX RED-APP-18/004: Player B prints in the same ink set in dark theme as in light (the dark variant is inert on paper)',
       JSON.stringify(light.b) === JSON.stringify(dark.b), `light=${JSON.stringify(light.b)} dark=${JSON.stringify(dark.b)}`);
     record('FIX RED-APP-18/004: Player A too (control for the family, and half of the matrix)',
@@ -8467,32 +8471,40 @@ try {
     await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(600);
     const stepOf = async () => { const t = (await tour.textContent().catch(() => '')) || ''; const m = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(t); return m ? Number(m[1]) : null; };
     const boardOf = async () => { const v = []; for (const pl of ['A', 'B']) for (let i = 0; i < 4; i++) v.push(await p.locator(`input[aria-label$="Player ${pl} payoff"]`).nth(i).inputValue()); return v.join(','); };
-    await p.keyboard.press('ArrowRight'); await p.waitForTimeout(300); await p.keyboard.press('ArrowRight'); await p.waitForTimeout(1200);
-    const s0 = await stepOf();
+    // CodeRabbit CLI: state-based waits — poll for the expected step (or for the step to
+    // stay put over a settle window when the assertion is "did NOT move"), never a fixed sleep.
+    const waitStep = async (n, ms = 4000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if ((await stepOf()) === n) return true; await p.waitForTimeout(50); } return false; };
+    const settled = async (ms = 600) => { const a = await stepOf(); await p.waitForTimeout(ms); return (await stepOf()) === a ? a : null; };
+    await p.keyboard.press('ArrowRight'); await waitStep(2); await p.keyboard.press('ArrowRight'); await waitStep(3);
+    const s0 = await settled();
     record('precondition: ArrowRight with focus on the tour itself still steps it (arrows are not owned by a button)', s0 === 3, `step=${s0}`);
     const inp = p.locator('input[aria-label$="Player A payoff"]').first();
     await inp.click(); await inp.press('End'); await p.keyboard.type('7'); const typed = await inp.inputValue();
-    await p.keyboard.press('ArrowLeft'); await p.waitForTimeout(500);
+    await p.keyboard.press('ArrowLeft');
     record('FIX 001: ArrowLeft in a focused payoff box does not move the tour and keeps the typed value',
-      (await stepOf()) === s0 && (await inp.inputValue()) === typed, `step=${await stepOf()} value=${await inp.inputValue()} typed=${typed}`);
-    await p.keyboard.press('Enter'); await p.waitForTimeout(500);
-    record('FIX 001: Enter in a focused payoff box does not move the tour', (await stepOf()) === s0, `step=${await stepOf()}`);
+      (await settled()) === s0 && (await inp.inputValue()) === typed, `step=${await stepOf()} value=${await inp.inputValue()} typed=${typed}`);
+    await p.keyboard.press('Enter');
+    record('FIX 001: Enter in a focused payoff box does not move the tour', (await settled()) === s0, `step=${await stepOf()}`);
     const slider = p.locator('input[type="range"]').first();
+    // CodeRabbit CLI: a missing slider is a failed precondition, not silent coverage.
+    record('precondition: the page has a range slider to test', (await slider.count()) >= 1, `sliders=${await slider.count()}`);
     if (await slider.count()) {
-      await slider.focus(); const v0 = await slider.inputValue(); await p.keyboard.press('ArrowRight'); await p.waitForTimeout(400);
+      await slider.focus(); const v0 = await slider.inputValue(); await p.keyboard.press('ArrowRight');
+      await p.waitForFunction((v) => document.activeElement?.value !== v, v0, { timeout: 3000 }).catch(() => {});
       record('FIX 001: ArrowRight on a focused range slider moves the slider, not the tour (WCAG 2.1.1)',
-        (await stepOf()) === s0 && (await slider.inputValue()) !== v0, `step=${await stepOf()} slider ${v0}→${await slider.inputValue()}`);
+        (await settled()) === s0 && (await slider.inputValue()) !== v0, `step=${await stepOf()} slider ${v0}→${await slider.inputValue()}`);
     }
     await p.evaluate(() => { const a = document.activeElement; if (a && a !== document.body) a.blur(); });
-    await p.keyboard.press('ArrowRight'); await p.waitForTimeout(700);
-    record('control: with nothing focused, ArrowRight still drives the tour', (await stepOf()) === s0 + 1, `step=${await stepOf()}`);
+    await p.keyboard.press('ArrowRight');
+    record('control: with nothing focused, ArrowRight still drives the tour', await waitStep(s0 + 1), `step=${await stepOf()}`);
     const next = tour.getByRole('button', { name: /^next$/i }).first();
-    await next.focus(); const s1 = await stepOf(); await p.keyboard.press('Enter'); await p.waitForTimeout(700);
-    record('FIX 002: Enter on a focused Next advances exactly one step', (await stepOf()) === s1 + 1, `${s1}→${await stepOf()}`);
-    await next.focus(); const s2 = await stepOf(); await p.keyboard.press('ArrowRight'); await p.waitForTimeout(700);
-    record('control: ArrowRight on a focused Next still advances one step (buttons pass arrows through)', (await stepOf()) === s2 + 1, `${s2}→${await stepOf()}`);
+    await next.focus(); const s1 = await settled(); await p.keyboard.press('Enter');
+    record('FIX 002: Enter on a focused Next advances exactly one step', (await waitStep(s1 + 1)) && (await settled()) === s1 + 1, `${s1}→${await stepOf()}`);
+    await next.focus(); const s2 = await settled(); await p.keyboard.press('ArrowRight');
+    record('control: ArrowRight on a focused Next still advances one step (buttons pass arrows through)', (await waitStep(s2 + 1)) && (await settled()) === s2 + 1, `${s2}→${await stepOf()}`);
     const b0 = await boardOf();
-    await p.getByRole('button', { name: /exit tour/i }).first().focus(); await p.keyboard.press('Enter'); await p.waitForTimeout(800);
+    await p.getByRole('button', { name: /exit tour/i }).first().focus(); await p.keyboard.press('Enter');
+    await tour.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); await p.waitForTimeout(300);
     record('FIX 002: Enter on a focused Exit tour closes the tour and leaves the board alone',
       !(await tour.isVisible().catch(() => false)) && (await boardOf()) === b0, `open=${await tour.isVisible().catch(() => false)} boardChanged=${(await boardOf()) !== b0}`);
     await p.close();
@@ -8511,29 +8523,47 @@ try {
     const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
     await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(800);
     const steps = [];
-    for (let k = 0; k < 25; k++) {
-      await p.waitForTimeout(1800);
-      const m = await p.evaluate(() => {
+    // CodeRabbit CLI: wait for STABLE geometry (two identical reads 300ms apart, after the
+    // glide/scroll), bounded, instead of a fixed sleep.
+    const readGeometry = () => p.evaluate(() => {
         const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]'); if (!dlg) return null;
         const mm = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(dlg.textContent || '');
         const spot = [...document.querySelectorAll('div')].find((d) => /9999px/.test(getComputedStyle(d).boxShadow));
-        const next = [...dlg.querySelectorAll('button')].find((b) => /^(next|finish|done)$/i.test(b.textContent.trim()));
-        let card = next; while (card && card.parentElement !== dlg) card = card.parentElement;
+        // The card: the dialog's direct-child DIV that accepts pointer events (the spotlight div is
+        // pointer-events:none; the Exit pill is a button) — label-independent, so the closing step's
+        // "Finish"/"Done" wording cannot hide the card from the oracle.
+        const card = [...dlg.children].filter((el) => el.tagName === 'DIV' && getComputedStyle(el).pointerEvents === 'auto')
+          .sort((a, b) => (b.getBoundingClientRect().width * b.getBoundingClientRect().height) - (a.getBoundingClientRect().width * a.getBoundingClientRect().height))[0] || null;
         const r = (e) => { const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
         const inter = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
         const s = spot ? r(spot) : null, c = card ? r(card) : null;
         return { step: mm ? Number(mm[1]) : null, total: mm ? Number(mm[2]) : null, overlap: s && c && s.w * s.h > 0 ? inter(s, c) / (s.w * s.h) : null,
-          isSheet: c ? (c.w >= window.innerWidth - 40 && c.y + c.h >= window.innerHeight - 4) : null, cardH: c ? Math.round(c.h) : null };
+          isSheet: c ? (c.w >= window.innerWidth - 40 && c.y + c.h >= window.innerHeight - 4) : null, cardH: c ? Math.round(c.h) : null,
+          hasSpot: !!spot, hasCard: !!card,
+          key: [s ? [s.x, s.y, s.w, s.h] : 'nospot', c ? [c.x, c.y, c.w, c.h] : 'nocard'].flat().map((v) => (typeof v === 'number' ? Math.round(v) : v)).join(',') };
       });
+    const stableGeometry = async (ms = 6000) => {
+      const t0 = Date.now(); let last = await readGeometry();
+      while (Date.now() - t0 < ms) { await p.waitForTimeout(300); const cur = await readGeometry(); if (cur && last && cur.key === last.key && cur.step === last.step) return cur; last = cur; }
+      return last;
+    };
+    for (let k = 0; k < 25; k++) {
+      const m = await stableGeometry();
       if (!m || m.step === null) break;
       steps.push(m);
       if (m.step >= m.total) break;
       await p.keyboard.press('ArrowRight');
+      await p.waitForFunction((prev) => { const d = document.querySelector('[role="dialog"][aria-label="Guided tour"]'); const mm = /(\d+)\s*(?:\/|of)/.exec(d?.textContent || ''); return mm && Number(mm[1]) !== prev; }, m.step, { timeout: 4000 }).catch(() => {});
     }
-    const bad = steps.filter((s) => s.overlap !== null && !s.isSheet && s.overlap > 0.25);
-    record('precondition: the whole tour was walked', steps.length >= 15, `walked ${steps.length}`);
+    // CodeRabbit CLI: missing geometry is a failure, and the walk must be 1..N without gaps or repeats.
+    // A step without a spotlight (no target — the closing step) has nothing to overlap; a
+    // step WITH a spotlight must have a readable card, or it is a failure.
+    const bad = steps.filter((s) => (s.hasSpot && (!s.hasCard || s.overlap === null)) || (s.overlap !== null && !s.isSheet && s.overlap > 0.25));
+    const contiguous = steps.length > 0 && steps.every((s, idx) => s.step === idx + 1) && steps[steps.length - 1].step === steps[steps.length - 1].total;
+    record('precondition: the whole tour was walked, step 1..N with no gaps or repeats, geometry read on every step',
+      steps.length >= 15 && contiguous, `walked ${steps.length}: ${steps.map((s) => s.step).join(',')}`);
     record('FIX RED-APP-18/003: no floating card covers more than 25% of its own spotlight on any step',
-      bad.length === 0, bad.map((s) => `step ${s.step}: ${(s.overlap * 100).toFixed(0)}% (card ${s.cardH}px)`).join('; ') || 'all clean');
+      bad.length === 0, bad.map((s) => `step ${s.step}: ${s.overlap === null ? 'no card/spotlight geometry' : `${(s.overlap * 100).toFixed(0)}% (card ${s.cardH}px)`}`).join('; ') || 'all clean');
     await p.close();
   });
 
