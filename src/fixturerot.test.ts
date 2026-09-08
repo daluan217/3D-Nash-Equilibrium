@@ -110,7 +110,12 @@ function plantsIn(src: string, vars: readonly string[]): string[] {
     if (recv === null || !owned.has(recv)) continue;
     let lit: string;
     try {
-      lit = JSON.parse(`"${m[2].replace(/"/g, '\\"').replace(/\\'/g, "'")}"`) as string;
+      // Decode by the quote style the plant was written in (CodeRabbit CLI on this
+      // branch). Escaping every `"` also rewrote a double-quoted literal's own
+      // `\"`, and `JSON.parse` then THREW — so the `catch` below skipped the plant
+      // silently and a guard whose fixture quotes speech was invisible to this scan.
+      const body = m[1] === '"' ? m[2] : m[2].replace(/\\'/g, "'").replace(/"/g, '\\"');
+      lit = JSON.parse(`"${body}"`) as string;
     } catch {
       continue;
     }
@@ -120,7 +125,17 @@ function plantsIn(src: string, vars: readonly string[]): string[] {
   return out;
 }
 
-const testFiles = tracked.filter((f) => f.endsWith('.test.ts'));
+/**
+ * This file itself is excluded, and it is the ONLY exclusion: every `.replace(` in it
+ * is fixture data for the extractor (strings that LOOK like guards), so scanning it
+ * would report its own test inputs as stale plants. The list is pinned below so the
+ * exclusion cannot quietly grow into a way to silence a real guard.
+ */
+const EXCLUDED = ['src/fixturerot.test.ts'];
+const testFiles = tracked.filter((f) => f.endsWith('.test.ts') && !EXCLUDED.includes(f));
+check('exactly one guard is excluded from the scan, and it is this one',
+  EXCLUDED.length === 1 && EXCLUDED[0] === 'src/fixturerot.test.ts', EXCLUDED.join());
+check('every other guard is scanned', tracked.filter((f) => f.endsWith('.test.ts')).length - testFiles.length === 1);
 check('there are test files to scan (an empty scan would pass vacuously)', testFiles.length > 20, String(testFiles.length));
 
 let planted = 0;
@@ -158,6 +173,17 @@ check('every mutant plant still occurs in the sources it mutates', stale.length 
     plantsIn(`const scene = 'a sentence the test wrote';\nscene.replace("${real}", "else");`, ['app']).length === 0);
   check('fixture: the extractor ignores a short .replace( that is ordinary munging',
     plantsIn('const app = readFileSync("x");\napp.replace("  ", " ");', ['app']).length === 0);
+  // Both quote styles, each carrying the OTHER quote — the shape that used to throw
+  // inside the decoder and be skipped without a word (CodeRabbit CLI on this branch).
+  const dq = 'const app = readFileSync("x");\nconst y = app.replace("she said \\"go now\\" and left the room", "z");';
+  check('fixture: a double-quoted plant containing escaped quotes decodes to the source text',
+    plantsIn(dq, ['app'])[0] === 'she said "go now" and left the room', JSON.stringify(plantsIn(dq, ['app'])));
+  const sq = `const app = readFileSync('x');\nconst y = app.replace('she said "go now" and left the room', 'z');`;
+  check('fixture: a single-quoted plant containing bare quotes decodes to the same text',
+    plantsIn(sq, ['app'])[0] === 'she said "go now" and left the room', JSON.stringify(plantsIn(sq, ['app'])));
+  check('fixture: an apostrophe escaped inside a single-quoted plant survives',
+    plantsIn(`const app = readFileSync('x');\napp.replace('the dialog\\'s own error line here', 'z');`, ['app'])[0]
+      === "the dialog's own error line here");
 }
 
 if (failures > 0) {
