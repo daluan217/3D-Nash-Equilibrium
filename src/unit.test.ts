@@ -24,7 +24,7 @@ import {
   numericInputProblem,
 } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
-import { tourBlockedOriginAfterPointerDown, tourClickSharesBlockedOrigin, tourControlClickAllowed, tourFloatingFits, tourScrollBehavior, tourTargetPlacementKey, tourTargetScrollDelta } from './components/Walkthrough';
+import { tourBlockedOriginAfterPointerDown, tourClickSharesBlockedOrigin, tourControlClickAllowed, tourFloatingFits, tourPortraitUsesSheet, tourRectAfterCentering, tourScrollBehavior, tourTargetPlacementKey, tourTargetScrollDelta } from './components/Walkthrough';
 import {
   isAgentRouterEndpoint,
   buildChatRequestBody,
@@ -3639,8 +3639,12 @@ function testWalkthroughInputContracts() {
       && /\}, \[open, placementKey\]\);/.test(scrollEffect)
       && !source.includes('document.body.style.paddingBottom'),
     'H5 target placement must rerun with the actual one-gap usable strip when measured card height or document geometry changes, without mutating global body padding');
-    assert(/const paddedRect = readRect\(el\);[\s\S]{0,300}?tourFloatingFits\(paddedRect, window\.innerWidth, window\.innerHeight\)/.test(scrollEffect),
-      'H5 scroll layout must use the same padded spotlight rect as render at the floating-card boundary');
+    // CodeRabbit on #173: the scroll effect decides the layout family from the
+    // spotlight's POST-centring position, through the same predicate render uses.
+    assert(/const paddedRect = readRect\(el\);[\s\S]{0,400}?tourPortraitUsesSheet\(\s*tourRectAfterCentering\(paddedRect, window\.innerHeight\), window\.innerWidth, window\.innerHeight,?\s*\)/.test(scrollEffect),
+      'H5/CR scroll layout must use the padded spotlight rect AS IT WILL SIT AFTER CENTRING, through tourPortraitUsesSheet(tourRectAfterCentering(...))');
+    assert(/const sheet = !landscape && \(!rect \? vw < COMPACT_MAX : tourPortraitUsesSheet\(rect, vw, vh\)\);/.test(source),
+      'CR #173: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect');
   };
   const source = readFileForContract('src/components/Walkthrough.tsx', 'utf8');
   contract(source);
@@ -3661,8 +3665,29 @@ function testWalkthroughInputContracts() {
     'H2 fixture: returning the pill to a viewport-top offset must fail the named source contract');
   assert(contractFails(source.replace('window.innerHeight - sheetH - GAP - top', 'window.innerHeight - sheetH - GAP * 2 - top')),
     'H5 fixture: budgeting a second gap inside the measured strip must fail the named source contract');
-  assert(contractFails(source.replace('tourFloatingFits(paddedRect, window.innerWidth, window.innerHeight)', 'tourFloatingFits(r0, window.innerWidth, window.innerHeight)')),
+  assert(contractFails(source.replace('tourRectAfterCentering(paddedRect, window.innerHeight)', 'paddedRect')),
+    'CR #173 fixture: deciding the scroll layout from the PRE-centring spotlight (the shape CodeRabbit found) must fail the named source contract');
+  assert(contractFails(source.replace('tourRectAfterCentering(paddedRect, window.innerHeight)', 'tourRectAfterCentering(r0, window.innerHeight)')),
     'H5 fixture: deciding scroll layout from the unpadded target while render uses the spotlight must fail the named source contract');
+  assert(contractFails(source.replace('const sheet = !landscape && (!rect ? vw < COMPACT_MAX : tourPortraitUsesSheet(rect, vw, vh));', 'const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));')),
+    'CR #173 fixture: render bypassing the shared predicate must fail the named source contract');
+  // Behavioural: the 3D plot at 920x1200 (480px tall, spotlight 496) fits a floating
+  // card only because of the room ABOVE its pre-scroll position; centred, it fits
+  // nowhere — so the effect must take the sheet path from the start.
+  const tallPreScroll = { top: 612, left: 8, width: 904, height: 496 };
+  assert(tourFloatingFits(tallPreScroll, 920, 1200) && !tourPortraitUsesSheet(tallPreScroll, 920, 1200),
+    'CR #173 precondition: the pre-scroll spotlight reports a floating fit (room above)');
+  const tallCentred = tourRectAfterCentering(tallPreScroll, 1200);
+  assert(tallCentred.top === 352 && tallCentred.height === 496 && tallCentred.left === 8,
+    'CR #173: tourRectAfterCentering places the spotlight at (vh - height) / 2 and keeps the other fields');
+  assert(tourPortraitUsesSheet(tallCentred, 920, 1200),
+    'CR #173: the same spotlight, centred, has no floating fit — the layout family is the sheet');
+  // A short target keeps its floating fit after centring: the centre path is still taken.
+  const shortPreScroll = { top: 700, left: 8, width: 300, height: 160 };
+  assert(!tourPortraitUsesSheet(tourRectAfterCentering(shortPreScroll, 1200), 920, 1200),
+    'CR #173 control: a short spotlight still fits a floating card after centring');
+  assert(tourPortraitUsesSheet(shortPreScroll, 800, 1200),
+    'CR #173: below COMPACT_MAX the sheet is used regardless of fit');
   assert(contractFails(source.replace('rect?.documentTop, rect?.left, rect?.width, rect?.height', '0, 0, 0, 0')),
     'H5 fixture: ignoring a post-onEnter target document-position shift must fail the named source contract');
   assert(contractFails(source.replace('rect?.documentTop, rect?.left, rect?.width, rect?.height, vp.w, vp.h', 'rect?.documentTop, rect?.left, rect?.width, rect?.height, 0, 0')),

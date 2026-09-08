@@ -110,6 +110,22 @@ export const tourFloatingFits = (r: { top: number; left: number; width: number; 
       || (r.left - GAP) >= FLOAT_W_EST;
 };
 
+/**
+ * CodeRabbit on PR #173: the padded spotlight as `scrollIntoView({block: 'center'})`
+ * will leave it. The scroll effect must choose the layout family from where the
+ * target WILL be, not where it is: a tall target that fits a floating card only
+ * because of the room above its pre-scroll position loses that room the moment it
+ * is centred, render then switches to the bottom sheet, and the sheet-aware strip
+ * scroll never runs (rect.top is deliberately absent from placementKey) — measured
+ * at 920x1200: the sheet covered 25% of the 3D plot.
+ */
+export const tourRectAfterCentering = <T extends { top: number; height: number }>(r: T, vh: number): T =>
+  ({ ...r, top: (vh - r.height) / 2 });
+
+/** Portrait layout family for a spotlight at a given position: bottom sheet unless a floating card fits beside it. */
+export const tourPortraitUsesSheet = (r: { top: number; left: number; width: number; height: number }, vw: number, vh: number): boolean =>
+  vw < COMPACT_MAX || !tourFloatingFits(r, vw, vh);
+
 const readRect = (el: Element): Rect => {
   const r = el.getBoundingClientRect();
   return {
@@ -219,8 +235,10 @@ export function Walkthrough({
       const paddedRect = readRect(el);
       const isLand = window.innerWidth > window.innerHeight;
       const behavior = tourScrollBehavior(!!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
-      const willSheet = !isLand && (window.innerWidth < COMPACT_MAX
-        || !tourFloatingFits(paddedRect, window.innerWidth, window.innerHeight));
+      // Decide from the POST-centring position (see tourRectAfterCentering).
+      const willSheet = !isLand && tourPortraitUsesSheet(
+        tourRectAfterCentering(paddedRect, window.innerHeight), window.innerWidth, window.innerHeight,
+      );
       if (!willSheet && !isLand) {
         el.scrollIntoView({ behavior, block: 'center' });
         return;
@@ -396,7 +414,7 @@ export function Walkthrough({
    * wherever a floating card cannot fit, the free-floating card otherwise.
    */
   const landscape = vw > vh;
-  const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));
+  const sheet = !landscape && (!rect ? vw < COMPACT_MAX : tourPortraitUsesSheet(rect, vw, vh));
 
   /** Landscape card width: whatever the roomier side offers, clamped sane. */
   const sideAvail = rect
