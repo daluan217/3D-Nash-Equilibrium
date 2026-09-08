@@ -3730,7 +3730,9 @@ function testWalkthroughInputContracts() {
     const hold = body.indexOf('holdSpinRef.current();');
     const record = body.indexOf('pinchStartDist.current = dist(te.touches);');
     // the ref must be kept current from render scope, or the hold reads first-render state
-    const refKept = /holdSpinRef\.current = holdSpinForCameraControl;/.test(src);
+    // CodeRabbit on #177: published from a layout effect, never during render.
+    const refKept = /useLayoutEffect\(\(\) => \{ holdSpinRef\.current = holdSpinForCameraControl; \}\);/.test(src)
+      && !/^\s*holdSpinRef\.current = holdSpinForCameraControl;\s*$/m.test(src);
     return cancel !== -1 && hold !== -1 && record !== -1 && cancel < record && hold < record && refKept;
   };
   assert(pinchWriterContract(pv), 'RED-MATH-19/001: onTouchStart must cancel the glide AND hold the spin (via the render-kept ref) before recording the pinch start');
@@ -3740,7 +3742,7 @@ function testWalkthroughInputContracts() {
   const noHold = pv.replace(/\n\s*holdSpinRef\.current\(\);\n(\s*pinchStartDist\.current = dist\(te\.touches\);)/, '\n$1');
   assert(noHold !== pv, 'RED-MATH-19/001 fixture: removing the hold must change the source');
   assert(!pinchWriterContract(noHold), 'RED-MATH-19/001 fixture: the pinch writer without the spin hold must be flagged (the spin resumed at its own radius and erased the pinch)');
-  const staleRef = pv.replace('  holdSpinRef.current = holdSpinForCameraControl;\n', '');
+  const staleRef = pv.replace('  useLayoutEffect(() => { holdSpinRef.current = holdSpinForCameraControl; });\n', '');
   assert(staleRef !== pv, 'RED-MATH-19/001 fixture: removing the ref assignment must change the source');
   assert(!pinchWriterContract(staleRef), 'RED-MATH-19/001 fixture: a hold ref that is never re-assigned (stale closure) must be flagged');
 }
