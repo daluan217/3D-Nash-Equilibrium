@@ -3694,6 +3694,37 @@ function testWalkthroughInputContracts() {
     'STRUCT-APP-19/001 fixture: a scroll effect still on the constant while render measures (the two disagreeing about the card height) must fail the named source contract');
   assert(contractFails(source.replace('open, vp.w, vp.h, portraitSheet]);', 'open, vp.w, vp.h]);')),
     'OPUS-173/C2 fixture: dropping the layout family from the measure deps (the 950x1000 regression) must fail the named source contract');
+
+  // ── STRUCT-APP-19/001: an INVARIANT, not a list of known call sites ────────
+  // Everything above pins the two calls that exist TODAY by their exact text. A
+  // third call added tomorrow with no measured height would reinstate finding
+  // 001 and every assertion above would still pass — the same enumeration trap
+  // that let the print theme leak (STRUCT-APP-19/002). So: whatever the call
+  // sites are, each must pass a MEASURED card height.
+  const measuredCallSites = (src: string): { total: number; unmeasured: string[] } => {
+    const needle = 'tourPortraitUsesSheet(';
+    const unmeasured: string[] = [];
+    let total = 0;
+    for (let i = src.indexOf(needle); i !== -1; i = src.indexOf(needle, i + 1)) {
+      let depth = 0, j = i + needle.length - 1;
+      for (; j < src.length; j++) {
+        if (src[j] === '(') depth++;
+        else if (src[j] === ')') { depth--; if (depth === 0) break; }
+      }
+      const call = src.slice(i, j + 1);
+      total++;
+      if (!/\bfloatHRef\.current\b|\bfloatH\b/.test(call)) unmeasured.push(call.replace(/\s+/g, ' ').slice(0, 110));
+    }
+    return { total, unmeasured };
+  };
+  const live = measuredCallSites(source);
+  assert(live.total >= 2, `STRUCT-APP-19/001: expected at least the two known tourPortraitUsesSheet call sites, found ${live.total}`);
+  assert(live.unmeasured.length === 0,
+    'STRUCT-APP-19/001: EVERY call to tourPortraitUsesSheet must pass a measured card height — the shipped defect was this predicate '
+    + `deciding the layout family from a 520px constant. Unmeasured: ${live.unmeasured.join(' | ')}`);
+  // and the invariant must be able to fail: a third, unmeasured call site
+  assert(measuredCallSites(`${source}\nconst x = tourPortraitUsesSheet(rect, vp.w, vp.h);`).unmeasured.length === 1,
+    'STRUCT-APP-19/001 fixture: a NEW call site with no measured height must be caught by the invariant, not just by the two named contracts');
   assert(contractFails(source.replace('    if (allowed) return;\n', '')),
     'OPUS-173/C4 fixture: dropping `if (allowed) return;` (every tour control dead) must fail the named source contract');
   assert(contractFails(source.replace('pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;', 'pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint || (e.target as HTMLElement).closest(\'[aria-label="Exit tour"]\') !== null;')),
