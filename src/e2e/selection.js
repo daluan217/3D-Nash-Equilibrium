@@ -41,8 +41,17 @@ import { dirname, join } from 'node:path';
  * — 30 shards clears every multi-section shard under 200 s again (worst
  * single-section shard, §70 alone, stays 207,990 ms as before; unaffected
  * by shard count).
+ *
+ * struct19-app (2026-09-08): §90 was first registered at 56,000 ms from a
+ * measurement taken before it walked the whole tour; it really costs
+ * 88,551 ms (19 steps, each waiting out a 300 ms spotlight transition —
+ * every step settles, so there is no cap to trim and no fat to cut). The
+ * honest number puts FIVE multi-section shards over the 200 s headroom line
+ * at 30 (worst 200,704 ms — the table was already within 1 s of the line in
+ * five places, so any true number over ~80,000 tips it). 31 clears them all;
+ * worst multi-section shard becomes 195,221 ms.
  */
-export const SHARD_COUNT = 30;
+export const SHARD_COUNT = 31;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));

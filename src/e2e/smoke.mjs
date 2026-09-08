@@ -8730,6 +8730,18 @@ try {
         cardH: c ? Math.round(c.h) : null,
         isSheet: c ? (c.w >= window.innerWidth - 40 && (window.innerHeight - (c.y + c.h)) <= 24) : null,
         cover: s && c && s.w * s.h > 0 ? inter(s, c) / (s.w * s.h) : null,
+        // The harm a mis-sized card actually does: its own controls leave the
+        // screen. The overlay is `fixed`, so the page cannot scroll to reach
+        // them — a visitor with Skip/Back/Next below the fold is stuck in the
+        // tour. Names, not a count, so a failure says which button was lost.
+        ctrlsOutside: card ? [...card.querySelectorAll('button, [role="button"], a[href]')]
+          .filter((b) => {
+            const q = b.getBoundingClientRect();
+            return q.width > 0 && q.height > 0
+              && !(q.top >= -1 && q.bottom <= window.innerHeight + 1
+                   && q.left >= -1 && q.right <= window.innerWidth + 1);
+          })
+          .map((b) => (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 22)) : [],
         key: [s ? [s.x, s.y, s.w, s.h] : 'ns', c ? [c.x, c.y, c.w, c.h] : 'nc'].flat()
           .map((v) => (typeof v === 'number' ? Math.round(v) : v)).join(','),
       };
@@ -8784,6 +8796,10 @@ try {
     record('STRUCT-APP-19/001: no floating card covers more than a quarter of its own spotlight, with captions enlarged',
       covering.length === 0,
       covering.map((s) => `step ${s.step}: ${(s.cover * 100).toFixed(0)}% (card ${s.cardH}px)`).join('; ') || 'all clean');
+    const unreachable = steps.filter((s) => (s.ctrlsOutside || []).length > 0);
+    record('STRUCT-APP-19/001: every control the tour card owns stays inside the viewport, with captions enlarged',
+      unreachable.length === 0,
+      unreachable.map((s) => `step ${s.step}: ${s.ctrlsOutside.join('/')} outside (card ${s.cardH}px)`).join('; ') || 'all reachable');
     const centred = steps.filter((s) => s.hasSpot && !s.isSheet && !s.hasArrow);
     record('STRUCT-APP-19/001: a step with a spotlight is either the bottom sheet or points at it — never the centred fallback',
       centred.length === 0,
