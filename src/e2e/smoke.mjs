@@ -8583,6 +8583,117 @@ try {
     await p.close();
   });
 
+  // ══ 90. STRUCT-APP-19/001 — the layout family must come from a MEASURED
+  //      floating card, not a constant. §88 walks the tour at the default type
+  //      scale; this walks it with the CAPTION ENLARGED, which is what a
+  //      visitor's browser "minimum font size" setting does: the card grows
+  //      while the room beside the spotlight does not. On a tree that decides
+  //      the family from FLOAT_H_EST the estimate still says "a 520px card
+  //      fits", placement (which uses the measured height) finds no side, and
+  //      the card is centred ON its own spotlight with no arrow — measured at
+  //      912x1368 dsf2 step 3: 599px card, 58.6% cover, arrow gone.
+  //
+  //      Two invariants, not a pixel number: (a) a floating card never covers
+  //      more than a quarter of its own spotlight, and (b) a step that HAS a
+  //      spotlight either docks as the bottom sheet or points at it with an
+  //      arrow — `place: 'center'` (the fallback that produced the defect) is
+  //      exactly the state with a spotlight, no sheet and no arrow.
+  //      Mutation: revert `portraitSheet` to `tourPortraitUsesSheet(rect, vp.w,
+  //      vp.h)` (the estimate) → both assertions fail on step 3.
+  section('90', 'tour layout family comes from a measured card, not an estimate (enlarged captions)', async () => {
+    const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
+    await tour.waitFor({ state: 'visible', timeout: 15000 });
+    // The condition under test: every caption paragraph in the tour (the real
+    // card AND the off-screen probe that measures it) rendered much larger, the
+    // way a browser minimum-font-size does. Applied through a stylesheet so it
+    // reaches both without the test knowing which is which.
+    await p.addStyleTag({ content: '[role="dialog"][aria-label="Guided tour"] p { font-size: 30px !important; line-height: 1.65 !important; }' });
+    await p.waitForTimeout(600);
+    const read = () => p.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]');
+      if (!dlg) return null;
+      const mm = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(dlg.textContent || '');
+      const spot = [...document.querySelectorAll('div')].find((d) => /9999px/.test(getComputedStyle(d).boxShadow)) || null;
+      // The rendered card is the dialog's direct-child DIV that accepts pointer
+      // events; the measuring probe is pointer-events:none, so it can never be
+      // mistaken for it.
+      const card = [...dlg.children]
+        .filter((el) => el.tagName === 'DIV' && getComputedStyle(el).pointerEvents === 'auto')
+        .sort((a, b) => (b.getBoundingClientRect().width * b.getBoundingClientRect().height)
+                      - (a.getBoundingClientRect().width * a.getBoundingClientRect().height))[0] || null;
+      const r = (e) => { const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
+      const s = spot ? r(spot) : null, c = card ? r(card) : null;
+      const inter = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
+                            * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+      return {
+        step: mm ? Number(mm[1]) : null, total: mm ? Number(mm[2]) : null,
+        hasSpot: !!spot, hasCard: !!card, hasArrow: !!dlg.querySelector('svg line'),
+        cardH: c ? Math.round(c.h) : null,
+        isSheet: c ? (c.w >= window.innerWidth - 40 && (window.innerHeight - (c.y + c.h)) <= 24) : null,
+        cover: s && c && s.w * s.h > 0 ? inter(s, c) / (s.w * s.h) : null,
+        key: [s ? [s.x, s.y, s.w, s.h] : 'ns', c ? [c.x, c.y, c.w, c.h] : 'nc'].flat()
+          .map((v) => (typeof v === 'number' ? Math.round(v) : v)).join(','),
+      };
+    });
+    // Poll for STABLE geometry (the spotlight carries `transition-all duration-300`),
+    // then keep the MINIMUM cover over a few samples — RED-APP-18 retracted two
+    // claims that were single mid-transition reads.
+    const settled = async (ms = 8000) => {
+      const t0 = Date.now(); let last = await read();
+      while (Date.now() - t0 < ms) {
+        await p.waitForTimeout(300);
+        const cur = await read();
+        if (cur && last && cur.key === last.key && cur.step === last.step) { last = cur; break; }
+        last = cur;
+      }
+      let m = last;
+      for (let j = 0; j < 3 && m; j++) {
+        await p.waitForTimeout(250);
+        const cur = await read();
+        if (cur && cur.step === m.step && cur.cover !== null && (m.cover === null || cur.cover < m.cover)) m = cur;
+      }
+      return m;
+    };
+    const steps = [];
+    for (let k = 0; k < 25; k++) {
+      const m = await settled();
+      if (!m || m.step === null) break;
+      steps.push(m);
+      if (m.step >= m.total) break;
+      await p.evaluate(() => { const a = document.activeElement; if (a && a !== document.body) a.blur(); });
+      await p.keyboard.press('ArrowRight');
+      await p.waitForFunction((prev) => {
+        const d = document.querySelector('[role="dialog"][aria-label="Guided tour"]');
+        const mm = /(\d+)\s*(?:\/|of)/.exec(d?.textContent || '');
+        return mm && Number(mm[1]) !== prev;
+      }, m.step, { timeout: 5000 }).catch(() => {});
+    }
+    const contiguous = steps.length > 0 && steps.every((s, idx) => s.step === idx + 1)
+      && steps[steps.length - 1].step === steps[steps.length - 1].total;
+    record('precondition: the whole tour was walked with enlarged captions, step 1..N, geometry read on every step',
+      steps.length >= 15 && contiguous, `walked ${steps.length}: ${steps.map((s) => s.step).join(',')}`);
+    // The condition has to have BITTEN: with 30px captions the floating card must
+    // be far taller than the 520px constant this replaces, or the section proves
+    // nothing. (Measured 599px at this viewport.)
+    const tallest = Math.max(...steps.map((s) => s.cardH || 0));
+    record('precondition: the enlarged captions really do produce a card taller than the old 520px estimate',
+      tallest > 520, `tallest rendered card = ${tallest}px`);
+    const missing = steps.filter((s) => s.hasSpot && !s.hasCard);
+    record('precondition: every step with a spotlight also has a readable card', missing.length === 0,
+      missing.map((s) => `step ${s.step}`).join(', ') || 'all present');
+    const covering = steps.filter((s) => s.cover !== null && !s.isSheet && s.cover > 0.25);
+    record('STRUCT-APP-19/001: no floating card covers more than a quarter of its own spotlight, with captions enlarged',
+      covering.length === 0,
+      covering.map((s) => `step ${s.step}: ${(s.cover * 100).toFixed(0)}% (card ${s.cardH}px)`).join('; ') || 'all clean');
+    const centred = steps.filter((s) => s.hasSpot && !s.isSheet && !s.hasArrow);
+    record('STRUCT-APP-19/001: a step with a spotlight is either the bottom sheet or points at it — never the centred fallback',
+      centred.length === 0,
+      centred.map((s) => `step ${s.step}: card ${s.cardH}px, no arrow and no sheet`).join('; ') || 'all clean');
+    await p.close();
+  });
+
 await executeSections();
 
 } catch (e) {

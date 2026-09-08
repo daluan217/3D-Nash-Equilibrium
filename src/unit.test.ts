@@ -3641,11 +3641,15 @@ function testWalkthroughInputContracts() {
     'H5 target placement must rerun with the actual one-gap usable strip when measured card height or document geometry changes, without mutating global body padding');
     // CodeRabbit on #173: the scroll effect decides the layout family from the
     // spotlight's POST-centring position, through the same predicate render uses.
-    assert(/const paddedRect = readRect\(el\);[\s\S]{0,400}?tourPortraitUsesSheet\(\s*tourRectAfterCentering\(paddedRect, window\.innerHeight\), window\.innerWidth, window\.innerHeight,?\s*\)/.test(scrollEffect),
-      'H5/CR scroll layout must use the padded spotlight rect AS IT WILL SIT AFTER CENTRING, through tourPortraitUsesSheet(tourRectAfterCentering(...))');
-    assert(/const portraitSheet = !\(vp\.w > vp\.h\) && \(!rect \? vp\.w < COMPACT_MAX : tourPortraitUsesSheet\(rect, vp\.w, vp\.h\)\);/.test(source)
+    // STRUCT-APP-19/001: both call sites now carry the MEASURED floating card
+    // (floatHRef.current / floatH + tourFloatingCardWidth) — never the fallback
+    // constant, and never cardH (the rendered family's height, which is what
+    // the constants existed to avoid feeding back).
+    assert(/const paddedRect = readRect\(el\);[\s\S]{0,600}?tourPortraitUsesSheet\(\s*tourRectAfterCentering\(paddedRect, window\.innerHeight\), window\.innerWidth, window\.innerHeight,\s*floatHRef\.current, tourFloatingCardWidth\(window\.innerWidth\),?\s*\)/.test(scrollEffect),
+      'H5/CR + STRUCT-APP-19/001: scroll layout must use the padded spotlight rect AS IT WILL SIT AFTER CENTRING, through tourPortraitUsesSheet(tourRectAfterCentering(...), …, floatHRef.current, tourFloatingCardWidth(...))');
+    assert(/const portraitSheet = !\(vp\.w > vp\.h\) && \(!rect \? vp\.w < COMPACT_MAX : tourPortraitUsesSheet\(rect, vp\.w, vp\.h, floatH, tourFloatingCardWidth\(vp\.w\)\)\);/.test(source)
       && /const sheet = portraitSheet;/.test(source),
-      'CR #173: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect (portraitSheet)');
+      'CR #173 + STRUCT-APP-19/001: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect, with the measured floating card');
     // OPUS-REVIEW-173/C2: the card measurement must re-run on a layout-family flip.
     assert(/if \(cardRef\.current\) setCardH\(cardRef\.current\.offsetHeight\);\s*\}, \[i, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, open, vp\.w, vp\.h, portraitSheet\]\);/.test(source),
       'OPUS-173/C2: the card-height measure effect must key on the rendered layout family (portraitSheet) — a sheet positioned with the floating card\'s height sat 223px above the bottom at 950x1000');
@@ -3682,6 +3686,12 @@ function testWalkthroughInputContracts() {
     'H5 fixture: deciding scroll layout from the unpadded target while render uses the spotlight must fail the named source contract');
   assert(contractFails(source.replace('const sheet = portraitSheet;', 'const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));')),
     'CR #173 fixture: render bypassing the shared predicate must fail the named source contract');
+  assert(contractFails(source.replace('tourPortraitUsesSheet(rect, vp.w, vp.h, floatH, tourFloatingCardWidth(vp.w))', 'tourPortraitUsesSheet(rect, vp.w, vp.h)')),
+    'STRUCT-APP-19/001 fixture: render deciding the family from the CONSTANT again (the shipped defect) must fail the named source contract');
+  assert(contractFails(source.replace('tourPortraitUsesSheet(rect, vp.w, vp.h, floatH, tourFloatingCardWidth(vp.w))', 'tourPortraitUsesSheet(rect, vp.w, vp.h, cardH, tourFloatingCardWidth(vp.w))')),
+    'STRUCT-APP-19/001 fixture: feeding the RENDERED card height back into the family test (the flip-flop the constants existed to avoid) must fail the named source contract');
+  assert(contractFails(source.replace('        floatHRef.current, tourFloatingCardWidth(window.innerWidth),\n', '')),
+    'STRUCT-APP-19/001 fixture: a scroll effect still on the constant while render measures (the two disagreeing about the card height) must fail the named source contract');
   assert(contractFails(source.replace('open, vp.w, vp.h, portraitSheet]);', 'open, vp.w, vp.h]);')),
     'OPUS-173/C2 fixture: dropping the layout family from the measure deps (the 950x1000 regression) must fail the named source contract');
   assert(contractFails(source.replace('    if (allowed) return;\n', '')),
@@ -3781,9 +3791,35 @@ function testWalkthroughInputContracts() {
       'a plain button must NOT own the arrow keys — the tour focuses its own buttons on open and arrows must still step it');
     assert(/tourKeyOwnedByTarget = \(t: EventTarget \| null, key: string\): boolean =>\s*t instanceof Element && !!t\.closest\(key === 'Enter' \? TOUR_ENTER_OWNER_SELECTOR : TOUR_ARROW_OWNER_SELECTOR\)/.test(src),
       'tourKeyOwnedByTarget must pick the Enter owners for Enter and the arrow owners otherwise');
-    const est = /const FLOAT_H_EST = (\d+);/.exec(src);
+    // ── STRUCT-APP-19/001: the layout family is chosen from a MEASUREMENT ──
+    // RED-APP-18/003's fix moved a constant (420 -> 520); this round removed the
+    // constant from the decision. The contract below is what makes the class
+    // impossible rather than merely absent, so each clause has a mutant.
+    const est = /const FLOAT_H_FALLBACK = (\d+);/.exec(src);
     assert(est && Number(est[1]) >= 520,
-      `FLOAT_H_EST must be >= 520, the tallest floating card measured (515px at 912x1368; RED-APP-18/003) — got ${est?.[1]}`);
+      `FLOAT_H_FALLBACK must be >= 520, the tallest floating card measured at the default type scale (515px at 912x1368; RED-APP-18/003) — got ${est?.[1]}`);
+    // 1. The predicates take the measured card; their bodies use the ARGUMENT,
+    //    with the constant only as the >0 fallback.
+    assert(/export const tourFloatingFits = \([\s\S]{0,400}?floatH: number = FLOAT_H_FALLBACK,\s*floatW: number = FLOAT_W_FALLBACK,\s*\): boolean => \{\s*const h = floatH > 0 \? floatH : FLOAT_H_FALLBACK;\s*const w = floatW > 0 \? floatW : FLOAT_W_FALLBACK;/.test(src),
+      'STRUCT-APP-19/001: tourFloatingFits must take the measured floating card and use it, falling back to the constant only when it is not measured yet');
+    assert(/\(vh - \(r\.top \+ r\.height\) - GAP\) >= h\s*\|\| \(r\.top - GAP\) >= h\s*\|\| \(vw - \(r\.left \+ r\.width\) - GAP\) >= w\s*\|\| \(r\.left - GAP\) >= w;/.test(src),
+      'STRUCT-APP-19/001: all four sides of the fit test must compare against the measured height/width, not the constants');
+    // 2. The probe exists, is the FLOATING variant at the FLOATING width, and is
+    //    off-screen + inert + aria-hidden (never visible, never focusable).
+    assert(/ref=\{floatProbeRef\}\s*aria-hidden="true"\s*inert\s*data-tour-float-probe=""\s*className=\{cardClass\(false, false\)\}\s*style=\{\{ top: 0, left: -10000, width: tourFloatingCardWidth\(vw\), visibility: 'hidden' \}\}\s*>\s*\{cardContents\(false, false, true\)\}/.test(src),
+      'STRUCT-APP-19/001: the measuring probe must render the FLOATING variant (cardClass(false,false) + cardContents(false,false,true)) at tourFloatingCardWidth(vw), off-screen, inert and aria-hidden');
+    // 3. The measurement reads the PROBE (never the rendered card) and re-reads
+    //    when the probe's box changes — a font swap or a browser minimum font
+    //    size is exactly what no dependency list can name.
+    assert(/const el = floatProbeRef\.current;[\s\S]{0,400}?const next = el\.offsetHeight;[\s\S]{0,300}?const ro = new ResizeObserver\(read\);\s*ro\.observe\(el\);/.test(src),
+      'STRUCT-APP-19/001: floatH must be measured from the probe and kept current with a ResizeObserver');
+    // 4. ONE definition of the card chrome and contents, so the measured card and
+    //    the placed card cannot drift apart (the defect, one level up).
+    assert((src.match(/const cardClass = \(/g) || []).length === 1
+      && (src.match(/const cardContents = \(/g) || []).length === 1
+      && (src.match(/text-2xl/g) || []).length === 1
+      && (src.match(/'p-4 gap-2' : 'p-6 sm:p-7 gap-3\.5'/g) || []).length === 1,
+      'STRUCT-APP-19/001: the card chrome and contents must be defined ONCE and shared by the probe and the rendered card — a second copy of the type scale is a second thing to keep in sync');
   };
   contract(tour);
   const mustThrow = (label: string, mutant: string) => {
@@ -3795,8 +3831,25 @@ function testWalkthroughInputContracts() {
   mustThrow('ownership guard after the advance branch', tour.replace('      if (tourKeyOwnedByTarget(e.target, e.key)) return;\n      if (e.key === \'ArrowRight\' || e.key === \'Enter\') setI((n) => Math.min(n + 1, steps.length - 1));\n', '      if (e.key === \'ArrowRight\' || e.key === \'Enter\') setI((n) => Math.min(n + 1, steps.length - 1));\n      if (tourKeyOwnedByTarget(e.target, e.key)) return;\n'));
   mustThrow('sliders dropped from the arrow owners', tour.replace("'textarea, select, [contenteditable]:not([contenteditable=\"false\"]), [role=\"slider\"], [role=\"textbox\"], '", "'textarea, select, [contenteditable]:not([contenteditable=\"false\"]), [role=\"textbox\"], '"));
   mustThrow('buttons own the arrows (the tour could no longer be stepped from its own focused Next)', tour.replace("+ '[role=\"tab\"], [role=\"tablist\"], [role=\"menuitem\"], [role=\"menu\"], [role=\"tree\"], [role=\"grid\"]';", "+ '[role=\"tab\"], [role=\"tablist\"], [role=\"menuitem\"], [role=\"menu\"], [role=\"tree\"], [role=\"grid\"], button';"));
-  mustThrow('estimate back at 420 (the shipped RED-APP-18/003 defect)', tour.replace('const FLOAT_H_EST = 520;', 'const FLOAT_H_EST = 420;'));
-  console.log('✓ RED-APP-18: tour keys bail when the focused element owns them (Escape still closes); FLOAT_H_EST >= 520; 5 mutants rejected');
+  mustThrow('fallback back at 420 (the shipped RED-APP-18/003 defect)', tour.replace('const FLOAT_H_FALLBACK = 520;', 'const FLOAT_H_FALLBACK = 420;'));
+  // ── STRUCT-APP-19/001 mutants: every way back to an estimate-driven family ──
+  mustThrow('the fit test ignores its measured height and reads the constant',
+    tour.replace('const h = floatH > 0 ? floatH : FLOAT_H_FALLBACK;', 'const h = FLOAT_H_FALLBACK;'));
+  mustThrow('the probe is rendered in the SHEET (dense) variant, so it measures the wrong card',
+    tour.replace('{cardContents(false, false, true)}', '{cardContents(dense, false, true)}'));
+  mustThrow('the probe carries the live region too (a screen reader hears every step twice)',
+    tour.replace('{cardContents(false, false, true)}', '{cardContents(false, false, false)}'));
+  mustThrow('the probe is rendered at the RENDERED width instead of the floating width',
+    tour.replace("style={{ top: 0, left: -10000, width: tourFloatingCardWidth(vw), visibility: 'hidden' }}", "style={{ top: 0, left: -10000, width: CARD_W, visibility: 'hidden' }}"));
+  mustThrow('the probe is visible and hit-testable (it would sit on the page as a second card)',
+    tour.replace('className={cardClass(false, false)}', 'className={cardClass(false, true)}'));
+  mustThrow('the probe is left in the tab order and the accessibility tree',
+    tour.replace('        aria-hidden="true"\n        inert\n', '        aria-hidden="true"\n'));
+  mustThrow('the measurement reads the RENDERED card instead of the probe',
+    tour.replace('const el = floatProbeRef.current;', 'const el = cardRef.current;'));
+  mustThrow('the measurement stops tracking the probe (a late font swap or minimum-font-size never lands)',
+    tour.replace('    const ro = new ResizeObserver(read);\n    ro.observe(el);\n', ''));
+  console.log('✓ RED-APP-18 + STRUCT-APP-19/001: tour keys bail when the focused element owns them (Escape still closes); the layout family is chosen from a MEASURED floating card with the constant only as a >= 520 fallback; 13 mutants rejected here + 3 call-site mutants in the H5/CR contract above');
 }
 
 // ── RED-MATH-18/001: "Reset View" must land on the default pose and STAY there ──
