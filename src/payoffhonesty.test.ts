@@ -1980,7 +1980,38 @@ testPlottingSkipsIsolatedDiamondsOnContinuum();
 testContinuumSettledPointAlwaysOnDrawnGlyph();
 testSimLogNamesContinuumOnRealRuns();
 testAppTsxUsesContinuumAwareLogAndDisplay();
+// RED-MATH-19/002: the grounding payload's continuum branch interpolated raw solver floats
+// ("y=0.9999999999999987") where the panel/log/tieProse print fmtProb's sub-resolution phrase.
+// The model echoes payload numbers verbatim, so the payload is a fourth rendering and must agree.
+function testPayloadCoordinatesUseFmtProb() {
+  const tokensOf = (payload: string) => [...payload.matchAll(/\b([xy])=([^,)]+)/g)].map((m) => m[2].trim());
+  const rawFloat = (tok: string) => /^-?\d*\.\d{4,}(e-?\d+)?$/.test(tok) || /e-\d+$/.test(tok);
+  // Known positive from the red's 2M-game sweep: a continuum whose mixed point sits within
+  // float noise of y=1 — fmtProb says "more than 0.999"; the raw float has 16 digits.
+  const g: GamePayoffs = { a11: -70.328, a12: 80.795, a21: -70.328, a22: 91.429, b11: -19.676, b12: 34.718, b21: -36.633, b22: -85.653 };
+  const payload = buildGroundingPayload(g);
+  const toks = tokensOf(payload);
+  ok(toks.length >= 2, `fixture: the continuum payload must state at least one (x, y) point; payload="${payload.slice(0, 300)}"`);
+  ok(toks.includes('more than 0.999'),
+    `fixture: the near-boundary coordinate (y=0.9999999999999987) must print exactly "more than 0.999"; tokens=${JSON.stringify(toks)}`);
+  ok(!toks.some(rawFloat), `fixture: no raw solver float may reach the payload; tokens=${JSON.stringify(toks)}`);
+  // Sweep: 4000 random 3dp games — every coordinate token the payload states is fmtProb-shaped.
+  const rnd = mk(0x19f0);
+  let games = 0, continua = 0;
+  for (let i = 0; i < 4000; i++) {
+    const v = () => Math.round((rnd() * 2 - 1) * 100 * 1000) / 1000;
+    const rg: GamePayoffs = { a11: v(), a12: v(), a21: v(), a22: v(), b11: v(), b12: v(), b21: v(), b22: v() };
+    const pl = buildGroundingPayload(rg); games++;
+    if (/continuum/i.test(pl)) continua++;
+    const bad = tokensOf(pl).filter(rawFloat);
+    ok(bad.length === 0, `payload states a raw coordinate ${JSON.stringify(bad)} for game ${JSON.stringify(rg)}`);
+  }
+  ok(games === 4000, 'sweep ran');
+  console.log(`  RED-MATH-19/002 payload coordinates: fixture + ${games} games (${continua} continuum payloads) fmtProb-shaped`);
+}
+
 testSaveFormReconciledWithBoard();
+testPayloadCoordinatesUseFmtProb();
 testStrayPointsNotOfferedAsContinuumRepresentatives();
 testValidateReportAcceptsCompliantContinuumClaims();
 testClaimOnContinuumUsesCoordTolerance();

@@ -3714,6 +3714,44 @@ function testWalkthroughInputContracts() {
   console.log('✓ Walkthrough input contracts: pointer origin is a root-level gate, header controls own their vertical band, sheet placement tracks real layout, and both JS scroll paths honor reduced motion');
 }
 
+// ── RED-MATH-19/001: the pinch writer cancels an in-flight glide, like Reset View ──
+// The tour glide (moveCamera) re-relayouts the camera every frame; a two-finger
+// pinch that lands mid-glide wrote its eye once and was overwritten 16 ms later,
+// so the gesture was a silent no-op for the whole glide. Same family as
+// RED-MATH-18/001 (#170 fixed Reset View only). Contract: onTouchStart cancels
+// the glide BEFORE it records the pinch start; fixture = that call removed.
+{
+  const pv = readFileForContract('src/components/PlotlyView.tsx', 'utf8');
+  const pinchWriterContract = (src: string): boolean => {
+    const start = src.indexOf('const onTouchStart = (e: Event) => {');
+    if (start === -1) return false;
+    const body = src.slice(start, src.indexOf('const onTouchMove', start));
+    const cancel = body.indexOf('cancelCameraGlide();');
+    const hold = body.indexOf('holdSpinRef.current();');
+    const record = body.indexOf('pinchStartDist.current = dist(te.touches);');
+    // the ref must be kept current from render scope, or the hold reads first-render state
+    // CodeRabbit on #177: published from a layout effect, never during render.
+    const refKept = /useLayoutEffect\(\(\) => \{ holdSpinRef\.current = holdSpinForCameraControl; \}\);/.test(src)
+      && !/^\s*holdSpinRef\.current = holdSpinForCameraControl;\s*$/m.test(src);
+    // CodeRabbit on #177: the COMPLETE ordering — cancel the glide first (it would otherwise
+    // overwrite the held camera), then hold the spin, then record the pinch start.
+    return cancel !== -1 && hold !== -1 && record !== -1 && cancel < hold && hold < record && refKept;
+  };
+  assert(pinchWriterContract(pv), 'RED-MATH-19/001: onTouchStart must cancel the glide AND hold the spin (via the render-kept ref) before recording the pinch start');
+  const noCancel = pv.replace(/\n\s*cancelCameraGlide\(\);\n(\s*holdSpinRef\.current\(\);)/, '\n$1');
+  assert(noCancel !== pv, 'RED-MATH-19/001 fixture: removing the cancel must change the source');
+  assert(!pinchWriterContract(noCancel), 'RED-MATH-19/001 fixture: the pinch writer without the glide cancel must be flagged');
+  const noHold = pv.replace(/\n\s*holdSpinRef\.current\(\);\n(\s*pinchStartDist\.current = dist\(te\.touches\);)/, '\n$1');
+  assert(noHold !== pv, 'RED-MATH-19/001 fixture: removing the hold must change the source');
+  assert(!pinchWriterContract(noHold), 'RED-MATH-19/001 fixture: the pinch writer without the spin hold must be flagged (the spin resumed at its own radius and erased the pinch)');
+  const swapped = pv.replace(/(\n\s*)cancelCameraGlide\(\);(\n\s*)holdSpinRef\.current\(\);/, '$1holdSpinRef.current();$2cancelCameraGlide();');
+  assert(swapped !== pv, 'RED-MATH-19/001 fixture: swapping cancel and hold must change the source');
+  assert(!pinchWriterContract(swapped), 'RED-MATH-19/001 fixture: holding the spin BEFORE cancelling the glide must be flagged (the glide would overwrite the held camera)');
+  const staleRef = pv.replace('  useLayoutEffect(() => { holdSpinRef.current = holdSpinForCameraControl; });\n', '');
+  assert(staleRef !== pv, 'RED-MATH-19/001 fixture: removing the ref assignment must change the source');
+  assert(!pinchWriterContract(staleRef), 'RED-MATH-19/001 fixture: a hold ref that is never re-assigned (stale closure) must be flagged');
+}
+
 // ── RED-MATH-18/001: "Reset View" must land on the default pose and STAY there ──
 // Director probe on main 498c7d0: the click relayouted to DEFAULT_CAMERA, and the
 // next frame moved the camera off it again — the idle spin (on from the first
