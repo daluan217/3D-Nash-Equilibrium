@@ -916,6 +916,17 @@ export default function App() {
       const res = await promise;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // RED-DESKTOP-19/001: this was the one account-scoped route that never
+        // told the shared dead-session helper about its 401, so a session the
+        // server had already killed kept the header claiming "signed in" while
+        // the dialog said "Sign in to move…". The offer's token IS the login
+        // token, so the helper clears the same session the other routes do;
+        // the offer closes with it (it is re-offered at the next sign-in).
+        if (handleDeadSessionResponse(res, localGamesOffer.token)) {
+          setLocalGamesOffer(null);
+          setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);
+          return;
+        }
         // Whatever the server said, the user must hear that nothing was lost
         // (RED-DESKTOP-12/001: a generic server message reached the dialog
         // verbatim and the reassurance below was never shown).

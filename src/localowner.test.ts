@@ -971,5 +971,41 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     !(!/setDeadSession\(null\)/.test(saveNameCheckUngated)));
 }
 
+// ── RED-DESKTOP-19/001 — every account-scoped request in App.tsx reports its 401 to the shared
+// dead-session helper. The instance was adoptLocalGames (POST /api/games/adopt-local): the header
+// kept "@user / Log out" for a session the server had killed. The INVARIANT is the family: any
+// request that sends an Authorization header must, within its own handler, call
+// handleDeadSessionResponse — except the /api/auth/me effect, which IS the session check and
+// clears the token itself (updateAuthToken(null) in its catch).
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const familyCheck = (src: string): { sites: number; unreported: string[] } => {
+    // A site is a request that carries the token; the `authHeaders` DEFINITION (`... } : {}`) is not one.
+    const re = /(?:'Authorization': `Bearer \$\{[^}]+\}` \}(?! : \{\})|\.\.\.authHeaders\(\)|headers: authHeaders\(\))/g;
+    const unreported: string[] = []; let m: RegExpExecArray | null; let sites = 0;
+    while ((m = re.exec(src))) {
+      sites++;
+      // The window is the rest of the ENCLOSING handler: up to the next top-level
+      // declaration inside App (2-space `const`/`function`/`useEffect`), so a helper call in
+      // the NEXT handler cannot vouch for this one.
+      const next = src.slice(m.index).search(/\n  (?:const|function|useEffect)\b/);
+      const window = src.slice(m.index, next === -1 ? undefined : m.index + next);
+      const isMeEffect = /\/api\/auth\/me/.test(src.slice(Math.max(0, m.index - 300), m.index));
+      if (isMeEffect) { if (!/updateAuthToken\(null\)/.test(window)) unreported.push(`auth/me effect @${m.index}`); continue; }
+      if (!/handleDeadSessionResponse\(res, [^)]+\)/.test(window)) unreported.push(`@${m.index}: ${src.slice(m.index, m.index + 60).replace(/\s+/g, ' ')}`);
+    }
+    return { sites, unreported };
+  };
+  const real = familyCheck(app);
+  check('App.tsx: at least 6 account-scoped request sites are found (the family, not one instance)', real.sites >= 6, `sites=${real.sites}`);
+  check('App.tsx: every account-scoped request reports its 401 to handleDeadSessionResponse (adoptLocalGames included)', real.unreported.length === 0, real.unreported.join(' | '));
+  check('adoptLocalGames closes the offer once the helper cleared the dead session',
+    /handleDeadSessionResponse\(res, localGamesOffer\.token\)\) \{\s*setLocalGamesOffer\(null\);/.test(app));
+  // Known-positive: the exact shipped defect — adoptLocalGames without the helper call.
+  const mutant = app.replace(/        if \(handleDeadSessionResponse\(res, localGamesOffer\.token\)\) \{[\s\S]*?\n        \}\n/, '');
+  check('fixture: removing adoptLocalGames\'s helper call actually landed', mutant !== app);
+  check('fixture: the unfixed adoptLocalGames is flagged by the family check', familyCheck(mutant).unreported.length === 1, familyCheck(mutant).unreported.join(' | '));
+}
+
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
 console.log(`✓ local owner: ${sites.length} resolver sites — game routes fall back to the device owner, account deletion and /auth/me keep the strict check, provisioning and adoption are desktop-only, adoption re-parents`);

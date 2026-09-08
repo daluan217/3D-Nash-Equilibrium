@@ -103,11 +103,22 @@ jobs:
           DMG_PATH="${dmgs[0]}"
 
           VERSION="$(node -p "require('./package.json').version")"
-          echo "Uploading '$DMG_PATH' (v$VERSION) -> gs://$BUCKET/Nash Equilibrium Simulator.dmg"
+
+          # RED-DESKTOP-19/002: the DMG and the manifest live at FIXED object names and the
+          # installed app only ever compares version strings, so publishing a second build
+          # under an unchanged version silently overwrites the first and no installed copy
+          # of it will ever be offered the update (0.0.193 shipped twice on 2026-09-08).
+          # Refuse to republish a version that is already live; the fix is a bump.
+          PUBLISHED="$(gcloud storage cat "gs://$BUCKET/app-version.json" 2>/dev/null | node -p "try{JSON.parse(require('fs').readFileSync(0,'utf8')).version||''}catch{''}")"
+          if [ -n "$PUBLISHED" ] && [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "::error::version $VERSION is already published (app-version.json); bump package.json before shipping another desktop build" >&2
+            exit 1
+          fi
+          echo "Uploading '$DMG_PATH' (v$VERSION, build ${GITHUB_SHA::7}) -> gs://$BUCKET/Nash Equilibrium Simulator.dmg"
 
           gcloud storage cp "$DMG_PATH" "gs://$BUCKET/Nash Equilibrium Simulator.dmg" \
             --cache-control="no-cache, max-age=0"
 
-          printf '{"version":"%s"}' "$VERSION" > app-version.json
+          printf '{"version":"%s","build":"%s"}' "$VERSION" "$GITHUB_SHA" > app-version.json
           gcloud storage cp app-version.json "gs://$BUCKET/app-version.json" \
             --cache-control="no-store"

@@ -207,6 +207,27 @@ if (unpinnedCheckout('on:\n  push:\n    branches: [main]\njobs:\n  a:\n    steps
   fail('a push-triggered workflow was flagged; only workflow_run resets GITHUB_SHA');
 }
 
+/* ---------------------------------------------------------------- check 5
+ * RED-DESKTOP-19/002: the DMG job refuses to republish a version that is already
+ * live (fixed GCS object names + a version-string-only update check mean a
+ * second build under one version is invisible to every installed copy of the
+ * first), and the manifest records the build sha.
+ */
+function republishGuarded(yml: string): boolean {
+  return /PUBLISHED=.*app-version\.json/.test(yml)
+    && /\[ "\$PUBLISHED" = "\$VERSION" \][\s\S]{0,400}exit 1/.test(yml)
+    && /"build":"%s"[\s\S]{0,80}"\$GITHUB_SHA"/.test(yml);
+}
+{
+  const yml = read('release-desktop.yml');
+  if (!republishGuarded(yml)) fail('release-desktop.yml must refuse to republish an already-published version and write the build sha into app-version.json (RED-DESKTOP-19/002)');
+  const unguarded = yml.replace(/\n\s*if \[ -n "\$PUBLISHED" \][\s\S]*?exit 1\n\s*fi\n/, '\n');
+  if (unguarded === yml) fail('known-positive fixture for the republish guard did not land (the guard text moved)');
+  if (republishGuarded(unguarded)) fail('known-positive fixture "release-desktop without the republish guard" was NOT flagged');
+  const noBuild = yml.replace('"build":"%s"', '');
+  if (republishGuarded(noBuild)) fail('known-positive fixture "manifest without the build sha" was NOT flagged');
+}
+
 console.log(
   `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on Deploy site's merged-head check gate (no Test rerun on main), workflow_run triggers filtered to main, `
   + `${MUST_FLAG.length} known-positive fixtures flagged, 2 controls clean`,
