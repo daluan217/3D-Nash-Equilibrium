@@ -448,9 +448,29 @@ export function actorNounsOk(sc: {
  * description? A row can fail this while being a perfectly good, honest,
  * claim-free story — it is a colourability screen, not a truthfulness one.
  *
- * Uses `highlightWouldMatch`, the SAME predicate `actorNounsOk` uses, so this
- * can never disagree with what the real highlighter (`ColorCoded.tsx`) would
- * actually do with the row.
+ * Uses `highlightWouldMatch`, the SAME predicate `actorNounsOk` uses, so it
+ * cannot disagree with the real highlighter about whether a given TERM matches.
+ *
+ * IT IS NOT, HOWEVER, WHAT THE RENDERER WILL PAINT, and this comment used to
+ * claim it was ("can never disagree with what the real highlighter would
+ * actually do with the row"). The renderer does not take the terms as authored:
+ * it takes `colorTermsFor(...)` / `regenPreviewColorTerms(...)`, whose last step
+ * is `dropAmbiguous`, deleting any term that appears on BOTH players' lists so a
+ * shared action is never painted as one player's. This predicate has no such
+ * step, so on a scenario that gives both players the same option-label pair it
+ * says "colourable" and the renderer paints nothing: measured 515 of 2,442
+ * shipped rows (21.09%) on the report audience, 244 (9.99%) on the regenerate
+ * one (STRUCT-CLOUD-19/002; `src/scenariobank.test.ts` pins both numbers so the
+ * claim cannot be quietly re-made).
+ *
+ * That is not a fault in the artifact — 431 of those 515 are genuine ambiguity,
+ * where NOT colouring is the correct rendering — but it does mean this function
+ * answers the AUTHORING question ("did the story give each player a term at
+ * all?") and not the rendering one. The rendering question is
+ * `scenarioRenderability` / `scenarioIsAttributable` in
+ * `src/utils/scenarioRenderability.ts`, which asks the renderer's own builders
+ * rather than rebuilding a third idea of what gets coloured, and it is what the
+ * serving path screens on.
  */
 export function scenarioIsColourable(sc: {
   actorA?: unknown; actorB?: unknown; description?: string | null;

@@ -22,11 +22,13 @@ import dotenv from "dotenv";
 // first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE, hasEquilibriumContinuum } from "./src/utils/gameEngine";
 import { tieProse, tieProseFull } from "./src/utils/tieProse";
-import { validateReport, validateScenario, validateProseClaims, validateProseDirections, scenarioIsClaimFree } from "./src/utils/nashValidator";
+import { validateReport, validateScenario, validateProseClaims, validateProseDirections } from "./src/utils/nashValidator";
 import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
 import { stripUnsafeText, clampGraphemeSafe } from "./src/utils/textSafety";
 import { cleanScenarioActorNouns } from "./src/utils/scenarioActorNouns";
+import type { ColourAudience } from "./src/utils/scenarioRenderability";
+import { screenScenario, type ScreenOptions } from "./src/utils/scenarioScreen";
 import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from "./src/utils/fetchTimeout";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
@@ -337,16 +339,45 @@ async function inventScreenedScenario(
   const MIN_DRAW_MS = 2_000;
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
-  const storyOk = (sc: SuggestedScenario): boolean => {
+  /**
+   * WHICH SURFACE WILL RENDER WHAT THIS RETURNS. `actorNouns` already separates
+   * the two callers exactly — `/api/report` passes false and its card colours
+   * with the four labels alone, `/api/scenario/regenerate` passes true and its
+   * preview passes the nouns through — but the coupling was accidental, so the
+   * audience is named here rather than re-derived at the one place that needs
+   * it. STRUCT-CLOUD-19/001.
+   */
+  const screenOptions: ScreenOptions = {
     // Actor declarations are a regenerate-only response contract. The full
     // report schema deliberately remains unchanged, so its existing gate must
     // not start demanding fields it can never receive.
-    if (!validateScenario(sc, payoffs, { actorNouns }).ok) return false;
-    const claimFree = scenarioIsClaimFree(sc);
-    if (!claimFree.ok) { onDrop?.(claimFree.reason); return false; }
-    if (avoid && isSameStory(sc, avoid)) { onDrop?.('regen-same-story'); return false; }
-    return process.env.NASH_DIRECTION_CHECKS !== '1'
-      || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0;
+    actorNouns,
+    /**
+     * WHICH SURFACE WILL RENDER WHAT THIS RETURNS. `actorNouns` already
+     * separates the two callers exactly — `/api/report` passes false and its
+     * card colours with the four labels alone, `/api/scenario/regenerate`
+     * passes true and its preview passes the nouns through — but the coupling
+     * was accidental, so the audience is named here rather than re-derived
+     * where it is needed. STRUCT-CLOUD-19/001.
+     */
+    audience: (actorNouns ? 'regen-preview' : 'report-card') as ColourAudience,
+    avoid,
+    directionChecks: process.env.NASH_DIRECTION_CHECKS === '1',
+  };
+  /**
+   * EVERY REJECTION REPORTS A REASON, and there is exactly one place that
+   * decides. Two of the screens used to drop a draw silently (`validateScenario`
+   * and the direction checks), so the production log `[report] rung-3 scenario
+   * dropped: …` reported three of five reasons and the reroll budget could not
+   * be tuned against the two it never saw. The screens themselves now live in
+   * `SCENARIO_SCREENS` (`src/utils/scenarioScreen.ts`), where each one is
+   * enumerable, unit-testable and required to carry its fixtures and its reach
+   * number — none of which a closure in this file could be.
+   */
+  const screen = (sc: SuggestedScenario): boolean => {
+    const verdict = screenScenario(sc, payoffs, screenOptions);
+    if (!verdict.ok) onDrop?.(verdict.reason ?? verdict.screen ?? 'validation-failed');
+    return verdict.ok;
   };
 
   // BLUE-CANCEL-12: one AbortController per ladder invocation, combined with
@@ -395,7 +426,7 @@ async function inventScreenedScenario(
         gateRerollsUsed++;
         continue;
       }
-      if (!gateOn || storyOk(draw.scenario)) {
+      if (!gateOn || screen(draw.scenario)) {
         return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
       }
       // GATE-DROPPED: a real draw came back and the screen rejected it. This
@@ -427,11 +458,28 @@ async function inventScreenedScenario(
     // desktop, pass nothing so `bankScenario`/`bankScenarioAvoiding` keep
     // using the per-launch singleton, exactly as before this fix.
     const hostedFallbackSeen = process.env.IS_ELECTRON === "true" ? undefined : new Set<string>();
-    const fallback = avoid
-      ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
-      : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
-    if (fallback && scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || storyOk(fallback))) {
-      return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
+    /**
+     * THE FALLBACK GETS MORE THAN ONE ROW. It used to draw exactly one and give
+     * up if the gates rejected it, which was survivable only because no gate
+     * could reject a bank row: the artifact is re-screened against every gate
+     * in `src/scenariobank.test.ts`. STRUCT-CLOUD-19/001 adds a screen the
+     * artifact is NOT re-screened against and cannot be — the `/api/report`
+     * path strips the actor nouns a row's colourability may depend on, so 84 of
+     * 2,442 rows (3.44%) are unattributable on THAT path while being perfectly
+     * good on the regenerate one. A single attempt would have turned that 3.44%
+     * into 3.44% of fallbacks returning no story at all. Each call draws a
+     * DIFFERENT row (the `seen` set above), so the attempts are independent;
+     * the cap keeps a pathological artifact from spinning the request.
+     */
+    const FALLBACK_ATTEMPTS = 4;
+    for (let attempt = 0; attempt < FALLBACK_ATTEMPTS; attempt++) {
+      const fallback = avoid
+        ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
+        : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
+      if (!fallback) break;
+      if (scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || screen(fallback))) {
+        return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
+      }
     }
     return { scenario: null, failure: exhaustionFailure };
   } finally {
@@ -560,7 +608,6 @@ import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair, cleanUserColorTerms } from "./src/utils/colorTerms";
 import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
 import { bankAvailable, bankScenario, bankDomainFor, bankScenarioAvoiding } from "./src/utils/bankSource";
-import { isSameStory } from "./src/utils/scenarioRegen";
 
 // Load environment variables from .env file
 dotenv.config();

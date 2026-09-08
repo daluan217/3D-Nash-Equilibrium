@@ -14,7 +14,8 @@ import { scenarioIsClaimFree, validateScenario, validateProseDirections } from '
 import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, type BankEntry } from './utils/scenarioBank';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
 import { readFileSync } from 'node:fs';
-import type { GamePayoffs } from './types';
+import { scenarioRenderability } from './utils/scenarioRenderability';
+import type { GamePayoffs, SuggestedScenario } from './types';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -313,11 +314,37 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     check('hostedFallbackSeen must gate on IS_ELECTRON and hand HOSTED requests a FRESH Set',
       /process\.env\.IS_ELECTRON === "true"\s*\?\s*undefined\s*:\s*new Set<string>\(\)/.test(line),
       `got: ${JSON.stringify(line)}`);
-    const callSiteBlock = src.slice(idx, idx + 400);
+    /**
+     * The window used to be `idx + 400` characters. A fixed character budget is
+     * the same mistake as a fixed pixel threshold: STRUCT-CLOUD-19 added a
+     * comment inside the block and the two calls fell out of range, so a guard
+     * that was still perfectly true reported a failure. Delimit by the block's
+     * own STRUCTURAL end instead — the one `return { scenario: null, failure:
+     * exhaustionFailure }` that ends the fallback section — which cannot move
+     * without the fallback itself being rewritten.
+     */
+    const blockEnd = src.indexOf('return { scenario: null, failure: exhaustionFailure };', idx);
+    check('the bank-fallback block ends where this guard thinks it does', blockEnd > idx);
+    const callSiteBlock = src.slice(idx, blockEnd);
     check('server.ts must actually PASS hostedFallbackSeen into both bank calls at the fallback call site, not just define it',
       /bankScenarioAvoiding\(payoffs, fallbackDomain, avoid\.name, hostedFallbackSeen\)/.test(callSiteBlock)
       && /bankScenario\(payoffs, fallbackDomain, hostedFallbackSeen\)/.test(callSiteBlock),
       callSiteBlock);
+    /**
+     * STRUCT-CLOUD-19/001: the fallback draws MORE THAN ONE row. It used to draw
+     * exactly one and give up if a gate rejected it, which was survivable only
+     * while no gate could reject a bank row. The `attributable` screen can — 84
+     * of the shipped rows (3.44%) are unattributable on the `/api/report` path,
+     * where the actor nouns they depend on are stripped — so a single attempt
+     * would turn that rate straight into fallbacks that return no story at all.
+     * Each call draws a DIFFERENT row (`bankScenario` records into `seen`
+     * BEFORE returning, precisely so a rejected row does not come back), so the
+     * attempts are independent. Mutation: unroll the loop and this fails.
+     */
+    check('the bank fallback retries with a different row instead of giving up on the first',
+      /for \(let attempt = 0; attempt < FALLBACK_ATTEMPTS; attempt\+\+\)/.test(callSiteBlock)
+      && /const FALLBACK_ATTEMPTS = [2-9]/.test(callSiteBlock),
+      callSiteBlock.slice(0, 200));
   }
 }
 
@@ -484,6 +511,50 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const colourable = screenColourableRows(allBankRows());
   check('every shipped row has a colourable term for BOTH players', colourable.bad === 0,
     `${colourable.bad} of ${colourable.scanned} shipped rows have no colourable term for at least one player — the artifact is stale, re-run the RED-DESKTOP-9/001 extraction+drop pass. First: ${colourable.firstBad}`);
+
+  /**
+   * …AND THAT CHECK IS NOT THE RENDERING GUARANTEE, which is what its own
+   * predicate's comment used to claim (STRUCT-CLOUD-19/002). `scenarioIsColourable`
+   * asks whether the story gave each player a term AT ALL; the renderer paints
+   * `colorTermsFor(...)`, whose last step `dropAmbiguous` deletes every term
+   * that appears on BOTH players' lists — so on a row that gives both players
+   * the same option-label pair the screen says yes and the page paints nothing.
+   *
+   * The gap is pinned here, in both directions, so that (a) nobody re-asserts
+   * the equivalence, and (b) a change to `dropAmbiguous` or to either term
+   * builder shows up as a number moving rather than as silent colour loss. The
+   * numbers are exact counts over the shipped artifact, not thresholds.
+   *
+   * 431 of the 515 are genuine AMBIGUITY — both players hold the same label, so
+   * no highlighter could attribute a mention of it and not colouring is correct.
+   * The other 84 are the real defect and are screened out of the serving path by
+   * `scenarioIsAttributable`; `src/scenarioscreen.contract.test.ts` pins that 84
+   * and asserts it falls to 0 on the audience that keeps the actor nouns.
+   */
+  {
+    const rows = allBankRows();
+    const disagree = (audience: 'report-card' | 'regen-preview'): number => {
+      let n = 0;
+      for (const e of rows) {
+        if (!scenarioIsColourable(e.s)) continue;
+        const r = scenarioRenderability(e.s as SuggestedScenario, audience);
+        if (!(r.a && r.b)) n++;
+      }
+      return n;
+    };
+    const report = disagree('report-card');
+    const regen = disagree('regen-preview');
+    check('the authoring screen and the renderer disagree on exactly the pinned number of report-card rows',
+      report === 515,
+      `${report} of ${rows.length} (pinned 515) — scenarioIsColourable and colorTermsFor have moved apart; `
+      + 'if this is intended, re-measure with _gen/cloud19_colour.ts and update the number AND the comments '
+      + 'in scenarioBank.ts and scenarioRenderability.ts that quote it');
+    check('...and on exactly the pinned number of regenerate-audience rows', regen === 244,
+      `${regen} of ${rows.length} (pinned 244)`);
+    check('the disagreement is not vacuous: the renderer paints strictly fewer rows than the screen admits',
+      report > 0 && report > regen,
+      `report=${report} regen=${regen}`);
+  }
 
   /**
    * KNOWN-POSITIVE for scenarioIsColourable itself: a row whose labels the
