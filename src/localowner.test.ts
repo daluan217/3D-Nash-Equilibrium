@@ -1000,7 +1000,15 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   check('App.tsx: at least 6 account-scoped request sites are found (the family, not one instance)', real.sites >= 6, `sites=${real.sites}`);
   check('App.tsx: every account-scoped request reports its 401 to handleDeadSessionResponse (adoptLocalGames included)', real.unreported.length === 0, real.unreported.join(' | '));
   check('adoptLocalGames closes ONLY the offer that still carries this request\'s token (a stale 401 after a re-login leaves the new offer alone)',
-    /const wasCurrent = authTokenRef\.current === requestToken;\s*if \(handleDeadSessionResponse\(res, requestToken\)\) \{\s*if \(wasCurrent\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);/.test(app));
+    /const wasCurrent = authTokenRef\.current === requestToken;\s*if \(handleDeadSessionResponse\(res, requestToken\)\) \{\s*if \(wasCurrent\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(prev => \[\.\.\.prev, 'Your session ended before the move\./.test(app));
+  // CodeRabbit (#176): the session-ended log line must sit INSIDE the same guard — a stale
+  // 401 must not append a false "session ended" message. Mutant: log moved out of the guard.
+  const logOutside = app.replace(
+    "            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));\n            setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);\n          }\n",
+    "            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));\n          }\n          setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);\n");
+  check('fixture: moving the session-ended log outside the wasCurrent guard actually landed', logOutside !== app);
+  check('fixture: a session-ended log outside the wasCurrent guard is rejected by the exact-shape check',
+    !/if \(wasCurrent\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(/.test(logOutside));
   // Known-positive: the exact shipped defect — adoptLocalGames without the helper call.
   const mutant = app.replace(/        if \(handleDeadSessionResponse\(res, requestToken\)\) \{[\s\S]*?\n        \}\n/, '');
   check('fixture: removing adoptLocalGames\'s helper call actually landed', mutant !== app);

@@ -29,6 +29,10 @@ on:
 # step is two GCS writes — the fixed-name DMG, then app-version.json — and a
 # cancel between them leaves a DMG newer than the manifest says. The
 # duplicate-version guard then makes the queued run refuse the same version.
+# Only the NEWEST pending run is retained (GitHub keeps one pending run per
+# group): a release that was overtaken while waiting is dropped on purpose —
+# the newer one builds the newer verified commit, and the older would have
+# been refused by the duplicate-version guard or shipped a stale build.
 concurrency:
   group: release-desktop
   cancel-in-progress: false
