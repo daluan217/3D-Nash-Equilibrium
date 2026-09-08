@@ -1,6 +1,20 @@
 @import "tailwindcss";
 
-@variant dark (&:where(.dark, .dark *));
+/* RED-APP-18/004 (a regression from #172): printing is the light surface.
+   Every `dark:` utility is INERT under print media by construction — the
+   variant itself carries `@media not print` — so paper never sees pale ink or
+   a dark flood, whatever class the element carries. (#172's print block
+   instead overrode `[class*="dark:text-"]` to slate-900: it keyed on the
+   PRESENCE of a dark variant, not on whether the light ink was already right
+   for paper, and turned Player B's blue black while Player A's red — which has
+   no dark variant — stayed red: half a colour-coded matrix.) */
+@custom-variant dark {
+  @media not print {
+    &:where(.dark, .dark *) {
+      @slot;
+    }
+  }
+}
 
 /* ════════════════════════════════════════════════════════════════════════
    Design tokens
@@ -310,10 +324,9 @@ input.no-native-spinner {
  */
 @media print {
   /* RED-APP-17/001: printing is a separate light surface. The `dark` class
-   * remains on <html> while the browser switches to print media, so neutralise
-   * every dark utility before it can put pale ink or a dark flood on paper.
-   * Attribute selectors cover all Tailwind dark variants without duplicating
-   * the generated palette (and apply in Chromium and WebKit). */
+   * remains on <html> while the browser switches to print media; the root
+   * palette below is the paper ground, and the dark VARIANT is inert under
+   * print (see the @custom-variant at the top of this file — RED-APP-18/004). */
   html,
   html.dark,
   html.dark body {
@@ -322,27 +335,9 @@ input.no-native-spinner {
     color: var(--color-slate-900) !important;
   }
 
-  html.dark [class*="dark:bg-"],
-  html.dark [class*="dark:hover:bg-"],
-  html.dark [class*="dark:disabled:bg-"],
-  html.dark [class*="dark:disabled:!bg-"] {
-    background-color: var(--color-white) !important;
-  }
-
-  html.dark [class*="dark:text-"],
-  html.dark [class*="dark:hover:text-"],
-  html.dark [class*="dark:disabled:text-"],
-  html.dark [class*="dark:disabled:!text-"] {
-    color: var(--color-slate-900) !important;
-  }
-
-  html.dark [class*="dark:border-"],
-  html.dark [class*="dark:hover:border-"],
-  html.dark [class*="dark:disabled:border-"],
-  html.dark [class*="dark:disabled:!border-"],
-  html.dark [class*="dark:focus-within:border-"] {
-    border-color: var(--color-slate-200) !important;
-  }
+  /* RED-APP-18/004: the `[class*="dark:…"]` family overrides that used to
+   * sit here are gone — the dark variant is inert under print (top of file),
+   * so every element prints with its light utilities exactly as designed. */
 
   /* The simulation progress panel uses darkMode's runtime class branch for
    * its stateful controls, so it has no `dark:` token for the family rules

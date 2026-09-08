@@ -835,8 +835,12 @@ export default function App() {
    */
   const saveFormBoardRef = useRef<string | null>(null);
   const boardKeyOf = (p: GamePayoffs) => JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22]);
-  const reconcileSaveFormWithBoard = () => {
+  const reconcileSaveFormWithBoard = (): boolean => {
     const key = boardKeyOf(payoffs);
+    // RED-REGEN-14/001: tell the caller whether a draft written for THIS
+    // board survived — its option labels belong to that draft and must
+    // survive with it (see the Save Preset click).
+    const kept = saveFormBoardRef.current === key;
     if (saveFormBoardRef.current !== null && saveFormBoardRef.current !== key) {
       setSaveName('');
       saveNameBaselineRef.current = '';
@@ -844,6 +848,7 @@ export default function App() {
       setSaveTerms({ a: [], b: [] });
     }
     saveFormBoardRef.current = key;
+    return kept;
   };
   const editNameBaselineRef = useRef('');
 
@@ -3103,7 +3108,7 @@ export default function App() {
     // RED-REGEN-11/001: a draw's own actor noun silently truncated by the
     // per-side cap must say so, same as a manual highlight already does —
     // `dropNote` is null on every draw that fit, which is the common case.
-    const dropNote = regenDroppedNote(kept.dropped);
+    const dropNote = regenDroppedNote(kept.dropped, kept.orphaned);
     const keptNote = key.kind === 'edit' ? REGEN_ANNOUNCE.keptEdit : REGEN_ANNOUNCE.keptSave;
     setRegen({
       status: 'idle', preview: null, error: null,
@@ -4860,16 +4865,30 @@ export default function App() {
                     setSaveError('');
                     // RED-REGEN-13/001: a draft written for another board must
                     // not be offered for this one (see saveFormBoardRef).
-                    reconcileSaveFormWithBoard();
+                    const draftKept = reconcileSaveFormWithBoard();
                     // Prefill from whatever the current game already calls its
                     // options, so saving a copy of a named game keeps the names.
                     // Read from scenarioForReport, not activeLabels, because the
                     // latter substitutes the literal "Row 1" and prefilling that
                     // would save a placeholder as if it were a real label.
-                    setSaveLabels({
-                      row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',
-                      col1: scenarioForReport?.col1 ?? '', col2: scenarioForReport?.col2 ?? '',
-                    });
+                    // RED-REGEN-14/001: NOT over a kept draft. The board is
+                    // keyed on its eight payoffs; a preset's identity is not
+                    // part of the key, so the same numbers re-typed by hand
+                    // keep the story while `scenarioForReport` (which needs
+                    // the selected preset to match) turns undefined — the old
+                    // unconditional prefill then blanked the four labels under
+                    // a story that still named those options, and the record
+                    // was saved that way. A kept draft keeps the labels it was
+                    // written with; only a fresh form (cleared, first open, or
+                    // no labels at all yet) takes the prefill.
+                    // CodeRabbit CLI: whitespace-only labels count as blank.
+                    const labelsBlank = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].every((l) => !l.trim());
+                    if (!draftKept || labelsBlank) {
+                      setSaveLabels({
+                        row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',
+                        col1: scenarioForReport?.col1 ?? '', col2: scenarioForReport?.col2 ?? '',
+                      });
+                    }
                     // A brand-new "Save Preset" click — a new save attempt,
                     // never a retry of whatever the dialog last submitted.
                     saveRequestIdRef.current = null;

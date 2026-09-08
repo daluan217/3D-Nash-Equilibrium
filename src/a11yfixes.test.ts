@@ -50,35 +50,20 @@ function assertDarkPrintPalette(source: string): void {
   assert(rootRule, '@media print must contain the html.dark root palette rule');
   assert(/color-scheme:\s*light\s*!important/.test(rootRule[2]),
     '@media print must force color-scheme: light in the html.dark root rule');
-  const variantFamilies = {
-    background: ['dark:bg-', 'dark:hover:bg-', 'dark:disabled:bg-', 'dark:disabled:!bg-'],
-    text: ['dark:text-', 'dark:hover:text-', 'dark:disabled:text-', 'dark:disabled:!text-'],
-    border: ['dark:border-', 'dark:hover:border-', 'dark:disabled:border-', 'dark:disabled:!border-', 'dark:focus-within:border-'],
-  } as const;
-  const assertFamilyRule = (prefix: string, property: string, expected: string): void => {
-    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
-    let matched = false;
-    for (const match of printBlock.matchAll(ruleRe)) {
-      if (!match[1].includes(`[class*="${prefix}"]`)) continue;
-      matched = true;
-      assert(new RegExp(`${property}:\\s*${expected}\\s*!important`).test(match[2]),
-        `@media print ${prefix} rule must set ${property} to ${expected}`);
-    }
-    assert(matched, `@media print must neutralise ${prefix}`);
-  };
-  for (const [kind, prefixes] of Object.entries(variantFamilies)) {
-    for (const prefix of prefixes) {
-      const property = kind === 'background' ? 'background-color' : kind === 'text' ? 'color' : 'border-color';
-      const expected = kind === 'background' ? 'var\\(--color-white\\)' : kind === 'text' ? 'var\\(--color-slate-900\\)' : 'var\\(--color-slate-200\\)';
-      assertFamilyRule(prefix, property, expected);
-    }
-  }
-  assert(/background-color:\s*var\(--color-white\)\s*!important/.test(printBlock),
-    '@media print must force a white paper background for dark backgrounds');
-  assert(/color:\s*var\(--color-slate-900\)\s*!important/.test(printBlock),
-    '@media print must force dark readable ink for dark text');
-  assert(/border-color:\s*var\(--color-slate-200\)\s*!important/.test(printBlock),
-    '@media print must force light borders on paper');
+  // RED-APP-18/004 (regression from #172): the `[class*="dark:…"]` family
+  // overrides keyed on the PRESENCE of a dark variant, not on the ink, and
+  // blanked Player B's blue on the dark-theme printout. They must be gone;
+  // the dark variant itself is defined inert under print media.
+  assert(!/html\.dark \[class\*="dark:/.test(printBlock),
+    '@media print must not carry [class*="dark:…"] family overrides (RED-APP-18/004: they turned Player B\'s print ink black)');
+  assert(/@custom-variant dark \{\s*@media not print \{\s*&:where\(\.dark, \.dark \*\) \{\s*@slot;?\s*\}\s*\}\s*\}/.test(source),
+    'the dark variant must be defined inside @media not print so every dark: utility is inert on paper (RED-APP-18/004)');
+  assert(!/@variant dark \(/.test(source) && !/@custom-variant dark \(/.test(source),
+    'no bare (media-unconditional) dark variant definition may remain (RED-APP-18/004)');
+  assert(/background-color:\s*var\(--color-white\)\s*!important/.test(rootRule[2]),
+    '@media print must force a white paper background in the html.dark root rule');
+  assert(/color:\s*var\(--color-slate-900\)\s*!important/.test(rootRule[2]),
+    '@media print must force dark readable ink in the html.dark root rule');
 }
 
 assertDarkPrintPalette(css);
@@ -142,42 +127,20 @@ assert.notStrictEqual(runtimePropertyMutant, css,
 assert.throws(() => assertRuntimeProgressPrintPalette(runtimePropertyMutant, app),
   /bg-slate-900.*background-color/, 'mutation-test: removing the runtime-dark background declaration must fail the named guard');
 
-const composedFixtures = [
-  ['background', ['dark:hover:bg-', 'dark:disabled:!bg-'], 'dark:hover:bg-slate-800 dark:disabled:!bg-slate-950'],
-  ['text', ['dark:hover:text-', 'dark:disabled:!text-'], 'dark:hover:text-slate-200 dark:disabled:!text-slate-100'],
-  ['border', ['dark:hover:border-', 'dark:disabled:!border-'], 'dark:hover:border-slate-700 dark:disabled:!border-slate-600'],
-] as const;
-for (const [kind, prefixes, classNames] of composedFixtures) {
-  assert(classNames.includes('dark:') && prefixes.every((prefix) => classNames.includes(prefix)),
-    `mutation fixture precondition: ${kind} composed dark utility tokens must be represented`);
-  const printBlock = extractPrintBlock(css);
-  for (const prefix of prefixes) assert(printBlock.includes(`[class*="${prefix}"]`),
-    `@media print must structurally cover composed ${kind} fixture ${prefix}`);
-}
-
-for (const [kind, suffix, message] of [
-  ['background', 'bg', /dark:bg-|background utility family/],
-  ['text', 'text', /dark:text-|text utility family/],
-  ['border', 'border', /dark:border-|border utility family/],
-] as const) {
-  const mutant = css.replace(new RegExp(`\\n  html\\.dark \\[[^\\n]*\"dark:${suffix}-\"\\],[\\s\\S]*?\\n  \\}`), '');
-  assert.notStrictEqual(mutant, css, `mutation-test precondition: the composed dark-${kind} rule must be removable`);
-  assert.throws(() => assertDarkPrintPalette(mutant), message,
-    `mutation-test: removing the composed dark-${kind} rule must fail the named guard`);
-}
-
-for (const [kind, suffix, property, message] of [
-  ['background', 'bg', 'background-color', /dark:bg-|background utility family/],
-  ['text', 'text', 'color', /dark:text-|text utility family/],
-  ['border', 'border', 'border-color', /dark:border-|border utility family/],
-] as const) {
-  const mutant = css.replace(
-    new RegExp(`(\\n  html\\.dark \\[[^\\n]*"dark:${suffix}-"\\],[\\s\\S]*?\\{[\\s\\S]*?)${property}:\\s*var\\([^;]+\\)\\s*!important;`),
-    '$1',
-  );
-  assert.notStrictEqual(mutant, css, `mutation-test precondition: the composed dark-${kind} declaration must be removable`);
-  assert.throws(() => assertDarkPrintPalette(mutant), message,
-    `mutation-test: removing the composed dark-${kind} declaration must fail the named guard`);
+// RED-APP-18/004 mutants — each must fail the named guard.
+{
+  const replanted = css.replace('  html.dark body {', '  html.dark [class*="dark:text-"] { color: var(--color-slate-900) !important; }\n  html.dark body {');
+  assert.notStrictEqual(replanted, css, 'mutation-test precondition: the #172 family override can be re-planted');
+  assert.throws(() => assertDarkPrintPalette(replanted), /family overrides/,
+    'mutation-test: re-planting a [class*="dark:text-"] print override must fail the named guard');
+  const unconditional = css.replace(/@custom-variant dark \{\s*@media not print \{\s*&:where\(\.dark, \.dark \*\) \{\s*@slot;?\s*\}\s*\}\s*\}/, '@custom-variant dark (&:where(.dark, .dark *));');
+  assert.notStrictEqual(unconditional, css, 'mutation-test precondition: the print-conditional dark variant can be flattened');
+  assert.throws(() => assertDarkPrintPalette(unconditional), /inert on paper|media-unconditional/,
+    'mutation-test: a dark variant that also applies under print must fail the named guard');
+  const noMedia = css.replace('@custom-variant dark {\n  @media not print {\n    &:where(.dark, .dark *) {\n      @slot;\n    }\n  }\n}', '@custom-variant dark {\n  &:where(.dark, .dark *) {\n    @slot;\n  }\n}');
+  assert.notStrictEqual(noMedia, css, 'mutation-test precondition: the @media not print wrapper can be removed');
+  assert.throws(() => assertDarkPrintPalette(noMedia), /inert on paper/,
+    'mutation-test: dropping the @media not print wrapper must fail the named guard');
 }
 
 /**

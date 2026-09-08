@@ -6,6 +6,7 @@
 import React, { useRef, useState } from 'react';
 import { ColorCoded } from './ColorCoded';
 import {
+  termOccursIn,
   colorTermKey,
   cleanUserColorTerms,
   cleanUserColorTermPair,
@@ -153,9 +154,19 @@ export function DescriptionEditor({
   // filed on A in this very dialog (a 409 adoption creates exactly that
   // shape) — a different cause from the label rule, so it gets its own words.
   const crossPlayerKeys = new Set(crossPlayerUserTerms(termsA, termsB).map(colorTermKey));
+  // RED-REGEN-14/002: a chip whose phrase does not occur in the text at all
+  // (a regenerated story replaced it, or the user edited it away) paints
+  // nothing either — same family, third cause, decided by the SAME boundary
+  // rule `ColorCoded` paints with (`termOccursIn`), never by a second one.
+  // The chip stays (Keep never destroys highlights); it says what it is.
+  // Precedence: the ownership causes first — they would still apply after
+  // the user put the phrase back into the text, so they are the fact worth
+  // stating; "absent" is reported only for a chip that would otherwise paint.
   const chip = (term: string, player: 'A' | 'B') => {
-    const suppressed = !(player === 'A' ? renderedA : renderedB).has(colorTermKey(term));
-    const crossPlayer = suppressed && player === 'B' && crossPlayerKeys.has(colorTermKey(term));
+    const byRule = !(player === 'A' ? renderedA : renderedB).has(colorTermKey(term));
+    const absent = !byRule && !termOccursIn(value, term);
+    const suppressed = byRule || absent;
+    const crossPlayer = byRule && player === 'B' && crossPlayerKeys.has(colorTermKey(term));
     const colour = player === 'A'
       ? 'border-player-a-300 dark:border-player-a-800 text-player-a-ink dark:text-player-a-ink-dark hover:bg-player-a-50 dark:hover:bg-player-a-900/30'
       : 'border-player-b-300 dark:border-player-b-800 text-player-b-ink dark:text-player-b-ink-dark hover:bg-player-b-50 dark:hover:bg-player-b-900/30';
@@ -167,11 +178,13 @@ export function DescriptionEditor({
         onClick={() => remove(term)}
         data-player={player}
         data-suppressed={suppressed ? 'true' : undefined}
-        data-suppressed-cause={suppressed ? (crossPlayer ? 'cross-player' : 'label') : undefined}
+        data-suppressed-cause={suppressed ? (absent ? 'absent' : crossPlayer ? 'cross-player' : 'label') : undefined}
         title={suppressed
-          ? (crossPlayer
-            ? `Not highlighted: "${term}" is also a Player A highlight in this dialog, and one phrase can belong to only one player. Remove it here or from Player A.`
-            : `Not highlighted: "${term}" names an option label that is not exclusively this player's (shared by both, or the other player's), so it stays neutral. Remove to drop the chip.`)
+          ? (absent
+            ? `Not highlighted: "${term}" does not appear in the story. Reuse the phrase in the text, or remove the chip.`
+            : crossPlayer
+              ? `Not highlighted: "${term}" is also a Player A highlight in this dialog, and one phrase can belong to only one player. Remove it here or from Player A.`
+              : `Not highlighted: "${term}" names an option label that is not exclusively this player's (shared by both, or the other player's), so it stays neutral. Remove to drop the chip.`)
           : 'Remove this highlight'}
         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${suppressed ? neutral : colour}`}
       >

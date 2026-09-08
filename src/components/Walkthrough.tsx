@@ -101,8 +101,41 @@ function headerOffset(): number {
 // scale. An optimistic 300 made the fit test disagree with the placement that
 // followed it: the test said "fits", placement then found no side with 405px of
 // room and fell back to a centred card sitting across 79% of its own target.
-const FLOAT_H_EST = 420;
+// RED-APP-18/003: 420 was measured at ONE viewport; at 912x1368 (a Surface Pro
+// held portrait) the same captions measure 432-515px, so for 10 of 19 steps the
+// test said "fits" with 420-514px of room and the placement below — which uses
+// the MEASURED height — found no side and fell back to a centred card INSIDE
+// its own spotlight. The estimate must be >= the tallest card the tour can
+// render (515 measured; the placement effect re-runs on the measured height,
+// but the layout FAMILY is chosen from this number before the scroll, so it
+// cannot be a per-step measurement without a family flip after the scroll).
+// A shorter card with 420-520px of room now gets the bottom sheet instead —
+// the safe family — never a card over its target. e2e §88 walks every step at
+// that viewport and asserts zero card-over-spotlight overlap.
+const FLOAT_H_EST = 520;
 const FLOAT_W_EST = 520;
+
+/**
+ * RED-APP-18/001+002: the elements that own Enter / the arrow keys while
+ * focused. The tour's window-level keydown never acts on a key typed into
+ * one of these (see onKey). Native controls plus the ARIA roles whose
+ * keyboard contract uses those keys.
+ */
+export const TOUR_ENTER_OWNER_SELECTOR = 'input, textarea, select, button, a[href], summary, '
+  + '[contenteditable]:not([contenteditable="false"]), [role="slider"], [role="button"], [role="textbox"], '
+  + '[role="combobox"], [role="spinbutton"], [role="menuitem"], [role="tab"], [role="link"], [role="option"]';
+/**
+ * The arrow keys are owned by controls that MOVE on them — a caret, a slider
+ * thumb, a select/listbox/radio choice — never by a plain button or link (a
+ * button does nothing with an arrow, and the tour focuses its own buttons on
+ * open, so arrows must keep driving the tour there).
+ */
+export const TOUR_ARROW_OWNER_SELECTOR = 'input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]), '
+  + 'textarea, select, [contenteditable]:not([contenteditable="false"]), [role="slider"], [role="textbox"], '
+  + '[role="combobox"], [role="spinbutton"], [role="listbox"], [role="option"], [role="radio"], [role="radiogroup"], '
+  + '[role="tab"], [role="tablist"], [role="menuitem"], [role="menu"], [role="tree"], [role="grid"]';
+export const tourKeyOwnedByTarget = (t: EventTarget | null, key: string): boolean =>
+  t instanceof Element && !!t.closest(key === 'Enter' ? TOUR_ENTER_OWNER_SELECTOR : TOUR_ARROW_OWNER_SELECTOR);
 
 /** Would a floating card fit on some side of this spotlight rect? */
 export const tourFloatingFits = (r: { top: number; left: number; width: number; height: number }, vw: number, vh: number): boolean => {
@@ -295,8 +328,18 @@ export function Walkthrough({
       t instanceof Element && !!t.closest('[role="dialog"]:not([aria-label="Guided tour"])');
     const onKey = (e: KeyboardEvent) => {
       if (ModalRegistry.isAnyOpen() || insideOtherDialog(e.target) || insideOtherDialog(document.activeElement)) return;
-      if (e.key === 'Escape') close();
-      else if (e.key === 'ArrowRight' || e.key === 'Enter') setI((n) => Math.min(n + 1, steps.length - 1));
+      if (e.key === 'Escape') { close(); return; }
+      // RED-APP-18/001+002: Enter and the arrow keys BELONG to whatever
+      // control has focus — a payoff box (ArrowLeft moves its caret; Enter
+      // commits), a range slider (arrows ARE its only keyboard, WCAG 2.1.1),
+      // any button including the tour's own (Enter/Space click it, and that
+      // click already advances/closes: a second, window-level advance ran the
+      // unseen step's onEnter and replaced the game). Per key: Enter belongs
+      // to every interactive element, the arrows only to controls that move
+      // on them (a focused button — the tour's own Next included — passes
+      // arrows through, so keyboard users can still step with the arrows).
+      if (tourKeyOwnedByTarget(e.target, e.key)) return;
+      if (e.key === 'ArrowRight' || e.key === 'Enter') setI((n) => Math.min(n + 1, steps.length - 1));
       else if (e.key === 'ArrowLeft') setI((n) => Math.max(n - 1, 0));
     };
     window.addEventListener('keydown', onKey);
