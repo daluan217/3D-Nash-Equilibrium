@@ -2845,14 +2845,72 @@ try {
       await pg.goto(BASE, { waitUntil: 'networkidle' });
       const exit = pg.getByRole('button', { name: /exit tour/i });
       if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) { await exit.click(); await exit.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); }
+      // STRUCT-APP-19/002: put the simulation progress panel on the page — the ONE
+      // component that picks its dark classes in JavaScript, and therefore the one
+      // a `@media` rule can never make inert. ONE Step rather than a whole Run:
+      // it is deterministic (both arms land on exactly step 1, so the two pages
+      // are structurally identical) and it costs a second instead of fifteen.
+      const stepBtn = pg.getByRole('button', { name: /^step$/i }).first();
+      if (await stepBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await stepBtn.click();
+        await pg.waitForFunction(
+          () => [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress'),
+          null, { timeout: 8000 },
+        ).catch(() => {});
+      }
       // CodeRabbit CLI (#179): wait for the print media to actually apply, not a fixed delay.
       await pg.emulateMedia({ media: 'print' });
       await pg.waitForFunction(() => window.matchMedia('print').matches, null, { timeout: 4000 });
+      // STRUCT-APP-19: and then wait for the REPAINT to finish. Switching to print
+      // media makes every `dark:` utility inert at once, and these elements carry
+      // `transition-all` — read immediately and you get colours in flight between
+      // the two themes, which differ on every run. (This bit me: the first version
+      // of the check below "found" six dark preset buttons that were really six
+      // mid-transition samples.) Poll until two consecutive reads agree.
+      await pg.waitForFunction(() => {
+        const sig = () => [...document.querySelectorAll('button, span, label, div')]
+          .slice(0, 400).map((e) => { const c = getComputedStyle(e); return `${c.color}|${c.backgroundColor}`; }).join(';');
+        const now = sig();
+        const prev = window.__printSig;
+        window.__printSig = now;
+        return prev !== undefined && prev === now;
+      }, null, { timeout: 8000, polling: 250 });
       const out = await pg.evaluate(() => {
         const isDark = document.documentElement.classList.contains('dark');
         const pick = (sel) => [...document.querySelectorAll(sel)].filter((e) => e.textContent.trim()).map((e) => getComputedStyle(e).color);
         const uniq = (a) => [...new Set(a)].sort();
-        return { isDark, a: uniq(pick('[class*="text-player-a"]')), b: uniq(pick('[class*="text-player-b"]')), nB: pick('[class*="text-player-b"]').length };
+        // ── STRUCT-APP-19/002: the WHOLE printed surface, with no enumeration ──
+        // Every element that actually reaches paper (print hides these three
+        // families outright), keyed by its structural path so the two arms are
+        // compared element-for-element. Any mechanism that lets the screen theme
+        // reach paper — a `dark:` utility, a runtime `darkMode ? …` class, an
+        // inline style, a variable — shows up here as a differing computed value.
+        const hidden = (el) => !!el.closest('[data-print="hide"], [data-modal-surface], [data-tour="plot"]');
+        const path = (el) => {
+          const parts = [];
+          for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+            parts.push(`${n.tagName.toLowerCase()}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+          }
+          return parts.reverse().join('/');
+        };
+        const surface = {};
+        for (const el of document.querySelectorAll('*')) {
+          if (hidden(el)) continue;
+          const cs = getComputedStyle(el);
+          if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+          const bx = el.getBoundingClientRect();
+          if (bx.width === 0 || bx.height === 0) continue;
+          surface[path(el)] = {
+            tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 32),
+            // The class attribute makes a failure actionable: it names WHICH
+            // utility (or JS-chosen class) let the screen theme reach paper.
+            cls: (el.getAttribute('class') || '').slice(0, 120),
+            color: cs.color, bg: cs.backgroundColor, bt: cs.borderTopColor, bb: cs.borderBottomColor,
+          };
+        }
+        // The panel this check exists for must actually be on the page.
+        const hasSimPanel = [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress');
+        return { isDark, hasSimPanel, surface, a: uniq(pick('[class*="text-player-a"]')), b: uniq(pick('[class*="text-player-b"]')), nB: pick('[class*="text-player-b"]').length };
       });
       await pg.close();
       return out;
@@ -2868,6 +2926,45 @@ try {
       JSON.stringify(light.b) === JSON.stringify(dark.b), `light=${JSON.stringify(light.b)} dark=${JSON.stringify(dark.b)}`);
     record('FIX RED-APP-18/004: Player A too (control for the family, and half of the matrix)',
       JSON.stringify(light.a) === JSON.stringify(dark.a), `light=${JSON.stringify(light.a)} dark=${JSON.stringify(dark.a)}`);
+
+    // ── STRUCT-APP-19/002: paper is ONE surface, asserted over the whole page ──
+    // The two checks above name two selector FAMILIES; this names none. A hand
+    // list of families (and index.css's former hand list of eleven utility
+    // overrides for the simulation panel) covers only what someone remembered —
+    // the panel printed its labels in slate-700 for a dark-theme visitor and
+    // slate-500 for a light-theme one until the panel was given `dark:` variants.
+    // Mutation: remove the `@media not print` wrapper from the `@custom-variant
+    // dark` block in src/index.css -> 328 of 376 elements differ; restore the
+    // panel's `darkMode ? …` class ternaries -> 3 of 497 differ. Both fail here.
+    const lk = Object.keys(light.surface), dk = Object.keys(dark.surface);
+    const shared = lk.filter((k) => Object.prototype.hasOwnProperty.call(dark.surface, k));
+    record('precondition: the simulation progress panel (the one component that picks its dark classes in JS) is on the page in BOTH print arms',
+      light.hasSimPanel && dark.hasSimPanel, `light=${light.hasSimPanel} dark=${dark.hasSimPanel}`);
+    record('precondition: the two print arms are the same page, element for element, and large enough to mean something',
+      shared.length >= 300 && lk.length === dk.length && shared.length === lk.length,
+      `light=${lk.length} dark=${dk.length} shared=${shared.length}`);
+    // Chromium serialises the SAME colour as `oklch(L C H)` when it comes from a
+    // token and as `oklab(L a b)` when it comes from a color-mix. Compare the
+    // colours, not the spelling, or the check fails on a notation difference.
+    const canon = (v) => {
+      const ok = /^okl(ch|ab)\(([^)]+)\)$/.exec(v || '');
+      if (!ok) return v;
+      const n = ok[2].split('/')[0].trim().split(/\s+/).map(Number);
+      if (n.length < 3 || n.some((x) => Number.isNaN(x))) return v;
+      const alpha = (ok[2].split('/')[1] || '1').trim();
+      const [L, x, y] = ok[1] === 'ch'
+        ? [n[0], n[1] * Math.cos(n[2] * Math.PI / 180), n[1] * Math.sin(n[2] * Math.PI / 180)]
+        : [n[0], n[1], n[2]];
+      return `oklab:${L.toFixed(3)}:${x.toFixed(3)}:${y.toFixed(3)}:${alpha}`;
+    };
+    const surfaceDiffs = [];
+    for (const k of shared) {
+      const a = light.surface[k], b = dark.surface[k];
+      const fields = ['color', 'bg', 'bt', 'bb'].filter((f) => canon(a[f]) !== canon(b[f]));
+      if (fields.length) surfaceDiffs.push(`${k} <${a.tag} class="${a.cls}"|dark class="${b.cls}"> "${a.text}" ${fields.map((f) => `${f}: ${a[f]} vs ${b[f]}`).join(', ')}`);
+    }
+    record('STRUCT-APP-19/002: every element that reaches paper computes the same colour, background and border in both screen themes',
+      surfaceDiffs.length === 0, surfaceDiffs.slice(0, 6).join(' | ') || `all ${shared.length} printed elements agree`);
 
     await printPage.close();
   });

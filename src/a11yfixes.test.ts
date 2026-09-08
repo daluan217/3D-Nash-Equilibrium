@@ -67,65 +67,94 @@ function assertDarkPrintPalette(source: string): void {
 }
 
 assertDarkPrintPalette(css);
-function assertRuntimeProgressPrintPalette(source: string, appSource: string): void {
+/**
+ * STRUCT-APP-19/002 — the same guarantee this guard has always made ("the
+ * simulation progress panel prints light"), asserted against the structure that
+ * now provides it instead of against the eleven hand-written print overrides
+ * that used to.
+ *
+ * Those overrides existed because the panel picked its dark classes in
+ * JavaScript, and a JS-chosen class is a plain class no `@media` rule can make
+ * inert. They were wrong twice over: the map disagreed with the light theme's
+ * own choice (a dark-theme visitor printed those labels slate-700 where a
+ * light-theme visitor printed slate-500 — measured), and it covered exactly one
+ * component, so the next component to pick classes in JS printed dark with
+ * nothing failing.
+ *
+ * The panel now uses `dark:` variants, which are already inert on paper
+ * (assertDarkPrintPalette above). So the invariant to hold is the STRONGER,
+ * general one: no component picks Tailwind colour classes at runtime, and the
+ * print block carries no per-utility dark overrides at all. e2e §41 asserts the
+ * same thing on the rendered page, over every element that reaches paper.
+ */
+const RUNTIME_DARK_COLOUR_TERNARY =
+  /darkMode\s*\?\s*'[^']*\b(?:bg|text|border|ring|placeholder|from|via|to|fill|stroke|decoration|outline|shadow|accent|caret|divide)-[a-z]+-\d{2,3}\b[^']*'\s*:/g;
+
+function assertNoRuntimeDarkColourClasses(source: string, appSource: string): void {
   const printBlock = extractPrintBlock(source);
-  const runtimeStart = printBlock.indexOf('html.dark [class~="bg-slate-900"][class~="border-slate-800"]');
-  const runtimeEnd = printBlock.indexOf('/* The one `position: sticky`', runtimeStart);
-  const runtimeBlock = runtimeEnd > runtimeStart ? printBlock.slice(runtimeStart, runtimeEnd) : '';
-  assert(printBlock && runtimeStart >= 0,
-    'the print block must scope runtime-dark simulation styles to the uniquely identified runtime simulation panel');
-  assert(/darkMode\s*\?\s*'bg-slate-900 border-slate-800'\s*:\s*'bg-slate-50 border-slate-200'/.test(appSource),
-    'the runtime-dark simulation panel fixture must still be present in App.tsx');
-  assert(/darkMode\s*\?\s*'border-ne-mixed-700 text-ne-mixed-400 hover:bg-ne-mixed-900\/30 cursor-pointer'\s*:\s*'border-ne-mixed-300 text-ne-mixed-700 hover:bg-ne-mixed-50 cursor-pointer'/.test(appSource),
-    'the runtime-dark mixed-NE control fixture must still be present in App.tsx');
-  const runtimeMappings = [
-    ['bg-slate-900', 'background-color', 'var\\(--color-slate-50\\)'],
-    ['bg-slate-800', 'background-color', 'var\\(--color-white\\)'],
-    ['bg-slate-700', 'background-color', 'var\\(--color-slate-200\\)'],
-    ['border-slate-800', 'border-color', 'var\\(--color-slate-200\\)'],
-    ['border-slate-700', 'border-color', 'var\\(--color-slate-300\\)'],
-    ['text-slate-400', 'color', 'var\\(--color-slate-700\\)'],
-    ['text-slate-200', 'color', 'var\\(--color-slate-700\\)'],
-    ['text-slate-600', 'color', 'var\\(--color-slate-600\\)'],
-    ['border-ne-mixed-700', 'border-color', 'var\\(--color-ne-mixed-300\\)'],
-    ['text-ne-mixed-400', 'color', 'var\\(--color-ne-mixed-700\\)'],
-    ['hover:bg-ne-mixed-900/30', 'background-color', 'var\\(--color-ne-mixed-50\\)'],
-  ] as const;
-  for (const [token, property, expected] of runtimeMappings) {
-    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = runtimeBlock.match(new RegExp(`[^{}]*\\[class~="${escaped}"\\][^{}]*\\{([^{}]*)\\}`));
-    assert(match, `runtime-dark print mapping must cover ${token}`);
-    assert(new RegExp(`${property}:\\s*${expected}\\s*!important`).test(match[1]),
-      `runtime-dark print mapping for ${token} must set ${property} to ${expected}`);
+  assert(printBlock, 'src/index.css must contain an @media print block');
+  // 1. No per-utility dark override survives in the print block. This is the
+  //    clause the old eleven mappings would fail.
+  // Scan RULES, not prose: the block explains in a comment what used to be here,
+  // and a scanner that reads its own documentation fires on the fix itself.
+  const printRules = printBlock.replace(/\/\*[\s\S]*?\*\//g, '');
+  const perUtility = [...printRules.matchAll(/html\.dark \[class~="[^"]+"\]/g)].map((m) => m[0]);
+  assert(perUtility.length === 0,
+    `@media print must carry no per-utility runtime-dark overrides; found ${perUtility.length}: ${perUtility.slice(0, 3).join(', ')} (STRUCT-APP-19/002)`);
+  // 2. No component picks a Tailwind COLOUR class from the darkMode flag. A
+  //    class chosen in JS cannot be made inert on paper, so paper would depend
+  //    on the screen theme again.
+  const runtime = [...appSource.matchAll(RUNTIME_DARK_COLOUR_TERNARY)].map((m) => m[0]);
+  assert(runtime.length === 0,
+    `App.tsx must not choose Tailwind colour classes from darkMode — use a dark: variant, which is inert on paper. Found ${runtime.length}: ${runtime.slice(0, 2).join(' | ')} (STRUCT-APP-19/002)`);
+  // 3. The panel really does carry the dark: variants now (a positive fixture,
+  //    so silently dropping the dark styling is a failure and not a pass).
+  for (const cls of ['bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800',
+    'text-slate-500 dark:text-slate-400',
+    'bg-slate-200 dark:bg-slate-700',
+    'border-ne-mixed-300 dark:border-ne-mixed-700 text-ne-mixed-700 dark:text-ne-mixed-400 hover:bg-ne-mixed-50 dark:hover:bg-ne-mixed-900/30 cursor-pointer']) {
+    assert(appSource.includes(cls),
+      `the simulation progress panel must keep its dark: variant styling: "${cls}" (STRUCT-APP-19/002)`);
   }
 }
 
-assertRuntimeProgressPrintPalette(css, app);
-const runtimePaletteMutant = css.replace(/\n  \/\* The simulation progress panel[\s\S]*?\n  \/\* The one `position: sticky`/, '\n  /* The one `position: sticky`');
-assert.notStrictEqual(runtimePaletteMutant, css,
-  'mutation-test precondition: runtime-dark print mapping must be removable');
-assert.throws(() => assertRuntimeProgressPrintPalette(runtimePaletteMutant, app),
-  /scope runtime-dark simulation/, 'mutation-test: removing runtime-dark print mapping must fail the named guard');
-const runtimeBlockMatch = css.match(/\n  \/\* The simulation progress panel[\s\S]*?\n  \/\* The one `position: sticky`/);
-assert(runtimeBlockMatch, 'mutation-test precondition: runtime-dark print mapping block must be movable');
-const runtimeMovedOutsideMedia = css
-  .replace(runtimeBlockMatch[0], '\n  /* The one `position: sticky`')
-  .replace('@media print {', `${runtimeBlockMatch[0]}\n@media print {`);
-assert.throws(() => assertRuntimeProgressPrintPalette(runtimeMovedOutsideMedia, app),
-  /scope runtime-dark simulation/, 'mutation-test: moving runtime-dark print mapping outside @media must fail the named guard');
-const runtimeIdentityMutant = app.replace('bg-slate-900 border-slate-800', 'bg-slate-900 border-slate-700');
-assert.notStrictEqual(runtimeIdentityMutant, app,
-  'mutation-test precondition: runtime-dark panel identity fixture must be mutable');
-assert.throws(() => assertRuntimeProgressPrintPalette(css, runtimeIdentityMutant),
-  /runtime-dark simulation panel fixture/, 'mutation-test: breaking the runtime-dark panel identity fixture must fail the named guard');
-const runtimePropertyMutant = css.replace(
-  /(html\.dark \[class~="bg-slate-900"\]\[class~="border-slate-800"\][\s\S]*?\{)[\s\S]*?background-color:\s*var\(--color-slate-50\)\s*!important;/,
-  '$1',
-);
-assert.notStrictEqual(runtimePropertyMutant, css,
-  'mutation-test precondition: runtime-dark background declaration must be removable');
-assert.throws(() => assertRuntimeProgressPrintPalette(runtimePropertyMutant, app),
-  /bg-slate-900.*background-color/, 'mutation-test: removing the runtime-dark background declaration must fail the named guard');
+assertNoRuntimeDarkColourClasses(css, app);
+// Mutants — each must fail the named guard.
+{
+  // The shipped RED-APP-18/004-era shape: the panel picking its classes in JS.
+  const jsClasses = app.replace(
+    "className={`flex flex-col gap-2 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800`}",
+    "className={`flex flex-col gap-2 px-3 py-2.5 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}",
+  );
+  assert.notStrictEqual(jsClasses, app, 'mutation-test precondition: the runtime-dark class ternary can be re-planted');
+  assert.throws(() => assertNoRuntimeDarkColourClasses(css, jsClasses), /must not choose Tailwind colour classes from darkMode/,
+    'mutation-test: a component picking Tailwind colour classes from darkMode must fail the named guard');
+  // The compensating print override coming back.
+  const overrideBack = css.replace('  /* The one `position: sticky` element on the page.',
+    '  html.dark [class~="bg-slate-900"][class~="border-slate-800"] { background-color: var(--color-slate-50) !important; }\n\n  /* The one `position: sticky` element on the page.');
+  assert.notStrictEqual(overrideBack, css, 'mutation-test precondition: a per-utility print override can be re-planted');
+  assert.throws(() => assertNoRuntimeDarkColourClasses(overrideBack, app), /no per-utility runtime-dark overrides/,
+    'mutation-test: re-planting a per-utility runtime-dark print override must fail the named guard');
+  // Dropping the dark styling altogether would make paper consistent by making
+  // the SCREEN wrong; that must fail too, not pass.
+  const noDark = app.replace('bg-slate-200 dark:bg-slate-700', 'bg-slate-200');
+  assert.notStrictEqual(noDark, app, 'mutation-test precondition: the dark: variant can be dropped');
+  assert.throws(() => assertNoRuntimeDarkColourClasses(css, noDark), /must keep its dark: variant styling/,
+    'mutation-test: dropping the panel\'s dark: variant must fail the named guard');
+  // NEGATIVE CONTROL (permanent): the three legitimate `darkMode ?` uses that
+  // remain in App.tsx — a native window colour, a button title, and an icon —
+  // must NOT trip the runtime-colour-class predicate. A predicate that fires on
+  // these would be unfixable without deleting real code.
+  const legit = [
+    "const bg = darkMode ? '#020617' : '#f8fafc';",
+    'title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}',
+    '{darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-accent-500" />}',
+  ].join('\n');
+  assert([...legit.matchAll(RUNTIME_DARK_COLOUR_TERNARY)].length === 0,
+    'negative control: a native-window hex colour, a title string and an icon element must not be read as runtime colour classes');
+  assert([...app.matchAll(/darkMode\s*\?/g)].length >= 3,
+    'negative control precondition: App.tsx still contains the legitimate darkMode ternaries this control is about');
+}
 
 // RED-APP-18/004 mutants — each must fail the named guard.
 {
