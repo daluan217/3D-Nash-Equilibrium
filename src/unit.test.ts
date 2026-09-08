@@ -3632,11 +3632,20 @@ function testGeometryDegenerateShelf() {
   // spin flag (a pause or countdown entered before the preference flipped on),
   // so no path can leave the Resume button up while the spin cannot run.
   const effectRmContract = (src: string) => {
-    const m = /if \(reducedMotion\) \{([\s\S]{0,900}?)\n\s*return;\n\s*\}/.exec(src);
+    // Scope to the idle-spin EFFECT: the first `if (reducedMotion) {` AFTER its
+    // `if (!idleSpin) return;` gate (CodeRabbit on #170: an earlier match
+    // elsewhere in the file must not satisfy the check).
+    const effectStart = src.indexOf('    if (!idleSpin) return;');
+    assert(effectStart !== -1, 'CodeRabbit #170: the idle-spin effect must start with the `if (!idleSpin) return;` gate');
+    const m = /if \(reducedMotion\) \{([\s\S]{0,900}?)\n\s*return;\n\s*\}/.exec(src.slice(effectStart));
     assert(m !== null, 'CodeRabbit #170: the idle-spin effect must exit under reducedMotion through a block that ends in `return;`');
-    const body = m![1].replace(/^\s*\/\/.*$/gm, '');
-    for (const stmt of ['spinPausedRef.current = false;', 'setSpinPaused(false);', 'spinWaitingRef.current = false;', 'setSpinWaiting(false);'])
-      assert(body.includes(stmt), `CodeRabbit #170: the effect's reduced-motion exit must run \`${stmt}\` before returning`);
+    // The block must consist of EXACTLY the four unconditional flag resets —
+    // nothing wrapped in a condition, nothing missing, nothing extra — so no
+    // entry path (paused, waiting, both) can return with a flag still set.
+    const stmts = m![1].replace(/^\s*\/\/.*$/gm, '').split('\n').map(l => l.trim()).filter(Boolean);
+    const expected = ['spinPausedRef.current = false;', 'setSpinPaused(false);', 'spinWaitingRef.current = false;', 'setSpinWaiting(false);'];
+    assert(stmts.length === expected.length && expected.every(e => stmts.includes(e)),
+      `CodeRabbit #170: the effect's reduced-motion exit must be exactly the four unconditional flag resets (found: ${JSON.stringify(stmts)})`);
   };
   effectRmContract(plot);
   {
@@ -3646,6 +3655,9 @@ function testGeometryDegenerateShelf() {
     threw = false;
     try { effectRmContract(plot.replace('      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      return;', '      return;')); } catch { threw = true; }
     assert(threw, 'fixture: an exit that clears the pause flags but not the waiting flags must be rejected');
+    threw = false;
+    try { effectRmContract(plot.replace('      spinPausedRef.current = false;\n      setSpinPaused(false);\n      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      return;', '      if (spinPausedRef.current) {\n        spinPausedRef.current = false;\n        setSpinPaused(false);\n        spinWaitingRef.current = false;\n        setSpinWaiting(false);\n      }\n      return;')); } catch { threw = true; }
+    assert(threw, 'fixture: flag resets wrapped in a condition (an entry path can still return with a flag set) must be rejected');
   }
   {
     let threw = false;
