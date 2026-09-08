@@ -233,6 +233,16 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     kept.terms.a.includes('the vendor'), `got terms.a=${JSON.stringify(kept.terms.a)}`);
   check('RED-REGEN/001: same for player B',
     kept.terms.b.includes('the buyer'), `got terms.b=${JSON.stringify(kept.terms.b)}`);
+  // RED-REGEN-14/002: this very draw's story names neither chip — Keep still
+  // keeps both (above) AND names them as orphaned, so the note can say so.
+  check('RED-REGEN-14/002: chips the kept story no longer contains are named in keepFill.orphaned',
+    kept.orphaned.a.includes('the vendor') && kept.orphaned.b.includes('the buyer'), `got orphaned=${JSON.stringify(kept.orphaned)}`);
+  const stillNamed = keepFill({ ...realDrawShape, description: 'The vendor and the buyer haggle at the quarry gate.' }, false, usersChips);
+  check('RED-REGEN-14/002 (control): chips the kept story still contains are not orphaned',
+    stillNamed.orphaned.a.length === 0 && stillNamed.orphaned.b.length === 0, `got orphaned=${JSON.stringify(stillNamed.orphaned)}`);
+  const beyondClamp = keepFill({ ...realDrawShape, description: `${'x'.repeat(REGEN_DESCRIPTION_MAX)} the vendor` }, false, usersChips);
+  check('RED-REGEN-14/002: orphaned is judged against the CLAMPED description (a phrase only beyond the 800 cut is orphaned)',
+    beyondClamp.orphaned.a.includes('the vendor'), `got orphaned=${JSON.stringify(beyondClamp.orphaned)}`);
   check('RED-REGEN/001: nothing is ADDED that the user did not have or the draw did not supply',
     kept.terms.a.length === 1 && kept.terms.b.length === 1,
     `got terms=${JSON.stringify(kept.terms)}`);

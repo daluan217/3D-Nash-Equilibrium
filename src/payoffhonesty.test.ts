@@ -848,7 +848,7 @@ function testSaveFormReconciledWithBoard() {
   const contract = (app: string) => {
     ok(/const saveFormBoardRef = useRef<string \| null>\(null\);/.test(app),
       'App.tsx must keep saveFormBoardRef — the board the Save form\'s text was written for (RED-REGEN-13/001)');
-    const helperStart = app.indexOf('const reconcileSaveFormWithBoard = () => {');
+    const helperStart = app.indexOf('const reconcileSaveFormWithBoard = (): boolean => {');
     ok(helperStart !== -1, 'App.tsx must define reconcileSaveFormWithBoard (RED-REGEN-13/001)');
     const helper = app.slice(helperStart, app.indexOf('};', helperStart) + 2);
     ok(/saveFormBoardRef\.current !== key/.test(helper) && /setSaveName\(''\)/.test(helper) && /setSaveDesc\(''\)/.test(helper)
@@ -863,6 +863,14 @@ function testSaveFormReconciledWithBoard() {
     const oIdx = presetHandler.indexOf('setIsSaveModalOpen(true);');
     ok(rIdx !== -1 && oIdx !== -1 && rIdx < oIdx,
       `the Save Preset click must reconcile the form with the board BEFORE opening the dialog (reconcile@${rIdx} open@${oIdx}) — RED-REGEN-13/001`);
+    // RED-REGEN-14/001: a kept draft keeps the option labels it was written
+    // with — the prefill from scenarioForReport runs only for a fresh form.
+    ok(/const draftKept = reconcileSaveFormWithBoard\(\);/.test(presetHandler)
+      && /if \(!draftKept \|\| labelsBlank\) \{\s*setSaveLabels\(\{/.test(presetHandler)
+      && (presetHandler.match(/setSaveLabels\(/g) || []).length === 1,
+      'the Save Preset click must prefill option labels ONLY when no draft was kept for this board, or the labels are all blank (RED-REGEN-14/001)');
+    ok(/const kept = saveFormBoardRef\.current === key;/.test(helper) && /return kept;/.test(helper),
+      'reconcileSaveFormWithBoard must report whether the draft for this board survived (RED-REGEN-14/001)');
     // Resume after sign-in: the board may have changed while the sign-in was up.
     const resumeStart = app.indexOf('if (authToken && resumeSaveAfterAuthRef.current) {');
     ok(resumeStart !== -1, 'the resume-after-sign-in branch must exist');
@@ -923,8 +931,10 @@ function testSaveFormReconciledWithBoard() {
   const handler = src.slice(handlerStart, presetAttr);
   mustThrow('Save Preset open no longer reconciles', src.slice(0, handlerStart) + handler.replace('reconcileSaveFormWithBoard();\n', '') + src.slice(presetAttr));
   mustThrow('reconcile keeps the stale description', src.replace("      setSaveDesc('');\n      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;", "      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;"));
-  mustThrow('board recorded before the clear (never clears)', src.replace("    saveFormBoardRef.current = key;\n  };", "  };").replace('    const key = boardKeyOf(payoffs);\n', '    const key = boardKeyOf(payoffs);\n    saveFormBoardRef.current = key;\n'));
+  mustThrow('board recorded before the clear (never clears)', src.replace("    saveFormBoardRef.current = key;\n    return kept;\n  };", "    return kept;\n  };").replace('    const key = boardKeyOf(payoffs);\n', '    const key = boardKeyOf(payoffs);\n    saveFormBoardRef.current = key;\n'));
   mustThrow('successful save leaves the board recorded', src.replace("        saveFormBoardRef.current = null; // RED-REGEN-13/001: blank form, no board\n", ''));
+  mustThrow('Save Preset prefills labels over a kept draft (RED-REGEN-14/001)', src.replace('if (!draftKept || labelsBlank) {\n                      setSaveLabels({', '{\n                      setSaveLabels({'));
+  mustThrow('reconcile reports every draft as fresh (RED-REGEN-14/001)', src.replace('const kept = saveFormBoardRef.current === key;', 'const kept = false;'));
   mustThrow('boardKeyOf ignores Player B (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', 'JSON.stringify([p.a11, p.a12, p.a21, p.a22])'));
   mustThrow('boardKeyOf returns a constant (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', "JSON.stringify(['board'])"));
   mustThrow('generate records the board unconditionally after the awaits (N1)', src.replace("      if (sc) {\n        const gen: GeneratedFill = {", "      saveFormBoardRef.current = boardKeyOf(g);\n      if (sc) {\n        const gen: GeneratedFill = {"));
