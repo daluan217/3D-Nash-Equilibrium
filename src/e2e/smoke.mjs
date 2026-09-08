@@ -8651,12 +8651,28 @@ try {
           kept === typed, `field=${JSON.stringify(kept)}`);
 
         await p.getByRole('button', { name: /^step$/i }).first().click();
-        await p.waitForTimeout(400);
+        // Poll the rendered log rather than sleeping a fixed 400 ms (CodeRabbit
+        // CLI on this branch). The wait swallows its own timeout, so the record
+        // below still reads the real line and still FAILS on a wrong one — the
+        // poll only removes the flake, it does not become the assertion.
+        await p.waitForFunction((want) => {
+          for (const el of document.querySelectorAll('[role="region"][aria-label="Simulation log"] *')) {
+            if (el.childElementCount === 0 && (el.textContent || '').trim().startsWith(`Start (${want},`)) return true;
+          }
+          return false;
+        }, expected, { timeout: 8000 }).catch(() => {});
         const line = await startLine();
         record(`§89 the log's Start line for x₀=${typed} carries ${JSON.stringify(expected)}`,
           typeof line === 'string' && line.startsWith(`Start (${expected},`), `line=${JSON.stringify(line)}`);
         await p.getByRole('button', { name: /^reset$/i }).first().click().catch(() => {});
-        await p.waitForTimeout(300);
+        // Reset restores exactly this line (src/App.tsx:3698); waiting for it
+        // means the next iteration types into a settled page.
+        await p.waitForFunction(() => {
+          for (const el of document.querySelectorAll('[role="region"][aria-label="Simulation log"] *')) {
+            if (el.childElementCount === 0 && (el.textContent || '').trim().startsWith('Set starting point')) return true;
+          }
+          return false;
+        }, null, { timeout: 8000 }).catch(() => {});
       }
     } finally {
       await ctx.close().catch(() => {});
