@@ -2844,9 +2844,10 @@ try {
       await pg.addInitScript((t) => { try { localStorage.setItem('nash_sim_theme', t); } catch {} }, theme);
       await pg.goto(BASE, { waitUntil: 'networkidle' });
       const exit = pg.getByRole('button', { name: /exit tour/i });
-      if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) await exit.click();
-      await pg.waitForTimeout(400);
-      await pg.emulateMedia({ media: 'print' }); await pg.waitForTimeout(300);
+      if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) { await exit.click(); await exit.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); }
+      // CodeRabbit CLI (#179): wait for the print media to actually apply, not a fixed delay.
+      await pg.emulateMedia({ media: 'print' });
+      await pg.waitForFunction(() => window.matchMedia('print').matches, null, { timeout: 4000 });
       const out = await pg.evaluate(() => {
         const isDark = document.documentElement.classList.contains('dark');
         const pick = (sel) => [...document.querySelectorAll(sel)].filter((e) => e.textContent.trim()).map((e) => getComputedStyle(e).color);
@@ -8474,7 +8475,17 @@ try {
     // CodeRabbit CLI: state-based waits — poll for the expected step (or for the step to
     // stay put over a settle window when the assertion is "did NOT move"), never a fixed sleep.
     const waitStep = async (n, ms = 4000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if ((await stepOf()) === n) return true; await p.waitForTimeout(50); } return false; };
-    const settled = async (ms = 600) => { const a = await stepOf(); await p.waitForTimeout(ms); return (await stepOf()) === a ? a : null; };
+    // CodeRabbit CLI (#179): sampled THROUGH the settle window, not once at its end — a
+    // navigation that lands mid-window is a change, not a coincidence.
+    const settled = async (ms = 600) => { const a = await stepOf(); const t0 = Date.now(); while (Date.now() - t0 < ms) { await p.waitForTimeout(50); if ((await stepOf()) !== a) return null; } return a; };
+    const boardStable = async (b, ms = 800) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if ((await boardOf()) !== b) return false; await p.waitForTimeout(50); } return true; };
+    // CodeRabbit CLI (#179): the precondition claims focus is ON the tour — SET it (the
+    // tour's own Next button: buttons pass arrows through to the tour) and assert it,
+    // rather than assume where the browser left focus after load.
+    const next = tour.getByRole('button', { name: /^next$/i }).first();
+    await next.focus();
+    const focusInTour = await p.evaluate(() => { const d = document.querySelector('[role="dialog"][aria-label="Guided tour"]'); return !!d && d.contains(document.activeElement); });
+    record('precondition: focus is inside the tour dialog (on its Next button) before the first ArrowRight', focusInTour);
     await p.keyboard.press('ArrowRight'); await waitStep(2); await p.keyboard.press('ArrowRight'); await waitStep(3);
     const s0 = await settled();
     record('precondition: ArrowRight with focus on the tour itself still steps it (arrows are not owned by a button)', s0 === 3, `step=${s0}`);
@@ -8497,16 +8508,17 @@ try {
     await p.evaluate(() => { const a = document.activeElement; if (a && a !== document.body) a.blur(); });
     await p.keyboard.press('ArrowRight');
     record('control: with nothing focused, ArrowRight still drives the tour', await waitStep(s0 + 1), `step=${await stepOf()}`);
-    const next = tour.getByRole('button', { name: /^next$/i }).first();
     await next.focus(); const s1 = await settled(); await p.keyboard.press('Enter');
     record('FIX 002: Enter on a focused Next advances exactly one step', (await waitStep(s1 + 1)) && (await settled()) === s1 + 1, `${s1}→${await stepOf()}`);
     await next.focus(); const s2 = await settled(); await p.keyboard.press('ArrowRight');
     record('control: ArrowRight on a focused Next still advances one step (buttons pass arrows through)', (await waitStep(s2 + 1)) && (await settled()) === s2 + 1, `${s2}→${await stepOf()}`);
     const b0 = await boardOf();
     await p.getByRole('button', { name: /exit tour/i }).first().focus(); await p.keyboard.press('Enter');
-    await tour.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); await p.waitForTimeout(300);
+    await tour.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {});
+    // CodeRabbit CLI (#179): a deferred game load could start after a single sample; watch the board over a window.
+    const boardKept = await boardStable(b0);
     record('FIX 002: Enter on a focused Exit tour closes the tour and leaves the board alone',
-      !(await tour.isVisible().catch(() => false)) && (await boardOf()) === b0, `open=${await tour.isVisible().catch(() => false)} boardChanged=${(await boardOf()) !== b0}`);
+      !(await tour.isVisible().catch(() => false)) && boardKept, `open=${await tour.isVisible().catch(() => false)} boardChanged=${(await boardOf()) !== b0}`);
     await p.close();
   });
 
