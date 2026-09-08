@@ -352,13 +352,11 @@ async function inventScreenedScenario(
   const MIN_DRAW_MS = 2_000;
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
+  // `actorNouns` (the parameter) still decides which SCHEMA the draw asks for —
+  // only the regenerate path sends `SCENARIO_SCHEMA_WITH_ACTORS`. It no longer
+  // decides anything about screening: the screens are the same on both routes,
+  // and the noun safety pass runs unconditionally (see `SCENARIO_SCREENS`).
   const screenOptions: ScreenOptions = {
-    // Whether the DRAW was asked for actor nouns: `SCENARIO_SCHEMA_WITH_ACTORS`
-    // is sent only on the regenerate path, so the report path's existing gate
-    // must not start demanding fields its schema can never return. This is a
-    // statement about the request, not about who renders the answer — every
-    // surface renders it the same way (`scenarioRenderability.ts`).
-    actorNouns,
     avoid,
     directionChecks: process.env.NASH_DIRECTION_CHECKS === '1',
   };

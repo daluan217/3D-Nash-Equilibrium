@@ -22,7 +22,7 @@
  *      that shadows it, and carry the measurement behind that claim;
  *   3. HAND-READ NEGATIVES — real gate-passing output, at least two per screen,
  *      each one keystroke from the known-positive, which must pass the WHOLE
- *      table under BOTH draw shapes (with and without the actor-noun schema);
+ *      table;
  *   4. REACH over a known-good corpus, re-measured here and compared with the
  *      pinned number, so a predicate that starts over-firing on good output
  *      fails this file rather than quietly rejecting a fraction of every draw.
@@ -41,14 +41,16 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 };
 
 /**
- * `actorNouns` is the DRAW shape (the regenerate schema asks for role nouns;
- * the report schema cannot return them), not an audience: every surface renders
- * a served scenario with the same terms since STRUCT-CLOUD-19/001, so there is
- * no second rendering to screen for. Both shapes are exercised below anyway,
- * because `validateScenario` reads this flag.
+ * ONE SET OF OPTIONS, because there is one screening policy. This used to take
+ * an audience ('report-card' | 'regen-preview') and then a draw shape
+ * (`actorNouns`); both were removed with the defects that made them differ —
+ * every surface paints a served scenario with the same terms, and the actor-noun
+ * safety pass runs on every route (STRUCT-CLOUD-19/001). What remains is
+ * genuinely per-request: the story a regenerate must not repeat, and the
+ * direction-check flag.
  */
-const opts = (actorNouns: boolean, avoid?: ScreenOptions['avoid']): ScreenOptions => ({
-  actorNouns, avoid, directionChecks: true,
+const opts = (avoid?: ScreenOptions['avoid']): ScreenOptions => ({
+  avoid, directionChecks: true,
 });
 
 /** Runs an arbitrary subset of the table, in table order. */
@@ -153,8 +155,6 @@ const NEGATIVES: Negative[] = [
 interface Evidence {
   knownPositive: {
     sc: SuggestedScenario; g: GamePayoffs; avoid?: ScreenOptions['avoid'];
-    /** the draw shape the fixture was taken from; defaults to the report shape */
-    actorNouns?: boolean;
     provenance: string;
     whyNotCoincidence: string;
   };
@@ -219,7 +219,6 @@ const EVIDENCE: Record<string, Evidence> = {
       g: { a11: 44, a12: 0, a21: 0, a22: 22, b11: 44, b12: 0, b21: 0, b22: 22 },
       sc: NEGATIVES[1].sc,
       avoid: { name: 'Truffle Foraging Permits', description: NEGATIVES[1].sc.description },
-      actorNouns: true,
       provenance: 'negative #1 handed back to a regenerate that asked to replace exactly it',
       whyNotCoincidence: 'the SAME scenario object is a passing negative when `avoid` is absent (asserted '
         + 'below), so the refusal can only come from the avoid comparison.',
@@ -310,7 +309,7 @@ for (const s of SCENARIO_SCREENS) {
   const ev = EVIDENCE[s.id];
   if (!ev) continue;
   const kp = ev.knownPositive;
-  const o = opts(kp.actorNouns ?? false, kp.avoid);
+  const o = opts(kp.avoid);
 
   check(`"${s.id}" refuses its own known-positive`, s.run(kp.sc, kp.g, o) !== null,
     `${kp.provenance} — the fixture no longer fires, so nothing below it means anything`);
@@ -342,14 +341,14 @@ for (const s of SCENARIO_SCREENS) {
   const kp = EVIDENCE.declarations.knownPositive;
   const rival: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 1, b12: 5, b21: 0, b22: 3 };
   check('declarations control: the same story on a rivalrous matrix is accepted',
-    screenScenario(kp.sc, rival, opts(false)).ok,
-    JSON.stringify(screenScenario(kp.sc, rival, opts(false))));
+    screenScenario(kp.sc, rival, opts()).ok,
+    JSON.stringify(screenScenario(kp.sc, rival, opts())));
 }
 {
   // regen-same-story: the same scenario with no `avoid` passes.
   const kp = EVIDENCE['regen-same-story'].knownPositive;
   check('regen-same-story control: the identical story with no avoid is accepted',
-    screenScenario(kp.sc, kp.g, opts(true)).ok);
+    screenScenario(kp.sc, kp.g, opts()).ok);
 }
 {
   // directions: the same sentence pointing the right way is accepted by the screen.
@@ -360,10 +359,10 @@ for (const s of SCENARIO_SCREENS) {
   } as SuggestedScenario;
   const screen = SCENARIO_SCREENS.find((s) => s.id === 'directions')!;
   check('directions control: the same sentence pointing the RIGHT way is accepted by this screen',
-    screen.run(flipped, kp.g, opts(false)) === null,
-    String(screen.run(flipped, kp.g, opts(false))));
+    screen.run(flipped, kp.g, opts()) === null,
+    String(screen.run(flipped, kp.g, opts())));
   check('directions is genuinely OFF when the flag is off',
-    screen.run(kp.sc, kp.g, { ...opts(false), directionChecks: false }) === null);
+    screen.run(kp.sc, kp.g, { ...opts(), directionChecks: false }) === null);
 }
 {
   // attributable: the same story with its labels stated is accepted.
@@ -373,12 +372,70 @@ for (const s of SCENARIO_SCREENS) {
     description: 'Two dairy co-ops are negotiating prices for a shared supermarket contract. The first chooses Hold Price or Cut Price for its wholesale list.',
   } as SuggestedScenario;
   check('attributable control: the same story stating its labels is accepted',
-    screenScenario(stated, kp.g, opts(false)).ok,
-    JSON.stringify(screenScenario(stated, kp.g, opts(false))));
+    screenScenario(stated, kp.g, opts()).ok,
+    JSON.stringify(screenScenario(stated, kp.g, opts())));
+}
+
+{
+  /**
+   * THE ACTOR-NOUN SAFETY PASS IS NOT A PER-ROUTE OPTION. `validateScenario`
+   * drops a declared noun pair `actorNounsOk` refuses and KEEPS the story
+   * (RED-CLOUD-9/001) — in place, on the object the later screens then read,
+   * which is why `attributable` cannot be fooled by a noun that is about to be
+   * dropped. Both halves are asserted here because both are load-bearing and
+   * neither is visible in a return value.
+   */
+  const g: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const stated = {
+    name: 'Packing Shed Slot', row1: 'Grade Early', row2: 'Grade Late',
+    col1: 'Ship Monday', col2: 'Ship Friday',
+    description: 'A packing shed and a freight broker settle one week of fruit. The shed picks Grade Early or Grade Late; the broker picks Ship Monday or Ship Friday.',
+    // Neither noun occurs in the description, so `actorNounsOk` refuses the pair.
+    actorA: ['the riverside grading committee'], actorB: ['the overnight freight desk'],
+  } as SuggestedScenario;
+  const copy = JSON.parse(JSON.stringify(stated)) as SuggestedScenario;
+  const verdict = screenScenario(copy, g, opts());
+  check('unsafe actor nouns are dropped on every route, and the story survives',
+    verdict.ok && !copy.actorA && !copy.actorB,
+    `ok=${verdict.ok} reason=${verdict.reason} actorA=${JSON.stringify(copy.actorA)}`);
+
+  /**
+   * The consequence, on a story whose colour DEPENDS on its nouns: neither
+   * pair of labels is stated, so once the unsafe nouns are dropped there is
+   * nothing left to attach to either player and the table refuses the story
+   * rather than serving it half-coloured.
+   *
+   * What makes THIS pair unsafe is one trailing space — `actorNounsOk` requires
+   * the noun to occur in the description as a whole term, and " committee "
+   * with the space kept does not. That is real model output, not a contrivance
+   * (a declared noun copied out of the sentence with its following space), and
+   * the control below is the same story with the space removed: accepted, and
+   * served WITH its nouns. So the refusal is about the noun being unusable, not
+   * about the story naming no labels.
+   */
+  const unstated = {
+    ...stated,
+    description: 'The riverside grading committee settles when the fruit is handled, and the overnight freight desk settles when it leaves.',
+    actorA: ['the riverside grading committee '], actorB: ['the overnight freight desk '],
+  } as SuggestedScenario;
+  const copy2 = JSON.parse(JSON.stringify(unstated)) as SuggestedScenario;
+  const verdict2 = screenScenario(copy2, g, opts());
+  check('...and a story whose only terms were those nouns is refused, not served half-coloured',
+    !verdict2.ok && verdict2.screen === 'attributable',
+    `ok=${verdict2.ok} screen=${verdict2.screen} reason=${verdict2.reason}`);
+
+  const copy3 = JSON.parse(JSON.stringify({
+    ...unstated,
+    actorA: ['the riverside grading committee'], actorB: ['the overnight freight desk'],
+  })) as SuggestedScenario;
+  const verdict3 = screenScenario(copy3, g, opts());
+  check('control: the identical story with usable nouns is accepted, nouns intact',
+    verdict3.ok && copy3.actorA?.length === 1 && copy3.actorB?.length === 1,
+    `ok=${verdict3.ok} screen=${verdict3.screen} reason=${verdict3.reason} actorA=${JSON.stringify(copy3.actorA)}`);
 }
 
 /* ============================================================================
- * 4. NEGATIVES — real, hand-read output must pass the WHOLE table, both shapes.
+ * 4. NEGATIVES — real, hand-read output must pass the WHOLE table.
  * ==========================================================================*/
 for (const s of SCENARIO_SCREENS) {
   const ev = EVIDENCE[s.id];
@@ -389,11 +446,8 @@ for (const s of SCENARIO_SCREENS) {
   }
 }
 for (const neg of NEGATIVES) {
-  for (const actorNouns of [false, true] as const) {
-    const v = screenScenario(neg.sc, neg.g, opts(actorNouns));
-    check(`negative "${neg.id}" passes the whole table (actorNouns=${actorNouns})`, v.ok,
-      `refused by ${v.screen}: ${v.reason}`);
-  }
+  const v = screenScenario(neg.sc, neg.g, opts());
+  check(`negative "${neg.id}" passes the whole table`, v.ok, `refused by ${v.screen}: ${v.reason}`);
 }
 
 /* ============================================================================
@@ -423,7 +477,7 @@ for (const neg of NEGATIVES) {
     const ev = EVIDENCE[s.id];
     if (!ev) continue;
     let fires = 0; let of = 0; let firstFire = '';
-    const o = opts(false);
+    const o = opts();
     if (matrixDependent.has(s.id)) {
       for (const e of rows) for (const g of probes) {
         of++;
@@ -462,7 +516,7 @@ for (const neg of NEGATIVES) {
   let strippedFires = 0; let firstStripped = '';
   for (const e of rows) {
     const { actorA: _actorA, actorB: _actorB, ...nounFree } = e.s as SuggestedScenario;
-    const r = attributable.run(nounFree as SuggestedScenario, probes[0], opts(false));
+    const r = attributable.run(nounFree as SuggestedScenario, probes[0], opts());
     if (r !== null) { strippedFires++; if (!firstStripped) firstStripped = `"${e.s.name}": ${r}`; }
   }
   check('the actor nouns are load-bearing: strip them and exactly 84 shipped rows stop being attributable',

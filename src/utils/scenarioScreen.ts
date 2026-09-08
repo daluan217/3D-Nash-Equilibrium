@@ -33,8 +33,6 @@ import { isSameStory } from './scenarioRegen';
 import { scenarioIsAttributable } from './scenarioRenderability';
 
 export interface ScreenOptions {
-  /** the regenerate contract; the report schema cannot carry actor nouns */
-  actorNouns: boolean;
   /** the story a regenerate must not hand back unchanged */
   avoid?: { name?: string; description?: string; domain?: string };
   /** `NASH_DIRECTION_CHECKS === '1'`; read by the caller so this stays pure */
@@ -61,8 +59,25 @@ export const SCENARIO_SCREENS: readonly ScenarioScreen[] = [
   {
     id: 'declarations',
     what: 'the story contradicts the matrix, leaks debris, or declares a malformed shape',
-    run: (sc, g, opts) => {
-      const v = validateScenario(sc, g, { actorNouns: opts.actorNouns });
+    /**
+     * `actorNouns: true` on EVERY route, and it does not mean "nouns are
+     * required": its one and only effect (nashValidator.ts, `if
+     * (options.actorNouns && !actorNounsOk(sc))`) is to DROP a declared noun
+     * pair the shared safety predicate refuses, keeping the story — and
+     * `actorNounsOk` returns true for a scenario that declares none.
+     *
+     * It used to be the caller's `actorNouns` draw-shape flag, so the safety
+     * pass ran on the regenerate route and not on the report one. That is the
+     * same "a guard on one path, absent on its sibling" shape as
+     * STRUCT-CLOUD-19/001 itself, and now that /api/report serves the nouns it
+     * would be the live version of it: an unsafe noun could reach the card
+     * without ever meeting the predicate the bank build applies. Measured on
+     * the shipped artifact: 2090 of 2442 rows declare nouns, 0 fail
+     * `actorNounsOk`, so this is defence in depth rather than a behaviour
+     * change (`_gen/cloud19_nounsok.ts`).
+     */
+    run: (sc, g) => {
+      const v = validateScenario(sc, g, { actorNouns: true });
       return v.ok ? null : (v.issues[0] ?? 'validateScenario');
     },
   },
