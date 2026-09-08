@@ -26,6 +26,7 @@ import {
   REGEN_DESCRIPTION_MAX,
   type RegenKey,
 } from './utils/scenarioRegen';
+import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { pickScenarioDomainExcluding, SCENARIO_DOMAINS } from './utils/scenarioDomains';
 import { bankDomainFor, bankScenarioAvoiding, allBankRows, bankAvailable, __resetBankSeen } from './utils/bankSource';
 import { pickFromBank } from './utils/scenarioBank';
@@ -419,6 +420,69 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     /regen\.key && currentDialogKey && regenKeyEquals\(regen\.key, currentDialogKey\)/.test(appSrcRegen));
   check('STRUCT-REGEN-19/003c: every regen outcome records the key it was drawn for',
     !/setRegen\(\{[^}]*\}\)/.test(appSrcRegen.replace(/setRegen\(\{[^}]*key[^}]*\}\)/g, '')));
+}
+
+/* ─────────────────────── STRUCT-REGEN-19/007: Keep must not hand the user's own
+   text to the "what the app last wrote" record. RED-APP-4 (round 4) stops a
+   Generate fill from overwriting text the user typed; `keepRegen` registers the
+   kept draw as that record (OPUS-REVIEW-171/N1) so a re-roll may replace it. The
+   fallback `kept.name !== undefined ? kept.name : liveName` put the USER's name
+   in there — `kept.name` is undefined exactly when the user typed it — and the
+   next Generate then judged the field "the app's own" and overwrote it.
+   Live: "My careful title" -> "Trail Watch" (findings/STRUCT-REGEN-19/007);
+   control without the Keep: the name survives. */
+{
+  const draw = { name: 'AI Title', description: 'A harbour story about ferries and tides.', row1: 'r1', row2: 'r2', col1: 'c1', col2: 'c2' };
+  const TYPED = 'My careful title';
+  // The whole path, as App.tsx runs it.
+  const record = (liveName: string, typedIt: boolean): GeneratedFill => {
+    const kept = keepFill(draw, shouldReplaceName(typedIt), { a: [], b: [] });
+    return {
+      // App.tsx's rule, post-fix: only what the Keep itself wrote.
+      name: kept.name ?? '',
+      desc: kept.desc,
+      row1: kept.labels.row1, row2: kept.labels.row2, col1: kept.labels.col1, col2: kept.labels.col2,
+    };
+  };
+  check('fixture precondition: Keep leaves a hand-typed name alone', shouldReplaceName(true) === false);
+  check('fixture precondition: Keep replaces a name the user never touched', shouldReplaceName(false) === true);
+  const typedCase = record(TYPED, true);
+  check('STRUCT-REGEN-19/007: the kept-draw record never carries the name the USER typed',
+    typedCase.name !== TYPED, JSON.stringify(typedCase.name));
+  const afterKeep = { name: TYPED, desc: typedCase.desc, labels: { row1: typedCase.row1, row2: typedCase.row2, col1: typedCase.col1, col2: typedCase.col2 } };
+  check('STRUCT-REGEN-19/007: after that Keep, the next Generate may NOT overwrite the form (RED-APP-4)',
+    generatedFillIsSafe(afterKeep, typedCase) === false);
+  // The pre-fix record, verbatim, must fail that same assertion — so the check
+  // above cannot be passing for an unrelated reason.
+  const preFix: GeneratedFill = { ...typedCase, name: TYPED };
+  check('fixture: the pre-fix record (name falls back to liveName) DOES let the fill through',
+    generatedFillIsSafe(afterKeep, preFix) === true);
+  // Control: a name the user never touched IS the app's own, and a re-roll may
+  // replace it — the behaviour OPUS-REVIEW-171/N1 added, still intact.
+  const untouched = record('AI Title', false);
+  check('control: a Keep that replaced the name records it, so a re-roll may replace it again',
+    untouched.name === 'AI Title'
+    && generatedFillIsSafe({ name: 'AI Title', desc: untouched.desc, labels: { row1: untouched.row1, row2: untouched.row2, col1: untouched.col1, col2: untouched.col2 } }, untouched) === true);
+  // …and the rest of the kept story is still recorded, or the re-roll flow breaks.
+  check('control: the kept description and option names are still recorded',
+    untouched.desc === keepFill(draw, true, { a: [], b: [] }).desc && untouched.row1 === 'r1');
+}
+
+/* App.tsx source: the record is built from `kept` alone. */
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const keepStart = app.indexOf('const keepRegen = (key: RegenKey) => {');
+  const keepFn = app.slice(keepStart, app.indexOf('regenButtonRef.current?.focus();', keepStart));
+  check('STRUCT-REGEN-19/007: keepRegen records only what the Keep wrote (name: kept.name ?? \'\')',
+    /name: kept\.name \?\? '',/.test(keepFn));
+  // Comment lines stripped first: this block's own explanation names `liveName`,
+  // and a check that a COMMENT can fail is a check that cannot fail for its reason.
+  const keepCode = keepFn.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  check('STRUCT-REGEN-19/007: liveName never reaches the last-generated-fill record',
+    !/lastGeneratedFillRef\.current = \{[\s\S]{0,300}?liveName/.test(keepCode));
+  check('fixture: that check DOES fire on the pre-fix code',
+    /lastGeneratedFillRef\.current = \{[\s\S]{0,300}?liveName/.test(
+      keepCode.replace("name: kept.name ?? '',", 'name: kept.name !== undefined ? kept.name : liveName,')));
 }
 
 if (failures > 0) {

@@ -3169,7 +3169,16 @@ export default function App() {
       // replace its own previous fill, instead of keeping a story written for
       // the old board and telling the user it was "text you'd already typed".
       lastGeneratedFillRef.current = {
-        name: kept.name !== undefined ? kept.name : liveName,
+        // ONLY what the Keep itself wrote. `kept.name` is undefined exactly when
+        // the user had typed the name (`shouldReplaceName(liveName !== baseline)`
+        // is false in that case and only that case), and the old fallback put the
+        // USER's text in here — telling the next Generate that the app had written
+        // it, so the all-or-nothing rule let a fresh fill overwrite a hand-typed
+        // name. That is RED-APP-4 re-opened through a door it does not watch
+        // (STRUCT-REGEN-19/007, live: "My careful title" -> "Trail Watch").
+        // '' is the right record: this ref answers "did the APP write this?", and
+        // for that field the answer is no.
+        name: kept.name ?? '',
         desc: kept.desc,
         row1: kept.labels.row1, row2: kept.labels.row2, col1: kept.labels.col1, col2: kept.labels.col2,
       };
