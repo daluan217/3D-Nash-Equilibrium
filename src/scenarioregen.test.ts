@@ -20,6 +20,7 @@ import {
   shouldReplaceName,
   regenErrorFromResponse,
   regenDroppedNote,
+  orphanedNote,
   codepointSafeSlice,
   REGEN_NAME_MAX,
   REGEN_LABEL_MAX,
@@ -483,6 +484,42 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('fixture: that check DOES fire on the pre-fix code',
     /lastGeneratedFillRef\.current = \{[\s\S]{0,300}?liveName/.test(
       keepCode.replace("name: kept.name ?? '',", 'name: kept.name !== undefined ? kept.name : liveName,')));
+}
+
+// ── STRUCT-REGEN-19/010: one orphaned-chip sentence, two callers ─────────────
+// The 409 adoption plants chips the app chose, against a description this dialog
+// may have rewritten. It owes the same sentence Keep already gives rather than a
+// second one written beside it, so `orphanedNote` takes WHERE the phrase is
+// missing from. The default must be byte-identical to what Keep printed before.
+{
+  const keepDefault = orphanedNote(['lighthouse keeper'], 'A');
+  check('orphanedNote: the default wording is unchanged for the Keep path',
+    keepDefault === 'Player A\'s highlight "lighthouse keeper" does not appear in the new story, so it is shown as not highlighted — reuse the phrase in the text or remove the chip.',
+    keepDefault);
+  const adopted = orphanedNote(['lighthouse keeper'], 'A', 'this description');
+  check('orphanedNote: the adoption path names this description instead of the new story',
+    adopted.includes('does not appear in this description') && !adopted.includes('the new story'), adopted);
+  check('orphanedNote: only the WHERE changes — the rest of the sentence is the same one',
+    adopted === keepDefault.replace('the new story', 'this description'), adopted);
+  // Number agreement (the round-16 rule) must survive the new argument.
+  const two = orphanedNote(['a', 'b'], 'B', 'this description');
+  check('orphanedNote: plural noun, verb and pronoun with a custom where',
+    /highlights .* do not appear in this description, so they are shown/.test(two)
+    && /remove the chips\.$/.test(two), two);
+  check('orphanedNote: singular noun, verb and pronoun with a custom where',
+    /highlight .* does not appear in this description, so it is shown/.test(adopted)
+    && /remove the chip\.$/.test(adopted), adopted);
+  // Mutants, each killed by the check that names it.
+  const mutants: [string, string, string][] = [
+    ['M1 the where argument is ignored (the pre-fix function)',
+      orphanedNote(['lighthouse keeper'], 'A'), 'names this description instead of the new story'],
+    ['M2 the default changes under the Keep path',
+      orphanedNote(['lighthouse keeper'], 'A', 'the story'), 'the default wording is unchanged'],
+  ];
+  check(`${mutants[0][0]} -> would fail "${mutants[0][2]}"`,
+    !mutants[0][1].includes('this description'));
+  check(`${mutants[1][0]} -> would fail "${mutants[1][2]}"`,
+    mutants[1][1] !== keepDefault);
 }
 
 if (failures > 0) {

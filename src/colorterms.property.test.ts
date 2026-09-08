@@ -621,7 +621,12 @@ if (failures > 0) {
   check('DescriptionEditor: the A chip that wins the tie is not suppressed', !!winner && winner.suppressed === null, JSON.stringify(winner));
   // The Edit dialog's 409 branch must read the same helper (structural).
   const app = readFileSync('src/App.tsx', 'utf8');
-  const branch = app.slice(app.indexOf("res.status === 409"), app.indexOf("res.status === 409") + 6000);
+  // Bounded by the branch's own end, not a magic character count: the window was
+  // 6000 characters and STRUCT-REGEN-19/010 added enough to the branch that the
+  // collision wording fell outside it — a guard that stops seeing what it checks.
+  const at409 = app.indexOf("res.status === 409");
+  const branch = app.slice(at409, app.indexOf("} else {", at409 + 200));
+  check('the 409 window is bounded by the branch, and is not empty', at409 !== -1 && branch.length > 500, String(branch.length));
   check('App.tsx 409 branch names the colliding phrase via crossPlayerUserTerms on every 409 (first and retry)',
     /crossPlayerUserTerms\(/.test(branch) && /Not saved: \$\{collisionNote\}/.test(branch) && /highlighted for both players/.test(branch));
 }

@@ -92,7 +92,7 @@ import {
 import { MenuDrawer } from './components/MenuDrawer';
 import { SavedGamesList, formatSavedGames } from './components/SavedGamesList';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { chipPaintStates, colorTermKey, colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { saveFormReducer, EMPTY_SAVE_FORM, type LabelKey, type SaveFormState } from './utils/saveFormModel';
 // aliased: `generateNote` is also the name of the state holding the rendered text.
@@ -105,6 +105,7 @@ import {
   regenErrorFromResponse,
   cleanPreview,
   regenDroppedNote,
+  orphanedNote,
   REGEN_ERROR_MESSAGES,
   REGEN_ANNOUNCE,
   type RegenKey,
@@ -588,10 +589,16 @@ export default function App() {
   const setEditDesc = (v: string) => dispatchEditForm({ type: 'typed', field: 'desc', value: v });
   const setEditLabel = (field: LabelKey, v: string) => dispatchEditForm({ type: 'typedLabel', field, value: v });
   const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });
-  // Mirrors for the 409 recovery's continuation (CodeRabbit on #142): the
-  // dialog can close, or open another game, while the refetch is in flight.
-  const editTermsRef = useRef(editTerms);
-  useEffect(() => { editTermsRef.current = editTerms; }, [editTerms]);
+  /**
+   * Mirror for the 409 recovery's continuation (CodeRabbit on #142): the dialog
+   * can close, or open another game, while the refetch is in flight. It mirrors
+   * the WHOLE form, not just the terms (STRUCT-REGEN-19/010 needs the live
+   * description too), and uses `useLayoutEffect` for the same reason
+   * `saveFormRef` does — see its comment: a passive effect leaves a window after
+   * the commit in which the ref is stale, and an async response can land in it.
+   */
+  const editFormRef = useRef(editForm);
+  useLayoutEffect(() => { editFormRef.current = editForm; }, [editForm]);
   // A monotonically increasing token: every open, close or switch of game
   // starts a new edit session (CodeRabbit on #142 — comparing the game id alone
   // let a continuation from a CLOSED-then-REOPENED session of the same game
@@ -2553,7 +2560,7 @@ export default function App() {
           const freshB: string[] = fresh.colorTermsB ?? [];
           // Judge "untouched" against the terms as they are NOW, not as
           // captured before the await (a chip added during the refetch counts).
-          const nowTerms = editTermsRef.current;
+          const nowTerms = editFormRef.current.terms;
           const untouchedA = same(nowTerms.a, orig.a);
           const untouchedB = same(nowTerms.b, orig.b);
           const adoptedA = untouchedA && !same(freshA, orig.a);
@@ -2566,7 +2573,7 @@ export default function App() {
             setEditTerms({ a: afterA, b: afterB });
             // Keep the mirror current before React re-renders (CodeRabbit CLI):
             // nothing below may read a pre-adoption snapshot.
-            editTermsRef.current = { a: afterA, b: afterB };
+            editFormRef.current = { ...editFormRef.current, terms: { a: afterA, b: afterB } };
           }
           // Re-baseline only the side(s) just adopted — a side the user HAS
           // typed into keeps its OLD baseline, so the next Save still submits
@@ -2589,15 +2596,36 @@ export default function App() {
           // to fall back to the server's generic "Reopen Edit" advice, which
           // RED-REGEN-8/002 already proved unhelpful. Name the colliding
           // phrase on every 409 while it is still there.
+          // STRUCT-REGEN-19/010: the phrases just adopted were written against
+          // ANOTHER device's description; this dialog may hold one the user
+          // rewrote, or the AI's replacement from "Save this scenario with the
+          // game". A chip that paints nothing is not silent anywhere else in
+          // this app (RED-REGEN-14/002 / `regenDroppedNote`), and the app put
+          // these chips here. Which ones paint is asked of `chipPaintStates`,
+          // the same pass the chips and ColorCoded render from — never a second
+          // rule — and the sentence is `orphanedNote`, the same one Keep uses.
+          const liveDesc = editFormRef.current.desc;
+          const paints = chipPaintStates(liveDesc, afterA, afterB);
+          const inert = (terms: readonly string[], side: 'a' | 'b') =>
+            terms.filter((t) => paints[side].get(colorTermKey(t))?.state === 'absent');
+          // Only the sides the app itself just adopted: a chip the USER placed
+          // that paints nothing is their own edit, and the chip already says so.
+          const inertA = adoptedA ? inert(afterA, 'a') : [];
+          const inertB = adoptedB ? inert(afterB, 'b') : [];
+          const orphanNotes = [
+            inertA.length > 0 ? orphanedNote(inertA, 'A', 'this description') : '',
+            inertB.length > 0 ? orphanedNote(inertB, 'B', 'this description') : '',
+          ].filter(Boolean);
           const colliding = crossPlayerUserTerms(afterA, afterB);
           const collisionNote = colliding.length > 0
             ? `${colliding.map((t) => `"${t}"`).join(', ')} ${colliding.length === 1 ? 'is' : 'are'} highlighted for both players; one phrase can belong to only one player, so remove it from Player A or Player B, then save again.`
             : '';
+          const orphanTail = orphanNotes.length > 0 ? ` ${orphanNotes.join(' ')}` : '';
           setEditError(
             changed.length > 0
-              ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.${collisionNote ? ` ${collisionNote}` : ''}`
+              ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.${collisionNote ? ` ${collisionNote}` : ''}${orphanTail}`
               : collisionNote
-                ? `Not saved: ${collisionNote}`
+                ? `Not saved: ${collisionNote}${orphanTail}`
                 : (data.error || 'Failed to update game.'),
           );
           setEditErrorNeedsAuth(false);

@@ -1010,6 +1010,43 @@ function testSaveFormReconciledWithBoard() {
       'the report prefill into the Edit dialog must carry NO colour terms — the game\'s own chips described the description this story replaces (STRUCT-REGEN-19/004)');
     ok((reportEditSlice.match(/dispatchEditForm\(/g) || []).length === 1,
       'the report → EDIT prefill must write the form exactly once (STRUCT-REGEN-19/004)');
+    // ── STRUCT-REGEN-19/010: the 409 adoption owes the orphaned-chip sentence ──
+    // The adopted phrases were written against ANOTHER device's description; this
+    // dialog may hold one the user rewrote, or the AI's replacement from "Save this
+    // scenario with the game". Which of them paint is asked of `chipPaintStates`,
+    // the pass the chips and ColorCoded already render from, and the sentence is
+    // `orphanedNote` — the one Keep uses — not a second one written beside it.
+    const four09 = app.indexOf('} else if (res.status === 409) {');
+    ok(four09 !== -1, 'the 409 branch must exist');
+    const adoptSlice = app.slice(four09, app.indexOf('} else {', four09 + 200));
+    ok(/const paints = chipPaintStates\(liveDesc, afterA, afterB\);/.test(adoptSlice),
+      'the 409 adoption must ask chipPaintStates which adopted chips paint (STRUCT-REGEN-19/010)');
+    ok(/const liveDesc = editFormRef\.current\.desc;/.test(adoptSlice),
+      '…against the LIVE description, from the same mirror the terms come from (STRUCT-REGEN-19/010)');
+    ok(/orphanedNote\(inertA, 'A', 'this description'\)/.test(adoptSlice)
+      && /orphanedNote\(inertB, 'B', 'this description'\)/.test(adoptSlice),
+      'the adoption must use orphanedNote, the sentence Keep already gives (STRUCT-REGEN-19/010)');
+    ok(/const inertA = adoptedA \? inert\(afterA, 'a'\) : \[\];/.test(adoptSlice),
+      'only the sides the app itself adopted are named — a chip the USER placed is their own edit (STRUCT-REGEN-19/010)');
+    ok(!/state === 'absent'[\s\S]{0,80}?termOccursIn|new RegExp/.test(adoptSlice),
+      'the 409 branch must not build a second "does this phrase occur?" rule of its own (STRUCT-REGEN-19/010)');
+    // Fixture: the pre-fix branch — adoption with no paint question at all — fails
+    // the first two checks above, so they cannot be passing on some other text.
+    const preFix = adoptSlice
+      .replace("const paints = chipPaintStates(liveDesc, afterA, afterB);", "")
+      .replace("const liveDesc = editFormRef.current.desc;", "");
+    ok(!/chipPaintStates\(liveDesc/.test(preFix) && !/const liveDesc = editFormRef/.test(preFix),
+      'fixture: those checks reject a 409 branch that never asks what paints');
+    // ONE mirror for the whole edit form, on the same rule as saveFormRef: a
+    // terms-only mirror could not answer "does this phrase appear in the live
+    // description?", and a passive effect leaves a window an async 409 can land in.
+    ok(!/editTermsRef/.test(app),
+      'the Edit dialog must mirror the WHOLE form, not just its terms (STRUCT-REGEN-19/010)');
+    ok(/const editFormRef = useRef\(editForm\);\s*\n\s*useLayoutEffect\(\(\) => \{ editFormRef\.current = editForm; \}, \[editForm\]\);/.test(app),
+      'editFormRef must be kept current in a useLayoutEffect, like saveFormRef (STRUCT-REGEN-19/010)');
+    ok(!/useEffect\(\(\) => \{ editFormRef\.current/.test(app),
+      'a PASSIVE effect would leave the mirror stale between commit and paint — that window is what the 409 continuation reads (STRUCT-REGEN-19/010)');
+
     // Opening a saved game loads its five pieces together, chips included.
     const openEdit = app.indexOf('const openEditGame = (game: any) => {');
     const openEditSlice = app.slice(openEdit, app.indexOf('setIsEditModalOpen(true);', openEdit));

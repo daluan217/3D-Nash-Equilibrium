@@ -316,11 +316,22 @@ export function shadowedNote(items: readonly ShadowedChip[], player: 'A' | 'B'):
     : `Player ${player}'s highlights ${parts} are shown in the other player's colour, because the longer phrases claim them — remove the chips, or highlight the longer phrases for Player ${player}.`;
 }
 
-export function orphanedNote(terms: readonly string[], player: 'A' | 'B'): string {
+/**
+ * `where` names the text the phrase is missing from. It defaults to "the new
+ * story" — the Keep path this note was written for — and the 409 adoption path
+ * passes "this description" (STRUCT-REGEN-19/010): the app put those chips on
+ * the form, so it owes the same sentence Keep already gives, rather than a
+ * second one written from scratch beside it.
+ */
+export function orphanedNote(
+  terms: readonly string[],
+  player: 'A' | 'B',
+  where = 'the new story',
+): string {
   const quoted = terms.map((t) => `"${t}"`).join(', ');
   const one = terms.length === 1;
   // CodeRabbit CLI (this branch): noun, verb and pronoun agree in number.
-  return `Player ${player}'s highlight${one ? '' : 's'} ${quoted} ${one ? 'does' : 'do'} not appear in the new story, so ${one ? 'it is' : 'they are'} shown as not highlighted — reuse the ${one ? 'phrase' : 'phrases'} in the text or remove the ${one ? 'chip' : 'chips'}.`;
+  return `Player ${player}'s highlight${one ? '' : 's'} ${quoted} ${one ? 'does' : 'do'} not appear in ${where}, so ${one ? 'it is' : 'they are'} shown as not highlighted — reuse the ${one ? 'phrase' : 'phrases'} in the text or remove the ${one ? 'chip' : 'chips'}.`;
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────
