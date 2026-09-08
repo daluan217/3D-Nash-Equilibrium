@@ -1284,7 +1284,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           hoverinfo: 'skip', showlegend: false,
         } as any);
         const goldPts: [number, string, boolean][] =
-          [[zGa, `A = ${labelA}`, true], [zGb, `B = ${labelB}`, false]];
+          [[zGa, `A ${labelA}`, true], [zGb, `B ${labelB}`, false]];  // relation is inside the label
         for (const [z, label, isA] of goldPts) {
           // The labels are scene ANNOTATIONS, not trace text: gl3d perspective-
           // scales trace text glyphs with depth, so on the two-corner step the

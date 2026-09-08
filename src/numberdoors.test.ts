@@ -250,7 +250,17 @@ const EXEMPTION_MARKER = 'not-a-rendering:';
 // or a `* not-a-rendering:` continuation line). Prose that merely mentions the
 // token ("the not-a-rendering: annotation is explained above") exempts nothing
 // (Opus review of #181, 2026-09-08).
-const EXEMPTION_RE = /(?:\/\/|\/\*|^\s*\*)\s*not-a-rendering:/;
+const EXEMPTION_RE = /^(?:\/\/|\/\*|\*)\s*not-a-rendering:/;
+/** The marker must follow the FIRST comment delimiter on the line (or open a
+ *  `*` continuation line) — `// see /* not-a-rendering:` opens nothing
+ *  (CodeRabbit CLI on 2d0fd58). */
+function opensWithMarker(line: string): boolean {
+  const t = line.trim();
+  if (t.startsWith('*') || t.startsWith('//') || t.startsWith('/*')) return EXEMPTION_RE.test(t);
+  const a = line.indexOf('//'), b = line.indexOf('/*');
+  const idx = a === -1 ? b : b === -1 ? a : Math.min(a, b);
+  return idx !== -1 && EXEMPTION_RE.test(line.slice(idx));
+}
 // A door is any of the three number-to-string methods, with or without a space
 // before the parenthesis: `.toFixed(`, `.toFixed (`, `.toPrecision(`,
 // `.toExponential(`. A literal `.toFixed(` search missed the other three
@@ -267,12 +277,12 @@ const DOOR_RE = /\.\s*(?:toFixed|toPrecision|toExponential)\s*\(/;
  * against the thing it excuses.
  */
 function isExempt(lines: string[], i: number): boolean {
-  if (EXEMPTION_RE.test(lines[i])) return true;
+  if (opensWithMarker(lines[i])) return true;
   for (let j = i - 1; j >= 0; j--) {
     const s = lines[j].trim();
     if (s === '') return false;                       // a blank line ends the block
     if (!(s.startsWith('//') || s.startsWith('*') || s.startsWith('/*'))) return false;
-    if (EXEMPTION_RE.test(lines[j])) return true;
+    if (opensWithMarker(lines[j])) return true;
   }
   return false;
 }
@@ -380,6 +390,7 @@ function testTheFixedSitesRenderThroughTheFamily(): void {
   const plot = readFileSync('src/components/PlotlyView.tsx', 'utf8');
   ok(plot.includes('const labelA = payoffProseRhs(zAraw);') && plot.includes('const labelB = payoffProseRhs(zBraw);'),
     'B2e the tour callout labels render through the payoff formatter, relation included');
+  ok(!/= \$\{label[AB]\}/.test(plot), 'B2e no second callout construction prepends its own "=" to a relation-bearing label');
   ok(plot.includes('text: [`${who} ${label}`]') && !plot.includes('${who} = ${label}'),
     'B2e the callout puts the relation in the operator, never "= less than 0.001"');
   ok(!/const label[AB] = r3\(/.test(plot), 'B2e no callout label interpolates a bare r3()');
@@ -439,6 +450,9 @@ function testNoUnannotatedDoors(): void {
   ok(scanText(['// not-a-rendering: a setting', 'const a = v.toFixed(3);'].join('\n')) === 0
     && scanText('const a = v.toFixed(3); /* not-a-rendering: a setting */') === 0,
     'B3e the marker opening a comment still exempts (control)');
+  ok(scanText(['// see /* not-a-rendering: not an opener', 'const a = v.toFixed(3);'].join('\n')) === 1
+    && scanText('const a = v.toFixed(3); // see /* not-a-rendering: not an opener') === 1,
+    'B3e a marker after an embedded "/*" inside a line comment exempts nothing');
   ok(scanText(['export function fmtPayoffProse(v: number): string {', '  return v.toFixed(3);', '}', 'export const probLabels = {', '  short: (v: number) => v.toFixed(3),', '};'].join('\n')) === 1,
     'B3f an object literal after a formatter-family function is not covered by it');
 
