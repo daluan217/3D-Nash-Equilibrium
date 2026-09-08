@@ -124,12 +124,6 @@ const sameLabels = (a: SaveFormLabels, b: SaveFormLabels) =>
 /** RED-REGEN-14/001 + CodeRabbit on #178: whitespace-only labels count as blank. */
 const labelsBlank = (l: SaveFormLabels) => [l.row1, l.row2, l.col1, l.col2].every((s) => !s.trim());
 
-/** True when nothing in the form is the user's own writing. */
-export function formIsAllGenerated(s: SaveFormState): boolean {
-  return (['name', 'desc', 'labels', 'terms'] as const)
-    .every((f) => s.provenance[f] === 'empty' || s.provenance[f] === 'generated' || s.provenance[f] === 'from-board');
-}
-
 export function saveFormReducer(state: SaveFormState, action: SaveFormAction): SaveFormState {
   switch (action.type) {
     case 'typed': {

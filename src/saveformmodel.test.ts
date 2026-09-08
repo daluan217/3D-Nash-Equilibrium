@@ -35,7 +35,6 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   saveFormReducer,
-  formIsAllGenerated,
   EMPTY_SAVE_FORM,
   EMPTY_LABELS,
   type SaveFormState,
@@ -189,10 +188,19 @@ function testNamedDefects(): void {
     ]);
     check('RED-APP-4: typing marks the field as the user\'s',
       typed.provenance.desc === 'typed' && typed.provenance.labels === 'typed' && typed.provenance.terms === 'typed');
-    check('RED-APP-4: a form the user has typed into is not "all generated"',
-      !formIsAllGenerated(typed));
+    // The provenance IS the app's "may a generated fill overwrite this?" answer
+    // (STRUCT-REGEN-19/005 wires `provenance.labels === 'from-board'` straight
+    // into `generatedFillIsSafe`), so it is asserted here as such rather than
+    // through a helper whose only caller was this test.
+    const appsOwn = (s: SaveFormState) => (['name', 'desc', 'labels', 'terms'] as const)
+      .every((f) => s.provenance[f] !== 'typed');
+    check('RED-APP-4: a form the user has typed into is not the app\'s own work', !appsOwn(typed));
     const fresh = saveFormReducer(EMPTY_SAVE_FORM, { type: 'openForBoard', boardKey: B1, presetLabels: PRESET });
-    check('a form holding only board-derived names IS all generated', formIsAllGenerated(fresh));
+    check('a form holding only board-derived names IS the app\'s own work', appsOwn(fresh));
+    check('board-derived labels are exactly what STRUCT-REGEN-19/005 hands generatedFillIsSafe',
+      fresh.provenance.labels === 'from-board');
+    check('one keystroke into a label field takes that away again',
+      saveFormReducer(fresh, { type: 'typedLabel', field: 'col1', value: 'Mine' }).provenance.labels === 'typed');
   }
 
   // A successful save leaves nothing behind — no board, no chips, no baseline.
