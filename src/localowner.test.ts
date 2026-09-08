@@ -971,5 +971,49 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     !(!/setDeadSession\(null\)/.test(saveNameCheckUngated)));
 }
 
+// ── RED-DESKTOP-19/001 — every account-scoped request in App.tsx reports its 401 to the shared
+// dead-session helper. The instance was adoptLocalGames (POST /api/games/adopt-local): the header
+// kept "@user / Log out" for a session the server had killed. The INVARIANT is the family: any
+// request that sends an Authorization header must, within its own handler, call
+// handleDeadSessionResponse — except the /api/auth/me effect, which IS the session check and
+// clears the token itself (updateAuthToken(null) in its catch).
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const familyCheck = (src: string): { sites: number; unreported: string[] } => {
+    // A site is a request that carries the token; the `authHeaders` DEFINITION (`... } : {}`) is not one.
+    const re = /(?:'Authorization': `Bearer \$\{[^}]+\}` \}(?! : \{\})|\.\.\.authHeaders\(\)|headers: authHeaders\(\))/g;
+    const unreported: string[] = []; let m: RegExpExecArray | null; let sites = 0;
+    while ((m = re.exec(src))) {
+      sites++;
+      // The window is the rest of the ENCLOSING handler: up to the next top-level
+      // declaration inside App (2-space `const`/`function`/`useEffect`), so a helper call in
+      // the NEXT handler cannot vouch for this one.
+      const next = src.slice(m.index).search(/\n  (?:const|function|useEffect)\b/);
+      const window = src.slice(m.index, next === -1 ? undefined : m.index + next);
+      const isMeEffect = /\/api\/auth\/me/.test(src.slice(Math.max(0, m.index - 300), m.index));
+      if (isMeEffect) { if (!/updateAuthToken\(null\)/.test(window)) unreported.push(`auth/me effect @${m.index}`); continue; }
+      if (!/handleDeadSessionResponse\(res, [^)]+\)/.test(window)) unreported.push(`@${m.index}: ${src.slice(m.index, m.index + 60).replace(/\s+/g, ' ')}`);
+    }
+    return { sites, unreported };
+  };
+  const real = familyCheck(app);
+  check('App.tsx: at least 6 account-scoped request sites are found (the family, not one instance)', real.sites >= 6, `sites=${real.sites}`);
+  check('App.tsx: every account-scoped request reports its 401 to handleDeadSessionResponse (adoptLocalGames included)', real.unreported.length === 0, real.unreported.join(' | '));
+  check('adoptLocalGames closes ONLY the offer that still carries this request\'s token (a stale 401 after a re-login leaves the new offer alone)',
+    /const wasCurrent = authTokenRef\.current === requestToken;\s*if \(handleDeadSessionResponse\(res, requestToken\)\) \{\s*if \(wasCurrent\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(prev => \[\.\.\.prev, 'Your session ended before the move\./.test(app));
+  // CodeRabbit (#176): the session-ended log line must sit INSIDE the same guard — a stale
+  // 401 must not append a false "session ended" message. Mutant: log moved out of the guard.
+  const logOutside = app.replace(
+    "            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));\n            setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);\n          }\n",
+    "            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));\n          }\n          setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);\n");
+  check('fixture: moving the session-ended log outside the wasCurrent guard actually landed', logOutside !== app);
+  check('fixture: a session-ended log outside the wasCurrent guard is rejected by the exact-shape check',
+    !/if \(wasCurrent\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(/.test(logOutside));
+  // Known-positive: the exact shipped defect — adoptLocalGames without the helper call.
+  const mutant = app.replace(/        if \(handleDeadSessionResponse\(res, requestToken\)\) \{[\s\S]*?\n        \}\n/, '');
+  check('fixture: removing adoptLocalGames\'s helper call actually landed', mutant !== app);
+  check('fixture: the unfixed adoptLocalGames is flagged by the family check', familyCheck(mutant).unreported.length === 1, familyCheck(mutant).unreported.join(' | '));
+}
+
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }
 console.log(`✓ local owner: ${sites.length} resolver sites — game routes fall back to the device owner, account deletion and /auth/me keep the strict check, provisioning and adoption are desktop-only, adoption re-parents`);
