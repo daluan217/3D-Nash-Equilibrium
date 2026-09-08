@@ -2679,6 +2679,21 @@ export default function App() {
     setPayoffs(gc);
     setRawPayoffs(rawOf(gc));
     handleReset();
+    // RED-REGEN-13/001 + OPUS-REVIEW-171/N1: the board is now `gc`. Text the
+    // form holds for the OLD board is stale — unless the user typed or edited it
+    // (the all-or-nothing safety rule below keeps that and the note says so).
+    // Decided HERE, before the report call, so what the form keeps never
+    // depends on whether that call succeeds; and keyed on `gc` (what is on the
+    // board), not `g`.
+    const boardKey = boardKeyOf(gc);
+    if (saveFormBoardRef.current !== boardKey && generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current)) {
+      setSaveName('');
+      saveNameBaselineRef.current = '';
+      setSaveDesc('');
+      setSaveTerms({ a: [], b: [] });
+      lastGeneratedFillRef.current = null;
+      saveFormBoardRef.current = boardKey;
+    }
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
     try {
       const res = await fetch(getApiUrl('/api/report'), {
@@ -2691,10 +2706,6 @@ export default function App() {
       // Prefill only from a validated invention — an unvalidated story could
       // contradict the very equilibria the user just asked for.
       const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;
-      // RED-REGEN-13/001: the board is now `g` — whatever the form holds from
-      // here on (the AI fill, or the user's own text kept by the safety rule)
-      // is the text for THIS board, so a same-board reopen keeps it.
-      saveFormBoardRef.current = boardKeyOf(g);
       if (sc) {
         const gen: GeneratedFill = {
           name: (sc.name ?? '').slice(0, 40),
@@ -2711,6 +2722,8 @@ export default function App() {
           setSaveDesc(gen.desc);
           setSaveLabels({ row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 });
           lastGeneratedFillRef.current = gen;
+          // The AI fill replaced the form: its text is for THIS board.
+          saveFormBoardRef.current = boardKey;
           setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
         } else {
           setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/option names you'd already typed — the AI wrote a scenario too, but didn't touch your text. Clear ALL of those fields (not just one) to let it fill them in on the next Generate.`);
@@ -2990,6 +3003,15 @@ export default function App() {
       setSaveDesc(kept.desc);
       setSaveLabels(kept.labels);
       setSaveTerms(kept.terms);
+      // OPUS-REVIEW-171/N1: a kept draw is GENERATED text, not the user's own —
+      // "…or generate a new game" may replace it (unedited) exactly as it may
+      // replace its own previous fill, instead of keeping a story written for
+      // the old board and telling the user it was "text you'd already typed".
+      lastGeneratedFillRef.current = {
+        name: kept.name !== undefined ? kept.name : liveName,
+        desc: kept.desc,
+        row1: kept.labels.row1, row2: kept.labels.row2, col1: kept.labels.col1, col2: kept.labels.col2,
+      };
     }
     // RED-REGEN-11/001: a draw's own actor noun silently truncated by the
     // per-side cap must say so, same as a manual highlight already does —
