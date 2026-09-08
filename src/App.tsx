@@ -881,7 +881,11 @@ export default function App() {
     void (async () => {
       const res = await api.request('/api/auth/me');
       if (cancelled || res.stale) return;
-      if (res.ok) { setUser(res.data); return; }
+      // `dataParsed` matters as much as `ok`: a 200 whose body did not parse
+      // (a captive portal's HTML, a truncated response) would commit `{}` as
+      // the signed-in identity and render a user with no name. Save and Edit
+      // have always required both; so does this (CodeRabbit CLI on this branch).
+      if (res.ok && res.dataParsed) { setUser(res.data); return; }
       // Either way the identity is unconfirmed, so nothing may keep claiming
       // one: a database-mode switch re-runs this probe with a DIFFERENT stored
       // token, and leaving `user` set would show the previous account's name in
@@ -1002,7 +1006,10 @@ export default function App() {
       // A failed request is not an empty library (CodeRabbit on #142): a
       // transient 500 during the 409 recovery must not wipe the saved list.
       // `kind !== 'response'` (offline, timeout) is the same story.
-      if (!res.ok) return undefined;
+      // Same rule for the library, and one more: `res.data` is `{}` when the
+      // body did not parse, and committing that replaces the ARRAY every
+      // renderer maps over (CodeRabbit CLI on this branch).
+      if (!res.ok || !res.dataParsed || !Array.isArray(res.data)) return undefined;
       const rows = res.data;
       if (seq !== gamesFetchSeqRef.current) return undefined;
       setUserCustomGames(rows);

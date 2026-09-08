@@ -37,6 +37,18 @@ const BASE = `http://localhost:${PORT}`;
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
 
+/** Wait for a killed child to be reaped, but never hang: a process that had
+ *  already exited emits nothing more, and `once('exit')` would then wait for
+ *  an event that will never come (CodeRabbit CLI on this branch). */
+function reaped(child, ms = 5000) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((res) => {
+    const done = () => { clearTimeout(t); res(); };
+    const t = setTimeout(done, ms);
+    child.once('exit', done);
+  });
+}
+
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -133,7 +145,7 @@ try {
   //      directory so we get a real game id to PATCH/DELETE.
 } finally {
   server?.kill('SIGKILL');
-  await new Promise((res) => server?.once('exit', res) ?? res());
+  await reaped(server);
   chmodSync(userData, 0o755); // restore so rmSync can clean up
   rmSync(userData, { recursive: true, force: true });
 }
@@ -224,7 +236,7 @@ try {
     `status=${afterFailedDelete.status} ids=${JSON.stringify((afterFailedDelete.json ?? []).map((g) => g.id))}`);
 } finally {
   server2.kill('SIGKILL');
-  await new Promise((res) => server2.once('exit', res) ?? res());
+  await reaped(server2);
   chmodSync(userData2, 0o755);
   rmSync(userData2, { recursive: true, force: true });
 }
@@ -335,7 +347,7 @@ try {
   record('CONTROL: the session is dead once the deletion actually happened', meGone.status === 401, `status=${meGone.status}`);
 } finally {
   server3.kill('SIGKILL');
-  await new Promise((res) => server3.once('exit', res) ?? res());
+  await reaped(server3);
   chmodSync(userData3, 0o755);
   rmSync(userData3, { recursive: true, force: true });
 }

@@ -131,12 +131,18 @@ const CASES: Case[] = [
   { name: 'STALE token (delayed response after re-auth), 401 -> died, but the CURRENT session is left alone',
     committed: 'tok-B', requestToken: 'tok-A', transport: { kind: 'status', status: 401 },
     expect: { sessionDied: true, sessionCleared: false, cleared: false } },
-  { name: 'no token sent, none committed, 401 -> cleared (both null, they match)',
+  // A request that attached NO credential cannot prove one died: the desktop
+  // local owner lists and saves games with no token at all, and a 401 there is
+  // the server declining an anonymous caller, not a session expiring. Before
+  // this, the first of these cleared a session that never existed, and both
+  // reported `sessionDied` to callers whose alert reads "Invalid or expired
+  // session." (CodeRabbit CLI on this branch).
+  { name: 'no token sent, none committed, 401 -> nothing died and nothing is cleared',
     committed: null, requestToken: null, transport: { kind: 'status', status: 401 },
-    expect: { sessionDied: true, sessionCleared: true, cleared: true } },
-  { name: 'no token sent but one has since been committed, 401 -> does NOT clear it',
+    expect: { sessionDied: false, sessionCleared: false, cleared: false } },
+  { name: 'no token sent but one has since been committed, 401 -> says nothing about it',
     committed: 'tok-B', requestToken: null, transport: { kind: 'status', status: 401 },
-    expect: { sessionDied: true, sessionCleared: false, cleared: false } },
+    expect: { sessionDied: false, sessionCleared: false, cleared: false } },
   { name: 'matching token, 200 -> not an auth failure, nothing cleared',
     committed: 'tok-A', requestToken: 'tok-A', transport: { kind: 'status', status: 200, body: { ok: 1 } },
     expect: { ok: true, sessionDied: false, sessionCleared: false, cleared: false } },
@@ -287,11 +293,30 @@ function mutantTreatsAnyFailureAsDead(deps: AccountApiDeps) {
     },
   };
 }
+function mutantAnonymous401IsDeadSession(deps: AccountApiDeps) {
+  // Drop the "a credential was attached" half of the rule: every 401 becomes a
+  // dead session, including one answering a request that presented nothing.
+  const real = createAccountApi(deps);
+  return {
+    request: async (p: string, i?: any) => {
+      const res = await real.request(p, i);
+      if (res.status === 401 && !res.stale && !res.sessionDied) return { ...res, sessionDied: true };
+      return res;
+    },
+  };
+}
 {
   const staleTokenCase = CASES.find((c) => c.name.startsWith('STALE token'))!;
   const m1 = await runCase(staleTokenCase, mutantIgnoresStaleToken as any);
   check('mutant: dropping the stale-token comparison makes the STALE-token case fail (so the case really tests it)',
     m1.cleared === true, `cleared=${m1.cleared}`);
+
+  for (const name of ['no token sent, none committed', 'no token sent but one has since been committed']) {
+    const c = CASES.find((x) => x.name.startsWith(name))!;
+    const m3 = await runCase(c, mutantAnonymous401IsDeadSession as any);
+    check(`mutant: treating an anonymous 401 as a dead session makes "${name}" fail (so the case really tests it)`,
+      m3.res.sessionDied === true, `sessionDied=${m3.res.sessionDied}`);
+  }
 
   for (const name of ['503 (backend redeploying)', 'network failure (offline / refused)', 'our own deadline fired']) {
     const c = CASES.find((x) => x.name.startsWith(name))!;
@@ -441,6 +466,23 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
     offenders.length === 0, offenders.join(', '));
   check('fixture: the deleted `clearTokenIfExpired` shape would be caught by that scan',
     /res\.status === 401/.test('const clearTokenIfExpired = (res) => { if (res.status === 401) updateAuthToken(null); };'));
+}
+
+// An unreadable 2xx is neither an identity nor a library. Both commit sites in
+// App.tsx must require `dataParsed` (and the list, an actual array) before the
+// body reaches state — a captive portal's 200 HTML otherwise renders a user
+// with no name, or replaces the array every row renderer maps over.
+{
+  const appSrc = codeOnly(readFileSync('src/App.tsx', 'utf8'));
+  const IDENTITY_PIN = /if \(res\.ok && res\.dataParsed\) \{ setUser\(res\.data\); return; \}/;
+  const LIST_PIN = /if \(!res\.ok \|\| !res\.dataParsed \|\| !Array\.isArray\(res\.data\)\) return undefined;/;
+  check('the identity probe commits only a parsed 2xx body', IDENTITY_PIN.test(appSrc));
+  check('the saved-game list commits only a parsed 2xx body that is an array', LIST_PIN.test(appSrc));
+  // Known-positives: each pin refuses the shape it replaced.
+  check('fixture: the old unguarded identity commit would be caught',
+    !IDENTITY_PIN.test('      if (res.ok) { setUser(res.data); return; }'));
+  check('fixture: the old unguarded list commit would be caught',
+    !LIST_PIN.test('      if (!res.ok) return undefined;\n      const rows = res.data;'));
 }
 
 if (failures > 0) { console.error(`✗ api client: ${failures} failed`); process.exit(1); }

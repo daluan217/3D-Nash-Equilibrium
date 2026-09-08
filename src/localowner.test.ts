@@ -756,8 +756,8 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
       !/updateAuthToken\(/.test(codeOnly(slice)), codeOnly(slice).replace(/\s+/g, ' ').slice(0, 200));
     check('/api/auth/me stops claiming an identity it could not confirm, whatever the failure was',
       /setUser\(null\);\s*if \(res\.sessionDied\) return;/.test(slice));
-    check('/api/auth/me sets the user ONLY from a response it accepted',
-      /if \(res\.ok\) \{ setUser\(res\.data\); return; \}/.test(slice));
+    check('/api/auth/me sets the user ONLY from a response it accepted AND could read',
+      /if \(res\.ok && res\.dataParsed\) \{ setUser\(res\.data\); return; \}/.test(slice));
     check('/api/auth/me ignores a stale response', /if \(cancelled \|\| res\.stale\) return;/.test(slice));
   }
 
@@ -812,15 +812,15 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   const jsonIdx = client.indexOf('await res.json()');
   const staleIdx = client.indexOf('const stale = requestGen !== deps.currentGen()');
   const gateIdx = client.indexOf('if (stale) {');
-  const diedIdx = client.indexOf('const sessionDied = res.status === 401;');
+  const diedIdx = client.indexOf('const sessionDied = res.status === 401 && requestToken !== null;');
   const clearIdx = client.indexOf('if (sessionCleared) deps.clearSession();');
   check(`the client reads the body, THEN judges staleness, THEN decides the session (json@${jsonIdx} stale@${staleIdx} gate@${gateIdx} died@${diedIdx} clear@${clearIdx})`,
     [jsonIdx, staleIdx, gateIdx, diedIdx, clearIdx].every((i) => i !== -1)
     && jsonIdx < staleIdx && staleIdx < gateIdx && gateIdx < diedIdx && diedIdx < clearIdx);
   check('the client clears ONLY when the 401\'s token is still the committed one',
     /const sessionCleared = sessionDied && deps\.currentToken\(\) === requestToken;/.test(client));
-  check('the client treats ONLY a 401 as a dead session (never a 5xx, a timeout or a network failure)',
-    /const sessionDied = res\.status === 401;/.test(client)
+  check('the client treats ONLY a 401 ON A REQUEST THAT PRESENTED A CREDENTIAL as a dead session (never a 5xx, a timeout, a network failure, or an anonymous call)',
+    /const sessionDied = res\.status === 401 && requestToken !== null;/.test(client)
     && /return \{ \.\.\.base, kind, status: 0, ok: false, data: \{\}, dataParsed: false, stale, error \};/.test(client));
 
   // Known-positives for the two pins above.
@@ -835,7 +835,11 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   check('fixture: dropping the token comparison actually landed', unconditionalClear !== client);
   check('fixture: an unconditional clear (the pre-#163 shape) fails the stale-token pin',
     !/const sessionCleared = sessionDied && deps\.currentToken\(\) === requestToken;/.test(unconditionalClear));
-  const anyFailureDead = client.replace('const sessionDied = res.status === 401;', 'const sessionDied = !res.ok;');
+  const anyFailureDead = client.replace('const sessionDied = res.status === 401 && requestToken !== null;', 'const sessionDied = !res.ok;');
+  const anonymousDead = client.replace('const sessionDied = res.status === 401 && requestToken !== null;', 'const sessionDied = res.status === 401;');
+  check('fixture: dropping the "a credential was attached" half actually landed', anonymousDead !== client);
+  check('fixture: a 401 answering an anonymous request fails the dead-session pin',
+    !/const sessionDied = res\.status === 401 && requestToken !== null;/.test(anonymousDead));
   check('fixture: treating any failure as a dead session actually landed', anyFailureDead !== client);
   check('fixture: the STRUCT-DESKTOP-19/001 shape (any failure is a dead session) fails the 401-only pin',
     !/const sessionDied = res\.status === 401;/.test(anyFailureDead));

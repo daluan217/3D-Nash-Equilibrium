@@ -181,7 +181,11 @@ export function createAccountApi(deps: AccountApiDeps): AccountApi {
       }
       // ONLY a 401 is a dead session, and only for a token that is still the
       // committed one. Everything else leaves the credential untouched.
-      const sessionDied = res.status === 401;
+      // A request that attached NO credential cannot prove the stored one
+      // died either (CodeRabbit CLI on this branch): the desktop local owner
+      // lists and writes games with no token at all, and a 401 there is the
+      // server declining an anonymous caller, not a session expiring.
+      const sessionDied = res.status === 401 && requestToken !== null;
       const sessionCleared = sessionDied && deps.currentToken() === requestToken;
       if (sessionCleared) deps.clearSession();
       return { ...base, kind: 'response', status: res.status, ok: res.ok, data, dataParsed, stale: false, sessionDied, sessionCleared, error: null };
