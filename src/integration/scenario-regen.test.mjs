@@ -423,8 +423,13 @@ try {
   // ═══════════════════════════════════════════════════════════════════════
   // 8. DESKTOP — bank first (0 provider calls even with credentials
   //    configured), reachable with NO credentials at all, never rate-limited.
-  //    Actor nouns are retained only for regenerate; ordinary scenario-only
-  //    report draws must stay on their frozen noun-free contract.
+  //    Actor nouns reach BOTH routes: a bank row's role noun is often the only
+  //    phrase in its description that either player's colour can attach to, and
+  //    /api/report stripping it left 84 of 2442 shipped rows rendering a
+  //    player's half of the story with no highlight anywhere. This section used
+  //    to assert the opposite ("ordinary draws stay noun-free"), which is the
+  //    contract that CAUSED that (dd15cf9); see server.ts and
+  //    src/utils/scenarioRenderability.ts. STRUCT-CLOUD-19/001.
   // ═══════════════════════════════════════════════════════════════════════
   {
     calls = 0; mode = 'story';
@@ -441,7 +446,7 @@ try {
       health.json?.capabilities?.scenarioRegen === true, `capabilities=${JSON.stringify(health.json?.capabilities)}`);
     let none429 = true;
     let bankActorRows = 0;
-    let ordinaryActorLeaks = 0;
+    let ordinaryActorRows = 0;
     let regenInvalid = 0;
     let ordinaryInvalid = 0;
     for (let i = 0; i < 25; i++) {
@@ -458,8 +463,15 @@ try {
       const ordinary = await call('POST', '/api/report', { body: { payoffs: PAYOFFS, scenarioOnly: true } });
       if (ordinary.status !== 200 || !isValidScenarioShape(ordinary.json?.scenario)) {
         ordinaryInvalid++;
-      } else if (ordinary.json.scenario.actorA || ordinary.json.scenario.actorB) {
-        ordinaryActorLeaks++;
+      } else {
+        const osc = ordinary.json.scenario;
+        // Same test as the regenerate route above, on the route that used to
+        // strip them: nouns present AND stated verbatim in the description, so
+        // this cannot pass on an empty array or on a noun the highlighter
+        // would never find.
+        if (osc.actorA?.length && osc.actorB?.length
+          && osc.actorA.every((term) => osc.description.includes(term))
+          && osc.actorB.every((term) => osc.description.includes(term))) ordinaryActorRows++;
       }
     }
     record('desktop: 25 regenerate calls, never a 429 (hosted-only rate limit lifted under IS_ELECTRON)', none429);
@@ -469,8 +481,11 @@ try {
       `invalid/malformed=${ordinaryInvalid}/25`);
     record('desktop: bank actor nouns survive the regenerate response wire verbatim', bankActorRows > 0,
       `actor-bearing rows=${bankActorRows}/25`);
-    record('desktop: ordinary bank scenario draws stay noun-free', ordinaryActorLeaks === 0,
-      `actor-bearing ordinary draws=${ordinaryActorLeaks}/25`);
+    // 2090 of the 2442 shipped rows declare actor nouns, so 25 draws finding
+    // none would mean the route is stripping them, not that the draw was
+    // unlucky (0.144^25). Reverting the server fix fails exactly here.
+    record('desktop: ordinary bank scenario draws KEEP their actor nouns (STRUCT-CLOUD-19/001)',
+      ordinaryActorRows > 0, `actor-bearing ordinary draws=${ordinaryActorRows}/25`);
     await stop();
   }
 
@@ -501,12 +516,24 @@ try {
     const ordinaryFallback = await call('POST', '/api/report', {
       body: { payoffs: PAYOFFS, scenarioOnly: true },
     });
-    record('timeout: the ordinary report fallback remains noun-free',
+    // Whether THIS one drawn row declares nouns is the bank's business, so the
+    // assertion is the policy rather than the row: nothing is stripped, and a
+    // noun that survives is one the highlighter can actually find. Section 8's
+    // 25-draw loop is where the keep-the-nouns contract is pinned.
+    //
+    // Case-insensitively, because that is what the highlighter is: a row's noun
+    // is written into the description as the sentence starts it ("A small
+    // microbrewery ...") while the declaration is lower case, and `termOccursIn`
+    // — the real predicate — folds case. A case-SENSITIVE test here fails on
+    // correct rows, which is how this check first ran.
+    const ofsc = ordinaryFallback.json?.scenario;
+    const stated = (terms) => !terms || terms.every((term) =>
+      (ofsc.description ?? '').toLowerCase().includes(String(term).toLowerCase()));
+    record('timeout: the ordinary report fallback carries its row through unedited',
       ordinaryFallback.status === 200
         && ordinaryFallback.json?.scenarioSource === 'bank-fallback'
-        && !ordinaryFallback.json?.scenario?.actorA
-        && !ordinaryFallback.json?.scenario?.actorB,
-      `status=${ordinaryFallback.status} scenario=${JSON.stringify(ordinaryFallback.json?.scenario)}`);
+        && stated(ofsc?.actorA) && stated(ofsc?.actorB),
+      `status=${ordinaryFallback.status} scenario=${JSON.stringify(ofsc)}`);
     await stop();
   }
 

@@ -9,50 +9,49 @@
  * RED-DESKTOP-9/001 (2026-09-04) named the defect: a description that gives a
  * player no term the highlighter can match "renders that player's half of the
  * story with NO highlight at all". That was fixed for the BANK ARTIFACT — an
- * extraction+drop pass plus the re-screen in `src/scenariobank.test.ts`. The
- * CLOUD path never got the screen, and `/api/report` actively removes the term
- * the bank fix leaned on (`withoutActorNouns`), so the same defect is alive on
- * the path that finding did not cover: measured 84 of 2,442 shipped bank rows
- * (3.44%) and 2 of 146 gate-passing live draws served through `/api/report`
- * (STRUCT-CLOUD-19/001, `_gen/cloud19_colour2.ts`).
+ * extraction+drop pass plus the re-screen in `src/scenariobank.test.ts` — and
+ * the fix has held there: 0 of 2,442 shipped rows fail this gate.
+ *
+ * THE CLOUD PATH NEVER GOT A SCREEN AT ALL, and the bank's re-screen cannot
+ * stand in for one: it certifies an artifact, and a live draw is not in it.
+ * Measured on 146 gate-passing live draws taken on the production call shape,
+ * 2 (1.37%) name nothing the reader can attribute to one of the two players
+ * (STRUCT-CLOUD-19/001, `_gen/cloud19_draw.ts` + `_gen/cloud19_colour2.ts`).
+ * That is what this gate is for. It fires on 0 bank rows by construction, so
+ * the artifact is its negative control, not its justification.
  *
  * WHY THIS MODULE EXISTS RATHER THAN ANOTHER PREDICATE NEXT TO THE LAST ONE.
  * `scenarioIsColourable` re-derives the renderer's term lists by hand, and the
  * copy has drifted: the renderer's builders end in `dropAmbiguous`, which
  * deletes any term appearing on BOTH players' lists so a shared action is never
  * painted as one player's. The screen omits that step, so it reports
- * "colourable for both players" on 515 of 2,442 bank rows (21.09%) the renderer
- * paints nothing on (STRUCT-CLOUD-19/002). Everything here therefore asks the
- * renderer's OWN builders — `colorTermsFor` and `regenPreviewColorTerms`, the
- * exact functions the two call sites in `App.tsx` use — instead of rebuilding
- * a third idea of what gets coloured. A drift is then not possible: there is
- * one implementation and this file calls it.
+ * "colourable for both players" on 244 of 2,442 bank rows (9.99%) the renderer
+ * paints nothing on for one side (STRUCT-CLOUD-19/002). Everything here therefore asks the
+ * renderer's OWN builder -- `regenPreviewColorTerms`, the exact function
+ * `App.tsx` renders both scenario cards with -- instead of rebuilding a third
+ * idea of what gets coloured. A drift is then not possible: there is one
+ * implementation and this file calls it.
  *
- * AMBIGUITY IS NOT ABSENCE, AND ONLY ABSENCE IS GATED. Of those 515, 431 are
+ * THERE IS ONE AUDIENCE, because there is one builder. This module used to take
+ * a `ColourAudience` ('report-card' | 'regen-preview') because the two surfaces
+ * genuinely painted different term sets: `/api/report` stripped the actor nouns
+ * and its card called `colorTermsFor(sc)` with the four labels alone, while the
+ * regenerate preview passed the nouns through. That difference WAS the defect
+ * (see server.ts, where the stripping used to happen), so removing it removes
+ * the parameter: every surface now paints with `regenPreviewColorTerms`, and a
+ * third surface that wants its own term list has to change this file to get one.
+ *
+ * AMBIGUITY IS NOT ABSENCE, AND ONLY ABSENCE IS GATED. All 244 of those are
  * scenarios that give both players the SAME option-label pair (what the model
  * writes whenever the game is symmetric). No highlighter can attribute a
  * mention of "Early heat" to one of two players who both chose between "Early
  * heat" and "Late heat"; NOT colouring is the correct rendering, and gating it
- * would reject a fifth of good output to catch nothing. The 84 that remain are
- * the real defect: a side with no term at all, before any ambiguity pass.
+ * would reject a tenth of good output to catch nothing. What IS gated is a side
+ * with no term at all, before any ambiguity pass.
  */
 import type { SuggestedScenario } from '../types';
-import { colorTermsFor, regenPreviewColorTerms, type ScenarioLabels } from './colorTerms';
+import { regenPreviewColorTerms, type ScenarioLabels } from './colorTerms';
 import { highlightWouldMatch } from './scenarioBank';
-
-/**
- * WHICH SURFACE WILL RENDER THIS STORY. The two differ in one way that decides
- * the outcome — whether the actor nouns reach the term builder — so the gate
- * must know which one it is screening for rather than assume the friendlier.
- *
- * - `report-card`: the suggestion card under the report, `App.tsx`'s
- *   `colorTermsFor(llmEnvelope.report.suggestedScenario)` — the scenario's four
- *   option labels and nothing else, because `/api/report` strips the nouns and
- *   the call site passes none.
- * - `regen-preview`: the regenerate preview, `App.tsx`'s `regenPreviewTerms`,
- *   which passes `preview.actorA` / `preview.actorB` through.
- */
-export type ColourAudience = 'report-card' | 'regen-preview';
 
 const strList = (v: unknown): string[] =>
   (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string' && t.length > 0) : []);
@@ -64,15 +63,21 @@ const labelsOf = (sc: SuggestedScenario): ScenarioLabels => ({
 /**
  * The terms the REAL renderer will paint this scenario's description with.
  *
- * `regen-preview` is asked with EMPTY existing user terms on purpose: a user's
- * own highlights can only ADD terms, so the empty set is the worst case, and a
- * gate calibrated on the worst case cannot pass a story that the surface would
- * then fail to colour for a user who has marked nothing.
+ * `regenPreviewColorTerms` is the one builder both scenario cards use, and it
+ * is the one whose composition survives a save: RED-REGEN/002 established that
+ * `colorTermsFor` (one `dropAmbiguous` pass over structural + label + actor
+ * terms) and `mergeDescriptionTerms` (label-ownership neutralisation of USER
+ * terms, which is what a saved game's stored nouns become) disagree when a noun
+ * collides with the other player's option label. The saved description renders
+ * through the second, so the card and this gate must too.
+ *
+ * Asked with EMPTY existing user terms on purpose: a user's own highlights
+ * normally only ADD terms, so the empty set is the worst case, and a gate
+ * calibrated on the worst case cannot pass a story the surface would then fail
+ * to colour for a user who has marked nothing.
  */
-export function renderedColourTerms(sc: SuggestedScenario, audience: ColourAudience): { a: string[]; b: string[] } {
-  return audience === 'regen-preview'
-    ? regenPreviewColorTerms(labelsOf(sc), strList(sc.actorA), strList(sc.actorB), [], [])
-    : colorTermsFor(labelsOf(sc));
+export function renderedColourTerms(sc: SuggestedScenario): { a: string[]; b: string[] } {
+  return regenPreviewColorTerms(labelsOf(sc), strList(sc.actorA), strList(sc.actorB), [], []);
 }
 
 /**
@@ -80,14 +85,11 @@ export function renderedColourTerms(sc: SuggestedScenario, audience: ColourAudie
  * authored for that player. Used only to tell absence from ambiguity; it is not
  * what gets painted.
  */
-function authoredColourTerms(sc: SuggestedScenario, audience: ColourAudience): { a: string[]; b: string[] } {
-  const nouns = audience === 'regen-preview'
-    ? { a: strList(sc.actorA), b: strList(sc.actorB) }
-    : { a: [] as string[], b: [] as string[] };
+function authoredColourTerms(sc: SuggestedScenario): { a: string[]; b: string[] } {
   const trimmed = (v: unknown): string[] => (typeof v === 'string' && v.trim() ? [v.trim()] : []);
   return {
-    a: [...trimmed(sc.row1), ...trimmed(sc.row2), ...nouns.a],
-    b: [...trimmed(sc.col1), ...trimmed(sc.col2), ...nouns.b],
+    a: [...trimmed(sc.row1), ...trimmed(sc.row2), ...strList(sc.actorA)],
+    b: [...trimmed(sc.col1), ...trimmed(sc.col2), ...strList(sc.actorB)],
   };
 }
 
@@ -104,13 +106,13 @@ export interface Renderability {
   ambiguityOnly: boolean;
 }
 
-export function scenarioRenderability(sc: SuggestedScenario, audience: ColourAudience): Renderability {
+export function scenarioRenderability(sc: SuggestedScenario): Renderability {
   const desc = sc.description ?? '';
-  const painted = renderedColourTerms(sc, audience);
+  const painted = renderedColourTerms(sc);
   const a = painted.a.some((t) => highlightWouldMatch(t, desc));
   const b = painted.b.some((t) => highlightWouldMatch(t, desc));
   if (a && b) return { a, b, ambiguityOnly: false };
-  const authored = authoredColourTerms(sc, audience);
+  const authored = authoredColourTerms(sc);
   const rawA = authored.a.some((t) => highlightWouldMatch(t, desc));
   const rawB = authored.b.some((t) => highlightWouldMatch(t, desc));
   return { a, b, ambiguityOnly: rawA && rawB };
@@ -122,16 +124,13 @@ export function scenarioRenderability(sc: SuggestedScenario, audience: ColourAud
  * is kept. Returns the side, so the drop reason a production log carries names
  * WHICH player the reader would lose (v5 self-adversarial item (f)).
  */
-export function scenarioIsAttributable(
-  sc: SuggestedScenario,
-  audience: ColourAudience,
-): { ok: boolean; reason?: string } {
-  const r = scenarioRenderability(sc, audience);
+export function scenarioIsAttributable(sc: SuggestedScenario): { ok: boolean; reason?: string } {
+  const r = scenarioRenderability(sc);
   if (r.a && r.b) return { ok: true };
   if (r.ambiguityOnly) return { ok: true };
   const side = !r.a && !r.b ? 'either player' : !r.a ? 'player A' : 'player B';
   return {
     ok: false,
-    reason: `the description names nothing the ${audience} would highlight for ${side}`,
+    reason: `the description names nothing the scenario card would highlight for ${side}`,
   };
 }

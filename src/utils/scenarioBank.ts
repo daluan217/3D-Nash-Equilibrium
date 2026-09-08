@@ -501,17 +501,17 @@ export function actorNounsOk(sc: {
  * IT IS NOT, HOWEVER, WHAT THE RENDERER WILL PAINT, and this comment used to
  * claim it was ("can never disagree with what the real highlighter would
  * actually do with the row"). The renderer does not take the terms as authored:
- * it takes `colorTermsFor(...)` / `regenPreviewColorTerms(...)`, whose last step
- * is `dropAmbiguous`, deleting any term that appears on BOTH players' lists so a
- * shared action is never painted as one player's. This predicate has no such
- * step, so on a scenario that gives both players the same option-label pair it
- * says "colourable" and the renderer paints nothing: measured 515 of 2,442
- * shipped rows (21.09%) on the report audience, 244 (9.99%) on the regenerate
- * one (STRUCT-CLOUD-19/002; `src/scenariobank.test.ts` pins both numbers so the
- * claim cannot be quietly re-made).
+ * it takes `regenPreviewColorTerms(...)`, whose composition ends by deleting any
+ * term that appears on BOTH players' lists so a shared action is never painted
+ * as one player's. This predicate has no such step, so on a scenario that gives
+ * both players the same option-label pair it says "colourable" and the renderer
+ * paints nothing: measured 244 of 2,442 shipped rows (9.99%)
+ * (STRUCT-CLOUD-19/002; `src/scenariobank.test.ts` pins the number so the claim
+ * cannot be quietly re-made).
  *
- * That is not a fault in the artifact — 431 of those 515 are genuine ambiguity,
- * where NOT colouring is the correct rendering — but it does mean this function
+ * That is not a fault in the artifact — every one of those 244 is genuine
+ * ambiguity, where NOT colouring is the correct rendering — but it does mean
+ * this function
  * answers the AUTHORING question ("did the story give each player a term at
  * all?") and not the rendering one. The rendering question is
  * `scenarioRenderability` / `scenarioIsAttributable` in

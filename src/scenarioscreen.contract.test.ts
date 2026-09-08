@@ -22,7 +22,7 @@
  *      that shadows it, and carry the measurement behind that claim;
  *   3. HAND-READ NEGATIVES — real gate-passing output, at least two per screen,
  *      each one keystroke from the known-positive, which must pass the WHOLE
- *      table on BOTH audiences;
+ *      table under BOTH draw shapes (with and without the actor-noun schema);
  *   4. REACH over a known-good corpus, re-measured here and compared with the
  *      pinned number, so a predicate that starts over-firing on good output
  *      fails this file rather than quietly rejecting a fraction of every draw.
@@ -40,8 +40,15 @@ const check = (name: string, ok: boolean, detail = ''): void => {
   if (!ok) { console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`); failures++; }
 };
 
-const opts = (audience: 'report-card' | 'regen-preview', avoid?: ScreenOptions['avoid']): ScreenOptions => ({
-  actorNouns: audience === 'regen-preview', audience, avoid, directionChecks: true,
+/**
+ * `actorNouns` is the DRAW shape (the regenerate schema asks for role nouns;
+ * the report schema cannot return them), not an audience: every surface renders
+ * a served scenario with the same terms since STRUCT-CLOUD-19/001, so there is
+ * no second rendering to screen for. Both shapes are exercised below anyway,
+ * because `validateScenario` reads this flag.
+ */
+const opts = (actorNouns: boolean, avoid?: ScreenOptions['avoid']): ScreenOptions => ({
+  actorNouns, avoid, directionChecks: true,
 });
 
 /** Runs an arbitrary subset of the table, in table order. */
@@ -146,7 +153,8 @@ const NEGATIVES: Negative[] = [
 interface Evidence {
   knownPositive: {
     sc: SuggestedScenario; g: GamePayoffs; avoid?: ScreenOptions['avoid'];
-    audience?: 'report-card' | 'regen-preview';
+    /** the draw shape the fixture was taken from; defaults to the report shape */
+    actorNouns?: boolean;
     provenance: string;
     whyNotCoincidence: string;
   };
@@ -211,7 +219,7 @@ const EVIDENCE: Record<string, Evidence> = {
       g: { a11: 44, a12: 0, a21: 0, a22: 22, b11: 44, b12: 0, b21: 0, b22: 22 },
       sc: NEGATIVES[1].sc,
       avoid: { name: 'Truffle Foraging Permits', description: NEGATIVES[1].sc.description },
-      audience: 'regen-preview',
+      actorNouns: true,
       provenance: 'negative #1 handed back to a regenerate that asked to replace exactly it',
       whyNotCoincidence: 'the SAME scenario object is a passing negative when `avoid` is absent (asserted '
         + 'below), so the refusal can only come from the avoid comparison.',
@@ -268,11 +276,13 @@ const EVIDENCE: Record<string, Evidence> = {
     isolation: 'independent',
     negatives: [4, 5, 1],
     reach: {
-      corpus: 'shipped bank rows on the report-card audience (matrix-independent, exact over 2442 rows)',
-      fires: 84, of: 2442,
-      note: 'NOT an over-fire: these 84 rows are unattributable only on /api/report, which strips the actor '
-        + 'nouns their colour depends on; all 2442 are attributable on the regenerate audience (asserted '
-        + 'below). This is the rate the bank fallback\'s retry loop is sized against — STRUCT-CLOUD-19/001.',
+      corpus: 'shipped bank rows (matrix-independent, exact over 2442 rows)',
+      fires: 0, of: 2442,
+      note: 'Zero is the POINT, and it is not vacuous: this screen fired on 84 of these rows while '
+        + '/api/report stripped their actor nouns, and the load-bearing control below strips them again and '
+        + 'requires exactly those 84 back. The corpus this screen exists for is live draws, where it '
+        + 'refuses 2 of 146 gate-passing draws (2026-09-08 campaign, _gen/cloud19_colour3.ts) — measured '
+        + 'off-corpus because re-deriving it costs real model calls. STRUCT-CLOUD-19/001.',
     },
   },
 };
@@ -300,7 +310,7 @@ for (const s of SCENARIO_SCREENS) {
   const ev = EVIDENCE[s.id];
   if (!ev) continue;
   const kp = ev.knownPositive;
-  const o = opts(kp.audience ?? 'report-card', kp.avoid);
+  const o = opts(kp.actorNouns ?? false, kp.avoid);
 
   check(`"${s.id}" refuses its own known-positive`, s.run(kp.sc, kp.g, o) !== null,
     `${kp.provenance} — the fixture no longer fires, so nothing below it means anything`);
@@ -332,14 +342,14 @@ for (const s of SCENARIO_SCREENS) {
   const kp = EVIDENCE.declarations.knownPositive;
   const rival: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 1, b12: 5, b21: 0, b22: 3 };
   check('declarations control: the same story on a rivalrous matrix is accepted',
-    screenScenario(kp.sc, rival, opts('report-card')).ok,
-    JSON.stringify(screenScenario(kp.sc, rival, opts('report-card'))));
+    screenScenario(kp.sc, rival, opts(false)).ok,
+    JSON.stringify(screenScenario(kp.sc, rival, opts(false))));
 }
 {
   // regen-same-story: the same scenario with no `avoid` passes.
   const kp = EVIDENCE['regen-same-story'].knownPositive;
   check('regen-same-story control: the identical story with no avoid is accepted',
-    screenScenario(kp.sc, kp.g, opts('regen-preview')).ok);
+    screenScenario(kp.sc, kp.g, opts(true)).ok);
 }
 {
   // directions: the same sentence pointing the right way is accepted by the screen.
@@ -350,10 +360,10 @@ for (const s of SCENARIO_SCREENS) {
   } as SuggestedScenario;
   const screen = SCENARIO_SCREENS.find((s) => s.id === 'directions')!;
   check('directions control: the same sentence pointing the RIGHT way is accepted by this screen',
-    screen.run(flipped, kp.g, opts('report-card')) === null,
-    String(screen.run(flipped, kp.g, opts('report-card'))));
+    screen.run(flipped, kp.g, opts(false)) === null,
+    String(screen.run(flipped, kp.g, opts(false))));
   check('directions is genuinely OFF when the flag is off',
-    screen.run(kp.sc, kp.g, { ...opts('report-card'), directionChecks: false }) === null);
+    screen.run(kp.sc, kp.g, { ...opts(false), directionChecks: false }) === null);
 }
 {
   // attributable: the same story with its labels stated is accepted.
@@ -363,12 +373,12 @@ for (const s of SCENARIO_SCREENS) {
     description: 'Two dairy co-ops are negotiating prices for a shared supermarket contract. The first chooses Hold Price or Cut Price for its wholesale list.',
   } as SuggestedScenario;
   check('attributable control: the same story stating its labels is accepted',
-    screenScenario(stated, kp.g, opts('report-card')).ok,
-    JSON.stringify(screenScenario(stated, kp.g, opts('report-card'))));
+    screenScenario(stated, kp.g, opts(false)).ok,
+    JSON.stringify(screenScenario(stated, kp.g, opts(false))));
 }
 
 /* ============================================================================
- * 4. NEGATIVES — real, hand-read output must pass the WHOLE table, both audiences.
+ * 4. NEGATIVES — real, hand-read output must pass the WHOLE table, both shapes.
  * ==========================================================================*/
 for (const s of SCENARIO_SCREENS) {
   const ev = EVIDENCE[s.id];
@@ -379,9 +389,9 @@ for (const s of SCENARIO_SCREENS) {
   }
 }
 for (const neg of NEGATIVES) {
-  for (const audience of ['report-card', 'regen-preview'] as const) {
-    const v = screenScenario(neg.sc, neg.g, opts(audience));
-    check(`negative "${neg.id}" passes the whole table (${audience})`, v.ok,
+  for (const actorNouns of [false, true] as const) {
+    const v = screenScenario(neg.sc, neg.g, opts(actorNouns));
+    check(`negative "${neg.id}" passes the whole table (actorNouns=${actorNouns})`, v.ok,
       `refused by ${v.screen}: ${v.reason}`);
   }
 }
@@ -413,8 +423,7 @@ for (const neg of NEGATIVES) {
     const ev = EVIDENCE[s.id];
     if (!ev) continue;
     let fires = 0; let of = 0; let firstFire = '';
-    const audience = s.id === 'attributable' ? 'report-card' : 'report-card';
-    const o = opts(audience);
+    const o = opts(false);
     if (matrixDependent.has(s.id)) {
       for (const e of rows) for (const g of probes) {
         of++;
@@ -438,20 +447,29 @@ for (const neg of NEGATIVES) {
   }
 
   /**
-   * The control for the one non-zero reach: those 84 rows are unattributable
-   * ONLY because `/api/report` strips their actor nouns. On the regenerate
-   * audience, which keeps them, the artifact is exactly as clean as
-   * RED-DESKTOP-9/001 left it. If this ever goes non-zero the artifact really is
-   * stale and the extraction+drop pass has to be re-run.
+   * THE ZERO ABOVE IS LOAD-BEARING, and this is what makes that falsifiable.
+   *
+   * A screen that reads zero on the only corpus a unit test can hold is one
+   * refactor away from being a screen that cannot fire at all — the exact
+   * "check that cannot fail for the reason it claims" this file exists to
+   * prevent. So: strip the actor nouns off every row, which is precisely what
+   * `/api/report` did until STRUCT-CLOUD-19/001 (server.ts, `withoutActorNouns`,
+   * introduced by dd15cf9), and require the screen to refuse EXACTLY the 84 rows
+   * that regression cost. Revert the server fix and this number is what comes
+   * back; break the screen and it goes to zero. Either way this file fails.
    */
   const attributable = SCENARIO_SCREENS.find((s) => s.id === 'attributable')!;
-  let regenFires = 0; let firstRegen = '';
+  let strippedFires = 0; let firstStripped = '';
   for (const e of rows) {
-    const r = attributable.run(e.s as SuggestedScenario, probes[0], opts('regen-preview'));
-    if (r !== null) { regenFires++; if (!firstRegen) firstRegen = `"${e.s.name}": ${r}`; }
+    const { actorA: _actorA, actorB: _actorB, ...nounFree } = e.s as SuggestedScenario;
+    const r = attributable.run(nounFree as SuggestedScenario, probes[0], opts(false));
+    if (r !== null) { strippedFires++; if (!firstStripped) firstStripped = `"${e.s.name}": ${r}`; }
   }
-  check('every shipped bank row is attributable on the audience that keeps its actor nouns',
-    regenFires === 0, `${regenFires} of ${rows.length} — first: ${firstRegen}`);
+  check('the actor nouns are load-bearing: strip them and exactly 84 shipped rows stop being attributable',
+    strippedFires === 84,
+    `${strippedFires} of ${rows.length} (pinned 84) — first: ${firstStripped}. `
+    + 'If this is 0 the screen has stopped working; if it moved, the artifact changed and '
+    + '_gen/cloud19_colour3.ts re-derives it.');
 }
 
 if (failures > 0) { console.error(`✗ scenario screens: ${failures} failed`); process.exit(1); }

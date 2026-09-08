@@ -516,44 +516,46 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
    * …AND THAT CHECK IS NOT THE RENDERING GUARANTEE, which is what its own
    * predicate's comment used to claim (STRUCT-CLOUD-19/002). `scenarioIsColourable`
    * asks whether the story gave each player a term AT ALL; the renderer paints
-   * `colorTermsFor(...)`, whose last step `dropAmbiguous` deletes every term
-   * that appears on BOTH players' lists — so on a row that gives both players
-   * the same option-label pair the screen says yes and the page paints nothing.
+   * what `regenPreviewColorTerms` returns, and that composition ends by deleting
+   * every term appearing on BOTH players' lists — so on a row that gives both
+   * players the same option-label pair the screen says yes and the page paints
+   * nothing.
    *
-   * The gap is pinned here, in both directions, so that (a) nobody re-asserts
-   * the equivalence, and (b) a change to `dropAmbiguous` or to either term
-   * builder shows up as a number moving rather than as silent colour loss. The
-   * numbers are exact counts over the shipped artifact, not thresholds.
+   * The gap is pinned here so that (a) nobody re-asserts the equivalence, and
+   * (b) a change to the ambiguity pass or to the term builder shows up as a
+   * number moving rather than as silent colour loss. It is an exact count over
+   * the shipped artifact, not a threshold.
    *
-   * 431 of the 515 are genuine AMBIGUITY — both players hold the same label, so
-   * no highlighter could attribute a mention of it and not colouring is correct.
-   * The other 84 are the real defect and are screened out of the serving path by
-   * `scenarioIsAttributable`; `src/scenarioscreen.contract.test.ts` pins that 84
-   * and asserts it falls to 0 on the audience that keeps the actor nouns.
+   * ALL 244 ARE THE AMBIGUITY CASE — both players hold the same label, so no
+   * highlighter could attribute a mention of it and not colouring is correct.
+   * There is no third category left: the 84 rows that used to be painted on
+   * NEITHER side were an artifact of `/api/report` stripping the actor nouns,
+   * and that strip is gone (see server.ts). `scenarioIsAttributable` is the
+   * screen that keeps it gone, and `src/scenarioscreen.contract.test.ts` pins
+   * its reach: 0 here, 2 of 146 on the live-draw corpus it actually exists for.
    */
   {
     const rows = allBankRows();
-    const disagree = (audience: 'report-card' | 'regen-preview'): number => {
-      let n = 0;
-      for (const e of rows) {
-        if (!scenarioIsColourable(e.s)) continue;
-        const r = scenarioRenderability(e.s as SuggestedScenario, audience);
-        if (!(r.a && r.b)) n++;
-      }
-      return n;
-    };
-    const report = disagree('report-card');
-    const regen = disagree('regen-preview');
-    check('the authoring screen and the renderer disagree on exactly the pinned number of report-card rows',
-      report === 515,
-      `${report} of ${rows.length} (pinned 515) — scenarioIsColourable and colorTermsFor have moved apart; `
-      + 'if this is intended, re-measure with _gen/cloud19_colour.ts and update the number AND the comments '
+    let disagree = 0;
+    let absent = 0;
+    for (const e of rows) {
+      if (!scenarioIsColourable(e.s)) continue;
+      const r = scenarioRenderability(e.s as SuggestedScenario);
+      if (r.a && r.b) continue;
+      disagree++;
+      if (!r.ambiguityOnly) absent++;
+    }
+    check('the authoring screen and the renderer disagree on exactly the pinned number of rows',
+      disagree === 244,
+      `${disagree} of ${rows.length} (pinned 244) — scenarioIsColourable and the renderer have moved apart; `
+      + 'if this is intended, re-measure with _gen/cloud19_colour3.ts and update the number AND the comments '
       + 'in scenarioBank.ts and scenarioRenderability.ts that quote it');
-    check('...and on exactly the pinned number of regenerate-audience rows', regen === 244,
-      `${regen} of ${rows.length} (pinned 244)`);
+    check('every one of those disagreements is ambiguity, never a side with no term at all',
+      absent === 0,
+      `${absent} of the ${disagree} disagreeing rows have a side the renderer paints nothing on — that is `
+      + 'RED-DESKTOP-9/001 back in the artifact, not the benign shared-label case');
     check('the disagreement is not vacuous: the renderer paints strictly fewer rows than the screen admits',
-      report > 0 && report > regen,
-      `report=${report} regen=${regen}`);
+      disagree > 0, `disagree=${disagree}`);
   }
 
   /**

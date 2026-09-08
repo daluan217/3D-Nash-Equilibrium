@@ -27,7 +27,6 @@ import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEF
 import type { ReasoningEffort } from "./src/utils/providers";
 import { stripUnsafeText, clampGraphemeSafe } from "./src/utils/textSafety";
 import { cleanScenarioActorNouns } from "./src/utils/scenarioActorNouns";
-import type { ColourAudience } from "./src/utils/scenarioRenderability";
 import { screenScenario, type ScreenOptions } from "./src/utils/scenarioScreen";
 import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from "./src/utils/fetchTimeout";
 
@@ -289,14 +288,28 @@ function scenarioOutputWithinDisplayLimits(sc: SuggestedScenario): boolean {
     && within(sc.description, 800);
 }
 
-// Actor declarations are a regeneration-preview affordance, not part of the
-// long-standing report/new-scenario response shape.  Bank rows may carry them
-// as source metadata, so remove them at the shared screened-result boundary
-// whenever the caller did not explicitly opt in.
-function withoutActorNouns(sc: SuggestedScenario): SuggestedScenario {
-  const { actorA: _actorA, actorB: _actorB, ...nounFree } = sc;
-  return nounFree;
-}
+/**
+ * THE RESPONSE CARRIES THE NOUNS THE STORY WAS WRITTEN WITH, on every route.
+ *
+ * There used to be a `withoutActorNouns()` helper here, stripping `actorA`
+ * and `actorB` from every scenario except a regenerate's (dd15cf9 "Harden
+ * scenario response boundaries", 2026-09-04, on the grounds that actor
+ * declarations were "a regeneration-preview affordance, not part of the
+ * long-standing report response shape"). That was tidying, not a product rule,
+ * and it is what made STRUCT-CLOUD-19/001 real: a bank row's actor noun is
+ * frequently the ONLY term its description shares with either player, so
+ * stripping it left 84 of 2,442 shipped rows (3.44%) rendering one or both
+ * players' half of the story with no highlight anywhere -- RED-DESKTOP-9/001's
+ * exact shape, on the one path that finding's fix never covered. With the nouns
+ * kept the same measurement is 0/2,442.
+ *
+ * A field is dropped from a response when serving it would be WRONG, not when
+ * it is merely unused: `SuggestedScenario` has always declared the two fields
+ * optional, every other field is unchanged, and a client that ignores them
+ * behaves exactly as before. What has to hold instead is the invariant in
+ * `src/utils/scenarioRenderability.ts` -- every surface that renders this
+ * description paints it with the same terms -- which the screen below enforces.
+ */
 
 /**
  * BLUE-CANCEL-12: an AbortSignal that fires when the CLIENT is gone before a
@@ -339,28 +352,13 @@ async function inventScreenedScenario(
   const MIN_DRAW_MS = 2_000;
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
-  /**
-   * WHICH SURFACE WILL RENDER WHAT THIS RETURNS. `actorNouns` already separates
-   * the two callers exactly — `/api/report` passes false and its card colours
-   * with the four labels alone, `/api/scenario/regenerate` passes true and its
-   * preview passes the nouns through — but the coupling was accidental, so the
-   * audience is named here rather than re-derived at the one place that needs
-   * it. STRUCT-CLOUD-19/001.
-   */
   const screenOptions: ScreenOptions = {
-    // Actor declarations are a regenerate-only response contract. The full
-    // report schema deliberately remains unchanged, so its existing gate must
-    // not start demanding fields it can never receive.
+    // Whether the DRAW was asked for actor nouns: `SCENARIO_SCHEMA_WITH_ACTORS`
+    // is sent only on the regenerate path, so the report path's existing gate
+    // must not start demanding fields its schema can never return. This is a
+    // statement about the request, not about who renders the answer — every
+    // surface renders it the same way (`scenarioRenderability.ts`).
     actorNouns,
-    /**
-     * WHICH SURFACE WILL RENDER WHAT THIS RETURNS. `actorNouns` already
-     * separates the two callers exactly — `/api/report` passes false and its
-     * card colours with the four labels alone, `/api/scenario/regenerate`
-     * passes true and its preview passes the nouns through — but the coupling
-     * was accidental, so the audience is named here rather than re-derived
-     * where it is needed. STRUCT-CLOUD-19/001.
-     */
-    audience: (actorNouns ? 'regen-preview' : 'report-card') as ColourAudience,
     avoid,
     directionChecks: process.env.NASH_DIRECTION_CHECKS === '1',
   };
@@ -427,7 +425,7 @@ async function inventScreenedScenario(
         continue;
       }
       if (!gateOn || screen(draw.scenario)) {
-        return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
+        return { scenario: draw.scenario };
       }
       // GATE-DROPPED: a real draw came back and the screen rejected it. This
       // is the only case the bounded reroll setting governs.
@@ -478,7 +476,7 @@ async function inventScreenedScenario(
         : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
       if (!fallback) break;
       if (scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || screen(fallback))) {
-        return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
+        return { scenario: fallback, scenarioSource: 'bank-fallback' };
       }
     }
     return { scenario: null, failure: exhaustionFailure };
@@ -574,7 +572,7 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNou
   const domain = pickScenarioDomainExcluding(avoid?.domain);
   if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
     const sc = avoid ? bankScenarioAvoiding(payoffs, domain, avoid.name) : bankScenario(payoffs, domain);
-    if (sc) return { scenario: actorNouns ? sc : withoutActorNouns(sc) };
+    if (sc) return { scenario: sc };
   }
   // Actor-mode requests always go through generateScenario, even when
   // REPORT_LOCAL_PROMPT is set: the local explainer was trained only on the

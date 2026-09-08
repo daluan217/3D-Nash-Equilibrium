@@ -30,13 +30,11 @@
 import type { GamePayoffs, SuggestedScenario } from '../types';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './nashValidator';
 import { isSameStory } from './scenarioRegen';
-import { scenarioIsAttributable, type ColourAudience } from './scenarioRenderability';
+import { scenarioIsAttributable } from './scenarioRenderability';
 
 export interface ScreenOptions {
   /** the regenerate contract; the report schema cannot carry actor nouns */
   actorNouns: boolean;
-  /** which surface will render what is served — see `ColourAudience` */
-  audience: ColourAudience;
   /** the story a regenerate must not hand back unchanged */
   avoid?: { name?: string; description?: string; domain?: string };
   /** `NASH_DIRECTION_CHECKS === '1'`; read by the caller so this stays pure */
@@ -93,8 +91,8 @@ export const SCENARIO_SCREENS: readonly ScenarioScreen[] = [
   {
     id: 'attributable',
     what: 'the reader cannot find one of the players in the story (RED-DESKTOP-9/001)',
-    run: (sc, _g, opts) => {
-      const a = scenarioIsAttributable(sc, opts.audience);
+    run: (sc) => {
+      const a = scenarioIsAttributable(sc);
       return a.ok ? null : (a.reason ?? 'unattributable');
     },
   },
