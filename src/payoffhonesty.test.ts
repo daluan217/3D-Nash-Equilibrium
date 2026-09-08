@@ -833,6 +833,109 @@ function testAppTsxUsesContinuumAwareLogAndDisplay() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// 5e. RED-REGEN-13/001 — a saved description must belong to the payoffs it is
+//     saved with. The Save dialog's name / description / actor nouns used to
+//     survive a close, a payoff change and a reopen (only the labels were
+//     re-prefilled), so a story kept for matrix P1 was persisted against P2
+//     (validateProseDirectionsDetailed: 0 issues vs P1, 4/4 backwards vs P2).
+//     Structural: every path that opens the Save dialog reconciles the form
+//     with the CURRENT board through ONE helper keyed on saveFormBoardRef.
+// ════════════════════════════════════════════════════════════════════════════
+
+function testSaveFormReconciledWithBoard() {
+  const src = readFileSync('src/App.tsx', 'utf8');
+  /** The contract, as one function so the mutants below exercise the same checks. */
+  const contract = (app: string) => {
+    ok(/const saveFormBoardRef = useRef<string \| null>\(null\);/.test(app),
+      'App.tsx must keep saveFormBoardRef — the board the Save form\'s text was written for (RED-REGEN-13/001)');
+    const helperStart = app.indexOf('const reconcileSaveFormWithBoard = () => {');
+    ok(helperStart !== -1, 'App.tsx must define reconcileSaveFormWithBoard (RED-REGEN-13/001)');
+    const helper = app.slice(helperStart, app.indexOf('};', helperStart) + 2);
+    ok(/saveFormBoardRef\.current !== key/.test(helper) && /setSaveName\(''\)/.test(helper) && /setSaveDesc\(''\)/.test(helper)
+      && /setSaveTerms\(\{ a: \[\], b: \[\] \}\)/.test(helper) && /saveNameBaselineRef\.current = ''/.test(helper)
+      && helper.indexOf('saveFormBoardRef.current = key;') > helper.indexOf('setSaveTerms('),
+      'reconcileSaveFormWithBoard must clear name, name baseline, description and actor nouns when the board differs, THEN record the current board (RED-REGEN-13/001)');
+    // Fresh "Save Preset" open: reconcile before the dialog opens.
+    const presetAttr = app.indexOf('data-focus-fallback="save-preset"');
+    ok(presetAttr !== -1, 'the Save Preset button must exist');
+    const presetHandler = app.slice(app.lastIndexOf('onClick={() => {', presetAttr), presetAttr);
+    const rIdx = presetHandler.indexOf('reconcileSaveFormWithBoard();');
+    const oIdx = presetHandler.indexOf('setIsSaveModalOpen(true);');
+    ok(rIdx !== -1 && oIdx !== -1 && rIdx < oIdx,
+      `the Save Preset click must reconcile the form with the board BEFORE opening the dialog (reconcile@${rIdx} open@${oIdx}) — RED-REGEN-13/001`);
+    // Resume after sign-in: the board may have changed while the sign-in was up.
+    const resumeStart = app.indexOf('if (authToken && resumeSaveAfterAuthRef.current) {');
+    ok(resumeStart !== -1, 'the resume-after-sign-in branch must exist');
+    const resume = app.slice(resumeStart, resumeStart + 600);
+    ok(resume.indexOf('reconcileSaveFormWithBoard();') !== -1 && resume.indexOf('reconcileSaveFormWithBoard();') < resume.indexOf('setIsSaveModalOpen(true);'),
+      'the resume-after-sign-in reopen must reconcile the form with the board before opening (RED-REGEN-13/001)');
+    // Report → save-as-new prefill: the story is for the board on screen — record it.
+    const prefill = app.indexOf('setSaveDesc(description.slice(0, 800));');
+    const prefillSlice = app.slice(prefill, app.indexOf('setIsSaveModalOpen(true);', prefill));
+    ok(/saveFormBoardRef\.current = boardKeyOf\(payoffs\);/.test(prefillSlice),
+      'the report prefill path must record the board its story was written for (RED-REGEN-13/001)');
+    // OPUS-REVIEW-171/N2: boardKeyOf must actually distinguish boards — run it.
+    const keyFnSrc = /const boardKeyOf = \(p: GamePayoffs\) => (JSON\.stringify\([^;]*\));/.exec(app);
+    ok(keyFnSrc !== null, 'App.tsx must define boardKeyOf as a JSON.stringify over the payoffs (RED-REGEN-13/001)');
+    const keyOf = new Function('p', `return ${keyFnSrc![1]};`) as (p: GamePayoffs) => string;
+    const base: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+    ok(keyOf({ ...base }) === keyOf(base), 'boardKeyOf: equal boards must key equally');
+    for (const cell of Object.keys(base) as (keyof GamePayoffs)[]) {
+      ok(keyOf({ ...base, [cell]: base[cell] + 1 }) !== keyOf(base),
+        `boardKeyOf: a board differing only in ${cell} (Player ${cell.startsWith('b') ? 'B' : 'A'}) must key differently (OPUS-REVIEW-171/N2)`);
+    }
+    ok(/const key = boardKeyOf\(payoffs\);/.test(helper), 'reconcileSaveFormWithBoard must key on the live payoffs (RED-REGEN-13/001)');
+    // "Generate a new game" replaces the board from inside the dialog
+    // (OPUS-REVIEW-171/N1): reconcile against the NEW board BEFORE the report
+    // call — keyed on gc (what is on the board) — clearing only text the
+    // safety rule deems generated/empty; the AI fill records the board when it
+    // lands; nothing records the board unconditionally.
+    const genStart = app.indexOf('const gc = commitPayoffs(g);');
+    const genFetch = app.indexOf("await fetch(getApiUrl('/api/report')", genStart);
+    ok(genStart !== -1 && genFetch > genStart, 'handleGenerateGame must commit gc then call /api/report');
+    const preFetch = app.slice(genStart, genFetch);
+    ok(/const boardKey = boardKeyOf\(gc\);/.test(preFetch)
+      && /if \(saveFormBoardRef\.current !== boardKey && generatedFillIsSafe\(saveFieldsRef\.current, lastGeneratedFillRef\.current\)\) \{[\s\S]{0,400}?setSaveName\(''\);[\s\S]{0,400}?setSaveDesc\(''\);[\s\S]{0,400}?setSaveTerms\(\{ a: \[\], b: \[\] \}\);[\s\S]{0,200}?saveFormBoardRef\.current = boardKey;\s*\}/.test(preFetch),
+      'handleGenerateGame must reconcile the form with the NEW board (gc) BEFORE the report call, clearing only generated/empty text (OPUS-REVIEW-171/N1)');
+    const postFetch = app.slice(genFetch, app.indexOf('setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario', genFetch));
+    ok(/lastGeneratedFillRef\.current = gen;\s*(\/\/[^\n]*\n\s*)?saveFormBoardRef\.current = boardKey;/.test(postFetch),
+      'the applied AI fill must record the generated board as the form\'s board (RED-REGEN-13/001)');
+    ok(!/saveFormBoardRef\.current = boardKeyOf\(g\);/.test(app) && (postFetch.match(/saveFormBoardRef\.current = /g) || []).length === 1,
+      'handleGenerateGame must not record the board unconditionally after the awaits (OPUS-REVIEW-171/N1)');
+    // A kept regenerated draw is generated text: the safety rule may replace it.
+    const keepStart = app.indexOf('const keepRegen = (key: RegenKey) => {');
+    const keepFn = app.slice(keepStart, app.indexOf('regenButtonRef.current?.focus();', keepStart));
+    ok(/setSaveTerms\(kept\.terms\);[\s\S]{0,500}?lastGeneratedFillRef\.current = \{/.test(keepFn),
+      'keepRegen (save dialog) must register the kept draw as the last generated fill (OPUS-REVIEW-171/N1)');
+    // After a successful save the form is blank: no board.
+    ok(/setSaveTerms\(\{ a: \[\], b: \[\] \}\);\s*setSaveLabels\(\{ row1: '', row2: '', col1: '', col2: '' \}\);\s*saveFormBoardRef\.current = null;/.test(app),
+      'a successful save must clear saveFormBoardRef with the fields (RED-REGEN-13/001)');
+  };
+  contract(src);
+
+  // Mutants — each must make the SAME contract throw (plant asserted to land).
+  const mustThrow = (label: string, mutated: string) => {
+    ok(mutated !== src, `fixture precondition: the plant "${label}" landed`);
+    let threw = false;
+    try { contract(mutated); } catch { threw = true; }
+    ok(threw, `fixture: ${label} must be rejected by the Save-form contract`);
+  };
+  const presetAttr = src.indexOf('data-focus-fallback="save-preset"');
+  const handlerStart = src.lastIndexOf('onClick={() => {', presetAttr);
+  const handler = src.slice(handlerStart, presetAttr);
+  mustThrow('Save Preset open no longer reconciles', src.slice(0, handlerStart) + handler.replace('reconcileSaveFormWithBoard();\n', '') + src.slice(presetAttr));
+  mustThrow('reconcile keeps the stale description', src.replace("      setSaveDesc('');\n      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;", "      setSaveTerms({ a: [], b: [] });\n    }\n    saveFormBoardRef.current = key;"));
+  mustThrow('board recorded before the clear (never clears)', src.replace("    saveFormBoardRef.current = key;\n  };", "  };").replace('    const key = boardKeyOf(payoffs);\n', '    const key = boardKeyOf(payoffs);\n    saveFormBoardRef.current = key;\n'));
+  mustThrow('successful save leaves the board recorded', src.replace("        saveFormBoardRef.current = null; // RED-REGEN-13/001: blank form, no board\n", ''));
+  mustThrow('boardKeyOf ignores Player B (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', 'JSON.stringify([p.a11, p.a12, p.a21, p.a22])'));
+  mustThrow('boardKeyOf returns a constant (N2)', src.replace('JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22])', "JSON.stringify(['board'])"));
+  mustThrow('generate records the board unconditionally after the awaits (N1)', src.replace("      if (sc) {\n        const gen: GeneratedFill = {", "      saveFormBoardRef.current = boardKeyOf(g);\n      if (sc) {\n        const gen: GeneratedFill = {"));
+  mustThrow('generate reconciles after the report call (N1 falsifier: retention decided by HTTP)', src.replace("    const boardKey = boardKeyOf(gc);\n    if (saveFormBoardRef.current !== boardKey", "    if (saveFormBoardRef.current !== boardKeyOf(gc)").replace("      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n", "      const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;\n      const boardKey = boardKeyOf(gc);\n"));
+  mustThrow('kept draw not registered as generated text (N1)', src.replace("      lastGeneratedFillRef.current = {\n        name: kept.name !== undefined ? kept.name : liveName,", "      void {\n        name: kept.name !== undefined ? kept.name : liveName,"));
+  console.log('✓ RED-REGEN-13/001: every Save-dialog open path reconciles the form with the current board through reconcileSaveFormWithBoard; boardKeyOf separates all eight cells; generate reconciles before the report call; nine mutants rejected');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // 6. RED-MATH-8/001 — buildGroundingPayload's continuum branch must never
 //    offer a DISJOINT, isolated equilibrium as a "valid choice" representative
 //    point for the continuum claim; every offered point must be an actual
@@ -1867,6 +1970,7 @@ testPlottingSkipsIsolatedDiamondsOnContinuum();
 testContinuumSettledPointAlwaysOnDrawnGlyph();
 testSimLogNamesContinuumOnRealRuns();
 testAppTsxUsesContinuumAwareLogAndDisplay();
+testSaveFormReconciledWithBoard();
 testStrayPointsNotOfferedAsContinuumRepresentatives();
 testValidateReportAcceptsCompliantContinuumClaims();
 testClaimOnContinuumUsesCoordTolerance();
