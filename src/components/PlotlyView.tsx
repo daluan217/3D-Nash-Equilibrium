@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
 import { EA, EB, r3 } from '../utils/gameEngine';
@@ -640,7 +640,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     }
     pauseSpin(false);
   };
-  holdSpinRef.current = holdSpinForCameraControl;
+  // CodeRabbit on #177: published from a layout effect, never during render —
+  // React may replay or discard a render, and the document-level touch
+  // listener must only ever call a closure that actually committed.
+  useLayoutEffect(() => { holdSpinRef.current = holdSpinForCameraControl; });
 
   /**
    * Deadline until which the idle spin must stay quiet because the container
