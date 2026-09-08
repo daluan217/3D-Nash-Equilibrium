@@ -293,38 +293,63 @@ const admin = stripComments(readFileSync('src/components/AdminDashboard.tsx', 'u
     'a keydown listener must also record the opener, for keyboard activation (Enter/Space) with no prior focusin (RED-APP-14/005)');
 }
 
-// RED-APP-14/003 (round15): every authenticated (`Authorization: Bearer`)
-// fetch in src/components must clear a dead token on 401 through ONE shared
-// helper — not a re-implementation per call site. Enumerated so a NEW
-// authenticated fetch in src/components that skips the helper fails CI.
-// Mutation: delete the `clearTokenIfExpired(res);` call from either Danger
-// Zone handler in MenuDrawer.tsx and this fails for that site.
+// RED-APP-14/003 (round15), restated for STRUCT-DESKTOP-19's structure.
+//
+// The original rule: every authenticated (`Authorization: Bearer`) fetch in
+// src/components must clear a dead token through ONE shared helper, not a
+// re-implementation per call site. The drawer's helper WAS a
+// re-implementation — `clearTokenIfExpired` had no stale-token guard, so a 401
+// for a token the app had already replaced destroyed the live session
+// (STRUCT-DESKTOP-19/002, harness `_gen/d19a3-dangerzone-session-copy.mjs`).
+//
+// The rule is now structural: no component builds a credential at all. Every
+// account-scoped request goes through the app's ONE client
+// (`src/utils/apiClient.ts`), which owns the header, the deadline, the body
+// read and the session verdict. So what is enumerated here is the ABSENCE of
+// per-component credential handling, plus the drawer's two Danger Zone
+// requests actually going through the client.
+// Mutation: give either Danger Zone handler its own `fetch` with an
+// Authorization header, or its own 401 check, and this fails by name.
 {
   const walkComponents = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
     const p = `${dir}/${f}`;
     return statSync(p).isDirectory() ? walkComponents(p) : (/\.tsx?$/.test(f) && !/\.test\./.test(f) ? [p] : []);
   });
-  let authedFetchSites = 0;
+  // A credential being BUILT, not the word in prose: a header key is quoted or
+  // followed by a colon (a JSX comment's continuation lines are ordinary text).
+  const CREDENTIAL_IN_CODE = /['"]Authorization['"]|\bAuthorization\s*:|authHeaders/;
+  const offenders: string[] = [];
   for (const file of walkComponents('src/components')) {
     const src = readFileSync(file, 'utf8');
-    // Every occurrence of the Authorization header; the enclosing function is
-    // the text back to the nearest `const ... = async` / `const ... = (` before it.
-    for (const m of src.matchAll(/'Authorization':\s*`Bearer/g)) {
-      authedFetchSites++;
-      const fnStart = Math.max(src.lastIndexOf('const handle', m.index), src.lastIndexOf('async (', m.index), src.lastIndexOf('async function', m.index));
-      const bodyEnd = src.indexOf('\n  };', m.index) > 0 ? src.indexOf('\n  };', m.index) : m.index + 2000;
-      const body = src.slice(fnStart >= 0 ? fnStart : 0, bodyEnd);
-      ok(/clearTokenIfExpired\(res\)/.test(body),
-        `${file}: an authenticated fetch's response handling must clear a dead token through clearTokenIfExpired(res), not its own check (RED-APP-14/003)`);
-    }
+    const code = src.split('\n').map((l) => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l)).join('\n');
+    if (CREDENTIAL_IN_CODE.test(code)) offenders.push(`${file}: builds its own Authorization header`);
+    // x-admin-secret is a DIFFERENT credential (the admin panel's shared
+    // secret, not a user session) and keeps its own 401 handling by design.
+    if (/status === 401/.test(code) && !/x-admin-secret/.test(code)) offenders.push(`${file}: re-implements the 401 session rule`);
+    if (/clearTokenIfExpired/.test(code)) offenders.push(`${file}: still carries the pre-fix dead-session copy`);
   }
-  ok(authedFetchSites >= 2, `expected at least MenuDrawer.tsx's 2 Danger Zone fetch sites, found ${authedFetchSites}`);
-  ok(/const clearTokenIfExpired = \(res: Response\) => \{ if \(res\.status === 401\) updateAuthToken\(null\); \};/.test(drawer),
-    'MenuDrawer.tsx must define exactly one clearTokenIfExpired helper backed by the updateAuthToken prop');
-  ok(/updateAuthToken:\s*\(token: string \| null\) => void;/.test(drawer),
-    'MenuDrawerProps must declare updateAuthToken so the drawer never re-implements its own token store');
-  ok(/<MenuDrawer[\s\S]{0,400}updateAuthToken=\{updateAuthToken\}/.test(app),
-    'App.tsx must pass its own updateAuthToken down to <MenuDrawer>');
+  ok(offenders.length === 0,
+    `no component may carry its own credential or dead-session rule (STRUCT-DESKTOP-19/002): ${offenders.join(' | ')}`);
+
+  // The two Danger Zone requests are the ones this guard was written for, so
+  // they are named: they must exist, and go through the client.
+  const dangerZoneSites = (drawer.match(/api\.request\('\/api\/auth\/delete-(request|confirm)'/g) || []);
+  ok(dangerZoneSites.length === 2,
+    `expected MenuDrawer.tsx's 2 Danger Zone requests to go through the ONE client, found ${dangerZoneSites.length}`);
+  ok(/api: AccountApi;/.test(drawer),
+    'MenuDrawerProps must take the app\'s AccountApi, so the drawer never re-implements a token store or a 401 rule');
+  ok(!/updateAuthToken/.test(drawer.split('\n').map((l) => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l)).join('\n')),
+    'MenuDrawer.tsx must not take or use a raw token setter any more — clearing is the client\'s decision');
+  ok(/<MenuDrawer[\s\S]{0,400}api=\{api\}/.test(app),
+    'App.tsx must pass its own account API client down to <MenuDrawer>');
+
+  // Known-positives: each pre-fix shape, fed to the SAME predicates.
+  ok(CREDENTIAL_IN_CODE.test("headers: { 'Authorization': `Bearer ${authToken}` }"),
+    'fixture: the pre-fix Danger Zone header must be flagged');
+  ok(/status === 401/.test('const clearTokenIfExpired = (res) => { if (res.status === 401) updateAuthToken(null); };'),
+    'fixture: the pre-fix clearTokenIfExpired must be flagged');
+  ok(!CREDENTIAL_IN_CODE.test('a save with no Authorization header lands under the local owner'),
+    'control: prose mentioning the word must NOT be flagged');
 }
 
 // RED-APP-4 (round15 regression guard): the expand-log dialog must still

@@ -11,6 +11,7 @@ import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { ModalSurface } from './ModalSurface';
 import { SavedGamesList, formatSavedGames } from './SavedGamesList';
+import { describeRequestFailure, type AccountApi } from '../utils/apiClient';
 import {
   X,
   HelpCircle,
@@ -32,10 +33,16 @@ interface MenuDrawerProps {
   onClose: () => void;
   user: { id: string; username: string; email: string } | null;
   authToken: string | null;
-  /** RED-APP-14/003: the drawer's own Danger Zone requests (delete-request,
-   *  delete-confirm) must clear a dead token exactly like App.tsx's
-   *  save/edit/delete paths — same setter, not a re-implementation. */
-  updateAuthToken: (token: string | null) => void;
+  /**
+   * RED-APP-14/003: the drawer's own Danger Zone requests (delete-request,
+   * delete-confirm) must handle a dead session exactly like App.tsx's
+   * save/edit/delete paths. STRUCT-DESKTOP-19/002: "exactly like" was a
+   * re-implementation — a local `clearTokenIfExpired` with no stale-token
+   * guard, so a 401 for a token the app had ALREADY replaced destroyed the
+   * live session. The drawer now uses the app's ONE client
+   * (`src/utils/apiClient.ts`) instead of a setter plus its own rule.
+   */
+  api: AccountApi;
   /**
    * RED-DESKTOP-13/001: whether THIS device can own saved games — a signed-in
    * account OR the desktop app's local owner (no account). The Library tab
@@ -72,7 +79,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   onClose,
   user,
   authToken,
-  updateAuthToken,
+  api,
   canOwnGames,
   userCustomGames,
   deletingGameIds,
@@ -128,46 +135,31 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   // so the two surfaces can't grow different descriptions/color terms again.
   const formattedCustomGames = useMemo(() => formatSavedGames(userCustomGames), [userCustomGames]);
 
-  /**
-   * RED-APP-14/003: an expired token dies mid-session same as anywhere else
-   * in the app (App.tsx's save/edit/delete paths, RED-APP-7/001) — but these
-   * two Danger Zone requests were the one place that kept it, so the header
-   * still read "Log out", the account panel still showed the registered
-   * email, and the same "Invalid or expired session" error repeated forever
-   * with no way out. The ONE call site every authenticated fetch in this
-   * file runs through, so a new one can't grow its own 401 handling.
-   */
-  const clearTokenIfExpired = (res: Response) => { if (res.status === 401) updateAuthToken(null); };
-
   // Handle deletion request (API call to dispatch email)
   const handleDeleteRequest = async () => {
     if (!authToken) return;
     setDeleteLoading(true);
     setDeleteError('');
     try {
-      const res = await fetch(getApiUrl('/api/auth/delete-request'), {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      let data;
-      try {
-        data = await res.json();
-      } catch (e) {
-        data = { error: `Server returned invalid response (Status ${res.status}).` };
+      const res = await api.request('/api/auth/delete-request', { method: 'POST' });
+      if (res.stale) return;
+      if (res.kind !== 'response') {
+        // STRUCT-DESKTOP-19/002: this used to be `setDeleteError(err.message)`,
+        // which put the browser's own text ("Failed to fetch" in Chrome,
+        // "Load failed" in WebKit) in the Danger Zone's error line. That is
+        // not an explanation, and it differs per engine.
+        setDeleteError(describeRequestFailure(res, 'start the deletion'));
+        return;
       }
-
       if (!res.ok) {
-        clearTokenIfExpired(res);
-        throw new Error(data.error || 'Failed to initialize deletion request.');
+        // The session verdict came from the ONE client, which cleared the
+        // token only if the 401 was for the token that is still committed.
+        setDeleteError(res.data.error
+          || (res.dataParsed ? 'Failed to initialize deletion request.' : `Server returned invalid response (Status ${res.status}).`));
+        return;
       }
       setDeleteStep('inputCode');
-      setDeleteSuccess(data.message || 'Verification code sent.');
-    } catch (err: any) {
-      setDeleteError(err.message);
+      setDeleteSuccess(res.data.message || 'Verification code sent.');
     } finally {
       setDeleteLoading(false);
     }
@@ -180,25 +172,16 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     setDeleteLoading(true);
     setDeleteError('');
     try {
-      const res = await fetch(getApiUrl('/api/auth/delete-confirm'), {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ code: deleteCode }),
-      });
-
-      let data;
-      try {
-        data = await res.json();
-      } catch (e) {
-        data = { error: `Server returned invalid response (Status ${res.status}).` };
+      const res = await api.request('/api/auth/delete-confirm', { method: 'POST', json: { code: deleteCode } });
+      if (res.stale) return;
+      if (res.kind !== 'response') {
+        setDeleteError(describeRequestFailure(res, 'confirm the deletion'));
+        return;
       }
-
       if (!res.ok) {
-        clearTokenIfExpired(res);
-        throw new Error(data.error || 'Incorrect security verification code.');
+        setDeleteError(res.data.error
+          || (res.dataParsed ? 'Incorrect security verification code.' : `Server returned invalid response (Status ${res.status}).`));
+        return;
       }
       setDeleteStep('success');
       setDeleteCode('');
@@ -209,8 +192,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         // Reset deletion states
         setDeleteStep('initial');
       }, 3500);
-    } catch (err: any) {
-      setDeleteError(err.message);
     } finally {
       setDeleteLoading(false);
     }
