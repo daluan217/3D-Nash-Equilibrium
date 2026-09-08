@@ -4835,7 +4835,8 @@ export default function App() {
                     // was saved that way. A kept draft keeps the labels it was
                     // written with; only a fresh form (cleared, first open, or
                     // no labels at all yet) takes the prefill.
-                    const labelsBlank = !saveLabels.row1 && !saveLabels.row2 && !saveLabels.col1 && !saveLabels.col2;
+                    // CodeRabbit CLI: whitespace-only labels count as blank.
+                    const labelsBlank = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].every((l) => !l.trim());
                     if (!draftKept || labelsBlank) {
                       setSaveLabels({
                         row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',

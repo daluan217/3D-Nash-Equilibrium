@@ -829,7 +829,9 @@ if (failures > 0) {
   const both = regenDroppedNote({ a: ['the lighthouse keeper'], b: [] }, { a: [], b: ['ferry crew'] });
   check('a cap drop and an orphan in the same Keep are both named, each on its own player',
     both !== null && /"the lighthouse keeper"/.test(both) && /"ferry crew"/.test(both) && /Player B/.test(both), both ?? 'null');
-  check('two orphans on one side read as a plural', /do not appear/.test(regenDroppedNote({ a: [], b: [] }, { a: ['x one', 'y two'], b: [] }) ?? ''));
+  const plural = regenDroppedNote({ a: [], b: [] }, { a: ['x one', 'y two'], b: [] }) ?? '';
+  check('two orphans on one side read as a plural throughout (highlights … do not appear … they are … chips)',
+    /highlights "x one", "y two" do not appear/.test(plural) && /they are shown/.test(plural) && /remove the chips/.test(plural), plural);
 
   const editorHtml = (value: string, termsA: string[]) => renderToStaticMarkup(React.createElement(DescriptionEditor, {
     value, onChange: () => {}, termsA, termsB: [], onTermsChange: () => {},

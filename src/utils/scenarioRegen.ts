@@ -269,8 +269,9 @@ export function regenDroppedNote(
 
 export function orphanedNote(terms: readonly string[], player: 'A' | 'B'): string {
   const quoted = terms.map((t) => `"${t}"`).join(', ');
-  const verb = terms.length === 1 ? 'does' : 'do';
-  return `Player ${player}'s highlight ${quoted} ${verb} not appear in the new story, so it is shown as not highlighted — reuse the phrase in the text or remove the chip.`;
+  const one = terms.length === 1;
+  // CodeRabbit CLI (this branch): noun, verb and pronoun agree in number.
+  return `Player ${player}'s highlight${one ? '' : 's'} ${quoted} ${one ? 'does' : 'do'} not appear in the new story, so ${one ? 'it is' : 'they are'} shown as not highlighted — reuse the ${one ? 'phrase' : 'phrases'} in the text or remove the ${one ? 'chip' : 'chips'}.`;
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────
