@@ -27,7 +27,6 @@
  * account-scoped route cannot quietly grow its own session handling again.
  */
 import { readFileSync, readdirSync } from 'fs';
-import { execSync } from 'child_process';
 import { join } from 'path';
 import { createAccountApi, describeRequestFailure, ACCOUNT_REQUEST_TIMEOUT_MS, type AccountApiDeps, type AccountResponse } from './utils/apiClient';
 import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from './utils/fetchTimeout';
@@ -493,7 +492,9 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
     offenders.length === 0, offenders.join(', '));
   // Known-positive on the REAL pre-fix file, through the SAME scanner: the
   // MenuDrawer that shipped the defect (main 71f655d) must be flagged.
-  const preFixDrawer = execSync('git show 71f655d:src/components/MenuDrawer.tsx', { encoding: 'utf8' });
+  // Committed as a fixture file: CI checks out with depth 1, so `git show
+  // 71f655d:…` is not available there.
+  const preFixDrawer = readFileSync('src/fixtures/MenuDrawer.prefix-71f655d.tsx.txt', 'utf8');
   check('fixture: the pre-fix MenuDrawer (71f655d) is flagged by the whole-file 401 scan', scan401(preFixDrawer).length > 0);
   check('fixture: the pre-fix MenuDrawer (71f655d) is flagged by the whole-file credential scan',
     new RegExp(CREDENTIAL_IN_CODE.source, 'i').test(codeOnly(preFixDrawer)));
