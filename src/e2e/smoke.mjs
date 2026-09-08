@@ -2835,9 +2835,37 @@ try {
     record('page.pdf() produces a non-empty PDF with no exception', pdfThrew === null && pdfBytes > 1000,
       pdfThrew ?? `bytes=${pdfBytes}`);
 
+    // RED-APP-18/004 (regression from #172): the printout is the LIGHT surface
+    // in both themes. Invariant: under print media, every Player A / Player B
+    // coloured element computes the SAME colour with and without html.dark.
+    // Fails on the unfixed tree (dark: Player B's blue → slate-900, 20 inks → 5).
+    const inksOf = async (theme) => {
+      const pg = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+      await pg.addInitScript((t) => { try { localStorage.setItem('nash_sim_theme', t); } catch {} }, theme);
+      await pg.goto(BASE, { waitUntil: 'networkidle' });
+      const exit = pg.getByRole('button', { name: /exit tour/i });
+      if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) await exit.click();
+      await pg.waitForTimeout(400);
+      await pg.emulateMedia({ media: 'print' }); await pg.waitForTimeout(300);
+      const out = await pg.evaluate(() => {
+        const isDark = document.documentElement.classList.contains('dark');
+        const pick = (sel) => [...document.querySelectorAll(sel)].filter((e) => e.textContent.trim()).map((e) => getComputedStyle(e).color);
+        const uniq = (a) => [...new Set(a)].sort();
+        return { isDark, a: uniq(pick('[class*="text-player-a"]')), b: uniq(pick('[class*="text-player-b"]')), nB: pick('[class*="text-player-b"]').length };
+      });
+      await pg.close();
+      return out;
+    };
+    const light = await inksOf('light'), dark = await inksOf('dark');
+    record('precondition: the two print pages really are light and dark, with Player B text present',
+      !light.isDark && dark.isDark && light.nB > 0, JSON.stringify({ light: light.isDark, dark: dark.isDark, nB: light.nB }));
+    record('FIX RED-APP-18/004: Player B prints in the same ink set in dark theme as in light (the dark variant is inert on paper)',
+      JSON.stringify(light.b) === JSON.stringify(dark.b), `light=${JSON.stringify(light.b)} dark=${JSON.stringify(dark.b)}`);
+    record('FIX RED-APP-18/004: Player A too (control for the family, and half of the matrix)',
+      JSON.stringify(light.a) === JSON.stringify(dark.a), `light=${JSON.stringify(light.a)} dark=${JSON.stringify(dark.a)}`);
+
     await printPage.close();
   });
-
   // ══ 42. RED-DESKTOP-9/002 -- a comma in a payoff cell is REJECTED, not
   //      reinterpreted as a decimal separator and not silently truncated to
   //      its leading digits (bare parseFloat made "3,5" -> 3). Repro from the
@@ -8423,6 +8451,90 @@ try {
     } finally {
       await ctx.close().catch(() => {});
     }
+  });
+
+  // ══ 87. RED-APP-18/001+002 — the tour's window keydown leaves Enter and the
+  //      arrows to whatever control has focus. Oracles are model-derived: the
+  //      step counter from the tour dialog's textContent, the board from the
+  //      eight payoff inputs (re-rendered from the payoff model). Fails on the
+  //      unfixed tree: ArrowLeft in a focused payoff box moved the tour 3→2 and
+  //      the typed 73 became 3; Enter on a focused Exit tour closed the tour AND
+  //      loaded the next step's game.
+  section('87', 'tour keys belong to the focused control', async () => {
+    const p = await newTrackedPage({ viewport: { width: 1440, height: 900 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
+    await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(600);
+    const stepOf = async () => { const t = (await tour.textContent().catch(() => '')) || ''; const m = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(t); return m ? Number(m[1]) : null; };
+    const boardOf = async () => { const v = []; for (const pl of ['A', 'B']) for (let i = 0; i < 4; i++) v.push(await p.locator(`input[aria-label$="Player ${pl} payoff"]`).nth(i).inputValue()); return v.join(','); };
+    await p.keyboard.press('ArrowRight'); await p.waitForTimeout(300); await p.keyboard.press('ArrowRight'); await p.waitForTimeout(1200);
+    const s0 = await stepOf();
+    record('precondition: ArrowRight with focus on the tour itself still steps it (arrows are not owned by a button)', s0 === 3, `step=${s0}`);
+    const inp = p.locator('input[aria-label$="Player A payoff"]').first();
+    await inp.click(); await inp.press('End'); await p.keyboard.type('7'); const typed = await inp.inputValue();
+    await p.keyboard.press('ArrowLeft'); await p.waitForTimeout(500);
+    record('FIX 001: ArrowLeft in a focused payoff box does not move the tour and keeps the typed value',
+      (await stepOf()) === s0 && (await inp.inputValue()) === typed, `step=${await stepOf()} value=${await inp.inputValue()} typed=${typed}`);
+    await p.keyboard.press('Enter'); await p.waitForTimeout(500);
+    record('FIX 001: Enter in a focused payoff box does not move the tour', (await stepOf()) === s0, `step=${await stepOf()}`);
+    const slider = p.locator('input[type="range"]').first();
+    if (await slider.count()) {
+      await slider.focus(); const v0 = await slider.inputValue(); await p.keyboard.press('ArrowRight'); await p.waitForTimeout(400);
+      record('FIX 001: ArrowRight on a focused range slider moves the slider, not the tour (WCAG 2.1.1)',
+        (await stepOf()) === s0 && (await slider.inputValue()) !== v0, `step=${await stepOf()} slider ${v0}→${await slider.inputValue()}`);
+    }
+    await p.evaluate(() => { const a = document.activeElement; if (a && a !== document.body) a.blur(); });
+    await p.keyboard.press('ArrowRight'); await p.waitForTimeout(700);
+    record('control: with nothing focused, ArrowRight still drives the tour', (await stepOf()) === s0 + 1, `step=${await stepOf()}`);
+    const next = tour.getByRole('button', { name: /^next$/i }).first();
+    await next.focus(); const s1 = await stepOf(); await p.keyboard.press('Enter'); await p.waitForTimeout(700);
+    record('FIX 002: Enter on a focused Next advances exactly one step', (await stepOf()) === s1 + 1, `${s1}→${await stepOf()}`);
+    await next.focus(); const s2 = await stepOf(); await p.keyboard.press('ArrowRight'); await p.waitForTimeout(700);
+    record('control: ArrowRight on a focused Next still advances one step (buttons pass arrows through)', (await stepOf()) === s2 + 1, `${s2}→${await stepOf()}`);
+    const b0 = await boardOf();
+    await p.getByRole('button', { name: /exit tour/i }).first().focus(); await p.keyboard.press('Enter'); await p.waitForTimeout(800);
+    record('FIX 002: Enter on a focused Exit tour closes the tour and leaves the board alone',
+      !(await tour.isVisible().catch(() => false)) && (await boardOf()) === b0, `open=${await tour.isVisible().catch(() => false)} boardChanged=${(await boardOf()) !== b0}`);
+    await p.close();
+  });
+
+  // ══ 88. RED-APP-18/003 — at 912x1368 (Surface Pro portrait, dsf 2) the
+  //      floating-card fit test said "fits" from a 420px estimate while the
+  //      measured card was 432-515px, and placement centred the card INSIDE
+  //      its own spotlight on 10 of 19 steps. Geometric oracle: card rect vs
+  //      spotlight rect (the element carrying the 9999px box-shadow) via
+  //      getBoundingClientRect; a floating card may never cover more than 25%
+  //      of its spotlight. Fails on the unfixed tree (51-59% on ten steps).
+  section('88', 'tour card never sits inside its own spotlight (912x1368 dsf2)', async () => {
+    const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
+    await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(800);
+    const steps = [];
+    for (let k = 0; k < 25; k++) {
+      await p.waitForTimeout(1800);
+      const m = await p.evaluate(() => {
+        const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]'); if (!dlg) return null;
+        const mm = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(dlg.textContent || '');
+        const spot = [...document.querySelectorAll('div')].find((d) => /9999px/.test(getComputedStyle(d).boxShadow));
+        const next = [...dlg.querySelectorAll('button')].find((b) => /^(next|finish|done)$/i.test(b.textContent.trim()));
+        let card = next; while (card && card.parentElement !== dlg) card = card.parentElement;
+        const r = (e) => { const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
+        const inter = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+        const s = spot ? r(spot) : null, c = card ? r(card) : null;
+        return { step: mm ? Number(mm[1]) : null, total: mm ? Number(mm[2]) : null, overlap: s && c && s.w * s.h > 0 ? inter(s, c) / (s.w * s.h) : null,
+          isSheet: c ? (c.w >= window.innerWidth - 40 && c.y + c.h >= window.innerHeight - 4) : null, cardH: c ? Math.round(c.h) : null };
+      });
+      if (!m || m.step === null) break;
+      steps.push(m);
+      if (m.step >= m.total) break;
+      await p.keyboard.press('ArrowRight');
+    }
+    const bad = steps.filter((s) => s.overlap !== null && !s.isSheet && s.overlap > 0.25);
+    record('precondition: the whole tour was walked', steps.length >= 15, `walked ${steps.length}`);
+    record('FIX RED-APP-18/003: no floating card covers more than 25% of its own spotlight on any step',
+      bad.length === 0, bad.map((s) => `step ${s.step}: ${(s.overlap * 100).toFixed(0)}% (card ${s.cardH}px)`).join('; ') || 'all clean');
+    await p.close();
   });
 
 await executeSections();

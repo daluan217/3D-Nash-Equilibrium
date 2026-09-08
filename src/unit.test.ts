@@ -3714,6 +3714,54 @@ function testWalkthroughInputContracts() {
   console.log('✓ Walkthrough input contracts: pointer origin is a root-level gate, header controls own their vertical band, sheet placement tracks real layout, and both JS scroll paths honor reduced motion');
 }
 
+
+// ── RED-APP-18/001+002 + /003 (tour keyboard ownership; floating-card estimate) ──
+{
+  const tour = readFileForContract('src/components/Walkthrough.tsx', 'utf8');
+  const contract = (src: string) => {
+    const onKey = src.slice(src.indexOf('const onKey = (e: KeyboardEvent) => {'), src.indexOf("window.addEventListener('keydown', onKey);"));
+    assert(onKey.length > 0, 'Walkthrough must define onKey');
+    const own = onKey.indexOf('if (tourKeyOwnedByTarget(e.target, e.key)) return;');
+    const esc = onKey.indexOf("if (e.key === 'Escape') { close(); return; }");
+    const adv = onKey.indexOf("if (e.key === 'ArrowRight' || e.key === 'Enter')");
+    const back = onKey.indexOf("else if (e.key === 'ArrowLeft')");
+    assert(own !== -1 && esc !== -1 && adv !== -1 && back !== -1 && esc < own && own < adv && adv < back,
+      `onKey must let Escape close, then bail when the focused element owns the key, BEFORE Enter/ArrowRight advance and ArrowLeft goes back (RED-APP-18/001+002) — esc@${esc} own@${own} adv@${adv} back@${back}`);
+    // Parsed from the SOURCE under test (so a mutant of the selector is seen), not the imported value.
+    const selectorOf = (name: string) => {
+      const decl = src.slice(src.indexOf(`export const ${name} = `), src.indexOf(';', src.indexOf(`export const ${name} = `)));
+      return [...decl.matchAll(/'([^']*)'/g)].map((m) => m[1]).join('').split(/,\s*/);
+    };
+    const enterOwners = selectorOf('TOUR_ENTER_OWNER_SELECTOR'), arrowOwners = selectorOf('TOUR_ARROW_OWNER_SELECTOR');
+    for (const owner of ['input', 'textarea', 'select', 'button', 'a[href]', '[role="slider"]', '[role="button"]', '[role="textbox"]', '[role="spinbutton"]', '[role="combobox"]']) {
+      assert(enterOwners.includes(owner), `TOUR_ENTER_OWNER_SELECTOR must name ${owner} (RED-APP-18/001+002)`);
+    }
+    for (const owner of ['textarea', 'select', '[role="slider"]', '[role="textbox"]', '[role="spinbutton"]', '[role="combobox"]', '[role="radio"]']) {
+      assert(arrowOwners.includes(owner), `TOUR_ARROW_OWNER_SELECTOR must name ${owner} (RED-APP-18/001)`);
+    }
+    assert(arrowOwners.some((o) => o.startsWith('input:not(')), 'TOUR_ARROW_OWNER_SELECTOR must name text-like inputs (RED-APP-18/001)');
+    assert(!arrowOwners.includes('button') && !arrowOwners.includes('[role="button"]'),
+      'a plain button must NOT own the arrow keys — the tour focuses its own buttons on open and arrows must still step it');
+    assert(/tourKeyOwnedByTarget = \(t: EventTarget \| null, key: string\): boolean =>\s*t instanceof Element && !!t\.closest\(key === 'Enter' \? TOUR_ENTER_OWNER_SELECTOR : TOUR_ARROW_OWNER_SELECTOR\)/.test(src),
+      'tourKeyOwnedByTarget must pick the Enter owners for Enter and the arrow owners otherwise');
+    const est = /const FLOAT_H_EST = (\d+);/.exec(src);
+    assert(est && Number(est[1]) >= 520,
+      `FLOAT_H_EST must be >= 520, the tallest floating card measured (515px at 912x1368; RED-APP-18/003) — got ${est?.[1]}`);
+  };
+  contract(tour);
+  const mustThrow = (label: string, mutant: string) => {
+    assert(mutant !== tour, `fixture precondition: the plant "${label}" landed`);
+    let threw = false; try { contract(mutant); } catch { threw = true; }
+    assert(threw, `fixture: ${label} must be rejected by the tour keyboard/estimate contract`);
+  };
+  mustThrow('ownership guard removed (the shipped RED-APP-18/001+002 defect)', tour.replace('      if (tourKeyOwnedByTarget(e.target, e.key)) return;\n', ''));
+  mustThrow('ownership guard after the advance branch', tour.replace('      if (tourKeyOwnedByTarget(e.target, e.key)) return;\n      if (e.key === \'ArrowRight\' || e.key === \'Enter\') setI((n) => Math.min(n + 1, steps.length - 1));\n', '      if (e.key === \'ArrowRight\' || e.key === \'Enter\') setI((n) => Math.min(n + 1, steps.length - 1));\n      if (tourKeyOwnedByTarget(e.target, e.key)) return;\n'));
+  mustThrow('sliders dropped from the arrow owners', tour.replace("'textarea, select, [contenteditable]:not([contenteditable=\"false\"]), [role=\"slider\"], [role=\"textbox\"], '", "'textarea, select, [contenteditable]:not([contenteditable=\"false\"]), [role=\"textbox\"], '"));
+  mustThrow('buttons own the arrows (the tour could no longer be stepped from its own focused Next)', tour.replace("+ '[role=\"tab\"], [role=\"tablist\"], [role=\"menuitem\"], [role=\"menu\"], [role=\"tree\"], [role=\"grid\"]';", "+ '[role=\"tab\"], [role=\"tablist\"], [role=\"menuitem\"], [role=\"menu\"], [role=\"tree\"], [role=\"grid\"], button';"));
+  mustThrow('estimate back at 420 (the shipped RED-APP-18/003 defect)', tour.replace('const FLOAT_H_EST = 520;', 'const FLOAT_H_EST = 420;'));
+  console.log('✓ RED-APP-18: tour keys bail when the focused element owns them (Escape still closes); FLOAT_H_EST >= 520; 5 mutants rejected');
+}
+
 // ── RED-MATH-18/001: "Reset View" must land on the default pose and STAY there ──
 // Director probe on main 498c7d0: the click relayouted to DEFAULT_CAMERA, and the
 // next frame moved the camera off it again — the idle spin (on from the first
