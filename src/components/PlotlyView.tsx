@@ -6,7 +6,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
-import { EA, EB, r3 } from '../utils/gameEngine';
+import { EA, EB, r3, fmtPayoffProse } from '../utils/gameEngine';
 import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera, shouldCollapseComponentAtCameraExact } from '../utils/cameraProjection';
 import { Rotate3d, Move, RefreshCw } from 'lucide-react';
 
@@ -1195,8 +1195,16 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // one element whose whole job is stating an exact value.
       const zA = r3(zAraw + calloutLift);
       const zB = r3(zBraw - calloutLift);
-      const labelA = r3(zAraw);
-      const labelB = r3(zBraw);
+      // STRUCT-MATH-19 class 1: the callout label is a RENDERED PAYOFF, so it
+      // goes through the payoff formatter like every other one. `r3(zAraw)`
+      // interpolated a bare number: a payoff of 0.00025 printed "A = 0" (an
+      // exact zero asserted for a value that is not), and a tiny negative
+      // printed "A = 0" too because `${-0}` is "0". Prose register, not the
+      // padded one — this is a label on a picture, and `fmtPayoffProse` trims
+      // the trailing zeros `r3` never added, so every integer/2-dp payoff the
+      // tour's presets produce is unchanged (verified in unit.test.ts).
+      const labelA = fmtPayoffProse(zAraw);
+      const labelB = fmtPayoffProse(zBraw);
       // Two accents, chosen per step:
       // - 'purple' (mixed act): TEXT-ONLY in the Mixed-NE purple. The
       //   equilibrium diamonds already mark the spot, so a second glyph on the
