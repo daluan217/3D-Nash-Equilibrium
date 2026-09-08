@@ -309,6 +309,92 @@ input.no-native-spinner {
  * this file would otherwise have had to pattern-match against.
  */
 @media print {
+  /* RED-APP-17/001: printing is a separate light surface. The `dark` class
+   * remains on <html> while the browser switches to print media, so neutralise
+   * every dark utility before it can put pale ink or a dark flood on paper.
+   * Attribute selectors cover all Tailwind dark variants without duplicating
+   * the generated palette (and apply in Chromium and WebKit). */
+  html,
+  html.dark,
+  html.dark body {
+    color-scheme: light !important;
+    background-color: var(--color-white) !important;
+    color: var(--color-slate-900) !important;
+  }
+
+  html.dark [class*="dark:bg-"],
+  html.dark [class*="dark:hover:bg-"],
+  html.dark [class*="dark:disabled:bg-"],
+  html.dark [class*="dark:disabled:!bg-"] {
+    background-color: var(--color-white) !important;
+  }
+
+  html.dark [class*="dark:text-"],
+  html.dark [class*="dark:hover:text-"],
+  html.dark [class*="dark:disabled:text-"],
+  html.dark [class*="dark:disabled:!text-"] {
+    color: var(--color-slate-900) !important;
+  }
+
+  html.dark [class*="dark:border-"],
+  html.dark [class*="dark:hover:border-"],
+  html.dark [class*="dark:disabled:border-"],
+  html.dark [class*="dark:disabled:!border-"],
+  html.dark [class*="dark:focus-within:border-"] {
+    border-color: var(--color-slate-200) !important;
+  }
+
+  /* The simulation progress panel uses darkMode's runtime class branch for
+   * its stateful controls, so it has no `dark:` token for the family rules
+   * above to match. Scope the light equivalents to its unique direct dark
+   * identity (the progress panel's exact bg/border tokens). */
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] {
+    background-color: var(--color-slate-50) !important;
+    border-color: var(--color-slate-200) !important;
+    color: var(--color-slate-900) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="bg-slate-900"] {
+    background-color: var(--color-slate-50) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="bg-slate-800"] {
+    background-color: var(--color-white) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="bg-slate-700"] {
+    background-color: var(--color-slate-200) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="border-slate-800"] {
+    border-color: var(--color-slate-200) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="border-slate-700"] {
+    border-color: var(--color-slate-300) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-slate-400"],
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-slate-200"] {
+    color: var(--color-slate-700) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-slate-600"] {
+    color: var(--color-slate-600) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="border-ne-mixed-700"] {
+    border-color: var(--color-ne-mixed-300) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-ne-mixed-400"] {
+    color: var(--color-ne-mixed-700) !important;
+  }
+
+  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="hover:bg-ne-mixed-900/30"] {
+    background-color: var(--color-ne-mixed-50) !important;
+  }
+
   /* The one `position: sticky` element on the page. Reset to static so it
    * prints once, in flow, at the top of page 1 — never re-baked as a
    * floating box mid-page. The on-screen sticky behavior is untouched
