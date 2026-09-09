@@ -522,6 +522,80 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     mutants[1][1] !== keepDefault);
 }
 
+// ── RED-REGEN-20/001: an abandoned auth detour must not spend a prefill ─────
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  // These checks intentionally inspect the EXACT named functions and paths,
+  // rather than searching the whole file. A source regex that sees a helper or
+  // a comment anywhere in App.tsx can pass while the real Save success branch
+  // never consumes anything, or while the dismiss clear sits under Edit only.
+  const withoutComments = (source: string) => source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+  const between = (source: string, start: string, end: string) => {
+    const i = source.indexOf(start);
+    if (i < 0) return '';
+    const j = source.indexOf(end, i + start.length);
+    return j < 0 ? '' : source.slice(i, j);
+  };
+  const code = withoutComments(app);
+  const suggested = between(code, 'const useSuggestedScenario = async', 'const fetchLlmExplanation = async');
+  const suggestedEdit = between(suggested, 'if (existing && authToken) {', 'setIsEditModalOpen(true);');
+  const suggestedSave = between(suggested, "const prefillName = (sc.name ?? '').slice(0, 40);", 'setIsSaveModalOpen(true);');
+  const authGate = between(code, 'const beginNeedsAuthSignIn =', 'const explanationDialogSessionSeqRef =');
+  const dismiss = between(code, 'const dismissAuthModal = () => {', 'const consumeRegenExplanationAfterSave = (');
+  const abandon = between(code, 'const abandonExplanationDialogSession = () => {', 'const cancelSaveDialog =');
+  const consume = between(code, 'const consumeRegenExplanationAfterSave = (', 'const saveRequestIdRef = useRef');
+  const editHandler = between(code, 'const handleEditGameSubmit = async', 'const deletingGamesRef =');
+  const saveHandler = between(code, 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async');
+  const parsedSuccessGate = "if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true)))";
+  const editSuccess = between(editHandler, 'if (res.ok) {', '\n      } else if (res.status === 404)');
+  const saveSuccess = between(saveHandler, 'if (res.ok) {', '\n      } else {');
+  const required = (label: string, ok: boolean) => check(`RED-REGEN-20/001: ${label}`, ok);
+
+  required('the pending value has a dialog nonce plus a RegenKey',
+    /type ExplanationSessionKey = \{[\s\S]*dialogSessionId: number;[\s\S]*regenKey: RegenKey;/.test(code)
+    && /useRef<ExplanationSessionKey \| null>\(null\)/.test(code));
+  required('Save and Edit prefill paths mint and store their own session keys',
+    /const dialogSessionId = beginEditDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{[\s\S]*regenKey: \{ kind: 'edit', gameId: existing\.id \}/.test(suggestedEdit)
+    && /const dialogSessionId = beginSaveDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{[\s\S]*regenKey: \{ kind: 'save', payoffs \}/.test(suggestedSave));
+  required('a fresh ordinary Save starts a new session before opening',
+    /onClick=\{\(\) => \{[\s\S]*?beginSaveDialogSession\(\);[\s\S]*?openSaveFormForBoard\(\);[\s\S]*?setIsSaveModalOpen\(true\);[\s\S]*?data-focus-fallback="save-preset"/.test(code));
+  required('a fresh ordinary Edit starts a new session before opening',
+    /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
+  required('auth resume closes and reopens the same dialog without abandoning it',
+    /if \(kind === 'save'\) \{\s*resumeSaveAfterAuthRef\.current = true;\s*setIsSaveModalOpen\(false\);/.test(authGate)
+    && /else \{\s*resumeEditAfterAuthRef\.current = true;\s*setIsEditModalOpen\(false\);/.test(authGate)
+    && !/abandonExplanationDialogSession\(\)/.test(authGate)
+    && /if \(authToken && resumeSaveAfterAuthRef\.current\) \{[\s\S]*setIsSaveModalOpen\(true\);/.test(code)
+    && /if \(authToken && resumeEditAfterAuthRef\.current\) \{[\s\S]*setIsEditModalOpen\(true\);/.test(code));
+  required('the auth-dismiss clear is unconditional and precedes the Edit-only reopen branch',
+    dismiss.indexOf('abandonExplanationDialogSession();') >= 0
+    && dismiss.indexOf('abandonExplanationDialogSession();') < dismiss.indexOf('if (resumeEditAfterAuthRef.current)'));
+  required('the abandonment helper clears the pending value and both dialog sessions',
+    /regenExplanationAfterSaveRef\.current = null;[\s\S]*saveDialogSessionRef\.current = null;[\s\S]*editDialogSessionRef\.current = null;/.test(abandon));
+  required('Save and Edit cancel handlers synchronously abandon the session',
+    /const cancelSaveDialog = \(\) => \{\s*abandonExplanationDialogSession\(\);/.test(code)
+    && /const cancelEditDialog = \(\) => \{\s*abandonExplanationDialogSession\(\);/.test(code)
+    && /onClose=\{cancelSaveDialog\}/.test(code) && /onClose=\{cancelEditDialog\}/.test(code)
+    && (code.match(/onClick=\{cancelSaveDialog\}/g) ?? []).length >= 2
+    && (code.match(/onClick=\{cancelEditDialog\}/g) ?? []).length >= 2);
+  required('consume clears before comparing nonce and RegenKey',
+    /const pendingKey = regenExplanationAfterSaveRef\.current;\s*regenExplanationAfterSaveRef\.current = null;/.test(consume)
+    && /pendingKey\.dialogSessionId === submittedSessionId/.test(consume)
+    && /regenKeyEquals\(pendingKey\.regenKey, submittedKey\)/.test(consume));
+  required('Edit consume is inside parsed success:true path',
+    editHandler.includes(parsedSuccessGate)
+    && editHandler.indexOf(parsedSuccessGate) < editHandler.indexOf('if (res.ok) {')
+    && /consumeRegenExplanationAfterSave\([\s\S]*editDialogSessionRef\.current/.test(editSuccess));
+  required('Save consume is inside parsed success:true path',
+    saveHandler.includes(parsedSuccessGate)
+    && saveHandler.indexOf(parsedSuccessGate) < saveHandler.indexOf('if (res.ok) {')
+    && /consumeRegenExplanationAfterSave\([\s\S]*saveDialogSessionRef\.current/.test(saveSuccess));
+  required('the session key is retired when a new matrix is generated',
+    /const handleGenerateGame = async \(\) => \{[\s\S]*beginSaveDialogSession\(\);/.test(code));
+}
+
 if (failures > 0) {
   console.error(`\n${failures} scenarioregen check(s) failed.`);
   process.exit(1);

@@ -585,8 +585,9 @@ function extractModalSurfaceBlock(src: string, id: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const editBlock = extractModalSurfaceBlock(app, 'edit-saved-game');
-  ok(/onClose=\{\(\) => \{ setIsEditModalOpen\(false\); setEditError\(''\); \}\}/.test(editBlock),
-    `Edit's <ModalSurface onClose> must close the SAME way its own "✕" button and backdrop do, got: ${JSON.stringify(editBlock.slice(0, 300))}`);
+  ok(/onClose=\{cancelEditDialog\}/.test(editBlock)
+    && /const cancelEditDialog = \(\) => \{\s*abandonExplanationDialogSession\(\);\s*setIsEditModalOpen\(false\);\s*setEditError\(''\);\s*\}/.test(app),
+    `Edit's <ModalSurface onClose> must use the session-abandoning close path shared by its own "✕" button and Cancel, got: ${JSON.stringify(editBlock.slice(0, 300))}`);
 
   // The local-games offer's onClose must still refuse to close mid-request
   // (RED-APP-12's "never mid-move" rule) — ModalSurface's shared Escape

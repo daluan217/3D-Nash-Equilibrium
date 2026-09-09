@@ -49,9 +49,10 @@ import { dirname, join } from 'node:path';
  * honest number puts FIVE multi-section shards over the 200 s headroom line
  * at 30 (worst 200,704 ms — the table was already within 1 s of the line in
  * five places, so any true number over ~80,000 tips it). 31 clears them all;
- * worst multi-section shard becomes 195,221 ms.
+ * worst multi-section shard becomes 195,221 ms. H3's §91 measured 175,615 ms
+ * on 2026-09-09; adding it makes 31 overpack again, while 32 clears the set.
  */
-export const SHARD_COUNT = 31;
+export const SHARD_COUNT = 32;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));

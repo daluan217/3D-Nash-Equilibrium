@@ -124,6 +124,18 @@ import katex from 'katex';
 type AuthMode = 'login' | 'register' | 'verify' | 'forgot' | 'reset-password';
 
 /**
+ * Authorization for the report refresh earned by a suggested scenario. The
+ * board/game identity is necessary, but not sufficient: two Save dialogs for
+ * the same matrix (or two Edit opens for the same game) are still different
+ * user actions. The dialog-session nonce survives only the intended auth
+ * detour and is retired by every other close/cancel path.
+ */
+type ExplanationSessionKey = {
+  dialogSessionId: number;
+  regenKey: RegenKey;
+};
+
+/**
  * RED-APP-7/004: the four option-label inputs' native `maxLength={40}`
  * enforced the same 40-unit budget as the server, but by raw UTF-16 code
  * unit count with NO grapheme awareness — a typed/pasted ZWJ emoji sequence
@@ -701,6 +713,48 @@ export default function App() {
     else { resumeEditAfterAuthRef.current = true; setIsEditModalOpen(false); }
     openAuthModal('login');
   };
+  // A board/game key alone is not a dialog session: reopening Save for the same
+  // payoffs, or reopening Edit for the same id, must never inherit an old
+  // report-refresh authorization. Auth resume deliberately keeps this nonce;
+  // every fresh open and every user cancellation gets another one (or clears
+  // it) synchronously.
+  const explanationDialogSessionSeqRef = useRef(0);
+  const saveDialogSessionRef = useRef<number | null>(null);
+  const editDialogSessionRef = useRef<number | null>(null);
+  const regenExplanationAfterSaveRef = useRef<ExplanationSessionKey | null>(null);
+  const nextExplanationDialogSession = () => {
+    explanationDialogSessionSeqRef.current += 1;
+    return explanationDialogSessionSeqRef.current;
+  };
+  const beginSaveDialogSession = () => {
+    const id = nextExplanationDialogSession();
+    saveDialogSessionRef.current = id;
+    editDialogSessionRef.current = null;
+    regenExplanationAfterSaveRef.current = null;
+    return id;
+  };
+  const beginEditDialogSession = () => {
+    const id = nextExplanationDialogSession();
+    editDialogSessionRef.current = id;
+    saveDialogSessionRef.current = null;
+    regenExplanationAfterSaveRef.current = null;
+    return id;
+  };
+  const abandonExplanationDialogSession = () => {
+    regenExplanationAfterSaveRef.current = null;
+    saveDialogSessionRef.current = null;
+    editDialogSessionRef.current = null;
+  };
+  const cancelSaveDialog = () => {
+    abandonExplanationDialogSession();
+    setIsSaveModalOpen(false);
+    setSaveError('');
+  };
+  const cancelEditDialog = () => {
+    abandonExplanationDialogSession();
+    setIsEditModalOpen(false);
+    setEditError('');
+  };
   /**
    * OPUS-REVIEW-DESKTOP17 N3: dismissing the Account dialog WITHOUT signing
    * in used to just clear both resume refs, stranding an Edit in progress —
@@ -720,16 +774,31 @@ export default function App() {
     setAuthError('');
     setAuthSuccess('');
     resumeSaveAfterAuthRef.current = false;
+    // Auth dismissal is an explicit abandonment. In particular, a later
+    // ordinary Save/Edit on the same board must not spend this authorization.
+    abandonExplanationDialogSession();
     if (resumeEditAfterAuthRef.current) {
       resumeEditAfterAuthRef.current = false;
+      // N3 reopens Edit with the user's typed fields, but it is a NEW dialog
+      // session now; no report refresh may ride through the dismissal.
+      beginEditDialogSession();
       setIsEditModalOpen(true);
     }
   };
-  // Set when "Save this scenario with the game" routes through the save modal
-  // (preset or unsaved matrix): the scenario only becomes real when that save
-  // completes, so the explanation regenerates there — from the fields as
-  // actually submitted, since the user may have edited them in the modal.
-  const regenExplanationAfterSaveRef = useRef(false);
+  // The prefilled scenario only earns a refreshed explanation if THIS dialog's
+  // save succeeds. Both the board key and the dialog nonce must match, and the
+  // one-shot authorization is consumed before the caller starts the refresh.
+  const consumeRegenExplanationAfterSave = (
+    submittedKey: RegenKey,
+    submittedSessionId: number | null,
+  ): boolean => {
+    const pendingKey = regenExplanationAfterSaveRef.current;
+    regenExplanationAfterSaveRef.current = null;
+    return !!pendingKey
+      && submittedSessionId !== null
+      && pendingKey.dialogSessionId === submittedSessionId
+      && regenKeyEquals(pendingKey.regenKey, submittedKey);
+  };
   /**
    * RED-APP-9/002: one id per Save-dialog SUBMISSION ATTEMPT (not per
    * keystroke, not per dialog open) — minted lazily on the first submit
@@ -1889,7 +1958,11 @@ export default function App() {
         terms: regenKeptColorTerms(sc.actorA ?? [], sc.actorB ?? [], [], [], description.slice(0, 800)),
       });
       setEditError('');
-      regenExplanationAfterSaveRef.current = true;
+      const dialogSessionId = beginEditDialogSession();
+      regenExplanationAfterSaveRef.current = {
+        dialogSessionId,
+        regenKey: { kind: 'edit', gameId: existing.id },
+      };
       setIsEditModalOpen(true);
       return;
     }
@@ -1941,7 +2014,11 @@ export default function App() {
       col1: prefillLabels.col1, col2: prefillLabels.col2,
     };
     setSaveError('');
-    regenExplanationAfterSaveRef.current = true;
+    const dialogSessionId = beginSaveDialogSession();
+    regenExplanationAfterSaveRef.current = {
+      dialogSessionId,
+      regenKey: { kind: 'save', payoffs },
+    };
     // A fresh save attempt for a different scenario — never reuse a
     // clientRequestId minted for whatever the dialog last tried to save.
     saveRequestIdRef.current = null;
@@ -2507,6 +2584,7 @@ export default function App() {
    */
   const editOriginalRef = useRef<{ name: string; description: string; row1: string; row2: string; col1: string; col2: string; a: string[]; b: string[] } | null>(null);
   const openEditGame = (game: any) => {
+    beginEditDialogSession();
     setEditGameId(game.id);
     editOriginalRef.current = {
       name: game.name ?? '', description: game.description ?? '',
@@ -2577,7 +2655,7 @@ export default function App() {
     if (Object.keys(editPatchBody).length === 1) {
       // Nothing changed: no request, nothing to clobber, dialog just closes.
       setEditError('');
-      setIsEditModalOpen(false);
+      cancelEditDialog();
       return;
     }
     setEditError('');
@@ -2605,14 +2683,16 @@ export default function App() {
       });
       staleSession = res.stale;
       if (staleSession) return;
-      // No response at all, or a success whose body did not parse: the same
-      // story the pre-client `catch` told, and never a session verdict.
+      const data = res.data;
+      // A 2xx body is a successful write only when the backend's explicit
+      // acknowledgement parsed as JSON. A captive portal or proxy can return
+      // 200 with HTML, `{}`, or `{ success: false }`; none may consume the
+      // one-shot explanation authorization or close this dialog as saved.
       if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         setEditError('Network error. Failed to update game.');
         setEditErrorNeedsAuth(false);
         return;
       }
-      const data = res.data;
       if (res.ok) {
         // A successful PATCH only ever happens signed in for real — resolves
         // any dead-session state this dialog was carrying.
@@ -2627,8 +2707,10 @@ export default function App() {
         // dialog), passed explicitly because scenarioForReport won't see the
         // update until the next render. Guard mirrors scenarioIsUsable so an
         // emptied-out form clears rather than triggering a fresh invention.
-        if (regenExplanationAfterSaveRef.current) {
-          regenExplanationAfterSaveRef.current = false;
+        if (consumeRegenExplanationAfterSave(
+          { kind: 'edit', gameId: editGameId },
+          editDialogSessionRef.current,
+        )) {
           const labels = [editLabels.row1, editLabels.row2, editLabels.col1, editLabels.col2].map((l) => cleanText(l));
           const desc = cleanText(editDesc);
           if (labels.every(Boolean) || desc.split(/\s+/).length >= 12) {
@@ -2935,7 +3017,9 @@ export default function App() {
     // resumeEditAfterAuthRef). (A successful submit consumes the flag itself
     // before closing, so this only ever cancels.)
     else if (!isEditModalOpen && !resumeSaveAfterAuthRef.current && !resumeEditAfterAuthRef.current) {
-      regenExplanationAfterSaveRef.current = false;
+      regenExplanationAfterSaveRef.current = null;
+      saveDialogSessionRef.current = null;
+      editDialogSessionRef.current = null;
     }
   }, [isSaveModalOpen, isEditModalOpen]);
 
@@ -2981,6 +3065,10 @@ export default function App() {
     setGenerateLoading(true);
     setGenerateNote('');
     setSaveError('');
+    // A new matrix is a new Save-dialog story. Even if the user later returns
+    // to the old payoffs, the prefill that earned a refresh is no longer this
+    // dialog session's story.
+    beginSaveDialogSession();
     // Same reasoning as handleLoadPreset: a fresh matrix makes any per-cell
     // rejected-comma hint stale (CodeRabbit, this branch).
     setPayoffInputHint(null);
@@ -3165,14 +3253,16 @@ export default function App() {
       requestToken = res.requestToken;
       staleSession = res.stale;
       if (staleSession) return;
-      // No response at all, or a success whose body did not parse: the same
-      // story the pre-client `catch` told, and never a session verdict.
+      const data = res.data;
+      // A 2xx body is a successful write only when the backend's explicit
+      // acknowledgement parsed as JSON. A captive portal or proxy can return
+      // 200 with HTML, `{}`, or `{ success: false }`; none may consume the
+      // one-shot explanation authorization or close this dialog as saved.
       if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         setSaveError('Network error. Failed to save game.');
         setSaveErrorNeedsAuth(false);
         return;
       }
-      const data = res.data;
       if (res.ok) {
         // A successful POST only ever happens signed in for real, or via the
         // explicit device choice — resolves any dead-session state this
@@ -3189,8 +3279,10 @@ export default function App() {
         // mirrors the server's scenarioIsUsable — four labels or a real
         // description — because sending an unusable scenario would trigger a
         // fresh invention, the opposite of "use what I just saved".
-        if (regenExplanationAfterSaveRef.current) {
-          regenExplanationAfterSaveRef.current = false;
+        if (consumeRegenExplanationAfterSave(
+          { kind: 'save', payoffs },
+          saveDialogSessionRef.current,
+        )) {
           const labels = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].map((l) => cleanText(l));
           const desc = cleanText(saveDesc);
           const usable = labels.every(Boolean) || desc.split(/\s+/).length >= 12;
@@ -5194,6 +5286,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     setSaveError('');
+                    beginSaveDialogSession();
                     // RED-REGEN-13/001 + RED-REGEN-14/001: a draft written for
                     // another board must not be offered for this one, and a
                     // kept draft keeps the option names it was written with.
@@ -6739,7 +6832,7 @@ export default function App() {
       <ModalSurface
         id="edit-saved-game"
         open={isEditModalOpen}
-        onClose={() => { setIsEditModalOpen(false); setEditError(''); }}
+        onClose={cancelEditDialog}
         ariaLabel="Edit saved game"
         fallbackSelector='[data-focus-fallback="saved-games"]'
       >
@@ -6750,7 +6843,7 @@ export default function App() {
               </div>
               <button
                 type="button"
-                onClick={() => { setIsEditModalOpen(false); setEditError(''); }}
+                onClick={cancelEditDialog}
                 className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs cursor-pointer"
                 aria-label="Close"
               >
@@ -6964,7 +7057,7 @@ export default function App() {
               <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
                 <button
                   type="button"
-                  onClick={() => { setIsEditModalOpen(false); setEditError(''); }}
+                  onClick={cancelEditDialog}
                   className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   Cancel
@@ -6987,7 +7080,7 @@ export default function App() {
       <ModalSurface
         id="save-preset"
         open={isSaveModalOpen}
-        onClose={() => { setIsSaveModalOpen(false); setSaveError(''); }}
+        onClose={cancelSaveDialog}
         ariaLabel="Save custom game"
         fallbackSelector='[data-focus-fallback="save-preset"]'
       >
@@ -7001,10 +7094,7 @@ export default function App() {
                 </span>
               </div>
               <button
-                onClick={() => {
-                  setIsSaveModalOpen(false);
-                  setSaveError('');
-                }}
+                onClick={cancelSaveDialog}
                 aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4 text-slate-400" />
@@ -7293,7 +7383,7 @@ export default function App() {
               <div className="flex gap-2 justify-end border-t border-slate-100 dark:border-slate-800 pt-3.5">
                 <button
                   type="button"
-                  onClick={() => setIsSaveModalOpen(false)}
+                  onClick={cancelSaveDialog}
                   className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
                 >
                   Cancel
