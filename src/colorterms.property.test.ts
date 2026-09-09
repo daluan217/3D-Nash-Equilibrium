@@ -989,11 +989,18 @@ if (failures > 0) {
     && /const suggestionCardTerms = useMemo\(/.test(appSrc10)
     && /suggestionCardTerms[\s\S]{0,600}?regenPreviewColorTerms\(/.test(appSrc10),
     'the card must paint what regenPreviewColorTerms returns — the one builder whose composition the save reproduces');
+  // Merged with #184 (STRUCT-REGEN-19/001): the chips no longer go through
+  // `setEditTerms`/`setSaveTerms` — each dialog receives ONE story action and
+  // the nouns ride inside it as `terms`, so the contract is "both story
+  // actions in useSuggestedScenario carry regenKeptColorTerms(sc.actorA…)".
+  const suggestedStart = appSrc10.indexOf('const useSuggestedScenario');
+  const suggestedSrc = suggestedStart === -1 ? '' : appSrc10.slice(suggestedStart, appSrc10.indexOf('\n  };', suggestedStart));
+  const storyActionsWithNouns = (suggestedSrc.match(/type: 'story',[\s\S]{0,900}?terms: regenKeptColorTerms\(\s*sc\.actorA \?\? \[\], sc\.actorB \?\? \[\]/g) ?? []).length;
   check("App.tsx: useSuggestedScenario carries the suggestion's actor nouns into BOTH dialogs as chips",
-    (appSrc10.match(/regenKeptColorTerms\(\s*\n?\s*sc\.actorA/g) ?? []).length >= 2
-    && /setEditTerms\(\{ a: keptEdit\.a, b: keptEdit\.b \}\)/.test(appSrc10)
-    && /setSaveTerms\(\{ a: keptNew\.a, b: keptNew\.b \}\)/.test(appSrc10),
-    'without this the nouns die at the save and the card colours more than the game ever will');
+    suggestedStart !== -1
+    && /dispatchEditForm\(\{\s*type: 'story',/.test(suggestedSrc) && /dispatchSaveForm\(\{\s*type: 'story',/.test(suggestedSrc)
+    && storyActionsWithNouns >= 2,
+    `story actions carrying the nouns: ${storyActionsWithNouns} (need 2 — edit dialog and save-as-new) — without this the nouns die at the save and the card colours more than the game ever will`);
 }
 
 if (failures > 0) {

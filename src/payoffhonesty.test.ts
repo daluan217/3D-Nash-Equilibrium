@@ -957,8 +957,21 @@ function testSaveFormReconciledWithBoard() {
     const prefill = app.indexOf("const prefillName = (sc.name ?? '').slice(0, 40);");
     ok(prefill !== -1, 'the report → save-as-new prefill must exist');
     const prefillSlice = app.slice(prefill, app.indexOf('setIsSaveModalOpen(true);', prefill));
-    ok(/dispatchSaveForm\(\{\s*type: 'story',\s*boardKey: boardKeyOf\(payoffs\),\s*name: prefillName,\s*desc: description\.slice\(0, 800\),\s*labels: prefillLabels,\s*\}\);/.test(prefillSlice),
-      'the report prefill must arrive as ONE story action carrying the board it was written for — writing four fifths of it left the previous draft\'s colour chips attached (STRUCT-REGEN-19/001)');
+    // Merged with #182 (STRUCT-CLOUD-19/001): the action carries a SIXTH piece,
+    // the card's actor nouns as chips, so the pieces are matched one by one
+    // inside the single call rather than by a fixed field order — a comment or
+    // a new field must not read as "the story broke up".
+    const storyCallStart = prefillSlice.indexOf('dispatchSaveForm({');
+    const storyCall = storyCallStart === -1 ? '' : prefillSlice.slice(storyCallStart, prefillSlice.indexOf('});', storyCallStart) + 3);
+    const storyPieces: RegExp[] = [
+      /type: 'story',/, /boardKey: boardKeyOf\(payoffs\),/, /name: prefillName,/,
+      /desc: description\.slice\(0, 800\),/, /labels: prefillLabels,/,
+      /terms: regenKeptColorTerms\(sc\.actorA \?\? \[\], sc\.actorB \?\? \[\], \[\], \[\], description\.slice\(0, 800\)\),/,
+    ];
+    const missingPieces = storyPieces.filter((re) => !re.test(storyCall)).map(String);
+    ok(storyCall !== '' && missingPieces.length === 0,
+      `the report prefill must arrive as ONE story action carrying the board it was written for and every piece — writing four fifths of it left the previous draft's colour chips attached (STRUCT-REGEN-19/001; chips merged with #182): missing ${missingPieces.join(', ')}`);
+
     ok(/const prefillLabels = \{\s*row1: sc\.row1 \?\? '', row2: sc\.row2 \?\? '',\s*col1: sc\.col1 \?\? '', col2: sc\.col2 \?\? '',\s*\};/.test(prefillSlice),
       'prefillLabels must be the scenario\'s own four option names — hoisting them out of the action must not change where they come from (OPUS-REVIEW-184/F1)');
     // The dispatched story and the recorded fill must be the SAME four labels, by
@@ -1061,8 +1074,13 @@ function testSaveFormReconciledWithBoard() {
     const reportEditSlice = app.slice(reportEdit, app.indexOf('setIsEditModalOpen(true);', reportEdit));
     ok(/dispatchEditForm\(\{\s*type: 'story',\s*boardKey: existing\.id,\s*name: prefillName,\s*desc: description\.slice\(0, 800\),\s*labels: \{/.test(reportEditSlice),
       'the report prefill into the Edit dialog must arrive as ONE story action keyed on the saved game (STRUCT-REGEN-19/004)');
-    ok(!/terms:/.test(reportEditSlice),
-      'the report prefill into the Edit dialog must carry NO colour terms — the game\'s own chips described the description this story replaces (STRUCT-REGEN-19/004)');
+    // Merged with #182 (STRUCT-CLOUD-19/001): the story carries its OWN actor
+    // nouns as chips — and nothing else: the existing-chip arguments are the
+    // empty lists, so the game's chips, which described the text this story
+    // replaces, still go with it.
+    ok(/terms: regenKeptColorTerms\(sc\.actorA \?\? \[\], sc\.actorB \?\? \[\], \[\], \[\], description\.slice\(0, 800\)\),/.test(reportEditSlice)
+      && !/terms:[^\n]*(editTerms|editForm|existing\.colorTerms|colorTermsA|colorTermsB)/.test(reportEditSlice),
+      'the report prefill into the Edit dialog must carry ONLY the story\'s own nouns as colour terms — the game\'s own chips described the description this story replaces (STRUCT-REGEN-19/004; nouns merged with #182)');
     ok((reportEditSlice.match(/dispatchEditForm\(/g) || []).length === 1,
       'the report → EDIT prefill must write the form exactly once (STRUCT-REGEN-19/004)');
     // ── STRUCT-REGEN-19/010: the 409 adoption owes the orphaned-chip sentence ──

@@ -984,25 +984,16 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   // 4. The source itself: no second regex may reappear in the gate's module.
   const bankSrc = readFileSync('src/utils/scenarioBank.ts', 'utf8')
     .split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
-  // Merged with #182 (STRUCT-CLOUD-19): `actorNounsOk` asks a SECOND, stricter
-  // question — is the noun there VERBATIM (raw text, no NFKC fold, so U+212A
-  // KELVIN SIGN cannot pass as "k") — through `occursAsRawSubstring`, ANDed with
-  // `highlightWouldMatch` → `termOccursIn`. A stricter extra clause cannot
-  // promise a highlight the painter will not paint (the 009 direction), so it
-  // is the one place a raw regex may live; anywhere else is a second rule.
-  const rawSites = [...bankSrc.matchAll(/\(\?<!\[\\w\]\)|\(\?<!\\w\)/g)].map((m) => {
-    const fn = [...bankSrc.slice(0, m.index).matchAll(/^(?:export )?function ([A-Za-z0-9_$]+)/gm)].pop();
-    return fn ? fn[1] : '<top level>';
-  });
-  check('scenarioBank.ts builds no colour-boundary regex of its own outside the verbatim predicate',
-    rawSites.length <= 1 && rawSites.every((f) => f === 'occursAsRawSubstring'),
-    `raw boundary regexes in: ${JSON.stringify(rawSites)} — the boundary rule lives in src/utils/colorTerms.ts; `
-    + 'only occursAsRawSubstring (the VERBATIM check ANDed with termOccursIn) may keep one');
-  const actorNounsOkSrc = bankSrc.slice(bankSrc.indexOf('function actorNounsOk'));
-  check("the verbatim predicate is ANDed with the painter's rule inside actorNounsOk, not a replacement for it",
-    /return termOccursIn\(/.test(bankSrc) && /occursAsRawSubstring\(/.test(actorNounsOkSrc) && /highlightWouldMatch\(/.test(actorNounsOkSrc));
+  // Merged with #182 (STRUCT-CLOUD-19): its raw `occursAsRawSubstring` is not
+  // kept — the gate agrees with the painter, so no second boundary rule may
+  // live in this module (the Kelvin case above is decided by the painter).
+  check('scenarioBank.ts builds no colour-boundary regex of its own',
+    !/\(\?<!\[\\\\w\]\)|\(\?<!\\\\w\)/.test(bankSrc),
+    'the boundary rule lives in src/utils/colorTerms.ts and nowhere else');
   check('fixture: that source check fires on the retired implementation',
     /\(\?<!\[\\\\w\]\)/.test('const re = new RegExp(`(?<![\\\\w])(?:${esc(term)})(?![\\\\w])`, \'gi\');'));
+}
+
 /* ============================================================================
  * THE ARTIFACT CANNOT BE WRITTEN TO BY SERVING IT (STRUCT-CLOUD-19/008).
  *
