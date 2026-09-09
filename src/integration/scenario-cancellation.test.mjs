@@ -25,13 +25,19 @@ import { test } from 'node:test';
 const BUNDLE = path.resolve(import.meta.dirname, '../../dist/server.cjs');
 const PORT_BASE = Number(process.env.CANCELLATION_TEST_PORT || 4800);
 const GAME = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 2, b12: 0, b21: 0, b22: 3 };
+// STRUCT-CLOUD-19/001: these stub descriptions now STATE their option
+// labels. `SCENARIO_SCREENS`'s `attributable` entry refuses a story the
+// reader cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud
+// path that finding never covered); this prose named neither pair, so every
+// draw of it was dropped and these suites measured the reroll ladder instead
+// of what they are about. Only the descriptions changed.
 const GOOD = {
   choices: [{
     index: 0, finish_reason: 'stop',
     message: { role: 'assistant', content: JSON.stringify({ suggestedScenario: {
       name: 'Harbor handover', row1: 'Load now', row2: 'Load later',
       col1: 'Send tug', col2: 'Hold tug',
-      description: 'A harbor operator and a tug company arrange the timing of a berth handover during a busy week.',
+      description: 'A harbor operator and a tug company arrange the timing of a berth handover during a busy week. The harbor operator chooses Load now or Load later, while the tug company chooses Send tug or Hold tug.',
     } }) },
   }],
 };
