@@ -647,6 +647,10 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     let depth = 0;
     for (let i = from; i < src.length; i++) {
       const c = src[i];
+      // Comments are skipped whole too: the close button's own `//` comment
+      // says "Playwright's", and that apostrophe must not open a string.
+      if (c === '/' && src[i + 1] === '/') { i = src.indexOf('\n', i); if (i === -1) return -1; continue; }
+      if (c === '/' && src[i + 1] === '*') { i = src.indexOf('*/', i); if (i === -1) return -1; i++; continue; }
       if (c === "'" || c === '"' || c === '`') {
         for (i++; i < src.length && src[i] !== c; i++) if (src[i] === '\\') i++;
         continue;
