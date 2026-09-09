@@ -600,6 +600,12 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   // removal itself, and re-point the inert rule at the control that replaced it.
   ok(!/aria-label="Exit tour"/.test(walkthrough),
     'STRUCT-APP-19/003: the viewport-anchored Exit-tour pill is gone — the card X is the tour\'s one exit');
+  // OPUS-REVIEW-180 SHOULD 4: an absence assertion over a long literal passes
+  // the moment the literal is reworded (e.g. to a `probeProps` spread), which is
+  // exactly the trap this branch called out in the rules it replaced. Assert the
+  // subject EXISTS before asserting what must not follow it.
+  ok(/aria-label=\{probe \? undefined : 'Close tour'\}/.test(walkthrough),
+    "precondition: the close button's aria-label expression is present in Walkthrough.tsx — if this is reworded, the absence check below stops protecting anything and must be updated with it");
   ok(!/aria-label=\{probe \? undefined : 'Close tour'\}[\s\S]{0,120}inert=\{blocked\}/.test(walkthrough),
     'the close button must NOT carry its own inert={blocked} — that gates hit-testing/tab-order but not painting, and RED-APP-16/001 needs both on one wrapper');
   ok(!/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),

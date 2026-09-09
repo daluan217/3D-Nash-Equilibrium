@@ -87,10 +87,47 @@ assertDarkPrintPalette(css);
  * print block carries no per-utility dark overrides at all. e2e §41 asserts the
  * same thing on the rendered page, over every element that reaches paper.
  */
-const RUNTIME_DARK_COLOUR_TERNARY =
-  /darkMode\s*\?\s*'[^']*\b(?:bg|text|border|ring|placeholder|from|via|to|fill|stroke|decoration|outline|shadow|accent|caret|divide)-[a-z]+-\d{2,3}\b[^']*'\s*:/g;
+// OPUS-REVIEW-180 SHOULD 3: this used to read App.tsx only, match only
+// `darkMode ?`, and only single-quoted branches — one file wide, when the
+// invariant it states ("no component picks a colour class at runtime") is
+// repo-wide. It now covers `isDark` too (what the components use) and all three
+// quote styles.
+const COLOUR_UTILITY = '(?:bg|text|border|ring|placeholder|from|via|to|fill|stroke|decoration|outline|shadow|accent|caret|divide)';
+const runtimeDarkTernary = () => new RegExp(
+  `\\b(?:darkMode|isDark)\\s*\\?\\s*(['"\`])[^'"\`]*\\b${COLOUR_UTILITY}-[a-z]+-\\d{2,3}\\b[^'"\`]*\\1\\s*:`,
+  'g',
+);
+const RUNTIME_DARK_COLOUR_TERNARY = runtimeDarkTernary();
 
-function assertNoRuntimeDarkColourClasses(source: string, appSource: string): void {
+/**
+ * Components whose output never reaches paper, each with the reason and the
+ * measurement behind it. This is an ALLOW-LIST, not a silence: the assertion
+ * below fails if an entry names a file that no longer exists, or one that no
+ * longer contains a runtime ternary — so an entry cannot outlive the thing it
+ * excuses. Anything NOT listed here must use `dark:` variants.
+ */
+const PRINT_HIDDEN_RUNTIME_DARK: Record<string, string> = {
+  'GameGraphMiniature.tsx':
+    'Renders only through SavedGamesList variant="drawer" and MenuDrawer, both inside [data-modal-surface], which @media print hides. '
+    + 'OPUS-REVIEW-180 SHOULD 3 proposed this as a LIVE leak via App.tsx\'s SavedGamesList; measured 2026-09-09 with one saved game in '
+    + 'desktop local-owner mode, that call site passes variant="sidebar" (a compact strip with no miniature): zero miniatures render on '
+    + 'the main page in either theme, and the printed saved-game row is identical light vs dark.',
+  'PlotlyView.tsx': 'The 3D plot carries [data-tour="plot"], which @media print hides.',
+  'AdminDashboard.tsx': 'Renders inside a ModalSurface ([data-modal-surface]), which @media print hides.',
+};
+
+/** Every component file as {name: source}. Injectable so the mutants below can
+ *  plant a runtime ternary without touching the working tree. */
+const readComponents = (): Record<string, string> => Object.fromEntries(
+  readdirSync('src/components').filter((f) => f.endsWith('.tsx'))
+    .map((f) => [f, readFileSync(join('src/components', f), 'utf8')]),
+);
+
+function assertNoRuntimeDarkColourClasses(
+  source: string,
+  appSource: string,
+  components: Record<string, string> = readComponents(),
+): void {
   const printBlock = extractPrintBlock(source);
   assert(printBlock, 'src/index.css must contain an @media print block');
   // 1. No per-utility dark override survives in the print block. This is the
@@ -104,9 +141,31 @@ function assertNoRuntimeDarkColourClasses(source: string, appSource: string): vo
   // 2. No component picks a Tailwind COLOUR class from the darkMode flag. A
   //    class chosen in JS cannot be made inert on paper, so paper would depend
   //    on the screen theme again.
-  const runtime = [...appSource.matchAll(RUNTIME_DARK_COLOUR_TERNARY)].map((m) => m[0]);
+  const runtime = [...appSource.matchAll(runtimeDarkTernary())].map((m) => m[0]);
   assert(runtime.length === 0,
     `App.tsx must not choose Tailwind colour classes from darkMode — use a dark: variant, which is inert on paper. Found ${runtime.length}: ${runtime.slice(0, 2).join(' | ')} (STRUCT-APP-19/002)`);
+  // 2b. The same rule for every component that can reach paper. Enumerating one
+  //     file was exactly the shape of the eleven print overrides this replaced.
+  const offenders: string[] = [];
+  for (const [file, src] of Object.entries(components)) {
+    const hits = [...src.matchAll(runtimeDarkTernary())].map((m) => m[0]);
+    if (!hits.length) continue;
+    if (PRINT_HIDDEN_RUNTIME_DARK[file]) continue;
+    offenders.push(`${file}: ${hits[0].slice(0, 70)}`);
+  }
+  assert(offenders.length === 0,
+    `no component that reaches paper may choose Tailwind colour classes at runtime — use dark: variants, which are inert on paper. `
+    + `Found ${offenders.length}: ${offenders.slice(0, 3).join(' | ')}. If the component is genuinely print-hidden, add it to `
+    + `PRINT_HIDDEN_RUNTIME_DARK with the reason and the measurement (STRUCT-APP-19/002)`);
+  // 2c. The allow-list is a ratchet: no entry may outlive what it excuses.
+  for (const [file, reason] of Object.entries(PRINT_HIDDEN_RUNTIME_DARK)) {
+    const src = components[file] ?? '';
+    assert(src, `PRINT_HIDDEN_RUNTIME_DARK names ${file}, which no longer exists — remove the entry (STRUCT-APP-19/002)`);
+    assert(reason.length > 40, `PRINT_HIDDEN_RUNTIME_DARK[${file}] must record WHY it cannot reach paper`);
+    assert([...src.matchAll(runtimeDarkTernary())].length > 0,
+      `PRINT_HIDDEN_RUNTIME_DARK names ${file}, which no longer picks colour classes at runtime — remove the entry so the allow-list `
+      + `cannot silently cover a future one (STRUCT-APP-19/002)`);
+  }
   // 3. The panel really does carry the dark: variants now (a positive fixture,
   //    so silently dropping the dark styling is a failure and not a pass).
   for (const cls of ['bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800',
@@ -119,11 +178,45 @@ function assertNoRuntimeDarkColourClasses(source: string, appSource: string): vo
 }
 
 assertNoRuntimeDarkColourClasses(css, app);
+// OPUS-REVIEW-180 SHOULD 3 mutants — the repo-wide clause and its ratchet.
+{
+  const real = readComponents();
+  // A NEW component that picks a colour class at runtime, in each quote style
+  // and from either flag, must be caught — this is the case the App.tsx-only
+  // scanner could never see.
+  for (const planted of [
+    "className={`p-2 ${isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}",
+    'className={`p-2 ${darkMode ? "text-slate-400" : "text-slate-500"}`}',
+    'const cls = isDark ? `bg-slate-900` : `bg-slate-100`;',
+  ]) {
+    assert.throws(
+      () => assertNoRuntimeDarkColourClasses(css, app, { ...real, 'NewThing.tsx': planted }),
+      /no component that reaches paper may choose Tailwind colour classes at runtime/,
+      `mutation: a component picking colour classes at runtime must fail the guard — ${planted.slice(0, 48)}`,
+    );
+  }
+  // The allow-list must not be able to cover something it no longer describes.
+  assert.throws(
+    () => assertNoRuntimeDarkColourClasses(css, app, { ...real, 'GameGraphMiniature.tsx': 'export const X = () => null;' }),
+    /no longer picks colour classes at runtime/,
+    'mutation: a stale allow-list entry (the file no longer has a runtime ternary) must fail',
+  );
+  const withoutFile = { ...real };
+  delete withoutFile['PlotlyView.tsx'];
+  assert.throws(
+    () => assertNoRuntimeDarkColourClasses(css, app, withoutFile),
+    /which no longer exists — remove the entry/,
+    'mutation: an allow-list entry naming a deleted file must fail',
+  );
+  // Control: the real tree passes, so the mutants above are not passing on a
+  // guard that fires unconditionally.
+  assertNoRuntimeDarkColourClasses(css, app, real);
+}
 // Mutants — each must fail the named guard.
 {
   // The shipped RED-APP-18/004-era shape: the panel picking its classes in JS.
   const jsClasses = app.replace(
-    "className={`flex flex-col gap-2 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800`}",
+    'className="flex flex-col gap-2 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800"',
     "className={`flex flex-col gap-2 px-3 py-2.5 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}",
   );
   assert.notStrictEqual(jsClasses, app, 'mutation-test precondition: the runtime-dark class ternary can be re-planted');

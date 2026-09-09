@@ -327,16 +327,16 @@ async function gotoHome() {
 }
 /* The tour auto-opens ~700ms after every anonymous load (by design), and a
  * fresh CI browser is always anonymous. Dismiss it through the
- * viewport-anchored Exit button — the callout card's own X moves with the
- * spotlight, and the tour's step-1 smooth-scroll can leave it unstable or
- * off-screen (observed on CI: spotlight at top:-210px, X unreachable, and
- * every later control click then timed out under the tour scrim). */
+ * card's X — the ONE exit since STRUCT-APP-19/003. It moves with the spotlight
+ * and step 1's smooth-scroll used to leave it unstable (observed on CI:
+ * spotlight at top:-210px, X unreachable, every later control click then timing
+ * out under the tour scrim), which is why the dismissal goes through
+ * `closeTour`: it waits for the button to be visible, then falls back to
+ * Escape. Measured after 003: the click lands in 2.2-4.7 s, 22/22. */
 async function dismissTour() {
-  try {
-    await page.locator('[aria-label="Close tour"]').click({ timeout: 20000 });
-  } catch {
-    await page.keyboard.press('Escape');
-  }
+  // OPUS-REVIEW-180 NIT 8: go through the one shared helper like every other
+  // site, so the real wait added for FIX-FIRST 1 applies here too.
+  await closeTour(page, { timeout: 20000 });
   // Fail LOUDLY if the tour survived: proceeding with it open turns every
   // later click into an unrelated 120s actionability timeout (the exact
   // flake this guards against). Poll for closure rather than one count():
@@ -358,8 +358,7 @@ async function dismissTour() {
  * because the regen sections below need it four more times. */
 async function registerAndLogin(p, tag) {
   await p.goto(BASE, { waitUntil: 'networkidle' });
-  const exitTour = p.getByRole('button', { name: /close tour/i });
-  if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+  await closeTour(p);
   await p.waitForTimeout(300);
   const uniq = `${tag}${Date.now()}`;
   await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
@@ -1043,12 +1042,7 @@ try {
   section('17', '320px label wrapping', async () => {
     const narrowPage = await newTrackedPage({ viewport: { width: 320, height: 900 } });
     await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
-    const narrowExitTour = narrowPage.getByRole('button', { name: /close tour/i });
-    if (await narrowExitTour.count() > 0) {
-      await narrowExitTour.click();
-      await narrowPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(narrowPage);
     // Prisoner's Dilemma is the default-selected preset; the exact fixture
     // this defect escaped at. Explicit click rather than relying on default
     // selection, so this check does not silently stop meaning anything if
@@ -1120,12 +1114,7 @@ try {
     const dist = (a, b2) => !!a && !!b2 && Math.hypot(a.x - b2.x, a.y - b2.y, a.z - b2.z);
 
     await rmPage.goto(BASE, { waitUntil: 'networkidle' });
-    const rmExitTour = rmPage.getByRole('button', { name: /close tour/i });
-    if (await rmExitTour.count() > 0) {
-      await rmExitTour.click();
-      await rmPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(rmPage);
     const sceneReady = await waitForScene(60000, rmPage);
     record('idle-spin check: the scene is live on the fresh page (precondition)', sceneReady);
 
@@ -1188,12 +1177,7 @@ try {
   section('19', 'expanded log focus', async () => {
     const focusPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await focusPage.goto(BASE, { waitUntil: 'networkidle' });
-    const focusExitTour = focusPage.getByRole('button', { name: /close tour/i });
-    if (await focusExitTour.count() > 0) {
-      await focusExitTour.click();
-      await focusPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(focusPage);
 
     const expandBtn = focusPage.getByRole('button', { name: 'Expand simulation log' });
     await expandBtn.waitFor({ state: 'visible', timeout: 15000 });
@@ -1264,12 +1248,7 @@ try {
   section('20', 'modal focus traps', async () => {
     const trapPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
-    const trapExitTour = trapPage.getByRole('button', { name: /close tour/i });
-    if (await trapExitTour.count() > 0) {
-      await trapExitTour.click();
-      await trapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(trapPage);
 
     const isInsideDialog = (label) => trapPage.evaluate((l) => {
       const dlg = document.querySelector(`[role="dialog"][aria-label="${l}"]`);
@@ -1367,14 +1346,11 @@ try {
   section('21', 'settled live-region wording', async () => {
     const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
-    const settledExitTour = settledPage.getByRole('button', { name: /close tour/i });
-    if (await settledExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await settledExitTour.click();
-      // CodeRabbit finding (this branch): poll for the tour dialog's actual
-      // detachment instead of a flat sleep, same pattern already used
-      // elsewhere in this file (React closes it asynchronously).
-      await settledPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
+    // OPUS-REVIEW-180 FIX-FIRST 1: the helper waits for the button and polls for
+    // the dialog's detachment (React closes it asynchronously), which is what
+    // this block open-coded with an `isVisible({ timeout })` that never waited.
+    await closeTour(settledPage);
+    {
     }
 
     const setCell = async (label, value) => {
@@ -1499,12 +1475,7 @@ try {
       // Deliberately never fulfill/abort/continue — a genuinely hung request.
     });
     await hangPage.goto(BASE, { waitUntil: 'networkidle' });
-    const hangExitTour = hangPage.getByRole('button', { name: /close tour/i });
-    if (await hangExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await hangExitTour.click();
-      await hangPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(hangPage);
 
     const explainBtn = hangPage.getByRole('button', { name: /explain this game/i });
     await explainBtn.click();
@@ -1564,8 +1535,7 @@ try {
   section('24', 'long-label 320px reflow', async () => {
     const overflowPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
-    const oExitTour = overflowPage.getByRole('button', { name: /close tour/i });
-    if (await oExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await oExitTour.click();
+    await closeTour(overflowPage);
     await overflowPage.waitForTimeout(300);
 
     const uniq = Date.now();
@@ -1608,8 +1578,7 @@ try {
     const p320 = trackPage(await narrow320.newPage());
     await p320.goto(BASE, { waitUntil: 'networkidle' });
     await p320.waitForTimeout(1000);
-    const p320ExitTour = p320.getByRole('button', { name: /close tour/i });
-    if (await p320ExitTour.isVisible({ timeout: 2000 }).catch(() => false)) await p320ExitTour.click();
+    await closeTour(p320);
     await p320.waitForTimeout(300);
 
     const overflowing = async () => p320.evaluate(() => {
@@ -1676,8 +1645,7 @@ try {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     });
     await clampPage.goto(BASE, { waitUntil: 'networkidle' });
-    const clampExitTour = clampPage.getByRole('button', { name: /close tour/i });
-    if (await clampExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await clampExitTour.click();
+    await closeTour(clampPage);
     await clampPage.waitForTimeout(300);
 
     await clampPage.getByRole('button', { name: /new ai scenario/i }).click();
@@ -2793,9 +2761,8 @@ try {
   //      exactly as the red's probe6b did.
   section('41', 'print stylesheet', async () => {
     const printPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
-    const exitTour = printPage.getByRole('button', { name: /close tour/i });
     await printPage.goto(BASE, { waitUntil: 'networkidle' });
-    if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+    await closeTour(printPage);
     await printPage.waitForTimeout(500);
     const runBtn = printPage.getByRole('button', { name: /^run$/i });
     if (await runBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
@@ -8769,7 +8736,7 @@ try {
         cover: s && c && s.w * s.h > 0 ? inter(s, c) / (s.w * s.h) : null,
         // The harm a mis-sized card actually does: its own controls leave the
         // screen. The overlay is `fixed`, so the page cannot scroll to reach
-        // them — a visitor with Skip/Back/Next below the fold is stuck in the
+        // them — a visitor with Back/Next/close below the fold is stuck in the
         // tour. Names, not a count, so a failure says which button was lost.
         ctrlsOutside: card ? [...card.querySelectorAll('button, [role="button"], a[href]')]
           .filter((b) => {
@@ -8848,6 +8815,44 @@ try {
       centred.length === 0,
       centred.map((s) => `step ${s.step}: card ${s.cardH}px, no arrow and no sheet`).join('; ') || 'all clean');
     await p.close();
+
+    // ── STRUCT-APP-19/003: the ONE exit must actually be clickable ──────────
+    // OPUS-REVIEW-180 FIX-FIRST 2: `closeTour` falls back to Escape, so every
+    // other section passes whether or not the X was hit — nothing in CI could
+    // see the class 003 was (the single exit covered by something). These are
+    // the two viewports where 003 showed: 67% of the X was under the old
+    // viewport-anchored pill. Two independent oracles, because either alone can
+    // be satisfied the wrong way: hit-testing at the button's centre (a cover
+    // that does not steal the click would still be wrong), and the helper's own
+    // report that the CLICK — not Escape — is what dismissed it.
+    // Mutation: re-plant any viewport-anchored element over that corner (003
+    // verbatim, or a future toast at z >= 60) -> both checks fail by name.
+    for (const [cw, ch] of [[320, 256], [900, 300]]) {
+      const cp = await newTrackedPage({ viewport: { width: cw, height: ch } });
+      await cp.goto(BASE, { waitUntil: 'networkidle' });
+      const closeBtn = cp.getByRole('button', { name: /close tour/i });
+      const up = await closeBtn.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false);
+      record(`precondition ${cw}x${ch}: the tour is open and its close button is visible`, up, `visible=${up}`);
+      if (up) {
+        const hit = await cp.evaluate(() => {
+          const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]');
+          const btn = [...dlg.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Close tour');
+          if (!btn) return { ok: false, what: 'no close button' };
+          const q = btn.getBoundingClientRect();
+          const at = document.elementFromPoint(Math.round(q.left + q.width / 2), Math.round(q.top + q.height / 2));
+          return {
+            ok: !!at && (at === btn || btn.contains(at)),
+            what: at ? `<${at.tagName.toLowerCase()} ${(at.getAttribute('aria-label') || at.className || '').toString().slice(0, 60)}>` : 'nothing',
+          };
+        });
+        record(`STRUCT-APP-19/003: at ${cw}x${ch} nothing covers the tour's one exit — the point at its centre IS the close button`,
+          hit.ok, `elementFromPoint = ${hit.what}`);
+        const { closed, via } = await closeTour(cp);
+        record(`STRUCT-APP-19/003: at ${cw}x${ch} the CLICK dismissed the tour (not the Escape fallback)`,
+          closed && via === 'click', `closed=${closed} via=${via}`);
+      }
+      await cp.close();
+    }
   });
 
 await executeSections();

@@ -19,19 +19,31 @@
  *    `[aria-label="Close tour"]` CSS selector matches BOTH and every call site
  *    dies of a strict-mode violation).
  *
- * Returns true if the tour is gone, false if it was never there.
+ * Returns `{ closed, via }` where `via` is 'click' | 'escape' | 'absent'.
  */
 export const closeTour = async (page, { timeout = 20000 } = {}) => {
   const x = page.getByRole('button', { name: /close tour/i });
-  if (!(await x.isVisible({ timeout: 5000 }).catch(() => false))) return false;
-  await x.click({ timeout }).catch(() => {});
+  // OPUS-REVIEW-180 FIX-FIRST 1: `isVisible({ timeout })` is DOCUMENTED AS
+  // IGNORED in Playwright 1.61 (types.d.ts: "@deprecated This option is
+  // ignored") — it returns immediately. The tour opens on a 700 ms timer from
+  // mount (App.tsx), and `goto(..., 'networkidle')` can resolve before that, so
+  // the old gate raced the timer and returned "never there" while the tour was
+  // still coming. The caller's next line then asserts the tour is absent and
+  // records a PASSING precondition — vacuously — before the tour opens on top
+  // of the section. `waitFor` actually waits.
+  const up = await x.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+  if (!up) return { closed: false, via: 'absent' };
   const gone = () => page.waitForFunction(
     () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
     null, { timeout: 8000 },
   ).then(() => true).catch(() => false);
-  if (await gone()) return true;
-  // Escape is the tour's other documented dismissal; used only as a fallback so
-  // a missed click cannot leave the overlay swallowing the rest of a section.
+  await x.click({ timeout }).catch(() => {});
+  // OPUS-REVIEW-180 FIX-FIRST 2: report WHICH path closed it. The Escape
+  // fallback keeps sections robust, but it also means every call site passes
+  // whether or not the X was actually hit — so nothing in CI could see the
+  // class of defect 003 was (the one exit covered or unclickable). §90 asserts
+  // `via === 'click'` at the viewports where 003 showed.
+  if (await gone()) return { closed: true, via: 'click' };
   await page.keyboard.press('Escape');
-  return gone();
+  return { closed: await gone(), via: 'escape' };
 };
