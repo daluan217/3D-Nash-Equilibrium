@@ -94,7 +94,7 @@ assertDarkPrintPalette(css);
 // quote styles.
 const COLOUR_UTILITY = '(?:bg|text|border|ring|placeholder|from|via|to|fill|stroke|decoration|outline|shadow|accent|caret|divide)';
 const runtimeDarkTernary = () => new RegExp(
-  `\\b(?:darkMode|isDark)\\s*\\?\\s*(['"\`])[^'"\`]*\\b${COLOUR_UTILITY}-[a-z]+-\\d{2,3}\\b[^'"\`]*\\1\\s*:`,
+  `\\b(?:darkMode|isDark)\\s*\\?\\s*(['"\`])[^'"\`]*\\b${COLOUR_UTILITY}-(?:[a-z]+-\\d{2,3}|white|black|transparent|current|none)\\b[^'"\`]*\\1\\s*:`,
   'g',
 );
 const RUNTIME_DARK_COLOUR_TERNARY = runtimeDarkTernary();
@@ -188,6 +188,9 @@ assertNoRuntimeDarkColourClasses(css, app);
     "className={`p-2 ${isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}",
     'className={`p-2 ${darkMode ? "text-slate-400" : "text-slate-500"}`}',
     'const cls = isDark ? `bg-slate-900` : `bg-slate-100`;',
+    // CodeRabbit (#180): shade-less utilities (text-white, bg-black) are the
+    // likeliest dark-arm picks and used to slip past the numeric-shade pattern.
+    "className={isDark ? 'text-white' : 'text-slate-900'}",
   ]) {
     assert.throws(
       () => assertNoRuntimeDarkColourClasses(css, app, { ...real, 'NewThing.tsx': planted }),

@@ -3811,7 +3811,11 @@ function testWalkthroughInputContracts() {
   const pinchWriterContract = (src: string): boolean => {
     const start = src.indexOf('const onTouchStart = (e: Event) => {');
     if (start === -1) return false;
-    const body = src.slice(start, src.indexOf('const onTouchMove', start));
+    // CodeRabbit (#180): a missing `onTouchMove` made indexOf return -1 and the
+    // slice ran to the end of the file, where unrelated handlers could satisfy it.
+    const end = src.indexOf('const onTouchMove', start);
+    if (end <= start) return false;
+    const body = src.slice(start, end);
     const cancel = body.indexOf('cancelCameraGlide();');
     const hold = body.indexOf('holdSpinRef.current();');
     const record = body.indexOf('pinchStartDist.current = dist(te.touches);');

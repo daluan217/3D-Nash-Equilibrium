@@ -636,7 +636,15 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   // subject EXISTS before asserting what must not follow it.
   ok(/aria-label=\{probe \? undefined : 'Close tour'\}/.test(walkthrough),
     "precondition: the close button's aria-label expression is present in Walkthrough.tsx — if this is reworded, the absence check below stops protecting anything and must be updated with it");
-  ok(!/aria-label=\{probe \? undefined : 'Close tour'\}[\s\S]{0,120}inert=\{blocked\}/.test(walkthrough),
+  // CodeRabbit (#180): JSX attribute order is free and the className is long,
+  // so scan the WHOLE close-button element, not 120 characters after the label.
+  const closeBtnStart = walkthrough.lastIndexOf('<button', walkthrough.indexOf("aria-label={probe ? undefined : 'Close tour'}"));
+  // The element ends at the first `>` that is not an arrow function's `=>`.
+  const closeBtnLabelAt = walkthrough.indexOf("aria-label={probe ? undefined : 'Close tour'}");
+  const closeBtnEnd = closeBtnLabelAt + walkthrough.slice(closeBtnLabelAt).search(/(?<!=)>/);
+  ok(closeBtnStart >= 0 && closeBtnEnd > closeBtnStart,
+    'precondition: the close button element must be locatable in Walkthrough.tsx');
+  ok(!/inert=\{blocked\}/.test(walkthrough.slice(closeBtnStart, closeBtnEnd)),
     'the close button must NOT carry its own inert={blocked} — that gates hit-testing/tab-order but not painting, and RED-APP-16/001 needs both on one wrapper');
   ok(!/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),
     'the tour card must NOT carry its own inert={blocked} — moved to the outer wrapper (RED-APP-16/001)');

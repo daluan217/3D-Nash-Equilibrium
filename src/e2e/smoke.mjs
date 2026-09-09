@@ -2811,15 +2811,17 @@ try {
       const pg = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
       await pg.addInitScript((t) => { try { localStorage.setItem('nash_sim_theme', t); } catch {} }, theme);
       await pg.goto(BASE, { waitUntil: 'networkidle' });
-      const exit = pg.getByRole('button', { name: /close tour/i });
-      if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) { await exit.click(); await exit.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); }
+      // CodeRabbit (#180): `isVisible({ timeout })` never waits, so a tour that
+      // opens after networkidle blocked the Step click. Wait through the helper.
+      await closeTour(pg);
       // STRUCT-APP-19/002: put the simulation progress panel on the page — the ONE
       // component that picks its dark classes in JavaScript, and therefore the one
       // a `@media` rule can never make inert. ONE Step rather than a whole Run:
       // it is deterministic (both arms land on exactly step 1, so the two pages
       // are structurally identical) and it costs a second instead of fifteen.
       const stepBtn = pg.getByRole('button', { name: /^step$/i }).first();
-      if (await stepBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      const stepUp = await stepBtn.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false);
+      if (stepUp) {
         await stepBtn.click();
         await pg.waitForFunction(
           () => [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress'),
