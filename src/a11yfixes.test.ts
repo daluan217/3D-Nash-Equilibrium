@@ -853,13 +853,19 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   for (const [label, block] of [['Edit', editDialog], ['Save', saveDialog]] as const) {
     const m = block.match(statusRegionRe);
     ok(!!m, `${label} dialog must carry its own <p role="status" aria-live="polite">...</p> region for regen announcements`);
-    ok(!!m && /regen\.note/.test(m[1]),
-      `${label} dialog's status-region ELEMENT (not just the surrounding block) must render regen.note`);
+    // STRUCT-REGEN-19/003c: the note the dialog announces is `regenView.note` —
+    // the outcome of THIS dialog session, not whatever `regen` last held (a
+    // preview stranded by a cancelled needs-auth jump belongs to a session that
+    // is gone). Same assertion, against the value the JSX is now allowed to read.
+    ok(!!m && /regenView\.note/.test(m[1]),
+      `${label} dialog's status-region ELEMENT (not just the surrounding block) must render regenView.note`);
+    ok(!/\bregen\.(note|status|preview|error)\b/.test(block),
+      `${label} dialog must read the regen outcome through regenView (session-scoped), never the raw regen state`);
   }
 
   // MUTATION / NEGATIVE FIXTURE — a dialog block missing the live region
   // entirely must be caught, not silently pass because SOME dialog has one.
-  const noLiveRegion = '<div aria-label="Save custom game"><p className="text-xs">{regen.note}</p></div>';
+  const noLiveRegion = '<div aria-label="Save custom game"><p className="text-xs">{regenView.note}</p></div>';
   ok(!statusRegionRe.test(noLiveRegion),
     'fixture sanity: a status paragraph without role/aria-live must NOT satisfy the live-region check');
 
@@ -869,9 +875,9 @@ function extractModalSurfaceBlock(src: string, id: string): string {
   // OLD independent-regex check would have passed this; the fixed check
   // must reject it because `regen.note` never appears inside the <p>...</p>
   // the status-region regex actually captures.
-  const decoupledNote = '<div aria-label="Save custom game"><p role="status" aria-live="polite" className="sr-only">{someOtherStatus}</p><p className="text-xs">{regen.note}</p></div>';
+  const decoupledNote = '<div aria-label="Save custom game"><p role="status" aria-live="polite" className="sr-only">{someOtherStatus}</p><p className="text-xs">{regenView.note}</p></div>';
   const decoupledMatch = decoupledNote.match(statusRegionRe);
-  ok(!!decoupledMatch && !/regen\.note/.test(decoupledMatch[1]),
+  ok(!!decoupledMatch && !/regenView\.note/.test(decoupledMatch[1]),
     'fixture sanity: a live region that does NOT itself contain regen.note must fail the (fixed) check, even though regen.note appears elsewhere in the block');
 }
 

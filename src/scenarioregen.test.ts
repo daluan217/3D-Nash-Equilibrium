@@ -19,12 +19,15 @@ import {
   keepFill,
   shouldReplaceName,
   regenErrorFromResponse,
+  regenDroppedNote,
+  orphanedNote,
   codepointSafeSlice,
   REGEN_NAME_MAX,
   REGEN_LABEL_MAX,
   REGEN_DESCRIPTION_MAX,
   type RegenKey,
 } from './utils/scenarioRegen';
+import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { pickScenarioDomainExcluding, SCENARIO_DOMAINS } from './utils/scenarioDomains';
 import { bankDomainFor, bankScenarioAvoiding, allBankRows, bankAvailable, __resetBankSeen } from './utils/bankSource';
 import { pickFromBank } from './utils/scenarioBank';
@@ -140,12 +143,12 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const app = readFileSync('src/App.tsx', 'utf8');
   const handler = app.match(/const handleRegenerateScenario = [\s\S]*?\n  \};\n/)?.[0] ?? '';
   check('the fetch success branch of the regen handler never calls a save-field setter directly',
-    !/setSaveName\(|setSaveDesc\(|setSaveLabels\(|setSaveTerms\(|setEditName\(|setEditDesc\(|setEditLabels\(|setEditTerms\(/.test(handler),
+    !/setSaveName\(|setSaveDesc\(|setSaveLabel\(|setSaveTerms\(|dispatchSaveForm\(|dispatchEditForm\(|setEditName\(|setEditDesc\(|setEditLabel\(|setEditTerms\(/.test(handler),
     'only setRegen(...) may run on a successful draw; the six form fields must be untouched until Keep runs');
   const discard = app.match(/const discardRegen = [\s\S]*?\n  \};\n/);
   check('discardRegen exists and is a short, pure reset', !!discard);
   check('discardRegen never calls a save/edit field setter',
-    !/(setSaveName|setSaveDesc|setSaveLabels|setSaveTerms|setEditName|setEditDesc|setEditLabels|setEditTerms)\(/.test(discard?.[0] ?? ''));
+    !/(setSaveName|setSaveDesc|setSaveLabel|setSaveTerms|dispatchSaveForm|dispatchEditForm|setEditName|setEditDesc|setEditLabel|setEditTerms)\(/.test(discard?.[0] ?? ''));
 }
 
 /* ───────────────────────────────────────────────── H-clamp: keepFill */
@@ -347,6 +350,176 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   } else {
     console.warn('  (bank not available in this environment — bank-avoidance checks skipped, not failed)');
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRUCT-REGEN-19/002 + /003c. Two structural changes, each with its mutation map.
+//
+//   m1 keepFill stops computing `shadowed`            -> "shadowed names the kept chip…"
+//   m2 shadowedNote ignores its player/plural         -> "shadowedNote agrees in number…"
+//   m3 regenDroppedNote drops the `shadowed` argument -> "regenDroppedNote names a shadowed chip…"
+//   m4 keepRegen loses its session check              -> "keepRegen refuses an outcome…"
+//   m5 regenView stops gating on the dialog key       -> "regenView is gated on…"
+{
+  // VERBATIM from STRUCT-REGEN-19/002's live repro — real draw #32 of the
+  // 34-draw corpus, typography included (the U+2019 apostrophe in "resort’s"):
+  // the user's chip "crew" for Player A, under Player B's option labels
+  // "Early Crew" / "Late Crew". The words ARE on screen; they are BLUE.
+  const shadowDraw = {
+    description: 'A ski resort’s operations manager and its grooming contractor are coordinating '
+      + 'preparation for a high-profile lift corridor. The manager chooses Full Grooming or Selective '
+      + 'Grooming, and the contractor books an Early Crew or a Late Crew.',
+    row1: 'Full Grooming', row2: 'Selective Grooming', col1: 'Early Crew', col2: 'Late Crew',
+  };
+  const shadowKept = keepFill(shadowDraw, false, { a: ['crew'], b: [] });
+  check('STRUCT-REGEN-19/002: shadowed names the kept chip and the phrase that took its colour',
+    shadowKept.shadowed.a.length === 1
+    && shadowKept.shadowed.a[0].term === 'crew'
+    && shadowKept.shadowed.a[0].by === 'Early Crew'
+    && shadowKept.shadowed.a[0].bySide === 'B',
+    `got shadowed=${JSON.stringify(shadowKept.shadowed)}`);
+  check('STRUCT-REGEN-19/002: a shadowed chip is STILL KEPT (Keep never destroys highlights)',
+    shadowKept.terms.a.includes('crew'), `got terms.a=${JSON.stringify(shadowKept.terms.a)}`);
+  check('STRUCT-REGEN-19/002: a shadowed chip is not ALSO reported as orphaned (its phrase is there)',
+    shadowKept.orphaned.a.length === 0, `got orphaned=${JSON.stringify(shadowKept.orphaned)}`);
+  // CONTROL: the same chip under labels that do not contain it paints normally.
+  const notShadowed = keepFill({ ...shadowDraw, col1: 'Early Slot', col2: 'Late Slot',
+    description: shadowDraw.description.replace(/Early Crew/, 'Early Slot').replace(/Late Crew/, 'Late Slot') },
+    false, { a: ['crew'], b: [] });
+  check('STRUCT-REGEN-19/002 (control): with no other-player phrase over it, the chip is not shadowed',
+    notShadowed.shadowed.a.length === 0 && notShadowed.orphaned.a.length === 1,
+    `got shadowed=${JSON.stringify(notShadowed.shadowed)} orphaned=${JSON.stringify(notShadowed.orphaned)}`);
+  // CONTROL: same-side shadowing is NOT a lie — the words really are this
+  // player's colour, just claimed by the longer phrase.
+  const sameSide = keepFill({ ...shadowDraw, row1: 'Early Crew', row2: 'Late Crew', col1: 'Full Grooming', col2: 'Selective Grooming' },
+    false, { a: ['crew'], b: [] });
+  check('STRUCT-REGEN-19/002 (control): a chip swallowed by a phrase of its OWN player is not shadowed',
+    sameSide.shadowed.a.length === 0, `got shadowed=${JSON.stringify(sameSide.shadowed)}`);
+  // CONTROL: a draw's own actor noun is not a "kept chip" and is never reported.
+  const drawNoun = keepFill({ ...shadowDraw, actorA: ['crew'] }, false, { a: [], b: [] });
+  check('STRUCT-REGEN-19/002 (control): the draw’s own noun is not reported as a shadowed KEPT chip',
+    drawNoun.shadowed.a.length === 0, `got shadowed=${JSON.stringify(drawNoun.shadowed)}`);
+
+  const shadowOne = regenDroppedNote({ a: [], b: [] }, { a: [], b: [] }, shadowKept.shadowed) ?? '';
+  check('STRUCT-REGEN-19/002: regenDroppedNote names a shadowed chip, the phrase that took it, and that player',
+    /"crew"/.test(shadowOne) && /"Early Crew"/.test(shadowOne) && /Player B/.test(shadowOne)
+    && /Player A's highlight /.test(shadowOne), shadowOne);
+  check('STRUCT-REGEN-19/002: shadowedNote agrees in number (singular)',
+    / highlight /.test(shadowOne) && / is shown /.test(shadowOne) && /remove the chip,/.test(shadowOne), shadowOne);
+  const shadowTwo = regenDroppedNote({ a: [], b: [] }, { a: [], b: [] },
+    { a: [{ term: 'crew', by: 'Early Crew', bySide: 'B' }, { term: 'slot', by: 'Late Slot', bySide: 'B' }], b: [] }) ?? '';
+  check('STRUCT-REGEN-19/002: shadowedNote agrees in number (plural: highlights … are … the chips)',
+    / highlights /.test(shadowTwo) && / are shown /.test(shadowTwo) && /remove the chips,/.test(shadowTwo), shadowTwo);
+  check('STRUCT-REGEN-19/002 (control): nothing dropped, orphaned or shadowed still reads as no note at all',
+    regenDroppedNote({ a: [], b: [] }, { a: [], b: [] }, { a: [], b: [] }) === null);
+
+  // 003c: a regenerate outcome belongs to the dialog session that asked for it.
+  const appSrcRegen = readFileSync('src/App.tsx', 'utf8');
+  check('STRUCT-REGEN-19/003c: keepRegen refuses an outcome drawn for another dialog session',
+    /if \(!regen\.preview \|\| !regen\.key \|\| !regenKeyEquals\(regen\.key, key\)\) return;/.test(appSrcRegen));
+  check('STRUCT-REGEN-19/003c: regenView is gated on regen.key matching the dialog on screen',
+    /regen\.key && currentDialogKey && regenKeyEquals\(regen\.key, currentDialogKey\)/.test(appSrcRegen));
+  check('STRUCT-REGEN-19/003c: every regen outcome records the key it was drawn for',
+    !/setRegen\(\{[^}]*\}\)/.test(appSrcRegen.replace(/setRegen\(\{[^}]*key[^}]*\}\)/g, '')));
+}
+
+/* ─────────────────────── STRUCT-REGEN-19/007: Keep must not hand the user's own
+   text to the "what the app last wrote" record. RED-APP-4 (round 4) stops a
+   Generate fill from overwriting text the user typed; `keepRegen` registers the
+   kept draw as that record (OPUS-REVIEW-171/N1) so a re-roll may replace it. The
+   fallback `kept.name !== undefined ? kept.name : liveName` put the USER's name
+   in there — `kept.name` is undefined exactly when the user typed it — and the
+   next Generate then judged the field "the app's own" and overwrote it.
+   Live: "My careful title" -> "Trail Watch" (findings/STRUCT-REGEN-19/007);
+   control without the Keep: the name survives. */
+{
+  const draw = { name: 'AI Title', description: 'A harbour story about ferries and tides.', row1: 'r1', row2: 'r2', col1: 'c1', col2: 'c2' };
+  const TYPED = 'My careful title';
+  // The whole path, as App.tsx runs it.
+  const record = (liveName: string, typedIt: boolean): GeneratedFill => {
+    const kept = keepFill(draw, shouldReplaceName(typedIt), { a: [], b: [] });
+    return {
+      // App.tsx's rule, post-fix: only what the Keep itself wrote.
+      name: kept.name ?? '',
+      desc: kept.desc,
+      row1: kept.labels.row1, row2: kept.labels.row2, col1: kept.labels.col1, col2: kept.labels.col2,
+    };
+  };
+  check('fixture precondition: Keep leaves a hand-typed name alone', shouldReplaceName(true) === false);
+  check('fixture precondition: Keep replaces a name the user never touched', shouldReplaceName(false) === true);
+  const typedCase = record(TYPED, true);
+  check('STRUCT-REGEN-19/007: the kept-draw record never carries the name the USER typed',
+    typedCase.name !== TYPED, JSON.stringify(typedCase.name));
+  const afterKeep = { name: TYPED, desc: typedCase.desc, labels: { row1: typedCase.row1, row2: typedCase.row2, col1: typedCase.col1, col2: typedCase.col2 } };
+  check('STRUCT-REGEN-19/007: after that Keep, the next Generate may NOT overwrite the form (RED-APP-4)',
+    generatedFillIsSafe(afterKeep, typedCase) === false);
+  // The pre-fix record, verbatim, must fail that same assertion — so the check
+  // above cannot be passing for an unrelated reason.
+  const preFix: GeneratedFill = { ...typedCase, name: TYPED };
+  check('fixture: the pre-fix record (name falls back to liveName) DOES let the fill through',
+    generatedFillIsSafe(afterKeep, preFix) === true);
+  // Control: a name the user never touched IS the app's own, and a re-roll may
+  // replace it — the behaviour OPUS-REVIEW-171/N1 added, still intact.
+  const untouched = record('AI Title', false);
+  check('control: a Keep that replaced the name records it, so a re-roll may replace it again',
+    untouched.name === 'AI Title'
+    && generatedFillIsSafe({ name: 'AI Title', desc: untouched.desc, labels: { row1: untouched.row1, row2: untouched.row2, col1: untouched.col1, col2: untouched.col2 } }, untouched) === true);
+  // …and the rest of the kept story is still recorded, or the re-roll flow breaks.
+  check('control: the kept description and option names are still recorded',
+    untouched.desc === keepFill(draw, true, { a: [], b: [] }).desc && untouched.row1 === 'r1');
+}
+
+/* App.tsx source: the record is built from `kept` alone. */
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  const keepStart = app.indexOf('const keepRegen = (key: RegenKey) => {');
+  const keepFn = app.slice(keepStart, app.indexOf('regenButtonRef.current?.focus();', keepStart));
+  check('STRUCT-REGEN-19/007: keepRegen records only what the Keep wrote (name: kept.name ?? \'\')',
+    /name: kept\.name \?\? '',/.test(keepFn));
+  // Comment lines stripped first: this block's own explanation names `liveName`,
+  // and a check that a COMMENT can fail is a check that cannot fail for its reason.
+  const keepCode = keepFn.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  check('STRUCT-REGEN-19/007: liveName never reaches the last-generated-fill record',
+    !/lastGeneratedFillRef\.current = \{[\s\S]{0,300}?liveName/.test(keepCode));
+  check('fixture: that check DOES fire on the pre-fix code',
+    /lastGeneratedFillRef\.current = \{[\s\S]{0,300}?liveName/.test(
+      keepCode.replace("name: kept.name ?? '',", 'name: kept.name !== undefined ? kept.name : liveName,')));
+}
+
+// ── STRUCT-REGEN-19/010: one orphaned-chip sentence, two callers ─────────────
+// The 409 adoption plants chips the app chose, against a description this dialog
+// may have rewritten. It owes the same sentence Keep already gives rather than a
+// second one written beside it, so `orphanedNote` takes WHERE the phrase is
+// missing from. The default must be byte-identical to what Keep printed before.
+{
+  const keepDefault = orphanedNote(['lighthouse keeper'], 'A');
+  check('orphanedNote: the default wording is unchanged for the Keep path',
+    keepDefault === 'Player A\'s highlight "lighthouse keeper" does not appear in the new story, so it is shown as not highlighted — reuse the phrase in the text or remove the chip.',
+    keepDefault);
+  const adopted = orphanedNote(['lighthouse keeper'], 'A', 'this description');
+  check('orphanedNote: the adoption path names this description instead of the new story',
+    adopted.includes('does not appear in this description') && !adopted.includes('the new story'), adopted);
+  check('orphanedNote: only the WHERE changes — the rest of the sentence is the same one',
+    adopted === keepDefault.replace('the new story', 'this description'), adopted);
+  // Number agreement (the round-16 rule) must survive the new argument.
+  const two = orphanedNote(['a', 'b'], 'B', 'this description');
+  check('orphanedNote: plural noun, verb and pronoun with a custom where',
+    /highlights .* do not appear in this description, so they are shown/.test(two)
+    && /remove the chips\.$/.test(two), two);
+  check('orphanedNote: singular noun, verb and pronoun with a custom where',
+    /highlight .* does not appear in this description, so it is shown/.test(adopted)
+    && /remove the chip\.$/.test(adopted), adopted);
+  // Mutants, each killed by the check that names it.
+  const mutants: [string, string, string][] = [
+    ['M1 the where argument is ignored (the pre-fix function)',
+      orphanedNote(['lighthouse keeper'], 'A'), 'names this description instead of the new story'],
+    ['M2 the default changes under the Keep path',
+      orphanedNote(['lighthouse keeper'], 'A', 'the story'), 'the default wording is unchanged'],
+  ];
+  check(`${mutants[0][0]} -> would fail "${mutants[0][2]}"`,
+    !mutants[0][1].includes('this description'));
+  check(`${mutants[1][0]} -> would fail "${mutants[1][2]}"`,
+    mutants[1][1] !== keepDefault);
 }
 
 if (failures > 0) {

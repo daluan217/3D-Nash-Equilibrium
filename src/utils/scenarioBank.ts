@@ -265,26 +265,6 @@ export const SERVE_PROBES: GamePayoffs[] = (() => {
  * best-effort trim (see CLAUDE.md's `no-rewriting-rung3-ceiling`).
  */
 /**
- * Whether ColorCoded would ACTUALLY highlight `term` inside `desc` — the
- * IDENTICAL regex `ColorCoded.tsx` builds from a caller-supplied term (raw,
- * unnormalized term against the raw, unnormalized description; only regex
- * metacharacters escaped; word-boundary lookarounds; `gi` flags; no
- * `.normalize()` anywhere). Extracted to module scope (RED-DESKTOP-9/001) so
- * `scenarioIsColourable` and `actorNounsOk` can share one predicate rather
- * than each growing its own subtly different idea of "verbatim" — exactly the
- * failure this project has hit before (`.toLowerCase()` folds U+212A KELVIN
- * SIGN to ASCII "k" where a plain `gi` regex does not; a bare `.includes()`
- * ignores word boundaries and would accept "vendor" inside "prevendors").
- * Building the identical regex here makes this predicate and the real
- * highlighter's decision provably the same by construction. The term is used
- * RAW, not `.trim()`'d, for the same reason: `ColorCoded.tsx` never trims
- * either, so incidental whitespace in a term changes what its word-boundary
- * lookarounds see.
- */
-export function escapeForColourRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-/**
  * DELEGATED, not re-implemented (STRUCT-REGEN-19/003a, routed 2026-09-08).
  *
  * The comment above says "building the identical regex here makes this
@@ -308,21 +288,6 @@ export function highlightWouldMatch(term: string, desc: string): boolean {
   if (!term) return false;
   return termOccursIn(desc, term);
 }
-/**
- * THE VERBATIM QUESTION, deliberately NOT the highlighter's (see
- * `actorNounsOk`'s own comment for the full argument). "Is this the author's
- * word, literally present in the text?" is answered without Unicode case
- * folding — `u` + `i` folds U+212A KELVIN SIGN onto "k", so the highlighter's
- * rule would accept a noun the author never wrote. Raw string, raw description,
- * only regex metacharacters escaped, ASCII word boundaries: exactly the
- * predicate this guard has always meant, now under a name that says which
- * question it answers so the two cannot be re-unified by accident.
- */
-function occursAsRawSubstring(term: string, desc: string): boolean {
-  if (!term) return false;
-  return new RegExp(`(?<![\\w])(?:${escapeForColourRegex(term)})(?![\\w])`, 'gi').test(desc);
-}
-
 export function actorNounsOk(sc: {
   actorA?: unknown; actorB?: unknown; description?: string | null;
   row1?: string | null; row2?: string | null; col1?: string | null; col2?: string | null;
@@ -382,24 +347,16 @@ export function actorNounsOk(sc: {
   // because the real regex's word-boundary lookarounds see the space
   // character as part of the match, not the caller's convenience trim.
   //
-  // THIS IS NO LONGER THE HIGHLIGHTER'S PREDICATE, AND MUST NOT BE
-  // (STRUCT-CLOUD-19, folding in STRUCT-REGEN-19/003a). It used to call
-  // `highlightWouldMatch` on the argument that the two questions were the same
-  // one; they are not, and the argument above is the proof. The paragraph
-  // reasons that a KELVIN-SIGN noun "can never actually highlight" because
-  // ColorCoded builds `gi` — but the renderer's rule is now
-  // `termBoundaryRegExp`'s `giu`, and `u`+`i` applies UNICODE CASE FOLDING,
-  // which does fold U+212A to "k". Under the renderer's rule such a noun WOULD
-  // paint, so borrowing it here would have flipped this guard from rejecting to
-  // accepting — which `src/scenariobank.test.ts` caught the moment
-  // `highlightWouldMatch` was delegated.
-  //
-  // The guard's real subject is the VERBATIM contract of RED-REGEN-2/001: a
-  // declared actor noun must be the author's own word, literally present in the
-  // description. That question is answered by a raw, unfolded, ASCII-boundary
-  // match, and it stays here under its own name so nobody re-unifies the two.
+  // `highlightWouldMatch` now lives at module scope
+  // (RED-DESKTOP-9/001) so `scenarioIsColourable` shares this exact
+  // predicate instead of growing its own.
+  // Merged with #182 (STRUCT-CLOUD-19): its separate raw, unfolded predicate
+  // (`occursAsRawSubstring`) is NOT kept. The invariant is "the gate agrees
+  // with the painter" (RED-REGEN-2/001, STRUCT-REGEN-19/009), and the painter
+  // now folds case under `u` — so a U+212A noun it paints is a noun this
+  // gate accepts. One construction, in colorTerms.ts.
   const rawDesc = sc.description ?? '';
-  if (all.some((t) => !occursAsRawSubstring(t, rawDesc))) return false;
+  if (all.some((t) => !highlightWouldMatch(t, rawDesc))) return false;
   const aSet = new Set((a as string[]).map(norm));
   const bSet = new Set((b as string[]).map(norm));
   if ([...aSet].some((t) => bSet.has(t))) return false;
@@ -503,9 +460,8 @@ export function actorNounsOk(sc: {
  *
  * Uses `highlightWouldMatch`, which delegates to `termOccursIn`, so it cannot
  * disagree with the real highlighter about whether a given TERM matches.
- * `actorNounsOk` deliberately does NOT share this predicate any more — it asks
- * the VERBATIM question through `occursAsRawSubstring`; its own comment above
- * carries the proof that the two questions are different ones.
+ * `actorNounsOk` shares it (merged with #182: one construction, so the two
+ * screens cannot answer the Kelvin-sign question differently).
  *
  * IT IS NOT, HOWEVER, WHAT THE RENDERER WILL PAINT, and this comment used to
  * claim it was ("can never disagree with what the real highlighter would

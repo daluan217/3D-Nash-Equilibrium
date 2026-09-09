@@ -23,7 +23,10 @@
  * assertion in `src/scenarioregen.test.ts` with no mount required.
  */
 import { cleanText } from './textSafety';
-import { regenKeptColorTerms, capHitMessage } from './colorTerms';
+import {
+  regenKeptColorTerms, capHitMessage, chipPaintStates, colorTermKey,
+  mergeDescriptionTerms, dialogBaseColorTerms, optionLabelTerms,
+} from './colorTerms';
 import type { GamePayoffs } from '../types';
 
 // ── field limits, matching the existing save/edit dialogs and server clamps ──
@@ -171,6 +174,14 @@ export interface KeptFill {
    *  not occur in `desc` any more (per `termOccursIn`) — the editor shows
    *  them as "not highlighted"; the Keep note names them. */
   orphaned: { a: string[]; b: string[] };
+  /** STRUCT-REGEN-19/002: EXISTING chip(s), kept in `terms`, whose phrase DOES
+   *  occur in `desc` but only inside a phrase highlighted for the OTHER player
+   *  (an option label, or an actor noun the draw brought), so every occurrence
+   *  is on screen in that player's colour. Same family as `orphaned` — the chip
+   *  paints nothing of its own — and named the same way rather than left for
+   *  the reader to notice a colour they did not choose. `by`/`bySide` come from
+   *  `chipPaintStates`, the pass that paints. */
+  shadowed: { a: ShadowedChip[]; b: ShadowedChip[] };
   /** RED-REGEN-11/001: actor noun(s) the draw offered but the per-side
    *  `USER_TERMS_MAX` cap kept out of `terms` — empty on both sides for
    *  every draw that fit. `keepRegen` turns this into the same cap-hit
@@ -232,6 +243,7 @@ export function keepFill(
     terms: { a: [], b: [] },
     dropped: { a: [], b: [] },
     orphaned: { a: [], b: [] },
+    shadowed: { a: [], b: [] },
   };
   // RED-REGEN-14/002: judged against the CLAMPED description — the text the
   // dialog will actually hold and render, not the raw draw.
@@ -239,6 +251,25 @@ export function keepFill(
   out.terms = { a: kept.a, b: kept.b };
   out.dropped = kept.dropped;
   out.orphaned = kept.orphaned;
+  // STRUCT-REGEN-19/002: shadowing can only be judged against the FULL merged
+  // list the dialog will render with — the kept chips PLUS this draw's own
+  // option labels — because the phrase that takes the colour is usually one of
+  // those labels. Composed here exactly as `DescriptionEditor` composes it.
+  const merged = mergeDescriptionTerms(
+    dialogBaseColorTerms(out.labels), kept.a, kept.b, optionLabelTerms(out.labels),
+  );
+  const states = chipPaintStates(out.desc, merged.a, merged.b);
+  const shadowedOn = (side: 'a' | 'b', chips: readonly string[]): ShadowedChip[] => {
+    const existingKeys = new Set((side === 'a' ? existingTerms.a : existingTerms.b).map(colorTermKey));
+    const found: ShadowedChip[] = [];
+    for (const t of chips) {
+      if (!existingKeys.has(colorTermKey(t))) continue; // the draw's own nouns are not kept chips
+      const st = (side === 'a' ? states.a : states.b).get(colorTermKey(t));
+      if (st && st.state === 'shadowed') found.push({ term: t, by: st.by, bySide: st.bySide });
+    }
+    return found;
+  };
+  out.shadowed = { a: shadowedOn('a', kept.a), b: shadowedOn('b', kept.b) };
   if (replaceName) out.name = codepointSafeSlice(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
   return out;
 }
@@ -255,6 +286,9 @@ export function keepFill(
 export function regenDroppedNote(
   dropped: { a: readonly string[]; b: readonly string[] },
   orphaned: { a: readonly string[]; b: readonly string[] } = { a: [], b: [] },
+  shadowed: { a: readonly ShadowedChip[]; b: readonly ShadowedChip[] } = { a: [], b: [] },
+  /** What the phrases are missing from; see `orphanedNote` (STRUCT-REGEN-19/010). */
+  where = 'the new story',
 ): string | null {
   const notes: string[] = [];
   if (dropped.a.length > 0) notes.push(capHitMessage(dropped.a, 'A'));
@@ -262,16 +296,44 @@ export function regenDroppedNote(
   // RED-REGEN-14/002: a kept chip the new story no longer contains is not
   // deleted (2026-09-03: Keep never destroys highlights) — but a silent inert
   // chip was the defect, so Keep says which ones and what to do.
-  if (orphaned.a.length > 0) notes.push(orphanedNote(orphaned.a, 'A'));
-  if (orphaned.b.length > 0) notes.push(orphanedNote(orphaned.b, 'B'));
+  if (orphaned.a.length > 0) notes.push(orphanedNote(orphaned.a, 'A', where));
+  if (orphaned.b.length > 0) notes.push(orphanedNote(orphaned.b, 'B', where));
+  // STRUCT-REGEN-19/002: same family — the chip paints nothing of its own —
+  // but the words ARE on screen, in the other player's colour, so the wording
+  // names the phrase that took them instead of saying "does not appear".
+  if (shadowed.a.length > 0) notes.push(shadowedNote(shadowed.a, 'A'));
+  if (shadowed.b.length > 0) notes.push(shadowedNote(shadowed.b, 'B'));
   return notes.length > 0 ? notes.join(' ') : null;
 }
 
-export function orphanedNote(terms: readonly string[], player: 'A' | 'B'): string {
+/** A kept chip whose phrase a phrase of the OTHER player paints over. */
+export interface ShadowedChip { term: string; by: string; bySide: 'A' | 'B' }
+
+export function shadowedNote(items: readonly ShadowedChip[], player: 'A' | 'B'): string {
+  const one = items.length === 1;
+  const parts = items.map((i) => `"${i.term}" (inside "${i.by}", Player ${i.bySide}'s)`).join(', ');
+  // Noun, verb and pronoun agree in number (the round-16 rule).
+  return one
+    ? `Player ${player}'s highlight ${parts} is shown in the other player's colour, because the longer phrase claims it — remove the chip, or highlight the longer phrase for Player ${player}.`
+    : `Player ${player}'s highlights ${parts} are shown in the other player's colour, because the longer phrases claim them — remove the chips, or highlight the longer phrases for Player ${player}.`;
+}
+
+/**
+ * `where` names the text the phrase is missing from. It defaults to "the new
+ * story" — the Keep path this note was written for — and the 409 adoption path
+ * passes "this description" (STRUCT-REGEN-19/010): the app put those chips on
+ * the form, so it owes the same sentence Keep already gives, rather than a
+ * second one written from scratch beside it.
+ */
+export function orphanedNote(
+  terms: readonly string[],
+  player: 'A' | 'B',
+  where = 'the new story',
+): string {
   const quoted = terms.map((t) => `"${t}"`).join(', ');
   const one = terms.length === 1;
   // CodeRabbit CLI (this branch): noun, verb and pronoun agree in number.
-  return `Player ${player}'s highlight${one ? '' : 's'} ${quoted} ${one ? 'does' : 'do'} not appear in the new story, so ${one ? 'it is' : 'they are'} shown as not highlighted — reuse the ${one ? 'phrase' : 'phrases'} in the text or remove the ${one ? 'chip' : 'chips'}.`;
+  return `Player ${player}'s highlight${one ? '' : 's'} ${quoted} ${one ? 'does' : 'do'} not appear in ${where}, so ${one ? 'it is' : 'they are'} shown as not highlighted — reuse the ${one ? 'phrase' : 'phrases'} in the text or remove the ${one ? 'chip' : 'chips'}.`;
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────

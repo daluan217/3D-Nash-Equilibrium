@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { ColorCoded } from './ColorCoded';
 import {
-  termOccursIn,
+  chipPaintStates,
   colorTermKey,
   cleanUserColorTerms,
   cleanUserColorTermPair,
@@ -154,18 +154,23 @@ export function DescriptionEditor({
   // filed on A in this very dialog (a 409 adoption creates exactly that
   // shape) — a different cause from the label rule, so it gets its own words.
   const crossPlayerKeys = new Set(crossPlayerUserTerms(termsA, termsB).map(colorTermKey));
-  // RED-REGEN-14/002: a chip whose phrase does not occur in the text at all
-  // (a regenerated story replaced it, or the user edited it away) paints
-  // nothing either — same family, third cause, decided by the SAME boundary
-  // rule `ColorCoded` paints with (`termOccursIn`), never by a second one.
-  // The chip stays (Keep never destroys highlights); it says what it is.
+  // RED-REGEN-14/002 + STRUCT-REGEN-19/002: a chip that paints nothing says so,
+  // and the reason comes from the SAME pass that paints — `chipPaintStates` runs
+  // `paintPlan` over exactly the merged lists this preview renders with, so the
+  // chip and the colours on screen can never be decided by two rules. Two causes
+  // live here: `absent` (the phrase is not in the text) and `shadowed` (it is, but
+  // a phrase belonging to the other player claims every occurrence, so the words
+  // are on screen in that player's colour).
+  const paintStates = useMemo(() => chipPaintStates(value, merged.a, merged.b), [value, merged]);
   // Precedence: the ownership causes first — they would still apply after
   // the user put the phrase back into the text, so they are the fact worth
-  // stating; "absent" is reported only for a chip that would otherwise paint.
+  // stating; the paint causes are reported for a chip that would otherwise paint.
   const chip = (term: string, player: 'A' | 'B') => {
     const byRule = !(player === 'A' ? renderedA : renderedB).has(colorTermKey(term));
-    const absent = !byRule && !termOccursIn(value, term);
-    const suppressed = byRule || absent;
+    const paint = (player === 'A' ? paintStates.a : paintStates.b).get(colorTermKey(term)) ?? { state: 'absent' as const };
+    const absent = !byRule && paint.state === 'absent';
+    const shadowed = !byRule && paint.state === 'shadowed' ? paint : null;
+    const suppressed = byRule || absent || !!shadowed;
     const crossPlayer = byRule && player === 'B' && crossPlayerKeys.has(colorTermKey(term));
     const colour = player === 'A'
       ? 'border-player-a-300 dark:border-player-a-800 text-player-a-ink dark:text-player-a-ink-dark hover:bg-player-a-50 dark:hover:bg-player-a-900/30'
@@ -178,10 +183,12 @@ export function DescriptionEditor({
         onClick={() => remove(term)}
         data-player={player}
         data-suppressed={suppressed ? 'true' : undefined}
-        data-suppressed-cause={suppressed ? (absent ? 'absent' : crossPlayer ? 'cross-player' : 'label') : undefined}
+        data-suppressed-cause={suppressed ? (absent ? 'absent' : shadowed ? 'shadowed' : crossPlayer ? 'cross-player' : 'label') : undefined}
         title={suppressed
           ? (absent
             ? `Not highlighted: "${term}" does not appear in the story. Reuse the phrase in the text, or remove the chip.`
+            : shadowed
+              ? `Not highlighted: "${term}" appears only inside "${shadowed.by}", which is highlighted for Player ${shadowed.bySide}, so those words are shown in Player ${shadowed.bySide}'s colour. Remove this chip, or highlight the longer phrase for Player ${player}.`
             : crossPlayer
               ? `Not highlighted: "${term}" is also a Player A highlight in this dialog, and one phrase can belong to only one player. Remove it here or from Player A.`
               : `Not highlighted: "${term}" names an option label that is not exclusively this player's (shared by both, or the other player's), so it stays neutral. Remove to drop the chip.`)

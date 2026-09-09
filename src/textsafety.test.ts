@@ -212,7 +212,20 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
   // expression) must independently carry all three handlers wired to ITS
   // OWN setter.
   const clampLabelInputCall = /clampLabelInput\(e\.target\.value\)/;
-  for (const [setter, anchorText] of [['setEditLabels', 'value={editLabels[key]}'], ['setSaveLabels', 'value={saveLabels[key]}']] as const) {
+  // STRUCT-REGEN-19/001 + /004: both dialogs now dispatch ONE field into the
+  // shared save-form reducer (`setSaveLabel` / `setEditLabel`); there is no bulk
+  // label setter left in App.tsx to update four at a time. The CLAMP contract is
+  // still checked per-dialog against that dialog's own writer shape — the two
+  // shapes happen to match again, but keeping them separate is what caught the
+  // regression when only one of them moved.
+  for (const [setter, anchorText, onChangeShape, onCompEndShape] of [
+    ['setEditLabel', 'value={editLabels[key]}',
+      `onChange=\\{\\(e\\) => setEditLabel\\(\\s*key,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\)\\}`,
+      'setEditLabel\\(key, clamped\\)'],
+    ['setSaveLabel', 'value={saveLabels[key]}',
+      `onChange=\\{\\(e\\) => setSaveLabel\\(\\s*key,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\)\\}`,
+      'setSaveLabel\\(key, clamped\\)'],
+  ] as const) {
     const anchorIdx = appSrc.indexOf(anchorText);
     ok(anchorIdx !== -1, `App.tsx must contain the label-input value binding "${anchorText}"`);
     const block = appSrc.slice(anchorIdx, anchorIdx + 1700);
@@ -220,8 +233,7 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
     ok(/onBeforeInput=\{clampLabelBeforeInput\}/.test(block),
       `the ${anchorText} label-input block must carry onBeforeInput={clampLabelBeforeInput}`);
 
-    const onChangeMatch = block.match(new RegExp(
-      `onChange=\\{\\(e\\) => ${setter}\\(\\(prev\\) => \\(\\{\\s*\\.\\.\\.prev,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\[key\\]: \\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\}\\)\\)\\}`));
+    const onChangeMatch = block.match(new RegExp(onChangeShape));
     ok(!!onChangeMatch,
       `the ${anchorText} label-input block must carry an onChange calling ${setter} with clampLabelInput, skipped while composing`);
 
@@ -236,7 +248,7 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
     // onCompositionEnd fires unconditionally (it is not subject to the
     // value-tracker dedup), so it is the one place guaranteed to see and
     // clamp the committed value.
-    ok(new RegExp(`onCompositionEnd=\\{\\(e\\) => \\{[\\s\\S]{0,1200}?${setter}\\(\\(prev\\) => \\(\\{ \\.\\.\\.prev, \\[key\\]: clamped \\}\\)\\)`).test(block),
+    ok(new RegExp(`onCompositionEnd=\\{\\(e\\) => \\{[\\s\\S]{0,1200}?${onCompEndShape}`).test(block),
       `the ${anchorText} label-input block must carry an onCompositionEnd calling ${setter} to clamp the committed value`);
 
     // No bare native maxLength on this (now clamp-only) label input block.
@@ -250,11 +262,23 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
   // maxLength, raw e.target.value with no clamp). Proves the checks above
   // can tell the fixed wiring apart from the defect.
   const preFixInput = `value={saveLabels[key]}
-                        onChange={(e) => setSaveLabels((prev) => ({ ...prev, [key]: e.target.value }))}
+                        onChange={(e) => setSaveLabel(key, e.target.value)}
                         maxLength={40}
                       />`;
   ok(!/clampLabelInput/.test(preFixInput),
     'the pre-fix fixture text must not accidentally already carry the clamp call (fixture sanity check)');
+  ok(!new RegExp(`onChange=\\{\\(e\\) => setSaveLabel\\(\\s*key,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\)\\}`).test(preFixInput),
+    'fixture: the Save-dialog onChange predicate must REJECT the unclamped shape');
+  // CodeRabbit CLI on #184: assert the anchor SEPARATELY. A missing anchor makes
+  // indexOf return -1, slice(-1, 1699) return one character, and the maxLength
+  // half pass over a block it never read. The loop above happens to assert this
+  // same anchor today, but only because it is one of its two anchors — rename the
+  // Save binding and that coupling silently disappears while this line still runs.
+  const saveAnchorAt = appSrc.indexOf('value={saveLabels[key]}');
+  ok(saveAnchorAt !== -1,
+    'App.tsx must contain the Save-dialog label-input binding value={saveLabels[key]} (otherwise the maxLength check below reads no block at all)');
+  ok(!/maxLength=\{40\}/.test(appSrc.slice(saveAnchorAt, saveAnchorAt + 1700)),
+    'the shipped Save-dialog label-input block must carry no maxLength={40}');
 }
 
 // ── 11. RED-APP-9/003 — `wouldExceedGraphemeBudget`, the shared boundary

@@ -46,16 +46,44 @@ export interface SaveFormFields {
 }
 
 /**
- * True iff every one of `current`'s six fields is either empty or exactly
- * what `prevFill` (the last thing Generate itself wrote, or `null` before the
- * first fill) put there — i.e. safe for a fresh `GeneratedFill` to replace.
+ * True iff every one of `current`'s six fields is either empty or exactly what
+ * the APP itself put there — i.e. safe for a fresh `GeneratedFill` to replace.
+ *
+ * The app writes into this form from TWO places, and the predicate has to know
+ * both (STRUCT-REGEN-19/005):
+ *
+ *   `prevFill`    the last thing Generate itself wrote (null before the first
+ *                 fill) — a re-roll recognising its own prior output.
+ *   `boardLabels` the four option names the dialog prefilled FROM THE BOARD
+ *                 when it opened, or null when it prefilled none. Pass them
+ *                 only while they are still the app's: `saveFormReducer`
+ *                 records that as `provenance.labels === 'from-board'`, and
+ *                 the first keystroke into any label field flips it to
+ *                 `'typed'`, at which point the caller passes null and all
+ *                 four are the user's again.
+ *
+ * Knowing only the first was a shipped defect: every preset carries option
+ * names, `openSaveFormForBoard` prefills them on every open, and the very first
+ * Generate click therefore read them as the user's own typing, refused to fill,
+ * and told the user it had "kept the name/description/option names you'd
+ * already typed" — text the user had never touched. Verified against
+ * origin/main 0.0.197; findings/STRUCT-REGEN-19/005.
+ *
+ * `boardLabels` is optional so that every caller and fixture written before it
+ * existed keeps its exact previous meaning.
  */
-export function generatedFillIsSafe(current: SaveFormFields, prevFill: GeneratedFill | null): boolean {
+export function generatedFillIsSafe(
+  current: SaveFormFields,
+  prevFill: GeneratedFill | null,
+  boardLabels: SaveFormFields['labels'] | null = null,
+): boolean {
   const untouched = (v: string, key: keyof GeneratedFill) => v === '' || (prevFill !== null && v === prevFill[key]);
+  const labelUntouched = (v: string, key: keyof SaveFormFields['labels']) =>
+    untouched(v, key) || (boardLabels !== null && v === boardLabels[key]);
   return untouched(current.name, 'name')
     && untouched(current.desc, 'desc')
-    && untouched(current.labels.row1, 'row1')
-    && untouched(current.labels.row2, 'row2')
-    && untouched(current.labels.col1, 'col1')
-    && untouched(current.labels.col2, 'col2');
+    && labelUntouched(current.labels.row1, 'row1')
+    && labelUntouched(current.labels.row2, 'row2')
+    && labelUntouched(current.labels.col1, 'col1')
+    && labelUntouched(current.labels.col2, 'col2');
 }

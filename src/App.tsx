@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useReducer, useRef, useCallback } from 'react';
 import { GamePayoffs, SimState, PresetGame, NashEquilibrium, PathSegment, ReportEnvelope, type SuggestedScenario } from './types';
 import {
   PRESETS,
@@ -94,8 +94,11 @@ import {
 import { MenuDrawer } from './components/MenuDrawer';
 import { SavedGamesList, formatSavedGames } from './components/SavedGamesList';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenKeptColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { chipPaintStates, colorTermKey, colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, optionLabelTerms, regenKeptColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
+import { saveFormReducer, EMPTY_SAVE_FORM, type LabelKey, type SaveFormState } from './utils/saveFormModel';
+// aliased: `generateNote` is also the name of the state holding the rendered text.
+import { generateNote as renderGenerateNote, keptFieldsOf } from './utils/generateNote';
 import {
   regenKeyEquals,
   regenResponseIsCurrent,
@@ -108,6 +111,7 @@ import {
   REGEN_ANNOUNCE,
   type RegenKey,
   type RegenPreview,
+  type ShadowedChip,
   type RegenErrorKind,
 } from './utils/scenarioRegen';
 import { DescriptionEditor } from './components/DescriptionEditor';
@@ -534,14 +538,23 @@ export default function App() {
 
   // Save Game Modal States
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
-  const [saveName, setSaveName] = useState('');
-  const [saveDesc, setSaveDesc] = useState('');
-  /** Option names for the save dialog: typed by the user, or prefilled from an
-   *  invented scenario the user chose to keep. */
-  const [saveLabels, setSaveLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
-  /** The user's own colour highlights for the description they are writing.
-   *  Never sent to the model — see src/utils/colorTerms.ts. */
-  const [saveTerms, setSaveTerms] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });
+  /**
+   * STRUCT-REGEN-19/001: the save form is ONE value with ONE reconcile rule
+   * (src/utils/saveFormModel.ts). Name, description, the four option labels and
+   * the user's colour chips always describe one story written for one board, so
+   * a writer cannot replace four fifths of it and leave the rest — which is how
+   * an abandoned draft's chips ended up saved under a brand-new AI story. The
+   * reads below are derived; every write is an action.
+   */
+  const [saveForm, dispatchSaveForm] = useReducer(saveFormReducer, EMPTY_SAVE_FORM);
+  const saveName = saveForm.name;
+  const saveDesc = saveForm.desc;
+  const saveLabels = saveForm.labels;
+  const saveTerms = saveForm.terms;
+  const setSaveName = (v: string) => dispatchSaveForm({ type: 'typed', field: 'name', value: v });
+  const setSaveDesc = (v: string) => dispatchSaveForm({ type: 'typed', field: 'desc', value: v });
+  const setSaveLabel = (field: LabelKey, v: string) => dispatchSaveForm({ type: 'typedLabel', field, value: v });
+  const setSaveTerms = (t: { a: string[]; b: string[] }) => dispatchSaveForm({ type: 'typedTerms', a: t.a, b: t.b });
   // "Generate a game for me" inside the save modal: which equilibrium
   // structure to roll, whether a roll+AI-description round trip is in flight,
   // and the outcome line shown under the controls.
@@ -554,14 +567,42 @@ export default function App() {
   // one set of fields would let a half-typed new game leak into an edit.
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editGameId, setEditGameId] = useState<string | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editDesc, setEditDesc] = useState('');
-  const [editLabels, setEditLabels] = useState({ row1: '', row2: '', col1: '', col2: '' });
-  const [editTerms, setEditTerms] = useState<{ a: string[]; b: string[] }>({ a: [], b: [] });
-  // Mirrors for the 409 recovery's continuation (CodeRabbit on #142): the
-  // dialog can close, or open another game, while the refetch is in flight.
-  const editTermsRef = useRef(editTerms);
-  useEffect(() => { editTermsRef.current = editTerms; }, [editTerms]);
+  /**
+   * STRUCT-REGEN-19/004: the Edit dialog's form is the SAME five pieces as the
+   * Save dialog's — name, description, four option labels, the user's colour
+   * chips — describing ONE story, so it is the SAME reducer
+   * (src/utils/saveFormModel.ts). Its `boardKey` is the saved game's id: the
+   * thing the story is written for.
+   *
+   * It used to be four independent useStates plus a name-baseline ref, and it
+   * broke exactly the way the Save form did: "Save this scenario with the game"
+   * on an ALREADY-SAVED game replaced the description and all four option names
+   * with a brand-new AI story and left the game's own colour chips in place —
+   * chips that described the text just replaced. `handleEditGameSubmit` then
+   * diffed those chips against `editOriginalRef` (the same values), so the PATCH
+   * omitted them, the server kept them, and the stored record named highlight
+   * phrases absent from its own description. One story, one action, and that
+   * cannot be written.
+   */
+  const [editForm, dispatchEditForm] = useReducer(saveFormReducer, EMPTY_SAVE_FORM);
+  const editName = editForm.name;
+  const editDesc = editForm.desc;
+  const editLabels = editForm.labels;
+  const editTerms = editForm.terms;
+  const setEditName = (v: string) => dispatchEditForm({ type: 'typed', field: 'name', value: v });
+  const setEditDesc = (v: string) => dispatchEditForm({ type: 'typed', field: 'desc', value: v });
+  const setEditLabel = (field: LabelKey, v: string) => dispatchEditForm({ type: 'typedLabel', field, value: v });
+  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });
+  /**
+   * Mirror for the 409 recovery's continuation (CodeRabbit on #142): the dialog
+   * can close, or open another game, while the refetch is in flight. It mirrors
+   * the WHOLE form, not just the terms (STRUCT-REGEN-19/010 needs the live
+   * description too), and uses `useLayoutEffect` for the same reason
+   * `saveFormRef` does — see its comment: a passive effect leaves a window after
+   * the commit in which the ref is stale, and an async response can land in it.
+   */
+  const editFormRef = useRef(editForm);
+  useLayoutEffect(() => { editFormRef.current = editForm; }, [editForm]);
   // A monotonically increasing token: every open, close or switch of game
   // starts a new edit session (CodeRabbit on #142 — comparing the game id alone
   // let a continuation from a CLOSED-then-REOPENED session of the same game
@@ -708,8 +749,8 @@ export default function App() {
       setSaveError('');
       // RED-REGEN-13/001: the board may have changed while the sign-in was
       // up (Cancel, edit, sign in from the header) — same reconciliation as
-      // a fresh open.
-      reconcileSaveFormWithBoard();
+      // a fresh open, because it IS the same one.
+      openSaveFormForBoard();
       setIsSaveModalOpen(true);
     }
     if (authToken && resumeEditAfterAuthRef.current) {
@@ -734,7 +775,7 @@ export default function App() {
    * — same shape as `payoffsRef` above). A PASSIVE effect runs asynchronously
    * after paint, so there is a real window — between React committing a
    * keystroke's state update and that effect actually running — during which
-   * `saveFieldsRef.current` is STALE. If `handleGenerateGame`'s report
+   * `saveFormRef.current` is STALE. If `handleGenerateGame`'s report
    * response happens to resolve inside that window, it reads the OLD field
    * values and can approve overwriting text the user just typed, which is
    * exactly the class of bug this ref exists to close. `useLayoutEffect`
@@ -742,10 +783,24 @@ export default function App() {
    * long before any network response can possibly resolve, so there is no
    * window left for an async callback to land in.
    */
-  const saveFieldsRef = useRef({ name: saveName, desc: saveDesc, labels: saveLabels });
+  const saveFormRef = useRef(saveForm);
   useLayoutEffect(() => {
-    saveFieldsRef.current = { name: saveName, desc: saveDesc, labels: saveLabels };
-  }, [saveName, saveDesc, saveLabels]);
+    saveFormRef.current = saveForm;
+  }, [saveForm]);
+  /**
+   * The option names the dialog itself prefilled FROM THE BOARD, or null once any
+   * of them is the user's own (STRUCT-REGEN-19/005). `generatedFillIsSafe` needs
+   * this because the app writes into the save form from TWO places, not one: a
+   * Generate fill, and the prefill `openSaveFormForBoard` does on every open.
+   * Knowing only the first was a shipped defect — every preset carries option
+   * names, so the very first Generate click read them as the user's own typing,
+   * refused to fill, and told the user it had "kept the name/description/option
+   * names you'd already typed" (verified against origin/main 0.0.197). The
+   * reducer is the one thing that knows which they are: `provenance.labels` is
+   * 'from-board' until the first keystroke flips it to 'typed'. So this reads
+   * that, rather than re-deriving "did the user type this" from the strings.
+   */
+  const boardLabelsIfAppsOwn = (f: SaveFormState) => (f.provenance.labels === 'from-board' ? f.labels : null);
   /**
    * What the LAST successful Generate call itself wrote into the save form —
    * `null` until the first fill. Lets a re-roll ("Generate" clicked again,
@@ -782,7 +837,13 @@ export default function App() {
     preview: RegenPreview | null;
     error: RegenErrorKind | null;
     note: string;
-  }>({ status: 'idle', preview: null, error: null, note: '' });
+    /** STRUCT-REGEN-19/003c: the dialog session this outcome was drawn FOR. A
+     *  preview is shown, and Keepable, only while that session is the one on
+     *  screen (`regenView`), so an outcome stranded by a session that ended some
+     *  other way — a needs-auth jump the user then cancelled leaves the reset
+     *  effect below unable to fire — can never be offered against another board. */
+    key: RegenKey | null;
+  }>({ status: 'idle', preview: null, error: null, note: '', key: null });
   // SEPARATE from requestGenerationRef (see the doc comment on that ref
   // above): bumping the shared counter from a dialog would leave an
   // in-flight "Explain this game" spinner permanently stuck, because its own
@@ -803,12 +864,11 @@ export default function App() {
    * still describes what's on screen. `null` when neither dialog is open.
    */
   const regenCurrentKeyRef = useRef<RegenKey | null>(null);
+  // `currentDialogKey` (the ONE definition of "which dialog session is on
+  // screen") is declared right after `payoffs`, which it reads; this ref is
+  // filled from it before paint, and `regenView` gates on the same value.
   useLayoutEffect(() => {
-    regenCurrentKeyRef.current = isEditModalOpen && editGameId
-      ? { kind: 'edit', gameId: editGameId }
-      : isSaveModalOpen
-      ? { kind: 'save', payoffs }
-      : null;
+    regenCurrentKeyRef.current = currentDialogKey;
   });
   /**
    * DIRECTOR'S DECISION (2026-09-03): Keep replaces the game NAME too, unless
@@ -822,7 +882,8 @@ export default function App() {
    * equals its baseline, the user never touched it and Keep may replace it;
    * the moment it differs, the user's own typing wins and Keep leaves it.
    */
-  const saveNameBaselineRef = useRef('');
+  // (the save form's name baseline lives in `saveForm.nameBaseline` — see
+  //  src/utils/saveFormModel.ts; the Edit dialog keeps its own ref below)
   /**
    * RED-REGEN-13/001: the board the Save form's text was written FOR. The
    * dialog's name / description / actor nouns used to survive a close, a
@@ -834,24 +895,29 @@ export default function App() {
    * stays; different board, the text is cleared (labels are re-prefilled by
    * the caller as before). Null after a successful save (the fields are blank).
    */
-  const saveFormBoardRef = useRef<string | null>(null);
   const boardKeyOf = (p: GamePayoffs) => JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22]);
-  const reconcileSaveFormWithBoard = (): boolean => {
-    const key = boardKeyOf(payoffs);
-    // RED-REGEN-14/001: tell the caller whether a draft written for THIS
-    // board survived — its option labels belong to that draft and must
-    // survive with it (see the Save Preset click).
-    const kept = saveFormBoardRef.current === key;
-    if (saveFormBoardRef.current !== null && saveFormBoardRef.current !== key) {
-      setSaveName('');
-      saveNameBaselineRef.current = '';
-      setSaveDesc('');
-      setSaveTerms({ a: [], b: [] });
-    }
-    saveFormBoardRef.current = key;
-    return kept;
+  /**
+   * Every path that OPENS the save dialog goes through here (RED-REGEN-13/001,
+   * RED-REGEN-14/001, STRUCT-REGEN-19/001). The decision — keep a draft written
+   * for this same board, labels and chips included, or discard it whole and take
+   * the board's own option names — is the reducer's `openForBoard`, so it is one
+   * rule rather than one per call site.
+   */
+  const openSaveFormForBoard = () => {
+    dispatchSaveForm({
+      type: 'openForBoard',
+      boardKey: boardKeyOf(payoffs),
+      // Read from scenarioForReport, not activeLabels, because the latter
+      // substitutes the literal "Row 1" and prefilling that would save a
+      // placeholder as if it were a real label.
+      presetLabels: {
+        row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',
+        col1: scenarioForReport?.col1 ?? '', col2: scenarioForReport?.col2 ?? '',
+      },
+    });
   };
-  const editNameBaselineRef = useRef('');
+  // (the Edit form's name baseline lives in `editForm.nameBaseline` — same
+  //  field, same rule, as the Save form's; see src/utils/saveFormModel.ts)
 
   // Feedback Modal States
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
@@ -1048,6 +1114,14 @@ export default function App() {
     a11: 2, b11: 1, a12: 0, b12: 0,
     a21: 0, b21: 0, a22: 1, b22: 2,
   });
+
+  const currentDialogKey = useMemo<RegenKey | null>(() => (
+    isEditModalOpen && editGameId
+      ? { kind: 'edit', gameId: editGameId }
+      : isSaveModalOpen
+      ? { kind: 'save', payoffs }
+      : null
+  ), [isEditModalOpen, editGameId, isSaveModalOpen, payoffs]);
   // Always the LATEST payoffs, readable from inside an async callback whose
   // own closure captured an OLDER value. RED-APP-3 finding 001:
   // `fetchLlmExplanation`'s closure captures `payoffs` at the moment the
@@ -1734,28 +1808,28 @@ export default function App() {
         row1: existing.row1Label ?? '', row2: existing.row2Label ?? '', col1: existing.col1Label ?? '', col2: existing.col2Label ?? '',
         a: existing.colorTermsA ?? [], b: existing.colorTermsB ?? [],
       };
-      // The dialog's chips must be THIS game's — this path never reset them, so a
-      // previous dialog's chips could have been diffed and sent as an edit
-      // (CodeRabbit, #126). This game's chips PLUS the suggestion's own actor
-      // nouns: `regenKeptColorTerms` is the same merge Keep uses (existing chips
-      // never destroyed, nouns added, per-side cap honoured), so a story whose
-      // only term for a player is its actor noun still colours that player after
-      // the save — which is what the card promised (STRUCT-CLOUD-19/001).
-      const keptEdit = regenKeptColorTerms(
-        sc.actorA ?? [], sc.actorB ?? [],
-        existing.colorTermsA ?? [], existing.colorTermsB ?? [],
-        description.slice(0, 800),
-      );
-      setEditTerms({ a: keptEdit.a, b: keptEdit.b });
-      setEditName(prefillName);
-      // This IS an auto-prefill (the report's invention, not the user's own
-      // typing) — the name-replace baseline moves with it, same as any other
-      // programmatic name write. See the ref's own doc comment above.
-      editNameBaselineRef.current = prefillName;
-      setEditDesc(description.slice(0, 800));
-      setEditLabels({
-        row1: sc.row1 ?? '', row2: sc.row2 ?? '',
-        col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+      // STRUCT-REGEN-19/004: ONE story arrives, so all five pieces move together
+      // and the name-replace baseline moves with the name in the same statement.
+      // No `terms`: the game's own chips described the description this AI story
+      // is replacing, and carrying them across is what persisted a record naming
+      // highlight phrases its own text did not contain. (It also subsumes
+      // CodeRabbit #126 — the chips can no longer be a PREVIOUS dialog's either.)
+      dispatchEditForm({
+        type: 'story',
+        boardKey: existing.id,
+        name: prefillName,
+        desc: description.slice(0, 800),
+        labels: {
+          row1: sc.row1 ?? '', row2: sc.row2 ?? '',
+          col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+        },
+        // Merged with #182 (STRUCT-CLOUD-19/001): the suggestion's own actor
+        // nouns ride along as chips — they are in this description by
+        // construction (the served story passed the attributable screen) — but
+        // the game's EXISTING chips do not: they described the text this story
+        // replaces (STRUCT-REGEN-19/004). Nouns only, so a story whose only
+        // term for a player is its actor noun still colours that player.
+        terms: regenKeptColorTerms(sc.actorA ?? [], sc.actorB ?? [], [], [], description.slice(0, 800)),
       });
       setEditError('');
       regenExplanationAfterSaveRef.current = true;
@@ -1773,24 +1847,43 @@ export default function App() {
     // characters would otherwise land in the field verbatim — visibly past
     // the limit the field claims (and correctly enforces for typing) to cap.
     const prefillName = (sc.name ?? '').slice(0, 40);
-    setSaveName(prefillName);
-    saveNameBaselineRef.current = prefillName;
-    setSaveDesc(description.slice(0, 800));
-    setSaveLabels({
+    // STRUCT-REGEN-19/001: ONE story arrives, so all five pieces move together
+    // and the board it was written for is recorded in the same statement. This
+    // site used to write four of them and stamp the board key itself, which left
+    // an abandoned draft's colour chips under a brand-new AI description AND
+    // disarmed the reconcile that would have cleared them — the saved record
+    // then named highlight phrases absent from its own text.
+    const prefillLabels = {
       row1: sc.row1 ?? '', row2: sc.row2 ?? '',
       col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+    };
+    dispatchSaveForm({
+      type: 'story',
+      boardKey: boardKeyOf(payoffs),
+      name: prefillName,
+      desc: description.slice(0, 800),
+      labels: prefillLabels,
+      // Merged with #182 (STRUCT-CLOUD-19/001): the card's actor nouns become
+      // the save's chips (same merge Keep uses; no previous dialog's chips).
+      terms: regenKeptColorTerms(sc.actorA ?? [], sc.actorB ?? [], [], [], description.slice(0, 800)),
     });
-    // The nouns the card coloured with, carried into the save as chips — the
-    // same `regenKeptColorTerms` merge the edit branch above and regenerate's
-    // Keep both use. Written unconditionally rather than left to whatever the
-    // last save dialog held: a previous attempt's chips belong to a different
-    // story (the #126 class), and a suggestion has none of its own yet.
-    const keptNew = regenKeptColorTerms(sc.actorA ?? [], sc.actorB ?? [], [], [], description.slice(0, 800));
-    setSaveTerms({ a: keptNew.a, b: keptNew.b });
+    // OPUS-REVIEW-184/F1, and the same rule keepRegen states below: a story the
+    // APP wrote is generated text, so it goes in the ref that answers "did the
+    // app write this?". Without it the form's provenance said 'generated' while
+    // `generatedFillIsSafe` — which compares VALUES against this ref — still
+    // treated the fields as the user's, so "…or generate a new game" was blocked
+    // by text nobody typed and the note named none of it. That made "Clear the
+    // name to let the AI fill the form" a false instruction (clearing the name
+    // left the prefilled description blocking) and made the empty-list branch
+    // reachable. Every `story` written into the SAVE form now records this in the
+    // same block, which is what payoffhonesty's ledger pins.
+    lastGeneratedFillRef.current = {
+      name: prefillName,
+      desc: description.slice(0, 800),
+      row1: prefillLabels.row1, row2: prefillLabels.row2,
+      col1: prefillLabels.col1, col2: prefillLabels.col2,
+    };
     setSaveError('');
-    // RED-REGEN-13/001: the report's story was written for the board on
-    // screen — record it, so a later reopen after a payoff change clears it.
-    saveFormBoardRef.current = boardKeyOf(payoffs);
     regenExplanationAfterSaveRef.current = true;
     // A fresh save attempt for a different scenario — never reuse a
     // clientRequestId minted for whatever the dialog last tried to save.
@@ -2363,22 +2456,27 @@ export default function App() {
       row1: game.row1Label ?? '', row2: game.row2Label ?? '', col1: game.col1Label ?? '', col2: game.col2Label ?? '',
       a: game.colorTermsA ?? [], b: game.colorTermsB ?? [],
     };
-    setEditName(game.name ?? '');
-    // The name on screen is the SAVED name, not user typing — Keep may
-    // replace it (director's decision) as long as the user leaves it alone.
-    editNameBaselineRef.current = game.name ?? '';
-    setEditDesc(game.description ?? '');
-    setEditTerms({ a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] });
-    setEditLabels({
-      row1: game.row1Label ?? '', row2: game.row2Label ?? '',
-      col1: game.col1Label ?? '', col2: game.col2Label ?? '',
+    // The saved game IS one story: its five pieces load together, and the name
+    // on screen is the SAVED name, not user typing — so it becomes the baseline
+    // and Keep may replace it (director's decision) as long as the user leaves
+    // it alone (STRUCT-REGEN-19/004).
+    dispatchEditForm({
+      type: 'story',
+      boardKey: game.id,
+      name: game.name ?? '',
+      desc: game.description ?? '',
+      labels: {
+        row1: game.row1Label ?? '', row2: game.row2Label ?? '',
+        col1: game.col1Label ?? '', col2: game.col2Label ?? '',
+      },
+      terms: { a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] },
     });
     setEditError('');
     // A different game must never inherit another game's regen preview.
     regenGenerationRef.current += 1;
     regenControllerRef.current?.abort();
     regenInFlightRef.current = false;
-    setRegen({ status: 'idle', preview: null, error: null, note: '' });
+    setRegen({ status: 'idle', preview: null, error: null, note: '', key: null });
     setIsEditModalOpen(true);
   };
 
@@ -2531,7 +2629,7 @@ export default function App() {
           const freshB: string[] = fresh.colorTermsB ?? [];
           // Judge "untouched" against the terms as they are NOW, not as
           // captured before the await (a chip added during the refetch counts).
-          const nowTerms = editTermsRef.current;
+          const nowTerms = editFormRef.current.terms;
           const untouchedA = same(nowTerms.a, orig.a);
           const untouchedB = same(nowTerms.b, orig.b);
           const adoptedA = untouchedA && !same(freshA, orig.a);
@@ -2541,10 +2639,17 @@ export default function App() {
           const afterA = adoptedA ? freshA : nowTerms.a;
           const afterB = adoptedB ? freshB : nowTerms.b;
           if (adoptedA || adoptedB) {
-            setEditTerms((prev) => ({ a: adoptedA ? freshA : prev.a, b: adoptedB ? freshB : prev.b }));
+            // OPUS-REVIEW-184/S3: its OWN action. `typedTerms` would have said the
+            // user typed another device's chips, and `keptFieldsOf` now depends on
+            // provenance being true.
+            dispatchEditForm({ type: 'adoptedTerms', a: afterA, b: afterB });
             // Keep the mirror current before React re-renders (CodeRabbit CLI):
             // nothing below may read a pre-adoption snapshot.
-            editTermsRef.current = { a: afterA, b: afterB };
+            editFormRef.current = {
+              ...editFormRef.current,
+              terms: { a: afterA, b: afterB },
+              provenance: { ...editFormRef.current.provenance, terms: 'adopted' },
+            };
           }
           // Re-baseline only the side(s) just adopted — a side the user HAS
           // typed into keeps its OLD baseline, so the next Save still submits
@@ -2567,15 +2672,55 @@ export default function App() {
           // to fall back to the server's generic "Reopen Edit" advice, which
           // RED-REGEN-8/002 already proved unhelpful. Name the colliding
           // phrase on every 409 while it is still there.
+          // STRUCT-REGEN-19/010: the phrases just adopted were written against
+          // ANOTHER device's description; this dialog may hold one the user
+          // rewrote, or the AI's replacement from "Save this scenario with the
+          // game". A chip that paints nothing is not silent anywhere else in
+          // this app (RED-REGEN-14/002 / `regenDroppedNote`), and the app put
+          // these chips here. Which ones paint is asked of `chipPaintStates`,
+          // the same pass the chips and ColorCoded render from — never a second
+          // rule — and the sentence is `orphanedNote`, the same one Keep uses.
+          // OPUS-REVIEW-184/S2: judged against the FULL merged list this dialog
+          // renders with — the chips PLUS the game's own option labels — because
+          // the phrase that takes an adopted chip's colour is usually one of those
+          // labels, and a plan built from the chips alone can never see it.
+          // Composed exactly as `DescriptionEditor` and `keepFill` compose it.
+          const live = editFormRef.current;
+          const merged = mergeDescriptionTerms(
+            dialogBaseColorTerms(live.labels), afterA, afterB, optionLabelTerms(live.labels),
+          );
+          const paints = chipPaintStates(live.desc, merged.a, merged.b);
+          const stateOf = (t: string, side: 'a' | 'b') => paints[side].get(colorTermKey(t));
+          // Only the sides the app itself just adopted: a chip the USER placed
+          // that paints nothing is their own edit, and the chip already says so.
+          // A chip neutralised by the OTHER player's option label is dropped from
+          // `merged` by mergeDescriptionTerms, so `stateOf` is undefined — it
+          // paints nothing either way and must not be silent (CodeRabbit, #184).
+          const inert = (terms: readonly string[], side: 'a' | 'b') =>
+            terms.filter((t) => (stateOf(t, side)?.state ?? 'absent') === 'absent');
+          const shadowedOn = (terms: readonly string[], side: 'a' | 'b'): ShadowedChip[] =>
+            terms.flatMap((t) => {
+              const st = stateOf(t, side);
+              return st && st.state === 'shadowed' ? [{ term: t, by: st.by, bySide: st.bySide }] : [];
+            });
+          const inertA = adoptedA ? inert(afterA, 'a') : [];
+          const inertB = adoptedB ? inert(afterB, 'b') : [];
+          const shadA = adoptedA ? shadowedOn(afterA, 'a') : [];
+          const shadB = adoptedB ? shadowedOn(afterB, 'b') : [];
+          // The same composer Keep uses, so the two paths cannot word this differently.
+          const chipNote = regenDroppedNote(
+            { a: [], b: [] }, { a: inertA, b: inertB }, { a: shadA, b: shadB }, 'this description',
+          );
           const colliding = crossPlayerUserTerms(afterA, afterB);
           const collisionNote = colliding.length > 0
             ? `${colliding.map((t) => `"${t}"`).join(', ')} ${colliding.length === 1 ? 'is' : 'are'} highlighted for both players; one phrase can belong to only one player, so remove it from Player A or Player B, then save again.`
             : '';
+          const orphanTail = chipNote ? ` ${chipNote}` : '';
           setEditError(
             changed.length > 0
-              ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.${collisionNote ? ` ${collisionNote}` : ''}`
+              ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.${collisionNote ? ` ${collisionNote}` : ''}${orphanTail}`
               : collisionNote
-                ? `Not saved: ${collisionNote}`
+                ? `Not saved: ${collisionNote}${orphanTail}`
                 : (data.error || 'Failed to update game.'),
           );
           setEditErrorNeedsAuth(false);
@@ -2745,7 +2890,7 @@ export default function App() {
       regenGenerationRef.current += 1;
       regenControllerRef.current?.abort();
       regenInFlightRef.current = false;
-      setRegen({ status: 'idle', preview: null, error: null, note: '' });
+      setRegen({ status: 'idle', preview: null, error: null, note: '', key: null });
     }
   }, [isSaveModalOpen, isEditModalOpen]);
 
@@ -2785,7 +2930,7 @@ export default function App() {
     regenGenerationRef.current += 1;
     regenControllerRef.current?.abort();
     regenInFlightRef.current = false;
-    setRegen({ status: 'idle', preview: null, error: null, note: '' });
+    setRegen({ status: 'idle', preview: null, error: null, note: '', key: null });
     const g = generateRandomGame(generateKind);
     // Mirror handleLoadPreset: board payoffs, their editable string twins,
     // preset highlight off, sim rebuilt from the start point.
@@ -2806,24 +2951,26 @@ export default function App() {
     // depends on whether that call succeeds; and keyed on `gc` (what is on the
     // board), not `g`.
     const boardKey = boardKeyOf(gc);
-    if (saveFormBoardRef.current !== boardKey) {
-      if (generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current)) {
-        // Generated (or empty) text: it was written for the old board. All six
-        // fields go, option names included (CodeRabbit on #171: a P2 save
-        // with P1's option names otherwise).
-        setSaveName('');
-        saveNameBaselineRef.current = '';
-        setSaveDesc('');
-        setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });
-        setSaveTerms({ a: [], b: [] });
-        lastGeneratedFillRef.current = null;
-      }
-      // Whatever the form holds now is for THIS board: cleared above, or the
-      // user's own text which the note below explicitly keeps for it — so a
-      // close-and-reopen keeps it too (CodeRabbit on #171), and a failed or
-      // pending report request changes nothing about that.
-      saveFormBoardRef.current = boardKey;
-    }
+    // `keepUserText` is the all-or-nothing judgement; the reducer applies it.
+    // Generated (or empty) text was written for the OLD board, so all six fields
+    // go, option names included (CodeRabbit on #171: a P2 save with P1's option
+    // names otherwise). The user's own text stays and now belongs to THIS board,
+    // so a close-and-reopen keeps it (CodeRabbit on #171) — and a failed or
+    // pending report request changes nothing about either.
+    const keepUserText = !generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));
+    // OPUS-REVIEW-184/NIT: the LIVE form, not this render's closure — every other
+    // read in this handler uses the ref for the reason at saveFormRef's declaration.
+    if (saveFormRef.current.boardKey !== boardKey && !keepUserText) lastGeneratedFillRef.current = null;
+    const boardAction = { type: 'boardChanged', boardKey, keepUserText } as const;
+    // STRUCT-REGEN-19/006: how many of the user's colour highlights this click
+    // discards, asked of the REDUCER (which decides it) rather than re-derived
+    // here — a second copy of that decision is how the note came to be silent
+    // about the one thing it destroys. `saveFormReducer` is pure, so running it
+    // to read the answer costs nothing and cannot drift from the dispatch below.
+    const chipsBefore = saveFormRef.current.terms.a.length + saveFormRef.current.terms.b.length;
+    const afterBoard = saveFormReducer(saveFormRef.current, boardAction);
+    const chipsRemoved = chipsBefore - (afterBoard.terms.a.length + afterBoard.terms.b.length);
+    dispatchSaveForm(boardAction);
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
     try {
       const res = await fetch(getApiUrl('/api/report'), {
@@ -2844,24 +2991,39 @@ export default function App() {
           col1: sc.col1 ?? '', col2: sc.col2 ?? '',
         };
         // Read the LIVE form values, not this closure's — the user may have
-        // typed during the await above (see the doc comment on saveFieldsRef).
-        const safe = generatedFillIsSafe(saveFieldsRef.current, lastGeneratedFillRef.current);
+        // typed during the await above (see the doc comment on saveFormRef).
+        const safe = generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));
         if (safe) {
-          setSaveName(gen.name);
-          saveNameBaselineRef.current = gen.name;
-          setSaveDesc(gen.desc);
-          setSaveLabels({ row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 });
+          dispatchSaveForm({
+            type: 'story',
+            boardKey,
+            name: gen.name,
+            desc: gen.desc,
+            labels: { row1: gen.row1, row2: gen.row2, col1: gen.col1, col2: gen.col2 },
+          });
           lastGeneratedFillRef.current = gen;
-          setGenerateNote(`New ${kindLabel} game on the board, scenario written by AI — edit anything below, then save.`);
+          // A `story` clears the chips too, and this branch can be reached with
+          // chips still on the form: `keepUserText` was decided BEFORE the report
+          // call, and the user may have cleared their text during it, so the
+          // reconcile above kept the chips and this fill is about to take them.
+          // Read the live ref (that is what it is for) rather than trusting the
+          // count taken at reconcile time — a note that undercounts is the same
+          // silence STRUCT-REGEN-19/006 removed.
+          setGenerateNote(renderGenerateNote(generateKind, { outcome: 'filled' },
+            chipsRemoved + saveFormRef.current.terms.a.length + saveFormRef.current.terms.b.length));
         } else {
-          setGenerateNote(`New ${kindLabel} game is on the board. Kept the name/description/option names you'd already typed — the AI wrote a scenario too, but didn't touch your text. Clear ALL of those fields (not just one) to let it fill them in on the next Generate.`);
+          // STRUCT-REGEN-19/008: what the sentence may claim it kept is read
+          // off the form model itself, live, at the moment the note is printed
+          // — never a fixed list of all four fields.
+          setGenerateNote(renderGenerateNote(
+            generateKind, { outcome: 'kept', kept: keptFieldsOf(saveFormRef.current) }, chipsRemoved));
         }
       } else {
-        setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+        setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));
       }
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium.`]);
     } catch {
-      setGenerateNote(`New ${kindLabel} game is on the board. The AI scenario isn't available right now — name and describe it yourself below.`);
+      setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
     } finally {
       setGenerateLoading(false);
@@ -2980,17 +3142,14 @@ export default function App() {
           }
         }
         setIsSaveModalOpen(false);
-        setSaveName('');
-        setSaveDesc('');
-        setSaveTerms({ a: [], b: [] });
-        setSaveLabels({ row1: '', row2: '', col1: '', col2: '' });
-        saveFormBoardRef.current = null; // RED-REGEN-13/001: blank form, no board
+        // Blank form, no board, no chips, no name baseline — one action
+        // (RED-REGEN-13/001, STRUCT-REGEN-19/001).
+        dispatchSaveForm({ type: 'saved' });
         // The fields are blank again, so any earlier Generate fill is spent —
         // the empty-field branch of handleGenerateGame's guard already covers
         // this, but clearing the ref too keeps it from describing content that
         // no longer exists.
         lastGeneratedFillRef.current = null;
-        saveNameBaselineRef.current = '';
         // OPUS-REVIEW-DESKTOP17 F1/N2: derived from where the request
         // ACTUALLY went (`requestToken`, captured before the fetch) rather
         // than from `localConfirmed` — a request with no Authorization
@@ -3049,7 +3208,7 @@ export default function App() {
     if (regenInFlightRef.current) return;
     regenInFlightRef.current = true;
     const myGen = (regenGenerationRef.current += 1);
-    setRegen({ status: 'loading', preview: null, error: null, note: REGEN_ANNOUNCE.loading });
+    setRegen({ status: 'loading', preview: null, error: null, note: REGEN_ANNOUNCE.loading, key });
 
     const requestPayoffs = key.kind === 'edit'
       ? userCustomGames.find((g) => g.id === key.gameId)?.payoffs
@@ -3060,7 +3219,7 @@ export default function App() {
       // rather than a silent no-op or a thrown exception.
       if (myGen === regenGenerationRef.current) {
         regenInFlightRef.current = false;
-        setRegen({ status: 'error', preview: null, error: 'network', note: REGEN_ERROR_MESSAGES.network() });
+        setRegen({ status: 'error', preview: null, error: 'network', note: REGEN_ERROR_MESSAGES.network(), key });
       }
       return;
     }
@@ -3113,10 +3272,10 @@ export default function App() {
     regenInFlightRef.current = false;
 
     if (status === 200 && body?.scenario) {
-      setRegen({ status: 'ready', preview: cleanPreview(body.scenario), error: null, note: REGEN_ANNOUNCE.ready });
+      setRegen({ status: 'ready', preview: cleanPreview(body.scenario), error: null, note: REGEN_ANNOUNCE.ready, key });
     } else {
       const kind = regenErrorFromResponse(status, body ?? null, caught);
-      setRegen({ status: 'error', preview: null, error: kind, note: REGEN_ERROR_MESSAGES[kind](body?.error) });
+      setRegen({ status: 'error', preview: null, error: kind, note: REGEN_ERROR_MESSAGES[kind](body?.error), key });
     }
   };
 
@@ -3125,31 +3284,53 @@ export default function App() {
    *  the server, so every clamp/cleanText/cleanLabels/cleanColorTerms the
    *  submit already runs still applies unchanged. */
   const keepRegen = (key: RegenKey) => {
-    if (!regen.preview) return;
-    const baselineRef = key.kind === 'edit' ? editNameBaselineRef : saveNameBaselineRef;
+    // STRUCT-REGEN-19/003c: only the session the draw was made for may Keep it.
+    if (!regen.preview || !regen.key || !regenKeyEquals(regen.key, key)) return;
+    const baseline = key.kind === 'edit' ? editForm.nameBaseline : saveForm.nameBaseline;
     const liveName = key.kind === 'edit' ? editName : saveName;
-    const replaceName = shouldReplaceName(liveName !== baselineRef.current);
+    const replaceName = shouldReplaceName(liveName !== baseline);
     // The user's EXISTING chips for whichever dialog Keep is running in — Keep
     // never destroys them (RED-REGEN/001); `keepFill` only ADDS any actor
     // nouns the draw itself supplies.
     const existingTerms = key.kind === 'edit' ? editTerms : saveTerms;
     const kept = keepFill(regen.preview, replaceName, existingTerms);
     if (key.kind === 'edit') {
-      if (kept.name !== undefined) { setEditName(kept.name); editNameBaselineRef.current = kept.name; }
-      setEditDesc(kept.desc);
-      setEditLabels(kept.labels);
-      setEditTerms(kept.terms);
+      // One story, one action — the name baseline moves with it, exactly as in
+      // the save branch below (STRUCT-REGEN-19/001, /004).
+      dispatchEditForm({
+        type: 'story',
+        boardKey: editGameId ?? '',
+        name: kept.name,
+        desc: kept.desc,
+        labels: kept.labels,
+        terms: kept.terms,
+      });
     } else {
-      if (kept.name !== undefined) { setSaveName(kept.name); saveNameBaselineRef.current = kept.name; }
-      setSaveDesc(kept.desc);
-      setSaveLabels(kept.labels);
-      setSaveTerms(kept.terms);
+      // One story, one action — the name baseline moves with it, so the two
+      // can never drift (STRUCT-REGEN-19/001).
+      dispatchSaveForm({
+        type: 'story',
+        boardKey: boardKeyOf(payoffs),
+        name: kept.name,
+        desc: kept.desc,
+        labels: kept.labels,
+        terms: kept.terms,
+      });
       // OPUS-REVIEW-171/N1: a kept draw is GENERATED text, not the user's own —
       // "…or generate a new game" may replace it (unedited) exactly as it may
       // replace its own previous fill, instead of keeping a story written for
       // the old board and telling the user it was "text you'd already typed".
       lastGeneratedFillRef.current = {
-        name: kept.name !== undefined ? kept.name : liveName,
+        // ONLY what the Keep itself wrote. `kept.name` is undefined exactly when
+        // the user had typed the name (`shouldReplaceName(liveName !== baseline)`
+        // is false in that case and only that case), and the old fallback put the
+        // USER's text in here — telling the next Generate that the app had written
+        // it, so the all-or-nothing rule let a fresh fill overwrite a hand-typed
+        // name. That is RED-APP-4 re-opened through a door it does not watch
+        // (STRUCT-REGEN-19/007, live: "My careful title" -> "Trail Watch").
+        // '' is the right record: this ref answers "did the APP write this?", and
+        // for that field the answer is no.
+        name: kept.name ?? '',
         desc: kept.desc,
         row1: kept.labels.row1, row2: kept.labels.row2, col1: kept.labels.col1, col2: kept.labels.col2,
       };
@@ -3157,11 +3338,12 @@ export default function App() {
     // RED-REGEN-11/001: a draw's own actor noun silently truncated by the
     // per-side cap must say so, same as a manual highlight already does —
     // `dropNote` is null on every draw that fit, which is the common case.
-    const dropNote = regenDroppedNote(kept.dropped, kept.orphaned);
+    const dropNote = regenDroppedNote(kept.dropped, kept.orphaned, kept.shadowed);
     const keptNote = key.kind === 'edit' ? REGEN_ANNOUNCE.keptEdit : REGEN_ANNOUNCE.keptSave;
     setRegen({
       status: 'idle', preview: null, error: null,
       note: dropNote ? `${dropNote} ${keptNote}` : keptNote,
+      key,
     });
     regenButtonRef.current?.focus();
   };
@@ -3169,7 +3351,7 @@ export default function App() {
   /** Discard: clear the preview only. The six fields and the colour chips
    *  were never written to, so there is nothing to undo. */
   const discardRegen = () => {
-    setRegen({ status: 'idle', preview: null, error: null, note: REGEN_ANNOUNCE.discarded });
+    setRegen({ status: 'idle', preview: null, error: null, note: REGEN_ANNOUNCE.discarded, key: regen.key });
     regenButtonRef.current?.focus();
   };
 
@@ -3686,13 +3868,27 @@ export default function App() {
   // Keep never wipes them, it only adds any actor nouns the draw supplies.
   // Only one dialog is ever open at a time, so `isEditModalOpen` alone picks
   // the right existing-chip source.
+  /**
+   * STRUCT-REGEN-19/003c: what the OPEN dialog may show. An outcome belongs to
+   * the dialog session that asked for it; anything else reads as idle. A preview
+   * stranded by a session that ended some other way (a needs-auth jump the user
+   * then cancelled — `dismissAuthModal` clears the resume ref without reopening
+   * the dialog, and the reset effect is keyed on the modal flags, so it never
+   * runs) is therefore never offered against whatever board comes next.
+   */
+  const regenView = useMemo(() => (
+    regen.key && currentDialogKey && regenKeyEquals(regen.key, currentDialogKey)
+      ? regen
+      : { status: 'idle' as const, preview: null, error: null, note: '', key: null }
+  ), [regen, currentDialogKey]);
+
   const regenPreviewTerms = useMemo(() => {
-    if (!regen.preview) return { a: [], b: [] };
+    if (!regenView.preview) return { a: [], b: [] };
     const existing = isEditModalOpen ? editTerms : saveTerms;
     return regenPreviewColorTerms(
-      regen.preview, regen.preview.actorA ?? [], regen.preview.actorB ?? [], existing.a, existing.b,
+      regenView.preview, regenView.preview.actorA ?? [], regenView.preview.actorB ?? [], existing.a, existing.b,
     );
-  }, [regen.preview, isEditModalOpen, editTerms, saveTerms]);
+  }, [regenView.preview, isEditModalOpen, editTerms, saveTerms]);
 
 
   // Clamp a whole matrix through the one cell parser, and derive its editable
@@ -4939,32 +5135,13 @@ export default function App() {
                 <button
                   onClick={() => {
                     setSaveError('');
-                    // RED-REGEN-13/001: a draft written for another board must
-                    // not be offered for this one (see saveFormBoardRef).
-                    const draftKept = reconcileSaveFormWithBoard();
-                    // Prefill from whatever the current game already calls its
-                    // options, so saving a copy of a named game keeps the names.
-                    // Read from scenarioForReport, not activeLabels, because the
-                    // latter substitutes the literal "Row 1" and prefilling that
-                    // would save a placeholder as if it were a real label.
-                    // RED-REGEN-14/001: NOT over a kept draft. The board is
-                    // keyed on its eight payoffs; a preset's identity is not
-                    // part of the key, so the same numbers re-typed by hand
-                    // keep the story while `scenarioForReport` (which needs
-                    // the selected preset to match) turns undefined — the old
-                    // unconditional prefill then blanked the four labels under
-                    // a story that still named those options, and the record
-                    // was saved that way. A kept draft keeps the labels it was
-                    // written with; only a fresh form (cleared, first open, or
-                    // no labels at all yet) takes the prefill.
-                    // CodeRabbit CLI: whitespace-only labels count as blank.
-                    const labelsBlank = [saveLabels.row1, saveLabels.row2, saveLabels.col1, saveLabels.col2].every((l) => !l.trim());
-                    if (!draftKept || labelsBlank) {
-                      setSaveLabels({
-                        row1: scenarioForReport?.row1 ?? '', row2: scenarioForReport?.row2 ?? '',
-                        col1: scenarioForReport?.col1 ?? '', col2: scenarioForReport?.col2 ?? '',
-                      });
-                    }
+                    // RED-REGEN-13/001 + RED-REGEN-14/001: a draft written for
+                    // another board must not be offered for this one, and a
+                    // kept draft keeps the option names it was written with.
+                    // Both are the reducer's `openForBoard` — see
+                    // src/utils/saveFormModel.ts; this click has no rule of
+                    // its own (STRUCT-REGEN-19/001).
+                    openSaveFormForBoard();
                     // A brand-new "Save Preset" click — a new save attempt,
                     // never a retry of whatever the dialog last submitted.
                     saveRequestIdRef.current = null;
@@ -6590,13 +6767,13 @@ export default function App() {
                         placeholder={placeholder}
                         value={editLabels[key]}
                         onBeforeInput={clampLabelBeforeInput}
-                        onChange={(e) => setEditLabels((prev) => ({
-                          ...prev,
+                        onChange={(e) => setEditLabel(
+                          key,
                           // RED-APP-8/002: never clamp WHILE an IME composition is
                           // open (the DOM value is correct as-is; onBeforeInput
                           // cannot block insertCompositionText).
-                          [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
-                        }))}
+                          (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
+                        )}
                         onCompositionEnd={(e) => {
                           // The commit's own trailing `input` event often carries
                           // the SAME string the last mid-composition `input` event
@@ -6609,7 +6786,7 @@ export default function App() {
                           // is the one place guaranteed to see the committed value.
                           const v = e.currentTarget.value;
                           const clamped = clampLabelInput(v);
-                          if (clamped !== v) setEditLabels((prev) => ({ ...prev, [key]: clamped }));
+                          if (clamped !== v) setEditLabel(key, clamped);
                         }}
                       />
                     </div>
@@ -6632,7 +6809,7 @@ export default function App() {
                   affordance, right under the immutability note above: this
                   rewrites the STORY only, the numbers on the board never move. */}
               {capabilities.scenarioRegen && (
-                <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regen.status === 'loading'}>
+                <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regenView.status === 'loading'}>
                   <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 shrink-0" />
                     Rewrite the story for these payoffs
@@ -6642,37 +6819,37 @@ export default function App() {
                       ref={regenButtonRef}
                       type="button"
                       aria-label="Regenerate scenario"
-                      aria-disabled={regen.status === 'loading'}
+                      aria-disabled={regenView.status === 'loading'}
                       title="Have the AI write a new description and option names for these exact payoffs. You preview it first; nothing changes until you Keep it."
-                      onClick={() => { if (regen.status !== 'loading' && editGameId) void handleRegenerateScenario({ kind: 'edit', gameId: editGameId }); }}
+                      onClick={() => { if (regenView.status !== 'loading' && editGameId) void handleRegenerateScenario({ kind: 'edit', gameId: editGameId }); }}
                       className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors cursor-pointer"
                     >
-                      {regen.status === 'loading' ? 'Regenerating…' : regen.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
+                      {regenView.status === 'loading' ? 'Regenerating…' : regenView.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
                     </button>
                   </div>
-                  {regen.note && (
+                  {regenView.note && (
                     <p role="status" aria-live="polite" className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
-                      {regen.note}
+                      {regenView.note}
                     </p>
                   )}
-                  {regen.status === 'ready' && regen.preview && (
+                  {regenView.status === 'ready' && regenView.preview && (
                     <div className="mt-1 rounded-lg border border-indigo-200 bg-white/70 dark:border-indigo-900/60 dark:bg-slate-950/30 p-2.5">
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
                         New scenario (preview)
                       </p>
                       <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words text-xs">
-                        {regen.preview.name}
+                        {regenView.preview.name}
                       </p>
                       <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300 break-words">
-                        <ColorCoded text={regen.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
+                        <ColorCoded text={regenView.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
                       </p>
                       <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
                         <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
-                          A: {regen.preview.row1} / {regen.preview.row2}
+                          A: {regenView.preview.row1} / {regenView.preview.row2}
                         </span>
                         {'  ·  '}
                         <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
-                          B: {regen.preview.col1} / {regen.preview.col2}
+                          B: {regenView.preview.col1} / {regenView.preview.col2}
                         </span>
                       </p>
                       <div className="mt-2 flex gap-2">
@@ -6854,7 +7031,7 @@ export default function App() {
                 generatefill.test.ts locates it with a plain indexOf, and an
                 earlier verbatim match up here breaks the locator. */}
             {capabilities.scenarioRegen && !generateLoading && (
-              <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regen.status === 'loading'}>
+              <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 flex flex-col gap-2" aria-busy={regenView.status === 'loading'}>
                 <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 shrink-0" />
                   Rewrite the story for these payoffs
@@ -6864,37 +7041,37 @@ export default function App() {
                     ref={regenButtonRef}
                     type="button"
                     aria-label="Regenerate scenario"
-                    aria-disabled={regen.status === 'loading'}
+                    aria-disabled={regenView.status === 'loading'}
                     title="Have the AI write a new description and option names for these exact payoffs. You preview it first; nothing changes until you Keep it."
-                    onClick={() => { if (regen.status !== 'loading') void handleRegenerateScenario({ kind: 'save', payoffs }); }}
+                    onClick={() => { if (regenView.status !== 'loading') void handleRegenerateScenario({ kind: 'save', payoffs }); }}
                     className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors cursor-pointer"
                   >
-                    {regen.status === 'loading' ? 'Regenerating…' : regen.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
+                    {regenView.status === 'loading' ? 'Regenerating…' : regenView.status === 'ready' ? 'Regenerate again' : 'Regenerate scenario'}
                   </button>
                 </div>
-                {regen.note && (
+                {regenView.note && (
                   <p role="status" aria-live="polite" className="text-[10px] leading-relaxed font-semibold text-indigo-700 dark:text-indigo-300">
-                    {regen.note}
+                    {regenView.note}
                   </p>
                 )}
-                {regen.status === 'ready' && regen.preview && (
+                {regenView.status === 'ready' && regenView.preview && (
                   <div className="mt-1 rounded-lg border border-indigo-200 bg-white/70 dark:border-indigo-900/60 dark:bg-slate-950/30 p-2.5">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
                       New scenario (preview)
                     </p>
                     <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200 break-words text-xs">
-                      {regen.preview.name}
+                      {regenView.preview.name}
                     </p>
                     <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300 break-words">
-                      <ColorCoded text={regen.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
+                      <ColorCoded text={regenView.preview.description ?? ''} aTerms={regenPreviewTerms.a} bTerms={regenPreviewTerms.b} />
                     </p>
                     <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
                       <span className="text-player-a-ink dark:text-player-a-ink-dark font-semibold">
-                        A: {regen.preview.row1} / {regen.preview.row2}
+                        A: {regenView.preview.row1} / {regenView.preview.row2}
                       </span>
                       {'  ·  '}
                       <span className="text-player-b-ink dark:text-player-b-ink-dark font-semibold">
-                        B: {regen.preview.col1} / {regen.preview.col2}
+                        B: {regenView.preview.col1} / {regenView.preview.col2}
                       </span>
                     </p>
                     <div className="mt-2 flex gap-2">
@@ -7034,19 +7211,19 @@ export default function App() {
                         placeholder={placeholder}
                         value={saveLabels[key]}
                         onBeforeInput={clampLabelBeforeInput}
-                        onChange={(e) => setSaveLabels((prev) => ({
-                          ...prev,
+                        onChange={(e) => setSaveLabel(
+                          key,
                           // RED-APP-8/002: see the identical comment on the Edit
                           // dialog's label inputs above.
-                          [key]: (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
-                        }))}
+                          (e.nativeEvent as InputEvent).isComposing ? e.target.value : clampLabelInput(e.target.value),
+                        )}
                         onCompositionEnd={(e) => {
                           // See the identical comment on the Edit dialog's label
                           // inputs above — React's value tracker can suppress
                           // onChange for the composition-commit event.
                           const v = e.currentTarget.value;
                           const clamped = clampLabelInput(v);
-                          if (clamped !== v) setSaveLabels((prev) => ({ ...prev, [key]: clamped }));
+                          if (clamped !== v) setSaveLabel(key, clamped);
                         }}
                       />
                     </div>

@@ -31,6 +31,7 @@ import {
   mergeDescriptionTerms,
   regenKeptColorTerms,
   termOccursIn,
+  chipPaintStates,
   regenPreviewColorTerms,
   descriptionColorTerms,
   savedGameColorTerms,
@@ -622,7 +623,17 @@ if (failures > 0) {
   check('DescriptionEditor: the A chip that wins the tie is not suppressed', !!winner && winner.suppressed === null, JSON.stringify(winner));
   // The Edit dialog's 409 branch must read the same helper (structural).
   const app = readFileSync('src/App.tsx', 'utf8');
-  const branch = app.slice(app.indexOf("res.status === 409"), app.indexOf("res.status === 409") + 6000);
+  // Bounded by the branch's own end, not a magic character count: the window was
+  // 6000 characters and STRUCT-REGEN-19/010 added enough to the branch that the
+  // collision wording fell outside it — a guard that stops seeing what it checks.
+  const at409 = app.indexOf("res.status === 409");
+  // A missing end marker must not widen the window to the whole file (indexOf -1
+  // as a slice end reads as length-1), so the end is required and bounded.
+  const end409 = app.indexOf("} else {", at409 + 200);
+  const branch = at409 !== -1 && end409 !== -1 ? app.slice(at409, end409) : '';
+  check('the 409 window is bounded by the branch, and is not empty', at409 !== -1 && end409 !== -1 && branch.length > 500 && branch.length < 12000, String(branch.length));
+  check('the 409 branch treats a chip with NO paint state (neutralised by the other player\'s option label) as inert, so the sentence still names it',
+    /\(stateOf\(t, side\)\?\.state \?\? 'absent'\) === 'absent'/.test(branch));
   check('App.tsx 409 branch names the colliding phrase via crossPlayerUserTerms on every 409 (first and retry)',
     /crossPlayerUserTerms\(/.test(branch) && /Not saved: \$\{collisionNote\}/.test(branch) && /highlighted for both players/.test(branch));
 }
@@ -807,8 +818,21 @@ if (failures > 0) {
   check('termOccursIn: regex metacharacters are literal', termOccursIn('the price (net) rises', '(net)') && !termOccursIn('the price net rises', '(net)'));
   check('termOccursIn: a 1-character chip never matches (ColorCoded drops it too)', !termOccursIn('a b', 'a'));
   const colourSrc = readFileSync('src/components/ColorCoded.tsx', 'utf8');
-  check('ColorCoded builds its term regex through termBoundaryRegExp (one rule for painting and for chip state)',
-    /termBoundaryRegExp\(entries\.map\(/.test(colourSrc) && !/new RegExp\(`\$\{left\}/.test(colourSrc) && !/Script=Han/.test(colourSrc));
+  // STRUCT-REGEN-19/002 rewrites m3 against the new structure: the boundary rule
+  // was already shared, but ColorCoded still SORTED the entries itself and chose
+  // each span's class with `entries.find(e => e.t.toLowerCase() === hit.toLowerCase())`
+  // — a second case rule beside the regex's own `iu` folding. The whole term pass
+  // is now `paintPlan`, which names the term that claimed each range; this checks
+  // ColorCoded owns none of it any more.
+  check('ColorCoded paints its terms from paintPlan (one pass for painting and for chip state)',
+    /paintPlan\(text, aTerms, bTerms\)/.test(colourSrc)
+    && !/termBoundaryRegExp\(/.test(colourSrc)   // a mention in a comment is fine; a CALL is not
+    && !/new RegExp\(`\$\{left\}/.test(colourSrc)
+    && !/Script=Han/.test(colourSrc)
+    && !/toLowerCase\(\) === /.test(colourSrc));
+  const editorSrc = readFileSync('src/components/DescriptionEditor.tsx', 'utf8');
+  check('DescriptionEditor decides a chip\'s state from chipPaintStates, not from a lone occurrence test',
+    /chipPaintStates\(value, merged\.a, merged\.b\)/.test(editorSrc) && !/termOccursIn\(/.test(editorSrc));
 
   const story = 'The miller and the ferry crew bargain over the toll.';
   const kept = regenKeptColorTerms([], [], ['orchard keeper', 'the miller'], ['ferry crew', 'harbour master'], story);
@@ -847,6 +871,58 @@ if (failures > 0) {
   check('editor (control): the same chip with its phrase present is not suppressed', presentChip !== '' && !/data-suppressed=/.test(presentChip), presentChip);
   check('editor: a chip present only inside a longer word is absent (same boundary as the painter)',
     /data-suppressed-cause="absent"/.test(chipA(editorHtml('The cattle graze.', ['cat']))));
+
+  // CodeRabbit CLI on this branch: the chip's paint state was looked up by the
+  // RAW term while `chipPaintStates` was keyed by the CLEANED one. A chip the
+  // user created by selecting text that carried a trailing space (or a double
+  // space inside it) therefore missed the lookup, fell through to the caller's
+  // `?? absent`, and said "does not appear in the story" about a phrase painted
+  // on screen — the chip and the paint disagreeing again, which is exactly what
+  // STRUCT-REGEN-19/002 removed. Both are keyed by `colorTermKey` now.
+  for (const [label, raw, text] of [
+    ['a trailing space (a drag-selection almost always carries one)', 'orchard keeper ', 'The orchard keeper bargains.'],
+    ['a leading space', ' orchard keeper', 'The orchard keeper bargains.'],
+    ['a double space inside the phrase', 'orchard  keeper', 'The orchard keeper bargains.'],
+    ['a NBSP where the text has a plain space', 'orchard\u00A0keeper', 'The orchard keeper bargains.'],
+  ] as const) {
+    const chip = chipA(editorHtml(text, [raw]));
+    check(`editor: a chip whose raw text differs from its cleaned form by ${label} is still painted, not called absent`,
+      chip !== '' && !/data-suppressed=/.test(chip), `${JSON.stringify(raw)} -> ${chip || 'no A chip'}`);
+  }
+  // Falsifier: the same raw forms with the phrase genuinely ABSENT must still
+  // report absent, or the checks above would pass for a chip that never looks.
+  for (const raw of ['orchard keeper ', ' orchard keeper', 'orchard  keeper']) {
+    const chip = chipA(editorHtml('The miller bargains.', [raw]));
+    check(`editor (falsifier): ${JSON.stringify(raw)} is still absent when the phrase is not in the text`,
+      /data-suppressed-cause="absent"/.test(chip), chip || 'no A chip');
+  }
+  // The KEY RULE itself, stated so that keying the maps by the raw term fails
+  // here rather than somewhere downstream. A mixed-case phrase is the
+  // discriminator: `cleanUserColorTermPair` leaves the case alone, so the
+  // cleaned term and its `colorTermKey` differ, and a raw-keyed map cannot be
+  // read by the key rule the rest of this surface uses.
+  {
+    const merged = mergeDescriptionTerms({ a: [], b: [] }, ['Harbour Ferry '], [], { a: [], b: [] });
+    check('fixture precondition: the cleaned term keeps its capitals, so cleaned !== colorTermKey(cleaned)',
+      merged.a[0] === 'Harbour Ferry' && colorTermKey(merged.a[0]) !== merged.a[0], JSON.stringify(merged.a));
+    const states = chipPaintStates('The Harbour Ferry departs.', merged.a, merged.b);
+    check('chipPaintStates keys BOTH maps by colorTermKey, never by the raw or merely-cleaned term',
+      [...states.a.keys()].every((k) => k === colorTermKey(k)) && [...states.b.keys()].every((k) => k === colorTermKey(k)),
+      JSON.stringify([...states.a.keys()]));
+    check('and the component\'s own lookup finds the painted state through that key',
+      states.a.get(colorTermKey('Harbour Ferry '))?.state === 'painted',
+      JSON.stringify([...states.a.entries()]));
+  }
+  // …and end to end, through the real component: a mixed-case chip the user
+  // created with a trailing space is painted, not called absent.
+  {
+    const chip = chipA(editorHtml('The Harbour Ferry departs.', ['Harbour Ferry ']));
+    check('editor: a mixed-case chip whose raw text has a trailing space is painted, not called absent',
+      chip !== '' && !/data-suppressed=/.test(chip), chip || 'no A chip');
+    const gone = chipA(editorHtml('The miller bargains.', ['Harbour Ferry ']));
+    check('editor (falsifier): the same mixed-case chip is absent when its phrase is not in the text',
+      /data-suppressed-cause="absent"/.test(gone), gone || 'no A chip');
+  }
 }
 
 /* ============================================================================
@@ -918,11 +994,20 @@ if (failures > 0) {
     && /const suggestionCardTerms = useMemo\(/.test(appSrc10)
     && /suggestionCardTerms[\s\S]{0,600}?regenPreviewColorTerms\(/.test(appSrc10),
     'the card must paint what regenPreviewColorTerms returns — the one builder whose composition the save reproduces');
+  // Merged with #184 (STRUCT-REGEN-19/001): the chips no longer go through
+  // `setEditTerms`/`setSaveTerms` — each dialog receives ONE story action and
+  // the nouns ride inside it as `terms`, so the contract is "both story
+  // actions in useSuggestedScenario carry regenKeptColorTerms(sc.actorA…)".
+  const suggestedStart = appSrc10.indexOf('const useSuggestedScenario');
+  const suggestedEnd = suggestedStart === -1 ? -1 : appSrc10.indexOf('\n  };', suggestedStart);
+  const suggestedSrc = suggestedStart !== -1 && suggestedEnd !== -1 ? appSrc10.slice(suggestedStart, suggestedEnd) : '';
+  check('the useSuggestedScenario window is bounded by its own closing brace', suggestedEnd !== -1 && suggestedSrc.length > 500 && suggestedSrc.length < 20000, String(suggestedSrc.length));
+  const storyActionsWithNouns = (suggestedSrc.match(/type: 'story',[\s\S]{0,900}?terms: regenKeptColorTerms\(\s*sc\.actorA \?\? \[\], sc\.actorB \?\? \[\]/g) ?? []).length;
   check("App.tsx: useSuggestedScenario carries the suggestion's actor nouns into BOTH dialogs as chips",
-    (appSrc10.match(/regenKeptColorTerms\(\s*\n?\s*sc\.actorA/g) ?? []).length >= 2
-    && /setEditTerms\(\{ a: keptEdit\.a, b: keptEdit\.b \}\)/.test(appSrc10)
-    && /setSaveTerms\(\{ a: keptNew\.a, b: keptNew\.b \}\)/.test(appSrc10),
-    'without this the nouns die at the save and the card colours more than the game ever will');
+    suggestedStart !== -1
+    && /dispatchEditForm\(\{\s*type: 'story',/.test(suggestedSrc) && /dispatchSaveForm\(\{\s*type: 'story',/.test(suggestedSrc)
+    && storyActionsWithNouns >= 2,
+    `story actions carrying the nouns: ${storyActionsWithNouns} (need 2 — edit dialog and save-as-new) — without this the nouns die at the save and the card colours more than the game ever will`);
 }
 
 if (failures > 0) {

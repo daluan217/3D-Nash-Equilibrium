@@ -439,10 +439,149 @@ export function termBoundaryRegExp(terms: readonly string[], flags = 'giu'): Reg
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`${TERM_LEFT}(?:${usable.map(esc).join('|')})${TERM_RIGHT}`, flags);
 }
-/** True when `term` would be painted somewhere in `text` (see termBoundaryRegExp). */
+/** True when `term` OCCURS somewhere in `text` under the boundary rule. Occurring is
+ *  not the same as being painted — a longer term can claim the range (see `paintPlan`
+ *  and `chipPaintStates`, which are what any "is this highlighted?" question must ask). */
 export function termOccursIn(text: string, term: string): boolean {
   const re = termBoundaryRegExp([term], 'iu');
   return re !== null && re.test(text);
+}
+
+/** One coloured range: which term claimed it, and for which player. */
+export interface PaintSpan {
+  start: number;
+  end: number;
+  /** The matched text, exactly as it appears in the source string. */
+  text: string;
+  /** The term entry that claimed it (its stored spelling, not the matched text). */
+  term: string;
+  side: 'A' | 'B';
+}
+
+/**
+ * THE paint pass: which ranges of `text` get colour, and whose.
+ *
+ * STRUCT-REGEN-19/002. `ColorCoded` renders from this, and every question of the form
+ * "does this chip highlight anything?" is answered from this — so a chip's displayed
+ * state and the colour on screen are the SAME computation, not two that must agree.
+ * Before this, the editor asked `termOccursIn(value, term)` (one term, alone) while the
+ * painter ran one alternation over ALL terms longest-first: a chip whose phrase sits
+ * inside a LONGER term belonging to the other player was drawn as a live highlight of
+ * this player's colour while every occurrence on screen was painted in the other's
+ * (measured on real draws: "crew" filed for A under the option labels "Early Crew" /
+ * "Late Crew").
+ *
+ * Longest first, so "Issue Fast Ticket" beats "Ticket"; terms under two characters are
+ * dropped ("A" is indistinguishable from the article). Each term gets its OWN capture
+ * group, so the alternative that matched identifies the term outright — the old
+ * `entries.find(e => e.t.toLowerCase() === hit.toLowerCase())` was a SECOND case rule
+ * beside the regex's own `iu` folding, and where the two disagreed (a long s, U+017F,
+ * folds to "s" under `iu` but not under `toLowerCase`) the span was emitted with no
+ * class at all: nothing coloured, the range consumed so no later rule could claim it,
+ * and the chip still claiming to be a highlight.
+ */
+export function paintPlan(
+  text: string,
+  aTerms: readonly string[],
+  bTerms: readonly string[],
+): PaintSpan[] {
+  const entries = [
+    ...aTerms.map((t) => ({ t, side: 'A' as const })),
+    ...bTerms.map((t) => ({ t, side: 'B' as const })),
+  ]
+    .filter((e) => e.t && e.t.trim().length >= 2)
+    .sort((p, q) => q.t.length - p.t.length);
+  if (!text || entries.length === 0) return [];
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(
+    `${TERM_LEFT}(?:${entries.map((e) => `(${esc(e.t)})`).join('|')})${TERM_RIGHT}`,
+    'giu',
+  );
+  const out: PaintSpan[] = [];
+  re.lastIndex = 0;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    // The first defined capture group IS the entry that matched — index, not spelling.
+    let gi = -1;
+    for (let i = 1; i < m.length; i++) if (m[i] !== undefined) { gi = i; break; }
+    const entry = gi > 0 ? entries[gi - 1] : undefined;
+    if (entry) out.push({ start: m.index, end: m.index + m[0].length, text: m[0], term: entry.t, side: entry.side });
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return out;
+}
+
+/**
+ * What a chip should SAY about itself, derived from the paint plan it will be shown
+ * beside — never from a separate rule.
+ *
+ * `painted`  at least one occurrence of the phrase overlaps a span of the chip's OWN
+ *            side. Same-side shadowing counts as painted: "operator" inside "the
+ *            harbour operator", both A, really is rose on screen.
+ * `absent`   the phrase does not occur in the text at all (RED-REGEN-14/002).
+ * `shadowed` it occurs, but every occurrence is claimed by a phrase belonging to the
+ *            OTHER player, so the words are on screen in that player's colour.
+ *            `by`/`bySide` name the claiming term so the chip and the Keep note can
+ *            say which phrase took it.
+ */
+export type ChipPaint =
+  | { state: 'painted' }
+  | { state: 'absent' }
+  | { state: 'shadowed'; by: string; bySide: 'A' | 'B' };
+
+/**
+ * Both maps are keyed by `colorTermKey(term)`, NOT by the raw string
+ * (CodeRabbit CLI on this branch). A caller holds the user's chips as the user
+ * created them — a selection can carry a trailing space or a double space —
+ * while the lists passed in here have been through `cleanUserColorTermPair`,
+ * which collapses exactly those. Keyed raw, `get('  crew  ')` missed, the
+ * caller's `?? absent` fallback took over, and the chip said "does not appear
+ * in the story" about a phrase painted on screen — the very disagreement
+ * between the chip and the paint that this function exists to make impossible.
+ * `colorTermKey` is what `DescriptionEditor` already uses for every other
+ * membership test (`renderedA`, `crossPlayerKeys`), so this makes one key rule
+ * for the whole surface.
+ *
+ * CONTRACT (OPUS-REVIEW-184/NIT): the key folds case, NFKC and a leading
+ * article, so "The Ferry" and "ferry" share one. Each side's list must already
+ * be key-unique — `mergeDescriptionTerms` guarantees that for every caller here,
+ * dropping any base term whose key a user chip claims — because with a duplicate
+ * the later entry wins the map and the earlier chip would read the other's state.
+ */
+export function chipPaintStates(
+  text: string,
+  aTerms: readonly string[],
+  bTerms: readonly string[],
+): { a: Map<string, ChipPaint>; b: Map<string, ChipPaint> } {
+  const spans = paintPlan(text, aTerms, bTerms);
+  const stateFor = (term: string, side: 'A' | 'B'): ChipPaint => {
+    const own = termBoundaryRegExp([term], 'giu');
+    if (!own) return { state: 'absent' };
+    own.lastIndex = 0;
+    let shadower: PaintSpan | undefined;
+    let occurs = false;
+    for (let m = own.exec(text); m !== null; m = own.exec(text)) {
+      occurs = true;
+      const s = m.index;
+      const e = m.index + m[0].length;
+      // OVERLAP, not containment: a longer term can start before this phrase and end
+      // inside it, so the phrase is partly claimed. Any overlap with a span of this
+      // chip's OWN side means the reader does see these words in this player's colour.
+      const overlaps = spans.filter((sp) => sp.start < e && sp.end > s);
+      if (overlaps.some((sp) => sp.side === side)) return { state: 'painted' };
+      if (!shadower) shadower = overlaps[0];
+      if (m[0].length === 0) own.lastIndex++;
+    }
+    // Not occurring at all, and "occurring with nothing coloured over it" (only
+    // reachable if the caller asks about a term outside the lists this plan was built
+    // from — the ownership rules report that case themselves), are the same fact for a
+    // chip: it paints nothing, and no other phrase took it.
+    if (!occurs || !shadower) return { state: 'absent' };
+    return { state: 'shadowed', by: shadower.term, bySide: shadower.side };
+  };
+  return {
+    a: new Map(aTerms.map((t) => [colorTermKey(t), stateFor(t, 'A')])),
+    b: new Map(bTerms.map((t) => [colorTermKey(t), stateFor(t, 'B')])),
+  };
 }
 
 export function regenKeptColorTerms(

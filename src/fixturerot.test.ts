@@ -1,0 +1,268 @@
+/**
+ * No source-shape guard may carry a DEAD mutant plant.
+ *
+ * Many guards in this suite work by mutating a copy of a real source file and
+ * asserting the check they just made now fails:
+ *
+ *     check('fixture: that check rejects the pre-fix shape',
+ *       !RULE.test(app.replace("<a line of App.tsx>", "<the pre-fix line>")));
+ *
+ * The whole thing rests on the first argument still occurring in the file. Once
+ * it does not, `.replace` is a silent no-op, the mutated copy equals the real
+ * one, and the fixture passes for the wrong reason — it can no longer fail for
+ * the reason it claims. That has happened twice on this branch alone (after the
+ * save-form refactor and again after the Generate-note refactor), each time
+ * caught by hand rather than by CI.
+ *
+ * So: in every `*.test.ts`, find the variables that hold a real file's contents
+ * (`const app = readFileSync('src/App.tsx', 'utf8')`), take the string-literal
+ * first argument of every `.replace(` applied to one of them, and require it to
+ * occur in that tree. A plant that no longer matches fails HERE, by name, at the
+ * moment it goes stale.
+ *
+ * Only file-backed receivers count. A test that mutates a fixture string it
+ * declared itself (`scene.replace('while the other independently chooses', …)` in
+ * unit.test.ts) is not this hazard — its plant is supposed to be absent from the
+ * product — and counting it would produce noise that trains people to ignore this
+ * file.
+ *
+ *   npx tsx src/fixturerot.test.ts
+ */
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+
+let failures = 0;
+let cases = 0;
+function check(name: string, cond: boolean, detail = ''): void {
+  cases++;
+  if (!cond) { console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`); failures++; }
+}
+
+const SKIP_EXT = /\.(png|jpe?g|gif|icns|ico|woff2?|ttf|zip|dmg)$/i;
+const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
+  .split('\n').filter((f) => f && !SKIP_EXT.test(f));
+
+/**
+ * Every tracked text file EXCEPT the guards themselves, concatenated — a plant may
+ * target any product source. Excluding `*.test.ts` is what makes this file able to
+ * fail at all: a plant's text always occurs in the guard that spells it out, so a
+ * haystack containing the guards matches every plant, stale or not. (Found by
+ * mutation: with the guards included, deliberately breaking a plant was not
+ * reported. That is precisely the "check that cannot fail for the reason it claims"
+ * shape this file exists to catch, so it had to be caught here first.)
+ */
+const haystack = tracked
+  .filter((f) => !f.endsWith('.test.ts'))
+  .map((f) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } })
+  .join('\n \n');
+
+/** Variables in this test that hold a real file's contents. */
+function fileBackedVars(src: string): string[] {
+  const out: string[] = [];
+  const re = /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*readFileSync\(/g;
+  for (let m = re.exec(src); m !== null; m = re.exec(src)) out.push(m[1]);
+  return out;
+}
+
+/**
+ * The string-literal first argument of every `.replace(` whose RECEIVER is one of
+ * those variables — resolved properly, so a chain
+ * (`app.replace(a, b).replace(c, d)`) counts for both links: from the `.replace(`
+ * token, walk left; a `)` means skip its balanced group and the `.replace` before
+ * it, and repeat; what remains must be the identifier.
+ *
+ * Template-literal and RegExp firsts are skipped: a regex plant that stops matching
+ * is the same hazard, but its text is not a literal to look up, and a pattern this
+ * file could not evaluate would be a check that cannot fail.
+ */
+/** A quote is escaped only by an ODD run of backslashes before it (`\\"` ends a string). */
+function escapedAt(src: string, i: number): boolean {
+  let n = 0;
+  for (let j = i - 1; j >= 0 && src[j] === '\\'; j--) n++;
+  return n % 2 === 1;
+}
+
+/**
+ * Decode a JavaScript string-literal BODY with JavaScript rules (CodeRabbit):
+ * `JSON.parse` rejects valid escapes such as `\x28` and `\'`, and a decoder that
+ * rejects a plant skips it silently. Returns null only for a malformed escape.
+ */
+function decodeJsString(body: string): string | null {
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== '\\') { out += c; continue; }
+    const e = body[++i];
+    if (e === undefined) return null;
+    switch (e) {
+      case 'n': out += '\n'; break;
+      case 't': out += '\t'; break;
+      case 'r': out += '\r'; break;
+      case 'b': out += '\b'; break;
+      case 'f': out += '\f'; break;
+      case 'v': out += '\v'; break;
+      case '0': out += '\0'; break;
+      case '\n': break; // line continuation
+      case 'x': {
+        const hex = body.slice(i + 1, i + 3);
+        if (!/^[0-9a-fA-F]{2}$/.test(hex)) return null;
+        out += String.fromCharCode(parseInt(hex, 16)); i += 2; break;
+      }
+      case 'u': {
+        if (body[i + 1] === '{') {
+          const close = body.indexOf('}', i + 2);
+          const hex = close === -1 ? '' : body.slice(i + 2, close);
+          if (!/^[0-9a-fA-F]{1,6}$/.test(hex)) return null;
+          out += String.fromCodePoint(parseInt(hex, 16)); i = close; break;
+        }
+        const hex = body.slice(i + 1, i + 5);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null;
+        out += String.fromCharCode(parseInt(hex, 16)); i += 4; break;
+      }
+      default: out += e; // \' \" \\ and any other identity escape
+    }
+  }
+  return out;
+}
+
+function receiverOf(src: string, at: number): string | null {
+  let i = at;
+  for (let guard = 0; guard < 20; guard++) {
+    while (i > 0 && /\s/.test(src[i - 1])) i--;
+    if (src[i - 1] === ')') {
+      let depth = 0;
+      i--;
+      while (i > 0) {
+        const c = src[i];
+        // A plant is a SOURCE LINE, so a stray '(' or ')' inside its string is
+        // ordinary: skip string literals whole while walking left (CodeRabbit).
+        if ((c === '"' || c === "'") && !escapedAt(src, i)) {
+          i--;
+          while (i > 0 && !(src[i] === c && !escapedAt(src, i))) i--;
+          i--;
+          continue;
+        }
+        if (c === ')') depth++;
+        else if (c === '(') { depth--; if (depth === 0) break; }
+        i--;
+      }
+      // now at the '(' of that call; the token before it must be `.replace`
+      const before = src.slice(Math.max(0, i - 8), i);
+      if (!/\.replace$/.test(before)) return null;
+      i -= 8;
+      continue;
+    }
+    const m = /([A-Za-z_$][\w$]*)$/.exec(src.slice(Math.max(0, i - 64), i));
+    return m ? m[1] : null;
+  }
+  return null;
+}
+
+function plantsIn(src: string, vars: readonly string[]): string[] {
+  if (vars.length === 0) return [];
+  const owned = new Set(vars);
+  const out: string[] = [];
+  const re = /\.replace\(\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
+  for (let m = re.exec(src); m !== null; m = re.exec(src)) {
+    const recv = receiverOf(src, m.index);
+    if (recv === null || !owned.has(recv)) continue;
+    // One JavaScript-rules decoder for both quote styles (CodeRabbit): JSON.parse
+    // rejected `\x28` and `\'`, and a rejected plant was skipped silently.
+    const lit = decodeJsString(m[2]);
+    if (lit === null) continue;
+    // Short plants ("  " -> " ") are ordinary string munging, not source shapes.
+    if (lit.length >= 25) out.push(lit);
+  }
+  return out;
+}
+
+/**
+ * This file itself is excluded, and it is the ONLY exclusion: every `.replace(` in it
+ * is fixture data for the extractor (strings that LOOK like guards), so scanning it
+ * would report its own test inputs as stale plants. The list is pinned below so the
+ * exclusion cannot quietly grow into a way to silence a real guard.
+ */
+const EXCLUDED = ['src/fixturerot.test.ts'];
+const testFiles = tracked.filter((f) => f.endsWith('.test.ts') && !EXCLUDED.includes(f));
+check('exactly one guard is excluded from the scan, and it is this one',
+  EXCLUDED.length === 1 && EXCLUDED[0] === 'src/fixturerot.test.ts', EXCLUDED.join());
+check('every other guard is scanned', tracked.filter((f) => f.endsWith('.test.ts')).length - testFiles.length === 1);
+check('there are test files to scan (an empty scan would pass vacuously)', testFiles.length > 20, String(testFiles.length));
+
+let planted = 0;
+const stale: string[] = [];
+for (const f of testFiles) {
+  // An unstaged local deletion leaves the path in `git ls-files`; report it as
+  // a named failure instead of aborting before the count floors (CodeRabbit).
+  let src: string;
+  try {
+    src = readFileSync(f, 'utf8');
+  } catch {
+    check(`tracked guard is readable: ${f}`, false);
+    continue;
+  }
+  for (const lit of plantsIn(src, fileBackedVars(src))) {
+    planted++;
+    if (!haystack.includes(lit)) stale.push(`${f}: ${JSON.stringify(lit.slice(0, 90))}`);
+  }
+}
+// 29 file-backed plants across the suite today. The floor is a vacuity guard, not
+// a target: it exists so that an extractor that silently stops matching (or a
+// wholesale deletion of the source-shape guards) fails here instead of reporting a
+// clean scan of nothing.
+check('the scan found mutant plants to check (a 0-plant scan would pass vacuously)', planted >= 20, String(planted));
+check('every mutant plant still occurs in the sources it mutates', stale.length === 0,
+  stale.slice(0, 6).join('\n      '));
+
+// The scanner itself must be able to see a stale plant — otherwise this whole
+// file is a check that cannot fail. Two fixtures: one plant that is really in
+// the tree, one that cannot be.
+{
+  const real = 'export function highlightWouldMatch(term: string, desc: string): boolean {';
+  const fake = 'export function thisFunctionHasNeverExisted_STRUCT_REGEN_19(x: never): void {';
+  check('fixture: a plant naming real source text is found', haystack.includes(real));
+  check('fixture: a plant naming text that is not in the tree is reported stale', !haystack.includes(fake));
+  const sample = `const app = readFileSync('src/App.tsx', 'utf8');\nconst x = app.replace("${real}", "else").replace("${real} two", "else");`;
+  const sampleVars = fileBackedVars(sample);
+  check('fixture: a readFileSync variable is recognised', sampleVars.join() === 'app', sampleVars.join());
+  check('fixture: the extractor pulls plants out of a CHAINED .replace( on that variable',
+    plantsIn(sample, sampleVars).length === 2 && plantsIn(sample, sampleVars)[0] === real,
+    JSON.stringify(plantsIn(sample, sampleVars)));
+  check('fixture: a .replace( on a string the TEST declared itself is not a plant',
+    plantsIn(`const scene = 'a sentence the test wrote';\nscene.replace("${real}", "else");`, ['app']).length === 0);
+  check('fixture: the extractor ignores a short .replace( that is ordinary munging',
+    plantsIn('const app = readFileSync("x");\napp.replace("  ", " ");', ['app']).length === 0);
+  // Both quote styles, each carrying the OTHER quote — the shape that used to throw
+  // inside the decoder and be skipped without a word (CodeRabbit CLI on this branch).
+  const dq = 'const app = readFileSync("x");\nconst y = app.replace("she said \\"go now\\" and left the room", "z");';
+  check('fixture: a double-quoted plant containing escaped quotes decodes to the source text',
+    plantsIn(dq, ['app'])[0] === 'she said "go now" and left the room', JSON.stringify(plantsIn(dq, ['app'])));
+  // A plant is a SOURCE LINE, so a stray '(' or ')' inside it is ordinary and
+  // must not break the receiver walk for the NEXT link of the chain.
+  const stray = `const app = readFileSync('x');\nconst y = app.replace("${real}", "a").replace("const n = someCall(x, y);  padding to clear the length floor", "b");`;
+  check('fixture: a chained plant whose earlier text carries a stray paren is still extracted',
+    plantsIn(stray, ['app']).length === 2, JSON.stringify(plantsIn(stray, ['app'])));
+  const strayClose = `const app = readFileSync('x');\nconst y = app.replace("a lone ) closes nothing here, twenty-five chars", "a").replace("${real}", "b");`;
+  check('fixture: a stray CLOSING paren inside an earlier plant does not swallow the chain either',
+    plantsIn(strayClose, ['app']).length === 2, JSON.stringify(plantsIn(strayClose, ['app'])));
+  // JavaScript string rules (CodeRabbit): a literal ENDING in an escaped
+  // backslash (even run → the quote is real) and one carrying a \x escape.
+  const evenRun = `const app = readFileSync('x');\nconst y = app.replace("path ends with a backslash and is long enough \\\\", "a").replace("${real}", "b");`;
+  check('fixture: a plant ending in an escaped backslash still closes its string and the chain continues',
+    plantsIn(evenRun, ['app']).length === 2 && plantsIn(evenRun, ['app'])[0].endsWith('\\'), JSON.stringify(plantsIn(evenRun, ['app'])));
+  const hexEsc = `const app = readFileSync('x');\nconst y = app.replace("open paren via hex escape \\x28 and enough padding text", "a");`;
+  check('fixture: a plant using a \\x escape decodes with JavaScript rules instead of being skipped',
+    plantsIn(hexEsc, ['app'])[0] === 'open paren via hex escape ( and enough padding text', JSON.stringify(plantsIn(hexEsc, ['app'])));
+  const sq = `const app = readFileSync('x');\nconst y = app.replace('she said "go now" and left the room', 'z');`;
+  check('fixture: a single-quoted plant containing bare quotes decodes to the same text',
+    plantsIn(sq, ['app'])[0] === 'she said "go now" and left the room', JSON.stringify(plantsIn(sq, ['app'])));
+  check('fixture: an apostrophe escaped inside a single-quoted plant survives',
+    plantsIn(`const app = readFileSync('x');\napp.replace('the dialog\\'s own error line here', 'z');`, ['app'])[0]
+      === "the dialog's own error line here");
+}
+
+if (failures > 0) {
+  console.error(`\n✗ ${failures} failure(s) of ${cases} checks`);
+  process.exit(1);
+}
+console.log(`✓ fixturerot.test.ts: ${cases} checks — ${planted} mutant plants across ${testFiles.length} guards all still match their sources`);
