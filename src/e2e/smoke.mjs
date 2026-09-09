@@ -8731,11 +8731,9 @@ try {
     try {
       const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
-      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await exitTour.click();
-        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
-      }
+      // Merged onto struct19-app: the "Exit tour" pill no longer exists
+      // (STRUCT-APP-19/003) — the ONE dismissal path is the shared helper.
+      await closeTour(p);
       // The readout value sits in the mono <span> next to the "x: P(A playing
       // Row 1)" label; read it by walking from the label, not by nth-child.
       const readX = () => p.evaluate(() => {

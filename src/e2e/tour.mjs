@@ -31,7 +31,18 @@ export const closeTour = async (page, { timeout = 20000 } = {}) => {
   // still coming. The caller's next line then asserts the tour is absent and
   // records a PASSING precondition — vacuously — before the tour opens on top
   // of the section. `waitFor` actually waits.
-  const up = await x.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+  // Director (merge of #180 with main, CI run 34311756205): a flat 3 s was
+  // measured on a warm laptop, not on the shipping condition. On the GitHub
+  // runner a fresh page can take longer than that to MOUNT, and mobile.mjs's
+  // 4x-CPU-throttled arm longer still, so the helper answered "absent" while
+  // the tour was still coming and every later click died under its scrim
+  // (shards 3/21/18/19 + mobile, all on the merged head). So: wait for React
+  // to mount first (bounded by `timeout`), THEN give the 700 ms timer a buffer
+  // sized for a throttled runner. A page where the tour never opens pays the
+  // buffer once; a page where it does pays nothing extra.
+  await page.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0, null, { timeout })
+    .catch(() => {});
+  const up = await x.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
   if (!up) return { closed: false, via: 'absent' };
   const gone = () => page.waitForFunction(
     () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
