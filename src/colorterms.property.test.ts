@@ -32,11 +32,13 @@ import {
   regenKeptColorTerms,
   termOccursIn,
   regenPreviewColorTerms,
+  descriptionColorTerms,
   savedGameColorTerms,
   capHitMessage,
   type ScenarioLabels,
 } from './utils/colorTerms';
 import { regenDroppedNote } from './utils/scenarioRegen';
+import { allBankRows } from './utils/bankSource';
 import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -845,6 +847,82 @@ if (failures > 0) {
   check('editor (control): the same chip with its phrase present is not suppressed', presentChip !== '' && !/data-suppressed=/.test(presentChip), presentChip);
   check('editor: a chip present only inside a longer word is absent (same boundary as the painter)',
     /data-suppressed-cause="absent"/.test(chipA(editorHtml('The cattle graze.', ['cat']))));
+}
+
+/* ============================================================================
+ * PART 10 — THE SUGGESTION CARD AND THE SAVED GAME PAINT THE SAME TEXT THE SAME
+ * WAY (STRUCT-CLOUD-19/001).
+ *
+ * The report's suggestion card shows the exact description the game will hold
+ * one click later, so the two must agree about which phrases belong to which
+ * player. They are built by DIFFERENT functions and cannot simply be asserted
+ * equal by inspection: the card calls `regenPreviewColorTerms` (nouns enter as
+ * USER terms, through `mergeDescriptionTerms`'s label-ownership pass) and the
+ * saved game calls `descriptionColorTerms` with those same nouns stored as
+ * colour-term chips. This part runs both over every shipped bank row.
+ *
+ * Not a hypothetical pairing: `App.tsx`'s `useSuggestedScenario` is what turns
+ * the nouns into chips (`regenKeptColorTerms`, the same merge regenerate's Keep
+ * uses), and the source contract at the end of this part pins that it still
+ * does. Without it the card would promise colour the save cannot deliver —
+ * which is this defect in the other direction.
+ * ==========================================================================*/
+{
+  /**
+   * Every shipped row that declares an actor noun — measured, not guessed
+   * (`_gen/cloud19_cardsave.ts`: 2090 of 2442 rows carry one). It is the count
+   * of rows on which a noun-free card would paint something different from the
+   * saved game, and it is deliberately not "84": those 84 were the rows that
+   * lost a player ENTIRELY, while this is every row that would lose any colour
+   * at all. A drop to zero means the two builders have become the same call and
+   * the equality above has stopped being able to fail.
+   */
+  const NOUNLESS_CARD_DISAGREEMENTS = 2090;
+  const rows = allBankRows();
+  const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []);
+  const norm = (l: { a: string[]; b: string[] }) => ({ a: [...l.a].sort().join('|'), b: [...l.b].sort().join('|') });
+  let mismatched = 0; let firstMismatch = '';
+  let noNounMismatched = 0;
+  for (const e of rows) {
+    const sc = e.s as ScenarioLabels & { actorA?: unknown; actorB?: unknown; name?: string };
+    const aN = strs(sc.actorA); const bN = strs(sc.actorB);
+    // What the card paints.
+    const card = norm(regenPreviewColorTerms(sc, aN, bN, [], []));
+    // What the game paints once saved: the nouns are stored as chips exactly as
+    // `useSuggestedScenario` writes them, then cleaned as the server cleans them.
+    const kept = regenKeptColorTerms(aN, bN, [], []);
+    const chips = cleanUserColorTermPair(kept.a, kept.b);
+    const saved = norm(descriptionColorTerms(sc, [], [], chips.a, chips.b));
+    if (card.a !== saved.a || card.b !== saved.b) {
+      mismatched++;
+      if (!firstMismatch) firstMismatch = `"${sc.name}" card=${JSON.stringify(card)} saved=${JSON.stringify(saved)}`;
+    }
+    // The mutant this corpus can kill: a card built WITHOUT the nouns, which is
+    // what /api/report forced until STRUCT-CLOUD-19/001 stopped stripping them.
+    // Counted rather than asserted per row, so the number below is the evidence
+    // that the equality above is not vacuous.
+    const nounless = norm(regenPreviewColorTerms(sc, [], [], [], []));
+    if (nounless.a !== saved.a || nounless.b !== saved.b) noNounMismatched++;
+  }
+  check('every shipped bank row: the suggestion card and the saved game paint it with the same terms',
+    mismatched === 0, `${mismatched} of ${rows.length} disagree — first: ${firstMismatch}`);
+  check('...and that equality is not vacuous: a card built without the actor nouns disagrees on the pinned number of rows',
+    noNounMismatched === NOUNLESS_CARD_DISAGREEMENTS,
+    `${noNounMismatched} of ${rows.length} (pinned ${NOUNLESS_CARD_DISAGREEMENTS}). If this is 0 the two compositions `
+    + 'have collapsed into one and the check above can no longer fail; if it moved, the artifact changed.');
+
+  // The App-side contract: both halves of the pairing above still exist.
+  const appSrc10 = readFileSync('src/App.tsx', 'utf8');
+  check('App.tsx: the suggestion card renders the terms `suggestionCardTerms` built, not a list rebuilt at the call site',
+    /aTerms=\{suggestionCardTerms\.a\}/.test(appSrc10) && /bTerms=\{suggestionCardTerms\.b\}/.test(appSrc10)
+    && /const suggestionCardTerms = useMemo\(/.test(appSrc10)
+    && /suggestionCardTerms[\s\S]{0,600}?regenPreviewColorTerms\(/.test(appSrc10),
+    'the card must paint what regenPreviewColorTerms returns — the one builder whose composition the save reproduces');
+  check("App.tsx: useSuggestedScenario carries the suggestion's actor nouns into BOTH dialogs as chips",
+    (appSrc10.match(/regenKeptColorTerms\(\s*\n?\s*sc\.actorA/g) ?? []).length >= 2
+    && /setEditTerms\(\{ a: keptEdit\.a, b: keptEdit\.b \}\)/.test(appSrc10)
+    && /setSaveTerms\(\{ a: keptNew\.a, b: keptNew\.b \}\)/.test(appSrc10),
+    'without this the nouns die at the save and the card colours more than the game ever will');
 }
 
 if (failures > 0) {

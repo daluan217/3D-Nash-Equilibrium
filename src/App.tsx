@@ -94,7 +94,7 @@ import {
 import { MenuDrawer } from './components/MenuDrawer';
 import { SavedGamesList, formatSavedGames } from './components/SavedGamesList';
 import { ColorCoded } from './components/ColorCoded';
-import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenKeptColorTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import {
   regenKeyEquals,
@@ -1736,8 +1736,17 @@ export default function App() {
       };
       // The dialog's chips must be THIS game's — this path never reset them, so a
       // previous dialog's chips could have been diffed and sent as an edit
-      // (CodeRabbit, #126).
-      setEditTerms({ a: existing.colorTermsA ?? [], b: existing.colorTermsB ?? [] });
+      // (CodeRabbit, #126). This game's chips PLUS the suggestion's own actor
+      // nouns: `regenKeptColorTerms` is the same merge Keep uses (existing chips
+      // never destroyed, nouns added, per-side cap honoured), so a story whose
+      // only term for a player is its actor noun still colours that player after
+      // the save — which is what the card promised (STRUCT-CLOUD-19/001).
+      const keptEdit = regenKeptColorTerms(
+        sc.actorA ?? [], sc.actorB ?? [],
+        existing.colorTermsA ?? [], existing.colorTermsB ?? [],
+        description.slice(0, 800),
+      );
+      setEditTerms({ a: keptEdit.a, b: keptEdit.b });
       setEditName(prefillName);
       // This IS an auto-prefill (the report's invention, not the user's own
       // typing) — the name-replace baseline moves with it, same as any other
@@ -1771,6 +1780,13 @@ export default function App() {
       row1: sc.row1 ?? '', row2: sc.row2 ?? '',
       col1: sc.col1 ?? '', col2: sc.col2 ?? '',
     });
+    // The nouns the card coloured with, carried into the save as chips — the
+    // same `regenKeptColorTerms` merge the edit branch above and regenerate's
+    // Keep both use. Written unconditionally rather than left to whatever the
+    // last save dialog held: a previous attempt's chips belong to a different
+    // story (the #126 class), and a suggestion has none of its own yet.
+    const keptNew = regenKeptColorTerms(sc.actorA ?? [], sc.actorB ?? [], [], [], description.slice(0, 800));
+    setSaveTerms({ a: keptNew.a, b: keptNew.b });
     setSaveError('');
     // RED-REGEN-13/001: the report's story was written for the board on
     // screen — record it, so a later reopen after a payoff change clears it.
@@ -3611,6 +3627,33 @@ export default function App() {
     Array.isArray(selectedPreset?.colorTermsA) ? selectedPreset.colorTermsA : [],
     Array.isArray(selectedPreset?.colorTermsB) ? selectedPreset.colorTermsB : [],
   ), [scenarioForReport, mergedPresets, activePreset, selectedPreset]);
+
+  /**
+   * The suggestion card's terms — the ONE list, built by the ONE builder.
+   *
+   * The card shows the exact text the game will hold a click later, so it must
+   * show the exact colouring. `regenPreviewColorTerms` is that guarantee made
+   * concrete: RED-REGEN/002 introduced it because `colorTermsFor` (one
+   * `dropAmbiguous` pass over structural + label + actor terms) and
+   * `mergeDescriptionTerms` (which neutralises a USER term that matches the
+   * other player's label) disagree about an actor noun colliding with a label —
+   * and a saved game's nouns ARE user terms, since `useSuggestedScenario` keeps
+   * them as chips. The card therefore renders through the same composition the
+   * saved description will. With no nouns the two agree exactly, so this is a
+   * strict superset of what the card painted before (STRUCT-CLOUD-19/001).
+   *
+   * Existing chips are `[]` here because the suggestion has not been saved yet.
+   * On the save-as-new path that is exactly what the save will hold; on the
+   * edit-an-existing-game path the user's own chips are merged in at save time
+   * and can only add colour — except for a chip the user filed under the player
+   * who does not own that label, which `mergeDescriptionTerms` neutralises by
+   * design and which no gate can predict from here.
+   */
+  const suggestionCardTerms = useMemo(() => {
+    const sc = llmEnvelope?.report?.suggestedScenario;
+    if (!sc) return { a: [] as string[], b: [] as string[] };
+    return regenPreviewColorTerms(sc, sc.actorA ?? [], sc.actorB ?? [], [], []);
+  }, [llmEnvelope]);
 
   /**
    * The automatic terms each description dialog's PREVIEW merges the user's
@@ -6016,15 +6059,18 @@ export default function App() {
                         </p>
                         <p className="mt-0.5 text-[12px] text-slate-600 dark:text-slate-300 break-words">
                           {/* Same terms this description will get once it is
-                              saved as the game's own (colorTermsFor is the one
-                              definition). Passing only the four option names
-                              here made the card color LESS than the identical
-                              text did a click later, which read as the save
-                              having changed the writing. */}
+                              saved as the game's own — see `suggestionCardTerms`
+                              for why that is one builder and not a list rebuilt
+                              here. Passing only the four option names here made
+                              the card color LESS than the identical text did a
+                              click later, which read as the save having changed
+                              the writing; dropping the actor nouns on the way
+                              out of /api/report was the same defect one layer
+                              down (STRUCT-CLOUD-19/001). */}
                           <ColorCoded
                             text={llmEnvelope.report.suggestedScenario.description ?? ''}
-                            aTerms={colorTermsFor(llmEnvelope.report.suggestedScenario).a}
-                            bTerms={colorTermsFor(llmEnvelope.report.suggestedScenario).b}
+                            aTerms={suggestionCardTerms.a}
+                            bTerms={suggestionCardTerms.b}
                           />
                         </p>
                         <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
