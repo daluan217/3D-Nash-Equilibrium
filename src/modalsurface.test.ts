@@ -641,10 +641,16 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   const closeBtnStart = walkthrough.lastIndexOf('<button', walkthrough.indexOf("aria-label={probe ? undefined : 'Close tour'}"));
   // The element ends at the first `>` OUTSIDE any `{…}` attribute expression
   // (CodeRabbit: `disabled={step > 0}` or an arrow function must not end it).
+  // Quoted strings inside an expression are skipped whole (CodeRabbit: a `}`
+  // or `>` inside 'text' must not change the depth or end the tag).
   const jsxTagEnd = (src: string, from: number): number => {
     let depth = 0;
     for (let i = from; i < src.length; i++) {
       const c = src[i];
+      if (c === "'" || c === '"' || c === '`') {
+        for (i++; i < src.length && src[i] !== c; i++) if (src[i] === '\\') i++;
+        continue;
+      }
       if (c === '{') depth++;
       else if (c === '}') depth--;
       else if (c === '>' && depth === 0) return i;
