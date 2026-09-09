@@ -34,6 +34,8 @@
  */
 
 /** What the Generate click actually achieved. */
+import type { FieldSource } from './saveFormModel';
+
 export type GenerateOutcome = GenerateResult['outcome'];
 
 /**
@@ -71,19 +73,26 @@ export interface KeptFields {
  * Read `KeptFields` off the form model itself. The note must never derive this
  * from its own copy of "what counts as filled in" — that second rule is how the
  * enumeration came to disagree with the form in the first place.
+ *
+ * A field is "kept" only when the USER typed it (`provenance === 'typed'`) and it
+ * is not blank. Option names copied from the board (`'from-board'`) and text an
+ * earlier Generate wrote (`'generated'`) never block a fill, so the sentence
+ * "…you'd already added" must not claim them (director probe on #184).
  */
 export function keptFieldsOf(form: {
   name: string;
   desc: string;
   labels: { row1: string; row2: string; col1: string; col2: string };
   terms: { a: readonly string[]; b: readonly string[] };
+  provenance: { name: FieldSource; desc: FieldSource; labels: FieldSource; terms: FieldSource };
 }): KeptFields {
+  const typed = (k: keyof KeptFields) => form.provenance[k] === 'typed';
   return {
-    name: form.name.trim() !== '',
-    desc: form.desc.trim() !== '',
-    labels: [form.labels.row1, form.labels.row2, form.labels.col1, form.labels.col2]
+    name: typed('name') && form.name.trim() !== '',
+    desc: typed('desc') && form.desc.trim() !== '',
+    labels: typed('labels') && [form.labels.row1, form.labels.row2, form.labels.col1, form.labels.col2]
       .some((l) => l.trim() !== ''),
-    terms: form.terms.a.length + form.terms.b.length > 0,
+    terms: typed('terms') && form.terms.a.length + form.terms.b.length > 0,
   };
 }
 

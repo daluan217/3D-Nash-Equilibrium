@@ -138,10 +138,19 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
     keptList(ALL_KEPT).join('|'));
 
   // `keptFieldsOf` reads the form, and whitespace is not text the user "added".
-  const form = (o: Partial<{ name: string; desc: string; row1: string; a: string[] }>) => ({
+  type Src = 'empty' | 'typed' | 'generated' | 'from-board';
+  const form = (o: Partial<{ name: string; desc: string; row1: string; a: string[];
+    src: Partial<{ name: Src; desc: Src; labels: Src; terms: Src }> }>) => ({
     name: o.name ?? '', desc: o.desc ?? '',
     labels: { row1: o.row1 ?? '', row2: '', col1: '', col2: '' },
     terms: { a: o.a ?? [], b: [] as string[] },
+    // Default provenance: whatever is non-blank was typed (the pre-#184 reading).
+    provenance: {
+      name: o.src?.name ?? ((o.name ?? '') !== '' ? 'typed' : 'empty'),
+      desc: o.src?.desc ?? ((o.desc ?? '') !== '' ? 'typed' : 'empty'),
+      labels: o.src?.labels ?? ((o.row1 ?? '') !== '' ? 'typed' : 'empty'),
+      terms: o.src?.terms ?? ((o.a?.length ?? 0) > 0 ? 'typed' : 'empty'),
+    } as { name: Src; desc: Src; labels: Src; terms: Src },
   });
   check('keptFieldsOf: an empty form kept nothing',
     keptList(keptFieldsOf(form({}))).length === 0);
@@ -152,6 +161,18 @@ const KINDS: EquilibriumKind[] = ['pure', 'mixed'];
   check('keptFieldsOf: one chip counts as kept highlights',
     keptFieldsOf(form({ a: ['harbour ferry'] })).terms === true);
   check('keptFieldsOf: a real name counts', keptFieldsOf(form({ name: 'My game' })).name === true);
+  // Director probe on #184: the board's own option names are not text the user
+  // "added", and neither is a story an earlier Generate wrote. Only typed text is.
+  check('keptFieldsOf: option names copied from the board are not kept option names',
+    keptFieldsOf(form({ name: 'My game', row1: 'Top', src: { labels: 'from-board' } })).labels === false);
+  check('keptFieldsOf: a description an earlier Generate wrote is not a kept description',
+    keptFieldsOf(form({ name: 'My game', desc: 'A harbour story.', src: { desc: 'generated' } })).desc === false);
+  check('keptFieldsOf: chips a Generate produced are not kept highlights',
+    keptFieldsOf(form({ a: ['harbour ferry'], src: { terms: 'generated' } })).terms === false);
+  check('keptFieldsOf: a typed option name IS a kept option name',
+    keptFieldsOf(form({ row1: 'Top', src: { labels: 'typed' } })).labels === true);
+  check('keptFieldsOf: from-board labels beside a typed name -> only the name is listed',
+    keptList(keptFieldsOf(form({ name: 'My game', row1: 'Top', src: { labels: 'from-board' } }))).join('|') === 'the name');
 }
 
 // ── 3c. Mutants of the kept renderer — each killed by the probe that NAMES it ─
