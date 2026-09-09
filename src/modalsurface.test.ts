@@ -595,9 +595,13 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // either to `aria-hidden={blocked}` → the last check fails by name.
 {
   const walkthrough = readFileSync('src/components/Walkthrough.tsx', 'utf8');
-  ok(!/inert=\{blocked\}[\s\S]{0,40}aria-label="Exit tour"/.test(walkthrough)
-    && !/aria-label="Exit tour"[\s\S]{0,10}\n\s*inert=\{blocked\}/.test(walkthrough),
-    'the Exit-tour button must NOT carry its own inert={blocked} — that gates hit-testing/tab-order but not painting, and RED-APP-16/001 needs both on one wrapper');
+  // STRUCT-APP-19/003: the Exit-tour pill this used to be about no longer
+  // exists, so the old regexes would now pass by matching nothing. Assert the
+  // removal itself, and re-point the inert rule at the control that replaced it.
+  ok(!/aria-label="Exit tour"/.test(walkthrough),
+    'STRUCT-APP-19/003: the viewport-anchored Exit-tour pill is gone — the card X is the tour\'s one exit');
+  ok(!/aria-label=\{probe \? undefined : 'Close tour'\}[\s\S]{0,120}inert=\{blocked\}/.test(walkthrough),
+    'the close button must NOT carry its own inert={blocked} — that gates hit-testing/tab-order but not painting, and RED-APP-16/001 needs both on one wrapper');
   ok(!/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),
     'the tour card must NOT carry its own inert={blocked} — moved to the outer wrapper (RED-APP-16/001)');
   ok(!/aria-hidden=\{blocked\}/.test(walkthrough),

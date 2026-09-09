@@ -416,7 +416,7 @@ export function Walkthrough({
 
   // RED-APP-15/003: the keydown gate above has no pointer equivalent, and the
   // drawer's overlay (z-50) sits BELOW the tour (z-[60]) — the only one of
-  // six surfaces that does — so a real click on the tour's own Next/Back/Skip
+  // six surfaces that does — so a real click on the tour's own Next/Back/close
   // reaches it right through an open, aria-modal drawer and rewrites the
   // board. Track ModalRegistry's stack (the same subscribe ModalSurface uses)
   // so the WHOLE overlay goes `inert` the instant any surface registers, and
@@ -523,7 +523,6 @@ export function Walkthrough({
 
   const vw = vp.w;
   const vh = vp.h;
-  const exitTop = headerOffset() + GAP;
   /**
    * Orientation decides the layout FAMILY, and it is the viewport's aspect —
    * never the device class. A phone rotated sideways, an iPad in landscape and
@@ -573,18 +572,12 @@ export function Walkthrough({
     }`;
   const cardContents = (denseVariant: boolean, scrolls: boolean, probe = false) => (
     <>
-      <div className="flex items-start justify-between gap-3">
+      {/* `pr-8` keeps the step counter clear of the close button, which is
+          positioned over this corner from the end of the card (see below). */}
+      <div className="flex items-start gap-3 pr-8">
         <span className={`font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${denseVariant ? 'text-[11px]' : 'text-[13px]'}`}>
           {i + 1} / {steps.length}
         </span>
-        <button
-          type="button"
-          onClick={close}
-          aria-label="Close tour"
-          className="shrink-0 -m-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-        >
-          <X className="w-4 h-4" />
-        </button>
       </div>
 
       <h3 className={`font-bold text-slate-800 dark:text-slate-100 leading-snug tracking-tight ${denseVariant ? 'text-[17px]' : 'text-2xl'}`}>{step.title}</h3>
@@ -598,14 +591,10 @@ export function Walkthrough({
         {step.body}
       </p>
 
-      <div className={`flex items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 ${denseVariant ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
-        <button
-          type="button"
-          onClick={close}
-          className={`font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors ${denseVariant ? 'text-[13px]' : 'text-[15px]'}`}
-        >
-          Skip
-        </button>
+      {/* STRUCT-APP-19/003: `justify-end`, not `justify-between` — Skip used to
+          hold the left edge, and leaving `justify-between` with one child would
+          push Back/Next across to it. */}
+      <div className={`flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800 ${denseVariant ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -624,6 +613,24 @@ export function Walkthrough({
           </button>
         </div>
       </div>
+
+      {/* STRUCT-APP-19/003: the tour's ONE exit (Daniel, 2026-09-08 — Skip and
+          the viewport-anchored "Exit tour" pill were the same action twice more).
+          Rendered LAST so the tab order is content -> Back/Next -> close, and
+          positioned over the card's top-right corner where it has always been. */}
+      <button
+        type="button"
+        onClick={close}
+        // The measuring probe renders these same contents, so a bare
+        // `[aria-label="Close tour"]` would match TWO elements and every
+        // selector in the suite would hit a strict-mode violation. The probe is
+        // aria-hidden and inert (Playwright's getByRole already skips it); this
+        // keeps the CSS attribute selector unambiguous too, at no layout cost.
+        aria-label={probe ? undefined : 'Close tour'}
+        className={`absolute ${denseVariant ? 'top-3 right-3' : 'top-5 right-5'} p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors`}
+      >
+        <X className="w-4 h-4" />
+      </button>
     </>
   );
   let cardTop: number;
@@ -736,22 +743,6 @@ export function Walkthrough({
         />
       )}
       {!rect && <div className="absolute inset-0 bg-slate-900/72 pointer-events-none" />}
-
-      {/* Always-available exit, anchored to the viewport rather than to the
-          caption card. The card's own X moves with the step, so on a step
-          pointing at something near the top of the page it can end up
-          somewhere unexpected; this one never moves. */}
-      {/* RED-APP-16/001: `inert` lives on the outer wrapper now (it is
-          inherited by the whole subtree) so it does not need repeating here. */}
-      <button
-        type="button"
-        onClick={close}
-        aria-label="Exit tour"
-        style={{ top: exitTop, right: GAP }}
-        className={`pointer-events-auto absolute z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
-      >
-        <X className="w-4 h-4" /> Exit tour
-      </button>
 
       {arrow && (
         <svg className="absolute inset-0 w-full h-full pointer-events-none" aria-hidden="true">

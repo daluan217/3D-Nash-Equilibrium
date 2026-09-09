@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
+import { closeTour } from './tour.mjs';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -332,7 +333,7 @@ async function gotoHome() {
  * every later control click then timed out under the tour scrim). */
 async function dismissTour() {
   try {
-    await page.locator('[aria-label="Exit tour"]').click({ timeout: 20000 });
+    await page.locator('[aria-label="Close tour"]').click({ timeout: 20000 });
   } catch {
     await page.keyboard.press('Escape');
   }
@@ -357,7 +358,7 @@ async function dismissTour() {
  * because the regen sections below need it four more times. */
 async function registerAndLogin(p, tag) {
   await p.goto(BASE, { waitUntil: 'networkidle' });
-  const exitTour = p.getByRole('button', { name: /exit tour/i });
+  const exitTour = p.getByRole('button', { name: /close tour/i });
   if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
   await p.waitForTimeout(300);
   const uniq = `${tag}${Date.now()}`;
@@ -1042,7 +1043,7 @@ try {
   section('17', '320px label wrapping', async () => {
     const narrowPage = await newTrackedPage({ viewport: { width: 320, height: 900 } });
     await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
-    const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
+    const narrowExitTour = narrowPage.getByRole('button', { name: /close tour/i });
     if (await narrowExitTour.count() > 0) {
       await narrowExitTour.click();
       await narrowPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
@@ -1119,7 +1120,7 @@ try {
     const dist = (a, b2) => !!a && !!b2 && Math.hypot(a.x - b2.x, a.y - b2.y, a.z - b2.z);
 
     await rmPage.goto(BASE, { waitUntil: 'networkidle' });
-    const rmExitTour = rmPage.getByRole('button', { name: /exit tour/i });
+    const rmExitTour = rmPage.getByRole('button', { name: /close tour/i });
     if (await rmExitTour.count() > 0) {
       await rmExitTour.click();
       await rmPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
@@ -1187,7 +1188,7 @@ try {
   section('19', 'expanded log focus', async () => {
     const focusPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await focusPage.goto(BASE, { waitUntil: 'networkidle' });
-    const focusExitTour = focusPage.getByRole('button', { name: /exit tour/i });
+    const focusExitTour = focusPage.getByRole('button', { name: /close tour/i });
     if (await focusExitTour.count() > 0) {
       await focusExitTour.click();
       await focusPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
@@ -1263,7 +1264,7 @@ try {
   section('20', 'modal focus traps', async () => {
     const trapPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
-    const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
+    const trapExitTour = trapPage.getByRole('button', { name: /close tour/i });
     if (await trapExitTour.count() > 0) {
       await trapExitTour.click();
       await trapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
@@ -1366,7 +1367,7 @@ try {
   section('21', 'settled live-region wording', async () => {
     const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
-    const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
+    const settledExitTour = settledPage.getByRole('button', { name: /close tour/i });
     if (await settledExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
       await settledExitTour.click();
       // CodeRabbit finding (this branch): poll for the tour dialog's actual
@@ -1498,7 +1499,7 @@ try {
       // Deliberately never fulfill/abort/continue — a genuinely hung request.
     });
     await hangPage.goto(BASE, { waitUntil: 'networkidle' });
-    const hangExitTour = hangPage.getByRole('button', { name: /exit tour/i });
+    const hangExitTour = hangPage.getByRole('button', { name: /close tour/i });
     if (await hangExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
       await hangExitTour.click();
       await hangPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
@@ -1563,7 +1564,7 @@ try {
   section('24', 'long-label 320px reflow', async () => {
     const overflowPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
-    const oExitTour = overflowPage.getByRole('button', { name: /exit tour/i });
+    const oExitTour = overflowPage.getByRole('button', { name: /close tour/i });
     if (await oExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await oExitTour.click();
     await overflowPage.waitForTimeout(300);
 
@@ -1607,7 +1608,7 @@ try {
     const p320 = trackPage(await narrow320.newPage());
     await p320.goto(BASE, { waitUntil: 'networkidle' });
     await p320.waitForTimeout(1000);
-    const p320ExitTour = p320.getByRole('button', { name: /exit tour/i });
+    const p320ExitTour = p320.getByRole('button', { name: /close tour/i });
     if (await p320ExitTour.isVisible({ timeout: 2000 }).catch(() => false)) await p320ExitTour.click();
     await p320.waitForTimeout(300);
 
@@ -1675,7 +1676,7 @@ try {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     });
     await clampPage.goto(BASE, { waitUntil: 'networkidle' });
-    const clampExitTour = clampPage.getByRole('button', { name: /exit tour/i });
+    const clampExitTour = clampPage.getByRole('button', { name: /close tour/i });
     if (await clampExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await clampExitTour.click();
     await clampPage.waitForTimeout(300);
 
@@ -2326,7 +2327,7 @@ try {
     // the tour dialog itself decides. Escape is the fallback dismissTour() uses,
     // and a tour that survives both is recorded as a failed precondition rather
     // than silently left on top of the checks below.
-    const exitTourShort = shortPage.locator('[aria-label="Exit tour"]');
+    const exitTourShort = shortPage.locator('[aria-label="Close tour"]');
     try { await exitTourShort.click({ timeout: 20000 }); } catch { /* decided by the dialog below */ }
     let shortTourGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
       null, { timeout: 5000 }).then(() => true).catch(() => false);
@@ -2530,7 +2531,7 @@ try {
       await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
 
       await tabB.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTourB = tabB.getByRole('button', { name: /exit tour/i });
+      const exitTourB = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
       await tabB.waitForTimeout(500);
       const rowB = tabB.getByRole('button', { name: deleteGameName, exact: true });
@@ -2566,7 +2567,7 @@ try {
       await tabA.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
 
       await tabB.reload({ waitUntil: 'networkidle' });
-      const exitTourB2 = tabB.getByRole('button', { name: /exit tour/i });
+      const exitTourB2 = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB2.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB2.click();
       await tabB.waitForTimeout(500);
       const rowBEdit = tabB.getByRole('button', { name: editGameName, exact: true });
@@ -2792,7 +2793,7 @@ try {
   //      exactly as the red's probe6b did.
   section('41', 'print stylesheet', async () => {
     const printPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
-    const exitTour = printPage.getByRole('button', { name: /exit tour/i });
+    const exitTour = printPage.getByRole('button', { name: /close tour/i });
     await printPage.goto(BASE, { waitUntil: 'networkidle' });
     if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
     await printPage.waitForTimeout(500);
@@ -2843,7 +2844,7 @@ try {
       const pg = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
       await pg.addInitScript((t) => { try { localStorage.setItem('nash_sim_theme', t); } catch {} }, theme);
       await pg.goto(BASE, { waitUntil: 'networkidle' });
-      const exit = pg.getByRole('button', { name: /exit tour/i });
+      const exit = pg.getByRole('button', { name: /close tour/i });
       if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) { await exit.click(); await exit.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); }
       // STRUCT-APP-19/002: put the simulation progress panel on the page — the ONE
       // component that picks its dark classes in JavaScript, and therefore the one
@@ -3014,7 +3015,7 @@ try {
     // relying on gotoHome(), matching section 35's pattern.
     const commaPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await commaPage.goto(BASE, { waitUntil: 'networkidle' });
-    try { await commaPage.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    await closeTour(commaPage); /* decided below */
     let tourGone = await commaPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
       null, { timeout: 5000 }).then(() => true).catch(() => false);
     if (!tourGone) {
@@ -3302,7 +3303,7 @@ try {
   section('44', 'comma in the step-size box rejected, value restored', async () => {
     const stepPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await stepPage.goto(BASE, { waitUntil: 'networkidle' });
-    try { await stepPage.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    await closeTour(stepPage); /* decided below */
     let tourGone = await stepPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
       null, { timeout: 5000 }).then(() => true).catch(() => false);
     if (!tourGone) {
@@ -3406,7 +3407,7 @@ try {
       const gameCalls = [];
       dp.on('request', (r) => { if (r.url().includes('/api/games')) gameCalls.push(`${r.method()} ${new URL(r.url()).pathname}`); });
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      await closeTour(dp); /* decided below */
       let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
       if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
       record('precondition: the guided tour is dismissed', tourGone);
@@ -3433,7 +3434,7 @@ try {
 
       // ── List survives a reload (the fetch on load is the second half of the finding) ──
       await dp.reload({ waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(dp); /* may not reopen */
       record('FIX: after a reload the local owner\'s game is listed again (no account, no token)',
         await dp.getByRole('button', { name, exact: true }).waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
 
@@ -3514,7 +3515,7 @@ try {
     await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
     const tabB = trackPage(await twoTab.newPage());
     await tabB.goto(BASE, { waitUntil: 'networkidle' });
-    const exitTourB = tabB.getByRole('button', { name: /exit tour/i });
+    const exitTourB = tabB.getByRole('button', { name: /close tour/i });
     if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
     const rowB = tabB.getByRole('button', { name: gameName, exact: true });
     await rowB.waitFor({ state: 'visible', timeout: 12000 });
@@ -3569,7 +3570,7 @@ try {
 
     // 003: Delete while offline must SAY something.
     await tabA.reload({ waitUntil: 'networkidle' });
-    const exitTourA = tabA.getByRole('button', { name: /exit tour/i });
+    const exitTourA = tabA.getByRole('button', { name: /close tour/i });
     if (await exitTourA.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourA.click();
     await tabA.getByRole('button', { name: gameName, exact: true }).waitFor({ state: 'visible', timeout: 12000 });
     const messages = [];
@@ -3596,7 +3597,7 @@ try {
   section('47', 'a legend toggle survives the next simulation redraw', async () => {
     const lp = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await lp.goto(BASE, { waitUntil: 'networkidle' });
-    try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    await closeTour(lp); /* decided below */
     const tourGone = await lp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false);
     record('precondition: the guided tour is dismissed', tourGone);
     const matrix = lp.locator('input[inputmode="decimal"][class*="text-center"]');
@@ -3683,7 +3684,7 @@ try {
       const adoptCalls = [];
       dp.on('request', (r) => { if (r.url().includes('/api/games/adopt-local')) adoptCalls.push(r.method()); });
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      await closeTour(dp); /* decided below */
       let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
       if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false); }
       record('precondition: the guided tour is dismissed', tourGone);
@@ -3769,7 +3770,7 @@ try {
     try {
       const p = await ctx.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
       await plot.waitFor({ state: 'visible', timeout: 15000 });
       await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene, null, { timeout: 20000 }).catch(() => {});
@@ -3819,7 +3820,7 @@ try {
     try {
       const p = await ctx.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
       await plot.waitFor({ state: 'visible', timeout: 15000 });
       await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?._scene, null, { timeout: 20000 }).catch(() => {});
@@ -3871,7 +3872,7 @@ try {
         body: JSON.stringify({ name: n, description: 'to be deleted twice at once', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) })).status, [name, token]);
       record('precondition: a saved game exists', saved === 200, `status ${saved}`);
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       const row = p.locator('div.group', { has: p.getByRole('button', { name, exact: true }) });
       await row.waitFor({ state: 'visible', timeout: 10000 });
       const del = row.getByTitle('Delete this saved game');
@@ -3916,7 +3917,7 @@ try {
       await p.evaluate(async ([n, t]) => fetch('/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
         body: JSON.stringify({ name: n, description: 'focus return check', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) }), [name, token]);
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       const row = p.locator('div.group', { has: p.getByRole('button', { name, exact: true }) });
       await row.waitFor({ state: 'visible', timeout: 10000 });
       const editBtn = row.getByTitle(/^Edit /);
@@ -3957,7 +3958,7 @@ try {
     try {
       const p = await ctx.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       const uniq = `foc2${Date.now()}`;
       const reg = await fetch(BASE + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: uniq, email: `${uniq}@example.com`, password: 'TestPass123' }) });
       record('precondition: an account exists', reg.ok, `status ${reg.status}`);
@@ -3977,7 +3978,7 @@ try {
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
       for (const n of ['Del-A', 'Del-B']) await fetch(BASE + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: `${n}-${uniq}`, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       const rowA = p.locator('div.group', { has: p.getByRole('button', { name: `Del-A-${uniq}`, exact: true }) });
       await rowA.waitFor({ state: 'visible', timeout: 10000 });
       const delA = rowA.getByTitle('Delete this saved game');
@@ -3995,7 +3996,7 @@ try {
       // Delete button → focus falls to the page under the drawer.
       for (const n of ['Del-C', 'Del-D']) await fetch(BASE + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: `${n}-${uniq}`, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       await p.getByRole('button', { name: /open workspace menu/i }).first().click();
       // The saved games live under the drawer's Library tab.
       await p.getByRole('button', { name: /library/i }).first().click();
@@ -4046,7 +4047,7 @@ try {
     try {
       const p = await tiny.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       await p.keyboard.press('Escape').catch(() => {});
       const hdr = await p.evaluate(() => { const h = document.querySelector('header'); return h ? { position: getComputedStyle(h).position, height: Math.round(h.getBoundingClientRect().height) } : null; });
       record('precondition: at 320x200 the header is taller than the viewport', !!hdr && hdr.height >= 200, JSON.stringify(hdr));
@@ -4057,7 +4058,7 @@ try {
       record('FIX: after scrolling, the point at the centre of the viewport is NOT inside the header (the page is reachable)', hit.tag !== null && !hit.inHeader, JSON.stringify(hit));
       const q = await normal.newPage();
       await q.goto(BASE, { waitUntil: 'networkidle' });
-      try { await q.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(q); /* may not show */
       const pos = await q.evaluate(() => getComputedStyle(document.querySelector('header')).position);
       record('control: at 1280x900 the header stays sticky', pos === 'sticky', pos);
     } finally { await tiny.close().catch(() => {}); await normal.close().catch(() => {}); }
@@ -4284,7 +4285,7 @@ try {
     const p = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     try {
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
       const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
       await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -4539,7 +4540,7 @@ try {
     {
       const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
 
       const cases = [
         // Feedback's own `autoFocus` textarea fires a real `focusin` during
@@ -4621,7 +4622,7 @@ try {
         body: JSON.stringify({ name: gameName, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }),
       });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
 
       const label = surface === 'save' ? 'Save custom game' : 'Edit saved game';
       const dialogSel = `[role="dialog"][aria-label="${label}"]`;
@@ -4737,7 +4738,7 @@ try {
         body: JSON.stringify({ name: gameName, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }),
       });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
 
       const menuBtn = p.getByRole('button', { name: /open workspace menu/i }).first();
       await menuBtn.click();
@@ -4900,7 +4901,7 @@ try {
       record('precondition: the desktop local-owner server is up', up);
       const dp = await deskCtx.newPage();
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* may not appear */ }
+      await closeTour(dp); /* may not appear */
       await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
 
       const nameA = `LG-A-${Date.now().toString(36)}`;
@@ -5135,7 +5136,7 @@ try {
 
       const dp = await deskCtx.newPage();
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(dp); /* may not show */
       await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
       await dp.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
       await dp.getByPlaceholder(/example\.com or username/i).fill(email);
@@ -5247,7 +5248,7 @@ try {
         // of the row a moment later — the click landed on the tour overlay,
         // not the button, and the dialog silently never opened.
         const dismissTour = async () => {
-          try { await wp.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+          await closeTour(wp); /* may not show */
           let gone = await wp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
           if (!gone) { await wp.keyboard.press('Escape'); gone = await wp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false); }
           return gone;
@@ -5395,7 +5396,7 @@ try {
       const scrollCtx = await browser.newContext({ viewport: { width: 900, height: 300 } });
       const lp = trackPage(await scrollCtx.newPage());
       await lp.goto(BASE, { waitUntil: 'networkidle' });
-      try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(lp); /* may not show */
       const stepBtn = lp.getByRole('button', { name: /^step$/i });
       for (let i = 0; i < 5; i++) await stepBtn.click({ force: true }).catch(() => {});
       await lp.locator('button[title*="Expand"]').first().click();
@@ -5472,7 +5473,7 @@ try {
     });
     try {
       await page.goto(BASE, { waitUntil: 'networkidle' });
-      try { await page.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(page); /* may not show */
       await page.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
       const matrix = page.locator('input[inputmode="decimal"][class*="text-center"]');
       await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -5693,7 +5694,7 @@ try {
     const p = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
     try {
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
       const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
       await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6143,7 +6144,7 @@ try {
         const p17 = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce' });
         try {
           await p17.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p17.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p17); /* may not show */
           await p17.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m17 = p17.locator('input[inputmode="decimal"][class*="text-center"]');
           await m17.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6320,7 +6321,7 @@ try {
         const p17mobile = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce', hasTouch: true, isMobile: true });
         try {
           await p17mobile.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p17mobile.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p17mobile); /* may not show */
           await p17mobile.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m17m = p17mobile.locator('input[inputmode="decimal"][class*="text-center"]');
           await m17m.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6564,7 +6565,7 @@ try {
         const p16 = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
         try {
           await p16.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p16.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p16); /* may not show */
           await p16.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m16 = p16.locator('input[inputmode="decimal"][class*="text-center"]');
           await m16.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6742,7 +6743,7 @@ try {
         const p17b = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
         try {
           await p17b.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p17b.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p17b); /* may not show */
           await p17b.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m17b = p17b.locator('input[inputmode="decimal"][class*="text-center"]');
           await m17b.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6997,7 +6998,7 @@ try {
   section('74', 'a press on UI that merely overlaps the plot keeps the run going; a drag out of a dialog keeps it open', async () => {
     const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
-    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+    await closeTour(p); /* may not show */
     const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
     const vals = [-12, 12, 8, -8, 2, -2, 0, 0]; // Penalty Kick: cycles, never converges on its own
     for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
@@ -7106,7 +7107,7 @@ try {
         inDialog: !!a.closest(dsel), title: a.getAttribute('title'), aria: a.getAttribute('aria-label') } : null;
     }, [lsel, dsel]);
 
-    const dismissTour = async (p) => { try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ } };
+    const dismissTour = async (p) => { await closeTour(p); /* may not show */ };
     const openLibrary = async (p) => {
       await p.getByRole('button', { name: /open workspace menu/i }).first().click();
       await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 8000 });
@@ -7524,7 +7525,7 @@ try {
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      await closeTour(dp); /* decided below */
       let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
       if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
       record('precondition: the guided tour is dismissed', tourGone);
@@ -7856,10 +7857,10 @@ try {
   // section measured 251s before (see the commit note) and had to shrink.
   const injectAuth = async (p, token) => {
     await p.goto(BASE, { waitUntil: 'networkidle' });
-    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+    await closeTour(p); /* may not show */
     await p.evaluate((t) => localStorage.setItem('nash_sim_token_local', t), token);
     await p.reload({ waitUntil: 'networkidle' });
-    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+    await closeTour(p); /* may not show */
   };
   section('80', 'Regenerate -> Keep at the highlight cap names the dropped actor noun', async () => {
     const desc = `The ${CAP_WORDS.join(', ')} crew members meet at the dock.`;
@@ -8117,7 +8118,7 @@ try {
       // nothing about the surface's own backdrop-click semantics, the two
       // arms' outcomes must match exactly — the surface underneath, not
       // only the blocked target itself (COMMON v5).
-      const exitTour = p.locator(`${TOUR_SEL} button[aria-label="Exit tour"]`);
+      const exitTour = p.locator(`${TOUR_SEL} button[aria-label="Close tour"]`);
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction((sel) => !document.querySelector(sel), TOUR_SEL, { timeout: 5000 }).catch(() => {});
@@ -8166,7 +8167,7 @@ try {
         openSurface: async (pg) => { await pg.locator('button', { hasText: /Get Desktop App/i }).first().click(); },
         surfaceOpenSelector: '[role="dialog"][aria-label="Get the desktop app"]',
         closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction(() => !document.querySelector('[aria-label="Get the desktop app"]'), null, { timeout: 8000 }).catch(() => {}); },
-        tourButtonSelector: `${TOUR_SEL} button[aria-label="Exit tour"]`,
+        tourButtonSelector: `${TOUR_SEL} button[aria-label="Close tour"]`,
       },
     ];
 
@@ -8351,7 +8352,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
@@ -8404,7 +8405,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
@@ -8466,7 +8467,7 @@ try {
     try {
       const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
@@ -8594,7 +8595,7 @@ try {
   //      step counter from the tour dialog's textContent, the board from the
   //      eight payoff inputs (re-rendered from the payoff model). Fails on the
   //      unfixed tree: ArrowLeft in a focused payoff box moved the tour 3→2 and
-  //      the typed 73 became 3; Enter on a focused Exit tour closed the tour AND
+  //      the typed 73 became 3; Enter on a focused close button closed the tour AND
   //      loaded the next step's game.
   section('87', 'tour keys belong to the focused control', async () => {
     const p = await newTrackedPage({ viewport: { width: 1440, height: 900 } });
@@ -8644,11 +8645,11 @@ try {
     await next.focus(); const s2 = await settled(); await p.keyboard.press('ArrowRight');
     record('control: ArrowRight on a focused Next still advances one step (buttons pass arrows through)', (await waitStep(s2 + 1)) && (await settled()) === s2 + 1, `${s2}→${await stepOf()}`);
     const b0 = await boardOf();
-    await p.getByRole('button', { name: /exit tour/i }).first().focus(); await p.keyboard.press('Enter');
+    await p.getByRole('button', { name: /close tour/i }).first().focus(); await p.keyboard.press('Enter');
     await tour.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {});
     // CodeRabbit CLI (#179): a deferred game load could start after a single sample; watch the board over a window.
     const boardKept = await boardStable(b0);
-    record('FIX 002: Enter on a focused Exit tour closes the tour and leaves the board alone',
+    record('FIX 002: Enter on a focused close button closes the tour and leaves the board alone',
       !(await tour.isVisible().catch(() => false)) && boardKept, `open=${await tour.isVisible().catch(() => false)} boardChanged=${(await boardOf()) !== b0}`);
     await p.close();
   });

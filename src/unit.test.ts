@@ -3625,9 +3625,17 @@ function testWalkthroughInputContracts() {
       && /scrollIntoView\(\{ behavior, block: 'center' \}\)/.test(source)
       && /scrollBy\(\{ top: delta, behavior \}\)/.test(source),
     'H4 both tour-scroll paths must share the reduced-motion policy rather than hard-code smooth behavior');
-    assert(/const exitTop = headerOffset\(\) \+ GAP;/.test(source)
-      && /aria-label="Exit tour"[\s\S]{0,160}?style=\{\{ top: exitTop, right: GAP \}\}/.test(source),
-    'H2 Exit pill must yield vertically to the measured header bottom, not rely on a viewport top offset');
+    // STRUCT-APP-19/003 (Daniel, 2026-09-08): the tour had THREE controls doing
+    // the same thing — Skip, the card's X, and a viewport-anchored "Exit tour"
+    // pill. Only the X remains. H2's old contract (the pill must yield to the
+    // measured header bottom) is retired with the pill it described; an absence
+    // on its own would be vacuous, so the presence half is asserted too.
+    assert(!/aria-label="Exit tour"/.test(source) && !/>\s*Skip\s*</.test(source),
+      'STRUCT-APP-19/003: the tour must have exactly ONE exit — no "Exit tour" pill, no Skip button');
+    assert(/aria-label=\{probe \? undefined : 'Close tour'\}/.test(source),
+      "STRUCT-APP-19/003: the card's X is that one exit, and the measuring probe must NOT duplicate its accessible name — a bare [aria-label=\"Close tour\"] would match two elements and every e2e call site would die of a strict-mode violation");
+    assert(source.indexOf("aria-label={probe ? undefined : 'Close tour'}") > source.indexOf("{last ? 'Explore on your own'"),
+      'STRUCT-APP-19/003: the close button must render AFTER Back/Next so the tab order is content -> Back/Next -> close');
     const scrollStart = source.indexOf('Bring the target into view when the step changes.');
     const scrollEnd = source.indexOf('if (cardRef.current) setCardH(cardRef.current.offsetHeight);');
     const scrollEffect = scrollStart >= 0 && scrollEnd > scrollStart ? source.slice(scrollStart, scrollEnd) : '';
@@ -3676,8 +3684,13 @@ function testWalkthroughInputContracts() {
     'H1 fixture: allowing a queued release frame to survive cleanup must fail the lifecycle contract');
   assert(contractFails(source.replace("scrollIntoView({ behavior, block: 'center' })", "scrollIntoView({ behavior: 'smooth', block: 'center' })")),
     'H4 fixture: restoring an unconditional smooth scroll must fail the named source contract');
-  assert(contractFails(source.replace('style={{ top: exitTop, right: GAP }}', 'style={{ top: GAP, right: GAP }}')),
-    'H2 fixture: returning the pill to a viewport-top offset must fail the named source contract');
+  // STRUCT-APP-19/003: H2's fixture mutated the pill's `top` offset; with the
+  // pill removed that mutation changes nothing and the fixture would "pass" by
+  // being inapplicable. Its replacement mutates what the new contract asserts.
+  assert(contractFails(source.replace("aria-label={probe ? undefined : 'Close tour'}", 'aria-label="Close tour"')),
+    'STRUCT-APP-19/003 fixture: giving the measuring probe the same accessible name as the real close button (two matches for one selector) must fail the named source contract');
+  assert(contractFails(`${source}\n<button aria-label="Exit tour" />`),
+    'STRUCT-APP-19/003 fixture: bringing the Exit-tour pill back must fail the named source contract');
   assert(contractFails(source.replace('window.innerHeight - sheetH - GAP - top', 'window.innerHeight - sheetH - GAP * 2 - top')),
     'H5 fixture: budgeting a second gap inside the measured strip must fail the named source contract');
   assert(contractFails(source.replace('tourRectAfterCentering(paddedRect, window.innerHeight)', 'paddedRect')),
@@ -3727,7 +3740,7 @@ function testWalkthroughInputContracts() {
     'STRUCT-APP-19/001 fixture: a NEW call site with no measured height must be caught by the invariant, not just by the two named contracts');
   assert(contractFails(source.replace('    if (allowed) return;\n', '')),
     'OPUS-173/C4 fixture: dropping `if (allowed) return;` (every tour control dead) must fail the named source contract');
-  assert(contractFails(source.replace('pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;', 'pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint || (e.target as HTMLElement).closest(\'[aria-label="Exit tour"]\') !== null;')),
+  assert(contractFails(source.replace('pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;', 'pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint || (e.target as HTMLElement).closest(\'[aria-label="Close tour"]\') !== null;')),
     'OPUS-173/C4 fixture: accepting a blocked-origin click on the Exit pill (RED-APP-17/002) must fail the named source contract');
   assert(contractFails(source.replace('    if (resumedAtSamePoint) resumedPointerOriginRef.current = null;\n', '')),
     'OPUS-173/C4 fixture: dropping the resumed-origin clear must fail the named source contract');
