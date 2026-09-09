@@ -23,6 +23,33 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 
+// PR #188 CI exposed a WebKit-only race in §83's own oracle: the step counter
+// was visible while the tour's smooth scroll / measured-card placement was
+// still moving, so the test compared a transient pre-open box with the settled
+// hidden box and failed twice even though visibility:hidden, inert, click
+// blocking, and surface semantics all passed. Keep the exact geometry oracle,
+// but require its baseline to come from the bounded stability helper first.
+const section83Start = smoke.indexOf("section('83'");
+const section84Start = smoke.indexOf("section('84'", section83Start);
+const section83 = section83Start >= 0 && section84Start > section83Start
+  ? smoke.slice(section83Start, section84Start)
+  : '';
+check('§83 defines a bounded settled-geometry helper for its WebKit baseline',
+  /const stableTourControlRect = \(btn\)[\s\S]*document\.fonts\.status === 'loaded'[\s\S]*stableFrames >= 30[\s\S]*performance\.now\(\) >= deadline/.test(section83));
+const hasSettledBaselineBeforeOpen = (source: string): boolean => {
+  const stableBaseline = source.indexOf('const bbBefore = await stableTourControlRect(btn);');
+  const surfaceOpen = source.indexOf('await openSurface(p);');
+  return stableBaseline >= 0 && surfaceOpen >= 0 && stableBaseline < surfaceOpen;
+};
+check('§83 captures the settled tour-control baseline before opening each surface',
+  hasSettledBaselineBeforeOpen(section83));
+const unstabilizedMutant = section83.replace(
+  'const bbBefore = await stableTourControlRect(btn);',
+  'const bbBefore = await btn.boundingBox();',
+);
+check('mutation: restoring the transient boundingBox baseline fails the §83 stability contract',
+  !hasSettledBaselineBeforeOpen(unstabilizedMutant));
+
 // ── Invariant 1: one launch site, and it lives inside the helper ───────────
 const launchSites = [...smoke.matchAll(/webkit\.launch\(\)/g)];
 check('smoke.mjs calls webkit.launch() from exactly one place', launchSites.length === 1,

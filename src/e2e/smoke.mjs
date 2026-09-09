@@ -8025,6 +8025,41 @@ try {
     // (line ~1241) to be certain a synchronous click handler's re-render has
     // actually committed before the next read (CodeRabbit CLI).
     const settleFrames = (p) => p.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // WebKit can still be carrying out the tour's initial smooth scroll and
+    // measured-card placement after the step counter is visible. Capturing a
+    // box in that transient state made the geometry-preservation assertion
+    // compare two different, individually-valid placements (CI observed
+    // y=506 -> 334.8125 twice). Wait on the condition we actually need: fonts
+    // are ready and the control plus scroll offset have stayed unchanged for
+    // a sustained run of animation frames. This does not weaken the later
+    // exact before/after comparison; it makes its BEFORE value a real settled
+    // baseline instead of a race against the tour's own positioning effects.
+    const stableTourControlRect = (btn) => btn.evaluate((el) => {
+      return new Promise((resolve) => {
+        let previous = null;
+        let stableFrames = 0;
+        const deadline = performance.now() + 8000;
+        const tick = () => {
+          const r = el.getBoundingClientRect();
+          const next = [r.x, r.y, r.width, r.height, window.scrollX, window.scrollY];
+          const fontsReady = !document.fonts || document.fonts.status === 'loaded';
+          const unchanged = fontsReady && previous
+            && next.every((value, index) => Math.abs(value - previous[index]) < 0.01);
+          stableFrames = unchanged ? stableFrames + 1 : 0;
+          previous = next;
+          if (stableFrames >= 30) {
+            resolve({ x: r.x, y: r.y, width: r.width, height: r.height });
+            return;
+          }
+          if (performance.now() >= deadline) {
+            resolve(null);
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+    });
 
     // One scenario runner shared by the drawer and the download dialog,
     // so both get every assertion instead of two hand-kept copies.
@@ -8047,8 +8082,8 @@ try {
       // box for a hidden+inert element (real, observed Playwright/browser
       // behavior, but not a documented guarantee to rely on) (CodeRabbit CLI).
       const btn = p.locator(tourButtonSelector).first();
-      const bbBefore = await btn.boundingBox();
-      record(`[${label}] precondition: the tour control has a bounding box before any surface opens (harness sanity)`, !!bbBefore, JSON.stringify(bbBefore));
+      const bbBefore = await stableTourControlRect(btn);
+      record(`[${label}] precondition: the tour control has a settled bounding box before any surface opens (harness sanity)`, !!bbBefore, JSON.stringify(bbBefore));
       if (!bbBefore) return;
       const cx = bbBefore.x + bbBefore.width / 2, cy = bbBefore.y + bbBefore.height / 2;
 
