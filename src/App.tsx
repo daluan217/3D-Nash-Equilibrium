@@ -2693,8 +2693,11 @@ export default function App() {
           const stateOf = (t: string, side: 'a' | 'b') => paints[side].get(colorTermKey(t));
           // Only the sides the app itself just adopted: a chip the USER placed
           // that paints nothing is their own edit, and the chip already says so.
+          // A chip neutralised by the OTHER player's option label is dropped from
+          // `merged` by mergeDescriptionTerms, so `stateOf` is undefined — it
+          // paints nothing either way and must not be silent (CodeRabbit, #184).
           const inert = (terms: readonly string[], side: 'a' | 'b') =>
-            terms.filter((t) => stateOf(t, side)?.state === 'absent');
+            terms.filter((t) => (stateOf(t, side)?.state ?? 'absent') === 'absent');
           const shadowedOn = (terms: readonly string[], side: 'a' | 'b'): ShadowedChip[] =>
             terms.flatMap((t) => {
               const st = stateOf(t, side);

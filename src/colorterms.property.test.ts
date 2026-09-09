@@ -627,8 +627,13 @@ if (failures > 0) {
   // 6000 characters and STRUCT-REGEN-19/010 added enough to the branch that the
   // collision wording fell outside it — a guard that stops seeing what it checks.
   const at409 = app.indexOf("res.status === 409");
-  const branch = app.slice(at409, app.indexOf("} else {", at409 + 200));
-  check('the 409 window is bounded by the branch, and is not empty', at409 !== -1 && branch.length > 500, String(branch.length));
+  // A missing end marker must not widen the window to the whole file (indexOf -1
+  // as a slice end reads as length-1), so the end is required and bounded.
+  const end409 = app.indexOf("} else {", at409 + 200);
+  const branch = at409 !== -1 && end409 !== -1 ? app.slice(at409, end409) : '';
+  check('the 409 window is bounded by the branch, and is not empty', at409 !== -1 && end409 !== -1 && branch.length > 500 && branch.length < 12000, String(branch.length));
+  check('the 409 branch treats a chip with NO paint state (neutralised by the other player\'s option label) as inert, so the sentence still names it',
+    /\(stateOf\(t, side\)\?\.state \?\? 'absent'\) === 'absent'/.test(branch));
   check('App.tsx 409 branch names the colliding phrase via crossPlayerUserTerms on every 409 (first and retry)',
     /crossPlayerUserTerms\(/.test(branch) && /Not saved: \$\{collisionNote\}/.test(branch) && /highlighted for both players/.test(branch));
 }
@@ -994,7 +999,9 @@ if (failures > 0) {
   // the nouns ride inside it as `terms`, so the contract is "both story
   // actions in useSuggestedScenario carry regenKeptColorTerms(sc.actorA…)".
   const suggestedStart = appSrc10.indexOf('const useSuggestedScenario');
-  const suggestedSrc = suggestedStart === -1 ? '' : appSrc10.slice(suggestedStart, appSrc10.indexOf('\n  };', suggestedStart));
+  const suggestedEnd = suggestedStart === -1 ? -1 : appSrc10.indexOf('\n  };', suggestedStart);
+  const suggestedSrc = suggestedStart !== -1 && suggestedEnd !== -1 ? appSrc10.slice(suggestedStart, suggestedEnd) : '';
+  check('the useSuggestedScenario window is bounded by its own closing brace', suggestedEnd !== -1 && suggestedSrc.length > 500 && suggestedSrc.length < 20000, String(suggestedSrc.length));
   const storyActionsWithNouns = (suggestedSrc.match(/type: 'story',[\s\S]{0,900}?terms: regenKeptColorTerms\(\s*sc\.actorA \?\? \[\], sc\.actorB \?\? \[\]/g) ?? []).length;
   check("App.tsx: useSuggestedScenario carries the suggestion's actor nouns into BOTH dialogs as chips",
     suggestedStart !== -1

@@ -859,7 +859,7 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     // is gone). Same assertion, against the value the JSX is now allowed to read.
     ok(!!m && /regenView\.note/.test(m[1]),
       `${label} dialog's status-region ELEMENT (not just the surrounding block) must render regenView.note`);
-    ok(!/\{regen\.(note|status|preview|error)\b/.test(block),
+    ok(!/\bregen\.(note|status|preview|error)\b/.test(block),
       `${label} dialog must read the regen outcome through regenView (session-scoped), never the raw regen state`);
   }
 

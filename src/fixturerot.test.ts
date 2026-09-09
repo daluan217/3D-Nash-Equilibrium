@@ -84,6 +84,14 @@ function receiverOf(src: string, at: number): string | null {
       i--;
       while (i > 0) {
         const c = src[i];
+        // A plant is a SOURCE LINE, so a stray '(' or ')' inside its string is
+        // ordinary: skip string literals whole while walking left (CodeRabbit).
+        if ((c === '"' || c === "'") && src[i - 1] !== '\\') {
+          i--;
+          while (i > 0 && !(src[i] === c && src[i - 1] !== '\\')) i--;
+          i--;
+          continue;
+        }
         if (c === ')') depth++;
         else if (c === '(') { depth--; if (depth === 0) break; }
         i--;
@@ -141,7 +149,15 @@ check('there are test files to scan (an empty scan would pass vacuously)', testF
 let planted = 0;
 const stale: string[] = [];
 for (const f of testFiles) {
-  const src = readFileSync(f, 'utf8');
+  // An unstaged local deletion leaves the path in `git ls-files`; report it as
+  // a named failure instead of aborting before the count floors (CodeRabbit).
+  let src: string;
+  try {
+    src = readFileSync(f, 'utf8');
+  } catch {
+    check(`tracked guard is readable: ${f}`, false);
+    continue;
+  }
   for (const lit of plantsIn(src, fileBackedVars(src))) {
     planted++;
     if (!haystack.includes(lit)) stale.push(`${f}: ${JSON.stringify(lit.slice(0, 90))}`);
@@ -178,6 +194,14 @@ check('every mutant plant still occurs in the sources it mutates', stale.length 
   const dq = 'const app = readFileSync("x");\nconst y = app.replace("she said \\"go now\\" and left the room", "z");';
   check('fixture: a double-quoted plant containing escaped quotes decodes to the source text',
     plantsIn(dq, ['app'])[0] === 'she said "go now" and left the room', JSON.stringify(plantsIn(dq, ['app'])));
+  // A plant is a SOURCE LINE, so a stray '(' or ')' inside it is ordinary and
+  // must not break the receiver walk for the NEXT link of the chain.
+  const stray = `const app = readFileSync('x');\nconst y = app.replace("${real}", "a").replace("const n = someCall(x, y);  padding to clear the length floor", "b");`;
+  check('fixture: a chained plant whose earlier text carries a stray paren is still extracted',
+    plantsIn(stray, ['app']).length === 2, JSON.stringify(plantsIn(stray, ['app'])));
+  const strayClose = `const app = readFileSync('x');\nconst y = app.replace("a lone ) closes nothing here, twenty-five chars", "a").replace("${real}", "b");`;
+  check('fixture: a stray CLOSING paren inside an earlier plant does not swallow the chain either',
+    plantsIn(strayClose, ['app']).length === 2, JSON.stringify(plantsIn(strayClose, ['app'])));
   const sq = `const app = readFileSync('x');\nconst y = app.replace('she said "go now" and left the room', 'z');`;
   check('fixture: a single-quoted plant containing bare quotes decodes to the same text',
     plantsIn(sq, ['app'])[0] === 'she said "go now" and left the room', JSON.stringify(plantsIn(sq, ['app'])));
