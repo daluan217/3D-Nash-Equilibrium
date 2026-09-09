@@ -546,6 +546,60 @@ export function fmtProb(v: number): string {
 }
 
 /**
+ * The same probability in FIXED-WIDTH register — the readout boxes and the
+ * simulation log, where a mono column is supposed to line up.
+ *
+ * `fmtProb` is the PROSE register: it prints 0.4 as "0.4", which is right in a
+ * sentence and wrong in a three-decimal column. That register mismatch is why
+ * three renderings of the same quantity had drifted apart:
+ * `simState.cx.toFixed(3)` in the readout (App.tsx) and
+ * `s.cx.toFixed(3)` in the "Step n" log line asserted a PURE strategy for a
+ * probability that is merely close to one. STRUCT-MATH-19/001 reproduced it in
+ * real output: typing 0.0004 into the x₀ field (its own `min`/`max` accept it,
+ * and `commitStartCoordinate` clamps to [0,1] without quantising to the 3-dp
+ * grid the way `commitPayoffInput` does) left the readout reading "0.000" and
+ * the log opening "Start (0.000, 0.217)", while the panel/prose/report said
+ * "less than 0.001" for the same number.
+ *
+ * Contract, identical to `fmtProb`'s and to `fmtPayoff`'s: an EXACT 0 or 1 is
+ * printed as a number; anything that merely ROUNDS to one says so in words.
+ * The only difference is padding, so `fmtProbFixed(v)` and `fmtProb(v)` can
+ * never disagree about WHICH values are sub-resolution — `src/numberdoors.test.ts`
+ * asserts that agreement over the whole reachable range rather than arguing it.
+ */
+export function fmtProbFixed(v: number): string {
+  if (!Number.isFinite(v)) return '—';
+  // -0 takes this branch too (`-0 === 0`), and `(-0).toFixed(3)` is "0.000",
+  // so a signed zero can never reach the screen from here.
+  if (v === 0 || v === 1) return v.toFixed(3);
+  const s = r3(v);
+  if (s === 0) return 'less than 0.001';
+  if (s === 1) return 'more than 0.999';
+  return s.toFixed(3);
+}
+
+/**
+ * A SEARCH CORRIDOR over the probability axis, printed as `[lo,hi]`.
+ *
+ * The four corridor log lines each built their own bracket out of
+ * `r3(v).toFixed(3)`, which is the same door `fmtProbFixed` closes — and
+ * unlike the Step line's `domStr`, three of them had no guard keeping a
+ * sub-resolution endpoint off the screen. Measured over 293,778 corridor lines
+ * on the pre-fix tree, none of them printed a value this changes
+ * (STRUCT-MATH-19 _gen/probe_corridor_lines), so this is the invariant being
+ * made structural, not a behaviour change.
+ *
+ * A corridor that has genuinely narrowed to a point (`domXLo = domXHi =
+ * stratX`, the landing step) prints `[v,v]` and SHOULD: unlike
+ * `fmtPayoffPair`, the two endpoints here are not two sides of a strict
+ * relation, so widening them would invent a distinction the search does not
+ * have.
+ */
+export function fmtProbInterval(lo: number, hi: number): string {
+  return `[${fmtProbFixed(lo)},${fmtProbFixed(hi)}]`;
+}
+
+/**
  * A PAYOFF for display, never claiming a value it does not have.
  *
  * fmtProb has protected probabilities from the sub-resolution lie since round
@@ -589,6 +643,19 @@ export function fmtPayoff(v: number): string {
  * quantity is nothing when it is not, and an exact zero becomes
  * indistinguishable from 0.0004.
  */
+/**
+ * The plain-text twin of `payoffTexRhs` for a label on a picture: relation
+ * included, prose register (trimmed zeros, so an integer preset stays "= 2").
+ * "A = less than 0.001" is a sentence fragment stuck onto an equals sign; the
+ * relation belongs in the operator: "A < 0.001" (Opus review of #181).
+ */
+export function payoffProseRhs(v: number): string {
+  if (!Number.isFinite(v)) return '= —';
+  if (v === 0) return '= 0';
+  if (r3(v) === 0) return v > 0 ? '< 0.001' : '> -0.001';
+  return `= ${fmtPayoffProse(v)}`;
+}
+
 export function payoffTexRhs(v: number): string {
   if (!Number.isFinite(v)) return '= \\text{--}';
   if (v === 0) return '= 0';
@@ -625,8 +692,19 @@ export function payoffTexRhs(v: number): string {
  * resolution.
  */
 export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
-  if (!Number.isFinite(p) || !Number.isFinite(q) || p === q) {
+  if (!Number.isFinite(p) || !Number.isFinite(q)) {
     return { p: r3(p).toFixed(3), q: r3(q).toFixed(3) };
+  }
+  if (p === q) {
+    // Equal values still owe the false-zero rule: 0.0001 twice must not read
+    // "0.000" twice. Unreachable from equilibriumPanel (it takes the
+    // indifference branch when |p-q| < 5e-4) but exported, so it holds here too
+    // (Opus review of #181, 2026-09-08).
+    for (let dp = 3; dp <= 8; dp++) {
+      const s = collapseNegZeroDisplay(p.toFixed(dp));
+      if (!isFalseZeroAt(s, p)) return { p: s, q: s };
+    }
+    return { p: p.toExponential(2), q: q.toExponential(2) };
   }
   // Widen only as far as it takes to tell them apart; 3dp stays the common case.
   for (let dp = 3; dp <= 8; dp++) {
@@ -637,9 +715,49 @@ export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
     // differs at dp=3) would print "-0.000". Collapse that sign artifact the
     // same way the `p === q` branch already does.
     const sp = collapseNegZeroDisplay(p.toFixed(dp)), sq = collapseNegZeroDisplay(q.toFixed(dp));
-    if (sp !== sq) return { p: sp, q: sq };
+    if (sp !== sq && !isFalseZeroAt(sp, p) && !isFalseZeroAt(sq, q)) return { p: sp, q: sq };
   }
   return { p: p.toExponential(2), q: q.toExponential(2) };
+}
+
+/**
+ * STRUCT-MATH-19/002 — "this string is all zeros and the value it stands for
+ * is not."
+ *
+ * Telling two values apart is not the same as stating either one honestly, and
+ * `fmtPayoffPair` used to stop the moment the two strings differed. When one
+ * side is sub-resolution and the other is ordinary, 3 dp already separates
+ * them, so no widening happened and the small side was printed as an exact
+ * zero: MEASURED on the shipping condition (54,981 equilibrium panels rendered
+ * from runs driven to convergence — `_gen/probe_panel_reachable.ts`), 8 real
+ * panels read
+ *
+ *   E[Row 1] = 0.000 < E[Row 2] = 0.009        (E[Row 1] is 0.00012)
+ *   E[Row 1] = 0.000 < E[Row 2] = 0.005        (E[Row 1] is -0.000264)
+ *
+ * while the panel's OWN headline, three lines above, printed "< 0.001" /
+ * "> -0.001" for the same kind of quantity through `payoffTexRhs`. The sign
+ * was erased as well. Widening one more digit states both sides truthfully
+ * AND keeps them distinct, which the operator-swap alternative did not: giving
+ * the small side "< 0.001" collided with an ordinary 0.001362 rendered as
+ * "0.001" and tripped `equilibriumpanel.test.ts`'s "a strict line must never
+ * print the same digits twice".
+ *
+ * THE BAND. A magnitude below 5e-9 cannot be shown as a nonzero digit at the
+ * widest precision this function offers (dp = 8), so calling it a false zero
+ * would only push the pair into the exponential fallback — "1.00e-16 vs
+ * 6.00e-1" on a panel — for a quantity that IS zero: nothing that started as a
+ * real 0.001-resolution matrix entry lands there, only float dust from
+ * cancelling arithmetic. The bound is therefore derived from dp's own limit,
+ * not chosen: it is exactly the smallest magnitude `toFixed(8)` can render.
+ */
+function isFalseZeroAt(s: string, v: number): boolean {
+  // No `-?` in the pattern, and that is not an oversight: the only call site
+  // passes strings that `collapseNegZeroDisplay` has already sign-stripped, so
+  // an all-zero string can never arrive with a leading "-". Written with the
+  // alternation first, it was a branch whose deletion changed no result — the
+  // exact shape this file's own `fmtPayoff` note warns about — so it is gone.
+  return /^0(\.0+)?$/.test(s) && v !== 0 && Math.abs(v) >= 5e-9;
 }
 
 // NOTE (adversarial round 1, 2026-08-29): the mixed NE is reported at 3-dp
@@ -1011,7 +1129,13 @@ export function formatConvergenceLogLine(
 ): string {
   const payoffTail = `E[A]=${fmtPayoff(eA)}  E[B]=${fmtPayoff(eB)}`;
   if (!convergedIsNE) {
-    return `━━ Settled at x=${fmtProb(x)}, y=${fmtProb(y)} — NOT an equilibrium (a player still gains ${regretMax.toFixed(3)} by switching)  ${payoffTail}`;
+    // `fmtPayoff`, not a bare `.toFixed(3)`: the gain is a PAYOFF, and this
+    // sentence denies the profile is an equilibrium — printing "gains 0.000"
+    // in it would contradict the clause it sits inside. Same padded register
+    // as before (`fmtPayoff` returns `r3(v).toFixed(3)` for every value with a
+    // significant digit), so the 318 "NOT an equilibrium" lines a 5,000-game
+    // sweep produced are unchanged (STRUCT-MATH-19 _gen/probe_regret_zero).
+    return `━━ Settled at x=${fmtProb(x)}, y=${fmtProb(y)} — NOT an equilibrium (a player still gains ${fmtPayoff(regretMax)} by switching)  ${payoffTail}`;
   }
   const continuumDesc = continuumSettledDescription(g, x, y);
   if (continuumDesc) {
@@ -1553,6 +1677,7 @@ export function doStep(
       // opponent's live regret. As the signal → 0 the steps shrink, so the domain
       // closes and its midpoint's strategy line flattens. The converged coordinate
       // is read off the collapsed domain — found by the dynamics, not precomputed.
+      // not-a-rendering: a dedupe KEY for visitedPositions, never shown.
       const rkey = r3(nx).toFixed(3) + ',' + r3(ny).toFixed(3);
       if (s.visitedPositions.includes(rkey)) {
         // A revisited best-response corner means the dynamics cycle — proof there
@@ -1626,7 +1751,7 @@ export function doStep(
             addLog('✓ y-coordinate discovered: ' + fmtProb(_ry ? _ry.y : s.stratY));
           }
         }
-        addLog(`↺ Cycle ${s.cycleCount} → A∈[${r3(s.domXLo).toFixed(3)},${r3(s.domXHi).toFixed(3)}] B∈[${r3(s.domYLo).toFixed(3)},${r3(s.domYHi).toFixed(3)}] (regretλ=${r3(lambda)})`);
+        addLog(`↺ Cycle ${s.cycleCount} → A∈${fmtProbInterval(s.domXLo, s.domXHi)} B∈${fmtProbInterval(s.domYLo, s.domYHi)} (regretλ=${r3(lambda)})`);
         onCycleDetected();
       } else {
         s.visitedPositions.push(rkey);
@@ -1796,6 +1921,7 @@ export function doStep(
       }
 
       // Ghost cycle detection: checks coordinates (calcX, calcY)
+      // not-a-rendering: a dedupe KEY for ghostVisitedPositions, never shown.
       const ghostKey = s.calcX!.toFixed(3) + ',' + s.calcY!.toFixed(3);
       if (s.ghostVisitedPositions.includes(ghostKey)) {
         s.cycleCount++;
@@ -1815,7 +1941,7 @@ export function doStep(
         }
 
         const searchMover = s.foundAxis === 'x' ? 'B' : 'A';
-        addLog(`↺ Ghost cycle ${s.cycleCount} (${searchMover}) → corridor [${r3(s.domainLo).toFixed(3)},${r3(s.domainHi).toFixed(3)}]${s.ghostBisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
+        addLog(`↺ Ghost cycle ${s.cycleCount} (${searchMover}) → corridor ${fmtProbInterval(s.domainLo, s.domainHi)}${s.ghostBisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
         onCycleDetected();
       } else {
         s.ghostVisitedPositions.push(ghostKey);
@@ -1839,14 +1965,20 @@ export function doStep(
   pushToSegs(s, s.displayX, s.displayY, eA, eB, mover);
 
   const domStr = (s.domainLo > 0.0005 || s.domainHi < 0.9995)
-    ? ' [' + r3(s.domainLo).toFixed(3) + ',' + r3(s.domainHi).toFixed(3) + ']' : '';
+    ? ' ' + fmtProbInterval(s.domainLo, s.domainHi) : '';
   // fmtPayoff, not `.toFixed(3)` on the already-r3-rounded eA/eB above: those
   // exist for pushToSegs' plot z-coordinate (r3 there is a harmless display
   // decision), but `.toFixed(3)` on a value that already collapsed to a
   // literal 0 can never recover "this rounds to zero but isn't" — see
   // RED-MATH-6/001. Recompute fresh from the exact s.cx/s.cy, same contract
   // computeAllNE's callers (equilibriumPanel.ts's neValues) already use.
-  addLog(`Step ${s.stepCount} (${mover})${domStr}: x=${s.cx.toFixed(3)}, y=${s.cy.toFixed(3)}  E[A]=${fmtPayoff(EA(s.cx, s.cy, g))}  E[B]=${fmtPayoff(EB(s.cx, s.cy, g))}`);
+  // fmtProbFixed, not `.toFixed(3)`: `s.cx` is assigned from the r3-rounded
+  // `displayX` today, so this line was honest BY ACCIDENT — measured over
+  // 342,964 Step lines from sub-resolution start points, 0 differ
+  // (STRUCT-MATH-19 _gen/probe_stepline_subres). Routing it through the shared
+  // formatter is what keeps it honest if that assignment ever changes, and is
+  // the same contract the E[A]/E[B] halves of this very line already use.
+  addLog(`Step ${s.stepCount} (${mover})${domStr}: x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}  E[A]=${fmtPayoff(EA(s.cx, s.cy, g))}  E[B]=${fmtPayoff(EB(s.cx, s.cy, g))}`);
 
   // Check convergence conditions
   if (pureNEs.length > 0) {
@@ -1931,12 +2063,13 @@ export function doStep(
   // shared-corridor cycle detection here.
   const inPhase2Now = (s.discoveredMixedX !== null) !== (s.discoveredMixedY !== null);
   if (pureNEs.length === 0 && !inPhase2Now && stepMode !== 'regret') {
+    // not-a-rendering: a dedupe KEY for cycle detection, never shown.
     const posKey = s.cx.toFixed(3) + ',' + s.cy.toFixed(3);
     if (s.visitedPositions.includes(posKey)) {
       s.cycleCount++;
       s.visitedPositions = [];
       applyBisectCycleStep(s, g, defaultShrinkStep, mover);
-      addLog(`↺ Cycle ${s.cycleCount} → domain [${r3(s.domainLo).toFixed(3)},${r3(s.domainHi).toFixed(3)}]${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
       onCycleDetected();
       return;
     }
@@ -1945,6 +2078,7 @@ export function doStep(
 
   // ── Pure NE cycle detection ────────────────────────────────────────────────
   if (pureNEs.length > 0) {
+    // not-a-rendering: a dedupe KEY for cycle detection, never shown.
     const posKey = s.cx.toFixed(3) + ',' + s.cy.toFixed(3);
     if (s.visitedPositions.includes(posKey)) {
       s.cycleCount++;
@@ -1954,7 +2088,7 @@ export function doStep(
       s.exactY = s.discoveredMixedY !== null ? s.discoveredMixedY : Math.max(s.domainLo, Math.min(s.domainHi, s.exactY));
       s.cx = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
       s.cy = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
-      addLog(`↺ Cycle ${s.cycleCount} → domain [${r3(s.domainLo).toFixed(3)},${r3(s.domainHi).toFixed(3)}]${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
       onCycleDetected();
       return;
     }

@@ -22,11 +22,12 @@ import dotenv from "dotenv";
 // first src/ import. esbuild (production) and vite (client) both resolve these.
 import { computeAllNE, hasEquilibriumContinuum } from "./src/utils/gameEngine";
 import { tieProse, tieProseFull } from "./src/utils/tieProse";
-import { validateReport, validateScenario, validateProseClaims, validateProseDirections, scenarioIsClaimFree } from "./src/utils/nashValidator";
+import { validateReport, validateScenario, validateProseClaims, validateProseDirections } from "./src/utils/nashValidator";
 import { generateReport, generateScenario, hasCredentials, scenarioIsUsable, DEFAULT_MODEL, LOCAL_SYSTEM_PROMPT, type Scenario } from "./src/utils/report";
 import type { ReasoningEffort } from "./src/utils/providers";
 import { stripUnsafeText, clampGraphemeSafe } from "./src/utils/textSafety";
 import { cleanScenarioActorNouns } from "./src/utils/scenarioActorNouns";
+import { screenScenario, type ScreenOptions } from "./src/utils/scenarioScreen";
 import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from "./src/utils/fetchTimeout";
 
 // Production reasoning effort for the explainer. UNSET (provider default)
@@ -287,14 +288,28 @@ function scenarioOutputWithinDisplayLimits(sc: SuggestedScenario): boolean {
     && within(sc.description, 800);
 }
 
-// Actor declarations are a regeneration-preview affordance, not part of the
-// long-standing report/new-scenario response shape.  Bank rows may carry them
-// as source metadata, so remove them at the shared screened-result boundary
-// whenever the caller did not explicitly opt in.
-function withoutActorNouns(sc: SuggestedScenario): SuggestedScenario {
-  const { actorA: _actorA, actorB: _actorB, ...nounFree } = sc;
-  return nounFree;
-}
+/**
+ * THE RESPONSE CARRIES THE NOUNS THE STORY WAS WRITTEN WITH, on every route.
+ *
+ * There used to be a `withoutActorNouns()` helper here, stripping `actorA`
+ * and `actorB` from every scenario except a regenerate's (dd15cf9 "Harden
+ * scenario response boundaries", 2026-09-04, on the grounds that actor
+ * declarations were "a regeneration-preview affordance, not part of the
+ * long-standing report response shape"). That was tidying, not a product rule,
+ * and it is what made STRUCT-CLOUD-19/001 real: a bank row's actor noun is
+ * frequently the ONLY term its description shares with either player, so
+ * stripping it left 84 of 2,442 shipped rows (3.44%) rendering one or both
+ * players' half of the story with no highlight anywhere -- RED-DESKTOP-9/001's
+ * exact shape, on the one path that finding's fix never covered. With the nouns
+ * kept the same measurement is 0/2,442.
+ *
+ * A field is dropped from a response when serving it would be WRONG, not when
+ * it is merely unused: `SuggestedScenario` has always declared the two fields
+ * optional, every other field is unchanged, and a client that ignores them
+ * behaves exactly as before. What has to hold instead is the invariant in
+ * `src/utils/scenarioRenderability.ts` -- every surface that renders this
+ * description paints it with the same terms -- which the screen below enforces.
+ */
 
 /**
  * BLUE-CANCEL-12: an AbortSignal that fires when the CLIENT is gone before a
@@ -337,16 +352,28 @@ async function inventScreenedScenario(
   const MIN_DRAW_MS = 2_000;
   // Honoured on EVERY path now. That is the point of the flag.
   const gateOn = process.env.NASH_SCENARIO_CHECKS !== '0';
-  const storyOk = (sc: SuggestedScenario): boolean => {
-    // Actor declarations are a regenerate-only response contract. The full
-    // report schema deliberately remains unchanged, so its existing gate must
-    // not start demanding fields it can never receive.
-    if (!validateScenario(sc, payoffs, { actorNouns }).ok) return false;
-    const claimFree = scenarioIsClaimFree(sc);
-    if (!claimFree.ok) { onDrop?.(claimFree.reason); return false; }
-    if (avoid && isSameStory(sc, avoid)) { onDrop?.('regen-same-story'); return false; }
-    return process.env.NASH_DIRECTION_CHECKS !== '1'
-      || validateProseDirections(sc.description ?? '', sc, payoffs).length === 0;
+  // `actorNouns` (the parameter) still decides which SCHEMA the draw asks for —
+  // only the regenerate path sends `SCENARIO_SCHEMA_WITH_ACTORS`. It no longer
+  // decides anything about screening: the screens are the same on both routes,
+  // and the noun safety pass runs unconditionally (see `SCENARIO_SCREENS`).
+  const screenOptions: ScreenOptions = {
+    avoid,
+    directionChecks: process.env.NASH_DIRECTION_CHECKS === '1',
+  };
+  /**
+   * EVERY REJECTION REPORTS A REASON, and there is exactly one place that
+   * decides. Two of the screens used to drop a draw silently (`validateScenario`
+   * and the direction checks), so the production log `[report] rung-3 scenario
+   * dropped: …` reported three of five reasons and the reroll budget could not
+   * be tuned against the two it never saw. The screens themselves now live in
+   * `SCENARIO_SCREENS` (`src/utils/scenarioScreen.ts`), where each one is
+   * enumerable, unit-testable and required to carry its fixtures and its reach
+   * number — none of which a closure in this file could be.
+   */
+  const screen = (sc: SuggestedScenario): boolean => {
+    const verdict = screenScenario(sc, payoffs, screenOptions);
+    if (!verdict.ok) onDrop?.(verdict.reason ?? verdict.screen ?? 'validation-failed');
+    return verdict.ok;
   };
 
   // BLUE-CANCEL-12: one AbortController per ladder invocation, combined with
@@ -395,8 +422,8 @@ async function inventScreenedScenario(
         gateRerollsUsed++;
         continue;
       }
-      if (!gateOn || storyOk(draw.scenario)) {
-        return { scenario: actorNouns ? draw.scenario : withoutActorNouns(draw.scenario) };
+      if (!gateOn || screen(draw.scenario)) {
+        return { scenario: draw.scenario };
       }
       // GATE-DROPPED: a real draw came back and the screen rejected it. This
       // is the only case the bounded reroll setting governs.
@@ -427,11 +454,28 @@ async function inventScreenedScenario(
     // desktop, pass nothing so `bankScenario`/`bankScenarioAvoiding` keep
     // using the per-launch singleton, exactly as before this fix.
     const hostedFallbackSeen = process.env.IS_ELECTRON === "true" ? undefined : new Set<string>();
-    const fallback = avoid
-      ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
-      : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
-    if (fallback && scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || storyOk(fallback))) {
-      return { scenario: actorNouns ? fallback : withoutActorNouns(fallback), scenarioSource: 'bank-fallback' };
+    /**
+     * THE FALLBACK GETS MORE THAN ONE ROW. It used to draw exactly one and give
+     * up if the gates rejected it, which was survivable only because no gate
+     * could reject a bank row: the artifact is re-screened against every gate
+     * in `src/scenariobank.test.ts`. STRUCT-CLOUD-19/001 adds a screen the
+     * artifact is NOT re-screened against and cannot be — the `/api/report`
+     * path strips the actor nouns a row's colourability may depend on, so 84 of
+     * 2,442 rows (3.44%) are unattributable on THAT path while being perfectly
+     * good on the regenerate one. A single attempt would have turned that 3.44%
+     * into 3.44% of fallbacks returning no story at all. Each call draws a
+     * DIFFERENT row (the `seen` set above), so the attempts are independent;
+     * the cap keeps a pathological artifact from spinning the request.
+     */
+    const FALLBACK_ATTEMPTS = 4;
+    for (let attempt = 0; attempt < FALLBACK_ATTEMPTS; attempt++) {
+      const fallback = avoid
+        ? bankScenarioAvoiding(payoffs, fallbackDomain, avoid.name, hostedFallbackSeen)
+        : bankScenario(payoffs, fallbackDomain, hostedFallbackSeen);
+      if (!fallback) break;
+      if (scenarioOutputWithinDisplayLimits(fallback) && (!gateOn || screen(fallback))) {
+        return { scenario: fallback, scenarioSource: 'bank-fallback' };
+      }
     }
     return { scenario: null, failure: exhaustionFailure };
   } finally {
@@ -526,7 +570,7 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNou
   const domain = pickScenarioDomainExcluding(avoid?.domain);
   if (process.env.IS_ELECTRON === 'true' && bankAvailable()) {
     const sc = avoid ? bankScenarioAvoiding(payoffs, domain, avoid.name) : bankScenario(payoffs, domain);
-    if (sc) return { scenario: actorNouns ? sc : withoutActorNouns(sc) };
+    if (sc) return { scenario: sc };
   }
   // Actor-mode requests always go through generateScenario, even when
   // REPORT_LOCAL_PROMPT is set: the local explainer was trained only on the
@@ -560,7 +604,6 @@ import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair, cleanUserColorTerms } from "./src/utils/colorTerms";
 import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
 import { bankAvailable, bankScenario, bankDomainFor, bankScenarioAvoiding } from "./src/utils/bankSource";
-import { isSameStory } from "./src/utils/scenarioRegen";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -2518,8 +2561,8 @@ function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength:
  */
 function saveDB(db: DB): boolean {
   if (localFileSaveBlocked()) return false;
-  inMemoryDb = db;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+    inMemoryDb = db;
     scheduleGcsSave(); // #85's coalescing pump; the GCS write is async, so the caller's boolean cannot reflect it
     return true;
   } else {
@@ -2529,6 +2572,18 @@ function saveDB(db: DB): boolean {
         fs.mkdirSync(dbDir, { recursive: true });
       }
       writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+      // STRUCT-DESKTOP-19: commit in memory only once the bytes are on disk.
+      // This assignment used to happen BEFORE the write, so a failed write on
+      // desktop (a read-only ELECTRON_USER_DATA_PATH) left the process serving
+      // a state no restart could reproduce: `/api/auth/delete-confirm` wiped
+      // the account in memory, answered 200 "successfully deleted from our
+      // records", and the account and every game came back on the next launch.
+      // `saveDBAwaited` (the game routes) already had this order; every caller
+      // that hands over a CANDIDATE database now gets the same guarantee, and
+      // a caller that mutates the shared object in place is unaffected either
+      // way. The hosted/GCS branch keeps committing first: the coalescing pump
+      // reads `inMemoryDb`, and its write is deliberately not per-request.
+      inMemoryDb = db;
       return true;
     } catch (err) {
       console.error("Error writing db.json:", err);
@@ -4111,11 +4166,26 @@ async function startServer() {
       });
     }
 
-    user.passwordHash = hashPassword(newPassword);
-    user.recoveryCode = undefined;
-    user.recoveryCodeExpires = undefined;
-    user.tokenVersion = (user.tokenVersion ?? 0) + 1; // invalidate existing sessions
-    saveDB(db);
+    // STRUCT-DESKTOP-19: "you can now log in with your new password" is a
+    // claim about what is on DISK, and it used to be made whatever happened to
+    // the write. On an unwritable data directory the new hash lived only in
+    // this process: the next launch refused the new password and accepted the
+    // OLD one — the password the user reset precisely because they wanted it
+    // dead — and the sessions this bumps `tokenVersion` to kill came back with
+    // it. `_gen/d19b4-resetpassword-false-success.mjs` walks exactly that.
+    // Same shape as delete-confirm: a CANDIDATE, committed only once written.
+    const updated: User = {
+      ...user,
+      passwordHash: hashPassword(newPassword),
+      recoveryCode: undefined,
+      recoveryCodeExpires: undefined,
+      tokenVersion: (user.tokenVersion ?? 0) + 1, // invalidate existing sessions
+    };
+    if (!saveDB({ users: db.users.map(u => (u.id === user.id ? updated : u)), games: db.games })) {
+      return res.status(500).json({
+        error: "Your password could not be changed — nothing was written, so your OLD password still works. Please try again."
+      });
+    }
 
     res.json({ success: true, message: "Password reset successfully! You can now log in with your new password." });
   });
@@ -4195,13 +4265,29 @@ async function startServer() {
 
     const userEmail = user.email.toLowerCase().trim();
 
-    // Clean up corresponding games saved by team space
-    db.games = db.games.filter(g => g.userId !== user.id);
+    // STRUCT-DESKTOP-19: this is the one route that promises destruction, so
+    // it is the one route that must never report a write it did not make.
+    // It used to mutate the shared in-memory database in place, call `saveDB`
+    // without reading its boolean, and answer "successfully deleted from our
+    // records" unconditionally. With an unwritable data directory that 200 was
+    // a lie in both directions at once: nothing was removed from disk, and the
+    // running process behaved as though the account were gone (its own
+    // `/api/auth/me` answered 401) until the next launch brought the account
+    // and every saved game back. `_gen/d19b3-deleteconfirm-false-destruction.mjs`
+    // walks that end to end. The post-deletion database is now a CANDIDATE
+    // that `saveDB` commits only after the bytes land, and a failure says so.
+    const remaining: DB = {
+      // Both wipes come from the same snapshot: the games saved by this user,
+      // and every user record sharing this id or this email address.
+      users: db.users.filter(u => u.email.toLowerCase().trim() !== userEmail && u.id !== user.id),
+      games: db.games.filter(g => g.userId !== user.id),
+    };
 
-    // Completely wipe out any user records matching this email or user ID
-    db.users = db.users.filter(u => u.email.toLowerCase().trim() !== userEmail && u.id !== user.id);
-
-    saveDB(db);
+    if (!saveDB(remaining)) {
+      return res.status(500).json({
+        error: "Your account could not be deleted right now — nothing was removed and your saved games are untouched. Please try again."
+      });
+    }
 
     res.json({
       success: true,

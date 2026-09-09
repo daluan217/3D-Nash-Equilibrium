@@ -49,10 +49,16 @@ let sequence = null; // per-call mode, consumed by index, clamped past the end
 let lastProviderRequest = null;
 // H1 changes the regenerate call site's schema only. The report schema remains
 // frozen; actor-bearing fixtures below exercise the new, strict regen shape.
+// STRUCT-CLOUD-19/001: these stub descriptions now STATE their option
+// labels. `SCENARIO_SCREENS`'s `attributable` entry refuses a story the
+// reader cannot find a player in (RED-DESKTOP-9/001's defect, on the cloud
+// path that finding never covered); this prose named neither pair, so every
+// draw of it was dropped and these suites measured the reroll ladder instead
+// of what they are about. Only the descriptions changed.
 const STORY = {
   name: 'Mock Harbor Run', row1: 'Load Now', row2: 'Load Later',
   col1: 'Send Tug', col2: 'Hold Tug',
-  description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week.',
+  description: 'A harbor operator and a tug company settle on how to time a single berth handover during a busy week. The harbor operator chooses Load Now or Load Later, while the tug company chooses Send Tug or Hold Tug.',
 };
 const STORY_WITH_ACTORS = {
   ...STORY,
@@ -62,7 +68,7 @@ const STORY_WITH_ACTORS = {
 const STORY2 = {
   name: 'Mock Kiln Slot', row1: 'Fire Early', row2: 'Fire Late',
   col1: 'Book Glaze', col2: 'Book Bisque',
-  description: 'A potter and a kiln co-op are settling a shared firing slot for the week ahead.',
+  description: 'A potter and a kiln co-op are settling a shared firing slot for the week ahead. The potter chooses Fire Early or Fire Late, while the kiln co-op chooses Book Glaze or Book Bisque.',
 };
 // Well-formed but repeats the SAME story every draw — the avoid gate's target.
 const SAME_AS_STORY = { ...STORY, description: STORY.description + ' Scheduling stays informal between them.' };
@@ -77,7 +83,7 @@ const SAME_AS_STORY = { ...STORY, description: STORY.description + ' Scheduling 
 const ZWSP_STORY = {
   name: 'Mock Farm Plot', row1: 'Plant Early', row2: 'Plant Late',
   col1: 'Harvest Soon', col2: 'Harvest Late',
-  description: 'A farmer chooses when to plant a plot, while a rival grower down the road decides when to harvest theirs.',
+  description: 'A farmer chooses Plant Early or Plant Late for a plot, while a rival grower down the road chooses Harvest Soon or Harvest Late for their own.',
   actorA: ['A far' + '​' + 'mer'], actorB: ['a rival grower'],
 };
 
@@ -417,8 +423,13 @@ try {
   // ═══════════════════════════════════════════════════════════════════════
   // 8. DESKTOP — bank first (0 provider calls even with credentials
   //    configured), reachable with NO credentials at all, never rate-limited.
-  //    Actor nouns are retained only for regenerate; ordinary scenario-only
-  //    report draws must stay on their frozen noun-free contract.
+  //    Actor nouns reach BOTH routes: a bank row's role noun is often the only
+  //    phrase in its description that either player's colour can attach to, and
+  //    /api/report stripping it left 84 of 2442 shipped rows rendering a
+  //    player's half of the story with no highlight anywhere. This section used
+  //    to assert the opposite ("ordinary draws stay noun-free"), which is the
+  //    contract that CAUSED that (dd15cf9); see server.ts and
+  //    src/utils/scenarioRenderability.ts. STRUCT-CLOUD-19/001.
   // ═══════════════════════════════════════════════════════════════════════
   {
     calls = 0; mode = 'story';
@@ -435,7 +446,7 @@ try {
       health.json?.capabilities?.scenarioRegen === true, `capabilities=${JSON.stringify(health.json?.capabilities)}`);
     let none429 = true;
     let bankActorRows = 0;
-    let ordinaryActorLeaks = 0;
+    let ordinaryActorRows = 0;
     let regenInvalid = 0;
     let ordinaryInvalid = 0;
     for (let i = 0; i < 25; i++) {
@@ -452,8 +463,18 @@ try {
       const ordinary = await call('POST', '/api/report', { body: { payoffs: PAYOFFS, scenarioOnly: true } });
       if (ordinary.status !== 200 || !isValidScenarioShape(ordinary.json?.scenario)) {
         ordinaryInvalid++;
-      } else if (ordinary.json.scenario.actorA || ordinary.json.scenario.actorB) {
-        ordinaryActorLeaks++;
+      } else {
+        const osc = ordinary.json.scenario;
+        // Same test as the regenerate route above, on the route that used to
+        // strip them: nouns present AND stated in the description, so this
+        // cannot pass on an empty array or on a noun the highlighter would
+        // never find. Case-folded, like `termOccursIn` (the real predicate) and
+        // like the timeout section below — a row states its noun as the
+        // sentence starts it ("A small microbrewery ...") while declaring it
+        // lower case, and a case-SENSITIVE test misses those (CodeRabbit CLI).
+        const inDesc = (term) => (osc.description ?? '').toLowerCase().includes(String(term).toLowerCase());
+        if (osc.actorA?.length && osc.actorB?.length
+          && osc.actorA.every(inDesc) && osc.actorB.every(inDesc)) ordinaryActorRows++;
       }
     }
     record('desktop: 25 regenerate calls, never a 429 (hosted-only rate limit lifted under IS_ELECTRON)', none429);
@@ -463,8 +484,11 @@ try {
       `invalid/malformed=${ordinaryInvalid}/25`);
     record('desktop: bank actor nouns survive the regenerate response wire verbatim', bankActorRows > 0,
       `actor-bearing rows=${bankActorRows}/25`);
-    record('desktop: ordinary bank scenario draws stay noun-free', ordinaryActorLeaks === 0,
-      `actor-bearing ordinary draws=${ordinaryActorLeaks}/25`);
+    // 2090 of the 2442 shipped rows declare actor nouns, so 25 draws finding
+    // none would mean the route is stripping them, not that the draw was
+    // unlucky (0.144^25). Reverting the server fix fails exactly here.
+    record('desktop: ordinary bank scenario draws KEEP their actor nouns (STRUCT-CLOUD-19/001)',
+      ordinaryActorRows > 0, `actor-bearing ordinary draws=${ordinaryActorRows}/25`);
     await stop();
   }
 
@@ -495,12 +519,24 @@ try {
     const ordinaryFallback = await call('POST', '/api/report', {
       body: { payoffs: PAYOFFS, scenarioOnly: true },
     });
-    record('timeout: the ordinary report fallback remains noun-free',
+    // Whether THIS one drawn row declares nouns is the bank's business, so the
+    // assertion is the policy rather than the row: nothing is stripped, and a
+    // noun that survives is one the highlighter can actually find. Section 8's
+    // 25-draw loop is where the keep-the-nouns contract is pinned.
+    //
+    // Case-insensitively, because that is what the highlighter is: a row's noun
+    // is written into the description as the sentence starts it ("A small
+    // microbrewery ...") while the declaration is lower case, and `termOccursIn`
+    // — the real predicate — folds case. A case-SENSITIVE test here fails on
+    // correct rows, which is how this check first ran.
+    const ofsc = ordinaryFallback.json?.scenario;
+    const stated = (terms) => !terms || terms.every((term) =>
+      (ofsc.description ?? '').toLowerCase().includes(String(term).toLowerCase()));
+    record('timeout: the ordinary report fallback carries its row through unedited',
       ordinaryFallback.status === 200
         && ordinaryFallback.json?.scenarioSource === 'bank-fallback'
-        && !ordinaryFallback.json?.scenario?.actorA
-        && !ordinaryFallback.json?.scenario?.actorB,
-      `status=${ordinaryFallback.status} scenario=${JSON.stringify(ordinaryFallback.json?.scenario)}`);
+        && stated(ofsc?.actorA) && stated(ofsc?.actorB),
+      `status=${ordinaryFallback.status} scenario=${JSON.stringify(ofsc)}`);
     await stop();
   }
 

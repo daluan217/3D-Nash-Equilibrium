@@ -118,18 +118,41 @@ check('every scenario draw goes through the screened helper',
   'raw inventScenario( calls outside the screened path: '
   + rawCallLines.map(({ line, n }) => `${n}: ${line.trim().slice(0, 70)}`).join(' | '));
 
-// 3. All three screens run inside it, and each one gates the result.
-for (const [name, re] of [
-  ['the declarations gate', /validateScenario\s*\(/],
-  ['the claim-free screen', /scenarioIsClaimFree\s*\(/],
-  ['the direction checks', /validateProseDirections\s*\(/],
-] as const) {
-  check(`the screened draw runs ${name}`, re.test(helperBody), helperBody.slice(0, 160).replace(/\s+/g, ' '));
+/* 3. All the screens run inside it — but since STRUCT-CLOUD-19 they no longer
+ *    live in its BODY. They are `SCENARIO_SCREENS` in
+ *    `src/utils/scenarioScreen.ts`: one table, enumerable, callable, and
+ *    required by `src/scenarioscreen.contract.test.ts` to carry a known-positive
+ *    fixture, hand-read negatives and a measured reach for every entry. So
+ *    "does the helper screen?" is now two questions with two instruments
+ *    instead of one regex over a closure:
+ *      (a) the helper runs THAT table and consumes its verdict — a property of
+ *          this file's source, checked here;
+ *      (b) the table actually refuses — checked BEHAVIOURALLY by running it, in
+ *          the screen contract test, where each screen must reject its own
+ *          known-positive and be the FIRST screen to do so.
+ *    The synthetic fixtures further down still guard against a screen being
+ *    re-inlined at a call site, and the loop at the end of this block makes the
+ *    same demand of the helper itself. */
+check('the screened draw delegates to the one screen table',
+  /screenScenario\s*\(\s*sc\s*,\s*payoffs\s*,\s*screenOptions\s*\)/.test(helperBody),
+  'inventScreenedScenario must run src/utils/scenarioScreen.ts\'s table rather than screens of its own');
+// PRESENCE IS NOT PARTICIPATION — the verdict must gate the returned boolean.
+// Mutation: make `screen` return true unconditionally and this fails.
+check('the screened draw returns the table\'s verdict',
+  /const\s+verdict\s*=\s*screenScenario\([\s\S]{0,240}?return\s+verdict\.ok\s*;/.test(helperBody),
+  'the screen table is called but its verdict never reaches the returned boolean');
+// Two of the screens used to refuse a draw without telling anyone. Mutation:
+// delete the `onDrop?.(…)` line and this fails.
+check('every refusal reaches the drop log',
+  /if\s*\(!verdict\.ok\)\s*onDrop\?\.\(/.test(helperBody),
+  'a screen that refuses silently cannot be measured; every refusal must call onDrop');
+// A screen re-inlined here is how the four `if`s grew in the first place, and
+// an inlined one carries no fixture and no reach number.
+for (const name of ['validateScenario', 'scenarioIsClaimFree', 'validateProseDirections'] as const) {
+  check(`${name} is not re-inlined in the screened draw`,
+    !new RegExp(`${name}\\s*\\(`).test(helperBody),
+    'screens belong in SCENARIO_SCREENS, where the contract test forces their fixtures and reach');
 }
-// PRESENCE IS NOT PARTICIPATION — the same distinction the per-site checks make.
-check('the screened draw returns false on a claim-free failure',
-  /claimFree\.ok[\s\S]{0,140}return false/.test(helperBody),
-  'the claim-free call is present but its result never reaches the returned boolean');
 // 4. The opt-out is honoured HERE, which is what makes it honoured everywhere.
 check('the screened draw honours NASH_SCENARIO_CHECKS',
   /NASH_SCENARIO_CHECKS/.test(helperBody),
