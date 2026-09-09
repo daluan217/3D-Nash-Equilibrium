@@ -75,6 +75,56 @@ function fileBackedVars(src: string): string[] {
  * is the same hazard, but its text is not a literal to look up, and a pattern this
  * file could not evaluate would be a check that cannot fail.
  */
+/** A quote is escaped only by an ODD run of backslashes before it (`\\"` ends a string). */
+function escapedAt(src: string, i: number): boolean {
+  let n = 0;
+  for (let j = i - 1; j >= 0 && src[j] === '\\'; j--) n++;
+  return n % 2 === 1;
+}
+
+/**
+ * Decode a JavaScript string-literal BODY with JavaScript rules (CodeRabbit):
+ * `JSON.parse` rejects valid escapes such as `\x28` and `\'`, and a decoder that
+ * rejects a plant skips it silently. Returns null only for a malformed escape.
+ */
+function decodeJsString(body: string): string | null {
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== '\\') { out += c; continue; }
+    const e = body[++i];
+    if (e === undefined) return null;
+    switch (e) {
+      case 'n': out += '\n'; break;
+      case 't': out += '\t'; break;
+      case 'r': out += '\r'; break;
+      case 'b': out += '\b'; break;
+      case 'f': out += '\f'; break;
+      case 'v': out += '\v'; break;
+      case '0': out += '\0'; break;
+      case '\n': break; // line continuation
+      case 'x': {
+        const hex = body.slice(i + 1, i + 3);
+        if (!/^[0-9a-fA-F]{2}$/.test(hex)) return null;
+        out += String.fromCharCode(parseInt(hex, 16)); i += 2; break;
+      }
+      case 'u': {
+        if (body[i + 1] === '{') {
+          const close = body.indexOf('}', i + 2);
+          const hex = close === -1 ? '' : body.slice(i + 2, close);
+          if (!/^[0-9a-fA-F]{1,6}$/.test(hex)) return null;
+          out += String.fromCodePoint(parseInt(hex, 16)); i = close; break;
+        }
+        const hex = body.slice(i + 1, i + 5);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null;
+        out += String.fromCharCode(parseInt(hex, 16)); i += 4; break;
+      }
+      default: out += e; // \' \" \\ and any other identity escape
+    }
+  }
+  return out;
+}
+
 function receiverOf(src: string, at: number): string | null {
   let i = at;
   for (let guard = 0; guard < 20; guard++) {
@@ -86,9 +136,9 @@ function receiverOf(src: string, at: number): string | null {
         const c = src[i];
         // A plant is a SOURCE LINE, so a stray '(' or ')' inside its string is
         // ordinary: skip string literals whole while walking left (CodeRabbit).
-        if ((c === '"' || c === "'") && src[i - 1] !== '\\') {
+        if ((c === '"' || c === "'") && !escapedAt(src, i)) {
           i--;
-          while (i > 0 && !(src[i] === c && src[i - 1] !== '\\')) i--;
+          while (i > 0 && !(src[i] === c && !escapedAt(src, i))) i--;
           i--;
           continue;
         }
@@ -116,17 +166,10 @@ function plantsIn(src: string, vars: readonly string[]): string[] {
   for (let m = re.exec(src); m !== null; m = re.exec(src)) {
     const recv = receiverOf(src, m.index);
     if (recv === null || !owned.has(recv)) continue;
-    let lit: string;
-    try {
-      // Decode by the quote style the plant was written in (CodeRabbit CLI on this
-      // branch). Escaping every `"` also rewrote a double-quoted literal's own
-      // `\"`, and `JSON.parse` then THREW — so the `catch` below skipped the plant
-      // silently and a guard whose fixture quotes speech was invisible to this scan.
-      const body = m[1] === '"' ? m[2] : m[2].replace(/\\'/g, "'").replace(/"/g, '\\"');
-      lit = JSON.parse(`"${body}"`) as string;
-    } catch {
-      continue;
-    }
+    // One JavaScript-rules decoder for both quote styles (CodeRabbit): JSON.parse
+    // rejected `\x28` and `\'`, and a rejected plant was skipped silently.
+    const lit = decodeJsString(m[2]);
+    if (lit === null) continue;
     // Short plants ("  " -> " ") are ordinary string munging, not source shapes.
     if (lit.length >= 25) out.push(lit);
   }
@@ -202,6 +245,14 @@ check('every mutant plant still occurs in the sources it mutates', stale.length 
   const strayClose = `const app = readFileSync('x');\nconst y = app.replace("a lone ) closes nothing here, twenty-five chars", "a").replace("${real}", "b");`;
   check('fixture: a stray CLOSING paren inside an earlier plant does not swallow the chain either',
     plantsIn(strayClose, ['app']).length === 2, JSON.stringify(plantsIn(strayClose, ['app'])));
+  // JavaScript string rules (CodeRabbit): a literal ENDING in an escaped
+  // backslash (even run → the quote is real) and one carrying a \x escape.
+  const evenRun = `const app = readFileSync('x');\nconst y = app.replace("path ends with a backslash and is long enough \\\\", "a").replace("${real}", "b");`;
+  check('fixture: a plant ending in an escaped backslash still closes its string and the chain continues',
+    plantsIn(evenRun, ['app']).length === 2 && plantsIn(evenRun, ['app'])[0].endsWith('\\'), JSON.stringify(plantsIn(evenRun, ['app'])));
+  const hexEsc = `const app = readFileSync('x');\nconst y = app.replace("open paren via hex escape \\x28 and enough padding text", "a");`;
+  check('fixture: a plant using a \\x escape decodes with JavaScript rules instead of being skipped',
+    plantsIn(hexEsc, ['app'])[0] === 'open paren via hex escape ( and enough padding text', JSON.stringify(plantsIn(hexEsc, ['app'])));
   const sq = `const app = readFileSync('x');\nconst y = app.replace('she said "go now" and left the room', 'z');`;
   check('fixture: a single-quoted plant containing bare quotes decodes to the same text',
     plantsIn(sq, ['app'])[0] === 'she said "go now" and left the room', JSON.stringify(plantsIn(sq, ['app'])));
