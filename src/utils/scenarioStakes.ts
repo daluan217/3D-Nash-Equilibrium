@@ -184,7 +184,18 @@ const PLAYER_GAP_NOTABLE = 4;
  * `Math.random`-shaped stub that is NOT stable across calls.
  */
 const SIZE_STRONG_P = 0.6;
-const SIZE_BOUNDARIES_LOG = [0, 1, Math.log10(50)]; // swing cuts at 1, 10, 50
+/**
+ * THE BAND CUTS, ONCE. They were written out three times — here as logs, in
+ * `exactSizeBand` as a `<` ladder, and again in `scenarioBank`'s `stakesBand`,
+ * whose comment claimed the two "match exactly" and whose test was named "band
+ * cuts match stakesHint" while calling only one of them. That is a guard that
+ * cannot fail for the reason it claims: move one copy and the bank serves a
+ * story written for one register to a game the prompt describes in another,
+ * with nothing red. One array, three derivations, one agreement check
+ * (STRUCT-CLOUD-19/009).
+ */
+export const STAKES_SWING_CUTS = [1, 10, 50] as const;
+const SIZE_BOUNDARIES_LOG = STAKES_SWING_CUTS.map((c) => Math.log10(c));
 const BOUNDARY_WINDOW = 0.15;
 
 const SIZE_WORDING = [
@@ -204,8 +215,10 @@ const SIZE_NEUTRAL = 'How big a deal this is can follow the setting\'s own logic
  * `stakesBand` still matches, so nothing downstream needs to know softening
  * exists.
  */
-function exactSizeBand(swing: number): number {
-  return swing < 1 ? 0 : swing < 10 ? 1 : swing < 50 ? 2 : 3;
+export function exactSizeBand(swing: number): number {
+  let band = 0;
+  for (const cut of STAKES_SWING_CUTS) if (swing >= cut) band++;
+  return band;
 }
 
 /**

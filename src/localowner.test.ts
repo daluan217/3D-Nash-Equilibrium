@@ -21,6 +21,24 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 };
 const server = readFileSync('server.ts', 'utf8');
 
+/**
+ * Whole-line comments removed. A comment is not code: App.tsx now EXPLAINS the
+ * shapes these checks forbid (`updateAuthToken(null)`, `Authorization`, `res.status
+ * === 401`) in the doc comments that record why they moved into the client, and
+ * scanning raw text would flag the explanation of the fix. Only lines that are
+ * entirely a comment are dropped, so a `//` inside a URL literal is untouched.
+ */
+const codeOnly = (src: string): string =>
+  src.split('\n').map((l) => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l)).join('\n');
+
+/**
+ * A credential being BUILT, as opposed to the word appearing in prose. Line
+ * stripping alone is not enough: a JSX comment's continuation lines start with
+ * ordinary text, and one of App.tsx's own explanations contains the bare word.
+ * A header key is always quoted or followed by a colon; a sentence is not.
+ */
+const CREDENTIAL_IN_CODE = /['"]Authorization['"]|\bAuthorization\s*:|authHeaders/;
+
 /** Each `getAuthUser`/`resolveGameOwner` call, tagged with the route above it. */
 function resolverByRoute(src: string): Array<{ route: string; resolver: string }> {
   const out: Array<{ route: string; resolver: string }> = [];
@@ -441,33 +459,47 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   {
     const editSlice = app.slice(app.indexOf('const handleEditGameSubmit'), app.indexOf('const handleDeleteGame'));
     const saveSlice = app.slice(app.indexOf('const handleSaveGameSubmit'), app.indexOf('const handleRegenerateScenario'));
-    check('handleEditGameSubmit checks staleness (editSessionRef) immediately after the response, before any branch',
-      /const data = await res\.json\(\);[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
+    // STRUCT-DESKTOP-19: the response, the body read and the staleness verdict
+    // are the ONE client's job now (src/utils/apiClient.ts), so each handler
+    // hands it the dialog-session predicate and reads `res.stale` back. The
+    // guarantee under test is unchanged: the verdict is taken and acted on
+    // BEFORE any branch touches state.
+    check('handleEditGameSubmit hands its own dialog-session predicate (editSessionRef) to the client',
+      /isStale: \(\) => editSessionRef\.current !== editSessionAtSubmit,/.test(editSlice));
+    check('handleEditGameSubmit takes the client\'s staleness verdict immediately, before any branch',
+      /staleSession = res\.stale;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
     check('handleEditGameSubmit checks staleness in its catch block too',
       /catch \{[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
     check('handleEditGameSubmit guards setEditLoading(false) in finally with the SAME flag (not re-derived, which the success branch\'s own session bump would flip)',
       /finally \{[\s\S]{0,50}if \(!staleSession\) setEditLoading\(false\);/.test(editSlice));
-    check('handleSaveGameSubmit checks staleness (saveRequestIdRef vs clientRequestId) immediately after the response, before any branch',
-      /const data = await res\.json\(\);[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
+    check('handleSaveGameSubmit hands its own request-id predicate (saveRequestIdRef) to the client',
+      /isStale: \(\) => saveRequestIdRef\.current !== clientRequestId,/.test(saveSlice));
+    check('handleSaveGameSubmit takes the client\'s staleness verdict immediately, before any branch',
+      /staleSession = res\.stale;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
     check('handleSaveGameSubmit checks staleness in its catch block too',
-      /catch \(err\) \{[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
+      /catch \{[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
     check('handleSaveGameSubmit guards setSaveLoading(false) in finally with the SAME flag',
       /finally \{[\s\S]{0,50}if \(!staleSession\) setSaveLoading\(false\);/.test(saveSlice));
 
     // The guard must precede every setter it exists to protect — no setter
     // sneaks in between the response and the `if (staleSession) return;`.
-    const editGate = guardPrecedesSetters(editSlice, 'const data = await res.json();', 'if (staleSession) return;',
+    // The guard must precede every setter it exists to protect. The anchor is
+    // the `try {` that opens the request, not the body read (the client owns
+    // the body now): between opening the try and taking the verdict there must
+    // be NO setter at all. The pre-flight setters above the try are outside
+    // this window by construction, which is what makes the anchor stable.
+    const editGate = guardPrecedesSetters(editSlice, 'try {', 'if (staleSession) return;',
       ['setEditError', 'setEditErrorNeedsAuth', 'setEditLoading', 'setUserCustomGames']);
-    check(`handleEditGameSubmit: no setter runs between the response and its staleness guard (found: ${editGate.between})`, editGate.ok);
-    const saveGate = guardPrecedesSetters(saveSlice, 'const data = await res.json();', 'if (staleSession) return;',
+    check(`handleEditGameSubmit: no setter runs between the request and its staleness guard (found: ${editGate.between})`, editGate.ok);
+    const saveGate = guardPrecedesSetters(saveSlice, 'try {', 'if (staleSession) return;',
       ['setSaveError', 'setSaveErrorNeedsAuth', 'setSaveLoading', 'setUserCustomGames']);
-    check(`handleSaveGameSubmit: no setter runs between the response and its staleness guard (found: ${saveGate.between})`, saveGate.ok);
+    check(`handleSaveGameSubmit: no setter runs between the request and its staleness guard (found: ${saveGate.between})`, saveGate.ok);
 
     // Known-positive fixtures: a setter inserted BEFORE the guard (the exact
     // regression the anchored regexes above cannot see on their own) MUST be
     // caught by `guardPrecedesSetters`.
-    const regressedOrder = 'const data = await res.json();\nsetEditError(data.error || \'x\');\nstaleSession = editSessionRef.current !== editSessionAtSubmit;\nif (staleSession) return;';
-    const regressedGate = guardPrecedesSetters(regressedOrder, 'const data = await res.json();', 'if (staleSession) return;', ['setEditError']);
+    const regressedOrder = 'try {\nconst res = await api.request(p);\nsetEditError(res.data.error || \'x\');\nstaleSession = res.stale;\nif (staleSession) return;';
+    const regressedGate = guardPrecedesSetters(regressedOrder, 'try {', 'if (staleSession) return;', ['setEditError']);
     check('fixture sanity: guardPrecedesSetters catches a setter placed BEFORE the staleness guard', !regressedGate.ok);
   }
 
@@ -642,14 +674,23 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     violationsInText('if ((authToken && user) || localOwnerMode) {', ALLOW).length === 0);
 }
 
-// OPUS-REVIEW-DESKTOP16 N3: all FOUR client call sites for the game routes
-// (GET refetchUserGames, POST/PATCH/DELETE handlers) must route their 401
-// through the ONE shared `handleDeadSessionResponse` helper, not a separate
-// inline `res.status === 401` check each — the GET site originally had NO
-// check at all (a dead token left the list stale and the header lying until
-// the next write). Each site is sliced out of App.tsx by its own stable
-// start/end markers (the same markers the staleness-guard checks above
-// already use for the Save/Edit handlers) and scanned independently, so a
+// OPUS-REVIEW-DESKTOP16 N3, rewritten for STRUCT-DESKTOP-19's structure.
+//
+// The four game-route call sites (GET refetchUserGames, POST/PATCH/DELETE)
+// used to each remember to call `handleDeadSessionResponse`, and every round
+// found the site that had not (the GET originally had NO check at all; #163
+// found one that cleared the WRONG token; #176 found adopt-local). The rule no
+// longer lives in a helper a call site can forget: it lives in the ONE client
+// (`src/utils/apiClient.ts`), which reads the body, judges staleness and hands
+// back `stale` / `sessionDied` / `sessionCleared`. So what these checks pin is
+// no longer "did you remember to call the helper" but "does this site still
+// get its session verdict from the client, and only from the client".
+//
+// The client's own rule is executed — not text-pinned — over the full case
+// matrix in `src/apiclient.contract.test.ts`, including the delayed-401 cases
+// that used to be simulated here.
+//
+// Each site is sliced out of App.tsx by its own stable start/end markers, so a
 // regression in ONE site is named, not just "something in App.tsx broke".
 {
   const app = readFileSync('src/App.tsx', 'utf8');
@@ -660,128 +701,159 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   };
   const FOUR_SITES: Array<[string, string, string]> = [
     ['GET /api/games (refetchUserGames)', 'const refetchUserGames = useCallback',
-      '}, [authToken, apiBaseUrl, dbMode, canOwnGames]);'],
+      '}, [authToken, apiBaseUrl, dbMode, canOwnGames, api]);'],
     ['POST /api/games (handleSaveGameSubmit)', 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async'],
     ['PATCH /api/games/:id (handleEditGameSubmit)', 'const handleEditGameSubmit = async', 'const handleDeleteGame = async'],
     ['DELETE /api/games/:id (handleDeleteGame)', 'const handleDeleteGame = async', 'const handleGenerateGame = async'],
   ];
   for (const [name, startMarker, endMarker] of FOUR_SITES) {
     const slice = app.slice(idx(startMarker), idx(endMarker));
-    check(`${name} routes its 401 through handleDeadSessionResponse`,
-      /handleDeadSessionResponse\(res/.test(slice));
-    // A site that checks `res.status === 401` DIRECTLY, bypassing the
-    // helper, is exactly the pre-fix shape (three independent inline copies
-    // plus one site with no check at all) — must not reappear in any of the
-    // four slices.
+    check(`${name} sends its request through the ONE client`,
+      /await api\.request\(/.test(slice));
+    // The pre-client shapes, all four of which shipped at some point: a raw
+    // fetch (with or without a hand-built header), and an inline status check.
+    check(`${name} has no raw fetch of its own`,
+      !/\bfetch\(/.test(slice));
+    check(`${name} builds no Authorization header of its own`,
+      !CREDENTIAL_IN_CODE.test(codeOnly(slice)));
     check(`${name} has no bypassing inline \`res.status === 401\` check`,
       !/res\.status === 401/.test(slice));
-    // CodeRabbit on #163 (src/App.tsx:466): a response for a request sent
-    // under an OLD token must not clear a CURRENT, different one committed
-    // while that request was still in flight — so the helper takes the
-    // token THIS request actually used, captured BEFORE the fetch, not
-    // whatever is current by the time the response lands. Each site must
-    // (a) capture it and (b) pass EXACTLY that captured identifier as the
-    // second argument — passing `null` or re-reading the CURRENT token at
-    // call time (`authTokenRef.current`, or the outer `authToken` read
-    // AFTER a later `await`) would make the ref-comparison inside the
-    // helper trivially always-true again, silently reintroducing the exact
-    // race CodeRabbit found under a different spelling.
-    check(`${name} captures its own requestToken before the fetch`,
-      /const requestToken = authToken;/.test(slice));
-    check(`${name} passes its captured requestToken (not null, not a re-read of the current token) to the helper`,
-      /handleDeadSessionResponse\(res, requestToken\)/.test(slice));
+    // ...and it must actually READ the verdict rather than ignoring it: a site
+    // that calls the client and then acts on every response regardless is the
+    // same defect in new clothes.
+    check(`${name} acts on the client's staleness verdict`,
+      /res\.stale/.test(slice));
+  }
+  // The three sites whose whole job is the 401 must take that verdict from the
+  // client — either flag, since the client splits them: `unauthorized` (the
+  // server demanded an account, true even for a token-less desktop request) is
+  // what raises the sign-in gate and empties a library that is not this
+  // caller's, while `sessionDied` (a credential was presented and refused) is
+  // what clears and words a message about "your session". What none of them may
+  // do is decide it themselves — the `res.status === 401` pin above forbids that.
+  const deadSessionSites: Array<[string, string, string]> = [
+    ['GET /api/games (refetchUserGames)', 'const refetchUserGames = useCallback', '}, [authToken, apiBaseUrl, dbMode, canOwnGames, api]);'],
+    ['POST /api/games (handleSaveGameSubmit)', 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async'],
+    ['PATCH /api/games/:id (handleEditGameSubmit)', 'const handleEditGameSubmit = async', 'const handleDeleteGame = async'],
+  ];
+  for (const [name, startMarker, endMarker] of deadSessionSites) {
+    const slice = app.slice(idx(startMarker), idx(endMarker));
+    check(`${name} takes its 401 verdict from the client (res.unauthorized / res.sessionDied)`,
+      /res\.(unauthorized|sessionDied)\b/.test(slice));
+    // Known-positive: a site that recomputed the verdict locally, with the
+    // client's flags nowhere in sight, fails this pin.
+    check(`fixture: ${name} with a locally recomputed verdict fails that pin`,
+      !/res\.(unauthorized|sessionDied)\b/.test(slice.replace(/res\.(unauthorized|sessionDied)\b/g, 'res.status === 401')));
+  }
+  // adopt-local (RED-DESKTOP-19/001, #176) is the fifth account-scoped site and
+  // is held to the same contract — it is the one that was missed last round.
+  {
+    const slice = app.slice(idx('const adoptLocalGames = async'), idx('const refetchUserGames = useCallback'));
+    check('adopt-local sends its request through the ONE client', /await api\.request\('\/api\/games\/adopt-local'/.test(slice));
+    check('adopt-local passes the offer\'s own token explicitly (it runs before authToken has caught up)',
+      /token: requestToken/.test(slice));
+    check('adopt-local closes the offer only when the client actually cleared THAT session',
+      /if \(res\.sessionDied\) \{[\s\S]{0,200}if \(res\.sessionCleared\)/.test(slice));
+    check('adopt-local has no raw fetch and builds no header of its own',
+      !/\bfetch\(/.test(codeOnly(slice)) && !CREDENTIAL_IN_CODE.test(codeOnly(slice)));
+  }
+  // The session probe (STRUCT-DESKTOP-19/001) is the sixth, and the one that
+  // used to DELETE the credential on a 503 or an offline launch.
+  {
+    const slice = app.slice(idx('  // Fetch Session User and Games'), idx('  /**\n   * RED-APP-9/001: a 404 from PATCH/DELETE'));
+    check('/api/auth/me goes through the client', /await api\.request\('\/api\/auth\/me'\)/.test(slice));
+    check('/api/auth/me no longer treats a non-401 failure as a dead session (no updateAuthToken(null) anywhere in it)',
+      !/updateAuthToken\(/.test(codeOnly(slice)), codeOnly(slice).replace(/\s+/g, ' ').slice(0, 200));
+    check('/api/auth/me stops claiming an identity it could not confirm, whatever the failure was',
+      /setUser\(null\);\s*if \(res\.sessionDied\) return;/.test(slice));
+    check('/api/auth/me sets the user ONLY from a response it accepted AND could read',
+      /if \(res\.ok && res\.dataParsed\) \{ setUser\(res\.data\); return; \}/.test(slice));
+    check('/api/auth/me ignores a stale response', /if \(cancelled \|\| res\.stale\) return;/.test(slice));
   }
 
-  // Known-positive (the mutation OPUS-REVIEW-DESKTOP16 N3 names by example):
-  // revert the GET site to its pre-fix shape (no dead-session check at all)
-  // and confirm the FIRST check above fails BY NAME for that site only.
-  const regressedRefetch = "const refetchUserGames = useCallback(async () => {\n"
-    + "  const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
-    + "  if (!res.ok) return undefined;\n"
-    + "  const rows = await res.json();\n"
-    + "  setUserCustomGames(rows);\n"
-    + "  return rows;\n"
-    + "}, [authToken, apiBaseUrl, dbMode, canOwnGames]);";
-  check('fixture: the pre-fix GET site (no dead-session check) fails the routing check',
-    !/handleDeadSessionResponse\(res/.test(regressedRefetch));
-  // And a regression back to the OLD inline three-copies shape (still bypassing
-  // the helper) must be flagged by the second check.
-  const regressedInline = "const wasAuthFailure = res.status === 401;\nif (wasAuthFailure) updateAuthToken(null);";
-  check('fixture: the pre-fix inline `res.status === 401` shape is flagged by the bypass check',
-    /res\.status === 401/.test(regressedInline));
-
-  // CodeRabbit's own named mutations: passing `null`, or re-reading the
-  // CURRENT token instead of the captured snapshot, at the helper call site.
-  const passedNull = "const requestToken = authToken;\n"
-    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
-    + "handleDeadSessionResponse(res, null);";
-  check('fixture: passing `null` as the second argument fails the requestToken-passing check',
-    !/handleDeadSessionResponse\(res, requestToken\)/.test(passedNull));
-  const passedCurrentTokenRef = "const requestToken = authToken;\n"
-    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
-    + "handleDeadSessionResponse(res, authTokenRef.current);";
-  check('fixture: passing `authTokenRef.current` (re-reading the CURRENT token, not the captured one) fails the requestToken-passing check',
-    !/handleDeadSessionResponse\(res, requestToken\)/.test(passedCurrentTokenRef));
-  // Control: the correct shape (capture, then pass that exact identifier) passes both.
-  const correctShape = "const requestToken = authToken;\n"
-    + "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
-    + "handleDeadSessionResponse(res, requestToken);";
-  check('control: the correct capture-then-pass shape is not flagged',
-    /const requestToken = authToken;/.test(correctShape) && /handleDeadSessionResponse\(res, requestToken\)/.test(correctShape));
+  // Known-positives: each pre-fix shape, fed to the SAME predicates, must be
+  // caught. (Named by the finding that shipped it.)
+  const preFixRefetch = "const res = await fetch(getApiUrl('/api/games'), { headers: authHeaders() });\n"
+    + "if (!res.ok) return undefined;";
+  check('fixture: RED-DESKTOP-16/001\'s raw authHeaders() read fails the no-raw-fetch check', /\bfetch\(/.test(preFixRefetch));
+  check('fixture: RED-DESKTOP-16/001\'s raw authHeaders() read fails the no-own-header check', /Authorization|authHeaders/.test(preFixRefetch));
+  const preFixInline401 = "const wasAuthFailure = res.status === 401;\nif (wasAuthFailure) updateAuthToken(null);";
+  check('fixture: the pre-#163 inline 401 shape fails the no-inline-401 check', /res\.status === 401/.test(preFixInline401));
+  const preFixAuthMe = ".catch(() => { updateAuthToken(null); setUser(null); });";
+  check('fixture: STRUCT-DESKTOP-19/001\'s catch-all sign-out fails the /api/auth/me check', /updateAuthToken\(/.test(preFixAuthMe));
+  const clientCall = "const res = await api.request('/api/games');\nif (res.stale) return undefined;";
+  check('control: the current client shape passes every one of those predicates',
+    !/\bfetch\(/.test(clientCall) && !/Authorization|authHeaders/.test(clientCall)
+    && !/res\.status === 401/.test(clientCall) && /await api\.request\(/.test(clientCall) && /res\.stale/.test(clientCall));
 }
 
-// CodeRabbit on #163 (delayed-401 regression, unit-level on the helper
-// itself): a 401 with a STALE requestToken (does not match what is
-// currently committed) must NOT clear the current token; a 401 with the
-// MATCHING token must. The four call-site checks above only pin that each
-// site passes its OWN captured token through — they say nothing about
-// whether `handleDeadSessionResponse`'s own comparison is correct. Pinned
-// two ways: (1) an exact-text pin on the helper's own conditional (a
-// mutation to the comparison, e.g. dropping the ref check or comparing the
-// wrong things, fails this immediately); (2) a hand-run case matrix against
-// a reimplementation of that SAME pinned line — its realism is guaranteed
-// by (1) passing, not by itself (this file cannot import App.tsx's
-// component internals to call the real closure directly).
+// CodeRabbit on #163 (delayed-401): a 401 with a STALE requestToken must NOT
+// clear the current token; a 401 with the MATCHING token must.
+//
+// STRUCT-DESKTOP-19 moved that rule out of App.tsx's `handleDeadSessionResponse`
+// (a helper each call site had to remember to call) and into the ONE client,
+// `src/utils/apiClient.ts`, where it is applied by construction. So the rule is
+// no longer pinned as TEXT and hand-simulated here — it is EXECUTED against the
+// real client, over the full case matrix (matching token, stale token, no token
+// each way, 200, 404, 500, 503, network failure, our own timeout, and a context
+// that moves during the body read), with mutant clients as the known-positives,
+// in `src/apiclient.contract.test.ts`. What this file pins is that the rule has
+// not silently moved back into the component.
 {
   const app = readFileSync('src/App.tsx', 'utf8');
-  const fnStart = app.indexOf('const handleDeadSessionResponse = (res: Response, requestToken');
-  check('handleDeadSessionResponse is defined with the (res, requestToken) signature', fnStart >= 0);
-  const fnSrc = app.slice(fnStart, app.indexOf('};', fnStart) + 2);
-  check('handleDeadSessionResponse only clears the token when authTokenRef.current === requestToken',
-    /if \(wasAuthFailure && authTokenRef\.current === requestToken\) updateAuthToken\(null\);/.test(fnSrc));
-  check('handleDeadSessionResponse still reports wasAuthFailure from the RAW response status, regardless of the ref match',
-    /const wasAuthFailure = res\.status === 401;/.test(fnSrc));
+  const client = readFileSync('src/utils/apiClient.ts', 'utf8');
+  check('the per-call-site dead-session helper is GONE from App.tsx (its rule lives in the client)',
+    !/const handleDeadSessionResponse = /.test(app));
+  check('App.tsx builds no Authorization header of its own any more (authHeaders is gone)',
+    !/const authHeaders = /.test(codeOnly(app)) && !CREDENTIAL_IN_CODE.test(codeOnly(app)));
+  check('App.tsx creates exactly one account API client',
+    (app.match(/createAccountApi\(/g) || []).length === 1);
+  check('the client is built from refs, so it is stable and safe in a dependency list',
+    /const api = useMemo\(\(\) => createAccountApi\(\{[\s\S]{0,400}\}\), \[\]\);/.test(app));
+  check('the client reads the CURRENT token and generation through refs, never a captured closure',
+    /currentToken: \(\) => authTokenRef\.current,/.test(app) && /currentGen: \(\) => gamesContextGenRef\.current,/.test(app));
 
-  // Known-positive: the exact CodeRabbit-named regression (unconditional
-  // clear, ignoring which token the response belongs to) must fail the pin.
-  const regressedUnconditional = 'const handleDeadSessionResponse = (res, requestToken) => {\n'
-    + '  const wasAuthFailure = res.status === 401;\n'
-    + '  if (wasAuthFailure) updateAuthToken(null);\n'
-    + '  return wasAuthFailure;\n};';
-  check('fixture: an unconditional clear (the pre-fix / CodeRabbit-found shape) fails the ref-match pin',
-    !/if \(wasAuthFailure && authTokenRef\.current === requestToken\) updateAuthToken\(null\);/.test(regressedUnconditional));
+  // OPUS-REVIEW-169/A, as a structural pin on the client: the body is read
+  // BEFORE staleness is judged (the context can move on during that second
+  // await), the stale gate returns before any verdict, and the session is
+  // cleared only after that gate. A clear placed before the gate is the exact
+  // regression that swallowed the legitimate "Invalid or expired session."
+  // alert on #169's first fix.
+  const jsonIdx = client.indexOf('await res.json()');
+  const staleIdx = client.indexOf('const stale = requestGen !== deps.currentGen()');
+  const gateIdx = client.indexOf('if (stale) {');
+  const diedIdx = client.indexOf('const sessionDied = unauthorized && requestToken !== null;');
+  const clearIdx = client.indexOf('if (sessionCleared) deps.clearSession();');
+  check(`the client reads the body, THEN judges staleness, THEN decides the session (json@${jsonIdx} stale@${staleIdx} gate@${gateIdx} died@${diedIdx} clear@${clearIdx})`,
+    [jsonIdx, staleIdx, gateIdx, diedIdx, clearIdx].every((i) => i !== -1)
+    && jsonIdx < staleIdx && staleIdx < gateIdx && gateIdx < diedIdx && diedIdx < clearIdx);
+  check('the client clears ONLY when the 401\'s token is still the committed one',
+    /const sessionCleared = sessionDied && deps\.currentToken\(\) === requestToken;/.test(client));
+  check('the client treats ONLY a 401 ON A REQUEST THAT PRESENTED A CREDENTIAL as a dead session (never a 5xx, a timeout, a network failure, or an anonymous call), while any 401 is `unauthorized`',
+    /const unauthorized = res\.status === 401;/.test(client)
+    && /const sessionDied = unauthorized && requestToken !== null;/.test(client)
+    && /return \{ \.\.\.base, kind, status: 0, ok: false, data: \{\}, dataParsed: false, stale, error \};/.test(client));
 
-  // Delayed-401 case matrix, gated by the exact-text pin above.
-  type Case = { name: string; committedToken: string | null; requestToken: string | null; status: number; expectCleared: boolean; expectAuthFailure: boolean };
-  const cases: Case[] = [
-    { name: 'matching token, 401 -> clears', committedToken: 'tok-A', requestToken: 'tok-A', status: 401, expectCleared: true, expectAuthFailure: true },
-    { name: 'STALE token (delayed response after re-auth), 401 -> does NOT clear the current one', committedToken: 'tok-B', requestToken: 'tok-A', status: 401, expectCleared: false, expectAuthFailure: true },
-    { name: 'request sent with no token, committed also none, 401 -> clears (both null, matches)', committedToken: null, requestToken: null, status: 401, expectCleared: true, expectAuthFailure: true },
-    { name: 'request sent with no token but a token was since committed, 401 -> does NOT clear it', committedToken: 'tok-B', requestToken: null, status: 401, expectCleared: false, expectAuthFailure: true },
-    { name: 'matching token, 200 -> no clear, not an auth failure', committedToken: 'tok-A', requestToken: 'tok-A', status: 200, expectCleared: false, expectAuthFailure: false },
-    { name: 'stale token, 200 -> no clear, not an auth failure', committedToken: 'tok-B', requestToken: 'tok-A', status: 200, expectCleared: false, expectAuthFailure: false },
-  ];
-  for (const c of cases) {
-    let cleared = false;
-    const authTokenRefSim = { current: c.committedToken };
-    const updateAuthTokenSim = (t: string | null) => { cleared = t === null ? true : cleared; };
-    // The SAME pinned line, executed:
-    const wasAuthFailure = c.status === 401;
-    if (wasAuthFailure && authTokenRefSim.current === c.requestToken) updateAuthTokenSim(null);
-    check(`delayed-401 fixture: ${c.name}`,
-      cleared === c.expectCleared && wasAuthFailure === c.expectAuthFailure,
-      `cleared=${cleared} (want ${c.expectCleared}), wasAuthFailure=${wasAuthFailure} (want ${c.expectAuthFailure})`);
-  }
+  // Known-positives for the two pins above.
+  const clearBeforeGate = client.replace('if (sessionCleared) deps.clearSession();', '')
+    .replace('const stale = requestGen !== deps.currentGen()', 'deps.clearSession();\n      const stale = requestGen !== deps.currentGen()');
+  check('fixture: moving the clear ahead of the stale gate actually landed', clearBeforeGate !== client);
+  check('fixture: a clear placed before the stale gate fails the ordering pin',
+    !(clearBeforeGate.indexOf('deps.clearSession()') > clearBeforeGate.indexOf('if (stale) {')));
+  const unconditionalClear = client.replace(
+    'const sessionCleared = sessionDied && deps.currentToken() === requestToken;',
+    'const sessionCleared = sessionDied;');
+  check('fixture: dropping the token comparison actually landed', unconditionalClear !== client);
+  check('fixture: an unconditional clear (the pre-#163 shape) fails the stale-token pin',
+    !/const sessionCleared = sessionDied && deps\.currentToken\(\) === requestToken;/.test(unconditionalClear));
+  const anyFailureDead = client.replace('const sessionDied = unauthorized && requestToken !== null;', 'const sessionDied = !res.ok;');
+  const anonymousDead = client.replace('const sessionDied = unauthorized && requestToken !== null;', 'const sessionDied = unauthorized;');
+  check('fixture: dropping the "a credential was attached" half actually landed', anonymousDead !== client);
+  check('fixture: a 401 answering an anonymous request fails the dead-session pin',
+    !/const sessionDied = unauthorized && requestToken !== null;/.test(anonymousDead));
+  check('fixture: treating any failure as a dead session actually landed', anyFailureDead !== client);
+  check('fixture: the STRUCT-DESKTOP-19/001 shape (any failure is a dead session) fails the 401-only pin',
+    !/const sessionDied = unauthorized && requestToken !== null;/.test(anyFailureDead));
 }
 
 // RED-DESKTOP-17/002: a SECOND click of the SAME still-enabled submit
@@ -810,16 +882,17 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // protecting nothing.
   function gatePrecedesFetch(slice: string, gatePattern: RegExp): { ok: boolean; detail: string } {
     const gateIdx = slice.search(gatePattern);
-    const fetchIdx = slice.indexOf('await fetch(');
+    // STRUCT-DESKTOP-19: the request is `api.request(...)` now, not a raw fetch.
+    const fetchIdx = slice.indexOf('await api.request(');
     if (gateIdx === -1) return { ok: false, detail: 'gate not found' };
-    if (fetchIdx === -1) return { ok: false, detail: 'fetch not found' };
-    return { ok: gateIdx < fetchIdx, detail: `gate@${gateIdx} fetch@${fetchIdx}` };
+    if (fetchIdx === -1) return { ok: false, detail: 'request not found' };
+    return { ok: gateIdx < fetchIdx, detail: `gate@${gateIdx} request@${fetchIdx}` };
   }
 
   const editGate = gatePrecedesFetch(editSlice, editGatePattern);
-  check(`handleEditGameSubmit consults its needs-auth gate before the fetch (${editGate.detail})`, editGate.ok);
+  check(`handleEditGameSubmit consults its needs-auth gate before the request (${editGate.detail})`, editGate.ok);
   const saveGate = gatePrecedesFetch(saveSlice, saveGatePattern);
-  check(`handleSaveGameSubmit consults its needs-auth gate before the fetch (${saveGate.detail})`, saveGate.ok);
+  check(`handleSaveGameSubmit consults its needs-auth gate before the request (${saveGate.detail})`, saveGate.ok);
 
   // Both dialogs must route through the SAME helper name — never a
   // per-button/per-dialog duplicate of the sign-in-detour logic.
@@ -840,80 +913,59 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // "refresh the list instead" ran the handler's STALE closure (A's token),
   // whose own 401 then cleared B's list (director's regression run of the
   // red's harness). The invariant is the one Save/Edit already hold: a
-  // stale-identity response is discarded before it touches ANY state —
-  // before `res.ok`'s list edit, before the 404 refetch, before the helper.
+  // stale-identity response is discarded before it touches ANY state.
   //
-  // CodeRabbit CLI on the fix: identity is not the whole context — both
+  // CodeRabbit CLI on that fix: identity is not the whole context — both
   // database modes can be signed out (token null in each), and the mode
   // decides which server the response came from — so the gate compares a
   // request-context GENERATION bumped on every identity / mode / API-base
-  // commit, captured before the fetch.
+  // commit, captured before the request.
+  //
+  // STRUCT-DESKTOP-19: capturing that generation and comparing it after the
+  // body read is the CLIENT's job now (pinned and executed above and in
+  // src/apiclient.contract.test.ts). What this handler must still do — and
+  // what the finding was actually about — is DISCARD the verdict before it
+  // touches any state.
   const deleteSlice = app.slice(app.indexOf('const handleDeleteGame'), app.indexOf('const handleGenerateGame'));
-  const DELETE_STALE_GATE = 'if (gamesContextGenRef.current !== requestGen) return;';
+  const DELETE_STALE_GATE = 'if (res.stale) return;';
   const gateIdx = deleteSlice.indexOf(DELETE_STALE_GATE);
   const okIdx = deleteSlice.indexOf('if (res.ok)');
-  const helperIdx = deleteSlice.indexOf('handleDeadSessionResponse(res, requestToken)');
-  const fetchIdx = deleteSlice.indexOf('await fetch(');
-  check(`handleDeleteGame discards a stale-context response before ANY state change (fetch@${fetchIdx} gate@${gateIdx} res.ok@${okIdx} helper@${helperIdx})`,
-    gateIdx !== -1 && okIdx !== -1 && helperIdx !== -1 && fetchIdx !== -1
-    && fetchIdx < gateIdx && gateIdx < okIdx && gateIdx < helperIdx);
-  check('handleDeleteGame captures the request generation before the fetch (requestGen = gamesContextGenRef.current)',
-    (() => { const i = deleteSlice.indexOf('const requestGen = gamesContextGenRef.current;'); return i !== -1 && i < fetchIdx; })());
+  const notFoundIdx = deleteSlice.indexOf('res.status === 404');
+  const errAlertIdx = deleteSlice.indexOf("alert(res.data.error || 'Failed to delete game.')");
+  const requestIdx = deleteSlice.indexOf('await api.request(');
+  check(`handleDeleteGame discards a stale-context response before ANY state change (request@${requestIdx} gate@${gateIdx} res.ok@${okIdx} alert@${errAlertIdx})`,
+    [requestIdx, gateIdx, okIdx, notFoundIdx, errAlertIdx].every((i) => i !== -1)
+    && requestIdx < gateIdx && gateIdx < okIdx && gateIdx < notFoundIdx && gateIdx < errAlertIdx);
+  check('handleDeleteGame keeps no stale copy of the token or generation of its own (the client owns both)',
+    !/const requestToken = authToken;/.test(deleteSlice) && !/const requestGen = /.test(deleteSlice));
   check('the games-context generation is bumped on every identity, API-base and database-mode commit',
     /useLayoutEffect\(\(\) => \{ gamesContextGenRef\.current \+= 1; \}, \[authToken, apiBaseUrl, dbMode\]\);/.test(app));
-  // Every await is a chance for the context to move on: the body read before
-  // the server-error alert, and the catch before the network alert.
-  const jsonIdx = deleteSlice.indexOf('const data = await res.json()');
-  const errAlertIdx = deleteSlice.indexOf("alert(data.error || 'Failed to delete game.')");
-  const netAlertIdx = deleteSlice.indexOf("alert('Network error. Failed to delete game.");
-  const gateAfter = (from: number, before: number) => { const i = deleteSlice.indexOf(DELETE_STALE_GATE, from); return i !== -1 && i < before; };
-  check(`handleDeleteGame re-checks the generation after the body read, before the server-error alert (json@${jsonIdx} alert@${errAlertIdx})`,
-    jsonIdx !== -1 && errAlertIdx !== -1 && gateAfter(jsonIdx, errAlertIdx));
-  // OPUS-REVIEW-169/A: the dead-session helper clears the token on a
-  // same-account 401, and the token is a dependency of the generation — so a
-  // gate placed AFTER the helper sees a moved generation and swallows the
-  // legitimate "Invalid or expired session." alert (confirmed A/B on main vs
-  // the first fix). The helper must run after the LAST gate and with no
-  // await between it and the alert: body read → gate → helper → alert.
-  const lastGateBeforeErrAlert = deleteSlice.lastIndexOf(DELETE_STALE_GATE, errAlertIdx);
-  check(`handleDeleteGame runs the dead-session helper AFTER the last generation gate and after the body read (json@${jsonIdx} gate@${lastGateBeforeErrAlert} helper@${helperIdx} alert@${errAlertIdx})`,
-    helperIdx !== -1 && lastGateBeforeErrAlert !== -1 && jsonIdx < lastGateBeforeErrAlert && lastGateBeforeErrAlert < helperIdx && helperIdx < errAlertIdx
-    && !/await/.test(deleteSlice.slice(helperIdx, errAlertIdx)));
-  const helperFirst = deleteSlice.replace('handleDeadSessionResponse(res, requestToken);\n', '')
-    .replace('const data = await res.json()', 'handleDeadSessionResponse(res, requestToken);\n        const data = await res.json()');
-  check('fixture: the helper moved back before the body read and the gate is rejected (precondition: the plant landed)',
-    helperFirst !== deleteSlice && helperFirst.indexOf('handleDeadSessionResponse(res, requestToken)') < helperFirst.lastIndexOf(DELETE_STALE_GATE, helperFirst.indexOf("alert(data.error")));
-  check(`handleDeleteGame re-checks the generation in the catch, before the network alert (alert@${netAlertIdx})`,
-    netAlertIdx !== -1 && gateAfter(errAlertIdx, netAlertIdx));
+  check('handleDeleteGame reports a request that never got an answer, and never as a session verdict',
+    /if \(res\.kind !== 'response'\) \{[\s\S]{0,160}alert\('Network error\. Failed to delete game\./.test(deleteSlice));
   // Mutation fixtures: the two ways this regresses — the gate removed (the
-  // original defect) and the gate moved below the helper (the alert is gone
-  // but the list edits and the 404 refetch run under the wrong identity).
-  // (The gate string recurs after the later awaits; removing the FIRST one
-  // leaves only gates that sit after `if (res.ok)`, which the discard check
-  // rejects.)
-  const noGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '');
-  const noGateFirst = noGate.indexOf(DELETE_STALE_GATE);
-  check('fixture: removing the stale-identity gate fails the discard check (precondition: the plant landed)',
-    noGate !== deleteSlice && (noGateFirst === -1 || noGateFirst > noGate.indexOf('if (res.ok)')));
-  const lateGate = deleteSlice.replace(DELETE_STALE_GATE + '\n', '')
-    .replace('handleDeadSessionResponse(res, requestToken);', 'handleDeadSessionResponse(res, requestToken);\n        ' + DELETE_STALE_GATE);
-  const lateIdx = lateGate.indexOf(DELETE_STALE_GATE);
-  check('fixture: a gate placed after the helper fails the discard check (precondition: the plant landed)',
-    lateGate !== deleteSlice && lateIdx !== -1 && !(lateIdx < lateGate.indexOf('if (res.ok)')));
+  // original defect) and the gate moved below the first state change.
+  const noGate = deleteSlice.replace('      ' + DELETE_STALE_GATE + '\n', '');
+  check('fixture: removing the stale-context gate actually landed', noGate !== deleteSlice);
+  check('fixture: removing the stale-context gate fails the discard check',
+    !(noGate.indexOf(DELETE_STALE_GATE) !== -1 && noGate.indexOf(DELETE_STALE_GATE) < noGate.indexOf('if (res.ok)')));
+  const lateGate = noGate.replace("      if (res.ok) {", "      if (res.ok) {\n        " + DELETE_STALE_GATE);
+  check('fixture: a gate moved below the first state change actually landed', lateGate !== noGate);
+  check('fixture: a gate placed after `if (res.ok)` fails the discard check',
+    !(lateGate.indexOf(DELETE_STALE_GATE) < lateGate.indexOf('if (res.ok)')));
 
   // Known-positive fixtures (mutation: bypass -> fails by name): removing
   // the gate line entirely must be caught, by NAME, for each dialog.
   const editBypassed = editSlice.replace(new RegExp(`${editGatePattern.source}\\n\\s*`), '');
-  check('fixture: reverting the Edit gate (bypass) is caught by the gate-before-fetch check',
+  check('fixture: reverting the Edit gate (bypass) is caught by the gate-before-request check',
     !gatePrecedesFetch(editBypassed, editGatePattern).ok);
   const saveBypassed = saveSlice.replace(new RegExp(`${saveGatePattern.source}\\n\\s*`), '');
-  check('fixture: reverting the Save gate (bypass) is caught by the gate-before-fetch check',
+  check('fixture: reverting the Save gate (bypass) is caught by the gate-before-request check',
     !gatePrecedesFetch(saveBypassed, saveGatePattern).ok);
 
   // Known-positive: the gate present but MOVED after the fetch (order, not
   // just presence) must also be caught.
   const saveGateAfterFetch = `${saveSlice.replace(new RegExp(`${saveGatePattern.source}\\n\\s*`), '')}\n    if (!localConfirmed && deadSession === 'save') { beginNeedsAuthSignIn('save'); return; }\n`;
-  check('fixture: the Save gate present but placed AFTER the fetch is still caught (order-sensitive, not a bare substring check)',
+  check('fixture: the Save gate present but placed AFTER the request is still caught (order-sensitive, not a bare substring check)',
     !gatePrecedesFetch(saveGateAfterFetch, saveGatePattern).ok);
 
   // Control: the real, unmutated slices must NOT be flagged by the bypass
@@ -971,48 +1023,64 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     !(!/setDeadSession\(null\)/.test(saveNameCheckUngated)));
 }
 
-// ── RED-DESKTOP-19/001 — every account-scoped request in App.tsx reports its 401 to the shared
-// dead-session helper. The instance was adoptLocalGames (POST /api/games/adopt-local): the header
-// kept "@user / Log out" for a session the server had killed. The INVARIANT is the family: any
-// request that sends an Authorization header must, within its own handler, call
-// handleDeadSessionResponse — except the /api/auth/me effect, which IS the session check and
-// clears the token itself (updateAuthToken(null) in its catch).
+// ── RED-DESKTOP-19/001, generalised by STRUCT-DESKTOP-19 ──────────────────
+// The finding was adoptLocalGames: the ONE account-scoped request that never
+// told the shared dead-session helper about its 401, so the header kept
+// "@user / Log out" for a session the server had killed. The invariant was
+// always the FAMILY, and the family kept growing a new unwired member every
+// round. It cannot any more: there is no per-site wiring to forget, because
+// there is no per-site request. Every account-scoped call goes through
+// `api.request`, which applies the rule itself.
+//
+// So the family check is now: the credential appears in exactly one place in
+// the whole browser bundle, and every account route reaches the server through
+// the client. (`src/apiclient.contract.test.ts` enforces the same thing across
+// every component file, and pins the set of endpoints reached outside it.)
 {
   const app = readFileSync('src/App.tsx', 'utf8');
-  const familyCheck = (src: string): { sites: number; unreported: string[] } => {
-    // A site is a request that carries the token; the `authHeaders` DEFINITION (`... } : {}`) is not one.
-    const re = /(?:'Authorization': `Bearer \$\{[^}]+\}` \}(?! : \{\})|\.\.\.authHeaders\(\)|headers: authHeaders\(\))/g;
-    const unreported: string[] = []; let m: RegExpExecArray | null; let sites = 0;
-    while ((m = re.exec(src))) {
-      sites++;
-      // The window is the rest of the ENCLOSING handler: up to the next top-level
-      // declaration inside App (2-space `const`/`function`/`useEffect`), so a helper call in
-      // the NEXT handler cannot vouch for this one.
-      const next = src.slice(m.index).search(/\n  (?:const|function|useEffect)\b/);
-      const window = src.slice(m.index, next === -1 ? undefined : m.index + next);
-      const isMeEffect = /\/api\/auth\/me/.test(src.slice(Math.max(0, m.index - 300), m.index));
-      if (isMeEffect) { if (!/updateAuthToken\(null\)/.test(window)) unreported.push(`auth/me effect @${m.index}`); continue; }
-      if (!/handleDeadSessionResponse\(res, [^)]+\)/.test(window)) unreported.push(`@${m.index}: ${src.slice(m.index, m.index + 60).replace(/\s+/g, ' ')}`);
-    }
-    return { sites, unreported };
-  };
-  const real = familyCheck(app);
-  check('App.tsx: at least 6 account-scoped request sites are found (the family, not one instance)', real.sites >= 6, `sites=${real.sites}`);
-  check('App.tsx: every account-scoped request reports its 401 to handleDeadSessionResponse (adoptLocalGames included)', real.unreported.length === 0, real.unreported.join(' | '));
-  check('adoptLocalGames closes ONLY the offer that still carries this request\'s token (a stale 401 after a re-login leaves the new offer alone)',
-    /const wasCurrent = authTokenRef\.current === requestToken;\s*if \(handleDeadSessionResponse\(res, requestToken\)\) \{\s*if \(wasCurrent\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(prev => \[\.\.\.prev, 'Your session ended before the move\./.test(app));
-  // CodeRabbit (#176): the session-ended log line must sit INSIDE the same guard — a stale
-  // 401 must not append a false "session ended" message. Mutant: log moved out of the guard.
+  const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const client = readFileSync('src/utils/apiClient.ts', 'utf8');
+
+  const sites = (app.match(/await api\.request\(/g) || []).length;
+  check('App.tsx: at least 6 account-scoped requests go through the ONE client (the family, not one instance)',
+    sites >= 6, `sites=${sites}`);
+  const ACCOUNT_ROUTES = ['/api/auth/me', '/api/games/adopt-local', '/api/games'];
+  for (const r of ACCOUNT_ROUTES) {
+    check(`${r} is requested through the client`, new RegExp(`api\\.request\\(['\`]${r.replace(/\//g, '\\/')}`).test(app)
+      || new RegExp(`api\\.request\\(\`${r.replace(/\//g, '\\/')}`).test(app));
+  }
+  check('the menu drawer\'s Danger Zone routes both its requests through the client too (STRUCT-DESKTOP-19/002)',
+    /api\.request\('\/api\/auth\/delete-request'/.test(drawer) && /api\.request\('\/api\/auth\/delete-confirm'/.test(drawer));
+  check('the menu drawer no longer carries its own copy of the dead-session rule',
+    !/clearTokenIfExpired/.test(codeOnly(drawer)) && !/updateAuthToken/.test(codeOnly(drawer)));
+  check('the menu drawer never shows the browser\'s own network wording (it describes the failure itself)',
+    /describeRequestFailure\(res, /.test(drawer) && !/setDeleteError\(err\.message\)/.test(codeOnly(drawer)));
+
+  // The credential is built in exactly one place, in the client.
+  check('the Authorization header is built in exactly one place in the app',
+    (client.match(/headers\['Authorization'\] = /g) || []).length === 1
+    && !CREDENTIAL_IN_CODE.test(codeOnly(app)) && !CREDENTIAL_IN_CODE.test(codeOnly(drawer)));
+
+  // adopt-local's own #176 rule, restated on the new structure: the offer is
+  // closed, and the "session ended" line logged, ONLY when the client actually
+  // cleared THIS request's session — never on a stale 401 after a re-login.
+  check('adoptLocalGames closes ONLY the offer whose session the client actually cleared',
+    /if \(res\.sessionDied\) \{\s*if \(res\.sessionCleared\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(prev => \[\.\.\.prev, 'Your session ended before the move\./.test(app));
+  // CodeRabbit (#176): the session-ended log must sit INSIDE that guard — a
+  // stale 401 must not append a false "session ended" message.
   const logOutside = app.replace(
     "            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));\n            setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);\n          }\n",
     "            setLocalGamesOffer(prev => (prev && prev.token === requestToken ? null : prev));\n          }\n          setLogEntries(prev => [...prev, 'Your session ended before the move. Your games are still on this device; sign in again to move them.']);\n");
-  check('fixture: moving the session-ended log outside the wasCurrent guard actually landed', logOutside !== app);
-  check('fixture: a session-ended log outside the wasCurrent guard is rejected by the exact-shape check',
-    !/if \(wasCurrent\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(/.test(logOutside));
-  // Known-positive: the exact shipped defect — adoptLocalGames without the helper call.
-  const mutant = app.replace(/        if \(handleDeadSessionResponse\(res, requestToken\)\) \{[\s\S]*?\n        \}\n/, '');
-  check('fixture: removing adoptLocalGames\'s helper call actually landed', mutant !== app);
-  check('fixture: the unfixed adoptLocalGames is flagged by the family check', familyCheck(mutant).unreported.length === 1, familyCheck(mutant).unreported.join(' | '));
+  check('fixture: moving the session-ended log outside the sessionCleared guard actually landed', logOutside !== app);
+  check('fixture: a session-ended log outside the sessionCleared guard is rejected by the exact-shape check',
+    !/if \(res\.sessionCleared\) \{\s*setLocalGamesOffer\(prev => \(prev && prev\.token === requestToken \? null : prev\)\);\s*setLogEntries\(/.test(logOutside));
+  // Known-positive for the family invariant itself: the pre-fix shape — a
+  // hand-built credential outside the client — must fail the one-place check.
+  const preFix = "const res = await fetch(getApiUrl('/api/games/adopt-local'), { headers: { 'Authorization': `Bearer ${requestToken}` } });";
+  check('fixture: a hand-built Authorization header outside the client is rejected',
+    CREDENTIAL_IN_CODE.test(codeOnly(preFix)));
+  check('control: prose that merely mentions the word is NOT rejected',
+    !CREDENTIAL_IN_CODE.test('the only shape where a save with no Authorization header lands under the owner'));
 }
 
 if (failures > 0) { console.error(`✗ local owner: ${failures} failed`); process.exit(1); }

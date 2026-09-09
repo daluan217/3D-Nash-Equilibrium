@@ -242,10 +242,30 @@ const RENDERING_PATH_FILES = [
  */
 const FORMATTER_FAMILY = [
   'collapseNegZeroDisplay', 'fmtProb', 'fmtProbFixed', 'fmtProbInterval',
-  'fmtPayoff', 'payoffTexRhs', 'fmtPayoffPair', 'fmtPayoffProse', 'texProb',
+  'fmtPayoff', 'payoffTexRhs', 'payoffProseRhs', 'fmtPayoffPair', 'fmtPayoffProse', 'texProb',
 ];
 
 const EXEMPTION_MARKER = 'not-a-rendering:';
+// The marker must OPEN the comment (`// not-a-rendering:`, `/* not-a-rendering:`
+// or a `* not-a-rendering:` continuation line). Prose that merely mentions the
+// token ("the not-a-rendering: annotation is explained above") exempts nothing
+// (Opus review of #181, 2026-09-08).
+const EXEMPTION_RE = /^(?:\/\/|\/\*|\*)\s*not-a-rendering:/;
+/** The marker must follow the FIRST comment delimiter on the line (or open a
+ *  `*` continuation line) — `// see /* not-a-rendering:` opens nothing
+ *  (CodeRabbit CLI on 2d0fd58). */
+function opensWithMarker(line: string): boolean {
+  const t = line.trim();
+  if (t.startsWith('*') || t.startsWith('//') || t.startsWith('/*')) return EXEMPTION_RE.test(t);
+  const a = line.indexOf('//'), b = line.indexOf('/*');
+  const idx = a === -1 ? b : b === -1 ? a : Math.min(a, b);
+  return idx !== -1 && EXEMPTION_RE.test(line.slice(idx));
+}
+// A door is any of the three number-to-string methods, with or without a space
+// before the parenthesis: `.toFixed(`, `.toFixed (`, `.toPrecision(`,
+// `.toExponential(`. A literal `.toFixed(` search missed the other three
+// spellings (Opus review of #181).
+const DOOR_RE = /\.\s*(?:toFixed|toPrecision|toExponential)\s*\(/;
 
 /**
  * Is this line exempted? The annotation must be ON the line, or in the comment
@@ -257,12 +277,12 @@ const EXEMPTION_MARKER = 'not-a-rendering:';
  * against the thing it excuses.
  */
 function isExempt(lines: string[], i: number): boolean {
-  if (lines[i].includes(EXEMPTION_MARKER)) return true;
+  if (opensWithMarker(lines[i])) return true;
   for (let j = i - 1; j >= 0; j--) {
     const s = lines[j].trim();
     if (s === '') return false;                       // a blank line ends the block
     if (!(s.startsWith('//') || s.startsWith('*') || s.startsWith('/*'))) return false;
-    if (lines[j].includes(EXEMPTION_MARKER)) return true;
+    if (opensWithMarker(lines[j])) return true;
   }
   return false;
 }
@@ -319,7 +339,12 @@ function scanDoors(): Door[] {
       const decl = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)/.exec(line)
         ?? /^(?:export\s+)?const\s+([A-Za-z0-9_]+)\s*=\s*(?:\(|function)/.exec(line);
       if (decl) enclosing = decl[1];
-      if (!line.includes('.toFixed(')) return;
+      // A column-0 `}` closes the top-level declaration, so an object literal or
+      // class that FOLLOWS a formatter-family function is not exempted by it
+      // (Opus review of #181: `export const probLabels = { short: v => v.toFixed(3) }`
+      // right after fmtPayoffProse scanned as 0 doors).
+      if (/^\}/.test(line)) enclosing = '';
+      if (!DOOR_RE.test(line)) return;
       // The annotation is read from the ORIGINAL text (that is where comments
       // live) and must sit against this very line — see `isExempt`.
       if (isExempt(lines, i)) return;
@@ -363,8 +388,11 @@ function testTheFixedSitesRenderThroughTheFamily(): void {
 
   // B2e — the plot's tour callout label.
   const plot = readFileSync('src/components/PlotlyView.tsx', 'utf8');
-  ok(plot.includes('const labelA = fmtPayoffProse(zAraw);') && plot.includes('const labelB = fmtPayoffProse(zBraw);'),
-    'B2e the tour callout labels render through the payoff formatter');
+  ok(plot.includes('const labelA = payoffProseRhs(zAraw);') && plot.includes('const labelB = payoffProseRhs(zBraw);'),
+    'B2e the tour callout labels render through the payoff formatter, relation included');
+  ok(!/= \$\{label[AB]\}/.test(plot), 'B2e no second callout construction prepends its own "=" to a relation-bearing label');
+  ok(plot.includes('text: [`${who} ${label}`]') && !plot.includes('${who} = ${label}'),
+    'B2e the callout puts the relation in the operator, never "= less than 0.001"');
   ok(!/const label[AB] = r3\(/.test(plot), 'B2e no callout label interpolates a bare r3()');
 }
 
@@ -379,7 +407,7 @@ function testNoUnannotatedDoors(): void {
   let total = 0;
   for (const file of RENDERING_PATH_FILES) {
     for (const l of blankComments(readFileSync(file, 'utf8'))) {
-      if (l.includes('.toFixed(')) total++;
+      if (DOOR_RE.test(l)) total++;
     }
   }
   ok(total >= 12, 'B3 the scan sees the real call sites (not an empty file list)', `saw ${total} code lines with .toFixed(`);
@@ -393,11 +421,40 @@ function testNoUnannotatedDoors(): void {
   const injectedCode = blankComments(injected);
   let caught = false;
   injectedCode.forEach((line, i) => {
-    if (!line.includes('.toFixed(')) return;
+    if (!DOOR_RE.test(line)) return;
     if (isExempt(injectedLines, i)) return;
     if (line.includes('simState.cx.toFixed(')) caught = true;
   });
   ok(caught, 'B3 mutation: reverting the readout to a bare toFixed is seen by the same scan');
+
+  // Opus review of #181 (2026-09-08): four ways past the gate, each now a fixture.
+  const scanText = (text: string): number => {
+    const ls = text.split('\n'); const cd = blankComments(text); let enclosing = ''; let doors = 0;
+    cd.forEach((line, i) => {
+      const decl = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)/.exec(line)
+        ?? /^(?:export\s+)?const\s+([A-Za-z0-9_]+)\s*=\s*(?:\(|function)/.exec(line);
+      if (decl) enclosing = decl[1];
+      if (/^\}/.test(line)) enclosing = '';
+      if (!DOOR_RE.test(line)) return;
+      if (isExempt(ls, i)) return;
+      if (FORMATTER_FAMILY.includes(enclosing)) return;
+      doors++;
+    });
+    return doors;
+  };
+  ok(scanText('const a = v.toFixed (3);') === 1, 'B3d `.toFixed (3)` with a space is a door');
+  ok(scanText('const a = v.toPrecision(3);') === 1 && scanText('const a = v.toExponential(2);') === 1,
+    'B3d toPrecision and toExponential are doors');
+  ok(scanText(['// Historical note: the not-a-rendering: annotation is explained above.', 'const a = v.toFixed(3);'].join('\n')) === 1,
+    'B3e prose that merely mentions the marker exempts nothing');
+  ok(scanText(['// not-a-rendering: a setting', 'const a = v.toFixed(3);'].join('\n')) === 0
+    && scanText('const a = v.toFixed(3); /* not-a-rendering: a setting */') === 0,
+    'B3e the marker opening a comment still exempts (control)');
+  ok(scanText(['// see /* not-a-rendering: not an opener', 'const a = v.toFixed(3);'].join('\n')) === 1
+    && scanText('const a = v.toFixed(3); // see /* not-a-rendering: not an opener') === 1,
+    'B3e a marker after an embedded "/*" inside a line comment exempts nothing');
+  ok(scanText(['export function fmtPayoffProse(v: number): string {', '  return v.toFixed(3);', '}', 'export const probLabels = {', '  short: (v: number) => v.toFixed(3),', '};'].join('\n')) === 1,
+    'B3f an object literal after a formatter-family function is not covered by it');
 
   // A `/*` inside a `//` comment must not open a block: with the old
   // first-check-`/*` order the second line below vanished from the scan, and
@@ -420,7 +477,8 @@ function testNoUnannotatedDoors(): void {
     const decl = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)/.exec(line)
       ?? /^(?:export\s+)?const\s+([A-Za-z0-9_]+)\s*=\s*(?:\(|function)/.exec(line);
     if (decl) enclosing = decl[1];
-    if (!line.includes('.toFixed(')) return;
+    if (/^\}/.test(line)) enclosing = '';
+    if (!DOOR_RE.test(line)) return;
     if (isExempt(strippedLines, i)) return;
     if (FORMATTER_FAMILY.includes(enclosing)) return;
     strippedDoors++;

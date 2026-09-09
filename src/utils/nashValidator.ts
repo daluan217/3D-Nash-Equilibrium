@@ -43,6 +43,7 @@ import { computeAllNE, computeIndifference, regretA, regretB, equilibriumSet, ha
 // module dependency-free in the sense the header means.
 import { describeGeometry } from './geometry';
 import { actorNounsOk } from './scenarioBank';
+import { colorTermKey } from './colorTerms';
 
 /** Matches the solver's own r3 rounding, so tolerance is consistent. */
 const COORD_TOL = 0.0015;
@@ -1213,6 +1214,33 @@ function assertsTheSameMove(desc: string): boolean {
  * parenthetical-annotation rule stays in validateScenario, where it belongs:
  * that one is decidable at any rung because the matrix settles it.
  */
+/**
+ * THE TEXT A CLAIM RULE READS. Never the text anyone is served — nothing here
+ * rewrites model output, the folded string exists only so a comparison happens
+ * on the characters a READER sees rather than the code points a model happened
+ * to emit.
+ *
+ * The numeral rule in this function was already hardened for exactly this
+ * ("`\p{N}` rather than `\d` ... a fullwidth numeral walks straight through");
+ * the WORD rules below it were not, so "Hold Quota is \uFF42etter against Open
+ * Season" — one fullwidth Latin b, which renders as an ordinary wide "better" —
+ * passed `scenarioIsClaimFree` while the identical ASCII sentence was refused
+ * (STRUCT-CLOUD-19 red pass 3, `_gen/cloud19_unicode.ts`). NFKC folds the
+ * fullwidth, halfwidth, circled and ligature forms onto the letters the list is
+ * written in, so a rule cannot be evaded by spelling a word in a second Unicode
+ * alphabet.
+ *
+ * A HOLE, NOT A DEFECT, and recorded as one: 0 of 2,442 shipped bank rows and 0
+ * of 156 live draws contain a single NFKC-unstable field, so this changes no
+ * verdict on any real output measured so far. It is here because the neighbouring
+ * subsystem already folds (`colorTermKey` NFKC-folds every colour term, after
+ * four rounds of fold-family findings) and a word list that does not is the same
+ * hole waiting for a different model. The zero-width and bidi family needs no
+ * folding here: `validateScenario`'s script check refuses U+00AD, U+200B-200D and
+ * U+2060 outright, one screen earlier (measured in the same probe).
+ */
+const foldForClaims = (s: string): string => normalizeProseMinus(s.normalize('NFKC'));
+
 export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reason?: string } {
   // A NUMBER, OR AN EXPLICIT MULTIPLE, IN THE NAME OR AN OPTION LABEL.
   //
@@ -1257,18 +1285,22 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     const raw = typeof sc[key] === 'string' ? (sc[key] as string).trim() : '';
     if (!raw) continue;
     const where = key === 'name' ? 'the scenario name' : `the option label "${raw}"`;
+    // FOLDED FOR THE RULES, RAW FOR THE MESSAGE. The reason string quotes what
+    // the author wrote; the rules read `foldForClaims(...)`. See its own comment
+    // for why a word rule that reads unfolded text is a hole.
+    const folded = foldForClaims(raw);
     // `\p{N}` rather than `\d`: `\d` is ASCII-only in JavaScript, so a fullwidth
     // or Arabic-Indic numeral walks straight through a rule that exists to stop
     // numerals. Same class of hole as the U+2212 minus this file normalizes,
     // which has bitten the repo three times.
-    if (/\p{N}/u.test(raw)) return { ok: false, reason: `${where} cites a number` };
-    if (MULTIPLIER_CLAIM.test(raw)) return { ok: false, reason: `${where} asserts a multiple` };
+    if (/\p{N}/u.test(folded)) return { ok: false, reason: `${where} cites a number` };
+    if (MULTIPLIER_CLAIM.test(folded)) return { ok: false, reason: `${where} asserts a multiple` };
     // The numeral written as a WORD. See BIG_SPELLED_QUANTITY above: name and
     // labels only, and narrower than the predicate RED 1 scored, because three
     // of theirs collide with ordinary scene vocabulary.
-    if (BIG_SPELLED_QUANTITY.test(raw)) return { ok: false, reason: `${where} cites a large quantity` };
+    if (BIG_SPELLED_QUANTITY.test(folded)) return { ok: false, reason: `${where} cites a large quantity` };
   }
-  const desc = normalizeProseMinus((sc.description ?? '').trim());
+  const desc = foldForClaims((sc.description ?? '').trim());
   if (!desc) return { ok: true };
   // `\p{N}`, for the reason given on the label screen above: `\d` is ASCII-only
   // in JavaScript. This rule shipped as `/\d/` and a fullwidth numeral walked
@@ -1725,8 +1757,29 @@ export function validateScenario(
         issues.push(`option label ${key} is missing — every option must be named`);
       }
     }
-    if (base(sc.row1) && base(sc.row1) === base(sc.row2)) issues.push(`row labels are not distinct ("${sc.row1}" / "${sc.row2}")`);
-    if (base(sc.col1) && base(sc.col1) === base(sc.col2)) issues.push(`column labels are not distinct ("${sc.col1}" / "${sc.col2}")`);
+    /**
+     * DISTINCT UNDER BOTH COMPARATORS, because two of them answer this one
+     * question. `base` above is this file's own: parentheticals out, whitespace
+     * collapsed, lower-cased. `colorTermKey` is the RENDERER's, and it also
+     * folds quote/dash/apostrophe glyphs, NFKC and invisibles — so "Fire Early"
+     * and "Fire Early." are two options to the validator and ONE term to the
+     * highlighter, which paints the player's two rows as the same phrase. Same
+     * class as RED-REGEN-4/5 (one equality, two comparators); the remedy on
+     * record is the shared key function, used by every comparison.
+     *
+     * The two are UNIONED, never swapped: `base` strips parentheticals and
+     * `colorTermKey` does not, so "Ship (fast)" / "Ship (slow)" is rejected
+     * today and must stay rejected. A pair is distinct only if BOTH agree.
+     *
+     * Reach of the added half on real output: 0 of 2,442 shipped bank rows and
+     * 0 of 316 live draws have a pair the validator calls distinct and the
+     * renderer reads as one term (`_gen/cloud19_comparators.ts`). It rejects
+     * nothing anyone has written; it closes a channel a model can still take.
+     */
+    const sameLabel = (x?: string, y?: string) =>
+      (!!base(x) && base(x) === base(y)) || (!!x && !!y && colorTermKey(x) === colorTermKey(y));
+    if (sameLabel(sc.row1, sc.row2)) issues.push(`row labels are not distinct ("${sc.row1}" / "${sc.row2}")`);
+    if (sameLabel(sc.col1, sc.col2)) issues.push(`column labels are not distinct ("${sc.col1}" / "${sc.col2}")`);
     const cells = [[g.a11, g.b11], [g.a12, g.b12], [g.a21, g.b21], [g.a22, g.b22]];
     const pairsFor = {
       row1: [...cells, [g.a11, g.a12], [g.b11, g.b12]],

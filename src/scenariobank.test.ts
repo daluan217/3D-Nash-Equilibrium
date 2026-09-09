@@ -9,13 +9,17 @@
  * silently returns nothing, repeats itself, or reaches into the wrong stakes
  * band, the product regresses in a way no existing test would notice.
  */
-import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, __resetBankSeen } from './utils/bankSource';
+import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, bankRowFor, __resetBankSeen } from './utils/bankSource';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
 import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, highlightWouldMatch, type BankEntry } from './utils/scenarioBank';
 import { paintPlan } from './utils/colorTerms';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
+import { describeStakes, exactSizeBand, STAKES_SWING_CUTS } from './utils/scenarioStakes';
 import { readFileSync } from 'node:fs';
-import type { GamePayoffs } from './types';
+import { scenarioRenderability } from './utils/scenarioRenderability';
+import { screenScenario } from './utils/scenarioScreen';
+import { colorTermKey, colorTermsFor, mergeDescriptionTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import type { GamePayoffs, SuggestedScenario } from './types';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -50,6 +54,45 @@ check('band cuts match stakesHint: <1 tiny', stakesBand(G(0.3)) === 0, `${stakes
 check('band cuts: <10 modest', stakesBand(G(4)) === 1, `${stakesBand(G(4))}`);
 check('band cuts: <50 substantial', stakesBand(G(20)) === 2, `${stakesBand(G(20))}`);
 check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60))}`);
+
+/**
+ * "MATCH THE HINT" MEANS THE HINT, not four numbers that agree with a copy of
+ * the same ladder (STRUCT-CLOUD-19/009). The four lines above are named for an
+ * agreement between two functions and call only one of them: they passed
+ * identically while `stakesBand` and `exactSizeBand` each carried their own
+ * literal cuts and could drift apart silently, which for a bank INDEXED on the
+ * band means serving a very-large story to a tiny game with nothing red.
+ *
+ * The cuts now have one source, `STAKES_SWING_CUTS`, and this sweeps both
+ * derivations across it — including each cut exactly, one ULP either side, and
+ * every band interior — so re-inlining a different literal in either function
+ * fails here. `SIZE_BOUNDARIES_LOG` (the boundary blend's third derivation) is
+ * checked through `stakesHint` itself in `src/scenariostakes.test.ts`.
+ */
+{
+  const cuts = [...STAKES_SWING_CUTS];
+  const swings: number[] = [0, 1e-9, 0.5];
+  for (const c of cuts) {
+    swings.push(c, c * (1 - Number.EPSILON), c * (1 + Number.EPSILON), c / 2, c * 2);
+  }
+  swings.push(1e6);
+  let disagree = 0; let firstDisagree = '';
+  for (const swing of swings) {
+    // A game whose A-swing IS this number, so `describeStakes` reports it back:
+    // one row 0, the other `swing`, both players symmetric.
+    const g: GamePayoffs = { a11: swing, a12: swing, a21: 0, a22: 0, b11: swing, b12: 0, b21: swing, b22: 0 };
+    const viaBank = stakesBand(g);
+    const viaHint = exactSizeBand(describeStakes(g).swing);
+    if (viaBank !== viaHint) { disagree++; if (!firstDisagree) firstDisagree = `swing=${swing}: bank=${viaBank} hint=${viaHint}`; }
+  }
+  check(`the bank's band and the hint's band agree on every cut and interior (${swings.length} swings)`,
+    disagree === 0, `${disagree} disagreements — first: ${firstDisagree}`);
+  check('the sweep actually crosses every band (otherwise it agrees vacuously)',
+    new Set(swings.map((swing) => stakesBand({ a11: swing, a12: swing, a21: 0, a22: 0, b11: swing, b12: 0, b21: swing, b22: 0 }))).size
+      === cuts.length + 1);
+  check('there is one cut list, and it is the one both bands are built from',
+    cuts.length === 3 && cuts[0] === 1 && cuts[1] === 10 && cuts[2] === 50, JSON.stringify(cuts));
+}
 
 /* --------------------------------------------- without replacement */
 {
@@ -237,17 +280,18 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const trueBand = stakesBand(FALLBACK_GAME);
   check('fixture sanity: FALLBACK_GAME true stakes band is 1', trueBand === 1, `${trueBand}`);
 
-  // Matched by OBJECT REFERENCE, not by name: names repeat across (domain,
+  // Matched by the SERVING RECORD, not by name: names repeat across (domain,
   // band) cells by design (that is the whole reason `pickFromBank`'s ladder
-  // tracks `seenNames` separately from `seen` entries), so a name-only
-  // lookup can silently resolve to the WRONG row's band — `sc` returned by
-  // `bankScenario` IS the exact `.s` object of whichever row was picked
-  // (`pickFromBank`'s `take()` returns `pool[i].s` verbatim), so reference
-  // equality is the only correct way to recover which row served it.
+  // tracks `seenNames` separately from `seen` entries) — 176 of the bank's
+  // 1,119 names span more than one band — so a name lookup can silently
+  // resolve to the WRONG row's band, which would make every number below
+  // meaningless. `bankScenario` now hands back a private COPY of the row
+  // (STRUCT-CLOUD-19/008: the artifact is frozen and never leaves the module
+  // by reference), so `e.s === sc` no longer identifies anything; `bankRowFor`
+  // is the WeakMap the copy was registered in, which is exact.
   const bandOfPick = (sc: { name?: string } | null | undefined): number | null => {
     if (!sc) return null;
-    const hit = allBankRows().find((e) => e.s === sc);
-    return hit ? hit.b : null;
+    return bankRowFor(sc)?.b ?? null;
   };
   const classify = (band: number | null): 'exact' | 'near' | 'far' | 'miss' => {
     if (band === null) return 'miss';
@@ -314,11 +358,37 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     check('hostedFallbackSeen must gate on IS_ELECTRON and hand HOSTED requests a FRESH Set',
       /process\.env\.IS_ELECTRON === "true"\s*\?\s*undefined\s*:\s*new Set<string>\(\)/.test(line),
       `got: ${JSON.stringify(line)}`);
-    const callSiteBlock = src.slice(idx, idx + 400);
+    /**
+     * The window used to be `idx + 400` characters. A fixed character budget is
+     * the same mistake as a fixed pixel threshold: STRUCT-CLOUD-19 added a
+     * comment inside the block and the two calls fell out of range, so a guard
+     * that was still perfectly true reported a failure. Delimit by the block's
+     * own STRUCTURAL end instead — the one `return { scenario: null, failure:
+     * exhaustionFailure }` that ends the fallback section — which cannot move
+     * without the fallback itself being rewritten.
+     */
+    const blockEnd = src.indexOf('return { scenario: null, failure: exhaustionFailure };', idx);
+    check('the bank-fallback block ends where this guard thinks it does', blockEnd > idx);
+    const callSiteBlock = src.slice(idx, blockEnd);
     check('server.ts must actually PASS hostedFallbackSeen into both bank calls at the fallback call site, not just define it',
       /bankScenarioAvoiding\(payoffs, fallbackDomain, avoid\.name, hostedFallbackSeen\)/.test(callSiteBlock)
       && /bankScenario\(payoffs, fallbackDomain, hostedFallbackSeen\)/.test(callSiteBlock),
       callSiteBlock);
+    /**
+     * STRUCT-CLOUD-19/001: the fallback draws MORE THAN ONE row. It used to draw
+     * exactly one and give up if a gate rejected it, which was survivable only
+     * while no gate could reject a bank row. The `attributable` screen can — 84
+     * of the shipped rows (3.44%) are unattributable on the `/api/report` path,
+     * where the actor nouns they depend on are stripped — so a single attempt
+     * would turn that rate straight into fallbacks that return no story at all.
+     * Each call draws a DIFFERENT row (`bankScenario` records into `seen`
+     * BEFORE returning, precisely so a rejected row does not come back), so the
+     * attempts are independent. Mutation: unroll the loop and this fails.
+     */
+    check('the bank fallback retries with a different row instead of giving up on the first',
+      /for \(let attempt = 0; attempt < FALLBACK_ATTEMPTS; attempt\+\+\)/.test(callSiteBlock)
+      && /const FALLBACK_ATTEMPTS = [2-9]/.test(callSiteBlock),
+      callSiteBlock.slice(0, 200));
   }
 }
 
@@ -485,6 +555,128 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   const colourable = screenColourableRows(allBankRows());
   check('every shipped row has a colourable term for BOTH players', colourable.bad === 0,
     `${colourable.bad} of ${colourable.scanned} shipped rows have no colourable term for at least one player — the artifact is stale, re-run the RED-DESKTOP-9/001 extraction+drop pass. First: ${colourable.firstBad}`);
+
+  /**
+   * …AND THAT CHECK IS NOT THE RENDERING GUARANTEE, which is what its own
+   * predicate's comment used to claim (STRUCT-CLOUD-19/002). `scenarioIsColourable`
+   * asks whether the story gave each player a term AT ALL; the renderer paints
+   * what `regenPreviewColorTerms` returns, and that composition ends by deleting
+   * every term appearing on BOTH players' lists — so on a row that gives both
+   * players the same option-label pair the screen says yes and the page paints
+   * nothing.
+   *
+   * The gap is pinned here so that (a) nobody re-asserts the equivalence, and
+   * (b) a change to the ambiguity pass or to the term builder shows up as a
+   * number moving rather than as silent colour loss. It is an exact count over
+   * the shipped artifact, not a threshold.
+   *
+   * ALL 244 ARE THE AMBIGUITY CASE — both players hold the same label, so no
+   * highlighter could attribute a mention of it and not colouring is correct.
+   * There is no third category left: the 84 rows that used to be painted on
+   * NEITHER side were an artifact of `/api/report` stripping the actor nouns,
+   * and that strip is gone (see server.ts). `scenarioIsAttributable` is the
+   * screen that keeps it gone, and `src/scenarioscreen.contract.test.ts` pins
+   * its reach: 0 here, 2 of 146 on the live-draw corpus it actually exists for.
+   */
+  {
+    const rows = allBankRows();
+    let disagree = 0;
+    let absent = 0;
+    for (const e of rows) {
+      if (!scenarioIsColourable(e.s)) continue;
+      const r = scenarioRenderability(e.s as SuggestedScenario);
+      if (r.a && r.b) continue;
+      disagree++;
+      if (!r.ambiguityOnly) absent++;
+    }
+    check('the authoring screen and the renderer disagree on exactly the pinned number of rows',
+      disagree === 244,
+      `${disagree} of ${rows.length} (pinned 244) — scenarioIsColourable and the renderer have moved apart; `
+      + 'if this is intended, re-measure with _gen/cloud19_colour3.ts and update the number AND the comments '
+      + 'in scenarioBank.ts and scenarioRenderability.ts that quote it');
+    check('every one of those disagreements is ambiguity, never a side with no term at all',
+      absent === 0,
+      `${absent} of the ${disagree} disagreeing rows have a side the renderer paints nothing on — that is `
+      + 'RED-DESKTOP-9/001 back in the artifact, not the benign shared-label case');
+    check('the disagreement is not vacuous: the renderer paints strictly fewer rows than the screen admits',
+      disagree > 0, `disagree=${disagree}`);
+  }
+
+  /**
+   * NO ROW IS PAINTED FOR THE WRONG PLAYER (STRUCT-CLOUD-19/001, self-check on
+   * the fix). The card now paints the actor nouns, and a noun is a phrase the
+   * model wrote — nothing stops it from being the OTHER player's option label.
+   * RED-REGEN/002 is exactly that defect: with `mergeDescriptionTerms` given no
+   * label-ownership list, a colliding noun was painted as its declarer's while
+   * belonging to the opponent's move. The composition that ships neutralises it;
+   * this pins that over the whole artifact, and the canary below is the same
+   * check run against the pre-RED-REGEN/002 composition so that a zero here is a
+   * result rather than a probe that cannot fire.
+   */
+  {
+    const rows = allBankRows();
+    const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []);
+    const crossPaints = (sc: SuggestedScenario, build: (s: SuggestedScenario, a: string[], b: string[]) => { a: string[]; b: string[] }): string[] => {
+      const aN = strs(sc.actorA); const bN = strs(sc.actorB);
+      const painted = build(sc, aN, bN);
+      // OWNERSHIP IS THE OPTION LABELS, not the declared nouns. A noun is a
+      // phrase the model chose; if it happens to be the opponent's move, the
+      // opponent owns it and declaring it cannot transfer it. Counting nouns as
+      // ownership would make this check unable to see RED-REGEN/002 at all —
+      // measured: the planted canary below then reads 0 under both compositions.
+      const aOwn = new Set([sc.row1, sc.row2].filter(Boolean).map((t) => colorTermKey(t as string)));
+      const bOwn = new Set([sc.col1, sc.col2].filter(Boolean).map((t) => colorTermKey(t as string)));
+      const bad: string[] = [];
+      for (const t of painted.a) if (bOwn.has(colorTermKey(t)) && !aOwn.has(colorTermKey(t))) bad.push(`A paints B's "${t}"`);
+      for (const t of painted.b) if (aOwn.has(colorTermKey(t)) && !bOwn.has(colorTermKey(t))) bad.push(`B paints A's "${t}"`);
+      return bad;
+    };
+    const shipping = (sc: SuggestedScenario, a: string[], b: string[]) => regenPreviewColorTerms(sc, a, b, [], []);
+    let crossed = 0; let firstCross = '';
+    for (const e of rows) {
+      const bad = crossPaints(e.s as SuggestedScenario, shipping);
+      if (bad.length) { crossed++; if (!firstCross) firstCross = `"${e.s.name}": ${bad.join(', ')}`; }
+    }
+    check('no shipped row paints a phrase for the player who does not own it', crossed === 0,
+      `${crossed} of ${rows.length} — first: ${firstCross}`);
+
+    const planted = {
+      name: 'Planted', row1: 'Hold Price', row2: 'Cut Price', col1: 'Stock Wide', col2: 'Stock Narrow',
+      description: 'Stock Wide is how the first party describes its own stance, and the other picks Hold Price or Cut Price.',
+      actorA: ['Stock Wide'],
+    } as SuggestedScenario;
+    check('the check can fire: the same planted collision is a cross-player paint under the pre-RED-REGEN/002 composition',
+      crossPaints(planted, (sc, a, b) => mergeDescriptionTerms(colorTermsFor(sc), a, b)).length === 1
+      && crossPaints(planted, shipping).length === 0,
+      `pre-fix=${JSON.stringify(crossPaints(planted, (sc, a, b) => mergeDescriptionTerms(colorTermsFor(sc), a, b)))} `
+      + `shipping=${JSON.stringify(crossPaints(planted, shipping))}`);
+  }
+
+  /**
+   * WHY FOLDING THE CLAIM RULES' INPUT CHANGED NO VERDICT (STRUCT-CLOUD-19 red
+   * pass 3). `scenarioIsClaimFree` now NFKC-folds the text its word rules read,
+   * which can only change an outcome for text that is not already NFKC-stable.
+   * The artifact has none: every authored field of every shipped row equals its
+   * own NFKC form, so the fold is a no-op here and the change is containment
+   * against a model that spells a claim in a second alphabet, not a reweighting
+   * of what ships. If this ever fails, the fold is no longer free and the
+   * claim-free reach has to be re-measured on the new rows.
+   */
+  {
+    const rows = allBankRows();
+    let unstable = 0; let firstUnstable = '';
+    for (const e of rows) {
+      const sc = e.s as { name?: string; row1?: string; row2?: string; col1?: string; col2?: string; description?: string };
+      for (const v of [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description]) {
+        if (typeof v === 'string' && v.normalize('NFKC') !== v) {
+          unstable++;
+          if (!firstUnstable) firstUnstable = `"${sc.name}": ${JSON.stringify(v.slice(0, 60))}`;
+        }
+      }
+    }
+    check('every authored field of every shipped row is already NFKC-stable', unstable === 0,
+      `${unstable} fields differ from their NFKC form — first: ${firstUnstable}`);
+  }
 
   /**
    * KNOWN-POSITIVE for scenarioIsColourable itself: a row whose labels the
@@ -792,11 +984,130 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   // 4. The source itself: no second regex may reappear in the gate's module.
   const bankSrc = readFileSync('src/utils/scenarioBank.ts', 'utf8')
     .split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
-  check('scenarioBank.ts builds no colour-boundary regex of its own',
-    !/\(\?<!\[\\\\w\]\)|\(\?<!\\\\w\)/.test(bankSrc),
-    'the boundary rule lives in src/utils/colorTerms.ts and nowhere else');
+  // Merged with #182 (STRUCT-CLOUD-19): `actorNounsOk` asks a SECOND, stricter
+  // question — is the noun there VERBATIM (raw text, no NFKC fold, so U+212A
+  // KELVIN SIGN cannot pass as "k") — through `occursAsRawSubstring`, ANDed with
+  // `highlightWouldMatch` → `termOccursIn`. A stricter extra clause cannot
+  // promise a highlight the painter will not paint (the 009 direction), so it
+  // is the one place a raw regex may live; anywhere else is a second rule.
+  const rawSites = [...bankSrc.matchAll(/\(\?<!\[\\w\]\)|\(\?<!\\w\)/g)].map((m) => {
+    const fn = [...bankSrc.slice(0, m.index).matchAll(/^(?:export )?function ([A-Za-z0-9_$]+)/gm)].pop();
+    return fn ? fn[1] : '<top level>';
+  });
+  check('scenarioBank.ts builds no colour-boundary regex of its own outside the verbatim predicate',
+    rawSites.length <= 1 && rawSites.every((f) => f === 'occursAsRawSubstring'),
+    `raw boundary regexes in: ${JSON.stringify(rawSites)} — the boundary rule lives in src/utils/colorTerms.ts; `
+    + 'only occursAsRawSubstring (the VERBATIM check ANDed with termOccursIn) may keep one');
+  const actorNounsOkSrc = bankSrc.slice(bankSrc.indexOf('function actorNounsOk'));
+  check("the verbatim predicate is ANDed with the painter's rule inside actorNounsOk, not a replacement for it",
+    /return termOccursIn\(/.test(bankSrc) && /occursAsRawSubstring\(/.test(actorNounsOkSrc) && /highlightWouldMatch\(/.test(actorNounsOkSrc));
   check('fixture: that source check fires on the retired implementation',
     /\(\?<!\[\\\\w\]\)/.test('const re = new RegExp(`(?<![\\\\w])(?:${esc(term)})(?![\\\\w])`, \'gi\');'));
+/* ============================================================================
+ * THE ARTIFACT CANNOT BE WRITTEN TO BY SERVING IT (STRUCT-CLOUD-19/008).
+ *
+ * `pickFromBank` returned `pool[i].s` verbatim, so the request pipeline held
+ * the module-global row itself — and the pipeline mutates what it holds by
+ * design: `validateScenario` deletes `actorA`/`actorB` in place when
+ * `actorNounsOk` fails (001). One request that drew a row the gate disliked
+ * therefore stripped BOTH noun lists off the shipped artifact for the rest of
+ * the process — on one warm Cloud Run instance, for every later unrelated user.
+ * Reproduction with one planted row: `_gen/cloud19_bankalias.ts`.
+ *
+ * Two independent defences, one check each, so a mutation is attributable:
+ * freeze (nothing can write to a row at all) and copy-on-serve (the gate's
+ * in-place strip still works, on the request's own object).
+ * ==========================================================================*/
+{
+  const rows = allBankRows();
+  const withNouns = rows.find((e) => (e.s as SuggestedScenario).actorA?.length
+    && (e.s as SuggestedScenario).actorB?.length);
+  check('fixture sanity: the artifact has a row carrying both noun lists', !!withNouns);
+  if (withNouns) {
+    // 1. FREEZE. The pre-fix corruption, attempted directly on the artifact.
+    let threw = false;
+    try { delete (withNouns.s as { actorA?: unknown }).actorA; } catch { threw = true; }
+    check('a bank row cannot be written to: deleting actorA on the artifact throws and changes nothing',
+      threw && ((withNouns.s as SuggestedScenario).actorA?.length ?? 0) > 0,
+      `threw=${threw} actorA=${JSON.stringify((withNouns.s as SuggestedScenario).actorA)}`);
+    let pushThrew = false;
+    try { (withNouns.s as SuggestedScenario).actorA!.push('smuggled'); } catch { pushThrew = true; }
+    check('the freeze reaches INSIDE a row: pushing onto actorA throws too', pushThrew,
+      `actorA=${JSON.stringify((withNouns.s as SuggestedScenario).actorA)}`);
+
+    // AND AT EVERY DEPTH (CodeRabbit on this branch): a one-level freeze leaves
+    // `storyClaims.cellCitations[i]` writable while the comment in bankSource.ts
+    // promises the artifact is read-only. No shipped row carries storyClaims
+    // today, so a live mutation attempt cannot reach that far — walk the object
+    // graph and require every node frozen, which stays true for the artifact
+    // that does carry them.
+    const unfrozen: string[] = [];
+    const walk = (v: unknown, path: string): void => {
+      if (v === null || typeof v !== 'object') return;
+      if (!Object.isFrozen(v)) unfrozen.push(path);
+      for (const [k, child] of Object.entries(v as Record<string, unknown>)) walk(child, `${path}.${k}`);
+    };
+    for (let i = 0; i < rows.length; i++) walk(rows[i], `row[${i}]`);
+    check('every node of every artifact row is frozen, at every depth',
+      unfrozen.length === 0, `${unfrozen.length} writable nodes — first: ${unfrozen[0]}`);
+    check('the depth walk is not vacuous: it visited nested nodes',
+      rows.some((e) => Array.isArray((e.s as SuggestedScenario).actorA)));
+
+    // 2. COPY-ON-SERVE, read through the SHIPPING gate rather than by hand: a
+    //    served copy given a noun the story does not contain must lose BOTH
+    //    lists (so the gate is demonstrably still doing the in-place strip —
+    //    this check cannot pass by the gate having become inert) while the
+    //    artifact row it came from keeps them.
+    const g: GamePayoffs = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 3, b12: 0, b21: 0, b22: 2 };
+    // Deterministic by EXCLUSION, not by luck (CodeRabbit on #182): `bankScenario`
+    // draws at random and the domain also holds nounless rows; a nounless draw
+    // would make "the artifact keeps its nouns" vacuous (undefined === undefined).
+    // Every nounless draw goes into `seen` so the picker cannot repeat it, and the
+    // loop ends on the first row that carries nouns on BOTH sides — or fails.
+    const excluded = new Set<string>();
+    let served: SuggestedScenario | null = null;
+    for (let attempt = 0; attempt < 64 && !served; attempt++) {
+      const candidate = bankScenario(g, withNouns.d, excluded);
+      if (!candidate) break;
+      const src = bankRowFor(candidate)!.s as SuggestedScenario;
+      if ((src.actorA?.length ?? 0) > 0 && (src.actorB?.length ?? 0) > 0) served = candidate;
+    }
+    check('precondition: a served row carrying nouns on both sides was found (by exclusion, not chance)',
+      !!served, `${excluded.size} draws excluded`);
+    check('a served scenario is not the artifact object', !!served && !rows.some((e) => e.s === served));
+    if (served) {
+      const row = bankRowFor(served)!;
+      check('precondition: the source row has non-empty actorA AND actorB (else the isolation check is vacuous)',
+        ((row.s as SuggestedScenario).actorA?.length ?? 0) > 0 && ((row.s as SuggestedScenario).actorB?.length ?? 0) > 0);
+      const beforeA = JSON.stringify((row.s as SuggestedScenario).actorA);
+      const beforeB = JSON.stringify((row.s as SuggestedScenario).actorB);
+      let plantThrew = false;
+      try { served.actorA = ['the harbourmaster of Vellenbrook']; } catch { plantThrew = true; }
+      check('a served copy is writable (the gate is allowed to strip ITS object)', !plantThrew);
+      screenScenario(served, g, { directionChecks: true });
+      check('the gate really stripped the copy (so the next check is not vacuous)',
+        served.actorA === undefined && served.actorB === undefined,
+        `actorA=${JSON.stringify(served.actorA)} actorB=${JSON.stringify(served.actorB)}`);
+      check('serving a row and letting the gate strip it leaves the artifact row untouched',
+        JSON.stringify((row.s as SuggestedScenario).actorA) === beforeA
+        && JSON.stringify((row.s as SuggestedScenario).actorB) === beforeB,
+        `artifact now actorA=${JSON.stringify((row.s as SuggestedScenario).actorA)} (was ${beforeA})`);
+      // 3. `bankRowFor` is the serving record, NOT a name lookup — 176 of the
+      //    bank's names span more than one band, so a name match would resolve
+      //    the wrong row and every band number in this file would be fiction.
+      check('bankRowFor resolves the row that actually served the copy', row.s.name === served.name);
+      check('bankRowFor is not a name lookup: an identical-looking object it never served is unknown',
+        bankRowFor({ ...served }) === undefined);
+    }
+  }
+  /**
+   * MUTATION. Remove the freeze loop in `src/utils/bankSource.ts` and exactly
+   * one check fails: "a bank row cannot be written to". Remove `serveCopy`'s
+   * `structuredClone` (return `sc`) and three fail: "a served scenario is not
+   * the artifact object", "a served copy is writable" (it is now the frozen
+   * row) and "the gate really stripped the copy". Neither mutation touches the
+   * 2,000-draw band-drift numbers above, which is what makes them separable.
+   */
 }
 
 // The exit check must be the LAST thing in the file. It was above the shipped-artifact
