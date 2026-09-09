@@ -643,6 +643,19 @@ export function fmtPayoff(v: number): string {
  * quantity is nothing when it is not, and an exact zero becomes
  * indistinguishable from 0.0004.
  */
+/**
+ * The plain-text twin of `payoffTexRhs` for a label on a picture: relation
+ * included, prose register (trimmed zeros, so an integer preset stays "= 2").
+ * "A = less than 0.001" is a sentence fragment stuck onto an equals sign; the
+ * relation belongs in the operator: "A < 0.001" (Opus review of #181).
+ */
+export function payoffProseRhs(v: number): string {
+  if (!Number.isFinite(v)) return '= —';
+  if (v === 0) return '= 0';
+  if (r3(v) === 0) return v > 0 ? '< 0.001' : '> -0.001';
+  return `= ${fmtPayoffProse(v)}`;
+}
+
 export function payoffTexRhs(v: number): string {
   if (!Number.isFinite(v)) return '= \\text{--}';
   if (v === 0) return '= 0';
@@ -679,8 +692,19 @@ export function payoffTexRhs(v: number): string {
  * resolution.
  */
 export function fmtPayoffPair(p: number, q: number): { p: string; q: string } {
-  if (!Number.isFinite(p) || !Number.isFinite(q) || p === q) {
+  if (!Number.isFinite(p) || !Number.isFinite(q)) {
     return { p: r3(p).toFixed(3), q: r3(q).toFixed(3) };
+  }
+  if (p === q) {
+    // Equal values still owe the false-zero rule: 0.0001 twice must not read
+    // "0.000" twice. Unreachable from equilibriumPanel (it takes the
+    // indifference branch when |p-q| < 5e-4) but exported, so it holds here too
+    // (Opus review of #181, 2026-09-08).
+    for (let dp = 3; dp <= 8; dp++) {
+      const s = collapseNegZeroDisplay(p.toFixed(dp));
+      if (!isFalseZeroAt(s, p)) return { p: s, q: s };
+    }
+    return { p: p.toExponential(2), q: q.toExponential(2) };
   }
   // Widen only as far as it takes to tell them apart; 3dp stays the common case.
   for (let dp = 3; dp <= 8; dp++) {

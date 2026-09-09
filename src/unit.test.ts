@@ -66,7 +66,7 @@ import {
   computeMixedNE, computeAllNE, fmtProb, texProb,
   profileConcept, resolveProfile, indifferenceAt,
   equilibriumSet, kindOf, describeContinua,
-  computeIndifference, generateRandomGame, fmtPayoff, fmtPayoffProse,
+  computeIndifference, generateRandomGame, fmtPayoff, fmtPayoffProse, payoffProseRhs,
 } from './utils/gameEngine';
 import { buildGroundingPayload } from './utils/report';
 import { describeGeometry, geometryBriefing } from './utils/geometry';
@@ -642,6 +642,19 @@ function testFmtPayoffProseExhaustive() {
     && fmtPayoffProse(0.000196289) !== legacy(0.000196289),
     'the prose renderer must differ from the legacy one on exactly the defect inputs');
   console.log('✓ fmtPayoffProse: 200,001 exhaustive values, "0" only for an exact zero');
+}
+
+// payoffProseRhs — the plot callout's relation-included label (Opus review of #181):
+// "A < 0.001" instead of "A = less than 0.001"; integer/2-dp presets unchanged.
+{
+  assert(payoffProseRhs(2) === '= 2', `payoffProseRhs(2) = "${payoffProseRhs(2)}"`);
+  assert(payoffProseRhs(1.5) === '= 1.5', `payoffProseRhs(1.5) = "${payoffProseRhs(1.5)}"`);
+  assert(payoffProseRhs(0) === '= 0', `payoffProseRhs(0) = "${payoffProseRhs(0)}"`);
+  assert(payoffProseRhs(0.00025) === '< 0.001', `payoffProseRhs(0.00025) = "${payoffProseRhs(0.00025)}"`);
+  assert(payoffProseRhs(-0.00025) === '> -0.001', `payoffProseRhs(-0.00025) = "${payoffProseRhs(-0.00025)}"`);
+  assert(payoffProseRhs(NaN) === '= —', `payoffProseRhs(NaN) = "${payoffProseRhs(NaN)}"`);
+  for (const v of [3, -2, 0.25, 1.75, 4.5]) assert(payoffProseRhs(v) === `= ${fmtPayoffProse(v)}`, `preset payoff ${v} keeps the prose register`);
+  console.log('✓ payoffProseRhs: relation in the operator, prose register for ordinary payoffs');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -3319,6 +3332,12 @@ function payoffDisplayTests() {
   // the caller draws an approx sign rather than a strict relation.
   const eq = fmtPayoffPair(0.5, 0.5);
   assert(eq.p === eq.q && eq.p === '0.500', `genuinely equal payoffs still render alike: ${eq.p}/${eq.q}`);
+  // Equal AND sub-resolution: the false-zero rule still applies (Opus review of
+  // #181). The old early return printed "0.000" twice for 0.0001 twice.
+  const eqTiny = fmtPayoffPair(0.0001, 0.0001);
+  assert(eqTiny.p === eqTiny.q && eqTiny.p === '0.0001', `equal sub-resolution payoffs widen instead of printing a false zero: ${eqTiny.p}/${eqTiny.q}`);
+  const eqZero = fmtPayoffPair(0, 0);
+  assert(eqZero.p === '0.000' && eqZero.q === '0.000', `an exact zero pair still prints 0.000: ${eqZero.p}`);
   // 3dp stays the common case — this must not widen everything.
   const ord = fmtPayoffPair(1.234, 5.678);
   assert(ord.p === '1.234' && ord.q === '5.678', `ordinary pairs keep 3dp: ${ord.p}/${ord.q}`);
