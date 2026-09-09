@@ -20,15 +20,13 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// The ONLY schemes that may be handed to the operating system.
-// `shell.openExternal` launches the default handler for whatever it is given:
-// `file://` opens Finder on an arbitrary path, `smb://` reaches for a network
-// share, and macOS resolves any custom scheme an installed app has registered.
-// The window-open handler below receives its URL from the RENDERER, so the
-// renderer must not be able to choose the scheme — today no document in this
-// app contains a link at all (there is not one `href` in src/), which is
-// exactly why this is worth pinning before one appears.
-const EXTERNAL_URL_SCHEMES = new Set(['https:', 'http:']);
+// The ONLY scheme that may be handed to the operating system. `shell.openExternal`
+// launches the default handler for whatever it is given: `file://` opens Finder on an
+// arbitrary path, `smb://` reaches for a network share, and macOS resolves any custom
+// scheme an installed app has registered. Every caller below takes a URL the RENDERER
+// chose. The app's own outbound links are https; its local server is reached with
+// loadURL, never openExternal, so http: buys nothing and is not allowed.
+const EXTERNAL_URL_SCHEMES = new Set(['https:']);
 function openExternalIfSafe(rawUrl) {
   let parsed = null;
   try { parsed = new URL(String(rawUrl)); } catch { /* not a URL at all */ }
@@ -38,6 +36,31 @@ function openExternalIfSafe(rawUrl) {
   }
   shell.openExternal(parsed.toString());
   return true;
+}
+
+// Where the renderer may send this app. `setWindowOpenHandler` only sees
+// window.open/target=_blank; a plain <a href> or location.href navigates THIS
+// window, and with titleBarStyle 'hidden' there is no URL bar to reveal that the
+// full-bleed page became a remote origin. Same policy for every door: stay on the
+// app's own origin, hand anything else to the OS through the scheme filter above.
+let appOrigin = null;
+const hardenedContents = new WeakSet();
+function hardenWebContents(contents) {
+  if (!contents || hardenedContents.has(contents)) return;
+  hardenedContents.add(contents);
+  contents.setWindowOpenHandler(({ url }) => {
+    openExternalIfSafe(url);
+    return { action: 'deny' };
+  });
+  const keepInApp = (event, url) => {
+    let origin = null;
+    try { origin = new URL(String(url)).origin; } catch { /* not a URL at all */ }
+    if (appOrigin !== null && origin === appOrigin) return;
+    event.preventDefault();
+    openExternalIfSafe(url);
+  };
+  contents.on('will-navigate', keepInApp);
+  contents.on('will-frame-navigate', (details) => keepInApp(details, details && details.url));
 }
 
 // Ask the public site for the latest version; if newer than this build, offer the download.
@@ -326,7 +349,8 @@ if (!gotTheLock) {
     mainWindow.webContents.setZoomFactor(1.33);
 
     // Load the Express-served application on loopback
-    mainWindow.loadURL(`http://127.0.0.1:${finalPort}`);
+    appOrigin = `http://127.0.0.1:${finalPort}`;
+    mainWindow.loadURL(appOrigin);
 
     // Notify renderer of macOS native fullscreen transitions
     const dispatchFullscreen = (value) => {
@@ -337,11 +361,8 @@ if (!gotTheLock) {
     mainWindow.on('enter-full-screen', () => dispatchFullscreen(true));
     mainWindow.on('leave-full-screen', () => dispatchFullscreen(false));
 
-    // Open external links (e.g. documentation, help pages) in standard Safari/default browser
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-      openExternalIfSafe(url);
-      return { action: 'deny' };
-    });
+    // Open external links in Safari/the default browser, and keep this window on the app.
+    hardenWebContents(mainWindow.webContents);
 
     mainWindow.on('closed', function () {
       mainWindow = null;
@@ -353,6 +374,10 @@ if (!gotTheLock) {
       setTimeout(() => checkForUpdates(mainWindow), 3000);
     }
   }
+
+  // Any other webContents Electron creates (webview, devtools-opened child) gets the
+  // same policy; the WeakSet keeps the main window from being hardened twice.
+  app.on('web-contents-created', (_event, contents) => hardenWebContents(contents));
 
   // Handle second instance activation
   app.on('second-instance', () => {
