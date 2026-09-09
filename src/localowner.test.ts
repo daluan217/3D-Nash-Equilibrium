@@ -14,6 +14,7 @@
  * pass.
  */
 import { readFileSync, readdirSync } from 'node:fs';
+import ts from 'typescript';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -928,6 +929,45 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // touches any state.
   const deleteSlice = app.slice(app.indexOf('const handleDeleteGame'), app.indexOf('const handleGenerateGame'));
   const DELETE_STALE_GATE = 'if (res.stale) return;';
+  const DELETE_PARSED_SUCCESS_GATE = "if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true)))";
+  const parsedGateRange = (source: string): { start: number; open: number; close: number } | null => {
+    const parsedGate = source.indexOf(DELETE_PARSED_SUCCESS_GATE);
+    if (parsedGate < 0) return null;
+    const open = source.indexOf('{', parsedGate + DELETE_PARSED_SUCCESS_GATE.length);
+    if (open < 0) return null;
+    let depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1;
+      if (source[i] === '}') depth -= 1;
+      if (depth === 0) return { start: parsedGate, open, close: i };
+    }
+    return null;
+  };
+  const rejectsUnreadable2xxBefore = (source: string, successCommitMarker: string): boolean => {
+    const gate = parsedGateRange(source);
+    const successCommit = source.indexOf(successCommitMarker);
+    if (!gate || successCommit === -1 || gate.close >= successCommit) return false;
+    const guardBody = source.slice(gate.open + 1, gate.close);
+    const parsedBody = ts.createSourceFile(
+      'parsed-success-guard.tsx',
+      `function guard() {${guardBody}}`,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const guardFunction = parsedBody.statements.find(ts.isFunctionDeclaration);
+    const exitsGuardDirectly = guardFunction?.body?.statements.some(ts.isReturnStatement) === true;
+    return exitsGuardDirectly;
+  };
+  const removeParsedGateReturn = (source: string): string => {
+    const gate = parsedGateRange(source);
+    if (!gate) return source;
+    const body = source.slice(gate.open + 1, gate.close);
+    const returnAt = body.lastIndexOf('return;');
+    if (returnAt < 0) return source;
+    return source.slice(0, gate.open + 1 + returnAt)
+      + source.slice(gate.open + 1 + returnAt + 'return;'.length);
+  };
   const gateIdx = deleteSlice.indexOf(DELETE_STALE_GATE);
   const okIdx = deleteSlice.indexOf('if (res.ok)');
   const notFoundIdx = deleteSlice.indexOf('res.status === 404');
@@ -941,7 +981,61 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   check('the games-context generation is bumped on every identity, API-base and database-mode commit',
     /useLayoutEffect\(\(\) => \{ gamesContextGenRef\.current \+= 1; \}, \[authToken, apiBaseUrl, dbMode\]\);/.test(app));
   check('handleDeleteGame reports a request that never got an answer, and never as a session verdict',
-    /if \(res\.kind !== 'response'\) \{[\s\S]{0,160}alert\('Network error\. Failed to delete game\./.test(deleteSlice));
+    /if \(res\.kind !== 'response'[\s\S]{0,160}\) \{[\s\S]{0,280}alert\('Network error\. Failed to delete game\./.test(deleteSlice));
+  check('handleDeleteGame commits success only after rejecting an unreadable 2xx response',
+    rejectsUnreadable2xxBefore(deleteSlice, 'if (res.ok)'));
+  // RED-DESKTOP-20/002 known-positive: this is the exact shipped mutation.
+  // It leaves the transport-failure guard intact but drops `dataParsed`, so
+  // a 200 HTML captive-portal response reaches the success state mutation.
+  const deleteWithoutParsedGate = deleteSlice.replace(" || (res.ok && (!res.dataParsed || res.data?.success !== true))", '');
+  check('fixture: removing DELETE dataParsed protection actually landed', deleteWithoutParsedGate !== deleteSlice);
+  check('fixture: status-only DELETE success fails the parsed-response contract',
+    !rejectsUnreadable2xxBefore(deleteWithoutParsedGate, 'if (res.ok)'));
+  const deleteWithoutParsedReturn = removeParsedGateReturn(deleteSlice);
+  check('fixture: removing the parsed-success guard return actually landed', deleteWithoutParsedReturn !== deleteSlice);
+  check('fixture: an inert parsed-success guard fails the commit-boundary contract',
+    !rejectsUnreadable2xxBefore(deleteWithoutParsedReturn, 'if (res.ok)'));
+
+  // Family sweep: these are all six account-client mutation sites whose
+  // successful response changes durable or destructive UI state. Each must
+  // reject an unreadable 2xx in a block that actually returns before commit.
+  const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  const adoptSlice = app.slice(app.indexOf('const adoptLocalGames = async'), app.indexOf('const refetchUserGames = useCallback'));
+  const deleteRequestSlice = drawer.slice(drawer.indexOf('const handleDeleteRequest = async'), drawer.indexOf('const handleDeleteConfirm = async'));
+  const deleteConfirmSlice = drawer.slice(drawer.indexOf('const handleDeleteConfirm = async'), drawer.indexOf('  // RED-APP-13/004'));
+  const parsedSuccessFamily: Array<[string, string, string]> = [
+    ['POST /api/games (Save)', saveSlice, 'if (res.ok)'],
+    ['PATCH /api/games/:id (Edit)', editSlice, 'if (res.ok)'],
+    ['DELETE /api/games/:id', deleteSlice, 'if (res.ok)'],
+    ['POST /api/games/adopt-local', adoptSlice, 'const moved ='],
+    ['POST /api/auth/delete-request', deleteRequestSlice, "setDeleteStep('inputCode')"],
+    ['POST /api/auth/delete-confirm', deleteConfirmSlice, "setDeleteStep('success')"],
+  ];
+  for (const [name, slice, commitMarker] of parsedSuccessFamily) {
+    check(`${name} rejects an unreadable 2xx before its success commit`,
+      rejectsUnreadable2xxBefore(slice, commitMarker));
+    const statusOnly = slice.replace(" || (res.ok && (!res.dataParsed || res.data?.success !== true))", '');
+    check(`fixture: ${name} status-only success fails the family contract`,
+      statusOnly !== slice && !rejectsUnreadable2xxBefore(statusOnly, commitMarker));
+    const parsedOnly = slice.replace('(!res.dataParsed || res.data?.success !== true)', '!res.dataParsed');
+    check(`fixture: ${name} parsed junk without success:true fails the acknowledgement contract`,
+      parsedOnly !== slice && !rejectsUnreadable2xxBefore(parsedOnly, commitMarker));
+    const inert = removeParsedGateReturn(slice);
+    check(`fixture: ${name} inert parsed-response guard fails the family contract`,
+      inert !== slice && !rejectsUnreadable2xxBefore(inert, commitMarker));
+    const commentedReturn = inert.replace(
+      DELETE_PARSED_SUCCESS_GATE + ' {',
+      DELETE_PARSED_SUCCESS_GATE + ' {\n        // return;',
+    );
+    check(`fixture: ${name} a commented return cannot satisfy the family contract`,
+      commentedReturn !== inert && !rejectsUnreadable2xxBefore(commentedReturn, commitMarker));
+    const nestedReturn = inert.replace(
+      DELETE_PARSED_SUCCESS_GATE + ' {',
+      DELETE_PARSED_SUCCESS_GATE + ' {\n        (() => { return; })();',
+    );
+    check(`fixture: ${name} a nested return cannot satisfy the family contract`,
+      nestedReturn !== inert && !rejectsUnreadable2xxBefore(nestedReturn, commitMarker));
+  }
   // Mutation fixtures: the two ways this regresses — the gate removed (the
   // original defect) and the gate moved below the first state change.
   const noGate = deleteSlice.replace('      ' + DELETE_STALE_GATE + '\n', '');

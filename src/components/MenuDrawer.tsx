@@ -143,7 +143,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     try {
       const res = await api.request('/api/auth/delete-request', { method: 'POST' });
       if (res.stale) return;
-      if (res.kind !== 'response') {
+      // RED-DESKTOP-20/002 family sweep: only a parsed success can prove the
+      // backend created the destructive-action challenge. A captive portal's
+      // 200 HTML must not advance this state machine.
+      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         // STRUCT-DESKTOP-19/002: this used to be `setDeleteError(err.message)`,
         // which put the browser's own text ("Failed to fetch" in Chrome,
         // "Load failed" in WebKit) in the Danger Zone's error line. That is
@@ -174,7 +177,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
     try {
       const res = await api.request('/api/auth/delete-confirm', { method: 'POST', json: { code: deleteCode } });
       if (res.stale) return;
-      if (res.kind !== 'response') {
+      // Same acknowledgement rule as delete-request and saved-game Delete:
+      // never claim an account was destroyed from an unreadable 2xx body.
+      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         setDeleteError(describeRequestFailure(res, 'confirm the deletion'));
         return;
       }

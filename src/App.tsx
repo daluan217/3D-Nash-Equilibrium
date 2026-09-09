@@ -1002,7 +1002,9 @@ export default function App() {
       // authToken state is guaranteed to have caught up.
       const res = await api.request('/api/games/adopt-local', { method: 'POST', token: requestToken });
       if (res.stale) return;
-      if (res.kind !== 'response') {
+      // RED-DESKTOP-20/002 family sweep: a 2xx response whose body was not
+      // the backend's JSON is not evidence that the device games moved.
+      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         setLocalGamesError(res.kind === 'timeout'
           ? 'The server did not answer in time. Your games are still on this device.'
           : 'Connection error. Your games are still on this device.');
@@ -2550,7 +2552,7 @@ export default function App() {
       if (staleSession) return;
       // No response at all, or a success whose body did not parse: the same
       // story the pre-client `catch` told, and never a session verdict.
-      if (res.kind !== 'response' || (res.ok && !res.dataParsed)) {
+      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         setEditError('Network error. Failed to update game.');
         setEditErrorNeedsAuth(false);
         return;
@@ -2807,7 +2809,12 @@ export default function App() {
       // rows. Discard it outright, exactly as Save/Edit skip a stale-session
       // response; `finally` still releases the row's deleting state.
       if (res.stale) return;
-      if (res.kind !== 'response') {
+      // RED-DESKTOP-20/002: `ok` alone is not proof that the backend
+      // processed the delete. A captive portal can answer DELETE with 200
+      // HTML; the account client exposes that as `dataParsed: false`. Match
+      // Save/Edit's contract and leave the row in place unless a successful
+      // response also carried the backend's JSON acknowledgement.
+      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         alert('Network error. Failed to delete game. Check your connection and try again.');
         return;
       }
@@ -3105,7 +3112,7 @@ export default function App() {
       if (staleSession) return;
       // No response at all, or a success whose body did not parse: the same
       // story the pre-client `catch` told, and never a session verdict.
-      if (res.kind !== 'response' || (res.ok && !res.dataParsed)) {
+      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
         setSaveError('Network error. Failed to save game.');
         setSaveErrorNeedsAuth(false);
         return;
