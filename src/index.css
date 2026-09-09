@@ -327,7 +327,12 @@ input.no-native-spinner {
    * remains on <html> while the browser switches to print media; the root
    * palette below is the paper ground, and the dark VARIANT is inert under
    * print (see the @custom-variant at the top of this file — RED-APP-18/004). */
+  /* STRUCT-APP-19/002: `body` used to be forced white only under `html.dark`,
+   * so the paper ground computed slate-50 from a light-theme browser and white
+   * from a dark one — the same theme-dependence, one element up. The ground is
+   * a property of PAPER, not of the screen the print was started from. */
   html,
+  body,
   html.dark,
   html.dark body {
     color-scheme: light !important;
@@ -339,56 +344,22 @@ input.no-native-spinner {
    * sit here are gone — the dark variant is inert under print (top of file),
    * so every element prints with its light utilities exactly as designed. */
 
-  /* The simulation progress panel uses darkMode's runtime class branch for
-   * its stateful controls, so it has no `dark:` token for the family rules
-   * above to match. Scope the light equivalents to its unique direct dark
-   * identity (the progress panel's exact bg/border tokens). */
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] {
-    background-color: var(--color-slate-50) !important;
-    border-color: var(--color-slate-200) !important;
-    color: var(--color-slate-900) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="bg-slate-900"] {
-    background-color: var(--color-slate-50) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="bg-slate-800"] {
-    background-color: var(--color-white) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="bg-slate-700"] {
-    background-color: var(--color-slate-200) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="border-slate-800"] {
-    border-color: var(--color-slate-200) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="border-slate-700"] {
-    border-color: var(--color-slate-300) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-slate-400"],
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-slate-200"] {
-    color: var(--color-slate-700) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-slate-600"] {
-    color: var(--color-slate-600) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="border-ne-mixed-700"] {
-    border-color: var(--color-ne-mixed-300) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="text-ne-mixed-400"] {
-    color: var(--color-ne-mixed-700) !important;
-  }
-
-  html.dark [class~="bg-slate-900"][class~="border-slate-800"] [class~="hover:bg-ne-mixed-900/30"] {
-    background-color: var(--color-ne-mixed-50) !important;
-  }
+  /* STRUCT-APP-19/002: the eleven `html.dark [class~="bg-slate-900"]…` rules
+   * that used to sit here are GONE, along with their cause. They existed
+   * because the simulation progress panel picked its dark classes in
+   * JavaScript (`darkMode ? 'text-slate-400' : 'text-slate-500'`), and a
+   * JS-chosen class is a plain class that no media query can make inert — so
+   * paper needed a hand-written map from that ONE component's dark utilities
+   * back to light ones. Two things were wrong with that: the map disagreed
+   * with the light theme's own choice (a dark-theme visitor printed those
+   * labels in slate-700 where a light-theme visitor printed slate-500 —
+   * measured, STRUCT-APP-19/002), and it covered exactly one component, so the
+   * next one to pick its classes in JS would print dark with nothing failing.
+   *
+   * That panel now uses `dark:` variants like every other component
+   * (App.tsx), and the variant is already inert on paper by construction (see
+   * the @custom-variant at the top of this file). e2e §41 asserts the
+   * invariant over the WHOLE printed surface rather than per selector. */
 
   /* The one `position: sticky` element on the page. Reset to static so it
    * prints once, in flow, at the top of page 1 — never re-baked as a

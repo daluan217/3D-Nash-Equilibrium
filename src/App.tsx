@@ -5513,12 +5513,12 @@ export default function App() {
           />
 
           {/* Progress bar + step input + NE jump — always visible once simulation starts */}
-          <div className={`flex flex-col gap-2 px-3 py-2.5 rounded-xl border ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+          <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800">
             {/* Bar row — only shown after first step */}
             {thinHistory.length > 1 && (
               <div className="flex items-center gap-3">
-                <span className={`text-xs font-medium shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Progress</span>
-                <div className={`flex-1 h-2 rounded-full overflow-hidden ${darkMode ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                <span className="text-xs font-medium shrink-0 text-slate-500 dark:text-slate-400">Progress</span>
+                <div className="flex-1 h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-700">
                   <div
                     className="h-full rounded-full bg-accent-500 transition-all duration-150"
                     style={{ width: `${Math.min(100, (simState.stepCount / (thinHistory.length - 1)) * 100)}%` }}
@@ -5533,7 +5533,7 @@ export default function App() {
             <div className="flex items-center gap-2 flex-wrap">
               {thinHistory.length > 1 && (
                 <>
-                  <label htmlFor={labelFor('sim', 'go-to-step')} className={`text-xs font-medium shrink-0 ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Go to step</label>
+                  <label htmlFor={labelFor('sim', 'go-to-step')} className="text-xs font-medium shrink-0 text-slate-500 dark:text-slate-400">Go to step</label>
                   <input
                     id={labelFor('sim', 'go-to-step')}
                     type="number"
@@ -5543,7 +5543,7 @@ export default function App() {
                     onChange={e => setJumpInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') handleJump(); }}
                     placeholder={`0 – ${thinHistory.length - 1}`}
-                    className={`no-native-spinner w-28 px-2 py-1 text-xs rounded-lg border font-mono ${darkMode ? 'bg-slate-800 border-slate-700 text-slate-200 placeholder-slate-600' : 'bg-white border-slate-300 text-slate-700 placeholder-slate-400'}`}
+                    className="no-native-spinner w-28 px-2 py-1 text-xs rounded-lg border font-mono bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-600"
                   />
                   <button
                     onClick={handleJump}
@@ -5563,8 +5563,8 @@ export default function App() {
                   disabled={!neSnapshot}
                   className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all ${
                     neSnapshot
-                      ? darkMode ? 'border-ne-mixed-700 text-ne-mixed-400 hover:bg-ne-mixed-900/30 cursor-pointer' : 'border-ne-mixed-300 text-ne-mixed-700 hover:bg-ne-mixed-50 cursor-pointer'
-                      : darkMode ? 'border-slate-700 text-slate-600 cursor-not-allowed' : 'border-slate-200 text-slate-400 cursor-not-allowed'
+                      ? 'border-ne-mixed-300 dark:border-ne-mixed-700 text-ne-mixed-700 dark:text-ne-mixed-400 hover:bg-ne-mixed-50 dark:hover:bg-ne-mixed-900/30 cursor-pointer'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-600 cursor-not-allowed'
                   }`}
                 >
                   {neSnapshot ? `1st NE Coord (step ${neSnapshot.stepCount})` : '1st NE Coord'}

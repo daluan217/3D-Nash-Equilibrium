@@ -40,20 +40,22 @@ const expectedIds = [
   '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
   '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '50',
   '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
-  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89',
+  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 30, 'the smoke suite is split into 30 CI shards (test.yml matrix must match) '
+assert.strictEqual(SHARD_COUNT, 31, 'the smoke suite is split into 31 CI shards (test.yml matrix must match) '
   + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
   + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
   + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
   + 'skipped (§70 alone: 207,990ms) and raised 28->29 on its own. Merging both onto ONE 29-shard table '
   + 'pushed 6 more multi-section shards over the 200 s headroom line (worst 204,888ms) -- neither branch '
-  + 'anticipated the other\'s addition; 30 shards clears every multi-section shard again.');
+  + 'anticipated the other\'s addition; 30 shards clears every multi-section shard again. '
+  + 'struct19-app 2026-09-08: correcting SS90 from a stale 56,000ms to its measured 88,551ms put five '
+  + 'multi-section shards back over the line (worst 200,704ms); 31 clears them (worst 195,221ms).');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
@@ -138,7 +140,7 @@ assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'th
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
 // A shard selector returns exactly the packed assignment's members.
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/30' }).selected.map(({ id }) => id);
+const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/31' }).selected.map(({ id }) => id);
 assert.deepStrictEqual(shard1Now, definitions.filter((d) => d.shard === 1).map(({ id }) => id),
   'E2E_SHARD must select exactly the sections the packing assigned to that shard');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
@@ -149,7 +151,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/30', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/31', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');

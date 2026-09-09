@@ -31,6 +31,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { closeTour } from './tour.mjs';
 
 const PORT = process.env.E2E_PORT || '3098';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -97,11 +98,18 @@ await page.route('**/api/report', async (route) => {
 });
 
 async function dismissTour() {
-  // The viewport-anchored Exit button, never the callout X: the card follows
-  // the spotlight and step 1's smooth-scroll can leave it off-screen.
-  await page.getByRole('button', { name: /Exit tour/i }).click({ timeout: 8000 }).catch(() => {});
-  await page.keyboard.press('Escape').catch(() => {});
-  await page.waitForFunction(() => !document.querySelector('[data-tour-overlay]'), { timeout: 10000 }).catch(() => {});
+  // OPUS-REVIEW-180 finding 5: this used to wait on `[data-tour-overlay]`, a
+  // selector that exists NOWHERE in the repo — so the wait always succeeded
+  // instantly and this suite had no real check the tour was gone. The comment
+  // above it also still described the viewport-anchored Exit button, removed in
+  // STRUCT-APP-19/003. Both replaced by the shared helper, which waits for the
+  // real dialog to detach, plus a loud failure if it did not.
+  const { closed } = await closeTour(page);
+  const gone = await page.waitForFunction(
+    () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+    null, { timeout: 10000 },
+  ).then(() => true).catch(() => false);
+  if (!gone) throw new Error(`ai-surface: the guided tour is still open (closeTour closed=${closed}) — every later click would time out under its scrim`);
 }
 /* Sign in first: "Save Preset" renders only for a signed-in user (`{user && …}`),
  * so signed-out e2e could never reach the dialog — which is a large part of why
