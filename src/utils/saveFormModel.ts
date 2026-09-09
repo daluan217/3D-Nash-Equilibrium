@@ -42,7 +42,16 @@
  */
 
 /** Where a field's current value came from. */
-export type FieldSource = 'empty' | 'typed' | 'generated' | 'from-board';
+/**
+ * Where a field's current value came from.
+ *
+ * `'adopted'` is a value this dialog did not write and the user did not type: a
+ * concurrent edit on another device, merged in by the 409 recovery
+ * (OPUS-REVIEW-184/S3). It is deliberately NOT `'typed'` — the Generate note
+ * only ever claims to have kept what the user typed — and not `'generated'`,
+ * which means an AI story this app wrote.
+ */
+export type FieldSource = 'empty' | 'typed' | 'generated' | 'from-board' | 'adopted';
 
 export interface SaveFormLabels { row1: string; row2: string; col1: string; col2: string }
 export type LabelKey = keyof SaveFormLabels;
@@ -86,6 +95,8 @@ export type SaveFormAction =
   | { type: 'typedLabel'; field: LabelKey; value: string }
   /** The user added or removed a colour highlight. */
   | { type: 'typedTerms'; a: string[]; b: string[] }
+  /** The 409 recovery adopting another device's colour terms (OPUS-REVIEW-184/S3). */
+  | { type: 'adoptedTerms'; a: readonly string[]; b: readonly string[] }
   /**
    * The dialog is being opened for `boardKey`. A draft written for THIS board
    * survives whole; a draft written for another board is discarded whole, and
@@ -137,6 +148,14 @@ export function saveFormReducer(state: SaveFormState, action: SaveFormAction): S
         labels: { ...state.labels, [action.field]: action.value },
         provenance: { ...state.provenance, labels: 'typed' },
       };
+    case 'adoptedTerms':
+      // A concurrent edit from another device, merged in by the 409 recovery.
+      // Only the terms move, and the provenance says whose they are.
+      return {
+        ...state,
+        terms: { a: [...action.a], b: [...action.b] },
+        provenance: { ...state.provenance, terms: 'adopted' },
+      };
     case 'typedTerms':
       return {
         ...state,
@@ -169,7 +188,10 @@ export function saveFormReducer(state: SaveFormState, action: SaveFormAction): S
         ...EMPTY_SAVE_FORM,
         labels: { ...action.presetLabels },
         boardKey: action.boardKey,
-        provenance: { ...EMPTY_SAVE_FORM.provenance, labels: sameLabels(action.presetLabels, EMPTY_LABELS) ? 'empty' : 'from-board' },
+        // ONE blankness predicate on both paths (OPUS-REVIEW-184/NIT): the branch
+        // above asks `labelsBlank`, which trims, so a whitespace-only board label
+        // must be 'empty' here too rather than 'from-board'.
+        provenance: { ...EMPTY_SAVE_FORM.provenance, labels: labelsBlank(action.presetLabels) ? 'empty' : 'from-board' },
       };
     }
     case 'story':

@@ -287,6 +287,8 @@ export function regenDroppedNote(
   dropped: { a: readonly string[]; b: readonly string[] },
   orphaned: { a: readonly string[]; b: readonly string[] } = { a: [], b: [] },
   shadowed: { a: readonly ShadowedChip[]; b: readonly ShadowedChip[] } = { a: [], b: [] },
+  /** What the phrases are missing from; see `orphanedNote` (STRUCT-REGEN-19/010). */
+  where = 'the new story',
 ): string | null {
   const notes: string[] = [];
   if (dropped.a.length > 0) notes.push(capHitMessage(dropped.a, 'A'));
@@ -294,8 +296,8 @@ export function regenDroppedNote(
   // RED-REGEN-14/002: a kept chip the new story no longer contains is not
   // deleted (2026-09-03: Keep never destroys highlights) — but a silent inert
   // chip was the defect, so Keep says which ones and what to do.
-  if (orphaned.a.length > 0) notes.push(orphanedNote(orphaned.a, 'A'));
-  if (orphaned.b.length > 0) notes.push(orphanedNote(orphaned.b, 'B'));
+  if (orphaned.a.length > 0) notes.push(orphanedNote(orphaned.a, 'A', where));
+  if (orphaned.b.length > 0) notes.push(orphanedNote(orphaned.b, 'B', where));
   // STRUCT-REGEN-19/002: same family — the chip paints nothing of its own —
   // but the words ARE on screen, in the other player's colour, so the wording
   // names the phrase that took them instead of saying "does not appear".

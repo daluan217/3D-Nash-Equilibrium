@@ -540,6 +540,12 @@ export type ChipPaint =
  * `colorTermKey` is what `DescriptionEditor` already uses for every other
  * membership test (`renderedA`, `crossPlayerKeys`), so this makes one key rule
  * for the whole surface.
+ *
+ * CONTRACT (OPUS-REVIEW-184/NIT): the key folds case, NFKC and a leading
+ * article, so "The Ferry" and "ferry" share one. Each side's list must already
+ * be key-unique — `mergeDescriptionTerms` guarantees that for every caller here,
+ * dropping any base term whose key a user chip claims — because with a duplicate
+ * the later entry wins the map and the earlier chip would read the other's state.
  */
 export function chipPaintStates(
   text: string,

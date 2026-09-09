@@ -93,7 +93,7 @@ import {
 import { MenuDrawer } from './components/MenuDrawer';
 import { SavedGamesList, formatSavedGames } from './components/SavedGamesList';
 import { ColorCoded } from './components/ColorCoded';
-import { chipPaintStates, colorTermKey, colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
+import { chipPaintStates, colorTermKey, colorTermsFor, crossPlayerUserTerms, descriptionColorTerms, dialogBaseColorTerms, mergeDescriptionTerms, optionLabelTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { saveFormReducer, EMPTY_SAVE_FORM, type LabelKey, type SaveFormState } from './utils/saveFormModel';
 // aliased: `generateNote` is also the name of the state holding the rendered text.
@@ -106,11 +106,11 @@ import {
   regenErrorFromResponse,
   cleanPreview,
   regenDroppedNote,
-  orphanedNote,
   REGEN_ERROR_MESSAGES,
   REGEN_ANNOUNCE,
   type RegenKey,
   type RegenPreview,
+  type ShadowedChip,
   type RegenErrorKind,
 } from './utils/scenarioRegen';
 import { DescriptionEditor } from './components/DescriptionEditor';
@@ -1823,16 +1823,33 @@ export default function App() {
     // an abandoned draft's colour chips under a brand-new AI description AND
     // disarmed the reconcile that would have cleared them — the saved record
     // then named highlight phrases absent from its own text.
+    const prefillLabels = {
+      row1: sc.row1 ?? '', row2: sc.row2 ?? '',
+      col1: sc.col1 ?? '', col2: sc.col2 ?? '',
+    };
     dispatchSaveForm({
       type: 'story',
       boardKey: boardKeyOf(payoffs),
       name: prefillName,
       desc: description.slice(0, 800),
-      labels: {
-        row1: sc.row1 ?? '', row2: sc.row2 ?? '',
-        col1: sc.col1 ?? '', col2: sc.col2 ?? '',
-      },
+      labels: prefillLabels,
     });
+    // OPUS-REVIEW-184/F1, and the same rule keepRegen states below: a story the
+    // APP wrote is generated text, so it goes in the ref that answers "did the
+    // app write this?". Without it the form's provenance said 'generated' while
+    // `generatedFillIsSafe` — which compares VALUES against this ref — still
+    // treated the fields as the user's, so "…or generate a new game" was blocked
+    // by text nobody typed and the note named none of it. That made "Clear the
+    // name to let the AI fill the form" a false instruction (clearing the name
+    // left the prefilled description blocking) and made the empty-list branch
+    // reachable. Every `story` written into the SAVE form now records this in the
+    // same block, which is what payoffhonesty's ledger pins.
+    lastGeneratedFillRef.current = {
+      name: prefillName,
+      desc: description.slice(0, 800),
+      row1: prefillLabels.row1, row2: prefillLabels.row2,
+      col1: prefillLabels.col1, col2: prefillLabels.col2,
+    };
     setSaveError('');
     regenExplanationAfterSaveRef.current = true;
     // A fresh save attempt for a different scenario — never reuse a
@@ -2580,10 +2597,17 @@ export default function App() {
           const afterA = adoptedA ? freshA : nowTerms.a;
           const afterB = adoptedB ? freshB : nowTerms.b;
           if (adoptedA || adoptedB) {
-            setEditTerms({ a: afterA, b: afterB });
+            // OPUS-REVIEW-184/S3: its OWN action. `typedTerms` would have said the
+            // user typed another device's chips, and `keptFieldsOf` now depends on
+            // provenance being true.
+            dispatchEditForm({ type: 'adoptedTerms', a: afterA, b: afterB });
             // Keep the mirror current before React re-renders (CodeRabbit CLI):
             // nothing below may read a pre-adoption snapshot.
-            editFormRef.current = { ...editFormRef.current, terms: { a: afterA, b: afterB } };
+            editFormRef.current = {
+              ...editFormRef.current,
+              terms: { a: afterA, b: afterB },
+              provenance: { ...editFormRef.current.provenance, terms: 'adopted' },
+            };
           }
           // Re-baseline only the side(s) just adopted — a side the user HAS
           // typed into keeps its OLD baseline, so the next Save still submits
@@ -2614,23 +2638,39 @@ export default function App() {
           // these chips here. Which ones paint is asked of `chipPaintStates`,
           // the same pass the chips and ColorCoded render from — never a second
           // rule — and the sentence is `orphanedNote`, the same one Keep uses.
-          const liveDesc = editFormRef.current.desc;
-          const paints = chipPaintStates(liveDesc, afterA, afterB);
-          const inert = (terms: readonly string[], side: 'a' | 'b') =>
-            terms.filter((t) => paints[side].get(colorTermKey(t))?.state === 'absent');
+          // OPUS-REVIEW-184/S2: judged against the FULL merged list this dialog
+          // renders with — the chips PLUS the game's own option labels — because
+          // the phrase that takes an adopted chip's colour is usually one of those
+          // labels, and a plan built from the chips alone can never see it.
+          // Composed exactly as `DescriptionEditor` and `keepFill` compose it.
+          const live = editFormRef.current;
+          const merged = mergeDescriptionTerms(
+            dialogBaseColorTerms(live.labels), afterA, afterB, optionLabelTerms(live.labels),
+          );
+          const paints = chipPaintStates(live.desc, merged.a, merged.b);
+          const stateOf = (t: string, side: 'a' | 'b') => paints[side].get(colorTermKey(t));
           // Only the sides the app itself just adopted: a chip the USER placed
           // that paints nothing is their own edit, and the chip already says so.
+          const inert = (terms: readonly string[], side: 'a' | 'b') =>
+            terms.filter((t) => stateOf(t, side)?.state === 'absent');
+          const shadowedOn = (terms: readonly string[], side: 'a' | 'b'): ShadowedChip[] =>
+            terms.flatMap((t) => {
+              const st = stateOf(t, side);
+              return st && st.state === 'shadowed' ? [{ term: t, by: st.by, bySide: st.bySide }] : [];
+            });
           const inertA = adoptedA ? inert(afterA, 'a') : [];
           const inertB = adoptedB ? inert(afterB, 'b') : [];
-          const orphanNotes = [
-            inertA.length > 0 ? orphanedNote(inertA, 'A', 'this description') : '',
-            inertB.length > 0 ? orphanedNote(inertB, 'B', 'this description') : '',
-          ].filter(Boolean);
+          const shadA = adoptedA ? shadowedOn(afterA, 'a') : [];
+          const shadB = adoptedB ? shadowedOn(afterB, 'b') : [];
+          // The same composer Keep uses, so the two paths cannot word this differently.
+          const chipNote = regenDroppedNote(
+            { a: [], b: [] }, { a: inertA, b: inertB }, { a: shadA, b: shadB }, 'this description',
+          );
           const colliding = crossPlayerUserTerms(afterA, afterB);
           const collisionNote = colliding.length > 0
             ? `${colliding.map((t) => `"${t}"`).join(', ')} ${colliding.length === 1 ? 'is' : 'are'} highlighted for both players; one phrase can belong to only one player, so remove it from Player A or Player B, then save again.`
             : '';
-          const orphanTail = orphanNotes.length > 0 ? ` ${orphanNotes.join(' ')}` : '';
+          const orphanTail = chipNote ? ` ${chipNote}` : '';
           setEditError(
             changed.length > 0
               ? `Another device changed ${changed.join(' and ')}'s highlights; they are shown now — adjust and save again.${collisionNote ? ` ${collisionNote}` : ''}${orphanTail}`
@@ -2871,7 +2911,9 @@ export default function App() {
     // so a close-and-reopen keeps it (CodeRabbit on #171) — and a failed or
     // pending report request changes nothing about either.
     const keepUserText = !generatedFillIsSafe(saveFormRef.current, lastGeneratedFillRef.current, boardLabelsIfAppsOwn(saveFormRef.current));
-    if (saveForm.boardKey !== boardKey && !keepUserText) lastGeneratedFillRef.current = null;
+    // OPUS-REVIEW-184/NIT: the LIVE form, not this render's closure — every other
+    // read in this handler uses the ref for the reason at saveFormRef's declaration.
+    if (saveFormRef.current.boardKey !== boardKey && !keepUserText) lastGeneratedFillRef.current = null;
     const boardAction = { type: 'boardChanged', boardKey, keepUserText } as const;
     // STRUCT-REGEN-19/006: how many of the user's colour highlights this click
     // discards, asked of the REDUCER (which decides it) rather than re-derived

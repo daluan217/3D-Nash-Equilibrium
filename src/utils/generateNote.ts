@@ -153,11 +153,16 @@ export function generateNote(kind: EquilibriumKind, result: GenerateResult, chip
       return `New ${kindLabel(kind)} game on the board, scenario written by AI — edit anything below, then save.${tail}`;
     case 'kept': {
       const items = keptList(result.kept);
-      // Unreachable in the app (`generatedFillIsSafe` calls an empty form safe,
-      // so nothing is kept), but a sentence that lists nothing must not be
-      // buildable: say what happened without naming fields that are not there.
+      // The fill was refused but nothing in the form is the user's own typing.
+      // OPUS-REVIEW-184/F1: this branch was called unreachable, and was reachable
+      // — the report card's prefill marked the fields 'generated' while
+      // `generatedFillIsSafe` still saw values it had no record of writing. That
+      // seam is closed (every `story` into the save form now records
+      // `lastGeneratedFillRef`), so on today's paths it should not be reached;
+      // it still must not be a dead end if it is, because a note that names
+      // nothing and offers nothing leaves the user with no way forward.
       if (items.length === 0) {
-        return `New ${kindLabel(kind)} game is on the board. The AI wrote a scenario, but the form was left exactly as it is.${tail}`;
+        return `New ${kindLabel(kind)} game is on the board. The AI wrote a scenario, but the form already has text in it, so nothing was replaced. Clear the form to let the AI fill it in on the next Generate.${tail}`;
       }
       // Number agreement (the round-16 rule): with one item the noun is
       // repeated rather than pronominalised, so "the option names" — plural in

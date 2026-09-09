@@ -253,11 +253,18 @@ const asFields = (f: GeneratedFill): SaveFormFields => ({ name: f.name, desc: f.
 
   // The in-dialog copy must actually say the fields are protected, not only
   // the code — the report's other half of the defect was misleading copy.
-  const genIdx = app.indexOf("…or generate a new game");
-  ok(genIdx > 0, 'the Generate section heading must be found');
-  const copy = app.slice(genIdx, genIdx + 500);
+  // Comment lines stripped first: this phrase is quoted in App.tsx's own comments
+  // (OPUS-REVIEW-184/F1 explains the Generate seam right above the prefill), and
+  // the first match then landed in prose instead of on the rendered heading — a
+  // check failed by a comment, the RED-REGEN hazard this suite has hit before.
+  const appCode = app.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const genIdx = appCode.indexOf("…or generate a new game");
+  ok(genIdx > 0, 'the Generate section heading must be found in CODE, not in a comment');
+  const copy = appCode.slice(genIdx, genIdx + 500);
   ok(/never overwritten|kept|preserv/i.test(copy),
     `the in-dialog copy near Generate must describe that typed text is protected, got: ${JSON.stringify(copy.slice(0, 300))}`);
+  ok(!/^\s*\/\//m.test(copy.split('\n')[0]),
+    'fixture: the slice must start on rendered copy, not on a comment line');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

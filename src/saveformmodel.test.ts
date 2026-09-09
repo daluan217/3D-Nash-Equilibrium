@@ -41,6 +41,7 @@ import {
   type SaveFormAction,
   type SaveFormLabels,
 } from './utils/saveFormModel';
+import { keptFieldsOf } from './utils/generateNote';
 
 let failures = 0;
 let cases = 0;
@@ -176,6 +177,36 @@ function testNamedDefects(): void {
       kept.desc === draftWithStaleChips.desc && kept.boardKey === B2 && kept.labels.row1 === 'Raid');
     const same = saveFormReducer(draftWithStaleChips, { type: 'boardChanged', boardKey: B1, keepUserText: false });
     check('a "board change" to the SAME board changes nothing at all', same === draftWithStaleChips);
+  }
+
+  // OPUS-REVIEW-184/S3 — the 409 recovery's adoption is its own door.
+  // Another device's chips are neither this user's typing nor this app's writing,
+  // and `keptFieldsOf` now depends on that distinction being true.
+  {
+    const adopted = run([
+      { type: 'openForBoard', boardKey: B1, presetLabels: PRESET },
+      { type: 'typed', field: 'desc', value: 'my own words' },
+      { type: 'adoptedTerms', a: ['the channel', 'lighthouse keeper'], b: [] },
+    ]);
+    check('adoptedTerms: the chips land on the form',
+      adopted.terms.a.join('|') === 'the channel|lighthouse keeper' && adopted.terms.b.length === 0,
+      JSON.stringify(adopted.terms));
+    check('adoptedTerms: provenance says adopted — not typed, and not generated',
+      adopted.provenance.terms === 'adopted', adopted.provenance.terms);
+    check('adoptedTerms: the Generate note may not claim them as "you\'d already added"',
+      keptFieldsOf(adopted).terms === false);
+    check('adoptedTerms: it touches ONLY the terms',
+      adopted.desc === 'my own words' && adopted.provenance.desc === 'typed'
+      && JSON.stringify(adopted.labels) === JSON.stringify(PRESET) && adopted.provenance.labels === 'from-board',
+      JSON.stringify({ desc: adopted.desc, prov: adopted.provenance }));
+    // The discriminator: the same chips through the door the user types with.
+    const typedIn = run([
+      { type: 'openForBoard', boardKey: B1, presetLabels: PRESET },
+      { type: 'typedTerms', a: ['the channel', 'lighthouse keeper'], b: [] },
+    ]);
+    check('adoptedTerms is distinguishable from typedTerms — same chips, different provenance',
+      typedIn.provenance.terms === 'typed' && keptFieldsOf(typedIn).terms === true
+      && typedIn.terms.a.join('|') === adopted.terms.a.join('|'));
   }
 
   // RED-APP-4 — the user's own typing outranks a generated fill.

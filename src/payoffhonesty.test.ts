@@ -887,6 +887,49 @@ function testSaveFormReconciledWithBoard() {
       `the save form's entry points must be exactly the ten enumerated here, in order — found ${dispatched.join(',')} (STRUCT-REGEN-19/001)`);
     ok((app.match(/dispatchSaveForm\(/g) || []).length === dispatched.length,
       `every dispatchSaveForm call must dispatch an action literal the ledger above can see — ${(app.match(/dispatchSaveForm\(/g) || []).length} calls vs ${dispatched.length} literals (STRUCT-REGEN-19/001)`);
+    // ── OPUS-REVIEW-184/F1: every save-form `story` records what the app wrote ──
+    // `keptFieldsOf` decides what the note may claim from PROVENANCE; the
+    // all-or-nothing rule (`generatedFillIsSafe`) decides what blocks the fill by
+    // comparing VALUES against `lastGeneratedFillRef`. The two agree only while
+    // `provenance === 'generated'` implies "in prevFill". The report card's prefill
+    // dispatched `story` and recorded nothing, so a story nobody typed blocked the
+    // fill while the note named none of it — "Clear the name to let the AI fill the
+    // form" was false, and the branch documented as unreachable was reached.
+    // Bind the two: a `story` into the SAVE form must write the ref in its own block.
+    const storySites: { at: number; slice: string }[] = [];
+    for (const m of app.matchAll(/dispatchSaveForm\(\{\s*\n?\s*type: 'story',/g)) {
+      storySites.push({ at: m.index ?? -1, slice: '' });
+    }
+    ok(storySites.length === 3,
+      `there must be exactly three save-form story sites (report prefill, Generate fill, Keep) — found ${storySites.length} (OPUS-REVIEW-184/F1)`);
+    for (let i = 0; i < storySites.length; i++) {
+      // Bounded by the NEXT story site, so no site can borrow another's assignment.
+      const end = i + 1 < storySites.length ? storySites[i + 1].at : storySites[i].at + 2500;
+      storySites[i].slice = app.slice(storySites[i].at, end);
+    }
+    // An object literal (`= {`) or a variable already built (`= gen`) both count;
+    // `= null`/`= undefined` do not — that is the pre-fix state written out longhand.
+    const RECORDS = /lastGeneratedFillRef\.current = (?!null|undefined)[{A-Za-z_$]/;
+    for (const site of storySites) {
+      // Name the site by the line it starts on, so a failure says WHICH one.
+      const line = app.slice(0, site.at).split('\n').length;
+      ok(RECORDS.test(site.slice),
+        `the save-form story at App.tsx:${line} must record lastGeneratedFillRef in the same block — provenance 'generated' has to mean "the app wrote this", or the note and the fill rule disagree (OPUS-REVIEW-184/F1)`);
+    }
+    // Fixtures: the check reads each site's OWN block, and it is not satisfied by
+    // an assignment that records nothing.
+    {
+      const stripped = storySites.map((st) => st.slice.replace(/lastGeneratedFillRef\.current = /, 'noop.current = '));
+      ok(stripped.every((sl) => !RECORDS.test(sl)),
+        'fixture: removing a site\'s own assignment really removes it from that slice');
+      ok(storySites.every((st) => RECORDS.test(st.slice)),
+        'fixture: every untouched slice carries its own assignment');
+      ok(!RECORDS.test('lastGeneratedFillRef.current = null;'),
+        'fixture: clearing the ref is not recording what the app wrote');
+      ok(RECORDS.test('lastGeneratedFillRef.current = gen;') && RECORDS.test('lastGeneratedFillRef.current = {'),
+        'fixture: both a built value and an object literal count as recording it');
+    }
+
     // ── one open path ────────────────────────────────────────────────────
     const helperStart = app.indexOf('const openSaveFormForBoard = () => {');
     ok(helperStart !== -1, 'App.tsx must define openSaveFormForBoard (RED-REGEN-13/001)');
@@ -914,8 +957,16 @@ function testSaveFormReconciledWithBoard() {
     const prefill = app.indexOf("const prefillName = (sc.name ?? '').slice(0, 40);");
     ok(prefill !== -1, 'the report → save-as-new prefill must exist');
     const prefillSlice = app.slice(prefill, app.indexOf('setIsSaveModalOpen(true);', prefill));
-    ok(/dispatchSaveForm\(\{\s*type: 'story',\s*boardKey: boardKeyOf\(payoffs\),\s*name: prefillName,\s*desc: description\.slice\(0, 800\),\s*labels: \{/.test(prefillSlice),
+    ok(/dispatchSaveForm\(\{\s*type: 'story',\s*boardKey: boardKeyOf\(payoffs\),\s*name: prefillName,\s*desc: description\.slice\(0, 800\),\s*labels: prefillLabels,\s*\}\);/.test(prefillSlice),
       'the report prefill must arrive as ONE story action carrying the board it was written for — writing four fifths of it left the previous draft\'s colour chips attached (STRUCT-REGEN-19/001)');
+    ok(/const prefillLabels = \{\s*row1: sc\.row1 \?\? '', row2: sc\.row2 \?\? '',\s*col1: sc\.col1 \?\? '', col2: sc\.col2 \?\? '',\s*\};/.test(prefillSlice),
+      'prefillLabels must be the scenario\'s own four option names — hoisting them out of the action must not change where they come from (OPUS-REVIEW-184/F1)');
+    // The dispatched story and the recorded fill must be the SAME four labels, by
+    // reference, so the form and "what the app wrote" cannot drift apart here.
+    ok(/lastGeneratedFillRef\.current = \{\s*name: prefillName,\s*desc: description\.slice\(0, 800\),\s*row1: prefillLabels\.row1, row2: prefillLabels\.row2,\s*col1: prefillLabels\.col1, col2: prefillLabels\.col2,\s*\};/.test(prefillSlice),
+      'the recorded fill must be the same name/description/labels the story just wrote (OPUS-REVIEW-184/F1)');
+    ok(!/lastGeneratedFillRef\.current = \{[\s\S]{0,200}?sc\.(row1|col1)/.test(prefillSlice),
+      'the recorded fill must reuse prefillLabels, not read sc again — a second read is a second source (OPUS-REVIEW-184/F1)');
     ok((prefillSlice.match(/dispatchSaveForm\(/g) || []).length === 1,
       'the report prefill must write the form exactly once (STRUCT-REGEN-19/001)');
     // OPUS-REVIEW-171/N2: boardKeyOf must actually distinguish boards — run it.
@@ -995,8 +1046,12 @@ function testSaveFormReconciledWithBoard() {
     ok(!/editNameBaselineRef/.test(app),
       'the Edit name baseline must live in editForm.nameBaseline, not a parallel ref that can drift from the name (STRUCT-REGEN-19/004)');
     const editDispatched = [...app.matchAll(/dispatchEditForm\(\{\s*type: '([a-zA-Z]+)'/g)].map((m) => m[1]);
-    ok(editDispatched.join(',') === ['typed', 'typed', 'typedLabel', 'typedTerms', 'story', 'story', 'story'].join(','),
-      `the Edit form's entry points must be exactly the seven enumerated here, in order — found ${editDispatched.join(',')} (STRUCT-REGEN-19/004)`);
+    // `adoptedTerms` is the 409 recovery merging another device's chips
+    // (OPUS-REVIEW-184/S3): its own door, so `provenance.terms` can say they were
+    // neither typed here nor written by this app.
+    ok(editDispatched.join(',') === ['typed', 'typed', 'typedLabel', 'typedTerms',
+      'story', 'story', 'adoptedTerms', 'story'].join(','),
+      `the Edit form's entry points must be exactly the eight enumerated here, in order — found ${editDispatched.join(',')} (STRUCT-REGEN-19/004, OPUS-REVIEW-184/S3)`);
     ok((app.match(/dispatchEditForm\(/g) || []).length === editDispatched.length,
       'every dispatchEditForm call must be a literal action object the ledger above can see (STRUCT-REGEN-19/004)');
     // THE fix for 004: the report's story arrives with NO terms, so the game's
@@ -1019,24 +1074,40 @@ function testSaveFormReconciledWithBoard() {
     const four09 = app.indexOf('} else if (res.status === 409) {');
     ok(four09 !== -1, 'the 409 branch must exist');
     const adoptSlice = app.slice(four09, app.indexOf('} else {', four09 + 200));
-    ok(/const paints = chipPaintStates\(liveDesc, afterA, afterB\);/.test(adoptSlice),
+    ok(/const paints = chipPaintStates\(/.test(adoptSlice),
       'the 409 adoption must ask chipPaintStates which adopted chips paint (STRUCT-REGEN-19/010)');
-    ok(/const liveDesc = editFormRef\.current\.desc;/.test(adoptSlice),
-      '…against the LIVE description, from the same mirror the terms come from (STRUCT-REGEN-19/010)');
-    ok(/orphanedNote\(inertA, 'A', 'this description'\)/.test(adoptSlice)
-      && /orphanedNote\(inertB, 'B', 'this description'\)/.test(adoptSlice),
-      'the adoption must use orphanedNote, the sentence Keep already gives (STRUCT-REGEN-19/010)');
-    ok(/const inertA = adoptedA \? inert\(afterA, 'a'\) : \[\];/.test(adoptSlice),
-      'only the sides the app itself adopted are named — a chip the USER placed is their own edit (STRUCT-REGEN-19/010)');
+    ok(/chipPaintStates\(live\.desc, merged\.a, merged\.b\)/.test(adoptSlice),
+      'the paint plan must be built from the MERGED list, not the chips alone — a chip shadowed by an option label is invisible otherwise (OPUS-REVIEW-184/S2)');
+    ok(/const live = editFormRef\.current;/.test(adoptSlice),
+      '…against the LIVE form, from the same mirror the terms come from (STRUCT-REGEN-19/010)');
+    // OPUS-REVIEW-184/S2: the plan must be built from the MERGED list — chips plus
+    // the game's own option labels — or a chip shadowed by a label can never be
+    // seen, and the label is usually what takes the colour. Composed exactly as
+    // DescriptionEditor and keepFill compose it, so there is one recipe.
+    ok(/const merged = mergeDescriptionTerms\(\s*dialogBaseColorTerms\(live\.labels\), afterA, afterB, optionLabelTerms\(live\.labels\),\s*\);/.test(adoptSlice),
+      'the 409 adoption must judge paint against the merged list, labels included (OPUS-REVIEW-184/S2)');
+    ok(/shadowedOn/.test(adoptSlice) && /st\.state === 'shadowed'/.test(adoptSlice),
+      'the 409 adoption must detect shadowed adopted chips, not only absent ones (OPUS-REVIEW-184/S2)');
+    ok(/const chipNote = regenDroppedNote\(\s*\{ a: \[\], b: \[\] \}, \{ a: inertA, b: inertB \}, \{ a: shadA, b: shadB \}, 'this description',\s*\);/.test(adoptSlice),
+      'the adoption must render through regenDroppedNote, the composer Keep uses (STRUCT-REGEN-19/010, OPUS-REVIEW-184/S2)');
+    ok(/const inertA = adoptedA \? inert\(afterA, 'a'\) : \[\];/.test(adoptSlice)
+      && /const inertB = adoptedB \? inert\(afterB, 'b'\) : \[\];/.test(adoptSlice),
+      'only the sides the app itself adopted are named for ABSENT chips — a chip the USER placed is their own edit (STRUCT-REGEN-19/010)');
+    ok(/const shadA = adoptedA \? shadowedOn\(afterA, 'a'\) : \[\];/.test(adoptSlice)
+      && /const shadB = adoptedB \? shadowedOn\(afterB, 'b'\) : \[\];/.test(adoptSlice),
+      'both adopted sides must be asked for SHADOWED chips too, or the message reports only half of what it can see (OPUS-REVIEW-184/S2)');
     ok(!/state === 'absent'[\s\S]{0,80}?termOccursIn|new RegExp/.test(adoptSlice),
       'the 409 branch must not build a second "does this phrase occur?" rule of its own (STRUCT-REGEN-19/010)');
-    // Fixture: the pre-fix branch — adoption with no paint question at all — fails
-    // the first two checks above, so they cannot be passing on some other text.
+    // Fixture: the pre-fix branch — chips only, no labels, absent only — fails the
+    // merged-list and shadowed checks, so they cannot be passing on some other text.
     const preFix = adoptSlice
-      .replace("const paints = chipPaintStates(liveDesc, afterA, afterB);", "")
-      .replace("const liveDesc = editFormRef.current.desc;", "");
-    ok(!/chipPaintStates\(liveDesc/.test(preFix) && !/const liveDesc = editFormRef/.test(preFix),
-      'fixture: those checks reject a 409 branch that never asks what paints');
+      .replace(/const merged = mergeDescriptionTerms\([\s\S]*?\);/, '')
+      .replace('const paints = chipPaintStates(live.desc, merged.a, merged.b);',
+        'const paints = chipPaintStates(live.desc, afterA, afterB);')
+      .replace(/const shadowedOn[\s\S]*?\}\);/, '');
+    ok(!/mergeDescriptionTerms\(/.test(preFix) && !/shadowedOn = /.test(preFix)
+      && !/chipPaintStates\(live\.desc, merged/.test(preFix),
+      'fixture: those checks reject a 409 branch that judges paint from the chips alone');
     // ONE mirror for the whole edit form, on the same rule as saveFormRef: a
     // terms-only mirror could not answer "does this phrase appear in the live
     // description?", and a passive effect leaves a window an async 409 can land in.
