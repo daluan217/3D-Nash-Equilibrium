@@ -20,6 +20,56 @@ function compareVersions(a, b) {
   return 0;
 }
 
+// The ONLY scheme that may be handed to the operating system. `shell.openExternal`
+// launches the default handler for whatever it is given: `file://` opens Finder on an
+// arbitrary path, `smb://` reaches for a network share, and macOS resolves any custom
+// scheme an installed app has registered. Every caller below takes a URL the RENDERER
+// chose. The app's own outbound links are https; its local server is reached with
+// loadURL, never openExternal, so http: buys nothing and is not allowed.
+const EXTERNAL_URL_SCHEMES = new Set(['https:']);
+function openExternalIfSafe(rawUrl) {
+  let parsed = null;
+  try { parsed = new URL(String(rawUrl)); } catch { /* not a URL at all */ }
+  if (!parsed || !EXTERNAL_URL_SCHEMES.has(parsed.protocol)) {
+    console.warn(`Refused to open an external URL with an unsupported scheme: ${String(rawUrl).slice(0, 120)}`);
+    return false;
+  }
+  Promise.resolve(shell.openExternal(parsed.toString())).catch((err) => {
+    console.warn(`The operating system refused to open ${parsed.origin}: ${err && err.message}`);
+  });
+  return true;
+}
+
+// Where the renderer may send this app. `setWindowOpenHandler` only sees
+// window.open/target=_blank; a plain <a href> or location.href navigates THIS
+// window, and with titleBarStyle 'hidden' there is no URL bar to reveal that the
+// full-bleed page became a remote origin. Same policy for every door: stay on the
+// app's own origin, hand anything else to the OS through the scheme filter above.
+let appOrigin = null;
+const hardenedContents = new WeakSet();
+function hardenWebContents(contents) {
+  if (!contents || hardenedContents.has(contents)) return;
+  hardenedContents.add(contents);
+  contents.setWindowOpenHandler(({ url }) => {
+    openExternalIfSafe(url);
+    return { action: 'deny' };
+  });
+  const keepInApp = (event, url) => {
+    let origin = null;
+    try { origin = new URL(String(url)).origin; } catch { /* not a URL at all */ }
+    if (appOrigin !== null && origin === appOrigin) return;
+    event.preventDefault();
+    openExternalIfSafe(url);
+  };
+  contents.on('will-navigate', keepInApp);
+  // Electron 31 passes ONE argument here (an Event carrying `url`); older/newer
+  // shapes pass (event, details). preventDefault must land on the event either
+  // way, so take the URL from whichever argument carries it. Both shapes probed.
+  contents.on('will-frame-navigate', (event, details) => {
+    keepInApp(event, (details && details.url) || (event && event.url));
+  });
+}
+
 // Ask the public site for the latest version; if newer than this build, offer the download.
 async function checkForUpdates(parentWindow) {
   try {
@@ -42,7 +92,7 @@ async function checkForUpdates(parentWindow) {
       detail: `You're on ${current}. Download the latest version and reinstall to update.`,
     });
     if (choice.response === 0) {
-      shell.openExternal(`${UPDATE_BASE_URL}/api/download/dmg`);
+      openExternalIfSafe(`${UPDATE_BASE_URL}/api/download/dmg`);
     }
   } catch (err) {
     // Offline or endpoint unavailable should never disrupt the app.
@@ -306,7 +356,8 @@ if (!gotTheLock) {
     mainWindow.webContents.setZoomFactor(1.33);
 
     // Load the Express-served application on loopback
-    mainWindow.loadURL(`http://127.0.0.1:${finalPort}`);
+    appOrigin = `http://127.0.0.1:${finalPort}`;
+    mainWindow.loadURL(appOrigin);
 
     // Notify renderer of macOS native fullscreen transitions
     const dispatchFullscreen = (value) => {
@@ -317,11 +368,8 @@ if (!gotTheLock) {
     mainWindow.on('enter-full-screen', () => dispatchFullscreen(true));
     mainWindow.on('leave-full-screen', () => dispatchFullscreen(false));
 
-    // Open external links (e.g. documentation, help pages) in standard Safari/default browser
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-      shell.openExternal(url);
-      return { action: 'deny' };
-    });
+    // Open external links in Safari/the default browser, and keep this window on the app.
+    hardenWebContents(mainWindow.webContents);
 
     mainWindow.on('closed', function () {
       mainWindow = null;
@@ -333,6 +381,10 @@ if (!gotTheLock) {
       setTimeout(() => checkForUpdates(mainWindow), 3000);
     }
   }
+
+  // Any other webContents Electron creates (webview, devtools-opened child) gets the
+  // same policy; the WeakSet keeps the main window from being hardened twice.
+  app.on('web-contents-created', (_event, contents) => hardenWebContents(contents));
 
   // Handle second instance activation
   app.on('second-instance', () => {

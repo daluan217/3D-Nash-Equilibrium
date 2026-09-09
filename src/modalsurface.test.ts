@@ -931,4 +931,140 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
     'mutation-test: dropping role="alert" from the authed branch\'s error banner must be caught by the check above');
 }
 
+// ── STRUCT-DESKTOP-19: which surfaces may set innerHTML, and what feeds them.
+//
+// WHY HERE. unit.test.ts pins the App.tsx description card: a CUSTOM game's
+// description (user- and model-authored, stored with its markup byte-for-byte)
+// renders through <ColorCoded> as React text nodes, and only a BUILT-IN
+// preset's description takes the `dangerouslySetInnerHTML` arm. The drawer has
+// a second innerHTML site with no pin at all, and its own Library tab lists
+// saved games a few hundred lines away — the day someone folds those into the
+// preset list, stored markup reaches innerHTML inside an Electron app. That is
+// a hole with no instance today (this check verifies exactly that), not a found
+// defect, and this is the ratchet that keeps it one.
+{
+  const walkSrc = (dir: string, out: string[] = []): string[] => {
+    for (const entry of readdirSync(dir)) {
+      const full = `${dir}/${entry}`;
+      if (statSync(full).isDirectory()) walkSrc(full, out);
+      else if (/\.tsx?$/.test(entry)) out.push(full);
+    }
+    return out;
+  };
+  // Every `dangerouslySetInnerHTML={{ __html: <expr> }}` site, found by walking the
+  // literal occurrences and matching braces — NOT by a regex. The regex this
+  // replaces (`([^}]+?)`, which cannot cross a `}`) silently missed a
+  // template-literal or object-argument expression; a missed site never reached
+  // `seen`, so the ratchet passed WHILE the hole was reopened. Mutation-tested below.
+  const scanInnerHtml = (src: string): Array<{ expr: string; index: number }> => {
+    const LITERAL = 'dangerouslySetInnerHTML';
+    const KEY = '__html:';
+    const sites: Array<{ expr: string; index: number }> = [];
+    for (let i = src.indexOf(LITERAL); i !== -1; i = src.indexOf(LITERAL, i)) {
+      const h = src.indexOf(KEY, i);
+      if (h === -1 || h - i > 40) {
+        // `dangerouslySetInnerHTML={someObject}` — a site with no __html of its
+        // own is still a site, and lands in `seen` where the allowlist rejects it.
+        sites.push({ expr: '<no __html: of its own>', index: i });
+        i += LITERAL.length;
+        continue;
+      }
+      let depth = 1;
+      let j = h + KEY.length;
+      while (j < src.length && depth > 0) {
+        if (src[j] === '{') depth++;
+        else if (src[j] === '}') { depth--; if (depth === 0) break; }
+        j++;
+      }
+      sites.push({ expr: src.slice(h + KEY.length, j).trim(), index: i });
+      i = j;
+    }
+    return sites;
+  };
+
+  // The nearest top-level declaration above a site, so an allowance is keyed to ONE
+  // component rather than to a bare identifier any later code could reuse.
+  const enclosingDecl = (src: string, index: number): string => {
+    let name = '<top level>';
+    for (const m of src.matchAll(/^(?:export\s+)?(?:default\s+)?(?:function|const|class)\s+([A-Za-z0-9_$]+)/gm)) {
+      if ((m.index ?? -1) < index) name = m[1]; else break;
+    }
+    return name;
+  };
+
+  const innerHtmlSites: string[] = [];
+  let literalOccurrences = 0;
+  for (const file of walkSrc('src')) {
+    if (/\.test\.tsx?$/.test(file)) continue;
+    const src = stripComments(readFileSync(file, 'utf8'));
+    literalOccurrences += src.split('dangerouslySetInnerHTML').length - 1;
+    for (const site of scanInnerHtml(src)) {
+      innerHtmlSites.push(`${file.replace(/\\/g, '/')}::${enclosingDecl(src, site.index)}::${site.expr}`);
+    }
+  }
+  /** Every place that sets innerHTML, and the reason its input is app-authored. */
+  const ALLOWED: Record<string, string> = {
+    'src/App.tsx::MathTex::html': 'KaTeX output: renderToString escapes its input and emits no links or raw HTML while `trust` is left at its default false — both pinned below',
+    'src/App.tsx::App::selectedPreset.desc': 'built-in preset copy from gameEngine.ts; the custom-game arm goes to <ColorCoded> (pinned in unit.test.ts)',
+    'src/components/MenuDrawer.tsx::MenuDrawer::preset.desc': 'built-in preset copy only — defaultPresets is derived from PRESETS, pinned below',
+  };
+  const seen = innerHtmlSites.slice().sort();
+  const allowed = Object.keys(ALLOWED).sort();
+  ok(JSON.stringify(seen) === JSON.stringify(allowed),
+    'every dangerouslySetInnerHTML site must be listed with the reason its input is app-authored — '
+    + `found ${JSON.stringify(seen)}, allowed ${JSON.stringify(allowed)}`);
+  // The invariant that makes "the scanner missed one" impossible to pass silently:
+  // one listed site per literal occurrence in the same stripped sources.
+  ok(seen.length === literalOccurrences,
+    `the scanner must account for every literal dangerouslySetInnerHTML: found ${seen.length} sites `
+    + `for ${literalOccurrences} occurrences — a shape the scanner cannot parse is a REOPENED hole, not a pass`);
+
+  // What feeds the App.tsx site: KaTeX with escaping on. `trust: true` (or any
+  // \href-enabling option) would let user-authored LaTeX emit real markup here.
+  const mathTexAt = app.indexOf('function MathTex(');
+  const mathTex = mathTexAt > -1 ? app.slice(mathTexAt, mathTexAt + 400) : '';
+  ok(/katex\.renderToString\(\s*tex\s*,\s*\{\s*throwOnError:\s*false\s*\}\s*\)/.test(mathTex),
+    'MathTex must call katex.renderToString with exactly { throwOnError: false } — it is the only reason its output may be set as HTML');
+  ok(!/\btrust\b/.test(mathTex),
+    'KaTeX must not be given a `trust` option: trust:true lets \\href and \\url in user LaTeX emit real links through this innerHTML span');
+
+  // What feeds the drawer's site: PRESETS, and nothing a user or a model wrote.
+  const defaultPresetsBlock = drawer.slice(
+    drawer.indexOf('const defaultPresets = useMemo('),
+    drawer.indexOf('const defaultPresets = useMemo(') > -1
+      ? drawer.indexOf('}, [', drawer.indexOf('const defaultPresets = useMemo('))
+      : 0);
+  ok(defaultPresetsBlock.length > 40, 'could not locate the drawer\'s defaultPresets memo');
+  ok(/Object\.keys\(PRESETS\)/.test(defaultPresetsBlock),
+    'the drawer\'s preset list must be built from PRESETS — it is the only reason its `desc` may be set as HTML');
+  ok(!/customGames|userCustomGames|savedGames|games\b/.test(defaultPresetsBlock),
+    'the drawer\'s preset list must not fold in saved games: their descriptions are user- and model-authored '
+    + 'and would reach innerHTML with the payload already stored');
+
+  // Known-positives: every rule fires on the edit that would reopen the hole, and
+  // the SCANNER itself is run over the two shapes the previous regex missed.
+  const SYNTHETIC = [
+    'const A = () => <p dangerouslySetInnerHTML={{ __html: `${game.description}` }} />;',
+    'const B = () => <p dangerouslySetInnerHTML={{ __html: md(g.desc, {gfm:true}) }} />;',
+    'const C = () => <p dangerouslySetInnerHTML={{ __html: preset.desc }} />;',
+  ].join('\n');
+  const OLD_REGEX = /dangerouslySetInnerHTML=\{\{\s*__html:\s*([^}]+?)\s*\}\}/g;
+  const syntheticOccurrences = SYNTHETIC.split('dangerouslySetInnerHTML').length - 1;
+  ok([...SYNTHETIC.matchAll(OLD_REGEX)].length === 1 && syntheticOccurrences === 3,
+    'mutation-test premise: of these three sites the previous regex saw only the plain-member one');
+  const scanned = scanInnerHtml(SYNTHETIC).map((x) => x.expr);
+  ok(scanned.length === 3 && scanned.includes('`${game.description}`') && scanned.includes('md(g.desc, {gfm:true})'),
+    `mutation-test: the scanner must find the template-literal and object-argument sites — found ${JSON.stringify(scanned)}`);
+  ok(scanned.length === syntheticOccurrences && [...SYNTHETIC.matchAll(OLD_REGEX)].length !== syntheticOccurrences,
+    'mutation-test: the site-count invariant holds for the scanner and FAILS for a scanner that misses a site');
+  const withNewSite = seen.concat(scanInnerHtml(SYNTHETIC).map((x) => `src/components/Something.tsx::A::${x.expr}`)).sort();
+  ok(JSON.stringify(withNewSite) !== JSON.stringify(allowed),
+    'mutation-test: NEW innerHTML sites, found by the scanner in a synthetic source, must not match the pinned allowlist');
+  ok(/\btrust\b/.test(mathTex.replace('throwOnError: false', 'throwOnError: false, trust: true')),
+    'mutation-test: adding a trust option to the KaTeX call must trip the check above');
+  const mergedList = defaultPresetsBlock.replace('Object.keys(PRESETS)', 'Object.keys(PRESETS).concat(userCustomGames)');
+  ok(/userCustomGames/.test(mergedList) && /customGames|userCustomGames|savedGames|games\b/.test(mergedList),
+    'mutation-test: a preset list merged with saved games must trip the predicate above');
+}
+
 console.log(`modalsurface.test.ts: ${checks} checks passed`);

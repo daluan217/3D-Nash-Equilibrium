@@ -37,6 +37,12 @@
  *                            Captures the dialog options so the test can
  *                            assert the singular wording never claims a
  *                            nonexistent second file.
+ *   mode = 'openexternal'  — fire 'ready', let the window be created, then drive
+ *                            the installed setWindowOpenHandler AND every
+ *                            will-navigate handler with renderer-chosen URLs,
+ *                            plus the app-level web-contents-created hook.
+ *                            Reports what reached shell.openExternal, which
+ *                            navigations were prevented, and the handler counts.
  *   mode = 'slowboot-normal' — do NOT simulate a lock failure (genuine slow
  *                            boot: serverStarted stays false with no lock
  *                            issue). Fire 'ready', wait past 800ms. Expect
@@ -50,13 +56,17 @@ const path = require('path');
 
 const mainCjsPath = process.argv[2];
 const mode = process.argv[3];
-const VALID_MODES = ['lockfail', 'data-conflict', 'data-conflict-single', 'slowboot-normal'];
+const VALID_MODES = ['lockfail', 'data-conflict', 'data-conflict-single', 'slowboot-normal', 'openexternal'];
 if (!mainCjsPath || !VALID_MODES.includes(mode)) {
   console.log(`usage: electron-window-guard-runner.cjs <mainCjsPath> <${VALID_MODES.join('|')}>`);
   process.exit(2);
 }
 
 let windowCount = 0;
+let capturedOpenHandler = null;
+let mainContents = null;
+let loadedUrl = null;
+const openedUrls = [];
 let dialogShown = 0;
 let dialogOptions = null;
 const onHandlers = {};
@@ -78,12 +88,24 @@ function totalStub(name) {
   });
 }
 
+// The stub records handlers as LISTS, so a guard registered twice (the real risk
+// once `web-contents-created` also hardens contents) shows up as a duplicate here
+// instead of hiding — and every recorded handler is executed by the probes below.
+class FakeWebContents {
+  constructor() { this.handlers = {}; this.openHandler = null; }
+  setZoomFactor() {}
+  executeJavaScript() { return Promise.resolve(); }
+  setWindowOpenHandler(h) { this.openHandler = h; capturedOpenHandler = h; }
+  on(event, cb) { (this.handlers[event] = this.handlers[event] || []).push(cb); return this; }
+}
+
 class FakeBrowserWindow {
   constructor() {
     windowCount++;
-    this.webContents = { setZoomFactor() {}, executeJavaScript: () => Promise.resolve(), setWindowOpenHandler() {} };
+    this.webContents = new FakeWebContents();
+    mainContents = this.webContents;
   }
-  loadURL() {}
+  loadURL(u) { loadedUrl = String(u); }
   on() {}
   isMinimized() { return false; }
   restore() {}
@@ -123,7 +145,16 @@ Module._load = function (request, parent, isMain) {
       BrowserWindow: FakeBrowserWindow,
       ipcMain: { on() {} },
       dialog: fakeDialog,
-      shell: totalStub('shell'),
+      shell: new Proxy(totalStub('shell'), {
+        get(target, prop) {
+          // Record what the app actually asks the OS to open; delegate everything
+          // else to totalStub's OWN trap, which keeps `then` undefined (a callable
+          // `then` would make `await shell` hang forever).
+          if (prop === 'openExternal') return (u) => { openedUrls.push(String(u)); return Promise.resolve(); };
+          return target[prop];
+        },
+        has() { return true; },
+      }),
       nativeTheme: { shouldUseDarkColors: false, on() {} },
       Menu: totalStub('Menu'),
       autoUpdater: totalStub('autoUpdater'),
@@ -156,6 +187,115 @@ if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-s
       process.exit(0);
     }, 50);
   }, 900); // past the 800ms fallback
+} else if (mode === 'openexternal') {
+  // Drive the REAL handlers with the URLs a renderer could hand them. Nothing here
+  // is a source scan: every probe executes a handler the app installed, and reports
+  // what reached shell.openExternal and whether the navigation was prevented.
+  if (typeof onHandlers.ready === 'function') onHandlers.ready();
+  setTimeout(() => {
+    const windowOpenProbes = [
+      'https://nash-equilibrium-simulator.com/api/download/dmg',
+      'https://mathematics-magazine.example/paper',
+      'http://127.0.0.1:9/health',
+      'file:///etc/passwd',
+      'javascript:alert(document.domain)',
+      'data:text/html,<script>alert(1)</script>',
+      'smb://attacker.example/share',
+      'vscode://file/etc/passwd',
+      'not a url at all',
+    ];
+    const probes = windowOpenProbes.map((url) => {
+      const before = openedUrls.length;
+      let action = 'NO_HANDLER';
+      if (typeof capturedOpenHandler === 'function') {
+        try { action = (capturedOpenHandler({ url }) || {}).action ?? null; }
+        catch (err) { action = `THREW ${err && err.message}`; }
+      }
+      return { url, action, opened: openedUrls.length > before };
+    });
+
+    // The same-window door: <a href> / location.href, which setWindowOpenHandler
+    // never sees. Every registered will-navigate handler runs, so a handler
+    // registered twice would show up as a second entry in openedUrls.
+    const navHandlers = (mainContents && mainContents.handlers['will-navigate']) || [];
+    const driveNav = (url) => {
+      const before = openedUrls.length;
+      let prevented = false;
+      const event = { preventDefault() { prevented = true; }, url };
+      for (const cb of navHandlers) {
+        try { cb(event, url); }
+        catch (err) { return { url, prevented, opened: openedUrls.length > before, threw: String(err && err.message) }; }
+      }
+      return { url, prevented, opened: openedUrls.length > before };
+    };
+    const navigation = [
+      `${loadedUrl}/library`,
+      'https://attacker.example/phish',
+      'http://127.0.0.1:9/not-this-app',
+      'file:///etc/passwd',
+      'javascript:alert(document.domain)',
+      'not a url at all',
+    ].map(driveNav);
+
+    // The frame door, driven in BOTH argument shapes Electron has used: 31.x passes
+    // ONE Event carrying `url`; the (event, details) shape must work too. The
+    // same-origin probes are the discriminating ones — a handler that cannot read
+    // the URL out of its arguments prevents them, breaking the app's own iframes.
+    const frameHandlers = (mainContents && mainContents.handlers['will-frame-navigate']) || [];
+    const driveFrameNav = (url, shape) => {
+      const before = openedUrls.length;
+      let prevented = false;
+      const event = { preventDefault() { prevented = true; } };
+      if (shape === 'one-arg') event.url = url;
+      for (const cb of frameHandlers) {
+        try { if (shape === 'one-arg') cb(event); else cb(event, { url }); }
+        catch (err) { return { url, shape, prevented, opened: openedUrls.length > before, threw: String(err && err.message) }; }
+      }
+      return { url, shape, prevented, opened: openedUrls.length > before };
+    };
+    const frameNavigation = [
+      driveFrameNav(`${loadedUrl}/embedded`, 'one-arg'),
+      driveFrameNav(`${loadedUrl}/embedded`, 'two-arg'),
+      driveFrameNav('file:///etc/passwd', 'one-arg'),
+      driveFrameNav('file:///etc/passwd', 'two-arg'),
+    ];
+
+    // Snapshot BEFORE the re-hardening below, so "one handler is installed" and
+    // "re-hardening does not add a second" fail for their own reasons, not each other's.
+    const navHandlerCount = navHandlers.length;
+    const frameNavHandlerCount = ((mainContents && mainContents.handlers['will-frame-navigate']) || []).length;
+
+    // The family sweep: a webContents created later must get the same policy, and
+    // re-hardening the main window must NOT register a second handler.
+    let createdContentsGuards = null;
+    let mainNavHandlersAfterRehardening = null;
+    if (typeof onHandlers['web-contents-created'] === 'function') {
+      const fresh = new FakeWebContents();
+      onHandlers['web-contents-created']({}, fresh);
+      createdContentsGuards = {
+        openHandler: typeof fresh.openHandler === 'function',
+        willNavigate: (fresh.handlers['will-navigate'] || []).length,
+        willFrameNavigate: (fresh.handlers['will-frame-navigate'] || []).length,
+      };
+      onHandlers['web-contents-created']({}, mainContents);
+      mainNavHandlersAfterRehardening = (mainContents.handlers['will-navigate'] || []).length;
+    }
+
+    console.log(`RUNNER_RESULT ${JSON.stringify({
+      handlerInstalled: typeof capturedOpenHandler === 'function',
+      loadedUrl,
+      navHandlerCount,
+      frameNavHandlerCount,
+      webContentsCreatedHooked: typeof onHandlers['web-contents-created'] === 'function',
+      createdContentsGuards,
+      mainNavHandlersAfterRehardening,
+      probes,
+      navigation,
+      frameNavigation,
+      openedUrls,
+    })}`);
+    process.exit(0);
+  }, 900);
 } else {
   // Genuine slow boot: no lock failure at all.
   if (typeof onHandlers.ready === 'function') onHandlers.ready();
