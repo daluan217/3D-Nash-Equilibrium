@@ -3813,7 +3813,10 @@ function testWalkthroughInputContracts() {
     if (start === -1) return false;
     // CodeRabbit (#180): a missing `onTouchMove` made indexOf return -1 and the
     // slice ran to the end of the file, where unrelated handlers could satisfy it.
-    const end = src.indexOf('const onTouchMove', start);
+    // cr CLI: the exact declaration, not any `onTouchMove…` token (a
+    // `const onTouchMoveRef` or a comment must not end the slice early).
+    const endMatch = /\bconst\s+onTouchMove\s*=/.exec(src.slice(start + 1));
+    const end = endMatch ? start + 1 + endMatch.index : -1;
     if (end <= start) return false;
     const body = src.slice(start, end);
     const cancel = body.indexOf('cancelCameraGlide();');

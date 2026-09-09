@@ -2819,15 +2819,16 @@ try {
       // a `@media` rule can never make inert. ONE Step rather than a whole Run:
       // it is deterministic (both arms land on exactly step 1, so the two pages
       // are structurally identical) and it costs a second instead of fifteen.
+      // cr CLI (#180): the setup is NOT optional — a swallowed wait here let a
+      // missing Step control surface only as a late `hasSimPanel` failure that
+      // named the wrong step. Step is a core control; let the bounded waits throw.
       const stepBtn = pg.getByRole('button', { name: /^step$/i }).first();
-      const stepUp = await stepBtn.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false);
-      if (stepUp) {
-        await stepBtn.click();
-        await pg.waitForFunction(
-          () => [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress'),
-          null, { timeout: 8000 },
-        ).catch(() => {});
-      }
+      await stepBtn.waitFor({ state: 'visible', timeout: 15000 });
+      await stepBtn.click();
+      await pg.waitForFunction(
+        () => [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress'),
+        null, { timeout: 8000 },
+      );
       // CodeRabbit CLI (#179): wait for the print media to actually apply, not a fixed delay.
       await pg.emulateMedia({ media: 'print' });
       await pg.waitForFunction(() => window.matchMedia('print').matches, null, { timeout: 4000 });
