@@ -625,9 +625,47 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
 // either to `aria-hidden={blocked}` → the last check fails by name.
 {
   const walkthrough = readFileSync('src/components/Walkthrough.tsx', 'utf8');
-  ok(!/inert=\{blocked\}[\s\S]{0,40}aria-label="Exit tour"/.test(walkthrough)
-    && !/aria-label="Exit tour"[\s\S]{0,10}\n\s*inert=\{blocked\}/.test(walkthrough),
-    'the Exit-tour button must NOT carry its own inert={blocked} — that gates hit-testing/tab-order but not painting, and RED-APP-16/001 needs both on one wrapper');
+  // STRUCT-APP-19/003: the Exit-tour pill this used to be about no longer
+  // exists, so the old regexes would now pass by matching nothing. Assert the
+  // removal itself, and re-point the inert rule at the control that replaced it.
+  ok(!/aria-label="Exit tour"/.test(walkthrough),
+    'STRUCT-APP-19/003: the viewport-anchored Exit-tour pill is gone — the card X is the tour\'s one exit');
+  // OPUS-REVIEW-180 SHOULD 4: an absence assertion over a long literal passes
+  // the moment the literal is reworded (e.g. to a `probeProps` spread), which is
+  // exactly the trap this branch called out in the rules it replaced. Assert the
+  // subject EXISTS before asserting what must not follow it.
+  ok(/aria-label=\{probe \? undefined : 'Close tour'\}/.test(walkthrough),
+    "precondition: the close button's aria-label expression is present in Walkthrough.tsx — if this is reworded, the absence check below stops protecting anything and must be updated with it");
+  // CodeRabbit (#180): JSX attribute order is free and the className is long,
+  // so scan the WHOLE close-button element, not 120 characters after the label.
+  const closeBtnStart = walkthrough.lastIndexOf('<button', walkthrough.indexOf("aria-label={probe ? undefined : 'Close tour'}"));
+  // The element ends at the first `>` OUTSIDE any `{…}` attribute expression
+  // (CodeRabbit: `disabled={step > 0}` or an arrow function must not end it).
+  // Quoted strings inside an expression are skipped whole (CodeRabbit: a `}`
+  // or `>` inside 'text' must not change the depth or end the tag).
+  const jsxTagEnd = (src: string, from: number): number => {
+    let depth = 0;
+    for (let i = from; i < src.length; i++) {
+      const c = src[i];
+      // Comments are skipped whole too: the close button's own `//` comment
+      // says "Playwright's", and that apostrophe must not open a string.
+      if (c === '/' && src[i + 1] === '/') { i = src.indexOf('\n', i); if (i === -1) return -1; continue; }
+      if (c === '/' && src[i + 1] === '*') { i = src.indexOf('*/', i); if (i === -1) return -1; i++; continue; }
+      if (c === "'" || c === '"' || c === '`') {
+        for (i++; i < src.length && src[i] !== c; i++) if (src[i] === '\\') i++;
+        continue;
+      }
+      if (c === '{') depth++;
+      else if (c === '}') depth--;
+      else if (c === '>' && depth === 0) return i;
+    }
+    return -1;
+  };
+  const closeBtnEnd = closeBtnStart >= 0 ? jsxTagEnd(walkthrough, closeBtnStart) : -1;
+  ok(closeBtnStart >= 0 && closeBtnEnd > closeBtnStart,
+    'precondition: the close button element must be locatable in Walkthrough.tsx');
+  ok(!/inert=\{blocked\}/.test(walkthrough.slice(closeBtnStart, closeBtnEnd)),
+    'the close button must NOT carry its own inert={blocked} — that gates hit-testing/tab-order but not painting, and RED-APP-16/001 needs both on one wrapper');
   ok(!/ref=\{cardRef\}\s*\n\s*inert=\{blocked\}/.test(walkthrough),
     'the tour card must NOT carry its own inert={blocked} — moved to the outer wrapper (RED-APP-16/001)');
   ok(!/aria-hidden=\{blocked\}/.test(walkthrough),

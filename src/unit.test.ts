@@ -3657,9 +3657,17 @@ function testWalkthroughInputContracts() {
       && /scrollIntoView\(\{ behavior, block: 'center' \}\)/.test(source)
       && /scrollBy\(\{ top: delta, behavior \}\)/.test(source),
     'H4 both tour-scroll paths must share the reduced-motion policy rather than hard-code smooth behavior');
-    assert(/const exitTop = headerOffset\(\) \+ GAP;/.test(source)
-      && /aria-label="Exit tour"[\s\S]{0,160}?style=\{\{ top: exitTop, right: GAP \}\}/.test(source),
-    'H2 Exit pill must yield vertically to the measured header bottom, not rely on a viewport top offset');
+    // STRUCT-APP-19/003 (Daniel, 2026-09-08): the tour had THREE controls doing
+    // the same thing — Skip, the card's X, and a viewport-anchored "Exit tour"
+    // pill. Only the X remains. H2's old contract (the pill must yield to the
+    // measured header bottom) is retired with the pill it described; an absence
+    // on its own would be vacuous, so the presence half is asserted too.
+    assert(!/aria-label="Exit tour"/.test(source) && !/>\s*Skip\s*</.test(source),
+      'STRUCT-APP-19/003: the tour must have exactly ONE exit — no "Exit tour" pill, no Skip button');
+    assert(/aria-label=\{probe \? undefined : 'Close tour'\}/.test(source),
+      "STRUCT-APP-19/003: the card's X is that one exit, and the measuring probe must NOT duplicate its accessible name — a bare [aria-label=\"Close tour\"] would match two elements and every e2e call site would die of a strict-mode violation");
+    assert(source.indexOf("aria-label={probe ? undefined : 'Close tour'}") > source.indexOf("{last ? 'Explore on your own'"),
+      'STRUCT-APP-19/003: the close button must render AFTER Back/Next so the tab order is content -> Back/Next -> close');
     const scrollStart = source.indexOf('Bring the target into view when the step changes.');
     const scrollEnd = source.indexOf('if (cardRef.current) setCardH(cardRef.current.offsetHeight);');
     const scrollEffect = scrollStart >= 0 && scrollEnd > scrollStart ? source.slice(scrollStart, scrollEnd) : '';
@@ -3673,11 +3681,15 @@ function testWalkthroughInputContracts() {
     'H5 target placement must rerun with the actual one-gap usable strip when measured card height or document geometry changes, without mutating global body padding');
     // CodeRabbit on #173: the scroll effect decides the layout family from the
     // spotlight's POST-centring position, through the same predicate render uses.
-    assert(/const paddedRect = readRect\(el\);[\s\S]{0,400}?tourPortraitUsesSheet\(\s*tourRectAfterCentering\(paddedRect, window\.innerHeight\), window\.innerWidth, window\.innerHeight,?\s*\)/.test(scrollEffect),
-      'H5/CR scroll layout must use the padded spotlight rect AS IT WILL SIT AFTER CENTRING, through tourPortraitUsesSheet(tourRectAfterCentering(...))');
-    assert(/const portraitSheet = !\(vp\.w > vp\.h\) && \(!rect \? vp\.w < COMPACT_MAX : tourPortraitUsesSheet\(rect, vp\.w, vp\.h\)\);/.test(source)
+    // STRUCT-APP-19/001: both call sites now carry the MEASURED floating card
+    // (floatHRef.current / floatH + tourFloatingCardWidth) — never the fallback
+    // constant, and never cardH (the rendered family's height, which is what
+    // the constants existed to avoid feeding back).
+    assert(/const paddedRect = readRect\(el\);[\s\S]{0,600}?tourPortraitUsesSheet\(\s*tourRectAfterCentering\(paddedRect, window\.innerHeight\), window\.innerWidth, window\.innerHeight,\s*floatHRef\.current, tourFloatingCardWidth\(window\.innerWidth\),?\s*\)/.test(scrollEffect),
+      'H5/CR + STRUCT-APP-19/001: scroll layout must use the padded spotlight rect AS IT WILL SIT AFTER CENTRING, through tourPortraitUsesSheet(tourRectAfterCentering(...), …, floatHRef.current, tourFloatingCardWidth(...))');
+    assert(/const portraitSheet = !\(vp\.w > vp\.h\) && \(!rect \? vp\.w < COMPACT_MAX : tourPortraitUsesSheet\(rect, vp\.w, vp\.h, floatH, tourFloatingCardWidth\(vp\.w\)\)\);/.test(source)
       && /const sheet = portraitSheet;/.test(source),
-      'CR #173: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect (portraitSheet)');
+      'CR #173 + STRUCT-APP-19/001: render must pick the sheet through the same tourPortraitUsesSheet predicate as the scroll effect, with the measured floating card');
     // OPUS-REVIEW-173/C2: the card measurement must re-run on a layout-family flip.
     assert(/if \(cardRef\.current\) setCardH\(cardRef\.current\.offsetHeight\);\s*\}, \[i, rect\?\.documentTop, rect\?\.left, rect\?\.width, rect\?\.height, open, vp\.w, vp\.h, portraitSheet\]\);/.test(source),
       'OPUS-173/C2: the card-height measure effect must key on the rendered layout family (portraitSheet) — a sheet positioned with the floating card\'s height sat 223px above the bottom at 950x1000');
@@ -3704,8 +3716,13 @@ function testWalkthroughInputContracts() {
     'H1 fixture: allowing a queued release frame to survive cleanup must fail the lifecycle contract');
   assert(contractFails(source.replace("scrollIntoView({ behavior, block: 'center' })", "scrollIntoView({ behavior: 'smooth', block: 'center' })")),
     'H4 fixture: restoring an unconditional smooth scroll must fail the named source contract');
-  assert(contractFails(source.replace('style={{ top: exitTop, right: GAP }}', 'style={{ top: GAP, right: GAP }}')),
-    'H2 fixture: returning the pill to a viewport-top offset must fail the named source contract');
+  // STRUCT-APP-19/003: H2's fixture mutated the pill's `top` offset; with the
+  // pill removed that mutation changes nothing and the fixture would "pass" by
+  // being inapplicable. Its replacement mutates what the new contract asserts.
+  assert(contractFails(source.replace("aria-label={probe ? undefined : 'Close tour'}", 'aria-label="Close tour"')),
+    'STRUCT-APP-19/003 fixture: giving the measuring probe the same accessible name as the real close button (two matches for one selector) must fail the named source contract');
+  assert(contractFails(`${source}\n<button aria-label="Exit tour" />`),
+    'STRUCT-APP-19/003 fixture: bringing the Exit-tour pill back must fail the named source contract');
   assert(contractFails(source.replace('window.innerHeight - sheetH - GAP - top', 'window.innerHeight - sheetH - GAP * 2 - top')),
     'H5 fixture: budgeting a second gap inside the measured strip must fail the named source contract');
   assert(contractFails(source.replace('tourRectAfterCentering(paddedRect, window.innerHeight)', 'paddedRect')),
@@ -3714,11 +3731,48 @@ function testWalkthroughInputContracts() {
     'H5 fixture: deciding scroll layout from the unpadded target while render uses the spotlight must fail the named source contract');
   assert(contractFails(source.replace('const sheet = portraitSheet;', 'const sheet = !landscape && (vw < COMPACT_MAX || (!!rect && !tourFloatingFits(rect, vw, vh)));')),
     'CR #173 fixture: render bypassing the shared predicate must fail the named source contract');
+  assert(contractFails(source.replace('tourPortraitUsesSheet(rect, vp.w, vp.h, floatH, tourFloatingCardWidth(vp.w))', 'tourPortraitUsesSheet(rect, vp.w, vp.h)')),
+    'STRUCT-APP-19/001 fixture: render deciding the family from the CONSTANT again (the shipped defect) must fail the named source contract');
+  assert(contractFails(source.replace('tourPortraitUsesSheet(rect, vp.w, vp.h, floatH, tourFloatingCardWidth(vp.w))', 'tourPortraitUsesSheet(rect, vp.w, vp.h, cardH, tourFloatingCardWidth(vp.w))')),
+    'STRUCT-APP-19/001 fixture: feeding the RENDERED card height back into the family test (the flip-flop the constants existed to avoid) must fail the named source contract');
+  assert(contractFails(source.replace('        floatHRef.current, tourFloatingCardWidth(window.innerWidth),\n', '')),
+    'STRUCT-APP-19/001 fixture: a scroll effect still on the constant while render measures (the two disagreeing about the card height) must fail the named source contract');
   assert(contractFails(source.replace('open, vp.w, vp.h, portraitSheet]);', 'open, vp.w, vp.h]);')),
     'OPUS-173/C2 fixture: dropping the layout family from the measure deps (the 950x1000 regression) must fail the named source contract');
+
+  // ── STRUCT-APP-19/001: an INVARIANT, not a list of known call sites ────────
+  // Everything above pins the two calls that exist TODAY by their exact text. A
+  // third call added tomorrow with no measured height would reinstate finding
+  // 001 and every assertion above would still pass — the same enumeration trap
+  // that let the print theme leak (STRUCT-APP-19/002). So: whatever the call
+  // sites are, each must pass a MEASURED card height.
+  const measuredCallSites = (src: string): { total: number; unmeasured: string[] } => {
+    const needle = 'tourPortraitUsesSheet(';
+    const unmeasured: string[] = [];
+    let total = 0;
+    for (let i = src.indexOf(needle); i !== -1; i = src.indexOf(needle, i + 1)) {
+      let depth = 0, j = i + needle.length - 1;
+      for (; j < src.length; j++) {
+        if (src[j] === '(') depth++;
+        else if (src[j] === ')') { depth--; if (depth === 0) break; }
+      }
+      const call = src.slice(i, j + 1);
+      total++;
+      if (!/\bfloatHRef\.current\b|\bfloatH\b/.test(call)) unmeasured.push(call.replace(/\s+/g, ' ').slice(0, 110));
+    }
+    return { total, unmeasured };
+  };
+  const live = measuredCallSites(source);
+  assert(live.total >= 2, `STRUCT-APP-19/001: expected at least the two known tourPortraitUsesSheet call sites, found ${live.total}`);
+  assert(live.unmeasured.length === 0,
+    'STRUCT-APP-19/001: EVERY call to tourPortraitUsesSheet must pass a measured card height — the shipped defect was this predicate '
+    + `deciding the layout family from a 520px constant. Unmeasured: ${live.unmeasured.join(' | ')}`);
+  // and the invariant must be able to fail: a third, unmeasured call site
+  assert(measuredCallSites(`${source}\nconst x = tourPortraitUsesSheet(rect, vp.w, vp.h);`).unmeasured.length === 1,
+    'STRUCT-APP-19/001 fixture: a NEW call site with no measured height must be caught by the invariant, not just by the two named contracts');
   assert(contractFails(source.replace('    if (allowed) return;\n', '')),
     'OPUS-173/C4 fixture: dropping `if (allowed) return;` (every tour control dead) must fail the named source contract');
-  assert(contractFails(source.replace('pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;', 'pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint || (e.target as HTMLElement).closest(\'[aria-label="Exit tour"]\') !== null;')),
+  assert(contractFails(source.replace('pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint;', 'pointerDownOnVisibleTourRef.current = !blocked && !resumedAtSamePoint || (e.target as HTMLElement).closest(\'[aria-label="Close tour"]\') !== null;')),
     'OPUS-173/C4 fixture: accepting a blocked-origin click on the Exit pill (RED-APP-17/002) must fail the named source contract');
   assert(contractFails(source.replace('    if (resumedAtSamePoint) resumedPointerOriginRef.current = null;\n', '')),
     'OPUS-173/C4 fixture: dropping the resumed-origin clear must fail the named source contract');
@@ -3746,6 +3800,51 @@ function testWalkthroughInputContracts() {
   console.log('✓ Walkthrough input contracts: pointer origin is a root-level gate, header controls own their vertical band, sheet placement tracks real layout, and both JS scroll paths honor reduced motion');
 }
 
+// ── RED-MATH-19/001: the pinch writer cancels an in-flight glide, like Reset View ──
+// The tour glide (moveCamera) re-relayouts the camera every frame; a two-finger
+// pinch that lands mid-glide wrote its eye once and was overwritten 16 ms later,
+// so the gesture was a silent no-op for the whole glide. Same family as
+// RED-MATH-18/001 (#170 fixed Reset View only). Contract: onTouchStart cancels
+// the glide BEFORE it records the pinch start; fixture = that call removed.
+{
+  const pv = readFileForContract('src/components/PlotlyView.tsx', 'utf8');
+  const pinchWriterContract = (src: string): boolean => {
+    const start = src.indexOf('const onTouchStart = (e: Event) => {');
+    if (start === -1) return false;
+    // CodeRabbit (#180): a missing `onTouchMove` made indexOf return -1 and the
+    // slice ran to the end of the file, where unrelated handlers could satisfy it.
+    // cr CLI: the exact declaration, not any `onTouchMove…` token (a
+    // `const onTouchMoveRef` or a comment must not end the slice early).
+    // …and a declaration LINE, so the same text inside a comment cannot end it.
+    const endMatch = /^\s*const\s+onTouchMove\s*=/m.exec(src.slice(start + 1));
+    const end = endMatch ? start + 1 + endMatch.index : -1;
+    if (end <= start) return false;
+    const body = src.slice(start, end);
+    const cancel = body.indexOf('cancelCameraGlide();');
+    const hold = body.indexOf('holdSpinRef.current();');
+    const record = body.indexOf('pinchStartDist.current = dist(te.touches);');
+    // the ref must be kept current from render scope, or the hold reads first-render state
+    // CodeRabbit on #177: published from a layout effect, never during render.
+    const refKept = /useLayoutEffect\(\(\) => \{ holdSpinRef\.current = holdSpinForCameraControl; \}\);/.test(src)
+      && !/^\s*holdSpinRef\.current = holdSpinForCameraControl;\s*$/m.test(src);
+    // CodeRabbit on #177: the COMPLETE ordering — cancel the glide first (it would otherwise
+    // overwrite the held camera), then hold the spin, then record the pinch start.
+    return cancel !== -1 && hold !== -1 && record !== -1 && cancel < hold && hold < record && refKept;
+  };
+  assert(pinchWriterContract(pv), 'RED-MATH-19/001: onTouchStart must cancel the glide AND hold the spin (via the render-kept ref) before recording the pinch start');
+  const noCancel = pv.replace(/\n\s*cancelCameraGlide\(\);\n(\s*holdSpinRef\.current\(\);)/, '\n$1');
+  assert(noCancel !== pv, 'RED-MATH-19/001 fixture: removing the cancel must change the source');
+  assert(!pinchWriterContract(noCancel), 'RED-MATH-19/001 fixture: the pinch writer without the glide cancel must be flagged');
+  const noHold = pv.replace(/\n\s*holdSpinRef\.current\(\);\n(\s*pinchStartDist\.current = dist\(te\.touches\);)/, '\n$1');
+  assert(noHold !== pv, 'RED-MATH-19/001 fixture: removing the hold must change the source');
+  assert(!pinchWriterContract(noHold), 'RED-MATH-19/001 fixture: the pinch writer without the spin hold must be flagged (the spin resumed at its own radius and erased the pinch)');
+  const swapped = pv.replace(/(\n\s*)cancelCameraGlide\(\);(\n\s*)holdSpinRef\.current\(\);/, '$1holdSpinRef.current();$2cancelCameraGlide();');
+  assert(swapped !== pv, 'RED-MATH-19/001 fixture: swapping cancel and hold must change the source');
+  assert(!pinchWriterContract(swapped), 'RED-MATH-19/001 fixture: holding the spin BEFORE cancelling the glide must be flagged (the glide would overwrite the held camera)');
+  const staleRef = pv.replace('  useLayoutEffect(() => { holdSpinRef.current = holdSpinForCameraControl; });\n', '');
+  assert(staleRef !== pv, 'RED-MATH-19/001 fixture: removing the ref assignment must change the source');
+  assert(!pinchWriterContract(staleRef), 'RED-MATH-19/001 fixture: a hold ref that is never re-assigned (stale closure) must be flagged');
+}
 
 // ── RED-APP-18/001+002 + /003 (tour keyboard ownership; floating-card estimate) ──
 {
@@ -3776,9 +3875,35 @@ function testWalkthroughInputContracts() {
       'a plain button must NOT own the arrow keys — the tour focuses its own buttons on open and arrows must still step it');
     assert(/tourKeyOwnedByTarget = \(t: EventTarget \| null, key: string\): boolean =>\s*t instanceof Element && !!t\.closest\(key === 'Enter' \? TOUR_ENTER_OWNER_SELECTOR : TOUR_ARROW_OWNER_SELECTOR\)/.test(src),
       'tourKeyOwnedByTarget must pick the Enter owners for Enter and the arrow owners otherwise');
-    const est = /const FLOAT_H_EST = (\d+);/.exec(src);
+    // ── STRUCT-APP-19/001: the layout family is chosen from a MEASUREMENT ──
+    // RED-APP-18/003's fix moved a constant (420 -> 520); this round removed the
+    // constant from the decision. The contract below is what makes the class
+    // impossible rather than merely absent, so each clause has a mutant.
+    const est = /const FLOAT_H_FALLBACK = (\d+);/.exec(src);
     assert(est && Number(est[1]) >= 520,
-      `FLOAT_H_EST must be >= 520, the tallest floating card measured (515px at 912x1368; RED-APP-18/003) — got ${est?.[1]}`);
+      `FLOAT_H_FALLBACK must be >= 520, the tallest floating card measured at the default type scale (515px at 912x1368; RED-APP-18/003) — got ${est?.[1]}`);
+    // 1. The predicates take the measured card; their bodies use the ARGUMENT,
+    //    with the constant only as the >0 fallback.
+    assert(/export const tourFloatingFits = \([\s\S]{0,400}?floatH: number = FLOAT_H_FALLBACK,\s*floatW: number = FLOAT_W_FALLBACK,\s*\): boolean => \{\s*const h = floatH > 0 \? floatH : FLOAT_H_FALLBACK;\s*const w = floatW > 0 \? floatW : FLOAT_W_FALLBACK;/.test(src),
+      'STRUCT-APP-19/001: tourFloatingFits must take the measured floating card and use it, falling back to the constant only when it is not measured yet');
+    assert(/\(vh - \(r\.top \+ r\.height\) - GAP\) >= h\s*\|\| \(r\.top - GAP\) >= h\s*\|\| \(vw - \(r\.left \+ r\.width\) - GAP\) >= w\s*\|\| \(r\.left - GAP\) >= w;/.test(src),
+      'STRUCT-APP-19/001: all four sides of the fit test must compare against the measured height/width, not the constants');
+    // 2. The probe exists, is the FLOATING variant at the FLOATING width, and is
+    //    off-screen + inert + aria-hidden (never visible, never focusable).
+    assert(/ref=\{floatProbeRef\}\s*aria-hidden="true"\s*inert\s*data-tour-float-probe=""\s*className=\{cardClass\(false, false\)\}\s*style=\{\{ top: 0, left: -10000, width: tourFloatingCardWidth\(vw\), visibility: 'hidden' \}\}\s*>\s*\{cardContents\(false, false, true\)\}/.test(src),
+      'STRUCT-APP-19/001: the measuring probe must render the FLOATING variant (cardClass(false,false) + cardContents(false,false,true)) at tourFloatingCardWidth(vw), off-screen, inert and aria-hidden');
+    // 3. The measurement reads the PROBE (never the rendered card) and re-reads
+    //    when the probe's box changes — a font swap or a browser minimum font
+    //    size is exactly what no dependency list can name.
+    assert(/const el = floatProbeRef\.current;[\s\S]{0,400}?const next = el\.offsetHeight;[\s\S]{0,300}?const ro = new ResizeObserver\(read\);\s*ro\.observe\(el\);/.test(src),
+      'STRUCT-APP-19/001: floatH must be measured from the probe and kept current with a ResizeObserver');
+    // 4. ONE definition of the card chrome and contents, so the measured card and
+    //    the placed card cannot drift apart (the defect, one level up).
+    assert((src.match(/const cardClass = \(/g) || []).length === 1
+      && (src.match(/const cardContents = \(/g) || []).length === 1
+      && (src.match(/text-2xl/g) || []).length === 1
+      && (src.match(/'p-4 gap-2' : 'p-6 sm:p-7 gap-3\.5'/g) || []).length === 1,
+      'STRUCT-APP-19/001: the card chrome and contents must be defined ONCE and shared by the probe and the rendered card — a second copy of the type scale is a second thing to keep in sync');
   };
   contract(tour);
   const mustThrow = (label: string, mutant: string) => {
@@ -3790,46 +3915,25 @@ function testWalkthroughInputContracts() {
   mustThrow('ownership guard after the advance branch', tour.replace('      if (tourKeyOwnedByTarget(e.target, e.key)) return;\n      if (e.key === \'ArrowRight\' || e.key === \'Enter\') setI((n) => Math.min(n + 1, steps.length - 1));\n', '      if (e.key === \'ArrowRight\' || e.key === \'Enter\') setI((n) => Math.min(n + 1, steps.length - 1));\n      if (tourKeyOwnedByTarget(e.target, e.key)) return;\n'));
   mustThrow('sliders dropped from the arrow owners', tour.replace("'textarea, select, [contenteditable]:not([contenteditable=\"false\"]), [role=\"slider\"], [role=\"textbox\"], '", "'textarea, select, [contenteditable]:not([contenteditable=\"false\"]), [role=\"textbox\"], '"));
   mustThrow('buttons own the arrows (the tour could no longer be stepped from its own focused Next)', tour.replace("+ '[role=\"tab\"], [role=\"tablist\"], [role=\"menuitem\"], [role=\"menu\"], [role=\"tree\"], [role=\"grid\"]';", "+ '[role=\"tab\"], [role=\"tablist\"], [role=\"menuitem\"], [role=\"menu\"], [role=\"tree\"], [role=\"grid\"], button';"));
-  mustThrow('estimate back at 420 (the shipped RED-APP-18/003 defect)', tour.replace('const FLOAT_H_EST = 520;', 'const FLOAT_H_EST = 420;'));
-  console.log('✓ RED-APP-18: tour keys bail when the focused element owns them (Escape still closes); FLOAT_H_EST >= 520; 5 mutants rejected');
-}
-
-// ── RED-MATH-19/001: the pinch writer cancels an in-flight glide, like Reset View ──
-// The tour glide (moveCamera) re-relayouts the camera every frame; a two-finger
-// pinch that lands mid-glide wrote its eye once and was overwritten 16 ms later,
-// so the gesture was a silent no-op for the whole glide. Same family as
-// RED-MATH-18/001 (#170 fixed Reset View only). Contract: onTouchStart cancels
-// the glide BEFORE it records the pinch start; fixture = that call removed.
-{
-  const pv = readFileForContract('src/components/PlotlyView.tsx', 'utf8');
-  const pinchWriterContract = (src: string): boolean => {
-    const start = src.indexOf('const onTouchStart = (e: Event) => {');
-    if (start === -1) return false;
-    const body = src.slice(start, src.indexOf('const onTouchMove', start));
-    const cancel = body.indexOf('cancelCameraGlide();');
-    const hold = body.indexOf('holdSpinRef.current();');
-    const record = body.indexOf('pinchStartDist.current = dist(te.touches);');
-    // the ref must be kept current from render scope, or the hold reads first-render state
-    // CodeRabbit on #177: published from a layout effect, never during render.
-    const refKept = /useLayoutEffect\(\(\) => \{ holdSpinRef\.current = holdSpinForCameraControl; \}\);/.test(src)
-      && !/^\s*holdSpinRef\.current = holdSpinForCameraControl;\s*$/m.test(src);
-    // CodeRabbit on #177: the COMPLETE ordering — cancel the glide first (it would otherwise
-    // overwrite the held camera), then hold the spin, then record the pinch start.
-    return cancel !== -1 && hold !== -1 && record !== -1 && cancel < hold && hold < record && refKept;
-  };
-  assert(pinchWriterContract(pv), 'RED-MATH-19/001: onTouchStart must cancel the glide AND hold the spin (via the render-kept ref) before recording the pinch start');
-  const noCancel = pv.replace(/\n\s*cancelCameraGlide\(\);\n(\s*holdSpinRef\.current\(\);)/, '\n$1');
-  assert(noCancel !== pv, 'RED-MATH-19/001 fixture: removing the cancel must change the source');
-  assert(!pinchWriterContract(noCancel), 'RED-MATH-19/001 fixture: the pinch writer without the glide cancel must be flagged');
-  const noHold = pv.replace(/\n\s*holdSpinRef\.current\(\);\n(\s*pinchStartDist\.current = dist\(te\.touches\);)/, '\n$1');
-  assert(noHold !== pv, 'RED-MATH-19/001 fixture: removing the hold must change the source');
-  assert(!pinchWriterContract(noHold), 'RED-MATH-19/001 fixture: the pinch writer without the spin hold must be flagged (the spin resumed at its own radius and erased the pinch)');
-  const swapped = pv.replace(/(\n\s*)cancelCameraGlide\(\);(\n\s*)holdSpinRef\.current\(\);/, '$1holdSpinRef.current();$2cancelCameraGlide();');
-  assert(swapped !== pv, 'RED-MATH-19/001 fixture: swapping cancel and hold must change the source');
-  assert(!pinchWriterContract(swapped), 'RED-MATH-19/001 fixture: holding the spin BEFORE cancelling the glide must be flagged (the glide would overwrite the held camera)');
-  const staleRef = pv.replace('  useLayoutEffect(() => { holdSpinRef.current = holdSpinForCameraControl; });\n', '');
-  assert(staleRef !== pv, 'RED-MATH-19/001 fixture: removing the ref assignment must change the source');
-  assert(!pinchWriterContract(staleRef), 'RED-MATH-19/001 fixture: a hold ref that is never re-assigned (stale closure) must be flagged');
+  mustThrow('fallback back at 420 (the shipped RED-APP-18/003 defect)', tour.replace('const FLOAT_H_FALLBACK = 520;', 'const FLOAT_H_FALLBACK = 420;'));
+  // ── STRUCT-APP-19/001 mutants: every way back to an estimate-driven family ──
+  mustThrow('the fit test ignores its measured height and reads the constant',
+    tour.replace('const h = floatH > 0 ? floatH : FLOAT_H_FALLBACK;', 'const h = FLOAT_H_FALLBACK;'));
+  mustThrow('the probe is rendered in the SHEET (dense) variant, so it measures the wrong card',
+    tour.replace('{cardContents(false, false, true)}', '{cardContents(dense, false, true)}'));
+  mustThrow('the probe carries the live region too (a screen reader hears every step twice)',
+    tour.replace('{cardContents(false, false, true)}', '{cardContents(false, false, false)}'));
+  mustThrow('the probe is rendered at the RENDERED width instead of the floating width',
+    tour.replace("style={{ top: 0, left: -10000, width: tourFloatingCardWidth(vw), visibility: 'hidden' }}", "style={{ top: 0, left: -10000, width: CARD_W, visibility: 'hidden' }}"));
+  mustThrow('the probe is visible and hit-testable (it would sit on the page as a second card)',
+    tour.replace('className={cardClass(false, false)}', 'className={cardClass(false, true)}'));
+  mustThrow('the probe is left in the tab order and the accessibility tree',
+    tour.replace('        aria-hidden="true"\n        inert\n', '        aria-hidden="true"\n'));
+  mustThrow('the measurement reads the RENDERED card instead of the probe',
+    tour.replace('const el = floatProbeRef.current;', 'const el = cardRef.current;'));
+  mustThrow('the measurement stops tracking the probe (a late font swap or minimum-font-size never lands)',
+    tour.replace('    const ro = new ResizeObserver(read);\n    ro.observe(el);\n', ''));
+  console.log('✓ RED-APP-18 + STRUCT-APP-19/001: tour keys bail when the focused element owns them (Escape still closes); the layout family is chosen from a MEASURED floating card with the constant only as a >= 520 fallback; 13 mutants rejected here + 3 call-site mutants in the H5/CR contract above');
 }
 
 // ── RED-MATH-18/001: "Reset View" must land on the default pose and STAY there ──

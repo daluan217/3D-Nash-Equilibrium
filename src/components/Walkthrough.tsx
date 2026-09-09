@@ -90,30 +90,39 @@ function headerOffset(): number {
   return r.top <= 1 ? Math.max(0, r.bottom) : 0;
 }
 /**
- * Fixed size estimates for the FLOATING card, used only to ask "would it fit
- * beside the target?".
+ * Size of the FLOATING card, used only to ask "would it fit beside the target?".
  *
- * Deliberately constants rather than the measured height: the sheet is shorter
- * than the floating card, so testing with the live measurement flip-flops —
- * sheet fits, so switch to floating, which no longer fits, so switch back.
+ * STRUCT-APP-19/001 — this used to be a pair of CONSTANTS, and the constant was
+ * the defect. The fit test runs BEFORE the card exists, but the placement that
+ * follows it uses the MEASURED height, so whenever the real card was taller than
+ * the constant the test said "a floating card fits", placement found no side with
+ * that much room, and fell through to `place: 'center'` — a caption sitting on
+ * top of the very thing it points at, with no arrow. 300 was wrong (79% cover);
+ * 420 was wrong (RED-APP-18/003, 10 of 19 steps at 912x1368); 520 was wrong by
+ * 2px — with Chrome's "Minimum font size" accessibility setting at 20px the
+ * step-3 card measures 599px and covers 58.6% of its own spotlight.
+ *
+ * A constant cannot be right, because the height is a function of the caption
+ * COPY, the type scale and the visitor's font settings, none of which it can
+ * see. So the component MEASURES the floating card instead: it renders one
+ * off-screen, in the floating variant, on every step (see `floatProbeRef` /
+ * `floatH` below) and passes the measurement to the predicates below.
+ *
+ * The measurement is of the FLOATING variant specifically — never of the
+ * rendered card — which is what keeps the old objection ("testing with the live
+ * measurement flip-flops: sheet fits, so switch to floating, which no longer
+ * fits, so switch back") from applying: the probe's height does not depend on
+ * which family is chosen, so the fit test is a fixed point.
+ *
+ * The constants remain only as the pre-measurement FALLBACK for the first
+ * commit (and for a non-DOM environment). They must stay >= the tallest card
+ * the tour renders at the default type scale (515px measured at 912x1368), so
+ * that even the fallback errs on the safe side.
  */
-// Must be >= the real floating card, which measures ~405px at the desktop type
-// scale. An optimistic 300 made the fit test disagree with the placement that
-// followed it: the test said "fits", placement then found no side with 405px of
-// room and fell back to a centred card sitting across 79% of its own target.
-// RED-APP-18/003: 420 was measured at ONE viewport; at 912x1368 (a Surface Pro
-// held portrait) the same captions measure 432-515px, so for 10 of 19 steps the
-// test said "fits" with 420-514px of room and the placement below — which uses
-// the MEASURED height — found no side and fell back to a centred card INSIDE
-// its own spotlight. The estimate must be >= the tallest card the tour can
-// render (515 measured; the placement effect re-runs on the measured height,
-// but the layout FAMILY is chosen from this number before the scroll, so it
-// cannot be a per-step measurement without a family flip after the scroll).
-// A shorter card with 420-520px of room now gets the bottom sheet instead —
-// the safe family — never a card over its target. e2e §88 walks every step at
-// that viewport and asserts zero card-over-spotlight overlap.
-const FLOAT_H_EST = 520;
-const FLOAT_W_EST = 520;
+const FLOAT_H_FALLBACK = 520;
+const FLOAT_W_FALLBACK = 520;
+/** Width the floating card is rendered at in portrait (see CARD_W below). */
+export const tourFloatingCardWidth = (vw: number) => Math.min(520, vw - 32);
 
 /**
  * RED-APP-18/001+002: the elements that own Enter / the arrow keys while
@@ -137,12 +146,27 @@ export const TOUR_ARROW_OWNER_SELECTOR = 'input:not([type="button"]):not([type="
 export const tourKeyOwnedByTarget = (t: EventTarget | null, key: string): boolean =>
   t instanceof Element && !!t.closest(key === 'Enter' ? TOUR_ENTER_OWNER_SELECTOR : TOUR_ARROW_OWNER_SELECTOR);
 
-/** Would a floating card fit on some side of this spotlight rect? */
-export const tourFloatingFits = (r: { top: number; left: number; width: number; height: number }, vw: number, vh: number): boolean => {
-  return (vh - (r.top + r.height) - GAP) >= FLOAT_H_EST
-      || (r.top - GAP) >= FLOAT_H_EST
-      || (vw - (r.left + r.width) - GAP) >= FLOAT_W_EST
-      || (r.left - GAP) >= FLOAT_W_EST;
+/**
+ * Would a floating card fit on some side of this spotlight rect?
+ *
+ * `floatH`/`floatW` are the MEASURED floating card (STRUCT-APP-19/001). They
+ * default to the fallback constants so a caller with no measurement yet — the
+ * first commit, or a unit assertion about the geometry itself — gets the old,
+ * deliberately conservative answer.
+ */
+export const tourFloatingFits = (
+  r: { top: number; left: number; width: number; height: number },
+  vw: number,
+  vh: number,
+  floatH: number = FLOAT_H_FALLBACK,
+  floatW: number = FLOAT_W_FALLBACK,
+): boolean => {
+  const h = floatH > 0 ? floatH : FLOAT_H_FALLBACK;
+  const w = floatW > 0 ? floatW : FLOAT_W_FALLBACK;
+  return (vh - (r.top + r.height) - GAP) >= h
+      || (r.top - GAP) >= h
+      || (vw - (r.left + r.width) - GAP) >= w
+      || (r.left - GAP) >= w;
 };
 
 /**
@@ -158,8 +182,14 @@ export const tourRectAfterCentering = <T extends { top: number; height: number }
   ({ ...r, top: (vh - r.height) / 2 });
 
 /** Portrait layout family for a spotlight at a given position: bottom sheet unless a floating card fits beside it. */
-export const tourPortraitUsesSheet = (r: { top: number; left: number; width: number; height: number }, vw: number, vh: number): boolean =>
-  vw < COMPACT_MAX || !tourFloatingFits(r, vw, vh);
+export const tourPortraitUsesSheet = (
+  r: { top: number; left: number; width: number; height: number },
+  vw: number,
+  vh: number,
+  floatH: number = FLOAT_H_FALLBACK,
+  floatW: number = FLOAT_W_FALLBACK,
+): boolean =>
+  vw < COMPACT_MAX || !tourFloatingFits(r, vw, vh, floatH, floatW);
 
 const readRect = (el: Element): Rect => {
   const r = el.getBoundingClientRect();
@@ -189,6 +219,15 @@ export function Walkthrough({
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardH, setCardH] = useState(0);
   /**
+   * STRUCT-APP-19/001: the measured height of the FLOATING card for this step,
+   * taken from an off-screen probe rendered in the floating variant (see
+   * `floatProbe` in the tree below). Never `cardH` — that is whichever family is
+   * currently rendered, and feeding it back into the family test is the
+   * flip-flop the old constants existed to avoid.
+   */
+  const floatProbeRef = useRef<HTMLDivElement>(null);
+  const [floatH, setFloatH] = useState(0);
+  /**
    * Viewport, tracked in state so a rotation or resize re-lays-out the card.
    * Read during render otherwise, which would go stale on orientation change.
    */
@@ -205,6 +244,31 @@ export function Walkthrough({
       window.removeEventListener('orientationchange', onResize);
     };
   }, []);
+
+  /**
+   * Measure the floating-variant probe. A ResizeObserver rather than a plain
+   * read on the deps, because the thing that invalidates this measurement is
+   * exactly the thing no dependency list can name: a web font finishing its
+   * swap, a browser minimum-font-size, a user zoom. When the probe's box
+   * changes, the fit test's input changes with it.
+   */
+  useLayoutEffect(() => {
+    const el = floatProbeRef.current;
+    if (!el) return;
+    const read = () => setFloatH((prev) => {
+      const next = el.offsetHeight;
+      return next > 0 && next !== prev ? next : prev;
+    });
+    read();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, i, vp.w]);
+  // Read by the scroll effect, which must not re-run (and re-scroll) just
+  // because the measurement arrived a frame later than the first render.
+  const floatHRef = useRef(floatH);
+  useLayoutEffect(() => { floatHRef.current = floatH; }, [floatH]);
 
   const step = steps[i];
   const last = i === steps.length - 1;
@@ -270,9 +334,13 @@ export function Walkthrough({
       const paddedRect = readRect(el);
       const isLand = window.innerWidth > window.innerHeight;
       const behavior = tourScrollBehavior(!!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
-      // Decide from the POST-centring position (see tourRectAfterCentering).
+      // Decide from the POST-centring position (see tourRectAfterCentering),
+      // with the MEASURED floating card (STRUCT-APP-19/001) — the same numbers
+      // render uses, so the scroll strategy and the layout family cannot
+      // disagree about how tall the card is.
       const willSheet = !isLand && tourPortraitUsesSheet(
         tourRectAfterCentering(paddedRect, window.innerHeight), window.innerWidth, window.innerHeight,
+        floatHRef.current, tourFloatingCardWidth(window.innerWidth),
       );
       if (!willSheet && !isLand) {
         el.scrollIntoView({ behavior, block: 'center' });
@@ -306,7 +374,7 @@ export function Walkthrough({
    * bottom of a 950x1000 screen, over 25% of the plot. The family itself is a
    * boolean, so keying on it re-measures exactly once per flip.
    */
-  const portraitSheet = !(vp.w > vp.h) && (!rect ? vp.w < COMPACT_MAX : tourPortraitUsesSheet(rect, vp.w, vp.h));
+  const portraitSheet = !(vp.w > vp.h) && (!rect ? vp.w < COMPACT_MAX : tourPortraitUsesSheet(rect, vp.w, vp.h, floatH, tourFloatingCardWidth(vp.w)));
   useLayoutEffect(() => {
     if (cardRef.current) setCardH(cardRef.current.offsetHeight);
   }, [i, rect?.documentTop, rect?.left, rect?.width, rect?.height, open, vp.w, vp.h, portraitSheet]);
@@ -348,7 +416,7 @@ export function Walkthrough({
 
   // RED-APP-15/003: the keydown gate above has no pointer equivalent, and the
   // drawer's overlay (z-50) sits BELOW the tour (z-[60]) — the only one of
-  // six surfaces that does — so a real click on the tour's own Next/Back/Skip
+  // six surfaces that does — so a real click on the tour's own Next/Back/close
   // reaches it right through an open, aria-modal drawer and rewrites the
   // board. Track ModalRegistry's stack (the same subscribe ModalSurface uses)
   // so the WHOLE overlay goes `inert` the instant any surface registers, and
@@ -455,7 +523,6 @@ export function Walkthrough({
 
   const vw = vp.w;
   const vh = vp.h;
-  const exitTop = headerOffset() + GAP;
   /**
    * Orientation decides the layout FAMILY, and it is the viewport's aspect —
    * never the device class. A phone rotated sideways, an iPad in landscape and
@@ -479,7 +546,7 @@ export function Walkthrough({
     ? Math.max(280, Math.min(520, Math.min(sideAvail, vw - GAP * 2)))
     : sheet
       ? vw - GAP * 2
-      : Math.min(520, vw - 32);
+      : tourFloatingCardWidth(vw);
   const h = cardH
     || (sheet ? Math.round(vh * sheetMaxVh(vh))
       : landscape ? Math.min(300, vh - GAP * 2)
@@ -491,6 +558,81 @@ export function Walkthrough({
   /** Small-type treatment: the portrait sheet, or a landscape card that is
    *  narrow or on a short screen (a phone held sideways is ~390px tall). */
   const dense = sheet || (landscape && (CARD_W < 420 || vh < 560));
+
+  /**
+   * The caption card's chrome and its contents, shared by the rendered card and
+   * by the off-screen floating probe that measures it (STRUCT-APP-19/001).
+   * ONE definition, so the thing measured and the thing placed cannot drift —
+   * a probe that copied the markup would be a second place for the type scale
+   * to change, which is the defect this replaces, one level up.
+   */
+  const cardClass = (denseVariant: boolean, interactive: boolean) =>
+    `${interactive ? 'pointer-events-auto' : 'pointer-events-none'} absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
+      denseVariant ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
+    }`;
+  const cardContents = (denseVariant: boolean, scrolls: boolean, probe = false) => (
+    <>
+      {/* `pr-8` keeps the step counter clear of the close button, which is
+          positioned over this corner from the end of the card (see below). */}
+      <div className="flex items-start gap-3 pr-8">
+        <span className={`font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${denseVariant ? 'text-[11px]' : 'text-[13px]'}`}>
+          {i + 1} / {steps.length}
+        </span>
+      </div>
+
+      <h3 className={`font-bold text-slate-800 dark:text-slate-100 leading-snug tracking-tight ${denseVariant ? 'text-[17px]' : 'text-2xl'}`}>{step.title}</h3>
+      {/* The probe is a measuring stick, not a second announcement: only the
+          rendered card carries the live region (aria-hidden already keeps the
+          probe out of the tree; this makes it true twice). */}
+      <p
+        className={`leading-relaxed text-slate-600 dark:text-slate-300 ${denseVariant ? 'text-[14px]' : 'text-[17px]'}${scrolls ? ' overflow-y-auto min-h-0' : ''}`}
+        aria-live={probe ? undefined : 'polite'}
+      >
+        {step.body}
+      </p>
+
+      {/* STRUCT-APP-19/003: `justify-end`, not `justify-between` — Skip used to
+          hold the left edge, and leaving `justify-between` with one child would
+          push Back/Next across to it. */}
+      <div className={`flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800 ${denseVariant ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setI((n) => Math.max(n - 1, 0))}
+            disabled={i === 0}
+            className={`inline-flex items-center gap-1 rounded-xl font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors ${denseVariant ? 'px-3 py-2 text-[13px]' : 'px-4 py-2.5 text-[15px]'}`}
+          >
+            <ArrowLeft className="w-4 h-4" /> Back
+          </button>
+          <button
+            type="button"
+            onClick={() => (last ? close() : setI((n) => n + 1))}
+            className={`inline-flex items-center gap-1 rounded-xl font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors ${denseVariant ? 'px-3.5 py-2 text-[13px]' : 'px-5 py-2.5 text-[15px]'}`}
+          >
+            {last ? 'Explore on your own' : <>Next <ArrowRight className="w-4 h-4" /></>}
+          </button>
+        </div>
+      </div>
+
+      {/* STRUCT-APP-19/003: the tour's ONE exit (Daniel, 2026-09-08 — Skip and
+          the viewport-anchored "Exit tour" pill were the same action twice more).
+          Rendered LAST so the tab order is content -> Back/Next -> close, and
+          positioned over the card's top-right corner where it has always been. */}
+      <button
+        type="button"
+        onClick={close}
+        // The measuring probe renders these same contents, so a bare
+        // `[aria-label="Close tour"]` would match TWO elements and every
+        // selector in the suite would hit a strict-mode violation. The probe is
+        // aria-hidden and inert (Playwright's getByRole already skips it); this
+        // keeps the CSS attribute selector unambiguous too, at no layout cost.
+        aria-label={probe ? undefined : 'Close tour'}
+        className={`absolute ${denseVariant ? 'top-3 right-3' : 'top-5 right-5'} p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors`}
+      >
+        <X className="w-4 h-4" />
+      </button>
+    </>
+  );
   let cardTop: number;
   let cardLeft: number;
   let place: 'below' | 'above' | 'right' | 'left' | 'center' = 'center';
@@ -602,22 +744,6 @@ export function Walkthrough({
       )}
       {!rect && <div className="absolute inset-0 bg-slate-900/72 pointer-events-none" />}
 
-      {/* Always-available exit, anchored to the viewport rather than to the
-          caption card. The card's own X moves with the step, so on a step
-          pointing at something near the top of the page it can end up
-          somewhere unexpected; this one never moves. */}
-      {/* RED-APP-16/001: `inert` lives on the outer wrapper now (it is
-          inherited by the whole subtree) so it does not need repeating here. */}
-      <button
-        type="button"
-        onClick={close}
-        aria-label="Exit tour"
-        style={{ top: exitTop, right: GAP }}
-        className={`pointer-events-auto absolute z-10 inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-slate-900/80 font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors ${dense ? 'px-3 py-1.5 text-[12px]' : 'px-4 py-2.5 text-[15px]'}`}
-      >
-        <X className="w-4 h-4" /> Exit tour
-      </button>
-
       {arrow && (
         <svg className="absolute inset-0 w-full h-full pointer-events-none" aria-hidden="true">
           <defs>
@@ -635,9 +761,7 @@ export function Walkthrough({
 
       <div
         ref={cardRef}
-        className={`pointer-events-auto absolute rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl flex flex-col ${
-          dense ? 'p-4 gap-2' : 'p-6 sm:p-7 gap-3.5'
-        }`}
+        className={cardClass(dense, true)}
         style={{
           top: cardTop,
           left: cardLeft,
@@ -648,54 +772,29 @@ export function Walkthrough({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3">
-          <span className={`font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${dense ? 'text-[11px]' : 'text-[13px]'}`}>
-            {i + 1} / {steps.length}
-          </span>
-          <button
-            type="button"
-            onClick={close}
-            aria-label="Close tour"
-            className="shrink-0 -m-1.5 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        {cardContents(dense, sheet || landscape)}
+      </div>
 
-        <h3 className={`font-bold text-slate-800 dark:text-slate-100 leading-snug tracking-tight ${dense ? 'text-[17px]' : 'text-2xl'}`}>{step.title}</h3>
-        <p
-          className={`leading-relaxed text-slate-600 dark:text-slate-300 ${dense ? 'text-[14px]' : 'text-[17px]'}${sheet || landscape ? ' overflow-y-auto min-h-0' : ''}`}
-          aria-live="polite"
-        >
-          {step.body}
-        </p>
-
-        <div className={`flex items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 ${dense ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
-          <button
-            type="button"
-            onClick={close}
-            className={`font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors ${dense ? 'text-[13px]' : 'text-[15px]'}`}
-          >
-            Skip
-          </button>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setI((n) => Math.max(n - 1, 0))}
-              disabled={i === 0}
-              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors ${dense ? 'px-3 py-2 text-[13px]' : 'px-4 py-2.5 text-[15px]'}`}
-            >
-              <ArrowLeft className="w-4 h-4" /> Back
-            </button>
-            <button
-              type="button"
-              onClick={() => (last ? close() : setI((n) => n + 1))}
-              className={`inline-flex items-center gap-1 rounded-xl font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors ${dense ? 'px-3.5 py-2 text-[13px]' : 'px-5 py-2.5 text-[15px]'}`}
-            >
-              {last ? 'Explore on your own' : <>Next <ArrowRight className="w-4 h-4" /></>}
-            </button>
-          </div>
-        </div>
+      {/* STRUCT-APP-19/001: the measuring stick. A copy of the caption card in
+          the FLOATING variant, at the floating width, rendered off-screen so the
+          layout family is chosen from the card that would actually be placed
+          instead of from a constant that has been wrong three times (300, 420,
+          520). Hidden from sight (`visibility: hidden`), from hit-testing
+          (`pointer-events: none`, and it is off-screen), and from assistive tech
+          and the tab order (`inert` + `aria-hidden`) — `inert` removes all three
+          of hit-testing, tab order and AT together, which `aria-hidden` alone on
+          a focusable subtree would not (WCAG 4.1.2). Rendered LAST so that every
+          existing "first match inside the tour" locator still resolves to the
+          real card. */}
+      <div
+        ref={floatProbeRef}
+        aria-hidden="true"
+        inert
+        data-tour-float-probe=""
+        className={cardClass(false, false)}
+        style={{ top: 0, left: -10000, width: tourFloatingCardWidth(vw), visibility: 'hidden' }}
+      >
+        {cardContents(false, false, true)}
       </div>
     </div>
   );

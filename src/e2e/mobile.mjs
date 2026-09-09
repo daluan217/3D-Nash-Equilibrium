@@ -17,6 +17,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
+import { closeTour } from './tour.mjs';
 
 const PORT = process.env.MOBILE_PORT || '3097';
 const BASE = process.env.MOBILE_BASE || `http://localhost:${PORT}`;
@@ -61,8 +62,10 @@ if (!(await waitReady())) {
 const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
 
 async function dismissTour(page) {
-  try { await page.locator('[aria-label="Exit tour"]').click({ timeout: 30000 }); }
-  catch { await page.keyboard.press('Escape').catch(() => {}); }
+  // STRUCT-APP-19/003: dismiss through the one shared helper (it already falls
+  // back to Escape); this wrapper keeps its own return semantics — "is the tour
+  // gone", which is true even when it never appeared.
+  await closeTour(page);
   return page.waitForFunction(
     () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
     null, { timeout: 20000 },

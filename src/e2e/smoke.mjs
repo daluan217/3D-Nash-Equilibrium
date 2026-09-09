@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
+import { closeTour } from './tour.mjs';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -326,16 +327,16 @@ async function gotoHome() {
 }
 /* The tour auto-opens ~700ms after every anonymous load (by design), and a
  * fresh CI browser is always anonymous. Dismiss it through the
- * viewport-anchored Exit button — the callout card's own X moves with the
- * spotlight, and the tour's step-1 smooth-scroll can leave it unstable or
- * off-screen (observed on CI: spotlight at top:-210px, X unreachable, and
- * every later control click then timed out under the tour scrim). */
+ * card's X — the ONE exit since STRUCT-APP-19/003. It moves with the spotlight
+ * and step 1's smooth-scroll used to leave it unstable (observed on CI:
+ * spotlight at top:-210px, X unreachable, every later control click then timing
+ * out under the tour scrim), which is why the dismissal goes through
+ * `closeTour`: it waits for the button to be visible, then falls back to
+ * Escape. Measured after 003: the click lands in 2.2-4.7 s, 22/22. */
 async function dismissTour() {
-  try {
-    await page.locator('[aria-label="Exit tour"]').click({ timeout: 20000 });
-  } catch {
-    await page.keyboard.press('Escape');
-  }
+  // OPUS-REVIEW-180 NIT 8: go through the one shared helper like every other
+  // site, so the real wait added for FIX-FIRST 1 applies here too.
+  await closeTour(page, { timeout: 20000 });
   // Fail LOUDLY if the tour survived: proceeding with it open turns every
   // later click into an unrelated 120s actionability timeout (the exact
   // flake this guards against). Poll for closure rather than one count():
@@ -357,8 +358,7 @@ async function dismissTour() {
  * because the regen sections below need it four more times. */
 async function registerAndLogin(p, tag) {
   await p.goto(BASE, { waitUntil: 'networkidle' });
-  const exitTour = p.getByRole('button', { name: /exit tour/i });
-  if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+  await closeTour(p);
   await p.waitForTimeout(300);
   const uniq = `${tag}${Date.now()}`;
   await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
@@ -1042,12 +1042,7 @@ try {
   section('17', '320px label wrapping', async () => {
     const narrowPage = await newTrackedPage({ viewport: { width: 320, height: 900 } });
     await narrowPage.goto(BASE, { waitUntil: 'networkidle' });
-    const narrowExitTour = narrowPage.getByRole('button', { name: /exit tour/i });
-    if (await narrowExitTour.count() > 0) {
-      await narrowExitTour.click();
-      await narrowPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(narrowPage);
     // Prisoner's Dilemma is the default-selected preset; the exact fixture
     // this defect escaped at. Explicit click rather than relying on default
     // selection, so this check does not silently stop meaning anything if
@@ -1119,12 +1114,7 @@ try {
     const dist = (a, b2) => !!a && !!b2 && Math.hypot(a.x - b2.x, a.y - b2.y, a.z - b2.z);
 
     await rmPage.goto(BASE, { waitUntil: 'networkidle' });
-    const rmExitTour = rmPage.getByRole('button', { name: /exit tour/i });
-    if (await rmExitTour.count() > 0) {
-      await rmExitTour.click();
-      await rmPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(rmPage);
     const sceneReady = await waitForScene(60000, rmPage);
     record('idle-spin check: the scene is live on the fresh page (precondition)', sceneReady);
 
@@ -1187,12 +1177,7 @@ try {
   section('19', 'expanded log focus', async () => {
     const focusPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await focusPage.goto(BASE, { waitUntil: 'networkidle' });
-    const focusExitTour = focusPage.getByRole('button', { name: /exit tour/i });
-    if (await focusExitTour.count() > 0) {
-      await focusExitTour.click();
-      await focusPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(focusPage);
 
     const expandBtn = focusPage.getByRole('button', { name: 'Expand simulation log' });
     await expandBtn.waitFor({ state: 'visible', timeout: 15000 });
@@ -1263,12 +1248,7 @@ try {
   section('20', 'modal focus traps', async () => {
     const trapPage = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     await trapPage.goto(BASE, { waitUntil: 'networkidle' });
-    const trapExitTour = trapPage.getByRole('button', { name: /exit tour/i });
-    if (await trapExitTour.count() > 0) {
-      await trapExitTour.click();
-      await trapPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(trapPage);
 
     const isInsideDialog = (label) => trapPage.evaluate((l) => {
       const dlg = document.querySelector(`[role="dialog"][aria-label="${l}"]`);
@@ -1366,14 +1346,11 @@ try {
   section('21', 'settled live-region wording', async () => {
     const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
-    const settledExitTour = settledPage.getByRole('button', { name: /exit tour/i });
-    if (await settledExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await settledExitTour.click();
-      // CodeRabbit finding (this branch): poll for the tour dialog's actual
-      // detachment instead of a flat sleep, same pattern already used
-      // elsewhere in this file (React closes it asynchronously).
-      await settledPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
+    // OPUS-REVIEW-180 FIX-FIRST 1: the helper waits for the button and polls for
+    // the dialog's detachment (React closes it asynchronously), which is what
+    // this block open-coded with an `isVisible({ timeout })` that never waited.
+    await closeTour(settledPage);
+    {
     }
 
     const setCell = async (label, value) => {
@@ -1498,12 +1475,7 @@ try {
       // Deliberately never fulfill/abort/continue — a genuinely hung request.
     });
     await hangPage.goto(BASE, { waitUntil: 'networkidle' });
-    const hangExitTour = hangPage.getByRole('button', { name: /exit tour/i });
-    if (await hangExitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await hangExitTour.click();
-      await hangPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-        null, { timeout: 10000 }).catch(() => {});
-    }
+    await closeTour(hangPage);
 
     const explainBtn = hangPage.getByRole('button', { name: /explain this game/i });
     await explainBtn.click();
@@ -1563,8 +1535,7 @@ try {
   section('24', 'long-label 320px reflow', async () => {
     const overflowPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await overflowPage.goto(BASE, { waitUntil: 'networkidle' });
-    const oExitTour = overflowPage.getByRole('button', { name: /exit tour/i });
-    if (await oExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await oExitTour.click();
+    await closeTour(overflowPage);
     await overflowPage.waitForTimeout(300);
 
     const uniq = Date.now();
@@ -1607,8 +1578,7 @@ try {
     const p320 = trackPage(await narrow320.newPage());
     await p320.goto(BASE, { waitUntil: 'networkidle' });
     await p320.waitForTimeout(1000);
-    const p320ExitTour = p320.getByRole('button', { name: /exit tour/i });
-    if (await p320ExitTour.isVisible({ timeout: 2000 }).catch(() => false)) await p320ExitTour.click();
+    await closeTour(p320);
     await p320.waitForTimeout(300);
 
     const overflowing = async () => p320.evaluate(() => {
@@ -1675,8 +1645,7 @@ try {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     });
     await clampPage.goto(BASE, { waitUntil: 'networkidle' });
-    const clampExitTour = clampPage.getByRole('button', { name: /exit tour/i });
-    if (await clampExitTour.isVisible({ timeout: 3000 }).catch(() => false)) await clampExitTour.click();
+    await closeTour(clampPage);
     await clampPage.waitForTimeout(300);
 
     await clampPage.getByRole('button', { name: /new ai scenario/i }).click();
@@ -2326,7 +2295,7 @@ try {
     // the tour dialog itself decides. Escape is the fallback dismissTour() uses,
     // and a tour that survives both is recorded as a failed precondition rather
     // than silently left on top of the checks below.
-    const exitTourShort = shortPage.locator('[aria-label="Exit tour"]');
+    const exitTourShort = shortPage.locator('[aria-label="Close tour"]');
     try { await exitTourShort.click({ timeout: 20000 }); } catch { /* decided by the dialog below */ }
     let shortTourGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
       null, { timeout: 5000 }).then(() => true).catch(() => false);
@@ -2530,7 +2499,7 @@ try {
       await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
 
       await tabB.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTourB = tabB.getByRole('button', { name: /exit tour/i });
+      const exitTourB = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
       await tabB.waitForTimeout(500);
       const rowB = tabB.getByRole('button', { name: deleteGameName, exact: true });
@@ -2566,7 +2535,7 @@ try {
       await tabA.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
 
       await tabB.reload({ waitUntil: 'networkidle' });
-      const exitTourB2 = tabB.getByRole('button', { name: /exit tour/i });
+      const exitTourB2 = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB2.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB2.click();
       await tabB.waitForTimeout(500);
       const rowBEdit = tabB.getByRole('button', { name: editGameName, exact: true });
@@ -2792,9 +2761,8 @@ try {
   //      exactly as the red's probe6b did.
   section('41', 'print stylesheet', async () => {
     const printPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
-    const exitTour = printPage.getByRole('button', { name: /exit tour/i });
     await printPage.goto(BASE, { waitUntil: 'networkidle' });
-    if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) await exitTour.click();
+    await closeTour(printPage);
     await printPage.waitForTimeout(500);
     const runBtn = printPage.getByRole('button', { name: /^run$/i });
     if (await runBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
@@ -2843,16 +2811,107 @@ try {
       const pg = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
       await pg.addInitScript((t) => { try { localStorage.setItem('nash_sim_theme', t); } catch {} }, theme);
       await pg.goto(BASE, { waitUntil: 'networkidle' });
-      const exit = pg.getByRole('button', { name: /exit tour/i });
-      if (await exit.isVisible({ timeout: 3000 }).catch(() => false)) { await exit.click(); await exit.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {}); }
+      // CodeRabbit (#180): `isVisible({ timeout })` never waits, so a tour that
+      // opens after networkidle blocked the Step click. Wait through the helper.
+      await closeTour(pg);
+      // STRUCT-APP-19/002: put the simulation progress panel on the page — the ONE
+      // component that picks its dark classes in JavaScript, and therefore the one
+      // a `@media` rule can never make inert. ONE Step rather than a whole Run:
+      // it is deterministic (both arms land on exactly step 1, so the two pages
+      // are structurally identical) and it costs a second instead of fifteen.
+      // cr CLI (#180): the setup is NOT optional — a swallowed wait here let a
+      // missing Step control surface only as a late `hasSimPanel` failure that
+      // named the wrong step. Step is a core control; let the bounded waits throw.
+      const stepBtn = pg.getByRole('button', { name: /^step$/i }).first();
+      await stepBtn.waitFor({ state: 'visible', timeout: 15000 });
+      await stepBtn.click();
+      await pg.waitForFunction(
+        () => [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress'),
+        null, { timeout: 8000 },
+      );
       // CodeRabbit CLI (#179): wait for the print media to actually apply, not a fixed delay.
       await pg.emulateMedia({ media: 'print' });
       await pg.waitForFunction(() => window.matchMedia('print').matches, null, { timeout: 4000 });
+      // STRUCT-APP-19: and then wait for the REPAINT to finish. Switching to print
+      // media makes every `dark:` utility inert at once, and these elements carry
+      // `transition-all` — read immediately and you get colours in flight between
+      // the two themes, which differ on every run. (This bit me: the first version
+      // of the check below "found" six dark preset buttons that were really six
+      // mid-transition samples.) Poll until two consecutive reads agree.
+      // CodeRabbit CLI (this branch): the gate must watch exactly what the
+      // assertion reads, so install the collector ONCE and have both call it.
+      // Two earlier versions drifted: the first sampled `button, span, label,
+      // div` capped at 400 elements (things in flight outside the sample were
+      // missed); the second walked every element in the document, including the
+      // display:none, zero-box and print-hidden ones the comparison skips — it
+      // waited on pixels that never reach paper.
+      await pg.evaluate(() => {
+        const hidden = (el) => !!el.closest('[data-print="hide"], [data-modal-surface], [data-tour="plot"]');
+        const path = (el) => {
+          const parts = [];
+          for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+            parts.push(`${n.tagName.toLowerCase()}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+          }
+          return parts.reverse().join('/');
+        };
+        // The gate's signature: the SAME element filter and the SAME four
+        // colour properties the assertion compares, with none of the keying.
+        // (Polling the full keyed surface was correct but cost a `path()`
+        // ancestor walk plus a JSON encode of ~400 objects every 250 ms, which
+        // took §41 from 24 s to a 42-79 s spread — unpackable in a shard.)
+        window.__printInk = () => {
+          let sig = '';
+          for (const el of document.querySelectorAll('*')) {
+            if (hidden(el)) continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            const bx = el.getBoundingClientRect();
+            if (bx.width === 0 || bx.height === 0) continue;
+            sig += `${cs.color}|${cs.backgroundColor}|${cs.borderTopColor}|${cs.borderBottomColor};`;
+          }
+          return sig;
+        };
+        window.__printSurface = () => {
+          const surface = {};
+          for (const el of document.querySelectorAll('*')) {
+            if (hidden(el)) continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            const bx = el.getBoundingClientRect();
+            if (bx.width === 0 || bx.height === 0) continue;
+            surface[path(el)] = {
+              tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 32),
+              // The class attribute makes a failure actionable: it names WHICH
+              // utility (or JS-chosen class) let the screen theme reach paper.
+              cls: (el.getAttribute('class') || '').slice(0, 120),
+              color: cs.color, bg: cs.backgroundColor, bt: cs.borderTopColor, bb: cs.borderBottomColor,
+            };
+          }
+          return surface;
+        };
+      });
+      await pg.waitForFunction(() => {
+        const now = window.__printInk();
+        const prev = window.__printSig;
+        window.__printSig = now;
+        return prev !== undefined && prev === now;
+      }, null, { timeout: 8000, polling: 250 });
       const out = await pg.evaluate(() => {
         const isDark = document.documentElement.classList.contains('dark');
         const pick = (sel) => [...document.querySelectorAll(sel)].filter((e) => e.textContent.trim()).map((e) => getComputedStyle(e).color);
         const uniq = (a) => [...new Set(a)].sort();
-        return { isDark, a: uniq(pick('[class*="text-player-a"]')), b: uniq(pick('[class*="text-player-b"]')), nB: pick('[class*="text-player-b"]').length };
+        // ── STRUCT-APP-19/002: the WHOLE printed surface, with no enumeration ──
+        // Every element that actually reaches paper (print hides these three
+        // families outright), keyed by its structural path so the two arms are
+        // compared element-for-element. Any mechanism that lets the screen theme
+        // reach paper — a `dark:` utility, a runtime `darkMode ? …` class, an
+        // inline style, a variable — shows up here as a differing computed value.
+        // The SAME collector the stability gate above waited on — one
+        // definition, so the gate and this assertion cannot disagree.
+        const surface = window.__printSurface();
+        // The panel this check exists for must actually be on the page.
+        const hasSimPanel = [...document.querySelectorAll('span')].some((n) => n.textContent.trim() === 'Progress');
+        return { isDark, hasSimPanel, surface, a: uniq(pick('[class*="text-player-a"]')), b: uniq(pick('[class*="text-player-b"]')), nB: pick('[class*="text-player-b"]').length };
       });
       await pg.close();
       return out;
@@ -2868,6 +2927,45 @@ try {
       JSON.stringify(light.b) === JSON.stringify(dark.b), `light=${JSON.stringify(light.b)} dark=${JSON.stringify(dark.b)}`);
     record('FIX RED-APP-18/004: Player A too (control for the family, and half of the matrix)',
       JSON.stringify(light.a) === JSON.stringify(dark.a), `light=${JSON.stringify(light.a)} dark=${JSON.stringify(dark.a)}`);
+
+    // ── STRUCT-APP-19/002: paper is ONE surface, asserted over the whole page ──
+    // The two checks above name two selector FAMILIES; this names none. A hand
+    // list of families (and index.css's former hand list of eleven utility
+    // overrides for the simulation panel) covers only what someone remembered —
+    // the panel printed its labels in slate-700 for a dark-theme visitor and
+    // slate-500 for a light-theme one until the panel was given `dark:` variants.
+    // Mutation: remove the `@media not print` wrapper from the `@custom-variant
+    // dark` block in src/index.css -> 328 of 376 elements differ; restore the
+    // panel's `darkMode ? …` class ternaries -> 3 of 497 differ. Both fail here.
+    const lk = Object.keys(light.surface), dk = Object.keys(dark.surface);
+    const shared = lk.filter((k) => Object.prototype.hasOwnProperty.call(dark.surface, k));
+    record('precondition: the simulation progress panel (the one component that picks its dark classes in JS) is on the page in BOTH print arms',
+      light.hasSimPanel && dark.hasSimPanel, `light=${light.hasSimPanel} dark=${dark.hasSimPanel}`);
+    record('precondition: the two print arms are the same page, element for element, and large enough to mean something',
+      shared.length >= 300 && lk.length === dk.length && shared.length === lk.length,
+      `light=${lk.length} dark=${dk.length} shared=${shared.length}`);
+    // Chromium serialises the SAME colour as `oklch(L C H)` when it comes from a
+    // token and as `oklab(L a b)` when it comes from a color-mix. Compare the
+    // colours, not the spelling, or the check fails on a notation difference.
+    const canon = (v) => {
+      const ok = /^okl(ch|ab)\(([^)]+)\)$/.exec(v || '');
+      if (!ok) return v;
+      const n = ok[2].split('/')[0].trim().split(/\s+/).map(Number);
+      if (n.length < 3 || n.some((x) => Number.isNaN(x))) return v;
+      const alpha = (ok[2].split('/')[1] || '1').trim();
+      const [L, x, y] = ok[1] === 'ch'
+        ? [n[0], n[1] * Math.cos(n[2] * Math.PI / 180), n[1] * Math.sin(n[2] * Math.PI / 180)]
+        : [n[0], n[1], n[2]];
+      return `oklab:${L.toFixed(3)}:${x.toFixed(3)}:${y.toFixed(3)}:${alpha}`;
+    };
+    const surfaceDiffs = [];
+    for (const k of shared) {
+      const a = light.surface[k], b = dark.surface[k];
+      const fields = ['color', 'bg', 'bt', 'bb'].filter((f) => canon(a[f]) !== canon(b[f]));
+      if (fields.length) surfaceDiffs.push(`${k} <${a.tag} class="${a.cls}"|dark class="${b.cls}"> "${a.text}" ${fields.map((f) => `${f}: ${a[f]} vs ${b[f]}`).join(', ')}`);
+    }
+    record('STRUCT-APP-19/002: every element that reaches paper computes the same colour, background and border in both screen themes',
+      surfaceDiffs.length === 0, surfaceDiffs.slice(0, 6).join(' | ') || `all ${shared.length} printed elements agree`);
 
     await printPage.close();
   });
@@ -2887,7 +2985,7 @@ try {
     // relying on gotoHome(), matching section 35's pattern.
     const commaPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await commaPage.goto(BASE, { waitUntil: 'networkidle' });
-    try { await commaPage.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    await closeTour(commaPage); /* decided below */
     let tourGone = await commaPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
       null, { timeout: 5000 }).then(() => true).catch(() => false);
     if (!tourGone) {
@@ -3175,7 +3273,7 @@ try {
   section('44', 'comma in the step-size box rejected, value restored', async () => {
     const stepPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await stepPage.goto(BASE, { waitUntil: 'networkidle' });
-    try { await stepPage.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    await closeTour(stepPage); /* decided below */
     let tourGone = await stepPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
       null, { timeout: 5000 }).then(() => true).catch(() => false);
     if (!tourGone) {
@@ -3279,7 +3377,7 @@ try {
       const gameCalls = [];
       dp.on('request', (r) => { if (r.url().includes('/api/games')) gameCalls.push(`${r.method()} ${new URL(r.url()).pathname}`); });
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      await closeTour(dp); /* decided below */
       let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
       if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
       record('precondition: the guided tour is dismissed', tourGone);
@@ -3306,7 +3404,7 @@ try {
 
       // ── List survives a reload (the fetch on load is the second half of the finding) ──
       await dp.reload({ waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(dp); /* may not reopen */
       record('FIX: after a reload the local owner\'s game is listed again (no account, no token)',
         await dp.getByRole('button', { name, exact: true }).waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false));
 
@@ -3387,7 +3485,7 @@ try {
     await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
     const tabB = trackPage(await twoTab.newPage());
     await tabB.goto(BASE, { waitUntil: 'networkidle' });
-    const exitTourB = tabB.getByRole('button', { name: /exit tour/i });
+    const exitTourB = tabB.getByRole('button', { name: /close tour/i });
     if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
     const rowB = tabB.getByRole('button', { name: gameName, exact: true });
     await rowB.waitFor({ state: 'visible', timeout: 12000 });
@@ -3442,7 +3540,7 @@ try {
 
     // 003: Delete while offline must SAY something.
     await tabA.reload({ waitUntil: 'networkidle' });
-    const exitTourA = tabA.getByRole('button', { name: /exit tour/i });
+    const exitTourA = tabA.getByRole('button', { name: /close tour/i });
     if (await exitTourA.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourA.click();
     await tabA.getByRole('button', { name: gameName, exact: true }).waitFor({ state: 'visible', timeout: 12000 });
     const messages = [];
@@ -3469,7 +3567,7 @@ try {
   section('47', 'a legend toggle survives the next simulation redraw', async () => {
     const lp = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await lp.goto(BASE, { waitUntil: 'networkidle' });
-    try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+    await closeTour(lp); /* decided below */
     const tourGone = await lp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false);
     record('precondition: the guided tour is dismissed', tourGone);
     const matrix = lp.locator('input[inputmode="decimal"][class*="text-center"]');
@@ -3556,7 +3654,7 @@ try {
       const adoptCalls = [];
       dp.on('request', (r) => { if (r.url().includes('/api/games/adopt-local')) adoptCalls.push(r.method()); });
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      await closeTour(dp); /* decided below */
       let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
       if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false); }
       record('precondition: the guided tour is dismissed', tourGone);
@@ -3642,7 +3740,7 @@ try {
     try {
       const p = await ctx.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
       await plot.waitFor({ state: 'visible', timeout: 15000 });
       await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene, null, { timeout: 20000 }).catch(() => {});
@@ -3692,7 +3790,7 @@ try {
     try {
       const p = await ctx.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
       await plot.waitFor({ state: 'visible', timeout: 15000 });
       await p.waitForFunction(() => !!document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?._scene, null, { timeout: 20000 }).catch(() => {});
@@ -3760,7 +3858,7 @@ try {
         body: JSON.stringify({ name: n, description: 'to be deleted twice at once', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) })).status, [name, token]);
       record('precondition: a saved game exists', saved === 200, `status ${saved}`);
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       const row = p.locator('div.group', { has: p.getByRole('button', { name, exact: true }) });
       await row.waitFor({ state: 'visible', timeout: 10000 });
       const del = row.getByTitle('Delete this saved game');
@@ -3825,7 +3923,7 @@ try {
       await p.evaluate(async ([n, t]) => fetch('/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
         body: JSON.stringify({ name: n, description: 'focus return check', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) }), [name, token]);
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       const row = p.locator('div.group', { has: p.getByRole('button', { name, exact: true }) });
       await row.waitFor({ state: 'visible', timeout: 10000 });
       const editBtn = row.getByTitle(/^Edit /);
@@ -3866,7 +3964,7 @@ try {
     try {
       const p = await ctx.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       const uniq = `foc2${Date.now()}`;
       const reg = await fetch(BASE + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: uniq, email: `${uniq}@example.com`, password: 'TestPass123' }) });
       record('precondition: an account exists', reg.ok, `status ${reg.status}`);
@@ -3886,7 +3984,7 @@ try {
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
       for (const n of ['Del-A', 'Del-B']) await fetch(BASE + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: `${n}-${uniq}`, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       const rowA = p.locator('div.group', { has: p.getByRole('button', { name: `Del-A-${uniq}`, exact: true }) });
       await rowA.waitFor({ state: 'visible', timeout: 10000 });
       const delA = rowA.getByTitle('Delete this saved game');
@@ -3904,7 +4002,7 @@ try {
       // Delete button → focus falls to the page under the drawer.
       for (const n of ['Del-C', 'Del-D']) await fetch(BASE + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: `${n}-${uniq}`, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
       await p.getByRole('button', { name: /open workspace menu/i }).first().click();
       // The saved games live under the drawer's Library tab.
       await p.getByRole('button', { name: /library/i }).first().click();
@@ -3955,7 +4053,7 @@ try {
     try {
       const p = await tiny.newPage();
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       await p.keyboard.press('Escape').catch(() => {});
       const hdr = await p.evaluate(() => { const h = document.querySelector('header'); return h ? { position: getComputedStyle(h).position, height: Math.round(h.getBoundingClientRect().height) } : null; });
       record('precondition: at 320x200 the header is taller than the viewport', !!hdr && hdr.height >= 200, JSON.stringify(hdr));
@@ -3966,7 +4064,7 @@ try {
       record('FIX: after scrolling, the point at the centre of the viewport is NOT inside the header (the page is reachable)', hit.tag !== null && !hit.inHeader, JSON.stringify(hit));
       const q = await normal.newPage();
       await q.goto(BASE, { waitUntil: 'networkidle' });
-      try { await q.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(q); /* may not show */
       const pos = await q.evaluate(() => getComputedStyle(document.querySelector('header')).position);
       record('control: at 1280x900 the header stays sticky', pos === 'sticky', pos);
     } finally { await tiny.close().catch(() => {}); await normal.close().catch(() => {}); }
@@ -4193,7 +4291,7 @@ try {
     const p = await newTrackedPage({ viewport: { width: 1400, height: 1000 } });
     try {
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
       const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
       await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -4448,7 +4546,7 @@ try {
     {
       const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
 
       const cases = [
         // Feedback's own `autoFocus` textarea fires a real `focusin` during
@@ -4530,7 +4628,7 @@ try {
         body: JSON.stringify({ name: gameName, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }),
       });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
 
       const label = surface === 'save' ? 'Save custom game' : 'Edit saved game';
       const dialogSel = `[role="dialog"][aria-label="${label}"]`;
@@ -4646,7 +4744,7 @@ try {
         body: JSON.stringify({ name: gameName, description: 'x', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }),
       });
       await p.reload({ waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }); } catch { /* may not reopen */ }
+      await closeTour(p); /* may not reopen */
 
       const menuBtn = p.getByRole('button', { name: /open workspace menu/i }).first();
       await menuBtn.click();
@@ -4809,7 +4907,7 @@ try {
       record('precondition: the desktop local-owner server is up', up);
       const dp = await deskCtx.newPage();
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* may not appear */ }
+      await closeTour(dp); /* may not appear */
       await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
 
       const nameA = `LG-A-${Date.now().toString(36)}`;
@@ -5044,7 +5142,7 @@ try {
 
       const dp = await deskCtx.newPage();
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(dp); /* may not show */
       await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
       await dp.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 5000 });
       await dp.getByPlaceholder(/example\.com or username/i).fill(email);
@@ -5156,7 +5254,7 @@ try {
         // of the row a moment later — the click landed on the tour overlay,
         // not the button, and the dialog silently never opened.
         const dismissTour = async () => {
-          try { await wp.locator('[aria-label="Exit tour"]').click({ timeout: 10000 }); } catch { /* may not show */ }
+          await closeTour(wp); /* may not show */
           let gone = await wp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
           if (!gone) { await wp.keyboard.press('Escape'); gone = await wp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false); }
           return gone;
@@ -5304,7 +5402,7 @@ try {
       const scrollCtx = await browser.newContext({ viewport: { width: 900, height: 300 } });
       const lp = trackPage(await scrollCtx.newPage());
       await lp.goto(BASE, { waitUntil: 'networkidle' });
-      try { await lp.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+      await closeTour(lp); /* may not show */
       const stepBtn = lp.getByRole('button', { name: /^step$/i });
       for (let i = 0; i < 5; i++) await stepBtn.click({ force: true }).catch(() => {});
       await lp.locator('button[title*="Expand"]').first().click();
@@ -5381,7 +5479,7 @@ try {
     });
     try {
       await page.goto(BASE, { waitUntil: 'networkidle' });
-      try { await page.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(page); /* may not show */
       await page.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
       const matrix = page.locator('input[inputmode="decimal"][class*="text-center"]');
       await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -5602,7 +5700,7 @@ try {
     const p = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
     try {
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+      await closeTour(p); /* may not show */
       await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
       const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
       await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6052,7 +6150,7 @@ try {
         const p17 = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce' });
         try {
           await p17.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p17.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p17); /* may not show */
           await p17.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m17 = p17.locator('input[inputmode="decimal"][class*="text-center"]');
           await m17.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6229,7 +6327,7 @@ try {
         const p17mobile = await newTrackedPage({ viewport: { width: 320, height: 700 }, reducedMotion: 'reduce', hasTouch: true, isMobile: true });
         try {
           await p17mobile.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p17mobile.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p17mobile); /* may not show */
           await p17mobile.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m17m = p17mobile.locator('input[inputmode="decimal"][class*="text-center"]');
           await m17m.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6473,7 +6571,7 @@ try {
         const p16 = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
         try {
           await p16.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p16.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p16); /* may not show */
           await p16.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m16 = p16.locator('input[inputmode="decimal"][class*="text-center"]');
           await m16.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6651,7 +6749,7 @@ try {
         const p17b = await newTrackedPage({ viewport: { width: 1000, height: 900 }, reducedMotion: 'reduce' });
         try {
           await p17b.goto(BASE, { waitUntil: 'networkidle' });
-          try { await p17b.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+          await closeTour(p17b); /* may not show */
           await p17b.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
           const m17b = p17b.locator('input[inputmode="decimal"][class*="text-center"]');
           await m17b.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -6906,7 +7004,7 @@ try {
   section('74', 'a press on UI that merely overlaps the plot keeps the run going; a drag out of a dialog keeps it open', async () => {
     const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
-    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 15000 }); } catch { /* may not show */ }
+    await closeTour(p); /* may not show */
     const matrix = p.locator('input[inputmode="decimal"][class*="text-center"]');
     const vals = [-12, 12, 8, -8, 2, -2, 0, 0]; // Penalty Kick: cycles, never converges on its own
     for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
@@ -7015,7 +7113,7 @@ try {
         inDialog: !!a.closest(dsel), title: a.getAttribute('title'), aria: a.getAttribute('aria-label') } : null;
     }, [lsel, dsel]);
 
-    const dismissTour = async (p) => { try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ } };
+    const dismissTour = async (p) => { await closeTour(p); /* may not show */ };
     const openLibrary = async (p) => {
       await p.getByRole('button', { name: /open workspace menu/i }).first().click();
       await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 8000 });
@@ -7433,7 +7531,7 @@ try {
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
-      try { await dp.locator('[aria-label="Exit tour"]').click({ timeout: 20000 }); } catch { /* decided below */ }
+      await closeTour(dp); /* decided below */
       let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
       if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
       record('precondition: the guided tour is dismissed', tourGone);
@@ -7765,10 +7863,10 @@ try {
   // section measured 251s before (see the commit note) and had to shrink.
   const injectAuth = async (p, token) => {
     await p.goto(BASE, { waitUntil: 'networkidle' });
-    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+    await closeTour(p); /* may not show */
     await p.evaluate((t) => localStorage.setItem('nash_sim_token_local', t), token);
     await p.reload({ waitUntil: 'networkidle' });
-    try { await p.locator('[aria-label="Exit tour"]').click({ timeout: 8000 }); } catch { /* may not show */ }
+    await closeTour(p); /* may not show */
   };
   section('80', 'Regenerate -> Keep at the highlight cap names the dropped actor noun', async () => {
     const desc = `The ${CAP_WORDS.join(', ')} crew members meet at the dock.`;
@@ -8026,7 +8124,7 @@ try {
       // nothing about the surface's own backdrop-click semantics, the two
       // arms' outcomes must match exactly — the surface underneath, not
       // only the blocked target itself (COMMON v5).
-      const exitTour = p.locator(`${TOUR_SEL} button[aria-label="Exit tour"]`);
+      const exitTour = p.locator(`${TOUR_SEL} button[aria-label="Close tour"]`);
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction((sel) => !document.querySelector(sel), TOUR_SEL, { timeout: 5000 }).catch(() => {});
@@ -8075,7 +8173,7 @@ try {
         openSurface: async (pg) => { await pg.locator('button', { hasText: /Get Desktop App/i }).first().click(); },
         surfaceOpenSelector: '[role="dialog"][aria-label="Get the desktop app"]',
         closeSurface: async (pg) => { await pg.keyboard.press('Escape'); await pg.waitForFunction(() => !document.querySelector('[aria-label="Get the desktop app"]'), null, { timeout: 8000 }).catch(() => {}); },
-        tourButtonSelector: `${TOUR_SEL} button[aria-label="Exit tour"]`,
+        tourButtonSelector: `${TOUR_SEL} button[aria-label="Close tour"]`,
       },
     ];
 
@@ -8260,7 +8358,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
@@ -8313,7 +8411,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
@@ -8375,7 +8473,7 @@ try {
     try {
       const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
+      const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
         await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
@@ -8503,7 +8601,7 @@ try {
   //      step counter from the tour dialog's textContent, the board from the
   //      eight payoff inputs (re-rendered from the payoff model). Fails on the
   //      unfixed tree: ArrowLeft in a focused payoff box moved the tour 3→2 and
-  //      the typed 73 became 3; Enter on a focused Exit tour closed the tour AND
+  //      the typed 73 became 3; Enter on a focused close button closed the tour AND
   //      loaded the next step's game.
   section('87', 'tour keys belong to the focused control', async () => {
     const p = await newTrackedPage({ viewport: { width: 1440, height: 900 } });
@@ -8553,11 +8651,11 @@ try {
     await next.focus(); const s2 = await settled(); await p.keyboard.press('ArrowRight');
     record('control: ArrowRight on a focused Next still advances one step (buttons pass arrows through)', (await waitStep(s2 + 1)) && (await settled()) === s2 + 1, `${s2}→${await stepOf()}`);
     const b0 = await boardOf();
-    await p.getByRole('button', { name: /exit tour/i }).first().focus(); await p.keyboard.press('Enter');
+    await p.getByRole('button', { name: /close tour/i }).first().focus(); await p.keyboard.press('Enter');
     await tour.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => {});
     // CodeRabbit CLI (#179): a deferred game load could start after a single sample; watch the board over a window.
     const boardKept = await boardStable(b0);
-    record('FIX 002: Enter on a focused Exit tour closes the tour and leaves the board alone',
+    record('FIX 002: Enter on a focused close button closes the tour and leaves the board alone',
       !(await tour.isVisible().catch(() => false)) && boardKept, `open=${await tour.isVisible().catch(() => false)} boardChanged=${(await boardOf()) !== b0}`);
     await p.close();
   });
@@ -8636,11 +8734,9 @@ try {
     try {
       const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
-      const exitTour = p.getByRole('button', { name: /exit tour/i });
-      if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await exitTour.click();
-        await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 });
-      }
+      // Merged onto struct19-app: the "Exit tour" pill no longer exists
+      // (STRUCT-APP-19/003) — the ONE dismissal path is the shared helper.
+      await closeTour(p);
       // The readout value sits in the mono <span> next to the "x: P(A playing
       // Row 1)" label; read it by walking from the label, not by nth-child.
       const readX = () => p.evaluate(() => {
@@ -8712,6 +8808,183 @@ try {
       }
     } finally {
       await ctx.close().catch(() => {});
+    }
+  });
+
+  // ══ 90. STRUCT-APP-19/001 — the layout family must come from a MEASURED
+  //      floating card, not a constant. §88 walks the tour at the default type
+  //      scale; this walks it with the CAPTION ENLARGED, which is what a
+  //      visitor's browser "minimum font size" setting does: the card grows
+  //      while the room beside the spotlight does not. On a tree that decides
+  //      the family from FLOAT_H_EST the estimate still says "a 520px card
+  //      fits", placement (which uses the measured height) finds no side, and
+  //      the card is centred ON its own spotlight with no arrow — measured at
+  //      912x1368 dsf2 step 3: 599px card, 58.6% cover, arrow gone.
+  //
+  //      Two invariants, not a pixel number: (a) a floating card never covers
+  //      more than a quarter of its own spotlight, and (b) a step that HAS a
+  //      spotlight either docks as the bottom sheet or points at it with an
+  //      arrow — `place: 'center'` (the fallback that produced the defect) is
+  //      exactly the state with a spotlight, no sheet and no arrow.
+  //      Mutation: revert `portraitSheet` to `tourPortraitUsesSheet(rect, vp.w,
+  //      vp.h)` (the estimate) → both assertions fail on step 3.
+  section('90', 'tour layout family comes from a measured card, not an estimate (enlarged captions)', async () => {
+    const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
+    await tour.waitFor({ state: 'visible', timeout: 15000 });
+    // The condition under test: every caption paragraph in the tour (the real
+    // card AND the off-screen probe that measures it) rendered much larger, the
+    // way a browser minimum-font-size does. Applied through a stylesheet so it
+    // reaches both without the test knowing which is which.
+    await p.addStyleTag({ content: '[role="dialog"][aria-label="Guided tour"] p { font-size: 30px !important; line-height: 1.65 !important; }' });
+    // CodeRabbit CLI: wait for the condition to be REAL, not for a fixed 600 ms.
+    // The section's whole premise is that the captions actually render at 30px;
+    // poll the rendered caption until they do (and fail loudly if they never do).
+    await p.waitForFunction(() => {
+      const cap = document.querySelector('[role="dialog"][aria-label="Guided tour"] p');
+      return !!cap && Math.round(parseFloat(getComputedStyle(cap).fontSize)) === 30;
+    }, null, { timeout: 5000 });
+    const read = () => p.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]');
+      if (!dlg) return null;
+      const mm = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(dlg.textContent || '');
+      const spot = [...document.querySelectorAll('div')].find((d) => /9999px/.test(getComputedStyle(d).boxShadow)) || null;
+      // The rendered card is the dialog's direct-child DIV that accepts pointer
+      // events; the measuring probe is pointer-events:none, so it can never be
+      // mistaken for it.
+      const card = [...dlg.children]
+        .filter((el) => el.tagName === 'DIV' && getComputedStyle(el).pointerEvents === 'auto')
+        .sort((a, b) => (b.getBoundingClientRect().width * b.getBoundingClientRect().height)
+                      - (a.getBoundingClientRect().width * a.getBoundingClientRect().height))[0] || null;
+      const r = (e) => { const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
+      const s = spot ? r(spot) : null, c = card ? r(card) : null;
+      const inter = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
+                            * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+      return {
+        step: mm ? Number(mm[1]) : null, total: mm ? Number(mm[2]) : null,
+        hasSpot: !!spot, hasCard: !!card, hasArrow: !!dlg.querySelector('svg line'),
+        cardH: c ? Math.round(c.h) : null,
+        isSheet: c ? (c.w >= window.innerWidth - 40 && (window.innerHeight - (c.y + c.h)) <= 24) : null,
+        cover: s && c && s.w * s.h > 0 ? inter(s, c) / (s.w * s.h) : null,
+        // The harm a mis-sized card actually does: its own controls leave the
+        // screen. The overlay is `fixed`, so the page cannot scroll to reach
+        // them — a visitor with Back/Next/close below the fold is stuck in the
+        // tour. Names, not a count, so a failure says which button was lost.
+        ctrlsOutside: card ? [...card.querySelectorAll('button, [role="button"], a[href]')]
+          .filter((b) => {
+            const q = b.getBoundingClientRect();
+            return q.width > 0 && q.height > 0
+              && !(q.top >= -1 && q.bottom <= window.innerHeight + 1
+                   && q.left >= -1 && q.right <= window.innerWidth + 1);
+          })
+          .map((b) => (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 22)) : [],
+        key: [s ? [s.x, s.y, s.w, s.h] : 'ns', c ? [c.x, c.y, c.w, c.h] : 'nc'].flat()
+          .map((v) => (typeof v === 'number' ? Math.round(v) : v)).join(','),
+      };
+    });
+    // Poll for STABLE geometry (the spotlight carries `transition-all duration-300`),
+    // then keep the MINIMUM cover over a few samples — RED-APP-18 retracted two
+    // claims that were single mid-transition reads.
+    const settled = async (ms = 8000) => {
+      const t0 = Date.now(); let last = await read();
+      while (Date.now() - t0 < ms) {
+        await p.waitForTimeout(300);
+        const cur = await read();
+        if (cur && last && cur.key === last.key && cur.step === last.step) { last = cur; break; }
+        last = cur;
+      }
+      let m = last;
+      for (let j = 0; j < 3 && m; j++) {
+        await p.waitForTimeout(250);
+        const cur = await read();
+        if (cur && cur.step === m.step && cur.cover !== null && (m.cover === null || cur.cover < m.cover)) m = cur;
+      }
+      return m;
+    };
+    const steps = [];
+    for (let k = 0; k < 25; k++) {
+      const m = await settled();
+      if (!m || m.step === null) break;
+      steps.push(m);
+      if (m.step >= m.total) break;
+      await p.evaluate(() => { const a = document.activeElement; if (a && a !== document.body) a.blur(); });
+      await p.keyboard.press('ArrowRight');
+      await p.waitForFunction((prev) => {
+        const d = document.querySelector('[role="dialog"][aria-label="Guided tour"]');
+        const mm = /(\d+)\s*(?:\/|of)/.exec(d?.textContent || '');
+        return mm && Number(mm[1]) !== prev;
+      }, m.step, { timeout: 5000 }).catch(() => {});
+    }
+    const contiguous = steps.length > 0 && steps.every((s, idx) => s.step === idx + 1)
+      && steps[steps.length - 1].step === steps[steps.length - 1].total;
+    record('precondition: the whole tour was walked with enlarged captions, step 1..N, geometry read on every step',
+      steps.length >= 15 && contiguous, `walked ${steps.length}: ${steps.map((s) => s.step).join(',')}`);
+    // The condition has to have BITTEN: with 30px captions the floating card must
+    // be far taller than the 520px constant this replaces, or the section proves
+    // nothing. (Measured 599px at this viewport.)
+    const tallest = Math.max(...steps.map((s) => s.cardH || 0));
+    record('precondition: the enlarged captions really do produce a card taller than the old 520px estimate',
+      tallest > 520, `tallest rendered card = ${tallest}px`);
+    const missing = steps.filter((s) => s.hasSpot && !s.hasCard);
+    record('precondition: every step with a spotlight also has a readable card', missing.length === 0,
+      missing.map((s) => `step ${s.step}`).join(', ') || 'all present');
+    // CodeRabbit CLI: both assertions below filter for steps that HAVE a
+    // spotlight, so a tree where no step ever renders one would satisfy them by
+    // matching nothing. Assert the subject exists before asserting about it.
+    const withSpot = steps.filter((s) => s.hasSpot).length;
+    record('precondition: steps with a spotlight actually exist, so the two assertions below cannot pass by matching nothing',
+      withSpot > 0, `${withSpot} of ${steps.length} steps render a spotlight`);
+    const covering = steps.filter((s) => s.cover !== null && !s.isSheet && s.cover > 0.25);
+    record('STRUCT-APP-19/001: no floating card covers more than a quarter of its own spotlight, with captions enlarged',
+      covering.length === 0,
+      covering.map((s) => `step ${s.step}: ${(s.cover * 100).toFixed(0)}% (card ${s.cardH}px)`).join('; ') || 'all clean');
+    const unreachable = steps.filter((s) => (s.ctrlsOutside || []).length > 0);
+    record('STRUCT-APP-19/001: every control the tour card owns stays inside the viewport, with captions enlarged',
+      unreachable.length === 0,
+      unreachable.map((s) => `step ${s.step}: ${s.ctrlsOutside.join('/')} outside (card ${s.cardH}px)`).join('; ') || 'all reachable');
+    const centred = steps.filter((s) => s.hasSpot && !s.isSheet && !s.hasArrow);
+    record('STRUCT-APP-19/001: a step with a spotlight is either the bottom sheet or points at it — never the centred fallback',
+      centred.length === 0,
+      centred.map((s) => `step ${s.step}: card ${s.cardH}px, no arrow and no sheet`).join('; ') || 'all clean');
+    await p.close();
+
+    // ── STRUCT-APP-19/003: the ONE exit must actually be clickable ──────────
+    // OPUS-REVIEW-180 FIX-FIRST 2: `closeTour` falls back to Escape, so every
+    // other section passes whether or not the X was hit — nothing in CI could
+    // see the class 003 was (the single exit covered by something). These are
+    // the two viewports where 003 showed: 67% of the X was under the old
+    // viewport-anchored pill. Two independent oracles, because either alone can
+    // be satisfied the wrong way: hit-testing at the button's centre (a cover
+    // that does not steal the click would still be wrong), and the helper's own
+    // report that the CLICK — not Escape — is what dismissed it.
+    // Mutation: re-plant any viewport-anchored element over that corner (003
+    // verbatim, or a future toast at z >= 60) -> both checks fail by name.
+    for (const [cw, ch] of [[320, 256], [900, 300]]) {
+      const cp = await newTrackedPage({ viewport: { width: cw, height: ch } });
+      await cp.goto(BASE, { waitUntil: 'networkidle' });
+      const closeBtn = cp.getByRole('button', { name: /close tour/i });
+      const up = await closeBtn.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false);
+      record(`precondition ${cw}x${ch}: the tour is open and its close button is visible`, up, `visible=${up}`);
+      if (up) {
+        const hit = await cp.evaluate(() => {
+          const dlg = document.querySelector('[role="dialog"][aria-label="Guided tour"]');
+          const btn = [...dlg.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Close tour');
+          if (!btn) return { ok: false, what: 'no close button' };
+          const q = btn.getBoundingClientRect();
+          const at = document.elementFromPoint(Math.round(q.left + q.width / 2), Math.round(q.top + q.height / 2));
+          return {
+            ok: !!at && (at === btn || btn.contains(at)),
+            what: at ? `<${at.tagName.toLowerCase()} ${(at.getAttribute('aria-label') || at.className || '').toString().slice(0, 60)}>` : 'nothing',
+          };
+        });
+        record(`STRUCT-APP-19/003: at ${cw}x${ch} nothing covers the tour's one exit — the point at its centre IS the close button`,
+          hit.ok, `elementFromPoint = ${hit.what}`);
+        const { closed, via } = await closeTour(cp);
+        record(`STRUCT-APP-19/003: at ${cw}x${ch} the CLICK dismissed the tour (not the Escape fallback)`,
+          closed && via === 'click', `closed=${closed} via=${via}`);
+      }
+      await cp.close();
     }
   });
 
