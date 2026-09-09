@@ -966,10 +966,26 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
     //    this check cannot pass by the gate having become inert) while the
     //    artifact row it came from keeps them.
     const g: GamePayoffs = { a11: 3, a12: 0, a21: 0, a22: 2, b11: 3, b12: 0, b21: 0, b22: 2 };
-    const served = bankScenario(g, withNouns.d, new Set<string>());
+    // Deterministic by EXCLUSION, not by luck (CodeRabbit on #182): `bankScenario`
+    // draws at random and the domain also holds nounless rows; a nounless draw
+    // would make "the artifact keeps its nouns" vacuous (undefined === undefined).
+    // Every nounless draw goes into `seen` so the picker cannot repeat it, and the
+    // loop ends on the first row that carries nouns on BOTH sides — or fails.
+    const excluded = new Set<string>();
+    let served: SuggestedScenario | null = null;
+    for (let attempt = 0; attempt < 64 && !served; attempt++) {
+      const candidate = bankScenario(g, withNouns.d, excluded);
+      if (!candidate) break;
+      const src = bankRowFor(candidate)!.s as SuggestedScenario;
+      if ((src.actorA?.length ?? 0) > 0 && (src.actorB?.length ?? 0) > 0) served = candidate;
+    }
+    check('precondition: a served row carrying nouns on both sides was found (by exclusion, not chance)',
+      !!served, `${excluded.size} draws excluded`);
     check('a served scenario is not the artifact object', !!served && !rows.some((e) => e.s === served));
     if (served) {
       const row = bankRowFor(served)!;
+      check('precondition: the source row has non-empty actorA AND actorB (else the isolation check is vacuous)',
+        ((row.s as SuggestedScenario).actorA?.length ?? 0) > 0 && ((row.s as SuggestedScenario).actorB?.length ?? 0) > 0);
       const beforeA = JSON.stringify((row.s as SuggestedScenario).actorA);
       const beforeB = JSON.stringify((row.s as SuggestedScenario).actorB);
       let plantThrew = false;
