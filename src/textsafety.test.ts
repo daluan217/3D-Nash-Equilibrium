@@ -267,9 +267,18 @@ ok(stripUnsafeText('') === '', 'empty string must return empty string');
                       />`;
   ok(!/clampLabelInput/.test(preFixInput),
     'the pre-fix fixture text must not accidentally already carry the clamp call (fixture sanity check)');
-  ok(!new RegExp(`onChange=\\{\\(e\\) => setSaveLabel\\(\\s*key,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\)\\}`).test(preFixInput)
-    && !/maxLength=\{40\}/.test(appSrc.slice(appSrc.indexOf('value={saveLabels[key]}'), appSrc.indexOf('value={saveLabels[key]}') + 1700)),
-    'fixture: the Save-dialog onChange predicate must REJECT the unclamped shape, and the shipped block must carry no maxLength={40}');
+  ok(!new RegExp(`onChange=\\{\\(e\\) => setSaveLabel\\(\\s*key,\\s*(?:\\/\\/[^\\n]*\\n\\s*)*\\(e\\.nativeEvent as InputEvent\\)\\.isComposing \\? e\\.target\\.value : ${clampLabelInputCall.source},\\s*\\)\\}`).test(preFixInput),
+    'fixture: the Save-dialog onChange predicate must REJECT the unclamped shape');
+  // CodeRabbit CLI on #184: assert the anchor SEPARATELY. A missing anchor makes
+  // indexOf return -1, slice(-1, 1699) return one character, and the maxLength
+  // half pass over a block it never read. The loop above happens to assert this
+  // same anchor today, but only because it is one of its two anchors — rename the
+  // Save binding and that coupling silently disappears while this line still runs.
+  const saveAnchorAt = appSrc.indexOf('value={saveLabels[key]}');
+  ok(saveAnchorAt !== -1,
+    'App.tsx must contain the Save-dialog label-input binding value={saveLabels[key]} (otherwise the maxLength check below reads no block at all)');
+  ok(!/maxLength=\{40\}/.test(appSrc.slice(saveAnchorAt, saveAnchorAt + 1700)),
+    'the shipped Save-dialog label-input block must carry no maxLength={40}');
 }
 
 // ── 11. RED-APP-9/003 — `wouldExceedGraphemeBudget`, the shared boundary

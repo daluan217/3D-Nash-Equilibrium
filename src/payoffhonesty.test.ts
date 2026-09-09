@@ -1127,11 +1127,13 @@ function testSaveFormReconciledWithBoard() {
   contract(src);
 
   // Mutants — each must make the SAME contract throw (plant asserted to land).
+  let mutantsRejected = 0;
   const mustThrow = (label: string, mutated: string) => {
     ok(mutated !== src, `fixture precondition: the plant "${label}" landed`);
     let threw = false;
     try { contract(mutated); } catch { threw = true; }
     ok(threw, `fixture: ${label} must be rejected by the Save-form contract`);
+    mutantsRejected++;
   };
   const presetAttr = src.indexOf('data-focus-fallback="save-preset"');
   const handlerStart = src.lastIndexOf('onClick={() => {', presetAttr);
@@ -1198,10 +1200,21 @@ function testSaveFormReconciledWithBoard() {
       "    const baseline = key.kind === 'edit' ? editNameBaselineRef.current : saveForm.nameBaseline;"));
   mustThrow('opening a saved game drops its own chips',
     src.replace('      terms: { a: game.colorTermsA ?? [], b: game.colorTermsB ?? [] },\n', ''));
-  mustThrow('an eighth Edit entry point appears unexamined',
+  mustThrow('a ninth Edit entry point appears unexamined',
     src.replace("  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });",
       "  const setEditTerms = (t: { a: string[]; b: string[] }) => dispatchEditForm({ type: 'typedTerms', a: t.a, b: t.b });\n  const clearEditDesc = () => dispatchEditForm({ type: 'typed', field: 'desc', value: '' });"));
-  console.log('✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001 + /004: BOTH dialog forms are ONE reducer value (ten enumerated save entry points, seven edit); every open path goes through openSaveFormForBoard; the report prefill carries no stale chips into either; boardKeyOf separates all eight cells; the app is told which option names it wrote itself; 26 mutants rejected');
+  // CodeRabbit CLI on #184: this sentence said "seven edit" while the ledger above
+  // enforced eight -- the printed contract is what a reader believes, so every
+  // number in it is derived from the same source the ledger reads, and the check
+  // below fails if anyone puts a literal back.
+  const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve'];
+  const saveEntries = (src.match(/dispatchSaveForm\(/g) || []).length;
+  const editEntries = (src.match(/dispatchEditForm\(/g) || []).length;
+  const summary = `✓ RED-REGEN-13/001 + 14/001 + STRUCT-REGEN-19/001 + /004: BOTH dialog forms are ONE reducer value (${WORDS[saveEntries]} enumerated save entry points, ${WORDS[editEntries]} edit); every open path goes through openSaveFormForBoard; the report prefill carries no stale chips into either; boardKeyOf separates all eight cells; the app is told which option names it wrote itself; ${mutantsRejected} mutants rejected`;
+  ok(summary.includes(`(${WORDS[saveEntries]} enumerated save entry points, ${WORDS[editEntries]} edit)`)
+    && summary.includes(`${mutantsRejected} mutants rejected`),
+    `the printed summary must name the counts this file actually enforced — ${saveEntries} save entry points, ${editEntries} edit, ${mutantsRejected} mutants (CodeRabbit CLI on #184)`);
+  console.log(summary);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
