@@ -49,8 +49,10 @@
  *   npx tsx src/numberdoors.test.ts
  */
 import { readFileSync } from 'node:fs';
-import { fmtProb, fmtProbFixed, fmtProbInterval, fmtPayoff, fmtPayoffProse, fmtPayoffPair, r3 } from './utils/gameEngine';
+import { fmtProb, fmtProbFixed, fmtProbInterval, fmtPayoff, fmtPayoffProse, fmtPayoffPair, r3, EA, EB, computeAllNE } from './utils/gameEngine';
 import { indifferenceLines } from './components/equilibriumPanel';
+import { applyPlotHoverContract, buildSurfaces, makeTraces, PLOT_HOVER_TEMPLATE } from './utils/plotting';
+import type { GamePayoffs } from './types';
 
 let checks = 0;
 let failures = 0;
@@ -495,6 +497,189 @@ function testRenderingFileListIsReal(): void {
   }
 }
 
+// ─────────────────────── C. Plotly hover contract ────────────────────────────
+
+function plotState(g: GamePayoffs, rich = false): any {
+  const startX = 0.217, startY = 0.217;
+  const state: any = {
+    cx: startX, cy: startY, exactX: startX, exactY: startY,
+    calcX: startX, calcY: startY, displayX: startX, displayY: startY,
+    startX, startY, domainLo: 0, domainHi: 1, domXLo: 0, domXHi: 1,
+    domYLo: 0, domYHi: 1, stratX: startX, stratY: startY, cycleCount: 0,
+    visitedPositions: [], ghostVisitedPositions: [], discoveredMixedX: null,
+    discoveredMixedY: null, foundAxis: null, running: false, converged: false,
+    stepCount: 0, phase1PtsA: null, phase1PtsB: null,
+    pathSegmentsA: [{ xs: [startX], ys: [startY], zs: [r3(EA(startX, startY, g))], mover: 'A' }],
+    pathSegmentsB: [{ xs: [startX], ys: [startY], zs: [r3(EB(startX, startY, g))], mover: 'A' }],
+    ghostPathSegmentsA: [], ghostPathSegmentsB: [], cyclePattern: null, bisecting: false,
+    bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
+    ghostCyclePattern: null, ghostBisecting: false, ghostBisectGoodLo: 0,
+    ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1,
+  };
+  if (rich) {
+    state.discoveredMixedX = 0.25;
+    state.foundAxis = 'x';
+    // The ghost is a real marker too. Use the sub-resolution coordinate from
+    // the finding so this control proves it reaches fmtProb rather than merely
+    // having any nonempty custom text.
+    state.calcX = 0.0004;
+    state.calcY = 0.25;
+    state.pathSegmentsA = [{ xs: [0.217, 0.4], ys: [0.217, 0.25], zs: [r3(EA(0.217, 0.217, g)), r3(EA(0.4, 0.25, g))], mover: 'A' }];
+    state.pathSegmentsB = [{ xs: [0.217, 0.4], ys: [0.217, 0.25], zs: [r3(EB(0.217, 0.217, g)), r3(EB(0.4, 0.25, g))], mover: 'B' }];
+    state.ghostPathSegmentsA = [{ xs: [0.4, 0.35], ys: [0.25, 0.25], zs: [r3(EA(0.4, 0.25, g)), r3(EA(0.35, 0.25, g))], mover: 'A' }];
+    state.ghostPathSegmentsB = [{ xs: [0.4, 0.4], ys: [0.25, 0.3], zs: [r3(EB(0.4, 0.25, g)), r3(EB(0.4, 0.3, g))], mover: 'B' }];
+  }
+  return state;
+}
+
+function flattenHoverText(value: unknown): string[] {
+  if (!Array.isArray(value)) return typeof value === 'string' ? [value] : [];
+  return value.flatMap((entry) => flattenHoverText(entry));
+}
+
+function hoverContractErrors(traces: any[]): string[] {
+  const errors: string[] = [];
+  traces.forEach((trace, index) => {
+    const requiresFormattedHover = trace.type === 'surface'
+      || trace.mode === 'markers';
+    if (trace.hoverinfo === 'skip') {
+      if (requiresFormattedHover) errors.push(`${index}: meaningful trace was silenced`);
+      return;
+    }
+    if (trace.hoverinfo !== undefined) errors.push(`${index}: non-skip hoverinfo ${trace.hoverinfo}`);
+    if (trace.hovertemplate !== PLOT_HOVER_TEMPLATE) {
+      errors.push(`${index}: missing canonical hovertemplate`);
+      return;
+    }
+    if (!Array.isArray(trace.text)) errors.push(`${index}: formatted hover has no text data`);
+    const text = flattenHoverText(trace.text);
+    if (text.length === 0 || text.some((entry) => typeof entry !== 'string')) {
+      errors.push(`${index}: formatted hover text is malformed`);
+    }
+    if (/%\{(?:x|y|z)(?:[}:])?/.test(trace.hovertemplate)) {
+      errors.push(`${index}: hovertemplate interpolates raw coordinates`);
+    }
+  });
+  return errors;
+}
+
+function testMalformedPlotDataIsSilent(): void {
+  // Plotly tolerates partial and scalar data, but a hover contract cannot
+  // safely infer a truthful x/y/payoff triple from it. Every malformed shape
+  // must become explicitly silent and lose any stale active template/text.
+  const malformed = [
+    ['surface scalar x', { type: 'surface', x: 0, y: [0], z: [[1]] }],
+    ['surface missing y', { type: 'surface', x: [0], z: [[1]] }],
+    ['surface short rows', { type: 'surface', x: [0, 1], y: [0, 1], z: [[1, 2]] }],
+    ['surface short row', { type: 'surface', x: [0, 1], y: [0, 1], z: [[1], [2, 3]] }],
+    ['surface empty', { type: 'surface', x: [], y: [], z: [] }],
+    ['surface NaN', { type: 'surface', x: [0], y: [0], z: [[NaN]] }],
+    ['marker scalar z', { type: 'scatter3d', mode: 'markers', x: [0], y: [0], z: 1 }],
+    ['marker missing y', { type: 'scatter3d', mode: 'markers', x: [0], z: [1] }],
+    ['marker short z', { type: 'scatter3d', mode: 'markers', x: [0, 1], y: [0, 1], z: [1] }],
+    ['marker empty', { type: 'scatter3d', mode: 'markers', x: [], y: [], z: [] }],
+    ['marker NaN', { type: 'scatter3d', mode: 'markers', x: [NaN], y: [0], z: [1] }],
+  ] as const;
+  for (const [label, malformedTrace] of malformed) {
+    const [trace] = applyPlotHoverContract([{
+      ...malformedTrace,
+      hovertemplate: 'x: %{x}<extra></extra>',
+      text: 'stale custom hover',
+    }]);
+    ok(trace.hoverinfo === 'skip' && trace.hovertemplate === undefined && trace.text === undefined,
+      `${label}: invalid data is explicitly silent with no active stale hover`, JSON.stringify(trace));
+  }
+}
+
+function testPlotHoverContract(): void {
+  const mixedGame: GamePayoffs = {
+    a11: 1, a12: 0, a21: 0, a22: 1,
+    b11: 2.499, b12: 0, b21: 0, b22: 0.001,
+  };
+  const negativeGame: GamePayoffs = {
+    a11: 1, a12: -1, a21: -1, a22: 1,
+    b11: -2, b12: 1, b21: 1, b22: -2,
+  };
+  const continuumGame: GamePayoffs = {
+    a11: 0, a12: 0, a21: 0, a22: 0,
+    b11: 0, b12: 0, b21: 0, b22: 0,
+  };
+  const twoPureGame: GamePayoffs = {
+    a11: 2, a12: 0, a21: 0, a22: 1,
+    b11: 1, b12: 0, b21: 0, b22: 2,
+  };
+  const cases = [
+    ['mixed/pure/base', mixedGame, plotState(mixedGame)],
+    ['mixed/ghost/flat', mixedGame, plotState(mixedGame, true)],
+    ['negative surface', negativeGame, plotState(negativeGame)],
+    ['continuum markers', continuumGame, plotState(continuumGame, true)],
+    ['two pure equilibria', twoPureGame, plotState(twoPureGame)],
+  ] as const;
+  const families = new Set<string>();
+  let mixedTraces: any[] = [];
+  let richMixedTraces: any[] = [];
+  let twoPureTraces: any[] = [];
+  for (const [label, game, state] of cases) {
+    const traces = makeTraces(buildSurfaces(game), game, state, 'both', computeAllNE(game), false, 'shrink');
+    traces.forEach((trace: any) => families.add(`${trace.type}:${trace.mode}`));
+    const errors = hoverContractErrors(traces);
+    ok(errors.length === 0, `${label}: every trace has canonical hover or skip`, errors.join(' | '));
+    if (label === 'mixed/pure/base') mixedTraces = traces;
+    if (label === 'mixed/ghost/flat') richMixedTraces = traces;
+    if (label === 'two pure equilibria') twoPureTraces = traces;
+  }
+  // Regret mode supplies the last line family; this game has a mixed NE and no
+  // pure NE, so its live strategy lines are actually emitted.
+  const regret = makeTraces(buildSurfaces(negativeGame), negativeGame, plotState(negativeGame, true), 'both', computeAllNE(negativeGame), false, 'regret');
+  regret.forEach((trace: any) => families.add(`${trace.type}:${trace.mode}`));
+  ok(hoverContractErrors(regret).length === 0, 'regret strategy-line traces also obey hover contract', hoverContractErrors(regret).join(' | '));
+  ok(families.has('surface:undefined') && families.has('scatter3d:lines') && families.has('scatter3d:markers'),
+    'the trace sweep exercised surfaces, lines, and markers', JSON.stringify([...families]));
+
+  const mixed = mixedTraces.find((trace) => trace.name === 'Mixed NE');
+  ok(!!mixed && flattenHoverText(mixed.text).some((text) => text.includes('x: less than 0.001')),
+    'Mixed NE hover uses fmtProb for the sub-resolution x*=0.0004');
+  ok(!!mixed && !flattenHoverText(mixed.text).some((text) => text.includes('0.0004')),
+    'Mixed NE hover never exposes the raw sub-resolution float');
+  const allText = mixedTraces.flatMap((trace) => flattenHoverText(trace.text));
+  ok(!allText.some((text) => text.includes('785.7143μ') || text.includes('0.07142857')),
+    'surface/marker hover never exposes Plotly SI prefixes or raw seven-digit floats');
+
+  const negative = makeTraces(buildSurfaces(negativeGame), negativeGame, plotState(negativeGame), 'both', computeAllNE(negativeGame), false, 'shrink');
+  const negativeText = negative.flatMap((trace: any) => flattenHoverText(trace.text));
+  ok(negativeText.some((text) => text.includes('payoff: -1.000')),
+    'negative payoff hover uses the canonical ASCII-minus fmtPayoff output');
+  ok(!negativeText.some((text) => text.includes('−')),
+    'negative payoff hover does not reintroduce Plotly Unicode-minus typography');
+
+  // A legend-deduped marker is still a plotted point.  Battle of the Sexes has
+  // two distinct pure equilibria, so its second diamond keeps name '_' while
+  // needing the same truthful hover as the first.  Phase-2's Ghost B marker
+  // has the same shape when both surfaces are shown.
+  const secondPure = twoPureTraces.find((trace: any) => trace.mode === 'markers' && trace.name === '_' && trace.legendgroup === 'pureNE');
+  ok(!!secondPure && secondPure.hovertemplate === PLOT_HOVER_TEMPLATE
+    && flattenHoverText(secondPure.text).every((text) => /^Pure NE<br>x: (?:0|1)<br>y: (?:0|1)<br>payoff: \d\.000$/.test(text)),
+  'second, legend-deduped Pure NE marker retains its formatted semantic hover', JSON.stringify(secondPure));
+  const ghostB = richMixedTraces.find((trace: any) => trace.name === '_' && trace.legendgroup === 'ghostB');
+  ok(!!ghostB && ghostB.hovertemplate === PLOT_HOVER_TEMPLATE
+    && flattenHoverText(ghostB.text).some((text) => text.includes('Search position (Ghost B)<br>x: less than 0.001<br>y: 0.25')),
+  'legend-deduped Ghost B marker retains its formatted semantic hover');
+
+  // Mutation fixtures: the behavioral gate must reject both an absent override
+  // and an override that falls back to Plotly's raw %{x}/%{z} interpolation.
+  const surfaceIndex = mixedTraces.findIndex((trace) => trace.type === 'surface');
+  const absent = mixedTraces.map((trace: any) => ({ ...trace }));
+  delete absent[surfaceIndex].hovertemplate;
+  ok(hoverContractErrors(absent).length > 0, 'mutation: removing a surface hovertemplate reopens the gate');
+  const malformed = mixedTraces.map((trace: any) => ({ ...trace }));
+  malformed[surfaceIndex].hovertemplate = 'x: %{x}<br>z: %{z}<extra></extra>';
+  ok(hoverContractErrors(malformed).length > 0, 'mutation: a raw-coordinate hovertemplate is rejected');
+  const legacy = mixedTraces.map((trace: any) => ({ ...trace }));
+  delete legacy[surfaceIndex].hovertemplate;
+  legacy[surfaceIndex].hoverinfo = 'x+y+z';
+  ok(hoverContractErrors(legacy).length > 0, 'mutation: legacy x+y+z hoverinfo is rejected');
+}
+
 testExactEndpointsPrintAsNumbers();
 testSubResolutionNeverClaimsAPureStrategy();
 testFixedAndProseRegistersAgree();
@@ -504,6 +689,8 @@ testStrictPairNeverPrintsAFalseZero();
 testRenderingFileListIsReal();
 testTheFixedSitesRenderThroughTheFamily();
 testNoUnannotatedDoors();
+testPlotHoverContract();
+testMalformedPlotDataIsSilent();
 
 if (failures > 0) {
   console.error(`✗ numberdoors.test.ts: ${failures} of ${checks} checks failed`);

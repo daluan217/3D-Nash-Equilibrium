@@ -4,13 +4,125 @@
  */
 
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
-import { EA, EB, r3, equilibriumSet, kindOf, pointInRect } from './gameEngine';
+import { EA, EB, r3, equilibriumSet, kindOf, pointInRect, fmtProb, fmtPayoff } from './gameEngine';
 
 export interface SurfaceData {
   xs: number[];
   ys: number[];
   zA: number[][];
   zB: number[][];
+}
+
+/**
+ * A trace must never fall through to Plotly's default number formatter. Its
+ * default uses raw floating-point coordinates (and may add SI prefixes), so a
+ * hover can disagree with every other rendering of the same probability or
+ * payoff. Meaningful surface/marker traces use preformatted text; decorative
+ * lines are explicitly skipped below.
+ */
+export const PLOT_HOVER_TEMPLATE = '%{text}<extra></extra>';
+
+type HoverTrace = {
+  type?: string;
+  mode?: string;
+  name?: string;
+  legendgroup?: string;
+  x?: unknown;
+  y?: unknown;
+  z?: unknown;
+  text?: unknown;
+  hovertemplate?: string;
+  hoverinfo?: string;
+};
+
+// `name: '_'` suppresses a duplicate legend entry; it does *not* make the
+// corresponding point decorative.  The equilibrium and ghost marker families
+// below deliberately use that name on later traces, so retain their semantic
+// label in the hover through the stable legend group instead.
+const HOVER_LABEL_BY_LEGEND_GROUP: Record<string, string> = {
+  pureNE: 'Pure NE',
+  mixedNE: 'Mixed NE',
+  continuumNE: 'Equilibrium continuum',
+  ghostB: 'Search position (Ghost B)',
+};
+
+const finiteNumberVector = (value: unknown): number[] | null => {
+  if (!Array.isArray(value) || value.length === 0
+    || !value.every((item) => typeof item === 'number' && Number.isFinite(item))) {
+    return null;
+  }
+  return value;
+};
+
+const silenceHover = (trace: HoverTrace): void => {
+  trace.hoverinfo = 'skip';
+  // Do not leave a stale custom/raw template attached to a silent malformed
+  // trace: a future hover-mode change must not reactivate it by accident.
+  delete trace.hovertemplate;
+  delete trace.text;
+};
+
+const hoverPoint = (label: string, x: number, y: number, z: number): string =>
+  `${label}<br>x: ${fmtProb(x)}<br>y: ${fmtProb(y)}<br>payoff: ${fmtPayoff(z)}`;
+
+/**
+ * Give each user-facing trace an explicitly formatted hover, and make every
+ * decorative trace opt out. The post-pass is deliberately exhaustive: adding
+ * a new trace family without a hover decision cannot silently restore Plotly's
+ * raw default.
+ */
+export function applyPlotHoverContract(traces: HoverTrace[]): HoverTrace[] {
+  for (const trace of traces) {
+    if (trace.hoverinfo === 'skip') {
+      silenceHover(trace);
+      continue;
+    }
+
+    const isSurface = trace.type === 'surface';
+    const isMarker = trace.mode === 'markers';
+
+    // Lines, including legend-only NaN stubs and strategy/path graphics, are
+    // visual aids rather than readouts. They must not expose a second number
+    // register through Plotly's implicit hover.
+    if (!isSurface && !isMarker) {
+      silenceHover(trace);
+      continue;
+    }
+
+    const label = trace.name && trace.name !== '_'
+      ? trace.name
+      : HOVER_LABEL_BY_LEGEND_GROUP[trace.legendgroup ?? ''] ?? 'Position';
+    const xs = finiteNumberVector(trace.x);
+    const ys = finiteNumberVector(trace.y);
+    const zs = trace.z;
+
+    if (!xs || !ys) {
+      silenceHover(trace);
+      continue;
+    }
+
+    if (isSurface) {
+      const zRows = Array.isArray(zs) && zs.length === ys.length
+        ? zs.map(finiteNumberVector)
+        : null;
+      if (!zRows || zRows.some((row) => row === null || row.length !== xs.length)) {
+        silenceHover(trace);
+        continue;
+      }
+      trace.text = (zRows as number[][]).map((row, yi) => row.map((z, xi) =>
+        hoverPoint(label, xs[xi], ys[yi], z)));
+    } else {
+      const zValues = finiteNumberVector(zs);
+      if (!zValues || xs.length !== ys.length || xs.length !== zValues.length) {
+        silenceHover(trace);
+        continue;
+      }
+      trace.text = zValues.map((z, i) => hoverPoint(label, xs[i], ys[i], z));
+    }
+    trace.hovertemplate = PLOT_HOVER_TEMPLATE;
+    delete trace.hoverinfo;
+  }
+  return traces;
 }
 
 // ── Surface data generator ──────────────────────────────────────────────────
@@ -287,6 +399,7 @@ export function makeTraces(
           mode: 'markers',
           name: trackingMode === 'B' ? ghostName : '_',
           showlegend: trackingMode === 'B',
+          legendgroup: 'ghostB',
           x: [gx],
           y: [gy],
           z: [zCurrentB],
@@ -925,15 +1038,7 @@ export function makeTraces(
     });
   }
 
-  // RED-MATH-11/002: '_' is the legend-dedupe name, never something to show a
-  // user. Any '_'-named trace that did not choose its own hover gets coordinates
-  // only (markers, surfaces) or no hover at all (decorative lines).
-  for (const t of traces as Array<{ name?: string; hoverinfo?: string; mode?: string; type?: string }>) {
-    if (t.name === '_' && t.hoverinfo === undefined) {
-      t.hoverinfo = t.mode === 'markers' || t.type === 'surface' ? 'x+y+z' : 'skip';
-    }
-  }
-  return traces;
+  return applyPlotHoverContract(traces);
 }
 
 // ── Layout (static) ──────────────────────────────────────────────────────────
