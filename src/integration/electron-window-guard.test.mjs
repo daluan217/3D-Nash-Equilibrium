@@ -180,6 +180,22 @@ function run(mode) {
       nav[url]?.opened === opensExternally, JSON.stringify(nav[url]));
   }
 
+  // ── door 2b: the same navigation inside a frame, in both of Electron's
+  //     argument shapes. Electron 31 (this app's) passes ONE Event carrying
+  //     `url`; a handler written for (event, details) alone throws here, which
+  //     would leave the frame navigation UNprevented.
+  const frameBy = Object.fromEntries((parsed?.frameNavigation ?? []).map((x) => [`${x.shape}:${x.url}`, x]));
+  for (const shape of ['one-arg', 'two-arg']) {
+    record(`CONTROL: a same-origin frame navigation is not prevented (${shape} listener shape)`,
+      frameBy[`${shape}:${parsed?.loadedUrl}/embedded`]?.prevented === false
+      && !frameBy[`${shape}:${parsed?.loadedUrl}/embedded`]?.threw,
+      JSON.stringify(frameBy[`${shape}:${parsed?.loadedUrl}/embedded`]));
+    record(`a frame navigation to file:///etc/passwd is prevented and not handed to the OS (${shape} listener shape)`,
+      frameBy[`${shape}:file:///etc/passwd`]?.prevented === true
+      && frameBy[`${shape}:file:///etc/passwd`]?.opened === false,
+      JSON.stringify(frameBy[`${shape}:file:///etc/passwd`]));
+  }
+
   // ── the family, not the instance
   record('every webContents Electron creates gets the same policy (web-contents-created is hooked)',
     parsed?.webContentsCreatedHooked === true && parsed?.createdContentsGuards?.openHandler === true

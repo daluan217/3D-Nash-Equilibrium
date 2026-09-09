@@ -237,6 +237,29 @@ if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-s
       'not a url at all',
     ].map(driveNav);
 
+    // The frame door, driven in BOTH argument shapes Electron has used: 31.x passes
+    // ONE Event carrying `url`; the (event, details) shape must work too. The
+    // same-origin probes are the discriminating ones — a handler that cannot read
+    // the URL out of its arguments prevents them, breaking the app's own iframes.
+    const frameHandlers = (mainContents && mainContents.handlers['will-frame-navigate']) || [];
+    const driveFrameNav = (url, shape) => {
+      const before = openedUrls.length;
+      let prevented = false;
+      const event = { preventDefault() { prevented = true; } };
+      if (shape === 'one-arg') event.url = url;
+      for (const cb of frameHandlers) {
+        try { if (shape === 'one-arg') cb(event); else cb(event, { url }); }
+        catch (err) { return { url, shape, prevented, opened: openedUrls.length > before, threw: String(err && err.message) }; }
+      }
+      return { url, shape, prevented, opened: openedUrls.length > before };
+    };
+    const frameNavigation = [
+      driveFrameNav(`${loadedUrl}/embedded`, 'one-arg'),
+      driveFrameNav(`${loadedUrl}/embedded`, 'two-arg'),
+      driveFrameNav('file:///etc/passwd', 'one-arg'),
+      driveFrameNav('file:///etc/passwd', 'two-arg'),
+    ];
+
     // Snapshot BEFORE the re-hardening below, so "one handler is installed" and
     // "re-hardening does not add a second" fail for their own reasons, not each other's.
     const navHandlerCount = navHandlers.length;
@@ -268,6 +291,7 @@ if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-s
       mainNavHandlersAfterRehardening,
       probes,
       navigation,
+      frameNavigation,
       openedUrls,
     })}`);
     process.exit(0);

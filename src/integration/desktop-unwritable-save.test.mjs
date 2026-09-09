@@ -49,6 +49,14 @@ function reaped(child, ms = 5000) {
   });
 }
 
+// This harness makes a directory read-only and asserts the app refuses to lie
+// about writing to it. chmod does not constrain root, so as root every refusal
+// check would fail for a reason that has nothing to do with the product.
+if (typeof process.getuid === 'function' && process.getuid() === 0) {
+  console.error('INCONCLUSIVE: running as root — chmod 0555 cannot block a write, so this harness proves nothing. Run it as a normal user.');
+  process.exit(2);
+}
+
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });

@@ -34,7 +34,9 @@ function openExternalIfSafe(rawUrl) {
     console.warn(`Refused to open an external URL with an unsupported scheme: ${String(rawUrl).slice(0, 120)}`);
     return false;
   }
-  shell.openExternal(parsed.toString());
+  Promise.resolve(shell.openExternal(parsed.toString())).catch((err) => {
+    console.warn(`The operating system refused to open ${parsed.origin}: ${err && err.message}`);
+  });
   return true;
 }
 
@@ -60,7 +62,12 @@ function hardenWebContents(contents) {
     openExternalIfSafe(url);
   };
   contents.on('will-navigate', keepInApp);
-  contents.on('will-frame-navigate', (details) => keepInApp(details, details && details.url));
+  // Electron 31 passes ONE argument here (an Event carrying `url`); older/newer
+  // shapes pass (event, details). preventDefault must land on the event either
+  // way, so take the URL from whichever argument carries it. Both shapes probed.
+  contents.on('will-frame-navigate', (event, details) => {
+    keepInApp(event, (details && details.url) || (event && event.url));
+  });
 }
 
 // Ask the public site for the latest version; if newer than this build, offer the download.
