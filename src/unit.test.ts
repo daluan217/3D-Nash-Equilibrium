@@ -3815,7 +3815,8 @@ function testWalkthroughInputContracts() {
     // slice ran to the end of the file, where unrelated handlers could satisfy it.
     // cr CLI: the exact declaration, not any `onTouchMove…` token (a
     // `const onTouchMoveRef` or a comment must not end the slice early).
-    const endMatch = /\bconst\s+onTouchMove\s*=/.exec(src.slice(start + 1));
+    // …and a declaration LINE, so the same text inside a comment cannot end it.
+    const endMatch = /^\s*const\s+onTouchMove\s*=/m.exec(src.slice(start + 1));
     const end = endMatch ? start + 1 + endMatch.index : -1;
     if (end <= start) return false;
     const body = src.slice(start, end);

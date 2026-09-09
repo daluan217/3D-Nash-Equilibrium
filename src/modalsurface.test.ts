@@ -639,9 +639,19 @@ function findOverlayAttrs(src: string): { attr: string; value: string; braced: b
   // CodeRabbit (#180): JSX attribute order is free and the className is long,
   // so scan the WHOLE close-button element, not 120 characters after the label.
   const closeBtnStart = walkthrough.lastIndexOf('<button', walkthrough.indexOf("aria-label={probe ? undefined : 'Close tour'}"));
-  // The element ends at the first `>` that is not an arrow function's `=>`.
-  const closeBtnLabelAt = walkthrough.indexOf("aria-label={probe ? undefined : 'Close tour'}");
-  const closeBtnEnd = closeBtnLabelAt + walkthrough.slice(closeBtnLabelAt).search(/(?<!=)>/);
+  // The element ends at the first `>` OUTSIDE any `{…}` attribute expression
+  // (CodeRabbit: `disabled={step > 0}` or an arrow function must not end it).
+  const jsxTagEnd = (src: string, from: number): number => {
+    let depth = 0;
+    for (let i = from; i < src.length; i++) {
+      const c = src[i];
+      if (c === '{') depth++;
+      else if (c === '}') depth--;
+      else if (c === '>' && depth === 0) return i;
+    }
+    return -1;
+  };
+  const closeBtnEnd = closeBtnStart >= 0 ? jsxTagEnd(walkthrough, closeBtnStart) : -1;
   ok(closeBtnStart >= 0 && closeBtnEnd > closeBtnStart,
     'precondition: the close button element must be locatable in Walkthrough.tsx');
   ok(!/inert=\{blocked\}/.test(walkthrough.slice(closeBtnStart, closeBtnEnd)),
