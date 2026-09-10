@@ -34,8 +34,16 @@ const section84Start = smoke.indexOf("section('84'", section83Start);
 const section83 = section83Start >= 0 && section84Start > section83Start
   ? smoke.slice(section83Start, section84Start)
   : '';
-check('§83 defines a bounded settled-geometry helper for its WebKit baseline',
-  /const stableTourControlRect = \(btn\)[\s\S]*document\.fonts\.status === 'loaded'[\s\S]*stableFrames >= 30[\s\S]*performance\.now\(\) >= deadline/.test(section83));
+const hasBoundedTimeStability = (source: string): boolean =>
+  /const stableTourControlRect = \(btn\)[\s\S]*document\.fonts\.status === 'loaded'[\s\S]*stableSince = unchanged \? \(stableSince \?\? now\) : null[\s\S]*now - stableSince >= 500[\s\S]*now >= deadline/.test(source);
+check('§83 defines a bounded, elapsed-time settled-geometry helper for its WebKit baseline',
+  hasBoundedTimeStability(section83));
+const frameCountMutant = section83
+  .replace('let stableSince = null;', 'let stableFrames = 0;')
+  .replace('stableSince = unchanged ? (stableSince ?? now) : null;', 'stableFrames = unchanged ? stableFrames + 1 : 0;')
+  .replace('stableSince !== null && now - stableSince >= 500', 'stableFrames >= 30');
+check('mutation: restoring the CI-throttled 30-frame gate fails the §83 elapsed-time contract',
+  !hasBoundedTimeStability(frameCountMutant));
 const hasSettledBaselineBeforeOpen = (source: string): boolean => {
   const stableBaseline = source.indexOf('const bbBefore = await stableTourControlRect(btn);');
   const surfaceOpen = source.indexOf('await openSurface(p);');

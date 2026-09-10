@@ -8031,27 +8031,31 @@ try {
     // compare two different, individually-valid placements (CI observed
     // y=506 -> 334.8125 twice). Wait on the condition we actually need: fonts
     // are ready and the control plus scroll offset have stayed unchanged for
-    // a sustained run of animation frames. This does not weaken the later
+    // a sustained half-second. Measure elapsed time, not a frame count:
+    // headless browsers under the 31-way CI matrix can throttle requestAnimationFrame
+    // enough that 30 unchanged frames take longer than this helper's 8s bound.
+    // This does not weaken the later
     // exact before/after comparison; it makes its BEFORE value a real settled
     // baseline instead of a race against the tour's own positioning effects.
     const stableTourControlRect = (btn) => btn.evaluate((el) => {
       return new Promise((resolve) => {
         let previous = null;
-        let stableFrames = 0;
+        let stableSince = null;
         const deadline = performance.now() + 8000;
         const tick = () => {
+          const now = performance.now();
           const r = el.getBoundingClientRect();
           const next = [r.x, r.y, r.width, r.height, window.scrollX, window.scrollY];
           const fontsReady = !document.fonts || document.fonts.status === 'loaded';
           const unchanged = fontsReady && previous
             && next.every((value, index) => Math.abs(value - previous[index]) < 0.01);
-          stableFrames = unchanged ? stableFrames + 1 : 0;
+          stableSince = unchanged ? (stableSince ?? now) : null;
           previous = next;
-          if (stableFrames >= 30) {
+          if (stableSince !== null && now - stableSince >= 500) {
             resolve({ x: r.x, y: r.y, width: r.width, height: r.height });
             return;
           }
-          if (performance.now() >= deadline) {
+          if (now >= deadline) {
             resolve(null);
             return;
           }
