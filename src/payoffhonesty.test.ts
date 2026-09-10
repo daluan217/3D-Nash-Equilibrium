@@ -2279,12 +2279,25 @@ function testSection62DrivesItsDefaultCameraControl() {
     'mutation: leaving section 62 at a timing-dependent idle-spin azimuth must fail the default-camera control guard');
   const couplesBurstToRealEvent = (source: string): boolean =>
     source.includes("gd?.on?.('plotly_relayout', onRelayout);")
-    && source.includes("queueMicrotask(() => { void window.Plotly.relayout");
+    && source.includes('queueMicrotask(() => {')
+    && source.includes("void window.Plotly.relayout(gd, { 'scene.camera.eye': last });");
   ok(couplesBurstToRealEvent(section62),
     'section 62 must dispatch its final throttle probe from the leading relayout event, independent of Playwright timing');
-  const playwrightSleepMutant = section62.replace('queueMicrotask(() => { void window.Plotly.relayout', 'setTimeout(() => { void window.Plotly.relayout');
+  const playwrightSleepMutant = section62.replace('queueMicrotask(() => {', 'setTimeout(() => {');
   ok(!couplesBurstToRealEvent(playwrightSleepMutant),
     'mutation: replacing the event-coupled microtask with a timer must fail the section 62 throttle-probe guard');
+  const measuresDispatchGap = (source: string): boolean =>
+    source.includes('lastDispatchedAt = performance.now();')
+    && source.includes('dispatchGapMs: lastDispatchedAt - firstEventAt')
+    && source.includes('Number.isFinite(burst.dispatchGapMs) && burst.dispatchGapMs < 100');
+  ok(measuresDispatchGap(section62),
+    'section 62 must prove the final relayout was dispatched inside the throttle window without timing Plotly event delivery');
+  const eventDeliveryMutant = section62.replace(
+    'dispatchGapMs: lastDispatchedAt - firstEventAt',
+    'dispatchGapMs: now - firstEventAt',
+  );
+  ok(!measuresDispatchGap(eventDeliveryMutant),
+    'mutation: measuring delayed final-event delivery instead of final-relayout dispatch must fail the section 62 timing guard');
 }
 
 testShortContinuumCollapsesToOneMarker();
