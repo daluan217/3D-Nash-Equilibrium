@@ -2258,10 +2258,40 @@ function testCameraBasisRespectsNonzeroCenter() {
     + `fwd delta=${fwdDelta.toFixed(3)}, projected screen delta=${screenDelta.toFixed(1)}px at the cornerRow1Col1 tour pose`);
 }
 
+function testSection62DrivesItsDefaultCameraControl() {
+  const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+  const start = smoke.indexOf("section('62'");
+  const end = smoke.indexOf("section('66'", start);
+  const section62 = start >= 0 && end > start ? smoke.slice(start, end) : '';
+  const drivesDefaultBeforeRead = (source: string): boolean => {
+    const setDefault = source.indexOf('await setEye(DEFAULT_EYE);');
+    const verifiesDefault = source.indexOf("record('precondition: the paused camera is explicitly restored to the default eye");
+    const readsDefault = source.indexOf('const atDefault = await readContinuum();');
+    return setDefault >= 0 && verifiesDefault > setDefault && readsDefault > verifiesDefault;
+  };
+  ok(drivesDefaultBeforeRead(section62),
+    'section 62 must drive the paused idle-spin camera to DEFAULT_EYE before calling its baseline the default-camera control');
+  const idleAzimuthMutant = section62.replace(
+    'await setEye(DEFAULT_EYE);',
+    '/* leave the camera at its current idle-spin azimuth */',
+  );
+  ok(!drivesDefaultBeforeRead(idleAzimuthMutant),
+    'mutation: leaving section 62 at a timing-dependent idle-spin azimuth must fail the default-camera control guard');
+  const couplesBurstToRealEvent = (source: string): boolean =>
+    source.includes("gd?.on?.('plotly_relayout', onRelayout);")
+    && source.includes("queueMicrotask(() => { void window.Plotly.relayout");
+  ok(couplesBurstToRealEvent(section62),
+    'section 62 must dispatch its final throttle probe from the leading relayout event, independent of Playwright timing');
+  const playwrightSleepMutant = section62.replace('queueMicrotask(() => { void window.Plotly.relayout', 'setTimeout(() => { void window.Plotly.relayout');
+  ok(!couplesBurstToRealEvent(playwrightSleepMutant),
+    'mutation: replacing the event-coupled microtask with a timer must fail the section 62 throttle-probe guard');
+}
+
 testShortContinuumCollapsesToOneMarker();
 testShortContinuumCutoffIsExactAndRelabelInvariant();
 testContinuumMarkersDoNotOverlapOnScreen();
 testCameraBasisRespectsNonzeroCenter();
+testSection62DrivesItsDefaultCameraControl();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
 testContinuumRenderingsAgree();

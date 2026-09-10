@@ -4371,6 +4371,27 @@ try {
       // the segment's own data-space geometry, not azimuth alone.
       const FUSING_EYE = { x: 0.3031761289426962, y: 2.242339009792971, z: 1.1 };
 
+      // The pause click freezes the CURRENT idle-spin azimuth; it does not
+      // restore Plotly's default eye. On a slow shard, setup itself can last
+      // long enough for that azimuth to be one where this exact near-threshold
+      // component is already dynamically collapsed. Drive the named control
+      // to its actual camera before reading it.
+      await setEye(DEFAULT_EYE);
+      const movedToDefault = await p.waitForFunction((want) => {
+        const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01 ? true : null;
+      }, DEFAULT_EYE, { timeout: 5000 }).then(() => true).catch(() => false);
+      const expandedAtDefault = await p.waitForFunction(() => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? [])
+          .filter((t) => t.meta && t.meta.continuumComponentIndex !== undefined);
+        const corners = ts.filter((t) => t.meta.continuumRole === 'corner');
+        const midpoint = ts.find((t) => t.meta.continuumRole === 'midpoint');
+        return corners.length === 2 && corners.every((t) => (t.visible ?? true) === true)
+          && midpoint && midpoint.marker?.size < corners[0].marker?.size ? true : null;
+      }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+      record('precondition: the paused camera is explicitly restored to the default eye before the default-camera control',
+        movedToDefault && expandedAtDefault, JSON.stringify({ eye: await readEye(), expandedAtDefault }));
+
       const atDefault = await readContinuum();
       const cornersAtDefault = atDefault.filter((t) => t.role === 'corner');
       record('at the default camera: the STATIC rule keeps this length-exactly-0.2 component\'s corners visible',
@@ -4452,17 +4473,51 @@ try {
       // first, then STOP — no further relayout — and confirm the TRAILING
       // evaluation alone still applies the collapse.
       await p.waitForTimeout(150);
-      for (const e of [{ x: 1.0, y: -1.0, z: 1.1 }, { x: 0.6, y: 0.2, z: 1.1 }, FUSING_EYE]) {
-        await setEye(e);
-        await p.waitForTimeout(10); // well inside the 100ms throttle window
-      }
+      // Couple the final relayout to the first relayout's ACTUAL event, not
+      // Playwright-side sleeps: the latter could race Plotly's async relayout
+      // queue and leave a different camera as the final pose. A microtask runs
+      // only after every listener (including the app's leading-edge evaluator)
+      // has seen the first event, and necessarily remains inside its 100ms
+      // throttle window.
+      const burst = await p.evaluate(({ first, last }) => new Promise((resolve) => {
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        let firstEventAt = null;
+        let sentLast = false;
+        const near = (a, b) => a && Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < 0.01;
+        const cleanup = () => {
+          clearTimeout(timeout);
+          gd?.removeListener?.('plotly_relayout', onRelayout);
+        };
+        const onRelayout = () => {
+          const eye = gd?._fullLayout?.scene?.camera?.eye;
+          const now = performance.now();
+          if (!sentLast && near(eye, first)) {
+            firstEventAt = now;
+            sentLast = true;
+            queueMicrotask(() => { void window.Plotly.relayout(gd, { 'scene.camera.eye': last }); });
+          } else if (sentLast && near(eye, last)) {
+            cleanup();
+            resolve({ observed: true, eventGapMs: now - firstEventAt, eye });
+          }
+        };
+        const timeout = setTimeout(() => {
+          const eye = gd?._fullLayout?.scene?.camera?.eye ?? null;
+          cleanup();
+          resolve({ observed: false, eventGapMs: null, eye });
+        }, 3000);
+        gd?.on?.('plotly_relayout', onRelayout);
+        void window.Plotly.relayout(gd, { 'scene.camera.eye': first });
+      }), { first: { x: 1.0, y: -1.0, z: 1.1 }, last: FUSING_EYE });
+      record('precondition: the burst final eye landed after the leading event and inside its 100ms throttle window',
+        burst.observed && burst.eventGapMs < 100, JSON.stringify(burst));
       // No further relayout is dispatched after this point.
       const trailingCaught = await p.waitForFunction(() => {
         const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
         return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
       }, null, { timeout: 2000 }).then(() => true).catch(() => false);
       record('FIX (CodeRabbit, PlotlyView.tsx#L1163): a trailing evaluation still applies the collapse after a burst\'s final relayout lands inside the throttle window with no event afterward',
-        trailingCaught, JSON.stringify(await readContinuum()));
+        burst.observed && burst.eventGapMs < 100 && trailingCaught,
+        JSON.stringify({ burst, eye: await readEye(), traces: await readContinuum() }));
       await setEye(DEFAULT_EYE);
       await p.waitForFunction((want) => {
         const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
@@ -8041,7 +8096,18 @@ try {
       return new Promise((resolve) => {
         let previous = null;
         let stableSince = null;
-        const deadline = performance.now() + 8000;
+        let raf = 0;
+        let finished = false;
+        const finish = (value) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(deadlineTimer);
+          if (raf) cancelAnimationFrame(raf);
+          resolve(value);
+        };
+        // Independent of rAF: a backgrounded or heavily-throttled renderer
+        // must not suspend the helper's eight-second bound indefinitely.
+        const deadlineTimer = setTimeout(() => finish(null), 8000);
         const tick = () => {
           const now = performance.now();
           const r = el.getBoundingClientRect();
@@ -8052,16 +8118,12 @@ try {
           stableSince = unchanged ? (stableSince ?? now) : null;
           previous = next;
           if (stableSince !== null && now - stableSince >= 500) {
-            resolve({ x: r.x, y: r.y, width: r.width, height: r.height });
+            finish({ x: r.x, y: r.y, width: r.width, height: r.height });
             return;
           }
-          if (now >= deadline) {
-            resolve(null);
-            return;
-          }
-          requestAnimationFrame(tick);
+          raf = requestAnimationFrame(tick);
         };
-        requestAnimationFrame(tick);
+        raf = requestAnimationFrame(tick);
       });
     });
 

@@ -35,7 +35,7 @@ const section83 = section83Start >= 0 && section84Start > section83Start
   ? smoke.slice(section83Start, section84Start)
   : '';
 const hasBoundedTimeStability = (source: string): boolean =>
-  /const stableTourControlRect = \(btn\)[\s\S]*document\.fonts\.status === 'loaded'[\s\S]*stableSince = unchanged \? \(stableSince \?\? now\) : null[\s\S]*now - stableSince >= 500[\s\S]*now >= deadline/.test(source);
+  /const stableTourControlRect = \(btn\)[\s\S]*const finish = \(value\)[\s\S]*clearTimeout\(deadlineTimer\)[\s\S]*cancelAnimationFrame\(raf\)[\s\S]*const deadlineTimer = setTimeout\(\(\) => finish\(null\), 8000\)[\s\S]*document\.fonts\.status === 'loaded'[\s\S]*stableSince = unchanged \? \(stableSince \?\? now\) : null[\s\S]*now - stableSince >= 500/.test(source);
 check('§83 defines a bounded, elapsed-time settled-geometry helper for its WebKit baseline',
   hasBoundedTimeStability(section83));
 const frameCountMutant = section83
@@ -44,6 +44,12 @@ const frameCountMutant = section83
   .replace('stableSince !== null && now - stableSince >= 500', 'stableFrames >= 30');
 check('mutation: restoring the CI-throttled 30-frame gate fails the §83 elapsed-time contract',
   !hasBoundedTimeStability(frameCountMutant));
+const rafOnlyDeadlineMutant = section83.replace(
+  'const deadlineTimer = setTimeout(() => finish(null), 8000);',
+  'const deadlineTimer = 0;',
+);
+check('mutation: removing the rAF-independent deadline timer fails the §83 bounded-wait contract',
+  !hasBoundedTimeStability(rafOnlyDeadlineMutant));
 const hasSettledBaselineBeforeOpen = (source: string): boolean => {
   const stableBaseline = source.indexOf('const bbBefore = await stableTourControlRect(btn);');
   const surfaceOpen = source.indexOf('await openSurface(p);');
