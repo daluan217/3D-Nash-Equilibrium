@@ -2260,6 +2260,7 @@ function testCameraBasisRespectsNonzeroCenter() {
 
 function testSection62DrivesItsDefaultCameraControl() {
   const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+  const plotlyView = readFileSync('src/components/PlotlyView.tsx', 'utf8');
   const start = smoke.indexOf("section('62'");
   const end = smoke.indexOf("section('66'", start);
   const section62 = start >= 0 && end > start ? smoke.slice(start, end) : '';
@@ -2277,19 +2278,81 @@ function testSection62DrivesItsDefaultCameraControl() {
   );
   ok(!drivesDefaultBeforeRead(idleAzimuthMutant),
     'mutation: leaving section 62 at a timing-dependent idle-spin azimuth must fail the default-camera control guard');
+  const waitsForRenderedCamera = (source: string): boolean =>
+    source.includes('const moveToRenderedEye = async (eye) =>')
+    && source.includes('const beforeMatrixKey = await readCameraMatrixKey();')
+    && source.includes('matrixKey !== null && matrixKey !== beforeMatrixKey')
+    && source.includes('await moveToRenderedEye(nudgeEye);')
+    && source.includes('await moveToRenderedEye(eye);')
+    && source.includes('const decisionBefore =')
+    && source.includes('decidedAt > before');
+  ok(waitsForRenderedCamera(section62),
+    'section 62 camera controls must wait for Plotly\'s rendered matrices, not only its eagerly-updated camera eye');
+  const declaredEyeOnlyMutant = section62.replace(
+    'matrixKey !== null && matrixKey !== beforeMatrixKey',
+    'true',
+  );
+  ok(!waitsForRenderedCamera(declaredEyeOnlyMutant),
+    'mutation: accepting an updated eye before its WebGL transform commits must fail the rendered-camera guard');
+  const rejectsRenderedNoOp = section62.replace(
+    'await moveToRenderedEye(nudgeEye);',
+    '/* trust the declared no-op */',
+  );
+  ok(!waitsForRenderedCamera(rejectsRenderedNoOp),
+    'mutation: trusting a declared no-op without forcing a rendered round trip must fail the camera guard');
+  const transientDecisionMutant = section62.replace(
+    '&& decidedAt > before',
+    '/* accept the decision made before the rendered matrix landed */',
+  );
+  ok(!waitsForRenderedCamera(transientDecisionMutant),
+    'mutation: accepting a pre-render camera decision must fail the rendered-camera guard');
+  const repairsCachedDecisionDrift = (source: string): boolean =>
+    source.includes('if (collapse === was && cornersMatch && midpointMatches) continue;')
+    && source.includes('if (!cornersMatch) {')
+    && source.includes('if (!midpointMatches) {');
+  ok(repairsCachedDecisionDrift(plotlyView),
+    'the continuum-collapse cache may skip work only when Plotly\'s live corner visibility and midpoint size match it');
+  const staleLiveTraceMutant = plotlyView.replace(
+    'if (collapse === was && cornersMatch && midpointMatches) continue;',
+    'if (collapse === was) continue;',
+  );
+  ok(!repairsCachedDecisionDrift(staleLiveTraceMutant),
+    'mutation: trusting the cached collapse boolean while Plotly live traces disagree must fail the cache-drift guard');
+  const synchronizesBurstBaseline = (source: string): boolean =>
+    source.includes('const syncDecisionBefore =')
+    && source.includes('syncDecidedAt > beforeSyncDecision')
+    && source.includes('cacheSynchronized !== null');
+  ok(synchronizesBurstBaseline(section62),
+    'section 62 must observe an app decision at the rendered default camera before using expanded traces as the throttle baseline');
+  const staleCacheMutant = section62.replace('syncDecidedAt > beforeSyncDecision', 'Number.isFinite(syncDecidedAt)');
+  ok(!synchronizesBurstBaseline(staleCacheMutant),
+    'mutation: accepting visibility without a new default-camera decision must fail the throttle-baseline guard');
   const couplesBurstToRealEvent = (source: string): boolean =>
     source.includes("gd?.on?.('plotly_relayout', onRelayout);")
+    && source.includes('cameraMatrixKey() !== beforeBurstMatrixKey')
+    && source.includes('requestAnimationFrame(waitForFirstMatrix)')
     && source.includes('queueMicrotask(() => {')
-    && source.includes("void window.Plotly.relayout(gd, { 'scene.camera.eye': last });");
+    && source.includes("void window.Plotly.relayout(gd, { 'scene.camera.eye': last });")
+    && source.includes('finalMatrixObserved: finalMatrixKey !== null && finalMatrixKey !== firstCommittedMatrixKey')
+    && source.includes('value.finalMatrixObserved');
   ok(couplesBurstToRealEvent(section62),
     'section 62 must dispatch its final throttle probe from the leading relayout event, independent of Playwright timing');
   const playwrightSleepMutant = section62.replace('queueMicrotask(() => {', 'setTimeout(() => {');
   ok(!couplesBurstToRealEvent(playwrightSleepMutant),
     'mutation: replacing the event-coupled microtask with a timer must fail the section 62 throttle-probe guard');
+  const overlappingRelayoutMutant = section62.replace(
+    'cameraMatrixKey() !== beforeBurstMatrixKey',
+    'true',
+  );
+  ok(!couplesBurstToRealEvent(overlappingRelayoutMutant),
+    'mutation: dispatching the final camera before Plotly commits the first WebGL transform must fail the section 62 burst guard');
+  const declaredFinalEyeMutant = section62.replace('&& value.finalMatrixObserved', '/* trust the declared final eye */');
+  ok(!couplesBurstToRealEvent(declaredFinalEyeMutant),
+    'mutation: accepting the final relayout without its distinct rendered transform must fail the section 62 burst guard');
   const measuresDispatchGap = (source: string): boolean =>
     source.includes('lastDispatchedAt = performance.now();')
     && source.includes('dispatchGapMs: lastDispatchedAt - firstEventAt')
-    && source.includes('Number.isFinite(burst.dispatchGapMs) && burst.dispatchGapMs < 100');
+    && source.includes('Number.isFinite(value.dispatchGapMs) && value.dispatchGapMs < 100');
   ok(measuresDispatchGap(section62),
     'section 62 must prove the final relayout was dispatched inside the throttle window without timing Plotly event delivery');
   const eventDeliveryMutant = section62.replace(
@@ -2298,6 +2361,43 @@ function testSection62DrivesItsDefaultCameraControl() {
   );
   ok(!measuresDispatchGap(eventDeliveryMutant),
     'mutation: measuring delayed final-event delivery instead of final-relayout dispatch must fail the section 62 timing guard');
+  const provesEventInsideThrottle = (source: string): boolean =>
+    source.includes('Number.isFinite(value.eventGapMs) && value.eventGapMs < 100');
+  ok(provesEventInsideThrottle(section62),
+    'section 62 must prove the app received the final event inside its listener-timed throttle window');
+  const lateEventMutant = section62.replace(
+    '&& Number.isFinite(value.eventGapMs) && value.eventGapMs < 100',
+    '/* accept a final event delivered outside the app\'s throttle window */',
+  );
+  ok(!provesEventInsideThrottle(lateEventMutant),
+    'mutation: accepting a late final event must fail the section 62 throttle-window guard');
+  const retriesOnlyInvalidBursts = (source: string): boolean =>
+    source.includes('for (let attempt = 1; attempt <= 3; attempt++)')
+    && source.includes('if (attempt > 1) {\n          await setEye(DEFAULT_EYE);\n          cacheSynchronized = await synchronizeBurstBaseline();')
+    && source.includes('if (burstFitsThrottleWindow(burst)) break;');
+  ok(retriesOnlyInvalidBursts(section62),
+    'section 62 may retry scheduler-delayed setup, but only after restoring and re-observing its expanded baseline');
+  const unboundedRetryMutant = section62.replace('attempt <= 3', 'true');
+  ok(!retriesOnlyInvalidBursts(unboundedRetryMutant),
+    'mutation: making the scheduler retry unbounded must fail the section 62 retry guard');
+  const dirtyRetryMutant = section62.replace(
+    'if (attempt > 1) {\n          await setEye(DEFAULT_EYE);\n          cacheSynchronized = await synchronizeBurstBaseline();',
+    'if (attempt > 1) {\n          /* retry without restoring the observed baseline */',
+  );
+  ok(!retriesOnlyInvalidBursts(dirtyRetryMutant),
+    'mutation: retrying without re-observing the default-camera baseline must fail the section 62 retry guard');
+  const provesTrailingDecision = (source: string): boolean =>
+    source.includes('const finalDecisionAtEvent = burst?.decisionAtFinalEvent;')
+    && source.includes('trailingDecision > finalDecisionAtEvent')
+    && source.includes('burstInsideWindow && trailingDecisionObserved && trailingCaught');
+  ok(provesTrailingDecision(section62),
+    'section 62 must prove a decision after the final event caused the collapse, not let final-event delivery itself satisfy the trailing-evaluator oracle');
+  const trailingCausalityMutant = section62.replace(
+    '&& trailingDecision > finalDecisionAtEvent',
+    '/* accept the decision already present at final-event delivery */',
+  );
+  ok(!provesTrailingDecision(trailingCausalityMutant),
+    'mutation: removing the after-final-event decision comparison must fail the section 62 trailing-evaluator guard');
 }
 
 testShortContinuumCollapsesToOneMarker();

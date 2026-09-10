@@ -541,7 +541,21 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
             { w: shapeNow[0], h: shapeNow[1] }, pixelRatioNow, marginTop)
         : shouldCollapseComponentAtCamera(s.midpoint, s.corners, m.midpointBaseSize, m.cornerSize, m.zLo, m.zHi, basis, viewport));
       const was = continuumCollapsedRef.current.get(m.componentIndex) ?? false;
-      if (collapse === was) continue;
+      const cornerTarget: boolean | 'legendonly' = collapse ? 'legendonly' : baselineVisible;
+      const midpointTarget = collapse ? m.midpointShortSize : m.midpointBaseSize;
+      // The cache is only an optimization; Plotly's own asynchronous legend
+      // and camera restyles can legitimately finish after an earlier collapse
+      // decision and leave live trace state disagreeing with it. Skipping on
+      // the cached boolean alone then makes that disagreement permanent until
+      // some unrelated decision flips. Verify the state we actually render
+      // before taking the fast path, and repair either half independently.
+      const cornersMatch = m.cornerTraceIndices.every((idx) => {
+        const trace = gdNow.data?.[idx];
+        return !!trace && (trace.visible ?? true) === cornerTarget;
+      });
+      const midpointTrace = gdNow.data?.[m.midpointTraceIndex];
+      const midpointMatches = !!midpointTrace && Number(midpointTrace.marker?.size) === midpointTarget;
+      if (collapse === was && cornersMatch && midpointMatches) continue;
       continuumCollapsedRef.current.set(m.componentIndex, collapse);
       // 'legendonly' rather than a bare `false` when collapsing (CodeRabbit,
       // this branch): using the SAME value Plotly's own legend-visibility
@@ -549,9 +563,13 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // indistinguishable from a legend-hidden one, so the legend-click
       // handler's own restyle (which now owns the WHOLE continuumNE toggle,
       // see below) never has to reconcile two different "off" values.
-      for (const ci of m.cornerTraceIndices) { cornerIdx.push(ci); cornerVis.push(collapse ? 'legendonly' : baselineVisible); }
-      midIdx.push(m.midpointTraceIndex);
-      midSize.push(collapse ? m.midpointShortSize : m.midpointBaseSize);
+      if (!cornersMatch) {
+        for (const ci of m.cornerTraceIndices) { cornerIdx.push(ci); cornerVis.push(cornerTarget); }
+      }
+      if (!midpointMatches) {
+        midIdx.push(m.midpointTraceIndex);
+        midSize.push(midpointTarget);
+      }
     }
     if (cornerIdx.length) PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);
     if (midIdx.length) PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx);
