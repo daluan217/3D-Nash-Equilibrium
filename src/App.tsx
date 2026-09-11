@@ -48,6 +48,7 @@ import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
 import { createAccountApi, describeRequestFailure, type AccountApi } from './utils/apiClient';
 import { isForgotPasswordSuccess, isLoginSuccess, isRegisterSuccess, isResetPasswordSuccess, isVerifySuccess } from './utils/authResponses';
+import { isSavedGameResponseRecord } from './utils/savedGameResponse';
 import { labelFor } from './utils/a11y';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
@@ -2693,13 +2694,19 @@ export default function App() {
         setEditErrorNeedsAuth(false);
         return;
       }
+      const savedGame = isSavedGameResponseRecord(data?.game) ? data.game : null;
+      if (res.ok && !savedGame) {
+        setEditError('Network error. Failed to update game.');
+        setEditErrorNeedsAuth(false);
+        return;
+      }
       if (res.ok) {
         // A successful PATCH only ever happens signed in for real — resolves
         // any dead-session state this dialog was carrying.
         setDeadSession((d) => (d === 'edit' ? null : d));
-        setUserCustomGames((prev) => prev.map((g) => (g.id === editGameId ? data.game : g)));
+        setUserCustomGames((prev) => prev.map((g) => (g.id === editGameId ? savedGame : g)));
         setIsEditModalOpen(false);
-        setLogEntries((prev) => [...prev, `✓ Updated "${data.game.name}".`]);
+        setLogEntries((prev) => [...prev, `✓ Updated "${savedGame.name}".`]);
         // The explanation was written about the OLD story, so it no longer
         // describes what the panel now says. A kept-scenario save goes one
         // step further than clearing: it regenerates from the fields as
@@ -3263,6 +3270,12 @@ export default function App() {
         setSaveErrorNeedsAuth(false);
         return;
       }
+      const savedGame = isSavedGameResponseRecord(data?.game) ? data.game : null;
+      if (res.ok && !savedGame) {
+        setSaveError('Network error. Failed to save game.');
+        setSaveErrorNeedsAuth(false);
+        return;
+      }
       if (res.ok) {
         // A successful POST only ever happens signed in for real, or via the
         // explicit device choice — resolves any dead-session state this
@@ -3271,8 +3284,8 @@ export default function App() {
         // This attempt is done (successfully) — the NEXT Save Preset click
         // is a new attempt and must mint its own id, not reuse this one.
         saveRequestIdRef.current = null;
-        setUserCustomGames(prev => [...prev, data.game]);
-        setActivePreset(data.game.id);
+        setUserCustomGames(prev => [...prev, savedGame]);
+        setActivePreset(savedGame.id);
         // Kept-scenario saves rewrite the explanation in the story's terms.
         // Values captured from the submitted form (the user may have edited
         // the prefill) BEFORE the field clears below. The usability guard
@@ -3311,8 +3324,8 @@ export default function App() {
         // sent it, and `localConfirmed` alone could describe a save that,
         // in a rotated-token edge case, actually landed under the account.
         setLogEntries(prev => [...prev, (!requestToken && isElectron && dbMode === 'local')
-          ? `✓ Saved custom game "${data.game.name}" to this device's local library — sign in to move it to your account.`
-          : `✓ Saved custom game "${data.game.name}" successfully!`]);
+          ? `✓ Saved custom game "${savedGame.name}" to this device's local library — sign in to move it to your account.`
+          : `✓ Saved custom game "${savedGame.name}" successfully!`]);
       } else {
         // RED-APP-7/001: same dead-token cleanup as Edit/Delete — see that
         // comment. `authToken` was truthy but dead, so this branch's own

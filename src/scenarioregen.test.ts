@@ -11,6 +11,7 @@
  */
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import {
   isSameStory,
   regenKeyEquals,
@@ -32,6 +33,7 @@ import { pickScenarioDomainExcluding, SCENARIO_DOMAINS } from './utils/scenarioD
 import { bankDomainFor, bankScenarioAvoiding, allBankRows, bankAvailable, __resetBankSeen } from './utils/bankSource';
 import { pickFromBank } from './utils/scenarioBank';
 import type { GamePayoffs } from './types';
+import { isSavedGameResponseRecord } from './utils/savedGameResponse';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -552,13 +554,73 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const editSuccess = between(editHandler, 'if (res.ok) {', '\n      } else if (res.status === 404)');
   const saveSuccess = between(saveHandler, 'if (res.ok) {', '\n      } else {');
   const required = (label: string, ok: boolean) => check(`RED-REGEN-20/001: ${label}`, ok);
+  const guardRange = (source: string, signature: string): { start: number; open: number; close: number } | null => {
+    const start = source.indexOf(signature);
+    if (start < 0) return null;
+    const open = source.indexOf('{', start + signature.length);
+    if (open < 0) return null;
+    let depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1;
+      if (source[i] === '}') depth -= 1;
+      if (depth === 0) return { start, open, close: i };
+    }
+    return null;
+  };
+  const guardReturnsBefore = (source: string, signature: string, commitMarker: string): boolean => {
+    const gate = guardRange(source, signature);
+    const commit = source.indexOf(commitMarker);
+    if (!gate || commit < 0 || gate.close >= commit) return false;
+    const body = source.slice(gate.open + 1, gate.close);
+    const parsed = ts.createSourceFile(
+      'regen-response-guard.tsx',
+      `function guard() {${body}}`,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const fn = parsed.statements.find(ts.isFunctionDeclaration);
+    return fn?.body?.statements.some(ts.isReturnStatement) === true;
+  };
+  const removeDirectGuardReturn = (source: string, signature: string): string => {
+    const gate = guardRange(source, signature);
+    if (!gate) return source;
+    const body = source.slice(gate.open + 1, gate.close);
+    const returnAt = body.lastIndexOf('return;');
+    if (returnAt < 0) return source;
+    const absolute = gate.open + 1 + returnAt;
+    return source.slice(0, absolute) + source.slice(absolute + 'return;'.length);
+  };
+  const editPrefillStoresOwnSession = (source: string): boolean =>
+    /const dialogSessionId = beginEditDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'edit', gameId: existing\.id \}/.test(source);
+  const savePrefillStoresOwnSession = (source: string): boolean =>
+    /const dialogSessionId = beginSaveDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'save', payoffs \}/.test(source);
+  const validSavedGame = {
+    id: 'g-fixture',
+    name: 'Fixture game',
+    description: 'A complete saved-game response.',
+    payoffs: payoffs(),
+    row1Label: 'Up', row2Label: 'Down', col1Label: 'Left', col2Label: 'Right',
+    colorTermsA: ['operator'], colorTermsB: ['supplier'],
+  };
 
   required('the pending value has a dialog nonce plus a RegenKey',
     /type ExplanationSessionKey = \{[\s\S]*dialogSessionId: number;[\s\S]*regenKey: RegenKey;/.test(code)
     && /useRef<ExplanationSessionKey \| null>\(null\)/.test(code));
   required('Save and Edit prefill paths mint and store their own session keys',
-    /const dialogSessionId = beginEditDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{[\s\S]*regenKey: \{ kind: 'edit', gameId: existing\.id \}/.test(suggestedEdit)
-    && /const dialogSessionId = beginSaveDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{[\s\S]*regenKey: \{ kind: 'save', payoffs \}/.test(suggestedSave));
+    editPrefillStoresOwnSession(suggestedEdit) && savePrefillStoresOwnSession(suggestedSave));
+  const wrongEditNonce = suggestedEdit.replace(
+    /(regenExplanationAfterSaveRef\.current = \{\s*)dialogSessionId,/,
+    '$1dialogSessionId: dialogSessionId + 1,',
+  );
+  check('mutation: storing the wrong Edit dialog nonce fails the pending-session guard',
+    wrongEditNonce !== suggestedEdit && !editPrefillStoresOwnSession(wrongEditNonce));
+  const wrongSaveNonce = suggestedSave.replace(
+    /(regenExplanationAfterSaveRef\.current = \{\s*)dialogSessionId,/,
+    '$1dialogSessionId: dialogSessionId + 1,',
+  );
+  check('mutation: storing the wrong Save dialog nonce fails the pending-session guard',
+    wrongSaveNonce !== suggestedSave && !savePrefillStoresOwnSession(wrongSaveNonce));
   required('a fresh ordinary Save starts a new session before opening',
     /onClick=\{\(\) => \{[\s\S]*?beginSaveDialogSession\(\);[\s\S]*?openSaveFormForBoard\(\);[\s\S]*?setIsSaveModalOpen\(true\);[\s\S]*?data-focus-fallback="save-preset"/.test(code));
   required('a fresh ordinary Edit starts a new session before opening',
@@ -585,13 +647,46 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     && /pendingKey\.dialogSessionId === submittedSessionId/.test(consume)
     && /regenKeyEquals\(pendingKey\.regenKey, submittedKey\)/.test(consume));
   required('Edit consume is inside parsed success:true path',
-    editHandler.includes(parsedSuccessGate)
-    && editHandler.indexOf(parsedSuccessGate) < editHandler.indexOf('if (res.ok) {')
+    guardReturnsBefore(editHandler, parsedSuccessGate, 'if (res.ok) {')
     && /consumeRegenExplanationAfterSave\([\s\S]*editDialogSessionRef\.current/.test(editSuccess));
   required('Save consume is inside parsed success:true path',
-    saveHandler.includes(parsedSuccessGate)
-    && saveHandler.indexOf(parsedSuccessGate) < saveHandler.indexOf('if (res.ok) {')
+    guardReturnsBefore(saveHandler, parsedSuccessGate, 'if (res.ok) {')
     && /consumeRegenExplanationAfterSave\([\s\S]*saveDialogSessionRef\.current/.test(saveSuccess));
+  const editWithoutParsedReturn = removeDirectGuardReturn(editHandler, parsedSuccessGate);
+  check('mutation: removing Edit parsed-success return fails the regeneration commit boundary',
+    editWithoutParsedReturn !== editHandler
+    && !guardReturnsBefore(editWithoutParsedReturn, parsedSuccessGate, 'if (res.ok) {'));
+  const saveWithoutParsedReturn = removeDirectGuardReturn(saveHandler, parsedSuccessGate);
+  check('mutation: removing Save parsed-success return fails the regeneration commit boundary',
+    saveWithoutParsedReturn !== saveHandler
+    && !guardReturnsBefore(saveWithoutParsedReturn, parsedSuccessGate, 'if (res.ok) {'));
+
+  required('the saved-game response predicate accepts a complete server game',
+    isSavedGameResponseRecord(validSavedGame));
+  required('the saved-game response predicate rejects a missing game, non-finite payoff, and malformed term list',
+    !isSavedGameResponseRecord(undefined)
+    && !isSavedGameResponseRecord({ ...validSavedGame, payoffs: { ...validSavedGame.payoffs, a11: Number.NaN } })
+    && !isSavedGameResponseRecord({ ...validSavedGame, colorTermsA: ['operator', 4] }));
+  const savedGameGuard = 'if (res.ok && !savedGame)';
+  const commitsOnlyValidGame = (source: string): boolean =>
+    source.includes('const savedGame = isSavedGameResponseRecord(data?.game) ? data.game : null;')
+    && guardReturnsBefore(source, savedGameGuard, 'if (res.ok) {');
+  required('Edit validates data.game and exits before committing malformed success data',
+    commitsOnlyValidGame(editHandler) && !/data\.game/.test(editSuccess));
+  required('Save validates data.game and exits before committing malformed success data',
+    commitsOnlyValidGame(saveHandler) && !/data\.game/.test(saveSuccess));
+  const editWithoutGameValidation = editHandler.replace(
+    'isSavedGameResponseRecord(data?.game) ? data.game : null',
+    'data?.game ? data.game : null',
+  );
+  check('mutation: accepting any truthy Edit data.game fails the response-record guard',
+    editWithoutGameValidation !== editHandler && !commitsOnlyValidGame(editWithoutGameValidation));
+  const saveWithoutGameValidation = saveHandler.replace(
+    'isSavedGameResponseRecord(data?.game) ? data.game : null',
+    'data?.game ? data.game : null',
+  );
+  check('mutation: accepting any truthy Save data.game fails the response-record guard',
+    saveWithoutGameValidation !== saveHandler && !commitsOnlyValidGame(saveWithoutGameValidation));
   required('the session key is retired when a new matrix is generated',
     /const handleGenerateGame = async \(\) => \{[\s\S]*beginSaveDialogSession\(\);/.test(code));
 
