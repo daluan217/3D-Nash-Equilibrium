@@ -4359,9 +4359,51 @@ try {
       const readContinuum = () => p.evaluate(() => (document.querySelector('.js-plotly-plot')?.data ?? [])
         .filter((t) => t.meta && t.meta.continuumComponentIndex !== undefined)
         .map((t) => ({ role: t.meta.continuumRole, visible: t.visible === undefined ? true : t.visible, size: t.marker?.size })));
-      const setEye = (eye) => p.evaluate((e) => {
-        window.Plotly.relayout(document.getElementById('plotly-3d-market-simulation'), { 'scene.camera.eye': e });
-      }, eye);
+      const readCameraMatrixKey = () => p.evaluate(() => {
+        const cp = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?._scene?.glplot?.cameraParams;
+        return cp?.model && cp?.view && cp?.projection
+          ? [...cp.model, ...cp.view, ...cp.projection].join(',')
+          : null;
+      });
+      const moveToRenderedEye = async (eye) => {
+        const beforeMatrixKey = await readCameraMatrixKey();
+        await p.evaluate((e) => {
+          void window.Plotly.relayout(document.getElementById('plotly-3d-market-simulation'), { 'scene.camera.eye': e });
+        }, eye);
+        await p.waitForFunction(({ want, beforeMatrixKey }) => {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const e = gd?._fullLayout?.scene?.camera?.eye;
+          const cp = gd?._fullLayout?.scene?._scene?.glplot?.cameraParams;
+          const matrixKey = cp?.model && cp?.view && cp?.projection
+            ? [...cp.model, ...cp.view, ...cp.projection].join(',')
+            : null;
+          return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01
+            && matrixKey !== null && matrixKey !== beforeMatrixKey ? true : null;
+        }, { want: eye, beforeMatrixKey }, { timeout: 5000 });
+      };
+      const setEye = async (eye) => {
+        const beforeEye = await readEye();
+        // Turn a declared no-op into two observable rendered moves. Reading
+        // `_fullLayout.camera.eye` alone cannot prove its WebGL matrices are
+        // current, so never waive the matrix-change control on that basis.
+        if (beforeEye && Math.hypot(beforeEye.x - eye.x, beforeEye.y - eye.y, beforeEye.z - eye.z) < 0.01) {
+          const nudgeEye = { x: eye.x + 0.05, y: eye.y, z: eye.z };
+          await moveToRenderedEye(nudgeEye);
+        }
+        await moveToRenderedEye(eye);
+        // The relayout event can precede the rendered matrix transition.
+        // Re-emit the now-rendered pose and observe a later app-side decision,
+        // so callers never assert against a transient decision for the prior
+        // transform.
+        const decisionBefore = await p.evaluate(() => Number(document.querySelector('.js-plotly-plot')?.dataset?.continuumDecidedAt ?? NaN));
+        await p.evaluate((e) => {
+          void window.Plotly.relayout(document.getElementById('plotly-3d-market-simulation'), { 'scene.camera.eye': e });
+        }, eye);
+        await p.waitForFunction((before) => {
+          const decidedAt = Number(document.querySelector('.js-plotly-plot')?.dataset?.continuumDecidedAt ?? NaN);
+          return Number.isFinite(decidedAt) && decidedAt > before ? true : null;
+        }, decisionBefore, { timeout: 3000 });
+      };
       const eyeDist = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : Infinity);
       const DEFAULT_EYE = { x: 1.6, y: -1.6, z: 1.1 };
       // Independently scanned (per-0.1°-azimuth) for THIS EXACT fixture using
@@ -4370,6 +4412,27 @@ try {
       // found on a DIFFERENT fixture and do not transfer — fusion depends on
       // the segment's own data-space geometry, not azimuth alone.
       const FUSING_EYE = { x: 0.3031761289426962, y: 2.242339009792971, z: 1.1 };
+
+      // The pause click freezes the CURRENT idle-spin azimuth; it does not
+      // restore Plotly's default eye. On a slow shard, setup itself can last
+      // long enough for that azimuth to be one where this exact near-threshold
+      // component is already dynamically collapsed. Drive the named control
+      // to its actual camera before reading it.
+      await setEye(DEFAULT_EYE);
+      const movedToDefault = await p.waitForFunction((want) => {
+        const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
+        return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01 ? true : null;
+      }, DEFAULT_EYE, { timeout: 5000 }).then(() => true).catch(() => false);
+      const expandedAtDefault = await p.waitForFunction(() => {
+        const ts = (document.querySelector('.js-plotly-plot')?.data ?? [])
+          .filter((t) => t.meta && t.meta.continuumComponentIndex !== undefined);
+        const corners = ts.filter((t) => t.meta.continuumRole === 'corner');
+        const midpoint = ts.find((t) => t.meta.continuumRole === 'midpoint');
+        return corners.length === 2 && corners.every((t) => (t.visible ?? true) === true)
+          && midpoint && midpoint.marker?.size < corners[0].marker?.size ? true : null;
+      }, null, { timeout: 3000 }).then(() => true).catch(() => false);
+      record('precondition: the paused camera is explicitly restored to the default eye before the default-camera control',
+        movedToDefault && expandedAtDefault, JSON.stringify({ eye: await readEye(), expandedAtDefault }));
 
       const atDefault = await readContinuum();
       const cornersAtDefault = atDefault.filter((t) => t.role === 'corner');
@@ -4444,6 +4507,27 @@ try {
       }, null, { timeout: 3000 }).then(() => true).catch(() => false);
       record('back at the default camera: corners are visible again', movedBack && restoredAtDefault, JSON.stringify(await readContinuum()));
 
+      // Make the app evaluate the already-rendered default camera once more,
+      // after the preceding fusing-camera legend writes have settled. This
+      // aligns its cached collapse decision with Plotly's live expanded trace
+      // state before the independent throttle oracle starts.
+      const synchronizeBurstBaseline = async () => {
+        await p.waitForTimeout(150);
+        const syncDecisionBefore = await p.evaluate(() => Number(document.querySelector('.js-plotly-plot')?.dataset?.continuumDecidedAt ?? NaN));
+        await p.evaluate((eye) => {
+          void window.Plotly.relayout(document.getElementById('plotly-3d-market-simulation'), { 'scene.camera.eye': eye });
+        }, DEFAULT_EYE);
+        return p.waitForFunction((beforeSyncDecision) => {
+          const gd = document.querySelector('.js-plotly-plot');
+          const syncDecidedAt = Number(gd?.dataset?.continuumDecidedAt ?? NaN);
+          const ts = (gd?.data ?? []).filter((t) => t.meta?.continuumComponentIndex !== undefined);
+          const corners = ts.filter((t) => t.meta?.continuumRole === 'corner');
+          return Number.isFinite(syncDecidedAt) && syncDecidedAt > beforeSyncDecision
+            && corners.length === 2 && corners.every((t) => (t.visible ?? true) === true) ? syncDecidedAt : null;
+        }, syncDecisionBefore, { timeout: 3000 }).then((handle) => handle.jsonValue()).catch(() => null);
+      };
+      let cacheSynchronized = await synchronizeBurstBaseline();
+
       // CodeRabbit (this branch, PlotlyView.tsx#L1163): a plain leading-edge
       // throttle drops the LAST event of a burst if it lands inside the
       // 100ms window and no further relayout follows (Reset View, the end
@@ -4451,18 +4535,126 @@ try {
       // eye, wait long enough for any prior throttle window to fully lapse
       // first, then STOP — no further relayout — and confirm the TRAILING
       // evaluation alone still applies the collapse.
-      await p.waitForTimeout(150);
-      for (const e of [{ x: 1.0, y: -1.0, z: 1.1 }, { x: 0.6, y: 0.2, z: 1.1 }, FUSING_EYE]) {
-        await setEye(e);
-        await p.waitForTimeout(10); // well inside the 100ms throttle window
+      // Couple the final relayout to the first relayout's ACTUAL event, not
+      // Playwright-side sleeps: the latter could race Plotly's async relayout
+      // queue and leave a different camera as the final pose. Also wait until
+      // Plotly's first WebGL camera matrices differ from the pre-burst frame
+      // before dispatching the second: re-entering Plotly from its own
+      // relayout event can update `_fullLayout.eye` without committing the
+      // matching rendered transform, which is not the two-rendered-event
+      // burst a drag/reset produces.
+      const runBurst = () => p.evaluate(({ first, last }) => new Promise((resolve) => {
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        let firstEventAt = null;
+        let lastDispatchedAt = null;
+        let sentLast = false;
+        let queuedLast = false;
+        let matrixRaf = null;
+        let firstCommittedMatrixKey = null;
+        const near = (a, b) => a && Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < 0.01;
+        const cameraMatrixKey = () => {
+          const cp = gd?._fullLayout?.scene?._scene?.glplot?.cameraParams;
+          return cp?.model && cp?.view && cp?.projection
+            ? [...cp.model, ...cp.view, ...cp.projection].join(',')
+            : null;
+        };
+        const beforeBurstMatrixKey = cameraMatrixKey();
+        const queueLast = () => {
+          if (queuedLast) return;
+          queuedLast = true;
+          firstCommittedMatrixKey = cameraMatrixKey();
+          queueMicrotask(() => {
+            lastDispatchedAt = performance.now();
+            void window.Plotly.relayout(gd, { 'scene.camera.eye': last });
+          });
+        };
+        const waitForFirstMatrix = () => {
+          if (cameraMatrixKey() !== beforeBurstMatrixKey) {
+            queueLast();
+            return;
+          }
+          matrixRaf = requestAnimationFrame(waitForFirstMatrix);
+        };
+        const cleanup = () => {
+          clearTimeout(timeout);
+          if (matrixRaf !== null) cancelAnimationFrame(matrixRaf);
+          gd?.removeListener?.('plotly_relayout', onRelayout);
+        };
+        const onRelayout = () => {
+          const eye = gd?._fullLayout?.scene?.camera?.eye;
+          const now = performance.now();
+          if (!sentLast && near(eye, first)) {
+            firstEventAt = now;
+            sentLast = true;
+            waitForFirstMatrix();
+          } else if (sentLast && near(eye, last)) {
+            const finalMatrixKey = cameraMatrixKey();
+            cleanup();
+            resolve({
+              observed: true,
+              dispatchGapMs: lastDispatchedAt - firstEventAt,
+              eventGapMs: now - firstEventAt,
+              finalEventAt: now,
+              decisionAtFinalEvent: Number(gd?.dataset?.continuumDecidedAt ?? NaN),
+              finalMatrixObserved: finalMatrixKey !== null && finalMatrixKey !== firstCommittedMatrixKey,
+              eye,
+            });
+          }
+        };
+        const timeout = setTimeout(() => {
+          const eye = gd?._fullLayout?.scene?.camera?.eye ?? null;
+          cleanup();
+          resolve({
+            observed: false,
+            dispatchGapMs: lastDispatchedAt === null || firstEventAt === null ? null : lastDispatchedAt - firstEventAt,
+            eventGapMs: null,
+            eye,
+          });
+        }, 3000);
+        gd?.on?.('plotly_relayout', onRelayout);
+        void window.Plotly.relayout(gd, { 'scene.camera.eye': first });
+      }), { first: { x: 1.0, y: -1.0, z: 1.1 }, last: FUSING_EYE });
+      const burstFitsThrottleWindow = (value) => value?.observed
+        && value.finalMatrixObserved
+        && Number.isFinite(value.dispatchGapMs) && value.dispatchGapMs < 100
+        && Number.isFinite(value.eventGapMs) && value.eventGapMs < 100;
+      let burst = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) {
+          await setEye(DEFAULT_EYE);
+          cacheSynchronized = await synchronizeBurstBaseline();
+        }
+        if (cacheSynchronized === null) continue;
+        // Leave the baseline evaluation's own window before starting the
+        // two-event burst whose leading event must own a fresh window.
+        await p.waitForTimeout(150);
+        burst = { ...(await runBurst()), attempt };
+        if (burstFitsThrottleWindow(burst)) break;
       }
+      record('precondition: the throttle burst starts with Plotly visibility and the collapse cache synchronized at the expanded default camera',
+        cacheSynchronized !== null, JSON.stringify({ cacheSynchronized, attempts: burst?.attempt ?? 0 }));
+      // Dispatch timing proves the harness itself did not insert a delay;
+      // event timing proves the app actually received the final camera inside
+      // its 100ms throttle window (the product timestamps in its listener).
+      const burstInsideWindow = burstFitsThrottleWindow(burst);
+      record('precondition: the burst final rendered eye was dispatched and delivered inside the leading event\'s 100ms throttle window',
+        burstInsideWindow, JSON.stringify(burst));
       // No further relayout is dispatched after this point.
       const trailingCaught = await p.waitForFunction(() => {
         const ts = (document.querySelector('.js-plotly-plot')?.data ?? []).filter((t) => t.meta?.continuumRole === 'corner');
         return ts.length > 0 && ts.every((t) => t.visible === 'legendonly') ? true : null;
       }, null, { timeout: 2000 }).then(() => true).catch(() => false);
+      const trailingDecision = await p.evaluate(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        return gd?.dataset?.continuumDecidedAt ? Number(gd.dataset.continuumDecidedAt) : null;
+      });
+      const finalDecisionAtEvent = burst?.decisionAtFinalEvent;
+      const trailingDecisionObserved = Number.isFinite(trailingDecision)
+        && Number.isFinite(finalDecisionAtEvent)
+        && trailingDecision > finalDecisionAtEvent;
       record('FIX (CodeRabbit, PlotlyView.tsx#L1163): a trailing evaluation still applies the collapse after a burst\'s final relayout lands inside the throttle window with no event afterward',
-        trailingCaught, JSON.stringify(await readContinuum()));
+        burstInsideWindow && trailingDecisionObserved && trailingCaught,
+        JSON.stringify({ burst, trailingDecision, trailingDecisionObserved, eye: await readEye(), traces: await readContinuum() }));
       await setEye(DEFAULT_EYE);
       await p.waitForFunction((want) => {
         const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
@@ -8025,6 +8217,52 @@ try {
     // (line ~1241) to be certain a synchronous click handler's re-render has
     // actually committed before the next read (CodeRabbit CLI).
     const settleFrames = (p) => p.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // WebKit can still be carrying out the tour's initial smooth scroll and
+    // measured-card placement after the step counter is visible. Capturing a
+    // box in that transient state made the geometry-preservation assertion
+    // compare two different, individually-valid placements (CI observed
+    // y=506 -> 334.8125 twice). Wait on the condition we actually need: fonts
+    // are ready and the control plus scroll offset have stayed unchanged for
+    // a sustained half-second. Measure elapsed time, not a frame count:
+    // headless browsers under the 31-way CI matrix can throttle requestAnimationFrame
+    // enough that 30 unchanged frames take longer than this helper's 8s bound.
+    // This does not weaken the later
+    // exact before/after comparison; it makes its BEFORE value a real settled
+    // baseline instead of a race against the tour's own positioning effects.
+    const stableTourControlRect = (btn) => btn.evaluate((el) => {
+      return new Promise((resolve) => {
+        let previous = null;
+        let stableSince = null;
+        let raf = 0;
+        let finished = false;
+        const finish = (value) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(deadlineTimer);
+          if (raf) cancelAnimationFrame(raf);
+          resolve(value);
+        };
+        // Independent of rAF: a backgrounded or heavily-throttled renderer
+        // must not suspend the helper's eight-second bound indefinitely.
+        const deadlineTimer = setTimeout(() => finish(null), 8000);
+        const tick = () => {
+          const now = performance.now();
+          const r = el.getBoundingClientRect();
+          const next = [r.x, r.y, r.width, r.height, window.scrollX, window.scrollY];
+          const fontsReady = !document.fonts || document.fonts.status === 'loaded';
+          const unchanged = fontsReady && previous
+            && next.every((value, index) => Math.abs(value - previous[index]) < 0.01);
+          stableSince = unchanged ? (stableSince ?? now) : null;
+          previous = next;
+          if (stableSince !== null && now - stableSince >= 500) {
+            finish({ x: r.x, y: r.y, width: r.width, height: r.height });
+            return;
+          }
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      });
+    });
 
     // One scenario runner shared by the drawer and the download dialog,
     // so both get every assertion instead of two hand-kept copies.
@@ -8047,8 +8285,8 @@ try {
       // box for a hidden+inert element (real, observed Playwright/browser
       // behavior, but not a documented guarantee to rely on) (CodeRabbit CLI).
       const btn = p.locator(tourButtonSelector).first();
-      const bbBefore = await btn.boundingBox();
-      record(`[${label}] precondition: the tour control has a bounding box before any surface opens (harness sanity)`, !!bbBefore, JSON.stringify(bbBefore));
+      const bbBefore = await stableTourControlRect(btn);
+      record(`[${label}] precondition: the tour control has a settled bounding box before any surface opens (harness sanity)`, !!bbBefore, JSON.stringify(bbBefore));
       if (!bbBefore) return;
       const cx = bbBefore.x + bbBefore.width / 2, cy = bbBefore.y + bbBefore.height / 2;
 

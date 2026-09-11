@@ -28,7 +28,9 @@
  */
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
+import * as ts from 'typescript';
 import { createAccountApi, describeRequestFailure, ACCOUNT_REQUEST_TIMEOUT_MS, type AccountApiDeps, type AccountResponse } from './utils/apiClient';
+import { isForgotPasswordSuccess, isLoginSuccess, isRegisterSuccess, isResetPasswordSuccess, isVerifySuccess } from './utils/authResponses';
 import { DEFAULT_REPORT_FETCH_TIMEOUT_MS } from './utils/fetchTimeout';
 
 let failures = 0;
@@ -361,31 +363,213 @@ function browserSources(): Array<{ path: string; src: string }> {
 }
 
 /**
- * Each request site in a file — `fetch(` AND `fetchWithTimeout(`, because the
- * bounded wrapper is a request too and a route that used it would otherwise
- * slip past this whole contract — with the text of that call only (cut at the
- * next site so one window can never bleed into the next).
+ * Each browser request site is found from the TypeScript AST, not a text
+ * window. The old regex could not see either half of this perfectly ordinary
+ * code:
+ *
+ *   const route = '/api/auth/login';
+ *   const send = fetch;
+ *   send(getApiUrl(route), init);
+ *
+ * Keeping endpoint resolution small and conservative is intentional: an
+ * unresolved expression has no path, so it cannot make the pinned allowlist
+ * look smaller, while every statically-known alias is still load-bearing.
  */
-function fetchSites(rawSrc: string): Array<{ index: number; text: string }> {
-  const src = codeOnly(rawSrc);
-  const out: Array<{ index: number; text: string }> = [];
-  const re = /\bfetch(?:WithTimeout)?\(/g;
-  let m: RegExpExecArray | null;
-  const starts: number[] = [];
-  while ((m = re.exec(src))) starts.push(m.index);
-  for (let i = 0; i < starts.length; i++) {
-    // The DEFINITION of fetchWithTimeout is not a call site. (Only `function
-    // NAME(` is skipped: `const { promise, clear } = fetchWithTimeout(` is a
-    // CALL, and an earlier draft that also skipped `= ` silently dropped every
-    // bounded request — the report and regenerate sites — from this contract.)
-    if (/\bfunction\s*$/.test(src.slice(Math.max(0, starts[i] - 20), starts[i]))) continue;
-    const end = Math.min(starts[i] + 700, i + 1 < starts.length ? starts[i + 1] : src.length);
-    out.push({ index: starts[i], text: src.slice(starts[i], end) });
+interface FetchSite { index: number; text: string; path: string | null }
+
+const API_PATH = /\/api\/[A-Za-z0-9/_.-]*/;
+
+function normalizeApiPath(value: string | null): string | null {
+  const match = value?.match(API_PATH)?.[0];
+  return match ? match.replace(/\/$/, '') : null;
+}
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isTypeAssertionExpression(current)
+    || ts.isNonNullExpression(current)
+    || ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
   }
+  return current;
+}
+
+function astFetchSites(rawSrc: string, fileName = 'fixture.tsx'): FetchSite[] {
+  const scriptKind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const compilerOptions: ts.CompilerOptions = {
+    jsx: ts.JsxEmit.Preserve,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const parsedSource = ts.createSourceFile(fileName, rawSrc, ts.ScriptTarget.Latest, true, scriptKind);
+  const host = ts.createCompilerHost(compilerOptions, true);
+  host.fileExists = (candidate) => candidate === fileName;
+  host.readFile = (candidate) => candidate === fileName ? rawSrc : undefined;
+  host.getSourceFile = (candidate) => candidate === fileName ? parsedSource : undefined;
+  const program = ts.createProgram([fileName], compilerOptions, host);
+  const sourceFile = program.getSourceFile(fileName);
+  if (!sourceFile) return [];
+  const checker = program.getTypeChecker();
+
+  // Resolve a reference through the TypeScript binder, not a file-global map
+  // keyed only by identifier text. The latter lets an unrelated declaration
+  // in a nested/sibling scope overwrite the initializer belonging to the call
+  // site and can make a raw auth fetch disappear from the inventory.
+  const variableDeclarationFor = (identifier: ts.Identifier): ts.VariableDeclaration | null => {
+    const symbol = checker.getSymbolAtLocation(identifier);
+    const declaration = symbol?.valueDeclaration
+      ?? symbol?.declarations?.find((candidate) => ts.isVariableDeclaration(candidate));
+    return declaration && ts.isVariableDeclaration(declaration) ? declaration : null;
+  };
+
+  const resolveNamed = (expression: ts.Expression, wanted: string, seen = new Set<ts.VariableDeclaration>()): boolean => {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      if (current.text === wanted) return true;
+      const declaration = variableDeclarationFor(current);
+      const initializer = declaration?.initializer;
+      if (!declaration || !initializer || seen.has(declaration)) return false;
+      const next = new Set(seen);
+      next.add(declaration);
+      return resolveNamed(initializer, wanted, next);
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const property = ts.isPropertyAccessExpression(current)
+        ? current.name.text
+        : ts.isStringLiteral(current.argumentExpression) ? current.argumentExpression.text : null;
+      return property === wanted;
+    }
+    return false;
+  };
+
+  function resolveValue(expression: ts.Expression, seen = new Set<ts.VariableDeclaration>()): string | null {
+    const current = unwrapExpression(expression);
+    if (ts.isStringLiteral(current) || ts.isNoSubstitutionTemplateLiteral(current)) return current.text;
+    if (ts.isIdentifier(current)) {
+      const declaration = variableDeclarationFor(current);
+      const initializer = declaration?.initializer;
+      if (!declaration || !initializer || seen.has(declaration)) return null;
+      const next = new Set(seen);
+      next.add(declaration);
+      return resolveValue(initializer, next);
+    }
+    if (ts.isTemplateExpression(current)) {
+      let value = current.head.text;
+      for (const span of current.templateSpans) {
+        // A dynamic suffix is intentionally omitted; the literal route prefix
+        // remains available to normalizeApiPath (e.g. `/api/games/${id}`).
+        value += resolveValue(span.expression, seen) ?? '';
+        value += span.literal.text;
+      }
+      return value;
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = resolveValue(current.left, seen);
+      const right = resolveValue(current.right, seen);
+      return left === null && right === null ? null : `${left ?? ''}${right ?? ''}`;
+    }
+    if (ts.isCallExpression(current) && current.arguments.length > 0) {
+      const firstArgument = resolveValue(current.arguments[0], seen);
+      if (resolveNamed(current.expression, 'getApiUrl') || resolveNamed(current.expression, 'String')) {
+        return firstArgument;
+      }
+      // Component-local URL adapters (for example AdminDashboard's
+      // `adminUrl(path)`) preserve the API path while selecting an origin.
+      // Retain a statically-known API argument through such a wrapper; an
+      // arbitrary non-API argument remains unresolved below.
+      if (normalizeApiPath(firstArgument)) return firstArgument;
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const object = unwrapExpression(current.expression);
+      if (!ts.isIdentifier(object)) return null;
+      const declaration = variableDeclarationFor(object);
+      const initializer = declaration?.initializer;
+      if (!declaration || !initializer || seen.has(declaration) || !ts.isObjectLiteralExpression(initializer)) return null;
+      const next = new Set(seen);
+      next.add(declaration);
+      const wanted = ts.isPropertyAccessExpression(current)
+        ? current.name.text
+        : ts.isStringLiteral(current.argumentExpression) ? current.argumentExpression.text : null;
+      if (!wanted) return null;
+      const property = initializer.properties.find((candidate) => {
+        if (!ts.isPropertyAssignment(candidate) || !candidate.name) return false;
+        return (ts.isIdentifier(candidate.name) || ts.isStringLiteral(candidate.name))
+          && candidate.name.text === wanted;
+      });
+      return property && ts.isPropertyAssignment(property) ? resolveValue(property.initializer, next) : null;
+    }
+    return null;
+  }
+
+  const resolveFetchName = (expression: ts.Expression, seen = new Set<ts.VariableDeclaration>()): string | null => {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      const declaration = variableDeclarationFor(current);
+      const initializer = declaration?.initializer;
+      if (declaration) {
+        if (!initializer || seen.has(declaration)) return null;
+        const next = new Set(seen);
+        next.add(declaration);
+        return resolveFetchName(initializer, next);
+      }
+      if (current.text === 'fetch') {
+        // With no DOM lib in this tiny in-memory program, the real global has
+        // no symbol. Any symbol here is therefore a lexical shadow (parameter,
+        // local function, import, etc.), not window.fetch.
+        return checker.getSymbolAtLocation(current) ? null : 'fetch';
+      }
+      if (current.text === 'fetchWithTimeout') {
+        const symbol = checker.getSymbolAtLocation(current);
+        // The real wrapper is either imported or declared as a function.
+        // Parameters/other lexical shadows with the same spelling are not
+        // network calls merely because their text happens to match.
+        const wrapperBinding = symbol?.declarations?.some((candidate) =>
+          ts.isImportSpecifier(candidate) || ts.isFunctionDeclaration(candidate));
+        return wrapperBinding ? 'fetchWithTimeout' : null;
+      }
+      return null;
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const property = ts.isPropertyAccessExpression(current)
+        ? current.name.text
+        : ts.isStringLiteral(current.argumentExpression) ? current.argumentExpression.text : null;
+      return property === 'fetch' || property === 'fetchWithTimeout' ? property : null;
+    }
+    return null;
+  };
+
+  const out: FetchSite[] = [];
+  const isFetchWithTimeoutImplementation = (node: ts.Node): boolean => {
+    let current: ts.Node | undefined = node.parent;
+    while (current) {
+      if (ts.isFunctionDeclaration(current) && current.name?.text === 'fetchWithTimeout') return true;
+      current = current.parent;
+    }
+    return false;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = resolveFetchName(node.expression);
+      // The wrapper's own `fetch(url)` is implementation, not a second
+      // endpoint. Its fetchWithTimeout call sites below carry the paths.
+      if (callee && !(callee === 'fetch' && isFetchWithTimeoutImplementation(node))) {
+        const start = node.getStart(sourceFile);
+        const endpoint = node.arguments.length > 0 ? resolveValue(node.arguments[0]) : null;
+        out.push({ index: start, text: rawSrc.slice(start, node.getEnd()), path: normalizeApiPath(endpoint) });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
   return out;
 }
 
-const API_PATH = /['"`](\/api\/[A-Za-z0-9/_.-]*)/;
+const fetchSites = (rawSrc: string, fileName?: string) => astFetchSites(rawSrc, fileName);
 
 /**
  * A credential being BUILT, as opposed to the word appearing in prose. Whole-line
@@ -398,21 +582,38 @@ const CREDENTIAL_IN_CODE = /['"]authorization['"]|\bauthorization\s*:|authHeader
 /** ±600 chars around a `status === 401`, for the admin-secret exemption. */
 const near401 = (code: string, idx: number) => code.slice(Math.max(0, idx - 600), idx + 600);
 
-/**
- * Endpoints reached by a raw `fetch` OUTSIDE the client, each one deliberately
- * unauthenticated: they carry no bearer token, so there is no session for them
- * to mishandle. The set is pinned in BOTH directions — a new entry means a new
- * route grew its own request handling and must be justified here; a missing one
- * means a route moved and this list is stale.
- */
-const UNAUTHENTICATED_OUTSIDE_CLIENT = [
-  '/api/admin/stats',          // AdminDashboard: x-admin-secret, not a user session
-  '/api/auth/desktop-hint',    // OtherAccountsNotice: anonymous "are there accounts here"
+/** The pre-session routes that still need the same body/verdict contract as
+ * account-scoped requests, but must not attach a token (there is no session yet).
+ * They all go through `api.request(..., { token: null })`, so a 200 HTML body
+ * cannot be mistaken for a successful login, registration, verification, or
+ * password flow. */
+const AUTH_ROUTES_THROUGH_CLIENT = [
   '/api/auth/forgot-password',
   '/api/auth/login',
   '/api/auth/register',
   '/api/auth/reset-password',
   '/api/auth/verify',
+].sort();
+
+const AUTH_SUCCESS_GUARDS: Record<string, string> = {
+  '/api/auth/forgot-password': 'isForgotPasswordSuccess(data)',
+  '/api/auth/login': 'isLoginSuccess(data)',
+  '/api/auth/register': 'isRegisterSuccess(data)',
+  '/api/auth/reset-password': 'isResetPasswordSuccess(data)',
+  '/api/auth/verify': 'isVerifySuccess(data)',
+};
+
+/**
+ * Endpoints reached by a raw `fetch` OUTSIDE the client, each one deliberately
+ * unauthenticated: they carry no bearer token, so there is no session for them
+ * to mishandle. The set is pinned in BOTH directions — a new entry means a new
+ * route grew its own request handling and must be justified here; a missing one
+ * means a route moved and this list is stale. The five auth mutation routes are
+ * deliberately absent: the guard below makes their migration load-bearing.
+ */
+const UNAUTHENTICATED_OUTSIDE_CLIENT = [
+  '/api/admin/stats',          // AdminDashboard: x-admin-secret, not a user session
+  '/api/auth/desktop-hint',    // OtherAccountsNotice: anonymous "are there accounts here"
   '/api/download/dmg',         // DownloadModal: public download
   '/api/feedback',             // anonymous feedback
   '/api/health',               // capability probe + the drawer's base-URL check
@@ -427,13 +628,19 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
 
 {
   const credentialed: string[] = [];
+  const rawAuthFetches: string[] = [];
+  const unresolvedFetches: string[] = [];
   const paths = new Set<string>();
   for (const { path, src } of browserSources()) {
-    for (const site of fetchSites(src)) {
+    for (const site of fetchSites(src, path)) {
       const line = src.slice(0, site.index).split('\n').length;
-      const apiPath = site.text.match(API_PATH)?.[1];
+      const normalizedPath = site.path;
+      if (!normalizedPath) unresolvedFetches.push(`${path}:${line}`);
       // A template path such as `/api/games/${id}` reduces to its literal head.
-      if (apiPath) paths.add(apiPath.replace(/\/$/, ''));
+      if (normalizedPath) paths.add(normalizedPath);
+      if (normalizedPath && AUTH_ROUTES_THROUGH_CLIENT.includes(normalizedPath)) {
+        rawAuthFetches.push(`${path}:${line} ${normalizedPath}`);
+      }
       if (CREDENTIAL_IN_CODE.test(site.text)) credentialed.push(`${path}:${line}`);
     }
     // WHOLE-FILE too: a header object built above the `fetch(` and passed by
@@ -447,10 +654,228 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
   check('no request outside src/utils/apiClient.ts attaches an Authorization header',
     credentialed.length === 0, credentialed.join(', '));
 
+  check('the five pre-session auth mutations have no raw fetch of their own',
+    rawAuthFetches.length === 0, rawAuthFetches.join(', '));
+
+  check('every browser fetch site resolves to a statically-known API path',
+    unresolvedFetches.length === 0, unresolvedFetches.join(', '));
+
   const found = [...paths].sort();
   check('the endpoints reached outside the client are EXACTLY the pinned unauthenticated set',
     JSON.stringify(found) === JSON.stringify(UNAUTHENTICATED_OUTSIDE_CLIENT),
     `found ${JSON.stringify(found)}`);
+}
+
+// The no-raw-auth-fetch rule must also prove that each route still exists in
+// the client-backed submit family. Otherwise deleting a handler would make the
+// negative scan green while silently removing sign-in, verification, or reset.
+{
+  const appSrc = codeOnly(readFileSync('src/App.tsx', 'utf8'));
+  const authCalls = AUTH_ROUTES_THROUGH_CLIENT.map((route) =>
+    `api.request('${route}'`);
+  const missing = authCalls.filter((call) => !appSrc.includes(call));
+  check('all five pre-session auth mutations call the one account client',
+    missing.length === 0, missing.join(', '));
+
+  const authCallSlice = (source: string, route: string): string => {
+    const call = `api.request('${route}'`;
+    const start = source.indexOf(call);
+    if (start < 0) return '';
+    const nextRequest = source.indexOf('api.request(', start + call.length);
+    const nextAuthBranch = source.indexOf('\n    } else if (authMode ===', start);
+    const handlerEnd = source.indexOf('\n  const mergedPresets = useMemo', start);
+    const end = [nextRequest, nextAuthBranch, handlerEnd]
+      .filter((candidate) => candidate >= 0)
+      .reduce((nearest, candidate) => Math.min(nearest, candidate), source.length);
+    return source.slice(start, end);
+  };
+  const authGuardFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) => {
+    const slice = authCallSlice(source, route);
+    if (!slice) return true;
+    return !/if \(res\.kind !== 'response' \|\| !res\.dataParsed\)/.test(slice);
+  });
+  check('each auth mutation rejects a response whose body was not parsed before reading success fields',
+    authGuardFailures(appSrc).length === 0, authGuardFailures(appSrc).join(', '));
+
+  const authStaleFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) =>
+    !/isStale: authRequest\.isStale/.test(authCallSlice(source, route)));
+  check('each auth mutation passes its keyed dialog-session predicate to the client',
+    authStaleFailures(appSrc).length === 0, authStaleFailures(appSrc).join(', '));
+
+  const authSemanticGuardFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) => {
+    const predicate = AUTH_SUCCESS_GUARDS[route];
+    return !authCallSlice(source, route).includes(`else if (res.ok && !${predicate})`);
+  });
+  check('each auth mutation requires its route-semantic success object before advancing',
+    authSemanticGuardFailures(appSrc).length === 0, authSemanticGuardFailures(appSrc).join(', '));
+
+  const authVerdictOrderingFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) => {
+    const slice = authCallSlice(source, route);
+    const stale = slice.indexOf('if (res.stale) return;');
+    const parsed = slice.indexOf("if (res.kind !== 'response' || !res.dataParsed)");
+    const semantic = slice.indexOf(`else if (res.ok && !${AUTH_SUCCESS_GUARDS[route]})`);
+    const success = slice.indexOf('else if (res.ok)', semantic + 1);
+    return stale < 0 || parsed < 0 || semantic < 0 || success < 0
+      || !(stale < parsed && parsed < semantic && semantic < success);
+  });
+  check('each auth response rejects stale work before transport, semantic, or success state changes',
+    authVerdictOrderingFailures(appSrc).length === 0, authVerdictOrderingFailures(appSrc).join(', '));
+
+  const authTokenFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) =>
+    !/\btoken\s*:\s*null\b/.test(authCallSlice(source, route)));
+  check('each pre-session auth api.request site explicitly sends token:null',
+    authTokenFailures(appSrc).length === 0, authTokenFailures(appSrc).join(', '));
+
+  check('auth dialog owns a generation, per-request key, and keyed loading cleanup',
+    /authDialogSessionRef = useRef\(0\)/.test(appSrc)
+      && /authRequestKeyRef = useRef\(0\)/.test(appSrc)
+      && /isStale: \(\) => !isCurrent\(\)/.test(appSrc)
+      && /finish: \(\) => \{ if \(isCurrent\(\)\) setAuthLoading\(false\); \}/.test(appSrc)
+      && /closeAuthModalAfterSuccess/.test(appSrc),
+    'missing session/key/finish pin');
+
+  // Known-positive mutations: planting a raw fetch for each auth route must
+  // trip the route scanner, and removing one route's data/stale/semantic guard
+  // must trip the family guard.
+  for (const route of AUTH_ROUTES_THROUGH_CLIENT) {
+    const plantedRawFetch = `${appSrc}\nfetch(getApiUrl('${route}'), { method: 'POST' });`;
+    const rawAuthSites = fetchSites(plantedRawFetch, 'mutation.tsx').filter((site) =>
+      AUTH_ROUTES_THROUGH_CLIENT.includes(site.path ?? ''));
+    check(`mutation: planting a raw ${route} fetch fails the no-raw-auth-fetch guard`,
+      rawAuthSites.length > 0, `${rawAuthSites.length} planted site(s)`);
+
+    const plantedAliasedRawFetch = `${appSrc}
+const authEndpointAlias = '${route}';
+const authFetchAlias = fetch;
+authFetchAlias(getApiUrl(authEndpointAlias), { method: 'POST' });`;
+    const aliasedRawAuthSites = fetchSites(plantedAliasedRawFetch, 'mutation.tsx').filter((site) =>
+      AUTH_ROUTES_THROUGH_CLIENT.includes(site.path ?? ''));
+    check(`mutation: planting an aliased raw ${route} fetch fails the AST endpoint guard`,
+      aliasedRawAuthSites.length > 0, `${aliasedRawAuthSites.length} aliased site(s)`);
+
+    const routeSlice = authCallSlice(appSrc, route);
+    const routeStart = appSrc.indexOf(`api.request('${route}'`);
+    const routeMutant = appSrc.slice(0, routeStart) + routeSlice.replace('isStale: authRequest.isStale,', '') + appSrc.slice(routeStart + routeSlice.length);
+    check(`mutation: removing the ${route} session predicate fails the auth-family guard`,
+      authStaleFailures(routeMutant).includes(route), authStaleFailures(routeMutant).join(', '));
+
+    const predicate = AUTH_SUCCESS_GUARDS[route];
+    const semanticMutant = appSrc.replace(`else if (res.ok && !${predicate})`, 'else if (res.ok)');
+    check(`mutation: removing the ${route} semantic success guard fails the auth-family guard`,
+      authSemanticGuardFailures(semanticMutant).includes(route), authSemanticGuardFailures(semanticMutant).join(', '));
+
+    const tokenMutant = appSrc.slice(0, routeStart)
+      + routeSlice.replace('token: null,', '')
+      + appSrc.slice(routeStart + routeSlice.length);
+    check(`mutation: removing ${route} token:null fails the pre-session auth contract`,
+      authTokenFailures(tokenMutant).includes(route), authTokenFailures(tokenMutant).join(', '));
+  }
+  const firstAuthGuard = "if (res.kind !== 'response' || !res.dataParsed)";
+  const guardMutant = appSrc.replace(firstAuthGuard, "if (res.kind !== 'response')");
+  check('mutation: dropping one auth route\'s dataParsed guard fails the family guard',
+    authGuardFailures(guardMutant).length > 0, authGuardFailures(guardMutant).join(', '));
+  const resetRoute = '/api/auth/reset-password';
+  const resetSlice = authCallSlice(appSrc, resetRoute);
+  const resetStart = appSrc.indexOf(`api.request('${resetRoute}'`);
+  const tailMaskMutant = appSrc.slice(0, resetStart)
+    + resetSlice.replace(firstAuthGuard, "if (res.kind !== 'response')")
+    + appSrc.slice(resetStart + resetSlice.length)
+    + `\n${firstAuthGuard} { /* unrelated tail text must not satisfy reset */ }`;
+  const oldUnboundedResetSlice = tailMaskMutant.slice(tailMaskMutant.indexOf(`api.request('${resetRoute}'`));
+  check('mutation: unrelated text after handleAuthSubmit cannot mask the final route\'s missing guard',
+    authGuardFailures(tailMaskMutant).includes(resetRoute)
+      && oldUnboundedResetSlice.includes(firstAuthGuard),
+    authGuardFailures(tailMaskMutant).join(', '));
+  const finishMutant = appSrc.replace('finish: () => { if (isCurrent()) setAuthLoading(false); }', 'finish: () => setAuthLoading(false)');
+  check('mutation: unkeying auth loading cleanup fails the session contract',
+    /finish: \(\) => \{ if \(isCurrent\(\)\) setAuthLoading\(false\); \}/.test(appSrc)
+      && !/finish: \(\) => \{ if \(isCurrent\(\)\) setAuthLoading\(false\); \}/.test(finishMutant));
+  const loginSlice = authCallSlice(appSrc, '/api/auth/login');
+  const staleLine = 'if (res.stale) return;';
+  const movedStaleSlice = loginSlice.replace(staleLine, '') + `\n${staleLine}`;
+  const movedStaleMutant = appSrc.replace(loginSlice, movedStaleSlice);
+  check('mutation: moving a stale gate after the auth success path fails the verdict-order guard',
+    authVerdictOrderingFailures(movedStaleMutant).includes('/api/auth/login'),
+    authVerdictOrderingFailures(movedStaleMutant).join(', '));
+}
+
+// Route-specific success contracts: parsed JSON alone is not enough. These
+// fixtures mirror the real server branches, including the hosted/local
+// optional fields, and each known-positive malformed mutation is rejected.
+{
+  const cases: Array<{ name: string; valid: unknown; predicate: (value: unknown) => boolean; malformed: unknown }> = [
+    {
+      name: 'login',
+      valid: { success: true, token: 'tok', user: { id: 'u', username: 'alice', email: 'a@example.com' }, localGames: 0 },
+      predicate: isLoginSuccess,
+      malformed: { success: true, token: 'tok', user: { id: 'u', username: 'alice' } },
+    },
+    {
+      name: 'register-local',
+      valid: { success: true, message: 'Local account created successfully!', autoVerified: true },
+      predicate: isRegisterSuccess,
+      malformed: { success: true, message: 'Local account created successfully!', autoVerified: 'true' },
+    },
+    {
+      name: 'register-hosted',
+      valid: { success: true, message: 'Registration successful!', email: 'a@example.com', via: 'smtp', previewUrl: null },
+      predicate: isRegisterSuccess,
+      malformed: { success: true, message: 'Registration successful!', email: 17 },
+    },
+    {
+      name: 'verify',
+      valid: { success: true, message: 'Email verified successfully!', username: 'alice' },
+      predicate: isVerifySuccess,
+      malformed: { success: true, message: 'Email verified successfully!' },
+    },
+    {
+      name: 'forgot-hosted',
+      valid: { success: true, message: 'If an account exists, a recovery code was sent.' },
+      predicate: isForgotPasswordSuccess,
+      malformed: {},
+    },
+    {
+      name: 'forgot-local',
+      valid: { success: true, message: 'Recovery code generated locally.', recoveryCode: '123456' },
+      predicate: isForgotPasswordSuccess,
+      malformed: { success: true, message: 'Recovery code generated locally.', recoveryCode: 123456 },
+    },
+    {
+      name: 'reset-password',
+      valid: { success: true, message: 'Password reset successfully!' },
+      predicate: isResetPasswordSuccess,
+      malformed: { success: true },
+    },
+  ];
+  for (const c of cases) {
+    check(`auth response contract accepts the real ${c.name} success shape`, c.predicate(c.valid));
+    check(`mutation: malformed ${c.name} success shape is rejected`, !c.predicate(c.malformed));
+  }
+  const registerLocal = { success: true, message: 'Local account created successfully!', autoVerified: true };
+  const registerHosted = {
+    success: true,
+    message: 'Registration successful!',
+    email: 'a@example.com',
+    via: 'smtp',
+    previewUrl: 'https://preview.example.test/message',
+  };
+  const registerHostedCompatibility = { ...registerHosted, autoVerified: false };
+  check('register predicate control: local success requires autoVerified:true', isRegisterSuccess(registerLocal));
+  check('register predicate control: hosted success requires email, via, and previewUrl', isRegisterSuccess(registerHosted));
+  check('register predicate control: hosted compatibility false is accepted with hosted fields', isRegisterSuccess(registerHostedCompatibility));
+  const registerMutants: Array<[string, unknown]> = [
+    ['bare success/message', { success: true, message: 'Registration successful!' }],
+    ['autoVerified:false without hosted fields', { success: true, message: 'Registration successful!', autoVerified: false }],
+    ['hosted success missing previewUrl', { success: true, message: 'Registration successful!', email: 'a@example.com', via: 'smtp' }],
+    ['hosted success with blank email', { ...registerHosted, email: '   ' }],
+    ['local success with malformed hosted field', { ...registerLocal, email: 17 }],
+  ];
+  for (const [name, value] of registerMutants) {
+    check(`mutation: register ${name} is rejected`, !isRegisterSuccess(value));
+  }
+  check('auth response contract rejects a parsed 200 `{}` for every route',
+    !isLoginSuccess({}) && !isRegisterSuccess({}) && !isVerifySuccess({})
+      && !isForgotPasswordSuccess({}) && !isResetPasswordSuccess({}));
 }
 
 // Known-positive fixtures for Part B: the two shapes this contract exists to
@@ -470,6 +895,74 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
     !CREDENTIAL_IN_CODE.test('a save with no Authorization header lands under the local owner'));
   check('fixture: a NEW account route would break the pinned endpoint set',
     !UNAUTHENTICATED_OUTSIDE_CLIENT.includes('/api/games/adopt-local'));
+  check('fixture: an unresolved dynamic fetch cannot disappear from the endpoint inventory',
+    fetchSites("const dynamicRoute = window.name; fetch(getApiUrl(dynamicRoute));")
+      .some((site) => site.path === null));
+
+  // CodeRabbit final review on #188: a file-global initializer map let the
+  // nested permitted declarations overwrite BOTH outer bindings by name, so
+  // this real raw login request produced no fetch site at all. The scanner
+  // must resolve each identifier in the lexical scope of its own call.
+  const shadowedRawLogin = `
+const endpoint = '/api/auth/login';
+const send = fetch;
+function unrelatedHealthProbe() {
+  const endpoint = '/api/health';
+  const send = () => undefined;
+  return { endpoint, send };
+}
+send(getApiUrl(endpoint), { method: 'POST' });`;
+  const shadowedRawLoginSites = fetchSites(shadowedRawLogin);
+  check('fixture: nested permitted-name shadows cannot mask an outer raw /api/auth/login fetch',
+    shadowedRawLoginSites.length === 1 && shadowedRawLoginSites[0].path === '/api/auth/login',
+    JSON.stringify(shadowedRawLoginSites));
+  const legacySource = ts.createSourceFile('legacy-shadow.ts', shadowedRawLogin, ts.ScriptTarget.Latest, true);
+  const legacyLastInitializerByText = new Map<string, string>();
+  const collectLegacyBindings = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      legacyLastInitializerByText.set(node.name.text, node.initializer.getText(legacySource));
+    }
+    ts.forEachChild(node, collectLegacyBindings);
+  };
+  collectLegacyBindings(legacySource);
+  check('mutation probe: the old file-global last-by-name resolver is fooled by the shadow fixture',
+    legacyLastInitializerByText.get('endpoint') === "'/api/health'"
+      && legacyLastInitializerByText.get('send') === '() => undefined',
+    JSON.stringify(Object.fromEntries(legacyLastInitializerByText)));
+
+  // Opposite control: the nearest inner binding really is the public health
+  // route; an outer auth-looking constant must not be attributed to this call.
+  const lexicalHealthControl = `
+const endpoint = '/api/auth/login';
+{
+  const endpoint = '/api/health';
+  const send = fetch;
+  send(getApiUrl(endpoint));
+}`;
+  const lexicalHealthSites = fetchSites(lexicalHealthControl);
+  check('control: an inner /api/health binding is not confused with an outer auth route',
+    lexicalHealthSites.length === 1 && lexicalHealthSites[0].path === '/api/health',
+    JSON.stringify(lexicalHealthSites));
+
+  const propertyCycle = `
+const endpoint = { path: endpoint.path };
+const send = fetch;
+send(getApiUrl(endpoint.path));`;
+  const propertyCycleSites = fetchSites(propertyCycle);
+  check('fixture: a cyclic object-property alias is bounded and remains an unresolved fetch',
+    propertyCycleSites.length === 1 && propertyCycleSites[0].path === null,
+    JSON.stringify(propertyCycleSites));
+
+  const shadowedBuiltin = `
+const fetch = () => undefined;
+const send = fetch;
+send('/api/auth/login');
+function localTimeout(fetchWithTimeout: () => void) {
+  fetchWithTimeout('/api/auth/login');
+}`;
+  check('control: local functions named fetch/fetchWithTimeout are not inventoried as browser requests',
+    fetchSites(shadowedBuiltin).length === 0,
+    JSON.stringify(fetchSites(shadowedBuiltin)));
 }
 
 // The client is the only place the rule may live: no second copy may reappear

@@ -23,6 +23,47 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 
+// PR #188 CI exposed a WebKit-only race in §83's own oracle: the step counter
+// was visible while the tour's smooth scroll / measured-card placement was
+// still moving, so the test compared a transient pre-open box with the settled
+// hidden box and failed twice even though visibility:hidden, inert, click
+// blocking, and surface semantics all passed. Keep the exact geometry oracle,
+// but require its baseline to come from the bounded stability helper first.
+const section83Start = smoke.indexOf("section('83'");
+const section84Start = smoke.indexOf("section('84'", section83Start);
+const section83 = section83Start >= 0 && section84Start > section83Start
+  ? smoke.slice(section83Start, section84Start)
+  : '';
+const hasBoundedTimeStability = (source: string): boolean =>
+  /const stableTourControlRect = \(btn\)[\s\S]*const finish = \(value\)[\s\S]*clearTimeout\(deadlineTimer\)[\s\S]*cancelAnimationFrame\(raf\)[\s\S]*const deadlineTimer = setTimeout\(\(\) => finish\(null\), 8000\)[\s\S]*document\.fonts\.status === 'loaded'[\s\S]*stableSince = unchanged \? \(stableSince \?\? now\) : null[\s\S]*now - stableSince >= 500/.test(source);
+check('§83 defines a bounded, elapsed-time settled-geometry helper for its WebKit baseline',
+  hasBoundedTimeStability(section83));
+const frameCountMutant = section83
+  .replace('let stableSince = null;', 'let stableFrames = 0;')
+  .replace('stableSince = unchanged ? (stableSince ?? now) : null;', 'stableFrames = unchanged ? stableFrames + 1 : 0;')
+  .replace('stableSince !== null && now - stableSince >= 500', 'stableFrames >= 30');
+check('mutation: restoring the CI-throttled 30-frame gate fails the §83 elapsed-time contract',
+  !hasBoundedTimeStability(frameCountMutant));
+const rafOnlyDeadlineMutant = section83.replace(
+  'const deadlineTimer = setTimeout(() => finish(null), 8000);',
+  'const deadlineTimer = 0;',
+);
+check('mutation: removing the rAF-independent deadline timer fails the §83 bounded-wait contract',
+  !hasBoundedTimeStability(rafOnlyDeadlineMutant));
+const hasSettledBaselineBeforeOpen = (source: string): boolean => {
+  const stableBaseline = source.indexOf('const bbBefore = await stableTourControlRect(btn);');
+  const surfaceOpen = source.indexOf('await openSurface(p);');
+  return stableBaseline >= 0 && surfaceOpen >= 0 && stableBaseline < surfaceOpen;
+};
+check('§83 captures the settled tour-control baseline before opening each surface',
+  hasSettledBaselineBeforeOpen(section83));
+const unstabilizedMutant = section83.replace(
+  'const bbBefore = await stableTourControlRect(btn);',
+  'const bbBefore = await btn.boundingBox();',
+);
+check('mutation: restoring the transient boundingBox baseline fails the §83 stability contract',
+  !hasSettledBaselineBeforeOpen(unstabilizedMutant));
+
 // ── Invariant 1: one launch site, and it lives inside the helper ───────────
 const launchSites = [...smoke.matchAll(/webkit\.launch\(\)/g)];
 check('smoke.mjs calls webkit.launch() from exactly one place', launchSites.length === 1,

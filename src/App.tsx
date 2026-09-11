@@ -47,6 +47,7 @@ import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
 import { createAccountApi, describeRequestFailure, type AccountApi } from './utils/apiClient';
+import { isForgotPasswordSuccess, isLoginSuccess, isRegisterSuccess, isResetPasswordSuccess, isVerifySuccess } from './utils/authResponses';
 import { labelFor } from './utils/a11y';
 import { Walkthrough, type TourStep } from './components/Walkthrough';
 import { CAMERA, TRACE, moveCamera } from './components/PlotlyView';
@@ -119,6 +120,8 @@ import { DownloadModal } from './components/DownloadModal';
 import { OtherAccountsNotice } from './components/OtherAccountsNotice';
 import { AdminDashboard } from './components/AdminDashboard';
 import katex from 'katex';
+
+type AuthMode = 'login' | 'register' | 'verify' | 'forgot' | 'reset-password';
 
 /**
  * RED-APP-7/004: the four option-label inputs' native `maxLength={40}`
@@ -528,7 +531,15 @@ export default function App() {
 
   // Auth Modal States
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register' | 'verify' | 'forgot' | 'reset-password'>('login');
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+  /**
+   * A dialog session ends when the Account surface closes, reopens, or moves
+   * to another auth flow. A request key also ends the previous continuation
+   * when a new submit starts. Both are refs so the predicate passed to the
+   * account client observes the latest session even after an await.
+   */
+  const authDialogSessionRef = useRef(0);
+  const authRequestKeyRef = useRef(0);
   // Games saved on this device without an account, offered to the user who
   // just signed in (RED-DESKTOP-11/001: the server used to move them into
   // whichever account logged in next, unasked). null = nothing to offer.
@@ -688,7 +699,7 @@ export default function App() {
   const beginNeedsAuthSignIn = (kind: 'save' | 'edit') => {
     if (kind === 'save') { resumeSaveAfterAuthRef.current = true; setIsSaveModalOpen(false); }
     else { resumeEditAfterAuthRef.current = true; setIsEditModalOpen(false); }
-    setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true);
+    openAuthModal('login');
   };
   /**
    * OPUS-REVIEW-DESKTOP17 N3: dismissing the Account dialog WITHOUT signing
@@ -704,6 +715,7 @@ export default function App() {
    * the reviewed scope (N3 is Edit-only).
    */
   const dismissAuthModal = () => {
+    invalidateAuthDialogSession();
     setIsAuthModalOpen(false);
     setAuthError('');
     setAuthSuccess('');
@@ -940,6 +952,49 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authSuccess, setAuthSuccess] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+
+  const invalidateAuthDialogSession = () => {
+    authDialogSessionRef.current += 1;
+    authRequestKeyRef.current += 1;
+    // Closing or changing flow must release this session's disabled submit
+    // button immediately. An old request's finally is keyed below and cannot
+    // release a newer session after this point.
+    setAuthLoading(false);
+  };
+
+  const changeAuthMode = (mode: AuthMode, options: { clearCode?: boolean; clearPasswords?: boolean } = {}) => {
+    invalidateAuthDialogSession();
+    setAuthError('');
+    setAuthSuccess('');
+    if (options.clearCode) setAuthCode('');
+    if (options.clearPasswords) {
+      setAuthPassword('');
+      setAuthConfirmPassword('');
+    }
+    setAuthMode(mode);
+  };
+
+  const openAuthModal = (mode: AuthMode = 'login') => {
+    changeAuthMode(mode);
+    setIsAuthModalOpen(true);
+  };
+
+  const closeAuthModalAfterSuccess = () => {
+    // Keep the Save/Edit resume refs intact; the auth request itself is still
+    // invalidated so a late continuation cannot act after this close.
+    invalidateAuthDialogSession();
+    setIsAuthModalOpen(false);
+  };
+
+  const beginAuthRequest = () => {
+    const session = authDialogSessionRef.current;
+    const requestKey = ++authRequestKeyRef.current;
+    const isCurrent = () => authDialogSessionRef.current === session && authRequestKeyRef.current === requestKey;
+    return {
+      isStale: () => !isCurrent(),
+      finish: () => { if (isCurrent()) setAuthLoading(false); },
+    };
+  };
 
   // Fetch Session User and Games
   useEffect(() => {
@@ -3495,23 +3550,24 @@ export default function App() {
         setAuthLoading(false);
         return;
       }
+      const authRequest = beginAuthRequest();
       try {
-        const res = await fetch(getApiUrl('/api/auth/login'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authEmail, password: authPassword })
+        const res = await api.request('/api/auth/login', {
+          method: 'POST', token: null, json: { email: authEmail, password: authPassword },
+          isStale: authRequest.isStale,
         });
-        
-        let data;
-        try {
-          data = await res.json();
-        } catch (e) {
-          data = { error: `Server returned invalid response (Status ${res.status}).` };
-        }
+        const data = res.data;
 
-        if (res.ok) {
+        if (res.stale) return;
+        if (res.kind !== 'response' || !res.dataParsed) {
+          setAuthError('Connection error.');
+        } else if (res.ok && !isLoginSuccess(data)) {
+          // A parsed body still has to describe the server's login shape. Do
+          // not close the dialog or claim an identity for partial JSON.
+          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        } else if (res.ok) {
           updateAuthToken(data.token);
-          setIsAuthModalOpen(false);
+          closeAuthModalAfterSuccess();
           setAuthEmail('');
           setAuthPassword('');
           setLogEntries(prev => [...prev, `✓ Welcome back, @${data.user.username}! Connected to server database.`]);
@@ -3523,16 +3579,16 @@ export default function App() {
             setLocalGamesError('');
             setLocalGamesOffer({ count: localGames, token: data.token });
           }
-        } else if (data.needVerification) {
-          setAuthMode('verify');
+        } else if (data?.needVerification) {
+          changeAuthMode('verify');
           setAuthSuccess('Please complete email verification first.');
         } else {
-          setAuthError(data.error || 'Invalid credentials.');
+          setAuthError(data?.error || 'Invalid credentials.');
         }
-      } catch (err) {
+      } catch {
         setAuthError('Connection error.');
       } finally {
-        setAuthLoading(false);
+        authRequest.finish();
       }
     } else if (authMode === 'register') {
       if (!authUsername || !authEmail || !authPassword || !authConfirmPassword) {
@@ -3555,38 +3611,37 @@ export default function App() {
         return;
       }
 
+      const authRequest = beginAuthRequest();
       try {
-        const res = await fetch(getApiUrl('/api/auth/register'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: authUsername, email: authEmail, password: authPassword })
+        const res = await api.request('/api/auth/register', {
+          method: 'POST', token: null, json: { username: authUsername, email: authEmail, password: authPassword },
+          isStale: authRequest.isStale,
         });
-        
-        let data;
-        try {
-          data = await res.json();
-        } catch (e) {
-          data = { error: `Server returned invalid response (Status ${res.status}).` };
-        }
+        const data = res.data;
 
-        if (res.ok) {
+        if (res.stale) return;
+        if (res.kind !== 'response' || !res.dataParsed) {
+          setAuthError('Connection error.');
+        } else if (res.ok && !isRegisterSuccess(data)) {
+          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        } else if (res.ok) {
           if (data.autoVerified) {
-            setAuthMode('login');
+            changeAuthMode('login');
             setAuthSuccess(data.message || 'Account created successfully inside local database! You are ready to log in.');
           } else {
-            setAuthMode('verify');
+            changeAuthMode('verify');
             setAuthSuccess(data.message || 'Registration successful! A 6-digit confirmation code has been sent to your email address.');
             if (data.verificationCode) {
               setAuthCode(data.verificationCode);
             }
           }
         } else {
-          setAuthError(data.error || 'Registration failed.');
+          setAuthError(data?.error || 'Registration failed.');
         }
-      } catch (err) {
+      } catch {
         setAuthError('Connection error.');
       } finally {
-        setAuthLoading(false);
+        authRequest.finish();
       }
     } else if (authMode === 'verify') {
       if (!authCode) {
@@ -3594,31 +3649,30 @@ export default function App() {
         setAuthLoading(false);
         return;
       }
+      const authRequest = beginAuthRequest();
       try {
-        const res = await fetch(getApiUrl('/api/auth/verify'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authEmail, code: authCode })
+        const res = await api.request('/api/auth/verify', {
+          method: 'POST', token: null, json: { email: authEmail, code: authCode },
+          isStale: authRequest.isStale,
         });
+        const data = res.data;
 
-        let data;
-        try {
-          data = await res.json();
-        } catch (e) {
-          data = { error: `Server returned invalid response (Status ${res.status}).` };
-        }
-
-        if (res.ok) {
-          setAuthMode('login');
+        if (res.stale) return;
+        if (res.kind !== 'response' || !res.dataParsed) {
+          setAuthError('Connection error.');
+        } else if (res.ok && !isVerifySuccess(data)) {
+          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        } else if (res.ok) {
+          changeAuthMode('login');
           setAuthSuccess('Account verified successfully! You can now log in.');
           setAuthCode('');
         } else {
-          setAuthError(data.error || 'Incorrect confirmation code.');
+          setAuthError(data?.error || 'Incorrect confirmation code.');
         }
-      } catch (err) {
+      } catch {
         setAuthError('Connection error.');
       } finally {
-        setAuthLoading(false);
+        authRequest.finish();
       }
     } else if (authMode === 'forgot') {
       if (!authEmail) {
@@ -3626,31 +3680,30 @@ export default function App() {
         setAuthLoading(false);
         return;
       }
+      const authRequest = beginAuthRequest();
       try {
-        const res = await fetch(getApiUrl('/api/auth/forgot-password'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authEmail })
+        const res = await api.request('/api/auth/forgot-password', {
+          method: 'POST', token: null, json: { email: authEmail },
+          isStale: authRequest.isStale,
         });
+        const data = res.data;
 
-        let data;
-        try {
-          data = await res.json();
-        } catch (e) {
-          data = { error: `Server returned invalid response (Status ${res.status}).` };
-        }
-
-        if (res.ok) {
-          setAuthMode('reset-password');
+        if (res.stale) return;
+        if (res.kind !== 'response' || !res.dataParsed) {
+          setAuthError('Connection error.');
+        } else if (res.ok && !isForgotPasswordSuccess(data)) {
+          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        } else if (res.ok) {
+          changeAuthMode('reset-password');
           setAuthSuccess(data.message || 'Recovery code sent! Check your email.');
           if (data.recoveryCode) setAuthCode(data.recoveryCode);
         } else {
-          setAuthError(data.error || 'Failed to send recovery code.');
+          setAuthError(data?.error || 'Failed to send recovery code.');
         }
-      } catch (err) {
+      } catch {
         setAuthError('Connection error.');
       } finally {
-        setAuthLoading(false);
+        authRequest.finish();
       }
     } else if (authMode === 'reset-password') {
       if (!authCode || !authPassword || !authConfirmPassword) {
@@ -3669,33 +3722,32 @@ export default function App() {
         setAuthLoading(false);
         return;
       }
+      const authRequest = beginAuthRequest();
       try {
-        const res = await fetch(getApiUrl('/api/auth/reset-password'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authEmail, code: authCode, newPassword: authPassword })
+        const res = await api.request('/api/auth/reset-password', {
+          method: 'POST', token: null, json: { email: authEmail, code: authCode, newPassword: authPassword },
+          isStale: authRequest.isStale,
         });
+        const data = res.data;
 
-        let data;
-        try {
-          data = await res.json();
-        } catch (e) {
-          data = { error: `Server returned invalid response (Status ${res.status}).` };
-        }
-
-        if (res.ok) {
-          setAuthMode('login');
+        if (res.stale) return;
+        if (res.kind !== 'response' || !res.dataParsed) {
+          setAuthError('Connection error.');
+        } else if (res.ok && !isResetPasswordSuccess(data)) {
+          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        } else if (res.ok) {
+          changeAuthMode('login');
           setAuthSuccess(data.message || 'Password reset successfully! You can now log in.');
           setAuthCode('');
           setAuthPassword('');
           setAuthConfirmPassword('');
         } else {
-          setAuthError(data.error || 'Failed to reset password.');
+          setAuthError(data?.error || 'Failed to reset password.');
         }
-      } catch (err) {
+      } catch {
         setAuthError('Connection error.');
       } finally {
-        setAuthLoading(false);
+        authRequest.finish();
       }
     }
   };
@@ -5038,7 +5090,7 @@ export default function App() {
               ) : (
                 <button
                   data-focus-fallback="account"
-                  onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
+                  onClick={() => openAuthModal('login')}
                   className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5" /> Sign In<span className="hidden sm:inline">&nbsp;/ Sign Up</span>
@@ -5081,7 +5133,7 @@ export default function App() {
               ) : (
                 <button
                   data-focus-fallback="account"
-                  onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); setIsAuthModalOpen(true); }}
+                  onClick={() => openAuthModal('login')}
                   className="inline-flex items-center gap-1.5 bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl transition-all shadow-xs cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5" /> Sign In / Sign Up
@@ -5177,10 +5229,7 @@ export default function App() {
               onEdit={openEditGame}
               onDelete={handleDeleteGame}
               onSignIn={() => {
-                setAuthError('');
-                setAuthSuccess('');
-                setAuthMode('login');
-                setIsAuthModalOpen(true);
+                openAuthModal('login');
               }}
               isDark={darkMode}
               variant="sidebar"
@@ -6580,7 +6629,7 @@ export default function App() {
                   <span>
                     Don't have an account?{' '}
                     <button
-                      onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('register'); }}
+                      onClick={() => changeAuthMode('register')}
                       className="font-bold text-accent-600 hover:underline cursor-pointer"
                     >
                       Sign Up
@@ -6588,7 +6637,7 @@ export default function App() {
                   </span>
                   <span>
                     <button
-                      onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthCode(''); setAuthMode('forgot'); }}
+                      onClick={() => changeAuthMode('forgot', { clearCode: true })}
                       className="font-bold text-orange-500 hover:underline cursor-pointer"
                     >
                       Forgot your password?
@@ -6599,7 +6648,7 @@ export default function App() {
                 <span>
                   Already have an account?{' '}
                   <button
-                    onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('login'); }}
+                    onClick={() => changeAuthMode('login')}
                     className="font-bold text-accent-600 hover:underline cursor-pointer"
                   >
                     Log In
@@ -6609,7 +6658,7 @@ export default function App() {
                 <span>
                   Remember your password?{' '}
                   <button
-                    onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthCode(''); setAuthPassword(''); setAuthConfirmPassword(''); setAuthMode('login'); }}
+                    onClick={() => changeAuthMode('login', { clearCode: true, clearPasswords: true })}
                     className="font-bold text-accent-600 hover:underline cursor-pointer"
                   >
                     Back to Login
@@ -6619,7 +6668,7 @@ export default function App() {
                 <span>
                   Back to{' '}
                   <button
-                    onClick={() => { setAuthError(''); setAuthSuccess(''); setAuthMode('register'); }}
+                    onClick={() => changeAuthMode('register')}
                     className="font-bold text-accent-600 hover:underline cursor-pointer"
                   >
                     Registration
@@ -7281,10 +7330,7 @@ export default function App() {
         isDark={darkMode}
         onLogout={handleLogout}
         onOpenAuth={() => {
-          setAuthError('');
-          setAuthSuccess('');
-          setAuthMode('login');
-          setIsAuthModalOpen(true);
+          openAuthModal('login');
         }}
         getApiUrl={getApiUrl}
         dbMode={dbMode}
