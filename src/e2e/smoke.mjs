@@ -9311,26 +9311,33 @@ try {
           const response = await fetch('/api/games', { headers, signal: controller.signal });
           let body = null;
           try { body = await response.json(); } catch { /* the readback reports parse=false */ }
-          const found = Array.isArray(body)
-            && body.some((game) => game?.id === wantedId && game?.name === wantedName);
-          return { ok: response.ok, status: response.status, parsed: Array.isArray(body), found };
+          const matches = Array.isArray(body)
+            ? body.filter((game) => game?.id === wantedId && game?.name === wantedName).length
+            : 0;
+          const nameMatches = Array.isArray(body)
+            ? body.filter((game) => game?.name === wantedName).length
+            : 0;
+          return { ok: response.ok, status: response.status, parsed: Array.isArray(body), found: matches > 0, matches, nameMatches };
         } catch {
-          return { ok: false, status: 0, parsed: false, found: false };
+          return { ok: false, status: 0, parsed: false, found: false, matches: 0, nameMatches: 0 };
         } finally {
           clearTimeout(deadlineTimer);
         }
       }, { id, name, token });
     };
-    const submitOrdinarySave = async (p, name) => {
-      await p.getByRole('button', { name: /save preset/i }).click();
-      const dialog = p.getByRole('dialog', { name: 'Save custom game' });
-      await dialog.waitFor({ state: 'visible', timeout: 5000 });
+    const fillOrdinarySaveDialog = async (dialog, name) => {
       await dialog.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(name);
       await dialog.locator('textarea').fill('A hand-typed ordinary description about a distinct game with no requested AI explanation.');
       await dialog.locator('input[placeholder="e.g. Undercut"]').fill('Ordinary row one');
       await dialog.locator('input[placeholder="e.g. Hold price"]').fill('Ordinary row two');
       await dialog.locator('input[placeholder="e.g. Match"]').fill('Ordinary column one');
       await dialog.locator('input[placeholder="e.g. Ignore"]').fill('Ordinary column two');
+    };
+    const submitOrdinarySave = async (p, name) => {
+      await p.getByRole('button', { name: /save preset/i }).click();
+      const dialog = p.getByRole('dialog', { name: 'Save custom game' });
+      await dialog.waitFor({ state: 'visible', timeout: 5000 });
+      await fillOrdinarySaveDialog(dialog, name);
       const saved = p.waitForResponse((r) => /\/api\/games$/.test(r.url()) && r.request().method() === 'POST', { timeout: 15000 });
       await dialog.getByRole('button', { name: /save game profile/i }).click();
       const response = await saved.catch(() => null);
@@ -9369,11 +9376,85 @@ try {
       `saved=${cancelOrdinarySave.saved} readback=${cancelOrdinarySave.readback} noReport=${await cancelNoReportDuring && cancelNoReportAfter} reports=${cancelReports}`);
     await cancelPage.close();
 
-    // A close must retire Edit synchronously, not in the useEffect that runs
-    // after React paints the closed dialog. Resolve a mocked PATCH in the
-    // microtask immediately after the Cancel click, before effects can run:
-    // the old implementation accepted this response, replaced the saved row,
-    // and appended a success log despite the user's cancellation.
+    // A POST can be committed before its response reaches the client. Hold
+    // exactly there: cancellation must be unavailable until the result is
+    // reconciled, or reopening Save can mint another idempotency key and
+    // duplicate a write the user never saw complete.
+    const heldSavePage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(heldSavePage, 'e2e91heldsave');
+    await heldSavePage.evaluate(() => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = async (input, init = {}) => {
+        const requestUrl = typeof input === 'string' ? input : input.url;
+        const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method) || 'GET').toUpperCase();
+        if (method === 'POST' && new URL(requestUrl, location.href).pathname === '/api/games') {
+          const response = await nativeFetch(input, init);
+          window.__e2e91HeldSaveCommitted = true;
+          return new Promise((resolve) => { window.__e2e91ReleaseHeldSave = () => resolve(response); });
+        }
+        return nativeFetch(input, init);
+      };
+    });
+    const heldSaveName = 'E2E 91 committed held Save';
+    await heldSavePage.getByRole('button', { name: /save preset/i }).click();
+    const heldSaveDialog = heldSavePage.getByRole('dialog', { name: 'Save custom game' });
+    await heldSaveDialog.waitFor({ state: 'visible', timeout: 5000 });
+    await fillOrdinarySaveDialog(heldSaveDialog, heldSaveName);
+    const heldSaveResponsePromise = heldSavePage.waitForResponse(
+      (r) => /\/api\/games$/.test(r.url()) && r.request().method() === 'POST', { timeout: 15000 },
+    );
+    await heldSaveDialog.getByRole('button', { name: /save game profile/i }).click();
+    const heldSaveCommitted = await heldSavePage.waitForFunction(
+      () => window.__e2e91HeldSaveCommitted === true && typeof window.__e2e91ReleaseHeldSave === 'function',
+      null, { timeout: 8000 },
+    ).then(() => true).catch(() => false);
+    const heldSaveCancel = heldSaveDialog.getByRole('button', { name: /^cancel$/i });
+    const heldSaveClose = heldSaveDialog.getByRole('button', { name: 'Close dialog', exact: true });
+    const heldSaveControlsLocked = heldSaveCommitted
+      && await heldSaveCancel.isDisabled() && await heldSaveClose.isDisabled();
+    record('precondition: a server-committed Save response is held while both dismissal controls are locked',
+      heldSaveCommitted && heldSaveControlsLocked,
+      `committed=${heldSaveCommitted} controlsLocked=${heldSaveControlsLocked}`);
+    if (heldSaveCommitted) {
+      await heldSaveDialog.screenshot({ path: '/tmp/e2e91-save-write-locked-before.png' });
+      const saveStayedOpen = heldSavePage.waitForFunction(
+        () => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
+        null, { timeout: 750 },
+      ).then(() => false).catch((e) => e?.name === 'TimeoutError');
+      await heldSavePage.keyboard.press('Escape');
+      await heldSavePage.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"][aria-label="Save custom game"]');
+        const cancel = [...(dialog?.querySelectorAll('button') ?? [])]
+          .find((button) => /^cancel$/i.test(button.textContent?.trim() ?? ''));
+        cancel?.click();
+      });
+      const dismissalBlocked = await saveStayedOpen;
+      const released = await heldSavePage.evaluate(() => {
+        const release = window.__e2e91ReleaseHeldSave;
+        if (typeof release !== 'function') return false;
+        release();
+        return true;
+      });
+      const heldSaveResponse = await heldSaveResponsePromise.catch(() => null);
+      let heldSaveBody = null;
+      try { heldSaveBody = heldSaveResponse ? await heldSaveResponse.json() : null; } catch { /* parsed below */ }
+      const heldSaveId = heldSaveBody?.game?.id ?? null;
+      const heldSaveClosed = await heldSaveDialog.waitFor({ state: 'hidden', timeout: 8000 }).then(() => true).catch(() => false);
+      const heldSaveReadback = heldSaveId
+        ? await readBackSavedGame(heldSavePage, heldSaveId, heldSaveName)
+        : null;
+      const heldSaveSuccessLogs = await heldSavePage.getByText(`✓ Saved custom game "${heldSaveName}" successfully!`, { exact: true }).count();
+      await heldSavePage.screenshot({ path: '/tmp/e2e91-save-write-locked-after.png', fullPage: true });
+      record('FIX: an in-flight Save cannot be dismissed and its committed result is reconciled exactly once',
+        dismissalBlocked && released && heldSaveResponse?.ok() === true && heldSaveBody?.success === true
+          && heldSaveClosed && heldSaveReadback?.matches === 1 && heldSaveReadback?.nameMatches === 1 && heldSaveSuccessLogs === 1,
+        `blocked=${dismissalBlocked} released=${released} response=${heldSaveResponse?.status() ?? 'none'} closed=${heldSaveClosed} matches=${heldSaveReadback?.matches ?? 0} nameMatches=${heldSaveReadback?.nameMatches ?? 0} successLogs=${heldSaveSuccessLogs}`);
+    }
+    await heldSavePage.close();
+
+    // PATCH has the same irreversible boundary. Trigger Cancel and release a
+    // server-committed response in the same browser task: the disabled close
+    // path must do nothing, and the eventual result must be reconciled once.
     const cancelEditPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(cancelEditPage, 'e2e91editcancel');
     const cancelEditBaseName = 'E2E 91 cancelled edit base';
@@ -9389,26 +9470,23 @@ try {
       await lateEditDialog.waitFor({ state: 'visible', timeout: 5000 });
       const cancelledEditName = 'E2E 91 response after Edit Cancel';
       await lateEditDialog.locator('input[type="text"]').first().fill(cancelledEditName);
-      await cancelEditPage.evaluate(({ game, name }) => {
+      await cancelEditPage.evaluate(() => {
         const nativeFetch = window.fetch.bind(window);
-        window.fetch = (input, init = {}) => {
+        window.fetch = async (input, init = {}) => {
           const requestUrl = typeof input === 'string' ? input : input.url;
           const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method) || 'GET').toUpperCase();
           if (method === 'PATCH' && new URL(requestUrl, location.href).pathname.startsWith('/api/games/')) {
+            const response = await nativeFetch(input, init);
             window.__e2e91PatchSeen = true;
             return new Promise((resolve) => {
               window.__e2e91ResolvePatch = () => {
-                const response = new Response(JSON.stringify({
-                  success: true,
-                  game: { ...game, name },
-                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
                 const parseJson = response.json.bind(response);
                 Object.defineProperty(response, 'json', { value: async () => {
                   const body = await parseJson();
                   // The application has now crossed its final asynchronous
                   // transport boundary. Its stale/commit branch runs in the
                   // following microtask, which the bounded observer below
-                  // must outlive before declaring cancellation successful.
+                  // must outlive before declaring reconciliation complete.
                   window.__e2e91PatchBodyReadAt = performance.now();
                   return body;
                 } });
@@ -9418,7 +9496,7 @@ try {
           }
           return nativeFetch(input, init);
         };
-      }, { game: cancelEditBase.body.game, name: cancelledEditName });
+      });
       await lateEditDialog.getByRole('button', { name: /save changes/i }).click();
       const patchHeld = await cancelEditPage.waitForFunction(
         () => window.__e2e91PatchSeen === true && typeof window.__e2e91ResolvePatch === 'function',
@@ -9427,10 +9505,10 @@ try {
       record('precondition: the Edit PATCH response is held until the cancellation task releases it', patchHeld);
       if (patchHeld) {
         await lateEditDialog.screenshot({ path: '/tmp/e2e91-edit-cancel-before.png' });
+        const editCancelDisabled = await lateEditDialog.getByRole('button', { name: /^cancel$/i }).isDisabled();
         // Arm the observer BEFORE the held response is released. It waits for
         // the response body to be consumed, then polls through a bounded
-        // stability window; a late row/log commit returns an immediate red
-        // result, while a missing settlement times out red as well.
+        // stability window for the one reconciled row/log result.
         const cancellationOutcomePromise = cancelEditPage.waitForFunction(
           ({ oldName, lateName, successText, stableForMs }) => {
             const bodyReadAt = window.__e2e91PatchBodyReadAt;
@@ -9443,7 +9521,7 @@ try {
             const lateRowAdded = exactButtonExists(lateName);
             const successLogCount = [...document.querySelectorAll('p')]
               .filter((line) => line.textContent?.trim() === successText).length;
-            const ok = oldRowKept && !lateRowAdded && successLogCount === 0;
+            const ok = !oldRowKept && lateRowAdded && successLogCount === 1;
             if (!ok || performance.now() - bodyReadAt >= stableForMs) {
               return { ok, dialogClosed, oldRowKept, lateRowAdded, successLogCount };
             }
@@ -9468,10 +9546,13 @@ try {
           return true;
         });
         const cancellationOutcome = await cancellationOutcomePromise;
+        const reconciledReadback = cancelEditBase.id
+          ? await readBackSavedGame(cancelEditPage, cancelEditBase.id, cancelledEditName)
+          : null;
         await cancelEditPage.screenshot({ path: '/tmp/e2e91-edit-cancel-after.png', fullPage: true });
-        record('FIX: cancelling before Edit settles keeps the old row and appends no success log',
-          cancelledAndReleased && cancellationOutcome?.ok === true,
-          `released=${cancelledAndReleased} settled=${!!cancellationOutcome} closed=${cancellationOutcome?.dialogClosed ?? false} old=${cancellationOutcome?.oldRowKept ?? false} late=${cancellationOutcome?.lateRowAdded ?? false} successLogs=${cancellationOutcome?.successLogCount ?? 'timeout'}`);
+        record('FIX: in-flight Edit dismissal is blocked and the committed PATCH is reconciled exactly once',
+          editCancelDisabled && cancelledAndReleased && cancellationOutcome?.ok === true && reconciledReadback?.matches === 1,
+          `disabled=${editCancelDisabled} released=${cancelledAndReleased} settled=${!!cancellationOutcome} closed=${cancellationOutcome?.dialogClosed ?? false} old=${cancellationOutcome?.oldRowKept ?? false} late=${cancellationOutcome?.lateRowAdded ?? false} matches=${reconciledReadback?.matches ?? 0} successLogs=${cancellationOutcome?.successLogCount ?? 'timeout'}`);
       }
     }
     await cancelEditPage.close();
@@ -9492,8 +9573,12 @@ try {
       await account.waitFor({ state: 'visible', timeout: 5000 });
       await account.getByRole('button', { name: 'Close dialog', exact: true }).click();
       await account.waitFor({ state: 'hidden', timeout: 5000 });
+      const abandonedSaveStayedClosed = await abandonPage.waitForFunction(
+        () => !!document.querySelector('[role="dialog"][aria-label="Save custom game"]'),
+        null, { timeout: 1500 },
+      ).then(() => false).catch((e) => e?.name === 'TimeoutError');
       record('precondition: dismissing auth does not reopen the abandoned Save dialog',
-        !(await abandonedDialog.isVisible().catch(() => false)));
+        abandonedSaveStayedClosed);
       await abandonPage.getByRole('button', { name: /^sign in\s*\/\s*sign up$/i }).first().click();
       await abandonPage.locator('[role="dialog"][aria-label="Account"]').waitFor({ state: 'visible', timeout: 5000 });
       await signUpFromOpenAccount(abandonPage, 'e2e91abandon');

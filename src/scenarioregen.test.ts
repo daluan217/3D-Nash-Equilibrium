@@ -599,10 +599,13 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     /const dialogSessionId = beginEditDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'edit', gameId: existing\.id \}/.test(source);
   const savePrefillStoresOwnSession = (source: string): boolean =>
     /const dialogSessionId = beginSaveDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'save', payoffs \}/.test(source);
-  const startsIndependentSaveSession = (source: string): boolean =>
-    /saveRequestIdRef\.current\s*=\s*null;/.test(source)
-    && /saveInFlightRef\.current\s*=\s*false;/.test(source)
-    && /setSaveLoading\(false\);/.test(source);
+  const startsIndependentSaveSession = (source: string): boolean => {
+    const activeGuard = source.indexOf('if (saveInFlightRef.current) {');
+    const requestReset = source.indexOf('saveRequestIdRef.current = null;');
+    return activeGuard >= 0 && requestReset > activeGuard
+      && /saveInFlightRef\.current\s*=\s*false;/.test(source)
+      && /setSaveLoading\(false\);/.test(source);
+  };
   const validSavedGame = {
     id: 'g-fixture',
     name: 'Fixture game',
@@ -639,7 +642,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     wrongSaveNonce !== suggestedSave && !savePrefillStoresOwnSession(wrongSaveNonce));
   required('a fresh ordinary Save starts a new session before opening',
     /onClick=\{\(\) => \{[\s\S]*?beginSaveDialogSession\(\);[\s\S]*?openSaveFormForBoard\(\);[\s\S]*?setIsSaveModalOpen\(true\);[\s\S]*?data-focus-fallback="save-preset"/.test(code));
-  required('every new Save session invalidates an older POST and releases its own loading state',
+  required('a new Save session preserves an active POST; otherwise it retires the prior attempt and loading state',
     startsIndependentSaveSession(beginSave));
   const saveSessionWithoutRequestInvalidation = beginSave.replace(/saveRequestIdRef\.current\s*=\s*null;/, '');
   check('mutation: keeping the prior Save request id fails the fresh-session boundary',
@@ -653,6 +656,10 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('mutation: inheriting the old synchronous Save owner fails the fresh-session boundary',
     saveSessionWithoutOwnerRelease !== beginSave
     && !startsIndependentSaveSession(saveSessionWithoutOwnerRelease));
+  const saveSessionWithoutActiveGuard = beginSave.replace('if (saveInFlightRef.current) {', 'if (false) {');
+  check('mutation: allowing a fresh Save session to replace an active POST owner fails the boundary',
+    saveSessionWithoutActiveGuard !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutActiveGuard));
   const generateGuardedFromSave = (source: string): boolean => {
     const guard = source.indexOf('if (generateGameInFlightRef.current || saveInFlightRef.current || saveLoading) return;');
     const firstMutation = source.indexOf('setGenerateLoading(true);');
@@ -687,6 +694,20 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const saveWithoutGenerateGuard = saveHandler.replace(' || generateGameInFlightRef.current', '');
   check('mutation: removing the Save handler Generate guard fails the write-exclusion contract',
     saveWithoutGenerateGuard !== saveHandler && !saveRejectsGenerateBeforeMutation(saveWithoutGenerateGuard));
+  const editOwnsWriteUntilReconciled = (source: string): boolean => {
+    const guard = source.indexOf('if (editInFlightRef.current) return;');
+    const claim = source.indexOf('editInFlightRef.current = true;');
+    const release = /if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*editInFlightRef\.current = false;\s*setEditLoading\(false\);\s*\}/.test(source);
+    return guard >= 0 && claim > guard && release;
+  };
+  required('Edit synchronously owns its PATCH until the current result is reconciled',
+    editOwnsWriteUntilReconciled(editHandler));
+  const editWithoutWriteClaim = editHandler.replace('editInFlightRef.current = true;', '');
+  check('mutation: removing Edit write ownership fails the reconciliation contract',
+    editWithoutWriteClaim !== editHandler && !editOwnsWriteUntilReconciled(editWithoutWriteClaim));
+  const editWithoutWriteRelease = editHandler.replace('editInFlightRef.current = false;', '');
+  check('mutation: removing Edit ownership release fails the reconciliation contract',
+    editWithoutWriteRelease !== editHandler && !editOwnsWriteUntilReconciled(editWithoutWriteRelease));
   const generateClick = code.indexOf('onClick={handleGenerateGame}');
   const generateTagStart = code.lastIndexOf('<button', generateClick);
   const generateTagEnd = code.indexOf('>', generateClick);
@@ -715,6 +736,9 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const saveButtonWithoutGenerate = saveSubmitTag.replace(/\s*\|\|\s*generateLoading/, '');
   check('mutation: removing generateLoading from Save disabled state fails the control guard',
     saveButtonWithoutGenerate !== saveSubmitTag && !saveButtonBlocksGenerate(saveButtonWithoutGenerate));
+  required('Save and Edit dismissal controls are disabled while an irreversible write is active',
+    (code.match(/onClick=\{cancelSaveDialog\}\s*disabled=\{saveLoading\}/g) ?? []).length === 2
+    && (code.match(/onClick=\{cancelEditDialog\}[\s\S]{0,80}?disabled=\{editLoading\}/g) ?? []).length === 2);
   required('a fresh ordinary Edit starts a new session before opening',
     /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
   required('auth resume closes and reopens the same dialog without abandoning it',
@@ -728,8 +752,20 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     && dismiss.indexOf('abandonExplanationDialogSession();') < dismiss.indexOf('if (resumeEditAfterAuthRef.current)'));
   required('the abandonment helper clears the pending value and both dialog sessions',
     /regenExplanationAfterSaveRef\.current = null;[\s\S]*saveDialogSessionRef\.current = null;[\s\S]*editDialogSessionRef\.current = null;/.test(abandon));
-  required('Save and Edit cancel handlers synchronously abandon the session',
-    /abandonExplanationDialogSession\(\);/.test(cancelSave)
+  const saveCancelPreservesActiveWrite = (source: string): boolean => {
+    const guard = source.indexOf('if (saveInFlightRef.current) return;');
+    const requestReset = source.indexOf('saveRequestIdRef.current = null;');
+    return guard >= 0 && requestReset > guard;
+  };
+  const editCancelPreservesActiveWrite = (source: string): boolean => {
+    const guard = source.indexOf('if (editInFlightRef.current) return;');
+    const sessionReset = source.indexOf('editSessionRef.current += 1;');
+    return guard >= 0 && sessionReset > guard;
+  };
+  required('Save and Edit cancel handlers block active writes, then synchronously abandon idle sessions',
+    saveCancelPreservesActiveWrite(cancelSave)
+    && editCancelPreservesActiveWrite(cancelEdit)
+    && /abandonExplanationDialogSession\(\);/.test(cancelSave)
     && /editSessionRef\.current \+= 1;\s*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);/.test(cancelEdit)
     && /onClose=\{cancelSaveDialog\}/.test(code) && /onClose=\{cancelEditDialog\}/.test(code)
     && (code.match(/onClick=\{cancelSaveDialog\}/g) ?? []).length >= 2
@@ -741,8 +777,11 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     && /generateGameGenerationRef\.current \+= 1;/.test(source)
     && /generateGameInFlightRef\.current = false;/.test(source)
     && /setGenerateLoading\(false\);/.test(source);
-  required('Save cancellation retires both an active POST response and an active Generate response',
+  required('idle Save cancellation retires its attempt and active Generate only after preserving an active POST',
     cancelRetiresSaveAndGenerate(cancelSave));
+  const cancelSaveWithoutWriteGuard = cancelSave.replace('if (saveInFlightRef.current) return;', '');
+  check('mutation: allowing Cancel to retire an active Save POST fails the ownership contract',
+    cancelSaveWithoutWriteGuard !== cancelSave && !saveCancelPreservesActiveWrite(cancelSaveWithoutWriteGuard));
   const cancelWithoutSaveRetirement = cancelSave.replace(/saveRequestIdRef\.current\s*=\s*null;/, '');
   check('mutation: removing Save-request retirement from Cancel fails the abandonment contract',
     cancelWithoutSaveRetirement !== cancelSave && !cancelRetiresSaveAndGenerate(cancelWithoutSaveRetirement));
@@ -753,6 +792,9 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('mutation: removing PATCH-session retirement from Edit Cancel fails the abandonment contract',
     cancelEditWithoutPatchRetirement !== cancelEdit
     && !/editSessionRef\.current \+= 1;\s*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);/.test(cancelEditWithoutPatchRetirement));
+  const cancelEditWithoutWriteGuard = cancelEdit.replace('if (editInFlightRef.current) return;', '');
+  check('mutation: allowing Cancel to hide an active Edit PATCH fails the ownership contract',
+    cancelEditWithoutWriteGuard !== cancelEdit && !editCancelPreservesActiveWrite(cancelEditWithoutWriteGuard));
   required('dismissing an auth detour abandons an in-flight Generate only when it abandons Save',
     /const abandoningSave = resumeSaveAfterAuthRef\.current;[\s\S]*resumeSaveAfterAuthRef\.current = false;[\s\S]*if \(abandoningSave\) \{\s*generateGameGenerationRef\.current \+= 1;\s*generateGameInFlightRef\.current = false;\s*setGenerateLoading\(false\);\s*\}/.test(dismiss));
   required('consume clears before comparing nonce and RegenKey',
@@ -832,6 +874,32 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('mutation: removing readback timer cleanup fails the §91 deadline guard',
     !readbackIsBounded(noReadbackCleanupMutant));
 
+  const heldSaveRace = between(rawSection91, 'const heldSavePage = await', 'await heldSavePage.close();');
+  const reconcilesHeldSaveExactlyOnce = (source: string): boolean => {
+    const serverCommit = source.indexOf('const response = await nativeFetch(input, init);');
+    const hold = source.indexOf('window.__e2e91HeldSaveCommitted = true;');
+    const absenceObserver = source.indexOf('const saveStayedOpen = heldSavePage.waitForFunction(');
+    const cancelAttempt = source.indexOf('await heldSavePage.evaluate(() => {', absenceObserver);
+    return serverCommit >= 0 && hold > serverCommit && absenceObserver > hold && cancelAttempt > absenceObserver
+      && /await heldSaveCancel\.isDisabled\(\) && await heldSaveClose\.isDisabled\(\)/.test(source)
+      && /\.then\(\(\) => false\)\.catch\(\(e\) => e\?\.name === 'TimeoutError'\)/.test(source)
+      && /await heldSavePage\.keyboard\.press\('Escape'\)/.test(source)
+      && /heldSaveReadback\?\.matches === 1/.test(source)
+      && /heldSaveReadback\?\.nameMatches === 1/.test(source)
+      && /heldSaveSuccessLogs === 1/.test(source);
+  };
+  required('§91 holds a server-committed Save response, blocks dismissal, and reconciles exactly one row/log',
+    reconcilesHeldSaveExactlyOnce(heldSaveRace));
+  const heldSaveWithoutDisabledGate = heldSaveRace.replace(
+    'await heldSaveCancel.isDisabled() && await heldSaveClose.isDisabled()',
+    'true',
+  );
+  check('mutation: dropping the held-Save disabled-control gate fails the reconciliation oracle',
+    heldSaveWithoutDisabledGate !== heldSaveRace && !reconcilesHeldSaveExactlyOnce(heldSaveWithoutDisabledGate));
+  const heldSaveWithoutExactReadback = heldSaveRace.replace('heldSaveReadback?.nameMatches === 1', 'heldSaveReadback?.found');
+  check('mutation: weakening exact-one-by-name Save readback to mere presence fails the duplicate guard',
+    heldSaveWithoutExactReadback !== heldSaveRace && !reconcilesHeldSaveExactlyOnce(heldSaveWithoutExactReadback));
+
   const editCancelRace = between(rawSection91, 'const cancelEditPage = await', 'await cancelEditPage.close();');
   const hasPrearmedEditCancelObserver = (source: string): boolean => {
     const observer = source.indexOf('const cancellationOutcomePromise = cancelEditPage.waitForFunction(');
@@ -841,11 +909,14 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
       && /typeof bodyReadAt !== 'number'/.test(source)
       && /performance\.now\(\) - bodyReadAt >= stableForMs/.test(source)
       && /\{ timeout: 5000, polling: 'raf' \}/.test(source)
+      && /const ok = !oldRowKept && lateRowAdded && successLogCount === 1/.test(source)
+      && /editCancelDisabled && cancelledAndReleased/.test(source)
       && /cancellationOutcome\?\.ok === true/.test(source)
+      && /reconciledReadback\?\.matches === 1/.test(source)
       && !/requestAnimationFrame\(\(\) => requestAnimationFrame\(resolve\)\)/.test(source)
       && !/\.isVisible\(\{ timeout:/.test(source);
   };
-  required('§91 pre-arms a bounded post-body-read Edit-cancel observer before releasing the PATCH',
+  required('§91 pre-arms a bounded observer and reconciles an Edit PATCH whose dismissal was blocked',
     hasPrearmedEditCancelObserver(editCancelRace));
   const editCancelWithoutBodyRead = editCancelRace.replace('__e2e91PatchBodyReadAt = performance.now();', '');
   check('mutation: removing the PATCH body-read settlement signal fails the Edit-cancel oracle guard',
@@ -856,6 +927,23 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   );
   check('mutation: removing the named pre-release observer fails the Edit-cancel oracle guard',
     editCancelWithoutPrearm !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutPrearm));
+  const editCancelWithoutDisabledGate = editCancelRace.replace('editCancelDisabled && cancelledAndReleased', 'cancelledAndReleased');
+  check('mutation: dropping the Edit disabled-control gate fails the reconciliation oracle',
+    editCancelWithoutDisabledGate !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutDisabledGate));
+
+  const abandonSaveRace = between(rawSection91, 'const abandonPage = await', 'await abandonPage.close();');
+  const observesAbandonedSaveAbsence = (source: string): boolean =>
+    /const abandonedSaveStayedClosed = await abandonPage\.waitForFunction\([\s\S]*Save custom game[\s\S]*\{ timeout: 1500 \}[\s\S]*\.then\(\(\) => false\)\.catch\(\(e\) => e\?\.name === 'TimeoutError'\)/.test(source)
+    && /dismissing auth does not reopen the abandoned Save dialog',[\s\S]*abandonedSaveStayedClosed/.test(source)
+    && !/abandonedDialog\.isVisible/.test(source);
+  required('§91 observes the abandoned Save dialog for a bounded no-reappearance window',
+    observesAbandonedSaveAbsence(abandonSaveRace));
+  const abandonSaveSnapshotMutant = abandonSaveRace.replace(
+    'abandonedSaveStayedClosed);',
+    '!(await abandonedDialog.isVisible().catch(() => false)));',
+  );
+  check('mutation: replacing the bounded abandoned-Save observer with a snapshot fails its guard',
+    abandonSaveSnapshotMutant !== abandonSaveRace && !observesAbandonedSaveAbsence(abandonSaveSnapshotMutant));
 
   const editAuthRace = between(rawSection91, 'const editPage = await', 'await editPage.close();');
   const preservesEditDraftAcrossAuth = (source: string): boolean => {

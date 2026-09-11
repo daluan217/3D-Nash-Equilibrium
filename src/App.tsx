@@ -666,6 +666,9 @@ export default function App() {
   // silently reintroduce a stale `true` from a previous, unrelated failure.
   const [editErrorNeedsAuth, setEditErrorNeedsAuth] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
+  // Synchronous owner for an Edit PATCH. The loading state disables visible
+  // controls; this ref also closes the same-tick submit/cancel boundary.
+  const editInFlightRef = useRef(false);
   const [saveError, setSaveError] = useState('');
   // Same invariant as `editErrorNeedsAuth` above (never reset alone; always
   // set alongside a non-empty `saveError`; read only behind one).
@@ -736,6 +739,12 @@ export default function App() {
     return explanationDialogSessionSeqRef.current;
   };
   const beginSaveDialogSession = () => {
+    // A POST cannot be recalled once submitted. Keep its dialog, request id,
+    // and form ownership until the response is reconciled; otherwise a hidden
+    // server commit followed by a fresh idempotency key can create a duplicate.
+    if (saveInFlightRef.current) {
+      return saveDialogSessionRef.current ?? explanationDialogSessionSeqRef.current;
+    }
     const id = nextExplanationDialogSession();
     // A new Save story is not a retry of an older POST. Clearing the request
     // id makes that response stale in both the client callback and catch path;
@@ -750,6 +759,9 @@ export default function App() {
     return id;
   };
   const beginEditDialogSession = () => {
+    if (editInFlightRef.current) {
+      return editDialogSessionRef.current ?? explanationDialogSessionSeqRef.current;
+    }
     const id = nextExplanationDialogSession();
     editDialogSessionRef.current = id;
     saveDialogSessionRef.current = null;
@@ -762,10 +774,10 @@ export default function App() {
     editDialogSessionRef.current = null;
   };
   const cancelSaveDialog = () => {
-    // Cancel owns the whole Save session, including work already submitted.
-    // The server may already have committed a POST, but its eventual response
-    // must not close/repaint this abandoned client session or spend its report
-    // refresh authorization.
+    // A submitted POST may already be committed server-side and cannot be
+    // cancelled safely. Keep the dialog and idempotency key until its result is
+    // reconciled; only pre-submit/generation work is truly cancellable.
+    if (saveInFlightRef.current) return;
     saveRequestIdRef.current = null;
     saveInFlightRef.current = false;
     setSaveLoading(false);
@@ -777,9 +789,9 @@ export default function App() {
     setSaveError('');
   };
   const cancelEditDialog = () => {
-    // useEffect also bumps this after the close renders, but cancellation is
-    // an ownership boundary now: a PATCH promise can settle before that
-    // effect and must already be stale when it does.
+    // Like Save, a PATCH may already have committed. Do not hide a write whose
+    // result still needs to be reflected in the list and success/error state.
+    if (editInFlightRef.current) return;
     editSessionRef.current += 1;
     setEditLoading(false);
     abandonExplanationDialogSession();
@@ -2647,6 +2659,7 @@ export default function App() {
   const handleEditGameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editGameId) return;
+    if (editInFlightRef.current) return;
     // OPUS-REVIEW-DESKTOP17 F1: reads `deadSession`, not `editError &&
     // editErrorNeedsAuth` (that pair is reset by validation below, which is
     // exactly the hole this closes) — checked first, matching Save's
@@ -2687,6 +2700,7 @@ export default function App() {
       cancelEditDialog();
       return;
     }
+    editInFlightRef.current = true;
     setEditError('');
     setEditLoading(true);
     // CodeRabbit on #158 (outside-diff, 9a71dce): a late response from a
@@ -2938,7 +2952,10 @@ export default function App() {
       // The shared client also reports stale when auth/mode context changes.
       // That does not retire this dialog, so its own controls still need to
       // be released; a genuinely newer dialog session owns its own loading.
-      if (!staleSession || editSessionRef.current === editSessionAtSubmit) setEditLoading(false);
+      if (!staleSession || editSessionRef.current === editSessionAtSubmit) {
+        editInFlightRef.current = false;
+        setEditLoading(false);
+      }
     }
   };
 
@@ -6901,7 +6918,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={cancelEditDialog}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs cursor-pointer"
+                disabled={editLoading}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="Close"
               >
                 ✕
@@ -7115,7 +7133,8 @@ export default function App() {
                 <button
                   type="button"
                   onClick={cancelEditDialog}
-                  className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                  disabled={editLoading}
+                  className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Cancel
                 </button>
@@ -7152,7 +7171,8 @@ export default function App() {
               </div>
               <button
                 onClick={cancelSaveDialog}
-                aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                disabled={saveLoading}
+                aria-label="Close dialog" className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <X className="w-4 h-4 text-slate-400" />
               </button>
@@ -7441,7 +7461,8 @@ export default function App() {
                 <button
                   type="button"
                   onClick={cancelSaveDialog}
-                  className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                  disabled={saveLoading}
+                  className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Cancel
                 </button>

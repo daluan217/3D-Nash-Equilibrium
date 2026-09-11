@@ -472,7 +472,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     check('handleEditGameSubmit checks staleness in its catch block too',
       /catch \{[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
     check('handleEditGameSubmit releases loading for a non-stale response or a context-stale response still owned by the same dialog',
-      /finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) setEditLoading\(false\);/.test(editSlice));
+      /finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*editInFlightRef\.current = false;\s*setEditLoading\(false\);\s*\}/.test(editSlice));
     check('handleSaveGameSubmit hands its own request-id predicate (saveRequestIdRef) to the client',
       /isStale: \(\) => saveRequestIdRef\.current !== clientRequestId,/.test(saveSlice));
     check('handleSaveGameSubmit takes the client\'s staleness verdict immediately, before any branch',
@@ -484,7 +484,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
 
     const editWithoutOwnerFallback = editSlice.replace(' || editSessionRef.current === editSessionAtSubmit', '');
     check('mutation: Edit cleanup without the same-dialog ownership fallback is rejected',
-      !/finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) setEditLoading\(false\);/.test(editWithoutOwnerFallback));
+      !/finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*editInFlightRef\.current = false;\s*setEditLoading\(false\);\s*\}/.test(editWithoutOwnerFallback));
     const saveWithoutOwnerFallback = saveSlice.replace(' || saveRequestIdRef.current === clientRequestId', '');
     check('mutation: Save cleanup without the same-request ownership fallback is rejected',
       !/finally \{[\s\S]{0,300}if \(!staleSession \|\| saveRequestIdRef\.current === clientRequestId\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(saveWithoutOwnerFallback));
@@ -560,11 +560,13 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     };
     const beginsCleanSaveSession = (src: string) => {
       const resets = activeSaveSessionResets(src);
-      return resets.request && resets.inFlight && resets.loading;
+      const guard = src.indexOf('if (saveInFlightRef.current) {');
+      const firstReset = src.indexOf('saveRequestIdRef.current = null;');
+      return guard >= 0 && firstReset > guard && resets.request && resets.inFlight && resets.loading;
     };
     check('beginSaveDialogSession is found exactly once',
       beginSaveStart >= 0 && app.indexOf('const beginSaveDialogSession = () => {', beginSaveStart + 1) < 0);
-    check('beginSaveDialogSession retires the prior request and clears stale save loading',
+    check('beginSaveDialogSession preserves an active write, otherwise retires the prior request and stale loading',
       beginsCleanSaveSession(beginSaveSession));
 
     // Known-positive fixtures: removing either half of the paired reset must
@@ -575,6 +577,8 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
       !beginsCleanSaveSession(beginSaveSession.replace(/saveInFlightRef\.current\s*=\s*false;/, '')));
     check('fixture sanity: a save-session opener missing the loading reset is rejected',
       !beginsCleanSaveSession(beginSaveSession.replace(/setSaveLoading\(false\);/, '')));
+    check('fixture sanity: a save-session opener that clears ownership before checking it is rejected',
+      !beginsCleanSaveSession(beginSaveSession.replace('if (saveInFlightRef.current) {', 'if (false) {')));
     check('fixture sanity: resets mentioned only in comments and strings are rejected',
       !beginsCleanSaveSession(`const beginSaveDialogSession = () => {
         // saveRequestIdRef.current = null;
