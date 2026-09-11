@@ -722,7 +722,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     /regenExplanationAfterSaveRef\.current = null;[\s\S]*saveDialogSessionRef\.current = null;[\s\S]*editDialogSessionRef\.current = null;/.test(abandon));
   required('Save and Edit cancel handlers synchronously abandon the session',
     /abandonExplanationDialogSession\(\);/.test(cancelSave)
-    && /abandonExplanationDialogSession\(\);/.test(cancelEdit)
+    && /editSessionRef\.current \+= 1;\s*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);/.test(cancelEdit)
     && /onClose=\{cancelSaveDialog\}/.test(code) && /onClose=\{cancelEditDialog\}/.test(code)
     && (code.match(/onClick=\{cancelSaveDialog\}/g) ?? []).length >= 2
     && (code.match(/onClick=\{cancelEditDialog\}/g) ?? []).length >= 2);
@@ -741,6 +741,10 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const cancelWithoutGenerateRetirement = cancelSave.replace(/generateGameGenerationRef\.current \+= 1;/, '');
   check('mutation: removing Generate retirement from Cancel fails the abandonment contract',
     cancelWithoutGenerateRetirement !== cancelSave && !cancelRetiresSaveAndGenerate(cancelWithoutGenerateRetirement));
+  const cancelEditWithoutPatchRetirement = cancelEdit.replace(/editSessionRef\.current \+= 1;/, '');
+  check('mutation: removing PATCH-session retirement from Edit Cancel fails the abandonment contract',
+    cancelEditWithoutPatchRetirement !== cancelEdit
+    && !/editSessionRef\.current \+= 1;\s*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);/.test(cancelEditWithoutPatchRetirement));
   required('dismissing an auth detour abandons an in-flight Generate only when it abandons Save',
     /const abandoningSave = resumeSaveAfterAuthRef\.current;[\s\S]*resumeSaveAfterAuthRef\.current = false;[\s\S]*if \(abandoningSave\) \{\s*generateGameGenerationRef\.current \+= 1;\s*generateGameInFlightRef\.current = false;\s*setGenerateLoading\(false\);\s*\}/.test(dismiss));
   required('consume clears before comparing nonce and RegenKey',

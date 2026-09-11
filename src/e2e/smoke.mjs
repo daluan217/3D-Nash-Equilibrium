@@ -9369,6 +9369,76 @@ try {
       `saved=${cancelOrdinarySave.saved} readback=${cancelOrdinarySave.readback} noReport=${await cancelNoReportDuring && cancelNoReportAfter} reports=${cancelReports}`);
     await cancelPage.close();
 
+    // A close must retire Edit synchronously, not in the useEffect that runs
+    // after React paints the closed dialog. Resolve a mocked PATCH in the
+    // microtask immediately after the Cancel click, before effects can run:
+    // the old implementation accepted this response, replaced the saved row,
+    // and appended a success log despite the user's cancellation.
+    const cancelEditPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(cancelEditPage, 'e2e91editcancel');
+    const cancelEditBaseName = 'E2E 91 cancelled edit base';
+    const cancelEditBase = await submitOrdinarySave(cancelEditPage, cancelEditBaseName);
+    record('precondition: the late-Edit cancellation arm has a parsed saved game and readback',
+      cancelEditBase.saved && cancelEditBase.readback,
+      `saved=${cancelEditBase.saved} readback=${cancelEditBase.readback}`);
+    if (cancelEditBase.saved && cancelEditBase.readback && cancelEditBase.id && cancelEditBase.body?.game) {
+      const originalRow = cancelEditPage.getByRole('button', { name: cancelEditBaseName, exact: true });
+      await originalRow.waitFor({ state: 'visible', timeout: 8000 });
+      await cancelEditPage.locator('div.group', { has: originalRow }).getByTitle(/^Edit /).click();
+      const lateEditDialog = cancelEditPage.getByRole('dialog', { name: 'Edit saved game' });
+      await lateEditDialog.waitFor({ state: 'visible', timeout: 5000 });
+      const cancelledEditName = 'E2E 91 response after Edit Cancel';
+      await lateEditDialog.locator('input[type="text"]').first().fill(cancelledEditName);
+      await cancelEditPage.evaluate(({ game, name }) => {
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {}) => {
+          const requestUrl = typeof input === 'string' ? input : input.url;
+          const method = String(init.method || (typeof input === 'string' ? 'GET' : input.method) || 'GET').toUpperCase();
+          if (method === 'PATCH' && new URL(requestUrl, location.href).pathname.startsWith('/api/games/')) {
+            window.__e2e91PatchSeen = true;
+            return new Promise((resolve) => {
+              window.__e2e91ResolvePatch = () => resolve(new Response(JSON.stringify({
+                success: true,
+                game: { ...game, name },
+              }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            });
+          }
+          return nativeFetch(input, init);
+        };
+      }, { game: cancelEditBase.body.game, name: cancelledEditName });
+      await lateEditDialog.getByRole('button', { name: /save changes/i }).click();
+      const patchHeld = await cancelEditPage.waitForFunction(
+        () => window.__e2e91PatchSeen === true && typeof window.__e2e91ResolvePatch === 'function',
+        null, { timeout: 5000 },
+      ).then(() => true).catch(() => false);
+      record('precondition: the Edit PATCH response is held until the cancellation task releases it', patchHeld);
+      if (patchHeld) {
+        await lateEditDialog.screenshot({ path: '/tmp/e2e91-edit-cancel-before.png' });
+        const cancelledAndReleased = await cancelEditPage.evaluate(() => {
+          const dialog = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+          const cancel = [...(dialog?.querySelectorAll('button') ?? [])]
+            .find((button) => /^cancel$/i.test(button.textContent?.trim() ?? ''));
+          const release = window.__e2e91ResolvePatch;
+          if (!cancel || typeof release !== 'function') return false;
+          cancel.click();
+          release();
+          return true;
+        });
+        await cancelEditPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const dialogClosed = await lateEditDialog.waitFor({ state: 'hidden', timeout: 5000 }).then(() => true).catch(() => false);
+        await cancelEditPage.screenshot({ path: '/tmp/e2e91-edit-cancel-after.png', fullPage: true });
+        const oldRowKept = await cancelEditPage.getByRole('button', { name: cancelEditBaseName, exact: true })
+          .isVisible({ timeout: 2000 }).catch(() => false);
+        const lateRowAdded = await cancelEditPage.getByRole('button', { name: cancelledEditName, exact: true })
+          .isVisible({ timeout: 1000 }).catch(() => false);
+        const successLogCount = await cancelEditPage.getByText(`✓ Updated "${cancelledEditName}".`, { exact: true }).count();
+        record('FIX: cancelling before Edit settles keeps the old row and appends no success log',
+          cancelledAndReleased && dialogClosed && oldRowKept && !lateRowAdded && successLogCount === 0,
+          `released=${cancelledAndReleased} closed=${dialogClosed} old=${oldRowKept} late=${lateRowAdded} successLogs=${successLogCount}`);
+      }
+    }
+    await cancelEditPage.close();
+
     const abandonPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let abandonReports = 0, watchAbandonReports = false;
     await mockSuggestedReport(abandonPage, () => { if (watchAbandonReports) abandonReports++; });

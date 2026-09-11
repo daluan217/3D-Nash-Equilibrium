@@ -585,8 +585,13 @@ function extractModalSurfaceBlock(src: string, id: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const editBlock = extractModalSurfaceBlock(app, 'edit-saved-game');
+  const cancelEditStart = app.indexOf('const cancelEditDialog = () => {');
+  const cancelEditEnd = app.indexOf('const dismissAuthModal = () => {', cancelEditStart);
+  const cancelEditBlock = cancelEditStart >= 0 && cancelEditEnd > cancelEditStart
+    ? app.slice(cancelEditStart, cancelEditEnd)
+    : '';
   ok(/onClose=\{cancelEditDialog\}/.test(editBlock)
-    && /const cancelEditDialog = \(\) => \{\s*abandonExplanationDialogSession\(\);\s*setIsEditModalOpen\(false\);\s*setEditError\(''\);\s*\}/.test(app),
+    && /editSessionRef\.current \+= 1;[\s\S]*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);[\s\S]*setIsEditModalOpen\(false\);[\s\S]*setEditError\(''\);/.test(cancelEditBlock),
     `Edit's <ModalSurface onClose> must use the session-abandoning close path shared by its own "✕" button and Cancel, got: ${JSON.stringify(editBlock.slice(0, 300))}`);
 
   // The local-games offer's onClose must still refuse to close mid-request

@@ -777,6 +777,11 @@ export default function App() {
     setSaveError('');
   };
   const cancelEditDialog = () => {
+    // useEffect also bumps this after the close renders, but cancellation is
+    // an ownership boundary now: a PATCH promise can settle before that
+    // effect and must already be stale when it does.
+    editSessionRef.current += 1;
+    setEditLoading(false);
     abandonExplanationDialogSession();
     setIsEditModalOpen(false);
     setEditError('');
