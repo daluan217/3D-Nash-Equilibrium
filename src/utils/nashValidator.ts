@@ -1776,8 +1776,11 @@ export function validateScenario(
      * renderer reads as one term (`_gen/cloud19_comparators.ts`). It rejects
      * nothing anyone has written; it closes a channel a model can still take.
      */
-    const sameLabel = (x?: string, y?: string) =>
-      (!!base(x) && base(x) === base(y)) || (!!x && !!y && colorTermKey(x) === colorTermKey(y));
+    const sameLabel = (x?: string, y?: string) => {
+      const xColorKey = colorTermKey(x ?? '');
+      return (!!base(x) && base(x) === base(y))
+        || (!!xColorKey && xColorKey === colorTermKey(y ?? ''));
+    };
     if (sameLabel(sc.row1, sc.row2)) issues.push(`row labels are not distinct ("${sc.row1}" / "${sc.row2}")`);
     if (sameLabel(sc.col1, sc.col2)) issues.push(`column labels are not distinct ("${sc.col1}" / "${sc.col2}")`);
     const cells = [[g.a11, g.b11], [g.a12, g.b12], [g.a21, g.b21], [g.a22, g.b22]];
