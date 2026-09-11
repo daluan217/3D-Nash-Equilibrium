@@ -548,6 +548,8 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const dismiss = between(code, 'const dismissAuthModal = () => {', 'const consumeRegenExplanationAfterSave = (');
   const beginSave = between(code, 'const beginSaveDialogSession = () => {', 'const beginEditDialogSession = () => {');
   const abandon = between(code, 'const abandonExplanationDialogSession = () => {', 'const cancelSaveDialog =');
+  const cancelSave = between(code, 'const cancelSaveDialog = () => {', 'const cancelEditDialog = () => {');
+  const cancelEdit = between(code, 'const cancelEditDialog = () => {', 'const dismissAuthModal = () => {');
   const consume = between(code, 'const consumeRegenExplanationAfterSave = (', 'useEffect(() => {');
   const editHandler = between(code, 'const handleEditGameSubmit = async', 'const deletingGamesRef =');
   const generateHandler = between(code, 'const handleGenerateGame = async', 'const handleSaveGameSubmit = async');
@@ -599,6 +601,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     /const dialogSessionId = beginSaveDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'save', payoffs \}/.test(source);
   const startsIndependentSaveSession = (source: string): boolean =>
     /saveRequestIdRef\.current\s*=\s*null;/.test(source)
+    && /saveInFlightRef\.current\s*=\s*false;/.test(source)
     && /setSaveLoading\(false\);/.test(source);
   const validSavedGame = {
     id: 'g-fixture',
@@ -638,16 +641,44 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('mutation: inheriting the old Save loading state fails the fresh-session boundary',
     saveSessionWithoutLoadingRelease !== beginSave
     && !startsIndependentSaveSession(saveSessionWithoutLoadingRelease));
+  const saveSessionWithoutOwnerRelease = beginSave.replace(/saveInFlightRef\.current\s*=\s*false;/, '');
+  check('mutation: inheriting the old synchronous Save owner fails the fresh-session boundary',
+    saveSessionWithoutOwnerRelease !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutOwnerRelease));
   const generateGuardedFromSave = (source: string): boolean => {
-    const guard = source.indexOf('if (saveLoading) return;');
+    const guard = source.indexOf('if (generateGameInFlightRef.current || saveInFlightRef.current || saveLoading) return;');
     const firstMutation = source.indexOf('setGenerateLoading(true);');
     return guard >= 0 && firstMutation >= 0 && guard < firstMutation;
   };
-  required('Generate rejects programmatic activation while a Save write is active',
+  required('Generate rejects duplicate activation and Save writes before mutating state',
     generateGuardedFromSave(generateHandler));
-  const generateWithoutSaveGuard = generateHandler.replace('if (saveLoading) return;', '');
+  const generateWithoutSaveGuard = generateHandler.replace(' || saveInFlightRef.current', '');
   check('mutation: removing the Generate handler save guard fails the write-exclusion contract',
     generateWithoutSaveGuard !== generateHandler && !generateGuardedFromSave(generateWithoutSaveGuard));
+  const generationOwnsLateResponse = (source: string): boolean =>
+    /generateGameInFlightRef\.current = true;[\s\S]*const myGeneration = \(generateGameGenerationRef\.current \+= 1\);/.test(source)
+    && (source.match(/if \(myGeneration !== generateGameGenerationRef\.current\) return;/g) ?? []).length === 2
+    && /if \(myGeneration === generateGameGenerationRef\.current\) \{\s*generateGameInFlightRef\.current = false;\s*setGenerateLoading\(false\);\s*\}/.test(source);
+  required('Generate commits success/error/loading only while its generation still owns the Save dialog',
+    generationOwnsLateResponse(generateHandler));
+  const generateWithoutSuccessOwnership = generateHandler.replace(
+    'if (myGeneration !== generateGameGenerationRef.current) return;',
+    '',
+  );
+  check('mutation: removing the late Generate success guard fails the response-ownership contract',
+    generateWithoutSuccessOwnership !== generateHandler && !generationOwnsLateResponse(generateWithoutSuccessOwnership));
+  const saveRejectsGenerateBeforeMutation = (source: string): boolean => {
+    const guard = source.indexOf('if (saveInFlightRef.current || generateGameInFlightRef.current) return;');
+    const claim = source.indexOf('saveInFlightRef.current = true;');
+    const firstMutation = source.indexOf("setSaveError('');");
+    const keyedRelease = /if \(!staleSession\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(source);
+    return guard >= 0 && claim > guard && firstMutation > claim && keyedRelease;
+  };
+  required('Save rejects programmatic activation while Generate owns the form',
+    saveRejectsGenerateBeforeMutation(saveHandler));
+  const saveWithoutGenerateGuard = saveHandler.replace(' || generateGameInFlightRef.current', '');
+  check('mutation: removing the Save handler Generate guard fails the write-exclusion contract',
+    saveWithoutGenerateGuard !== saveHandler && !saveRejectsGenerateBeforeMutation(saveWithoutGenerateGuard));
   const generateClick = code.indexOf('onClick={handleGenerateGame}');
   const generateTagStart = code.lastIndexOf('<button', generateClick);
   const generateTagEnd = code.indexOf('>', generateClick);
@@ -661,6 +692,21 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const generateButtonWithoutSave = generateTag.replace(/\s*\|\|\s*saveLoading/, '');
   check('mutation: removing saveLoading from Generate disabled state fails the control guard',
     generateButtonWithoutSave !== generateTag && !generateButtonBlocksSave(generateButtonWithoutSave));
+  const saveSubmitLabel = code.indexOf("deadSession === 'save' ? 'Sign In to Save' : 'Save Game Profile'");
+  const saveSubmitStart = code.lastIndexOf('<button', saveSubmitLabel);
+  const saveSubmitEnd = code.indexOf('>', saveSubmitStart);
+  const saveSubmitTag = saveSubmitStart >= 0 && saveSubmitEnd >= 0 ? code.slice(saveSubmitStart, saveSubmitEnd + 1) : '';
+  const deviceSaveLabel = code.indexOf("saveLoading ? 'Saving...' : 'Save on this device instead'");
+  const deviceSaveStart = code.lastIndexOf('<button', deviceSaveLabel);
+  const deviceSaveEnd = code.indexOf('>', deviceSaveStart);
+  const deviceSaveTag = deviceSaveStart >= 0 && deviceSaveEnd >= 0 ? code.slice(deviceSaveStart, deviceSaveEnd + 1) : '';
+  const saveButtonBlocksGenerate = (source: string): boolean =>
+    /disabled=\{saveLoading\s*\|\|\s*generateLoading\}/.test(source);
+  required('both Save controls are disabled for Save and Generate work',
+    saveButtonBlocksGenerate(saveSubmitTag) && saveButtonBlocksGenerate(deviceSaveTag));
+  const saveButtonWithoutGenerate = saveSubmitTag.replace(/\s*\|\|\s*generateLoading/, '');
+  check('mutation: removing generateLoading from Save disabled state fails the control guard',
+    saveButtonWithoutGenerate !== saveSubmitTag && !saveButtonBlocksGenerate(saveButtonWithoutGenerate));
   required('a fresh ordinary Edit starts a new session before opening',
     /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
   required('auth resume closes and reopens the same dialog without abandoning it',
@@ -675,11 +721,28 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   required('the abandonment helper clears the pending value and both dialog sessions',
     /regenExplanationAfterSaveRef\.current = null;[\s\S]*saveDialogSessionRef\.current = null;[\s\S]*editDialogSessionRef\.current = null;/.test(abandon));
   required('Save and Edit cancel handlers synchronously abandon the session',
-    /const cancelSaveDialog = \(\) => \{\s*abandonExplanationDialogSession\(\);/.test(code)
-    && /const cancelEditDialog = \(\) => \{\s*abandonExplanationDialogSession\(\);/.test(code)
+    /abandonExplanationDialogSession\(\);/.test(cancelSave)
+    && /abandonExplanationDialogSession\(\);/.test(cancelEdit)
     && /onClose=\{cancelSaveDialog\}/.test(code) && /onClose=\{cancelEditDialog\}/.test(code)
     && (code.match(/onClick=\{cancelSaveDialog\}/g) ?? []).length >= 2
     && (code.match(/onClick=\{cancelEditDialog\}/g) ?? []).length >= 2);
+  const cancelRetiresSaveAndGenerate = (source: string): boolean =>
+    /saveRequestIdRef\.current\s*=\s*null;/.test(source)
+    && /saveInFlightRef\.current = false;/.test(source)
+    && /setSaveLoading\(false\);/.test(source)
+    && /generateGameGenerationRef\.current \+= 1;/.test(source)
+    && /generateGameInFlightRef\.current = false;/.test(source)
+    && /setGenerateLoading\(false\);/.test(source);
+  required('Save cancellation retires both an active POST response and an active Generate response',
+    cancelRetiresSaveAndGenerate(cancelSave));
+  const cancelWithoutSaveRetirement = cancelSave.replace(/saveRequestIdRef\.current\s*=\s*null;/, '');
+  check('mutation: removing Save-request retirement from Cancel fails the abandonment contract',
+    cancelWithoutSaveRetirement !== cancelSave && !cancelRetiresSaveAndGenerate(cancelWithoutSaveRetirement));
+  const cancelWithoutGenerateRetirement = cancelSave.replace(/generateGameGenerationRef\.current \+= 1;/, '');
+  check('mutation: removing Generate retirement from Cancel fails the abandonment contract',
+    cancelWithoutGenerateRetirement !== cancelSave && !cancelRetiresSaveAndGenerate(cancelWithoutGenerateRetirement));
+  required('dismissing an auth detour abandons an in-flight Generate only when it abandons Save',
+    /const abandoningSave = resumeSaveAfterAuthRef\.current;[\s\S]*resumeSaveAfterAuthRef\.current = false;[\s\S]*if \(abandoningSave\) \{\s*generateGameGenerationRef\.current \+= 1;\s*generateGameInFlightRef\.current = false;\s*setGenerateLoading\(false\);\s*\}/.test(dismiss));
   required('consume clears before comparing nonce and RegenKey',
     /const pendingKey = regenExplanationAfterSaveRef\.current;\s*regenExplanationAfterSaveRef\.current = null;/.test(consume)
     && /pendingKey\.dialogSessionId === submittedSessionId/.test(consume)

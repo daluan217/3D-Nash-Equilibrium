@@ -479,8 +479,8 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
       /staleSession = res\.stale;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
     check('handleSaveGameSubmit checks staleness in its catch block too',
       /catch \{[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
-    check('handleSaveGameSubmit guards setSaveLoading(false) in finally with the SAME flag',
-      /finally \{[\s\S]{0,50}if \(!staleSession\) setSaveLoading\(false\);/.test(saveSlice));
+    check('handleSaveGameSubmit releases its synchronous owner and loading state in finally with the SAME flag',
+      /finally \{[\s\S]{0,50}if \(!staleSession\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(saveSlice));
 
     // The guard must precede every setter it exists to protect — no setter
     // sneaks in between the response and the `if (staleSession) return;`.
@@ -527,9 +527,34 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     const beginSaveSession = beginSaveStart >= 0 && beginSaveEnd > beginSaveStart
       ? app.slice(beginSaveStart, beginSaveEnd)
       : '';
-    const beginsCleanSaveSession = (src: string) =>
-      /saveRequestIdRef\.current\s*=\s*null;/.test(src)
-      && /setSaveLoading\(false\);/.test(src);
+    const activeSaveSessionResets = (src: string): { request: boolean; inFlight: boolean; loading: boolean } => {
+      const parsed = ts.createSourceFile('save-session.tsx', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      let request = false;
+      let inFlight = false;
+      let loading = false;
+      const visit = (node: ts.Node): void => {
+        if (ts.isBinaryExpression(node)
+          && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          && node.left.getText(parsed).replace(/\s/g, '') === 'saveRequestIdRef.current'
+          && node.right.kind === ts.SyntaxKind.NullKeyword) request = true;
+        if (ts.isBinaryExpression(node)
+          && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          && node.left.getText(parsed).replace(/\s/g, '') === 'saveInFlightRef.current'
+          && node.right.kind === ts.SyntaxKind.FalseKeyword) inFlight = true;
+        if (ts.isCallExpression(node)
+          && ts.isIdentifier(node.expression)
+          && node.expression.text === 'setSaveLoading'
+          && node.arguments.length === 1
+          && node.arguments[0].kind === ts.SyntaxKind.FalseKeyword) loading = true;
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+      return { request, inFlight, loading };
+    };
+    const beginsCleanSaveSession = (src: string) => {
+      const resets = activeSaveSessionResets(src);
+      return resets.request && resets.inFlight && resets.loading;
+    };
     check('beginSaveDialogSession is found exactly once',
       beginSaveStart >= 0 && app.indexOf('const beginSaveDialogSession = () => {', beginSaveStart + 1) < 0);
     check('beginSaveDialogSession retires the prior request and clears stale save loading',
@@ -539,8 +564,87 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     // make the guard fail.
     check('fixture sanity: a save-session opener missing the request reset is rejected',
       !beginsCleanSaveSession(beginSaveSession.replace(/saveRequestIdRef\.current\s*=\s*null;/, '')));
+    check('fixture sanity: a save-session opener missing the synchronous owner reset is rejected',
+      !beginsCleanSaveSession(beginSaveSession.replace(/saveInFlightRef\.current\s*=\s*false;/, '')));
     check('fixture sanity: a save-session opener missing the loading reset is rejected',
       !beginsCleanSaveSession(beginSaveSession.replace(/setSaveLoading\(false\);/, '')));
+    check('fixture sanity: resets mentioned only in comments and strings are rejected',
+      !beginsCleanSaveSession(`const beginSaveDialogSession = () => {
+        // saveRequestIdRef.current = null;
+        'saveInFlightRef.current = false;';
+        'setSaveLoading(false);';
+      };`));
+
+    // Inventory the actual open calls with the TypeScript tree. A fresh open
+    // must have a direct beginSaveDialogSession() statement earlier in its
+    // own block; the one deliberate exception is auth resume, which reopens
+    // the same session and therefore must not mint another nonce.
+    type SaveOpenSite = { hasPriorBegin: boolean; isAuthResume: boolean };
+    const classifySaveOpenSites = (src: string): SaveOpenSite[] => {
+      const parsed = ts.createSourceFile('save-opens.tsx', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      const sites: SaveOpenSite[] = [];
+      const isBeginCall = (node: ts.Node | undefined): boolean =>
+        !!node
+        && ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === 'beginSaveDialogSession'
+        && node.arguments.length === 0;
+      const directBegin = (statement: ts.Statement): boolean => {
+        if (ts.isExpressionStatement(statement)) return isBeginCall(statement.expression);
+        if (!ts.isVariableStatement(statement)) return false;
+        return statement.declarationList.declarations.some((declaration) => isBeginCall(declaration.initializer));
+      };
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)
+          && ts.isIdentifier(node.expression)
+          && node.expression.text === 'setIsSaveModalOpen'
+          && node.arguments.length === 1
+          && node.arguments[0].kind === ts.SyntaxKind.TrueKeyword) {
+          let statement: ts.Node = node;
+          while (statement.parent && !ts.isBlock(statement.parent)) statement = statement.parent;
+          const block = statement.parent && ts.isBlock(statement.parent) ? statement.parent : null;
+          const statementIndex = block ? block.statements.findIndex((candidate) => candidate === statement) : -1;
+          const hasPriorBegin = !!block && statementIndex >= 0
+            && block.statements.slice(0, statementIndex).some(directBegin);
+          let ancestor: ts.Node | undefined = node.parent;
+          let isAuthResume = false;
+          while (ancestor && !ts.isFunctionLike(ancestor)) {
+            if (ts.isIfStatement(ancestor)
+              && ancestor.expression.getText(parsed).replace(/\s/g, '') === 'authToken&&resumeSaveAfterAuthRef.current') {
+              isAuthResume = true;
+            }
+            ancestor = ancestor.parent;
+          }
+          sites.push({ hasPriorBegin, isAuthResume });
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+      return sites;
+    };
+    const saveOpenSites = classifySaveOpenSites(app);
+    const freshSaveOpenSites = saveOpenSites.filter((site) => !site.isAuthResume);
+    const authResumeSites = saveOpenSites.filter((site) => site.isAuthResume);
+    check(`exactly 3 Save-open calls are inventoried (2 fresh, 1 auth resume) — found ${saveOpenSites.length}`,
+      saveOpenSites.length === 3 && freshSaveOpenSites.length === 2 && authResumeSites.length === 1);
+    check('every fresh Save-open call directly begins its own session first',
+      freshSaveOpenSites.every((site) => site.hasPriorBegin));
+    check('auth resume reopens the existing Save session without minting another nonce',
+      authResumeSites.every((site) => !site.hasPriorBegin));
+    const missingBeginFixture = classifySaveOpenSites('const fresh = () => { setIsSaveModalOpen(true); };');
+    check('fixture sanity: a fresh Save-open call without beginSaveDialogSession is rejected',
+      missingBeginFixture.length === 1
+      && !missingBeginFixture[0].isAuthResume
+      && !missingBeginFixture[0].hasPriorBegin);
+    const appWithoutSuggestedBegin = app.replace(
+      'const dialogSessionId = beginSaveDialogSession();',
+      'const dialogSessionId = 0;',
+    );
+    const mutatedFreshSites = classifySaveOpenSites(appWithoutSuggestedBegin).filter((site) => !site.isAuthResume);
+    check('mutation: removing a real fresh-open session start is rejected by the complete call-site inventory',
+      appWithoutSuggestedBegin !== app
+      && mutatedFreshSites.length === 2
+      && mutatedFreshSites.some((site) => !site.hasPriorBegin));
   }
 
   // OPUS-REVIEW-DESKTOP N5: a bare COUNT comparison passes if an unpaired

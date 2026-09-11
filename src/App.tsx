@@ -585,6 +585,11 @@ export default function App() {
   const [generateKind, setGenerateKind] = useState<'pure' | 'mixed'>('pure');
   const [generateLoading, setGenerateLoading] = useState(false);
   const [generateNote, setGenerateNote] = useState('');
+  // State disables the rendered controls; the ref closes the same-tick gap
+  // before React can render that state. The generation id also makes an old
+  // report response inert after the Save dialog is explicitly cancelled.
+  const generateGameInFlightRef = useRef(false);
+  const generateGameGenerationRef = useRef(0);
 
   // Edit dialog for an already-saved game. Separate state from the save dialog
   // rather than shared: the two are open in different situations and reusing
@@ -666,6 +671,9 @@ export default function App() {
   // set alongside a non-empty `saveError`; read only behind one).
   const [saveErrorNeedsAuth, setSaveErrorNeedsAuth] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
+  // Synchronous owner for a Save POST. Unlike state, this closes the gap in
+  // which another control can run before React paints saveLoading=true.
+  const saveInFlightRef = useRef(false);
   /**
    * OPUS-REVIEW-DESKTOP17 F1: "this dialog session already tried as the
    * account holder and was refused" as its OWN state, independent of
@@ -734,6 +742,7 @@ export default function App() {
     // clearing loading releases the new session's controls while the stale
     // request's finally is deliberately forbidden from touching them.
     saveRequestIdRef.current = null;
+    saveInFlightRef.current = false;
     setSaveLoading(false);
     saveDialogSessionRef.current = id;
     editDialogSessionRef.current = null;
@@ -753,6 +762,16 @@ export default function App() {
     editDialogSessionRef.current = null;
   };
   const cancelSaveDialog = () => {
+    // Cancel owns the whole Save session, including work already submitted.
+    // The server may already have committed a POST, but its eventual response
+    // must not close/repaint this abandoned client session or spend its report
+    // refresh authorization.
+    saveRequestIdRef.current = null;
+    saveInFlightRef.current = false;
+    setSaveLoading(false);
+    generateGameGenerationRef.current += 1;
+    generateGameInFlightRef.current = false;
+    setGenerateLoading(false);
     abandonExplanationDialogSession();
     setIsSaveModalOpen(false);
     setSaveError('');
@@ -780,7 +799,13 @@ export default function App() {
     setIsAuthModalOpen(false);
     setAuthError('');
     setAuthSuccess('');
+    const abandoningSave = resumeSaveAfterAuthRef.current;
     resumeSaveAfterAuthRef.current = false;
+    if (abandoningSave) {
+      generateGameGenerationRef.current += 1;
+      generateGameInFlightRef.current = false;
+      setGenerateLoading(false);
+    }
     // Auth dismissal is an explicit abandonment. In particular, a later
     // ordinary Save/Edit on the same board must not spend this authorization.
     abandonExplanationDialogSession();
@@ -3069,7 +3094,9 @@ export default function App() {
    * says so instead of silently doing nothing.
    */
   const handleGenerateGame = async () => {
-    if (saveLoading) return;
+    if (generateGameInFlightRef.current || saveInFlightRef.current || saveLoading) return;
+    generateGameInFlightRef.current = true;
+    const myGeneration = (generateGameGenerationRef.current += 1);
     setGenerateLoading(true);
     setGenerateNote('');
     setSaveError('');
@@ -3138,6 +3165,7 @@ export default function App() {
       });
       if (!res.ok) throw new Error(String(res.status));
       const env = (await res.json()) as ReportEnvelope;
+      if (myGeneration !== generateGameGenerationRef.current) return;
       // Prefill only from a validated invention — an unvalidated story could
       // contradict the very equilibria the user just asked for.
       const sc = envelopeIsTrustworthy(env) ? env.report?.suggestedScenario : null;
@@ -3181,10 +3209,14 @@ export default function App() {
       }
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium.`]);
     } catch {
+      if (myGeneration !== generateGameGenerationRef.current) return;
       setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
     } finally {
-      setGenerateLoading(false);
+      if (myGeneration === generateGameGenerationRef.current) {
+        generateGameInFlightRef.current = false;
+        setGenerateLoading(false);
+      }
     }
   };
 
@@ -3197,6 +3229,9 @@ export default function App() {
    */
   const handleSaveGameSubmit = async (e: React.FormEvent | null, opts?: { localConfirmed?: boolean }) => {
     e?.preventDefault();
+    // Refs close both same-tick windows before either loading state renders.
+    // Save and Generate must never own and rewrite this form concurrently.
+    if (saveInFlightRef.current || generateGameInFlightRef.current) return;
     const localConfirmed = opts?.localConfirmed ?? false;
     // OPUS-REVIEW-DESKTOP17 F1: reads `deadSession`, not `saveError &&
     // saveErrorNeedsAuth` (that pair is reset by the empty-name check below,
@@ -3217,6 +3252,7 @@ export default function App() {
       setSaveErrorNeedsAuth(true);
       return;
     }
+    saveInFlightRef.current = true;
     setSaveError('');
     setSaveLoading(true);
     // RED-APP-9/002: minted ONCE per save attempt and reused on every retry
@@ -3359,7 +3395,10 @@ export default function App() {
       setSaveError('Network error. Failed to save game.');
       setSaveErrorNeedsAuth(false);
     } finally {
-      if (!staleSession) setSaveLoading(false);
+      if (!staleSession) {
+        saveInFlightRef.current = false;
+        setSaveLoading(false);
+      }
     }
   };
 
@@ -7145,7 +7184,7 @@ export default function App() {
                       {deadSession === 'save' && isElectron && dbMode === 'local' && (
                         <button
                           type="button"
-                          disabled={saveLoading}
+                          disabled={saveLoading || generateLoading}
                           onClick={() => void handleSaveGameSubmit(null, { localConfirmed: true })}
                           className="rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white/70 dark:bg-slate-900/40 px-2.5 py-1.5 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 transition hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 cursor-pointer"
                         >
@@ -7397,7 +7436,7 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  disabled={saveLoading}
+                  disabled={saveLoading || generateLoading}
                   className="bg-accent-600 hover:bg-accent-700 text-white font-semibold text-xs py-2 px-4 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
                   {/* RED-DESKTOP-17/002: relabelled while deadSession==='save'
