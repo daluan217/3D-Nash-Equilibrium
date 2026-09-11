@@ -746,6 +746,40 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   required('Save and Edit dismissal controls are disabled while an irreversible write is active',
     (code.match(/onClick=\{cancelSaveDialog\}\s*disabled=\{saveLoading\}/g) ?? []).length === 2
     && (code.match(/onClick=\{cancelEditDialog\}[\s\S]{0,80}?disabled=\{editLoading\}/g) ?? []).length === 2);
+  // CodeRabbit (H3 exact diff): cancelling Save — or dismissing the Account
+  // dialog mid-detour — must ABORT the pending Generate fetch, not only
+  // invalidate its response token. A stalled /api/report request otherwise
+  // stays alive (and keeps server work running to its deadline) across
+  // reopen/Cancel cycles. The generation bump alone does not settle the
+  // request; only the AbortController does.
+  const generateAbortContract = (source: string): boolean => {
+    const handler = between(source, 'const handleGenerateGame = async', 'const handleSaveGameSubmit = async');
+    const save = between(source, 'const cancelSaveDialog = () => {', 'const cancelEditDialog = () => {');
+    const auth = between(source, 'const dismissAuthModal = () => {', 'const consumeRegenExplanationAfterSave = (');
+    return /const generateControllerRef = useRef<AbortController \| null>\(null\);/.test(source)
+      && /const generateController = new AbortController\(\);[\s\S]{0,4200}?fetchWithTimeout\(getApiUrl\('\/api\/report'\)[\s\S]{0,200}?, generateController\)/.test(handler)
+      && save.includes('generateControllerRef.current?.abort();')
+      && auth.includes('generateControllerRef.current?.abort();');
+  };
+  required('Generate owns an AbortController and both Save cancellation paths abort it',
+    generateAbortContract(code));
+  const generateWithoutHandlerAbort = code.replace(
+    /const generateController = new AbortController\(\);\n/, '',
+  ).replace(/, generateController\)/, ')');
+  check('mutation: removing the Generate AbortController fails the cancellation contract',
+    generateWithoutHandlerAbort !== code && !generateAbortContract(generateWithoutHandlerAbort));
+  const generateWithoutCancelAbort = code.replace(
+    /(const cancelSaveDialog = \(\) => \{[\s\S]*?)\n    generateControllerRef\.current\?\.abort\(\);\n    generateControllerRef\.current = null;/,
+    '$1',
+  );
+  check('mutation: removing the Cancel-path abort fails the cancellation contract',
+    generateWithoutCancelAbort !== code && !generateAbortContract(generateWithoutCancelAbort));
+  const generateWithoutDismissAbort = code.replace(
+    /(const dismissAuthModal = \(\) => \{[\s\S]*?)\n      generateControllerRef\.current\?\.abort\(\);\n      generateControllerRef\.current = null;/,
+    '$1',
+  );
+  check('mutation: removing the auth-dismiss abort fails the cancellation contract',
+    generateWithoutDismissAbort !== code && !generateAbortContract(generateWithoutDismissAbort));
   required('a fresh ordinary Edit starts a new session before opening',
     /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
   required('auth resume closes and reopens the same dialog without abandoning it',
@@ -803,7 +837,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('mutation: allowing Cancel to hide an active Edit PATCH fails the ownership contract',
     cancelEditWithoutWriteGuard !== cancelEdit && !editCancelPreservesActiveWrite(cancelEditWithoutWriteGuard));
   required('dismissing an auth detour abandons an in-flight Generate only when it abandons Save',
-    /const abandoningSave = resumeSaveAfterAuthRef\.current;[\s\S]*resumeSaveAfterAuthRef\.current = false;[\s\S]*if \(abandoningSave\) \{\s*generateGameGenerationRef\.current \+= 1;\s*generateGameInFlightRef\.current = false;\s*setGenerateLoading\(false\);\s*\}/.test(dismiss));
+    /const abandoningSave = resumeSaveAfterAuthRef\.current;[\s\S]*resumeSaveAfterAuthRef\.current = false;[\s\S]*if \(abandoningSave\) \{\s*generateGameGenerationRef\.current \+= 1;\s*generateGameInFlightRef\.current = false;\s*generateControllerRef\.current\?\.abort\(\);\s*generateControllerRef\.current = null;\s*setGenerateLoading\(false\);\s*\}/.test(dismiss));
   required('consume clears before comparing nonce and RegenKey',
     /const pendingKey = regenExplanationAfterSaveRef\.current;\s*regenExplanationAfterSaveRef\.current = null;/.test(consume)
     && /pendingKey\.dialogSessionId === submittedSessionId/.test(consume)

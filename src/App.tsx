@@ -590,6 +590,11 @@ export default function App() {
   // report response inert after the Save dialog is explicitly cancelled.
   const generateGameInFlightRef = useRef(false);
   const generateGameGenerationRef = useRef(0);
+  // CodeRabbit (H3 exact diff): cancellation must abort the Generate fetch
+  // itself, not only invalidate its response — a stalled request otherwise
+  // stays pending (and keeps server work alive to its deadline) across
+  // Cancel / auth-dismiss cycles. Same pattern as regenControllerRef.
+  const generateControllerRef = useRef<AbortController | null>(null);
 
   // Edit dialog for an already-saved game. Separate state from the save dialog
   // rather than shared: the two are open in different situations and reusing
@@ -783,6 +788,8 @@ export default function App() {
     setSaveLoading(false);
     generateGameGenerationRef.current += 1;
     generateGameInFlightRef.current = false;
+    generateControllerRef.current?.abort();
+    generateControllerRef.current = null;
     setGenerateLoading(false);
     abandonExplanationDialogSession();
     setIsSaveModalOpen(false);
@@ -821,6 +828,8 @@ export default function App() {
     if (abandoningSave) {
       generateGameGenerationRef.current += 1;
       generateGameInFlightRef.current = false;
+      generateControllerRef.current?.abort();
+      generateControllerRef.current = null;
       setGenerateLoading(false);
     }
     // Auth dismissal is an explicit abandonment. In particular, a later
@@ -3123,6 +3132,11 @@ export default function App() {
     if (generateGameInFlightRef.current || saveInFlightRef.current || saveLoading) return;
     generateGameInFlightRef.current = true;
     const myGeneration = (generateGameGenerationRef.current += 1);
+    // Abort any request a PREVIOUS Generate session left pending (its Cancel
+    // path could not abort what did not exist yet), then own this one.
+    generateControllerRef.current?.abort();
+    const generateController = new AbortController();
+    generateControllerRef.current = generateController;
     setGenerateLoading(true);
     setGenerateNote('');
     setSaveError('');
@@ -3184,11 +3198,13 @@ export default function App() {
     dispatchSaveForm(boardAction);
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
     try {
-      const res = await fetch(getApiUrl('/api/report'), {
+      const { promise, clear } = fetchWithTimeout(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ payoffs: g }),
-      });
+      }, generateController);
+      const res = await promise;
+      clear();
       if (!res.ok) throw new Error(String(res.status));
       const env = (await res.json()) as ReportEnvelope;
       if (myGeneration !== generateGameGenerationRef.current) return;
@@ -3235,6 +3251,10 @@ export default function App() {
       }
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium.`]);
     } catch {
+      // An aborted request is a cancelled one, not a failure: its response is
+      // stale by construction (cancellation bumped the generation first), so
+      // the staleness gate below drops it silently — same contract as the
+      // regen catch path.
       if (myGeneration !== generateGameGenerationRef.current) return;
       setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
