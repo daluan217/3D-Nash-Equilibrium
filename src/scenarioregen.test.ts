@@ -623,8 +623,11 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     colorTermsA: null,
   };
 
+  // CodeRabbit on #189 (2nd pass): bound the type-body check to the type itself — a greedy
+  // whole-file [\s\S]* let later dialogSessionId/regenKey occurrences satisfy it even if the
+  // type declared neither field.
   required('the pending value has a dialog nonce plus a RegenKey',
-    /type ExplanationSessionKey = \{[\s\S]*dialogSessionId: number;[\s\S]*regenKey: RegenKey;/.test(code)
+    /type ExplanationSessionKey = \{[^}]*dialogSessionId: number;[^}]*regenKey: RegenKey;[^}]*\}/.test(code)
     && /useRef<ExplanationSessionKey \| null>\(null\)/.test(code));
   required('Save and Edit prefill paths mint and store their own session keys',
     editPrefillStoresOwnSession(suggestedEdit) && savePrefillStoresOwnSession(suggestedSave));
@@ -640,8 +643,16 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   );
   check('mutation: storing the wrong Save dialog nonce fails the pending-session guard',
     wrongSaveNonce !== suggestedSave && !savePrefillStoresOwnSession(wrongSaveNonce));
+  // CodeRabbit on #189 (2nd pass): slice the preset handler with the last onClick boundary
+  // before the anchor (the payoffhonesty.test.ts:943 pattern) — lazy whole-file spans could
+  // borrow the three calls from an earlier handler that precedes the anchor.
+  const presetHandler = code.slice(code.lastIndexOf('onClick={() => {', code.indexOf('data-focus-fallback="save-preset"')), code.indexOf('data-focus-fallback="save-preset"'));
   required('a fresh ordinary Save starts a new session before opening',
-    /onClick=\{\(\) => \{[\s\S]*?beginSaveDialogSession\(\);[\s\S]*?openSaveFormForBoard\(\);[\s\S]*?setIsSaveModalOpen\(true\);[\s\S]*?data-focus-fallback="save-preset"/.test(code));
+    presetHandler.includes('beginSaveDialogSession();')
+    && presetHandler.includes('openSaveFormForBoard();')
+    && presetHandler.includes('setIsSaveModalOpen(true);')
+    && presetHandler.indexOf('beginSaveDialogSession();') < presetHandler.indexOf('openSaveFormForBoard();')
+    && presetHandler.indexOf('openSaveFormForBoard();') < presetHandler.indexOf('setIsSaveModalOpen(true);'));
   required('a new Save session preserves an active POST; otherwise it retires the prior attempt and loading state',
     startsIndependentSaveSession(beginSave));
   const saveSessionWithoutRequestInvalidation = beginSave.replace(/saveRequestIdRef\.current\s*=\s*null;/, '');
