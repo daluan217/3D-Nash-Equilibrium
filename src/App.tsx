@@ -2694,7 +2694,9 @@ export default function App() {
         setEditErrorNeedsAuth(false);
         return;
       }
-      const savedGame = isSavedGameResponseRecord(data?.game) ? data.game : null;
+      const savedGame = isSavedGameResponseRecord(data?.game) && data.game.id === editGameId
+        ? data.game
+        : null;
       if (res.ok && !savedGame) {
         setEditError('Network error. Failed to update game.');
         setEditErrorNeedsAuth(false);

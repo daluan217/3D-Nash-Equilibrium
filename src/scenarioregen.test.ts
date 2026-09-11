@@ -669,24 +669,30 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     && !isSavedGameResponseRecord({ ...validSavedGame, colorTermsA: ['operator', 4] }));
   const savedGameGuard = 'if (res.ok && !savedGame)';
   const commitsOnlyValidGame = (source: string): boolean =>
-    source.includes('const savedGame = isSavedGameResponseRecord(data?.game) ? data.game : null;')
+    /const savedGame\s*=\s*isSavedGameResponseRecord\(data\?\.game\)[\s\S]{0,120}?\?\s*data\.game\s*:\s*null;/.test(source)
     && guardReturnsBefore(source, savedGameGuard, 'if (res.ok) {');
+  const editCommitsOnlyMatchingGame = (source: string): boolean =>
+    commitsOnlyValidGame(source)
+    && /isSavedGameResponseRecord\(data\?\.game\)\s*&&\s*data\.game\.id\s*===\s*editGameId/.test(source);
   required('Edit validates data.game and exits before committing malformed success data',
-    commitsOnlyValidGame(editHandler) && !/data\.game/.test(editSuccess));
+    editCommitsOnlyMatchingGame(editHandler) && !/data\.game/.test(editSuccess));
   required('Save validates data.game and exits before committing malformed success data',
     commitsOnlyValidGame(saveHandler) && !/data\.game/.test(saveSuccess));
   const editWithoutGameValidation = editHandler.replace(
-    'isSavedGameResponseRecord(data?.game) ? data.game : null',
-    'data?.game ? data.game : null',
+    'isSavedGameResponseRecord(data?.game)',
+    '!!data?.game',
   );
   check('mutation: accepting any truthy Edit data.game fails the response-record guard',
-    editWithoutGameValidation !== editHandler && !commitsOnlyValidGame(editWithoutGameValidation));
+    editWithoutGameValidation !== editHandler && !editCommitsOnlyMatchingGame(editWithoutGameValidation));
   const saveWithoutGameValidation = saveHandler.replace(
-    'isSavedGameResponseRecord(data?.game) ? data.game : null',
-    'data?.game ? data.game : null',
+    'isSavedGameResponseRecord(data?.game)',
+    '!!data?.game',
   );
   check('mutation: accepting any truthy Save data.game fails the response-record guard',
     saveWithoutGameValidation !== saveHandler && !commitsOnlyValidGame(saveWithoutGameValidation));
+  const editWithoutIdBinding = editHandler.replace(' && data.game.id === editGameId', '');
+  check('mutation: accepting another game id fails the Edit response-binding guard',
+    editWithoutIdBinding !== editHandler && !editCommitsOnlyMatchingGame(editWithoutIdBinding));
   required('the session key is retired when a new matrix is generated',
     /const handleGenerateGame = async \(\) => \{[\s\S]*beginSaveDialogSession\(\);/.test(code));
 
