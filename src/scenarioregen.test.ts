@@ -793,12 +793,17 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     generateWithoutDismissAbort !== code && !generateAbortContract(generateWithoutDismissAbort));
   required('a fresh ordinary Edit starts a new session before opening',
     /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
+  // CodeRabbit (4th pass): bound both resume-reopen conjuncts to their own branches — greedy
+  // whole-file [\s\S]* let a later setIs*ModalOpen(true) call site (ordinary Edit open,
+  // suggested-scenario prefill) satisfy the check even if the resume branch stopped reopening.
+  const resumeSaveBranch = between(code, 'if (authToken && resumeSaveAfterAuthRef.current) {', 'if (authToken && resumeEditAfterAuthRef.current) {');
+  const resumeEditBranch = between(code, 'if (authToken && resumeEditAfterAuthRef.current) {', '}, [authToken');
   required('auth resume closes and reopens the same dialog without abandoning it',
     /if \(kind === 'save'\) \{\s*resumeSaveAfterAuthRef\.current = true;\s*setIsSaveModalOpen\(false\);/.test(authGate)
     && /else \{\s*resumeEditAfterAuthRef\.current = true;\s*setIsEditModalOpen\(false\);/.test(authGate)
     && !/abandonExplanationDialogSession\(\)/.test(authGate)
-    && /if \(authToken && resumeSaveAfterAuthRef\.current\) \{[\s\S]*setIsSaveModalOpen\(true\);/.test(code)
-    && /if \(authToken && resumeEditAfterAuthRef\.current\) \{[\s\S]*setIsEditModalOpen\(true\);/.test(code));
+    && resumeSaveBranch.includes('setIsSaveModalOpen(true);')
+    && resumeEditBranch.includes('setIsEditModalOpen(true);'));
   required('the auth-dismiss clear is unconditional and precedes the Edit-only reopen branch',
     dismiss.indexOf('abandonExplanationDialogSession();') >= 0
     && dismiss.indexOf('abandonExplanationDialogSession();') < dismiss.indexOf('if (resumeEditAfterAuthRef.current)'));

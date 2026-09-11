@@ -8967,7 +8967,7 @@ try {
     // mid-resize spotlight then overlaps it 45-48% on the captured step. Require THREE
     // identical consecutive reads and no in-flight plotly resize before declaring the
     // geometry stable (bounded; falls back to the last read like before).
-    const stableGeometry = async (ms = 10000) => {
+    const stableGeometry = async (ms = 10000, useFallback = true) => {
       let plotIdlePrev = null;
       const t0 = Date.now(); const reads = [];
       while (Date.now() - t0 < ms) {
@@ -8989,7 +8989,7 @@ try {
           && reads.slice(-3).every((r) => r.key === reads[reads.length - 1].key && r.step === reads[reads.length - 1].step)) return cur;
         plotIdlePrev = plotIdle;
       }
-      return reads[reads.length - 1] ?? null;
+      return useFallback ? (reads[reads.length - 1] ?? null) : null;
     };
     for (let k = 0; k < 25; k++) {
       const m = await stableGeometry();
@@ -9007,13 +9007,18 @@ try {
     // the 25% budget, re-read for 1.2s and judge the SETTLED geometry — the guarded defect
     // (unfixed tree: 51-59% on ten steps) persists and still fails; a transient does not.
     const suspected = steps.filter((s) => s.overlap !== null && !s.isSheet && s.overlap > 0.25);
+    // CodeRabbit (4th pass): the settled re-read must satisfy the FULL stability predicate —
+    // not just two matching keys — before it may overwrite the captured geometry. Strict mode
+    // returns null on timeout, so an unsettled page keeps its captured value and the oracle
+    // judges THAT (the guarded defect persists under any unstable layout).
     for (const s of suspected) {
       const target = steps[steps.indexOf(s)];
-      const reReads = [];
-      const t0 = Date.now();
-      while (Date.now() - t0 < 1200) { await p.waitForTimeout(300); reReads.push(await readGeometry()); }
-      const settled = reReads.filter((r) => r && r.step === s.step);
-      if (settled.length) { target.overlap = settled[settled.length - 1].overlap; target.cardH = settled[settled.length - 1].cardH; target.isSheet = settled[settled.length - 1].isSheet; }
+      const settled = await stableGeometry(1200, false);
+      if (settled && settled.step === s.step) {
+        target.overlap = settled.overlap;
+        target.cardH = settled.cardH;
+        target.isSheet = settled.isSheet;
+      }
     }
     const bad = steps.filter((s) => (s.hasSpot && (!s.hasCard || s.overlap === null)) || (s.overlap !== null && !s.isSheet && s.overlap > 0.25));
     const contiguous = steps.length > 0 && steps.every((s, idx) => s.step === idx + 1) && steps[steps.length - 1].step === steps[steps.length - 1].total;
