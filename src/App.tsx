@@ -3069,6 +3069,7 @@ export default function App() {
    * says so instead of silently doing nothing.
    */
   const handleGenerateGame = async () => {
+    if (saveLoading) return;
     setGenerateLoading(true);
     setGenerateNote('');
     setSaveError('');
@@ -7269,7 +7270,7 @@ export default function App() {
                 <select
                   value={generateKind}
                   onChange={(e) => setGenerateKind(e.target.value as 'pure' | 'mixed')}
-                  disabled={generateLoading}
+                  disabled={generateLoading || saveLoading}
                   aria-label="Equilibrium type to generate"
                   className="flex-1 px-2.5 py-1.5 text-xs bg-white dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-slate-300 text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
                 >
@@ -7279,7 +7280,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleGenerateGame}
-                  disabled={generateLoading}
+                  disabled={generateLoading || saveLoading}
                   className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 bg-indigo-50/60 dark:bg-indigo-950/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
                 >
                   {generateLoading ? 'Generating…' : 'Generate'}

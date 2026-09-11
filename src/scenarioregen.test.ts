@@ -550,6 +550,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const abandon = between(code, 'const abandonExplanationDialogSession = () => {', 'const cancelSaveDialog =');
   const consume = between(code, 'const consumeRegenExplanationAfterSave = (', 'useEffect(() => {');
   const editHandler = between(code, 'const handleEditGameSubmit = async', 'const deletingGamesRef =');
+  const generateHandler = between(code, 'const handleGenerateGame = async', 'const handleSaveGameSubmit = async');
   const saveHandler = between(code, 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async');
   const parsedSuccessGate = "if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true)))";
   const editSuccess = between(editHandler, 'if (res.ok) {', '\n      } else if (res.status === 404)');
@@ -637,6 +638,29 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('mutation: inheriting the old Save loading state fails the fresh-session boundary',
     saveSessionWithoutLoadingRelease !== beginSave
     && !startsIndependentSaveSession(saveSessionWithoutLoadingRelease));
+  const generateGuardedFromSave = (source: string): boolean => {
+    const guard = source.indexOf('if (saveLoading) return;');
+    const firstMutation = source.indexOf('setGenerateLoading(true);');
+    return guard >= 0 && firstMutation >= 0 && guard < firstMutation;
+  };
+  required('Generate rejects programmatic activation while a Save write is active',
+    generateGuardedFromSave(generateHandler));
+  const generateWithoutSaveGuard = generateHandler.replace('if (saveLoading) return;', '');
+  check('mutation: removing the Generate handler save guard fails the write-exclusion contract',
+    generateWithoutSaveGuard !== generateHandler && !generateGuardedFromSave(generateWithoutSaveGuard));
+  const generateClick = code.indexOf('onClick={handleGenerateGame}');
+  const generateTagStart = code.lastIndexOf('<button', generateClick);
+  const generateTagEnd = code.indexOf('>', generateClick);
+  const generateTag = generateClick >= 0 && generateTagStart >= 0 && generateTagEnd >= 0
+    ? code.slice(generateTagStart, generateTagEnd + 1)
+    : '';
+  const generateButtonBlocksSave = (source: string): boolean =>
+    /disabled=\{generateLoading\s*\|\|\s*saveLoading\}/.test(source);
+  required('the Generate button is disabled for both generation and Save writes',
+    generateButtonBlocksSave(generateTag));
+  const generateButtonWithoutSave = generateTag.replace(/\s*\|\|\s*saveLoading/, '');
+  check('mutation: removing saveLoading from Generate disabled state fails the control guard',
+    generateButtonWithoutSave !== generateTag && !generateButtonBlocksSave(generateButtonWithoutSave));
   required('a fresh ordinary Edit starts a new session before opening',
     /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
   required('auth resume closes and reopens the same dialog without abandoning it',
