@@ -4805,11 +4805,12 @@ try {
     // own Edit button, gated on the (now false) `canOwnGames`.
     // `dialogs.length <= 1` (not `=== 1`) matches the director's own
     // independent harness (round13/notes/DIRECTOR/repro-app13.mjs): the
-    // fixed focus-recapture can legitimately land on the dialog's own
-    // "Close dialog" ✕ (the first focusable once the error banner is the
-    // newest content), so Enter there CLOSES the dialog rather than leaving
-    // it open — neither outcome is the reported defect (a SECOND dialog
-    // stacked on an still-open first one).
+    // fixed focus-recapture can legitimately land on the dialog's own close
+    // button (so Enter closes it) or its own Sign In action (so Enter replaces
+    // it with Account). Neither is the reported defect: focus escaping to the
+    // header under the backdrop and stacking Account over the still-open
+    // Save/Edit dialog. The pre-Enter focus assertion and origin capture below
+    // distinguish that defect from a legitimate in-dialog action.
     for (const surface of ['save', 'edit']) {
       const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
       const uniq = await registerAndLogin(p, `e66${surface}`);
@@ -4873,24 +4874,32 @@ try {
       await submitDone.catch(() => null);
       await p.waitForFunction((s) => Array.from(document.querySelectorAll(`${s} button`)).some((b) => /sign in.*sign up/i.test(b.textContent || '')),
         dialogSel, { timeout: 5000 }).catch(() => {});
-      const focusInfo401 = await p.evaluate((l) => { const a = document.activeElement; return { dialogs: [...document.querySelectorAll('[role="dialog"]')].map((d) => d.getAttribute('aria-label')), inDialog: !!a?.closest(`[aria-label="${l}"]`) }; }, label);
+      const focusInfo401 = await p.evaluate((l) => {
+        const a = document.activeElement;
+        return {
+          dialogs: [...document.querySelectorAll('[role="dialog"]')].map((d) => d.getAttribute('aria-label')),
+          inDialog: !!a?.closest(`[aria-label="${l}"]`),
+        };
+      }, label);
       record(`${surfaceName} dialog + 401: the dialog is still open and focus stayed inside it (RED-APP-13/002)`,
         focusInfo401.dialogs.includes(label) && focusInfo401.inDialog, JSON.stringify(focusInfo401));
       await p.keyboard.press('Enter');
       await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const dialogsAfterEnter = await p.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => d.getAttribute('aria-label')));
-      // <= 1 for the reason in the comment above; additionally the ONE that
-      // may remain must be THIS surface, never a different dialog that
-      // replaced it (Account, opened from a header control under the
-      // backdrop — CodeRabbit CLI: a count of 1 alone would pass that shape).
+      // Enter from an in-dialog INPUT triggers that dialog form's implicit
+      // submit — here the dead-session submit, whose handler legitimately
+      // routes to Sign In (App.tsx deadSession branch -> beginNeedsAuthSignIn):
+      // Save/Edit closes and Account replaces it, WITHOUT any header
+      // interaction. A sole Account dialog is therefore allowed ONLY on the
+      // inDialog origin captured above; the defect this guards (the [user]
+      // effect's ModalRegistry guard removed) moves focus to the header
+      // Sign In control under the backdrop BEFORE Enter, failing the previous
+      // assertion, and stacking a second dialog here.
+      const soleDialog = dialogsAfterEnter.length === 1 ? dialogsAfterEnter[0] : null;
       record(`${surfaceName} dialog + 401: Enter does not stack a second dialog on top`,
-        dialogsAfterEnter.length <= 1 && dialogsAfterEnter.every((l) => l === label), JSON.stringify(dialogsAfterEnter));
-      // The 401 signed the page out and its [user] effect refetches the games; closing the page mid-flight
-      // logs 'Failed to fetch' as a console error (a teardown artefact, not a defect) — let the request settle first.
-      await p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-      // The 401 signed the page out and its [user] effect refetches the games; closing the page mid-flight
-      // logs 'Failed to fetch' as a console error (a teardown artefact, not a defect) — let the request settle first.
-      await p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        dialogsAfterEnter.length <= 1
+          && (soleDialog !== 'Account' || focusInfo401.inDialog),
+        JSON.stringify({ dialogsAfterEnter, focusInfo401 }));
       // The 401 signed the page out and its [user] effect refetches the games; closing the page mid-flight
       // logs 'Failed to fetch' as a console error (a teardown artefact, not a defect) — let the request settle first.
       await p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
@@ -7763,24 +7772,35 @@ try {
       await dp.unroute('**/api/games/*');
       await dp.keyboard.press('Escape');
 
-      // ── Director-verified regression on f3ca711: a request left in flight
-      // when its dialog closes must not leave the NEXT session's submit
-      // button disabled forever (`editLoading`/`saveLoading` belong to the
-      // SESSION, reset at open/close, not only in a since-guarded `finally`
-      // that now skips a stale response). Hang the PATCH, submit, close
-      // mid-flight, reopen — the fresh session's button must be enabled and
-      // read "Save Changes", never "Saving...".
-      await dp.route('**/api/games/*', (route) => (route.request().method() === 'PATCH' ? new Promise(() => {}) : route.continue()));
+      // ── H3 irreversible-write contract. A submitted PATCH may already
+      // have committed, so Escape must not hide its dialog or permit a second
+      // session while the outcome is unknown. Release the held request, await
+      // its real response and reconciliation, then prove a fresh Edit session
+      // is enabled. This replaces the pre-H3 oracle that expected the pending
+      // dialog to close — behavior that could conceal a committed write.
+      let releaseHeldPatch;
+      const heldPatchGate = new Promise((resolve) => { releaseHeldPatch = resolve; });
+      await dp.route('**/api/games/*', async (route) => {
+        if (route.request().method() !== 'PATCH') return route.continue();
+        await heldPatchGate;
+        return route.continue();
+      });
       await dp.locator('div.group', { has: savedRow }).getByTitle(/^Edit /).click();
       await editDlg.waitFor({ state: 'visible', timeout: 8000 });
       await editDlg.locator('textarea').first().fill('Edited then hung, testing the reopen loading reset.');
       const editSubmitBtn = editDlg.getByRole('button', { name: /^save changes$|^saving\.\.\.$/i });
       await editSubmitBtn.click();
       await editDlg.getByRole('button', { name: /^saving\.\.\.$/i }).waitFor({ state: 'visible', timeout: 5000 });
-      record('precondition: the hung submit shows "Saving..." (disabled) before the dialog closes',
+      record('precondition: the held submit shows "Saving..." (disabled)',
         await editDlg.getByRole('button', { name: /^saving\.\.\.$/i }).isDisabled().catch(() => false));
       await dp.keyboard.press('Escape');
-      await editDlg.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+      record('FIX (H3): Escape cannot dismiss an Edit dialog while its irreversible PATCH is unresolved',
+        await editDlg.isVisible().catch(() => false));
+      const patchResponse = dp.waitForResponse((r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
+      releaseHeldPatch();
+      await patchResponse;
+      await editDlg.waitFor({ state: 'hidden', timeout: 8000 });
+      await dp.unroute('**/api/games/*');
       await dp.locator('div.group', { has: savedRow }).getByTitle(/^Edit /).click();
       await editDlg.waitFor({ state: 'visible', timeout: 8000 });
       // CodeRabbit CLI: locate the button by BOTH possible names (its label
@@ -7788,9 +7808,8 @@ try {
       // actually broke — `editLoading`, read through `disabled={editLoading}`
       // (App.tsx:6222) — not the button's wording.
       const reopenedBtn = editDlg.getByRole('button', { name: /^save changes$|^saving\.\.\.$/i });
-      record('FIX: the reopened Edit dialog\'s submit button is enabled, not stuck disabled by the hung request\'s editLoading',
+      record('FIX (H3): after the held PATCH reconciles, a fresh Edit dialog has an enabled submit button',
         !(await reopenedBtn.isDisabled().catch(() => true)));
-      await dp.unroute('**/api/games/*');
       await dp.keyboard.press('Escape');
 
       // ── Positive control: an ACCOUNT user, still on dbMode='local', whose
