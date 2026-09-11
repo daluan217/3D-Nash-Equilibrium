@@ -2371,18 +2371,25 @@ function testSection62DrivesItsDefaultCameraControl() {
   );
   ok(!provesEventInsideThrottle(lateEventMutant),
     'mutation: accepting a late final event must fail the section 62 throttle-window guard');
+  const retryPreamble = /if \(attempt > 1\) \{\s*await setEye\(DEFAULT_EYE\);\s*cacheSynchronized = await synchronizeBurstBaseline\(\);/;
   const retriesOnlyInvalidBursts = (source: string): boolean =>
     source.includes('for (let attempt = 1; attempt <= 3; attempt++)')
-    && source.includes('if (attempt > 1) {\n          await setEye(DEFAULT_EYE);\n          cacheSynchronized = await synchronizeBurstBaseline();')
+    && retryPreamble.test(source)
     && source.includes('if (burstFitsThrottleWindow(burst)) break;');
   ok(retriesOnlyInvalidBursts(section62),
     'section 62 may retry scheduler-delayed setup, but only after restoring and re-observing its expanded baseline');
   const unboundedRetryMutant = section62.replace('attempt <= 3', 'true');
   ok(!retriesOnlyInvalidBursts(unboundedRetryMutant),
     'mutation: making the scheduler retry unbounded must fail the section 62 retry guard');
+  const reindentedRetryControl = section62.replace(
+    retryPreamble,
+    'if (attempt > 1) {\n  await setEye(DEFAULT_EYE);\n\tcacheSynchronized = await synchronizeBurstBaseline();',
+  );
+  ok(reindentedRetryControl !== section62 && retriesOnlyInvalidBursts(reindentedRetryControl),
+    'control: indentation-only retry formatting changes preserve the section 62 retry guard');
   const dirtyRetryMutant = section62.replace(
-    'if (attempt > 1) {\n          await setEye(DEFAULT_EYE);\n          cacheSynchronized = await synchronizeBurstBaseline();',
-    'if (attempt > 1) {\n          /* retry without restoring the observed baseline */',
+    retryPreamble,
+    'if (attempt > 1) { /* retry without restoring the observed baseline */',
   );
   ok(!retriesOnlyInvalidBursts(dirtyRetryMutant),
     'mutation: retrying without re-observing the default-camera baseline must fail the section 62 retry guard');
