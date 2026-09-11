@@ -578,9 +578,13 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     check('fixture sanity: a save-session opener missing the loading reset is rejected',
       !beginsCleanSaveSession(beginSaveSession.replace(/setSaveLoading\(false\);/, '')));
     check('fixture sanity: a save-session opener that clears ownership before checking it is rejected',
-      !beginsCleanSaveSession(beginSaveSession.replace('if (saveInFlightRef.current) {', 'if (false) {')));
+      !beginsCleanSaveSession(beginSaveSession.replace(
+        'if (saveInFlightRef.current) {',
+        'saveRequestIdRef.current = null;\n    if (saveInFlightRef.current) {',
+      )));
     check('fixture sanity: resets mentioned only in comments and strings are rejected',
       !beginsCleanSaveSession(`const beginSaveDialogSession = () => {
+        if (saveInFlightRef.current) { return 0; }
         // saveRequestIdRef.current = null;
         'saveInFlightRef.current = false;';
         'setSaveLoading(false);';
