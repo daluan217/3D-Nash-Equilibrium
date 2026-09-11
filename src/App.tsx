@@ -3358,7 +3358,14 @@ export default function App() {
         setSaveErrorNeedsAuth(false);
         return;
       }
-      const savedGame = isSavedGameResponseRecord(data?.game) ? data.game : null;
+      // CodeRabbit on #189 (outside-diff, 25dfd6a): shape alone is not
+      // identity. The server echoes the submitted clientRequestId in the row
+      // it wrote (server.ts:4404), so a successful response for a DIFFERENT
+      // game must not be appended or spend this session's authorization —
+      // the same identity rule Edit applies via `data.game.id === editGameId`.
+      const savedGame = isSavedGameResponseRecord(data?.game) && data.game.clientRequestId === clientRequestId
+        ? data.game
+        : null;
       if (res.ok && !savedGame) {
         setSaveError('Network error. Failed to save game.');
         setSaveErrorNeedsAuth(false);

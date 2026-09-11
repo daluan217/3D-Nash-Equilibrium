@@ -4896,9 +4896,14 @@ try {
       // Sign In control under the backdrop BEFORE Enter, failing the previous
       // assertion, and stacking a second dialog here.
       const soleDialog = dialogsAfterEnter.length === 1 ? dialogsAfterEnter[0] : null;
+      // Exact allowlist (independent-review tighten): the sole survivor must be
+      // the original dialog, or Account on the captured in-dialog origin. The
+      // App can open no third-party dialog in this flow today; this keeps it
+      // exact if one ever can.
       record(`${surfaceName} dialog + 401: Enter does not stack a second dialog on top`,
         dialogsAfterEnter.length <= 1
-          && (soleDialog !== 'Account' || focusInfo401.inDialog),
+          && (soleDialog === null || soleDialog === label
+            || (soleDialog === 'Account' && focusInfo401.inDialog)),
         JSON.stringify({ dialogsAfterEnter, focusInfo401 }));
       // The 401 signed the page out and its [user] effect refetches the games; closing the page mid-flight
       // logs 'Failed to fetch' as a console error (a teardown artefact, not a defect) — let the request settle first.
