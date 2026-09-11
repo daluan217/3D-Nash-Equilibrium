@@ -9397,10 +9397,23 @@ try {
           if (method === 'PATCH' && new URL(requestUrl, location.href).pathname.startsWith('/api/games/')) {
             window.__e2e91PatchSeen = true;
             return new Promise((resolve) => {
-              window.__e2e91ResolvePatch = () => resolve(new Response(JSON.stringify({
-                success: true,
-                game: { ...game, name },
-              }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+              window.__e2e91ResolvePatch = () => {
+                const response = new Response(JSON.stringify({
+                  success: true,
+                  game: { ...game, name },
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                const parseJson = response.json.bind(response);
+                Object.defineProperty(response, 'json', { value: async () => {
+                  const body = await parseJson();
+                  // The application has now crossed its final asynchronous
+                  // transport boundary. Its stale/commit branch runs in the
+                  // following microtask, which the bounded observer below
+                  // must outlive before declaring cancellation successful.
+                  window.__e2e91PatchBodyReadAt = performance.now();
+                  return body;
+                } });
+                resolve(response);
+              };
             });
           }
           return nativeFetch(input, init);
@@ -9414,6 +9427,36 @@ try {
       record('precondition: the Edit PATCH response is held until the cancellation task releases it', patchHeld);
       if (patchHeld) {
         await lateEditDialog.screenshot({ path: '/tmp/e2e91-edit-cancel-before.png' });
+        // Arm the observer BEFORE the held response is released. It waits for
+        // the response body to be consumed, then polls through a bounded
+        // stability window; a late row/log commit returns an immediate red
+        // result, while a missing settlement times out red as well.
+        const cancellationOutcomePromise = cancelEditPage.waitForFunction(
+          ({ oldName, lateName, successText, stableForMs }) => {
+            const bodyReadAt = window.__e2e91PatchBodyReadAt;
+            if (typeof bodyReadAt !== 'number') return false;
+            const dialogClosed = !document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
+            if (!dialogClosed) return false;
+            const exactButtonExists = (name) => [...document.querySelectorAll('button')]
+              .some((button) => button.textContent?.trim() === name);
+            const oldRowKept = exactButtonExists(oldName);
+            const lateRowAdded = exactButtonExists(lateName);
+            const successLogCount = [...document.querySelectorAll('p')]
+              .filter((line) => line.textContent?.trim() === successText).length;
+            const ok = oldRowKept && !lateRowAdded && successLogCount === 0;
+            if (!ok || performance.now() - bodyReadAt >= stableForMs) {
+              return { ok, dialogClosed, oldRowKept, lateRowAdded, successLogCount };
+            }
+            return false;
+          },
+          {
+            oldName: cancelEditBaseName,
+            lateName: cancelledEditName,
+            successText: `✓ Updated "${cancelledEditName}".`,
+            stableForMs: 500,
+          },
+          { timeout: 5000, polling: 'raf' },
+        ).then((handle) => handle.jsonValue()).catch(() => null);
         const cancelledAndReleased = await cancelEditPage.evaluate(() => {
           const dialog = document.querySelector('[role="dialog"][aria-label="Edit saved game"]');
           const cancel = [...(dialog?.querySelectorAll('button') ?? [])]
@@ -9424,17 +9467,11 @@ try {
           release();
           return true;
         });
-        await cancelEditPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        const dialogClosed = await lateEditDialog.waitFor({ state: 'hidden', timeout: 5000 }).then(() => true).catch(() => false);
+        const cancellationOutcome = await cancellationOutcomePromise;
         await cancelEditPage.screenshot({ path: '/tmp/e2e91-edit-cancel-after.png', fullPage: true });
-        const oldRowKept = await cancelEditPage.getByRole('button', { name: cancelEditBaseName, exact: true })
-          .isVisible({ timeout: 2000 }).catch(() => false);
-        const lateRowAdded = await cancelEditPage.getByRole('button', { name: cancelledEditName, exact: true })
-          .isVisible({ timeout: 1000 }).catch(() => false);
-        const successLogCount = await cancelEditPage.getByText(`✓ Updated "${cancelledEditName}".`, { exact: true }).count();
         record('FIX: cancelling before Edit settles keeps the old row and appends no success log',
-          cancelledAndReleased && dialogClosed && oldRowKept && !lateRowAdded && successLogCount === 0,
-          `released=${cancelledAndReleased} closed=${dialogClosed} old=${oldRowKept} late=${lateRowAdded} successLogs=${successLogCount}`);
+          cancelledAndReleased && cancellationOutcome?.ok === true,
+          `released=${cancelledAndReleased} settled=${!!cancellationOutcome} closed=${cancellationOutcome?.dialogClosed ?? false} old=${cancellationOutcome?.oldRowKept ?? false} late=${cancellationOutcome?.lateRowAdded ?? false} successLogs=${cancellationOutcome?.successLogCount ?? 'timeout'}`);
       }
     }
     await cancelEditPage.close();
@@ -9484,10 +9521,31 @@ try {
       baseSave.saved && baseSave.readback, `saved=${baseSave.saved} readback=${baseSave.readback}`);
     if (baseSave.saved && baseSave.readback && baseSave.id) {
       let editPatchRefused = false;
+      let editLegacyResponseRewritten = false;
       await editPage.route('**/api/games/*', async (route) => {
-        if (route.request().method() === 'PATCH' && !editPatchRefused) {
+        const isPatch = route.request().method() === 'PATCH';
+        if (isPatch && !editPatchRefused) {
           editPatchRefused = true;
           await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid or expired session.' }) });
+        } else if (isPatch && !editLegacyResponseRewritten) {
+          // Let the server really commit the edit, but present the client with
+          // the shape an older stored row can produce when PATCH spreads it:
+          // some story metadata is null and some is absent. The app supports
+          // those as empty values and must still accept the successful write.
+          const response = await route.fetch();
+          const body = await response.json().catch(() => null);
+          if (response.ok() && body?.success === true && body?.game) {
+            body.game.description = null;
+            body.game.row1Label = null;
+            body.game.colorTermsA = null;
+            body.game.clientRequestId = null;
+            delete body.game.row2Label;
+            delete body.game.colorTermsB;
+            editLegacyResponseRewritten = true;
+            await route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(body) });
+          } else {
+            await route.fulfill({ response });
+          }
         } else {
           await route.continue();
         }
@@ -9499,6 +9557,13 @@ try {
       await editDialog.getByRole('button', { name: 'Close', exact: true }).click();
       await editDialog.waitFor({ state: 'hidden', timeout: 5000 });
       editDialog = await openSuggestedEdit(editPage);
+      const editDraftName = 'E2E 91 preserved Edit auth draft';
+      const editNameInput = editDialog.locator('input[type="text"]').first();
+      await editNameInput.fill(editDraftName);
+      if (!(await waitForInputValue(editPage,
+        '[role="dialog"][aria-label="Edit saved game"] input[type="text"]', 0, editDraftName, 5000))) {
+        throw new Error('Edit auth-detour sentinel did not commit before the refused PATCH');
+      }
       const refusedPatch = editPage.waitForResponse((r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
       await editDialog.getByRole('button', { name: /save changes/i }).click();
       const refusedResponse = await refusedPatch.catch(() => null);
@@ -9517,15 +9582,23 @@ try {
         await auth.getByRole('button', { name: 'Close dialog', exact: true }).click();
         await auth.waitFor({ state: 'hidden', timeout: 5000 });
         const editReopened = await editDialog.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+        const draftAfterDismiss = editReopened
+          && await waitForInputValue(editPage,
+            '[role="dialog"][aria-label="Edit saved game"] input[type="text"]', 0, editDraftName, 5000)
+          && await editNameInput.inputValue() === editDraftName;
         record('FIX: dismissing Edit auth reopens the same typed dialog but abandons its report-refresh authorization',
-          editReopened, `reopened=${editReopened}`);
-        if (editReopened) {
+          editReopened && draftAfterDismiss,
+          `reopened=${editReopened} draftPreserved=${draftAfterDismiss}`);
+        if (editReopened && draftAfterDismiss) {
           const resumedEditSignIn = editDialog.getByRole('button', { name: /sign in\s*\/\s*sign up/i });
           await resumedEditSignIn.waitFor({ state: 'visible', timeout: 5000 });
           await resumedEditSignIn.click();
           await auth.waitFor({ state: 'visible', timeout: 5000 });
           await loginExistingAccount(editPage, editUser);
           await editDialog.waitFor({ state: 'visible', timeout: 8000 });
+          const draftAfterLogin = await waitForInputValue(editPage,
+            '[role="dialog"][aria-label="Edit saved game"] input[type="text"]', 0, editDraftName, 5000)
+            && await editNameInput.inputValue() === editDraftName;
           watchEditReports = true;
           const editedName = await editDialog.locator('input[type="text"]').first().inputValue();
           const finalPatch = editPage.waitForResponse((r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
@@ -9541,12 +9614,16 @@ try {
           } catch { /* explicit oracle reports a stuck Edit dialog */ }
           const finalSaved = finalResponse?.ok() === true && finalBody?.success === true
             && finalBody?.game?.id === baseSave.id && finalBody?.game?.name === editedName && finalHidden;
+          const legacyResponseAccepted = editLegacyResponseRewritten
+            && finalBody?.game?.description === null && finalBody?.game?.row1Label === null
+            && finalBody?.game?.row2Label === undefined && finalBody?.game?.colorTermsA === null
+            && finalBody?.game?.colorTermsB === undefined && finalBody?.game?.clientRequestId === null;
           const finalReadback = finalSaved ? await readBackSavedGame(editPage, baseSave.id, editedName) : null;
           const noEditReportAfter = await observeNoReport(editPage);
           const noEditReport = await noEditReportDuring && noEditReportAfter;
           record('FIX: a successful Edit after auth dismissal requires success:true/readback and stays report-free',
-            finalSaved && !!finalReadback?.ok && finalReadback.parsed && finalReadback.found && noEditReport && editReports === 0,
-            `saved=${finalSaved} readback=${!!finalReadback?.ok && finalReadback.parsed && finalReadback.found} noReport=${noEditReport} reports=${editReports}`);
+            draftAfterLogin && finalSaved && legacyResponseAccepted && !!finalReadback?.ok && finalReadback.parsed && finalReadback.found && noEditReport && editReports === 0,
+            `draftAfterLogin=${draftAfterLogin} saved=${finalSaved} legacyResponse=${legacyResponseAccepted} readback=${!!finalReadback?.ok && finalReadback.parsed && finalReadback.found} noReport=${noEditReport} reports=${editReports}`);
         }
       }
     }

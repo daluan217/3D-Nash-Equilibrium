@@ -611,6 +611,14 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     row1Label: 'Up', row2Label: 'Down', col1Label: 'Left', col2Label: 'Right',
     colorTermsA: ['operator'], colorTermsB: ['supplier'],
   };
+  const legacySavedGame = {
+    id: 'g-legacy',
+    name: 'Legacy game',
+    description: null,
+    payoffs: payoffs(),
+    row1Label: null,
+    colorTermsA: null,
+  };
 
   required('the pending value has a dialog nonce plus a RegenKey',
     /type ExplanationSessionKey = \{[\s\S]*dialogSessionId: number;[\s\S]*regenKey: RegenKey;/.test(code)
@@ -768,9 +776,12 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
 
   required('the saved-game response predicate accepts a complete server game',
     isSavedGameResponseRecord(validSavedGame));
-  required('the saved-game response predicate rejects a missing game, non-finite payoff, and malformed term list',
+  required('the saved-game response predicate accepts nullish or absent optional fields on a legacy PATCH row',
+    isSavedGameResponseRecord(legacySavedGame));
+  required('the saved-game response predicate rejects a missing game, non-finite payoff, malformed optional text, and malformed term list',
     !isSavedGameResponseRecord(undefined)
     && !isSavedGameResponseRecord({ ...validSavedGame, payoffs: { ...validSavedGame.payoffs, a11: Number.NaN } })
+    && !isSavedGameResponseRecord({ ...validSavedGame, row1Label: 4 })
     && !isSavedGameResponseRecord({ ...validSavedGame, colorTermsA: ['operator', 4] }));
   const savedGameGuard = 'if (res.ok && !savedGame)';
   const commitsOnlyValidGame = (source: string): boolean =>
@@ -801,8 +812,10 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   required('the session key is retired when a new matrix is generated',
     /const handleGenerateGame = async \(\) => \{[\s\S]*beginSaveDialogSession\(\);/.test(code));
 
-  const smoke = withoutComments(readFileSync('src/e2e/smoke.mjs', 'utf8'));
+  const rawSmoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+  const smoke = withoutComments(rawSmoke);
   const section91 = between(smoke, "section('91',", '\nawait executeSections();');
+  const rawSection91 = between(rawSmoke, "section('91',", '\nawait executeSections();');
   const readback = between(section91, 'const readBackSavedGame = async', 'const submitOrdinarySave = async');
   const readbackIsBounded = (source: string) =>
     /const\s+controller\s*=\s*new AbortController\(\)/.test(source)
@@ -818,6 +831,66 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const noReadbackCleanupMutant = readback.replace('clearTimeout(deadlineTimer);', '');
   check('mutation: removing readback timer cleanup fails the §91 deadline guard',
     !readbackIsBounded(noReadbackCleanupMutant));
+
+  const editCancelRace = between(rawSection91, 'const cancelEditPage = await', 'await cancelEditPage.close();');
+  const hasPrearmedEditCancelObserver = (source: string): boolean => {
+    const observer = source.indexOf('const cancellationOutcomePromise = cancelEditPage.waitForFunction(');
+    const release = source.indexOf('const cancelledAndReleased = await cancelEditPage.evaluate(');
+    return observer >= 0 && release > observer
+      && /__e2e91PatchBodyReadAt = performance\.now\(\)/.test(source)
+      && /typeof bodyReadAt !== 'number'/.test(source)
+      && /performance\.now\(\) - bodyReadAt >= stableForMs/.test(source)
+      && /\{ timeout: 5000, polling: 'raf' \}/.test(source)
+      && /cancellationOutcome\?\.ok === true/.test(source)
+      && !/requestAnimationFrame\(\(\) => requestAnimationFrame\(resolve\)\)/.test(source)
+      && !/\.isVisible\(\{ timeout:/.test(source);
+  };
+  required('§91 pre-arms a bounded post-body-read Edit-cancel observer before releasing the PATCH',
+    hasPrearmedEditCancelObserver(editCancelRace));
+  const editCancelWithoutBodyRead = editCancelRace.replace('__e2e91PatchBodyReadAt = performance.now();', '');
+  check('mutation: removing the PATCH body-read settlement signal fails the Edit-cancel oracle guard',
+    editCancelWithoutBodyRead !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutBodyRead));
+  const editCancelWithoutPrearm = editCancelRace.replace(
+    'const cancellationOutcomePromise = cancelEditPage.waitForFunction(',
+    'const delayedCancellationOutcomePromise = cancelEditPage.waitForFunction(',
+  );
+  check('mutation: removing the named pre-release observer fails the Edit-cancel oracle guard',
+    editCancelWithoutPrearm !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutPrearm));
+
+  const editAuthRace = between(rawSection91, 'const editPage = await', 'await editPage.close();');
+  const preservesEditDraftAcrossAuth = (source: string): boolean => {
+    const afterDismiss = between(source, 'const draftAfterDismiss =', "record('FIX: dismissing Edit auth");
+    const afterLogin = between(source, 'const draftAfterLogin =', 'watchEditReports = true;');
+    return /const editDraftName = '[^']+';[\s\S]*await editNameInput\.fill\(editDraftName\)/.test(source)
+      && /await editNameInput\.inputValue\(\) === editDraftName/.test(afterDismiss)
+      && /await editNameInput\.inputValue\(\) === editDraftName/.test(afterLogin)
+      && /draftAfterLogin && finalSaved/.test(source);
+  };
+  required('§91 proves the typed Edit draft survives both auth dismissal and successful login',
+    preservesEditDraftAcrossAuth(editAuthRace));
+  const editAuthWithoutDismissValue = editAuthRace.replace(
+    '&& await editNameInput.inputValue() === editDraftName;',
+    ';',
+  );
+  check('mutation: dropping the post-dismiss typed-value assertion fails the Edit auth-detour guard',
+    editAuthWithoutDismissValue !== editAuthRace && !preservesEditDraftAcrossAuth(editAuthWithoutDismissValue));
+  const editAuthWithoutLoginGate = editAuthRace.replace('draftAfterLogin && finalSaved', 'finalSaved');
+  check('mutation: dropping the post-login draft gate fails the Edit auth-detour guard',
+    editAuthWithoutLoginGate !== editAuthRace && !preservesEditDraftAcrossAuth(editAuthWithoutLoginGate));
+  const exercisesLegacyPatchResponse = (source: string): boolean =>
+    /const response = await route\.fetch\(\)/.test(source)
+    && /body\.game\.description = null/.test(source)
+    && /body\.game\.row1Label = null/.test(source)
+    && /delete body\.game\.row2Label/.test(source)
+    && /body\.game\.colorTermsA = null/.test(source)
+    && /delete body\.game\.colorTermsB/.test(source)
+    && /body\.game\.clientRequestId = null/.test(source)
+    && /finalSaved && legacyResponseAccepted &&/.test(source);
+  required('§91 accepts a real committed PATCH whose client response has supported legacy nullish fields',
+    exercisesLegacyPatchResponse(editAuthRace));
+  const editAuthWithoutLegacyGate = editAuthRace.replace('finalSaved && legacyResponseAccepted &&', 'finalSaved &&');
+  check('mutation: dropping the legacy-response acceptance gate fails the Edit auth-detour guard',
+    editAuthWithoutLegacyGate !== editAuthRace && !exercisesLegacyPatchResponse(editAuthWithoutLegacyGate));
 }
 
 if (failures > 0) {
