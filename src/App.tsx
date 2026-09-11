@@ -729,6 +729,12 @@ export default function App() {
   };
   const beginSaveDialogSession = () => {
     const id = nextExplanationDialogSession();
+    // A new Save story is not a retry of an older POST. Clearing the request
+    // id makes that response stale in both the client callback and catch path;
+    // clearing loading releases the new session's controls while the stale
+    // request's finally is deliberately forbidden from touching them.
+    saveRequestIdRef.current = null;
+    setSaveLoading(false);
     saveDialogSessionRef.current = id;
     editDialogSessionRef.current = null;
     regenExplanationAfterSaveRef.current = null;
@@ -2020,14 +2026,6 @@ export default function App() {
       dialogSessionId,
       regenKey: { kind: 'save', payoffs },
     };
-    // A fresh save attempt for a different scenario — never reuse a
-    // clientRequestId minted for whatever the dialog last tried to save.
-    saveRequestIdRef.current = null;
-    // CodeRabbit on #158 (director-verified regression on f3ca711): a
-    // stale submit's `finally` now leaves `saveLoading` untouched — nothing
-    // else ever reset it, so a request in flight when the dialog closed
-    // left the NEXT session's Save Game Profile button disabled forever.
-    setSaveLoading(false);
     setIsSaveModalOpen(true);
   };
 
@@ -5309,13 +5307,6 @@ export default function App() {
                     // src/utils/saveFormModel.ts; this click has no rule of
                     // its own (STRUCT-REGEN-19/001).
                     openSaveFormForBoard();
-                    // A brand-new "Save Preset" click — a new save attempt,
-                    // never a retry of whatever the dialog last submitted.
-                    saveRequestIdRef.current = null;
-                    // See the other fresh-open site's comment (CodeRabbit on
-                    // #158): a stale submit's own finally no longer clears
-                    // this, so the open path must.
-                    setSaveLoading(false);
                     setIsSaveModalOpen(true);
                   }}
                   data-focus-fallback="save-preset"

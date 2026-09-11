@@ -546,8 +546,9 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const suggestedSave = between(suggested, "const prefillName = (sc.name ?? '').slice(0, 40);", 'setIsSaveModalOpen(true);');
   const authGate = between(code, 'const beginNeedsAuthSignIn =', 'const explanationDialogSessionSeqRef =');
   const dismiss = between(code, 'const dismissAuthModal = () => {', 'const consumeRegenExplanationAfterSave = (');
+  const beginSave = between(code, 'const beginSaveDialogSession = () => {', 'const beginEditDialogSession = () => {');
   const abandon = between(code, 'const abandonExplanationDialogSession = () => {', 'const cancelSaveDialog =');
-  const consume = between(code, 'const consumeRegenExplanationAfterSave = (', 'const saveRequestIdRef = useRef');
+  const consume = between(code, 'const consumeRegenExplanationAfterSave = (', 'useEffect(() => {');
   const editHandler = between(code, 'const handleEditGameSubmit = async', 'const deletingGamesRef =');
   const saveHandler = between(code, 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async');
   const parsedSuccessGate = "if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true)))";
@@ -595,6 +596,9 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     /const dialogSessionId = beginEditDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'edit', gameId: existing\.id \}/.test(source);
   const savePrefillStoresOwnSession = (source: string): boolean =>
     /const dialogSessionId = beginSaveDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'save', payoffs \}/.test(source);
+  const startsIndependentSaveSession = (source: string): boolean =>
+    /saveRequestIdRef\.current\s*=\s*null;/.test(source)
+    && /setSaveLoading\(false\);/.test(source);
   const validSavedGame = {
     id: 'g-fixture',
     name: 'Fixture game',
@@ -623,6 +627,16 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     wrongSaveNonce !== suggestedSave && !savePrefillStoresOwnSession(wrongSaveNonce));
   required('a fresh ordinary Save starts a new session before opening',
     /onClick=\{\(\) => \{[\s\S]*?beginSaveDialogSession\(\);[\s\S]*?openSaveFormForBoard\(\);[\s\S]*?setIsSaveModalOpen\(true\);[\s\S]*?data-focus-fallback="save-preset"/.test(code));
+  required('every new Save session invalidates an older POST and releases its own loading state',
+    startsIndependentSaveSession(beginSave));
+  const saveSessionWithoutRequestInvalidation = beginSave.replace(/saveRequestIdRef\.current\s*=\s*null;/, '');
+  check('mutation: keeping the prior Save request id fails the fresh-session boundary',
+    saveSessionWithoutRequestInvalidation !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutRequestInvalidation));
+  const saveSessionWithoutLoadingRelease = beginSave.replace(/setSaveLoading\(false\);/, '');
+  check('mutation: inheriting the old Save loading state fails the fresh-session boundary',
+    saveSessionWithoutLoadingRelease !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutLoadingRelease));
   required('a fresh ordinary Edit starts a new session before opening',
     /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
   required('auth resume closes and reopens the same dialog without abandoning it',
