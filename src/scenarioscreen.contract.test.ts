@@ -402,6 +402,20 @@ for (const s of SCENARIO_SCREENS) {
   const wide = screenScenario(fullwidth, g, opts());
   check('...and the identical claim with one fullwidth letter is refused by the SAME screen',
     !wide.ok && wide.screen === 'claim-free', `ok=${wide.ok} screen=${wide.screen} reason=${wide.reason}`);
+  const combining = JSON.parse(JSON.stringify({
+    ...quota, description: quota.description!.replace('better', 'b\u0301etter'),
+  })) as SuggestedScenario;
+  const marked = screenScenario(combining, g, opts());
+  check('...and the identical claim with a non-composing mark spliced into its word is refused by the SAME screen',
+    !marked.ok && marked.screen === 'claim-free',
+    `ok=${marked.ok} screen=${marked.screen} reason=${marked.reason}`);
+  const precomposing = JSON.parse(JSON.stringify({
+    ...quota, description: quota.description!.replace('better', 'be\u0301tter'),
+  })) as SuggestedScenario;
+  const composed = screenScenario(precomposing, g, opts());
+  check('...and a mark that NFKC first composes into an accented letter cannot evade the claim screen',
+    !composed.ok && composed.screen === 'claim-free',
+    `ok=${composed.ok} screen=${composed.screen} reason=${composed.reason}`);
   // The control: folding must not turn ordinary prose into a claim. A fullwidth
   // letter in a word no rule lists is not a refusal.
   const harmless = JSON.parse(JSON.stringify({
@@ -411,6 +425,15 @@ for (const s of SCENARIO_SCREENS) {
   const plain = screenScenario(harmless, g, opts());
   check('control: a fullwidth letter in a NON-claim word passes the whole table', plain.ok,
     `refused by ${plain.screen}: ${plain.reason}`);
+  const accented = JSON.parse(JSON.stringify({
+    ...harmless,
+    description: 'Two cafe\u0301 fleets set a seasonal quota. One picks Hold Quota or Raise Quota; the other picks Open Season or Short Season.',
+  })) as SuggestedScenario;
+  const authoredAccentedDescription = accented.description;
+  const accentedVerdict = screenScenario(accented, g, opts());
+  check('control: ordinary decomposed accented prose passes and remains byte-for-byte authored text',
+    accentedVerdict.ok && accented.description === authoredAccentedDescription,
+    `ok=${accentedVerdict.ok} screen=${accentedVerdict.screen} preserved=${accented.description === authoredAccentedDescription}`);
 }
 
 {
