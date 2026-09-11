@@ -671,7 +671,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     const guard = source.indexOf('if (saveInFlightRef.current || generateGameInFlightRef.current) return;');
     const claim = source.indexOf('saveInFlightRef.current = true;');
     const firstMutation = source.indexOf("setSaveError('');");
-    const keyedRelease = /if \(!staleSession\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(source);
+    const keyedRelease = /if \(!staleSession \|\| saveRequestIdRef\.current === clientRequestId\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(source);
     return guard >= 0 && claim > guard && firstMutation > claim && keyedRelease;
   };
   required('Save rejects programmatic activation while Generate owns the form',

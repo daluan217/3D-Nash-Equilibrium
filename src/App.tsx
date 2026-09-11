@@ -2930,7 +2930,10 @@ export default function App() {
       setEditError('Network error. Failed to update game.');
       setEditErrorNeedsAuth(false);
     } finally {
-      if (!staleSession) setEditLoading(false);
+      // The shared client also reports stale when auth/mode context changes.
+      // That does not retire this dialog, so its own controls still need to
+      // be released; a genuinely newer dialog session owns its own loading.
+      if (!staleSession || editSessionRef.current === editSessionAtSubmit) setEditLoading(false);
     }
   };
 
@@ -3395,7 +3398,10 @@ export default function App() {
       setSaveError('Network error. Failed to save game.');
       setSaveErrorNeedsAuth(false);
     } finally {
-      if (!staleSession) {
+      // `res.stale` can mean the auth/mode context changed, not only that this
+      // Save session was retired. Release the controls when this request still
+      // owns them; success is non-stale even though it clears the id above.
+      if (!staleSession || saveRequestIdRef.current === clientRequestId) {
         saveInFlightRef.current = false;
         setSaveLoading(false);
       }

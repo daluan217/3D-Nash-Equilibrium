@@ -471,16 +471,23 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
       /staleSession = res\.stale;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
     check('handleEditGameSubmit checks staleness in its catch block too',
       /catch \{[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
-    check('handleEditGameSubmit guards setEditLoading(false) in finally with the SAME flag (not re-derived, which the success branch\'s own session bump would flip)',
-      /finally \{[\s\S]{0,50}if \(!staleSession\) setEditLoading\(false\);/.test(editSlice));
+    check('handleEditGameSubmit releases loading for a non-stale response or a context-stale response still owned by the same dialog',
+      /finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) setEditLoading\(false\);/.test(editSlice));
     check('handleSaveGameSubmit hands its own request-id predicate (saveRequestIdRef) to the client',
       /isStale: \(\) => saveRequestIdRef\.current !== clientRequestId,/.test(saveSlice));
     check('handleSaveGameSubmit takes the client\'s staleness verdict immediately, before any branch',
       /staleSession = res\.stale;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
     check('handleSaveGameSubmit checks staleness in its catch block too',
       /catch \{[\s\S]{0,200}staleSession = saveRequestIdRef\.current !== clientRequestId;[\s\S]{0,10}if \(staleSession\) return;/.test(saveSlice));
-    check('handleSaveGameSubmit releases its synchronous owner and loading state in finally with the SAME flag',
-      /finally \{[\s\S]{0,50}if \(!staleSession\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(saveSlice));
+    check('handleSaveGameSubmit releases its controls for a non-stale response or a context-stale response still owned by the same request',
+      /finally \{[\s\S]{0,300}if \(!staleSession \|\| saveRequestIdRef\.current === clientRequestId\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(saveSlice));
+
+    const editWithoutOwnerFallback = editSlice.replace(' || editSessionRef.current === editSessionAtSubmit', '');
+    check('mutation: Edit cleanup without the same-dialog ownership fallback is rejected',
+      !/finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) setEditLoading\(false\);/.test(editWithoutOwnerFallback));
+    const saveWithoutOwnerFallback = saveSlice.replace(' || saveRequestIdRef.current === clientRequestId', '');
+    check('mutation: Save cleanup without the same-request ownership fallback is rejected',
+      !/finally \{[\s\S]{0,300}if \(!staleSession \|\| saveRequestIdRef\.current === clientRequestId\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(saveWithoutOwnerFallback));
 
     // The guard must precede every setter it exists to protect — no setter
     // sneaks in between the response and the `if (staleSession) return;`.
