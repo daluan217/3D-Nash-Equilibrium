@@ -585,8 +585,18 @@ function extractModalSurfaceBlock(src: string, id: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const editBlock = extractModalSurfaceBlock(app, 'edit-saved-game');
-  ok(/onClose=\{\(\) => \{ setIsEditModalOpen\(false\); setEditError\(''\); \}\}/.test(editBlock),
-    `Edit's <ModalSurface onClose> must close the SAME way its own "✕" button and backdrop do, got: ${JSON.stringify(editBlock.slice(0, 300))}`);
+  const cancelEditStart = app.indexOf('const cancelEditDialog = () => {');
+  const cancelEditEnd = app.indexOf('const dismissAuthModal = () => {', cancelEditStart);
+  const cancelEditBlock = cancelEditStart >= 0 && cancelEditEnd > cancelEditStart
+    ? app.slice(cancelEditStart, cancelEditEnd)
+    : '';
+  ok(/onClose=\{cancelEditDialog\}/.test(editBlock)
+    && cancelEditBlock.indexOf('if (editInFlightRef.current) return;') >= 0
+    && cancelEditBlock.indexOf('if (editInFlightRef.current) return;') < cancelEditBlock.indexOf('editSessionRef.current += 1;')
+    && /editSessionRef\.current \+= 1;[\s\S]*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);[\s\S]*setIsEditModalOpen\(false\);[\s\S]*setEditError\(''\);/.test(cancelEditBlock),
+    `Edit's <ModalSurface onClose> must use the session-abandoning close path shared by its own "✕" button and Cancel, got: ${JSON.stringify(editBlock.slice(0, 300))}`);
+  ok((editBlock.match(/disabled=\{editLoading\}/g) ?? []).length >= 3,
+    'Edit close, Cancel, and submit controls must all be disabled while PATCH ownership is active');
 
   // The local-games offer's onClose must still refuse to close mid-request
   // (RED-APP-12's "never mid-move" rule) — ModalSurface's shared Escape

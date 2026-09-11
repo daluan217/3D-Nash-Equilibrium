@@ -11,6 +11,7 @@
  */
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import {
   isSameStory,
   regenKeyEquals,
@@ -32,6 +33,7 @@ import { pickScenarioDomainExcluding, SCENARIO_DOMAINS } from './utils/scenarioD
 import { bankDomainFor, bankScenarioAvoiding, allBankRows, bankAvailable, __resetBankSeen } from './utils/bankSource';
 import { pickFromBank } from './utils/scenarioBank';
 import type { GamePayoffs } from './types';
+import { isSavedGameResponseRecord } from './utils/savedGameResponse';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -520,6 +522,548 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     !mutants[0][1].includes('this description'));
   check(`${mutants[1][0]} -> would fail "${mutants[1][2]}"`,
     mutants[1][1] !== keepDefault);
+}
+
+// ── RED-REGEN-20/001: an abandoned auth detour must not spend a prefill ─────
+{
+  const app = readFileSync('src/App.tsx', 'utf8');
+  // These checks intentionally inspect the EXACT named functions and paths,
+  // rather than searching the whole file. A source regex that sees a helper or
+  // a comment anywhere in App.tsx can pass while the real Save success branch
+  // never consumes anything, or while the dismiss clear sits under Edit only.
+  const withoutComments = (source: string) => source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+  const between = (source: string, start: string, end: string) => {
+    const i = source.indexOf(start);
+    if (i < 0) return '';
+    const j = source.indexOf(end, i + start.length);
+    return j < 0 ? '' : source.slice(i, j);
+  };
+  const code = withoutComments(app);
+  const suggested = between(code, 'const useSuggestedScenario = async', 'const fetchLlmExplanation = async');
+  const suggestedEdit = between(suggested, 'if (existing && authToken) {', 'setIsEditModalOpen(true);');
+  const suggestedSave = between(suggested, "const prefillName = (sc.name ?? '').slice(0, 40);", 'setIsSaveModalOpen(true);');
+  const authGate = between(code, 'const beginNeedsAuthSignIn =', 'const explanationDialogSessionSeqRef =');
+  const dismiss = between(code, 'const dismissAuthModal = () => {', 'const consumeRegenExplanationAfterSave = (');
+  const beginSave = between(code, 'const beginSaveDialogSession = () => {', 'const beginEditDialogSession = () => {');
+  const abandon = between(code, 'const abandonExplanationDialogSession = () => {', 'const cancelSaveDialog =');
+  const cancelSave = between(code, 'const cancelSaveDialog = () => {', 'const cancelEditDialog = () => {');
+  const cancelEdit = between(code, 'const cancelEditDialog = () => {', 'const dismissAuthModal = () => {');
+  const consume = between(code, 'const consumeRegenExplanationAfterSave = (', 'useEffect(() => {');
+  const editHandler = between(code, 'const handleEditGameSubmit = async', 'const deletingGamesRef =');
+  const generateHandler = between(code, 'const handleGenerateGame = async', 'const handleSaveGameSubmit = async');
+  const saveHandler = between(code, 'const handleSaveGameSubmit = async', 'const handleRegenerateScenario = async');
+  const parsedSuccessGate = "if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true)))";
+  const editSuccess = between(editHandler, 'if (res.ok) {', '\n      } else if (res.status === 404)');
+  const saveSuccess = between(saveHandler, 'if (res.ok) {', '\n      } else {');
+  const required = (label: string, ok: boolean) => check(`RED-REGEN-20/001: ${label}`, ok);
+  const guardRange = (source: string, signature: string): { start: number; open: number; close: number } | null => {
+    const start = source.indexOf(signature);
+    if (start < 0) return null;
+    const open = source.indexOf('{', start + signature.length);
+    if (open < 0) return null;
+    let depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1;
+      if (source[i] === '}') depth -= 1;
+      if (depth === 0) return { start, open, close: i };
+    }
+    return null;
+  };
+  const guardReturnsBefore = (source: string, signature: string, commitMarker: string): boolean => {
+    const gate = guardRange(source, signature);
+    const commit = source.indexOf(commitMarker);
+    if (!gate || commit < 0 || gate.close >= commit) return false;
+    const body = source.slice(gate.open + 1, gate.close);
+    const parsed = ts.createSourceFile(
+      'regen-response-guard.tsx',
+      `function guard() {${body}}`,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const fn = parsed.statements.find(ts.isFunctionDeclaration);
+    return fn?.body?.statements.some(ts.isReturnStatement) === true;
+  };
+  const removeDirectGuardReturn = (source: string, signature: string): string => {
+    const gate = guardRange(source, signature);
+    if (!gate) return source;
+    const body = source.slice(gate.open + 1, gate.close);
+    const returnAt = body.lastIndexOf('return;');
+    if (returnAt < 0) return source;
+    const absolute = gate.open + 1 + returnAt;
+    return source.slice(0, absolute) + source.slice(absolute + 'return;'.length);
+  };
+  const editPrefillStoresOwnSession = (source: string): boolean =>
+    /const dialogSessionId = beginEditDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'edit', gameId: existing\.id \}/.test(source);
+  const savePrefillStoresOwnSession = (source: string): boolean =>
+    /const dialogSessionId = beginSaveDialogSession\(\);[\s\S]*regenExplanationAfterSaveRef\.current = \{\s*dialogSessionId,\s*regenKey: \{ kind: 'save', payoffs \}/.test(source);
+  const startsIndependentSaveSession = (source: string): boolean => {
+    const activeGuard = source.indexOf('if (saveInFlightRef.current) {');
+    const requestReset = source.indexOf('saveRequestIdRef.current = null;');
+    return activeGuard >= 0 && requestReset > activeGuard
+      && /saveInFlightRef\.current\s*=\s*false;/.test(source)
+      && /setSaveLoading\(false\);/.test(source);
+  };
+  const validSavedGame = {
+    id: 'g-fixture',
+    name: 'Fixture game',
+    description: 'A complete saved-game response.',
+    payoffs: payoffs(),
+    row1Label: 'Up', row2Label: 'Down', col1Label: 'Left', col2Label: 'Right',
+    colorTermsA: ['operator'], colorTermsB: ['supplier'],
+  };
+  const legacySavedGame = {
+    id: 'g-legacy',
+    name: 'Legacy game',
+    description: null,
+    payoffs: payoffs(),
+    row1Label: null,
+    colorTermsA: null,
+  };
+
+  // CodeRabbit on #189 (2nd pass): bound the type-body check to the type itself — a greedy
+  // whole-file [\s\S]* let later dialogSessionId/regenKey occurrences satisfy it even if the
+  // type declared neither field.
+  required('the pending value has a dialog nonce plus a RegenKey',
+    /type ExplanationSessionKey = \{[^}]*dialogSessionId: number;[^}]*regenKey: RegenKey;[^}]*\}/.test(code)
+    && /useRef<ExplanationSessionKey \| null>\(null\)/.test(code));
+  required('Save and Edit prefill paths mint and store their own session keys',
+    editPrefillStoresOwnSession(suggestedEdit) && savePrefillStoresOwnSession(suggestedSave));
+  const wrongEditNonce = suggestedEdit.replace(
+    /(regenExplanationAfterSaveRef\.current = \{\s*)dialogSessionId,/,
+    '$1dialogSessionId: dialogSessionId + 1,',
+  );
+  check('mutation: storing the wrong Edit dialog nonce fails the pending-session guard',
+    wrongEditNonce !== suggestedEdit && !editPrefillStoresOwnSession(wrongEditNonce));
+  const wrongSaveNonce = suggestedSave.replace(
+    /(regenExplanationAfterSaveRef\.current = \{\s*)dialogSessionId,/,
+    '$1dialogSessionId: dialogSessionId + 1,',
+  );
+  check('mutation: storing the wrong Save dialog nonce fails the pending-session guard',
+    wrongSaveNonce !== suggestedSave && !savePrefillStoresOwnSession(wrongSaveNonce));
+  // CodeRabbit on #189 (2nd pass): slice the preset handler with the last onClick boundary
+  // before the anchor (the payoffhonesty.test.ts:943 pattern) — lazy whole-file spans could
+  // borrow the three calls from an earlier handler that precedes the anchor.
+  const presetHandler = code.slice(code.lastIndexOf('onClick={() => {', code.indexOf('data-focus-fallback="save-preset"')), code.indexOf('data-focus-fallback="save-preset"'));
+  required('a fresh ordinary Save starts a new session before opening',
+    presetHandler.includes('beginSaveDialogSession();')
+    && presetHandler.includes('openSaveFormForBoard();')
+    && presetHandler.includes('setIsSaveModalOpen(true);')
+    && presetHandler.indexOf('beginSaveDialogSession();') < presetHandler.indexOf('openSaveFormForBoard();')
+    && presetHandler.indexOf('openSaveFormForBoard();') < presetHandler.indexOf('setIsSaveModalOpen(true);'));
+  required('a new Save session preserves an active POST; otherwise it retires the prior attempt and loading state',
+    startsIndependentSaveSession(beginSave));
+  const saveSessionWithoutRequestInvalidation = beginSave.replace(/saveRequestIdRef\.current\s*=\s*null;/, '');
+  check('mutation: keeping the prior Save request id fails the fresh-session boundary',
+    saveSessionWithoutRequestInvalidation !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutRequestInvalidation));
+  const saveSessionWithoutLoadingRelease = beginSave.replace(/setSaveLoading\(false\);/, '');
+  check('mutation: inheriting the old Save loading state fails the fresh-session boundary',
+    saveSessionWithoutLoadingRelease !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutLoadingRelease));
+  const saveSessionWithoutOwnerRelease = beginSave.replace(/saveInFlightRef\.current\s*=\s*false;/, '');
+  check('mutation: inheriting the old synchronous Save owner fails the fresh-session boundary',
+    saveSessionWithoutOwnerRelease !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutOwnerRelease));
+  const saveSessionWithoutActiveGuard = beginSave.replace('if (saveInFlightRef.current) {', 'if (false) {');
+  check('mutation: allowing a fresh Save session to replace an active POST owner fails the boundary',
+    saveSessionWithoutActiveGuard !== beginSave
+    && !startsIndependentSaveSession(saveSessionWithoutActiveGuard));
+  const generateGuardedFromSave = (source: string): boolean => {
+    const guard = source.indexOf('if (generateGameInFlightRef.current || saveInFlightRef.current || saveLoading) return;');
+    const firstMutation = source.indexOf('setGenerateLoading(true);');
+    return guard >= 0 && firstMutation >= 0 && guard < firstMutation;
+  };
+  required('Generate rejects duplicate activation and Save writes before mutating state',
+    generateGuardedFromSave(generateHandler));
+  const generateWithoutSaveGuard = generateHandler.replace(' || saveInFlightRef.current', '');
+  check('mutation: removing the Generate handler save guard fails the write-exclusion contract',
+    generateWithoutSaveGuard !== generateHandler && !generateGuardedFromSave(generateWithoutSaveGuard));
+  const generationOwnsLateResponse = (source: string): boolean =>
+    /generateGameInFlightRef\.current = true;[\s\S]*const myGeneration = \(generateGameGenerationRef\.current \+= 1\);/.test(source)
+    && (source.match(/if \(myGeneration !== generateGameGenerationRef\.current\) return;/g) ?? []).length === 2
+    && /if \(myGeneration === generateGameGenerationRef\.current\) \{\s*generateGameInFlightRef\.current = false;\s*setGenerateLoading\(false\);\s*\}/.test(source);
+  required('Generate commits success/error/loading only while its generation still owns the Save dialog',
+    generationOwnsLateResponse(generateHandler));
+  const generateWithoutSuccessOwnership = generateHandler.replace(
+    'if (myGeneration !== generateGameGenerationRef.current) return;',
+    '',
+  );
+  check('mutation: removing the late Generate success guard fails the response-ownership contract',
+    generateWithoutSuccessOwnership !== generateHandler && !generationOwnsLateResponse(generateWithoutSuccessOwnership));
+  const saveRejectsGenerateBeforeMutation = (source: string): boolean => {
+    const guard = source.indexOf('if (saveInFlightRef.current || generateGameInFlightRef.current) return;');
+    const claim = source.indexOf('saveInFlightRef.current = true;');
+    const firstMutation = source.indexOf("setSaveError('');");
+    const keyedRelease = /if \(!staleSession \|\| saveRequestIdRef\.current === clientRequestId\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(source);
+    return guard >= 0 && claim > guard && firstMutation > claim && keyedRelease;
+  };
+  required('Save rejects programmatic activation while Generate owns the form',
+    saveRejectsGenerateBeforeMutation(saveHandler));
+  const saveWithoutGenerateGuard = saveHandler.replace(' || generateGameInFlightRef.current', '');
+  check('mutation: removing the Save handler Generate guard fails the write-exclusion contract',
+    saveWithoutGenerateGuard !== saveHandler && !saveRejectsGenerateBeforeMutation(saveWithoutGenerateGuard));
+  const editOwnsWriteUntilReconciled = (source: string): boolean => {
+    const guard = source.indexOf('if (editInFlightRef.current) return;');
+    const claim = source.indexOf('editInFlightRef.current = true;');
+    const release = /finally \{[\s\S]{0,400}?editInFlightRef\.current = false;\s*if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*setEditLoading\(false\);\s*\}/.test(source);
+    return guard >= 0 && claim > guard && release;
+  };
+  required('Edit synchronously owns its PATCH until the current result is reconciled',
+    editOwnsWriteUntilReconciled(editHandler));
+  const editWithoutWriteClaim = editHandler.replace('editInFlightRef.current = true;', '');
+  check('mutation: removing Edit write ownership fails the reconciliation contract',
+    editWithoutWriteClaim !== editHandler && !editOwnsWriteUntilReconciled(editWithoutWriteClaim));
+  const editWithoutWriteRelease = editHandler.replace('editInFlightRef.current = false;', '');
+  check('mutation: removing Edit ownership release fails the reconciliation contract',
+    editWithoutWriteRelease !== editHandler && !editOwnsWriteUntilReconciled(editWithoutWriteRelease));
+  const editWithSessionConditionalWriteRelease = editHandler.replace(
+    'editInFlightRef.current = false;\n      if (!staleSession || editSessionRef.current === editSessionAtSubmit) {',
+    'if (!staleSession || editSessionRef.current === editSessionAtSubmit) {\n        editInFlightRef.current = false;',
+  );
+  check('mutation: making Edit write release conditional on the old dialog session fails the ownership contract',
+    editWithSessionConditionalWriteRelease !== editHandler
+    && !editOwnsWriteUntilReconciled(editWithSessionConditionalWriteRelease));
+  const generateClick = code.indexOf('onClick={handleGenerateGame}');
+  const generateTagStart = code.lastIndexOf('<button', generateClick);
+  const generateTagEnd = code.indexOf('>', generateClick);
+  const generateTag = generateClick >= 0 && generateTagStart >= 0 && generateTagEnd >= 0
+    ? code.slice(generateTagStart, generateTagEnd + 1)
+    : '';
+  const generateButtonBlocksSave = (source: string): boolean =>
+    /disabled=\{generateLoading\s*\|\|\s*saveLoading\}/.test(source);
+  required('the Generate button is disabled for both generation and Save writes',
+    generateButtonBlocksSave(generateTag));
+  const generateButtonWithoutSave = generateTag.replace(/\s*\|\|\s*saveLoading/, '');
+  check('mutation: removing saveLoading from Generate disabled state fails the control guard',
+    generateButtonWithoutSave !== generateTag && !generateButtonBlocksSave(generateButtonWithoutSave));
+  const saveSubmitLabel = code.indexOf("deadSession === 'save' ? 'Sign In to Save' : 'Save Game Profile'");
+  const saveSubmitStart = code.lastIndexOf('<button', saveSubmitLabel);
+  const saveSubmitEnd = code.indexOf('>', saveSubmitStart);
+  const saveSubmitTag = saveSubmitStart >= 0 && saveSubmitEnd >= 0 ? code.slice(saveSubmitStart, saveSubmitEnd + 1) : '';
+  const deviceSaveLabel = code.indexOf("saveLoading ? 'Saving...' : 'Save on this device instead'");
+  const deviceSaveStart = code.lastIndexOf('<button', deviceSaveLabel);
+  const deviceSaveEnd = code.indexOf('>', deviceSaveStart);
+  const deviceSaveTag = deviceSaveStart >= 0 && deviceSaveEnd >= 0 ? code.slice(deviceSaveStart, deviceSaveEnd + 1) : '';
+  const saveButtonBlocksGenerate = (source: string): boolean =>
+    /disabled=\{saveLoading\s*\|\|\s*generateLoading\}/.test(source);
+  required('both Save controls are disabled for Save and Generate work',
+    saveButtonBlocksGenerate(saveSubmitTag) && saveButtonBlocksGenerate(deviceSaveTag));
+  const saveButtonWithoutGenerate = saveSubmitTag.replace(/\s*\|\|\s*generateLoading/, '');
+  check('mutation: removing generateLoading from Save disabled state fails the control guard',
+    saveButtonWithoutGenerate !== saveSubmitTag && !saveButtonBlocksGenerate(saveButtonWithoutGenerate));
+  required('Save and Edit dismissal controls are disabled while an irreversible write is active',
+    (code.match(/onClick=\{cancelSaveDialog\}\s*disabled=\{saveLoading\}/g) ?? []).length === 2
+    && (code.match(/onClick=\{cancelEditDialog\}[\s\S]{0,80}?disabled=\{editLoading\}/g) ?? []).length === 2);
+  // CodeRabbit (H3 exact diff): cancelling Save — or dismissing the Account
+  // dialog mid-detour — must ABORT the pending Generate fetch, not only
+  // invalidate its response token. A stalled /api/report request otherwise
+  // stays alive (and keeps server work running to its deadline) across
+  // reopen/Cancel cycles. The generation bump alone does not settle the
+  // request; only the AbortController does.
+  const generateAbortContract = (source: string): boolean => {
+    const handler = between(source, 'const handleGenerateGame = async', 'const handleSaveGameSubmit = async');
+    const save = between(source, 'const cancelSaveDialog = () => {', 'const cancelEditDialog = () => {');
+    const auth = between(source, 'const dismissAuthModal = () => {', 'const consumeRegenExplanationAfterSave = (');
+    return /const generateControllerRef = useRef<AbortController \| null>\(null\);/.test(source)
+      && /const generateController = new AbortController\(\);[\s\S]{0,4200}?fetchWithTimeout\(getApiUrl\('\/api\/report'\)[\s\S]{0,200}?, generateController\)/.test(handler)
+      && save.includes('generateControllerRef.current?.abort();')
+      && auth.includes('generateControllerRef.current?.abort();');
+  };
+  required('Generate owns an AbortController and both Save cancellation paths abort it',
+    generateAbortContract(code));
+  const generateWithoutHandlerAbort = code.replace(
+    /const generateController = new AbortController\(\);\n/, '',
+  ).replace(/, generateController\)/, ')');
+  check('mutation: removing the Generate AbortController fails the cancellation contract',
+    generateWithoutHandlerAbort !== code && !generateAbortContract(generateWithoutHandlerAbort));
+  const generateWithoutCancelAbort = code.replace(
+    /(const cancelSaveDialog = \(\) => \{[\s\S]*?)\n    generateControllerRef\.current\?\.abort\(\);\n    generateControllerRef\.current = null;/,
+    '$1',
+  );
+  check('mutation: removing the Cancel-path abort fails the cancellation contract',
+    generateWithoutCancelAbort !== code && !generateAbortContract(generateWithoutCancelAbort));
+  const generateWithoutDismissAbort = code.replace(
+    /(const dismissAuthModal = \(\) => \{[\s\S]*?)\n      generateControllerRef\.current\?\.abort\(\);\n      generateControllerRef\.current = null;/,
+    '$1',
+  );
+  check('mutation: removing the auth-dismiss abort fails the cancellation contract',
+    generateWithoutDismissAbort !== code && !generateAbortContract(generateWithoutDismissAbort));
+  required('a fresh ordinary Edit starts a new session before opening',
+    /const openEditGame = \(game: any\) => \{\s*beginEditDialogSession\(\);/.test(code));
+  // CodeRabbit (4th pass): bound both resume-reopen conjuncts to their own branches — greedy
+  // whole-file [\s\S]* let a later setIs*ModalOpen(true) call site (ordinary Edit open,
+  // suggested-scenario prefill) satisfy the check even if the resume branch stopped reopening.
+  const resumeSaveBranch = between(code, 'if (authToken && resumeSaveAfterAuthRef.current) {', 'if (authToken && resumeEditAfterAuthRef.current) {');
+  const resumeEditBranch = between(code, 'if (authToken && resumeEditAfterAuthRef.current) {', '}, [authToken');
+  required('auth resume closes and reopens the same dialog without abandoning it',
+    /if \(kind === 'save'\) \{\s*resumeSaveAfterAuthRef\.current = true;\s*setIsSaveModalOpen\(false\);/.test(authGate)
+    && /else \{\s*resumeEditAfterAuthRef\.current = true;\s*setIsEditModalOpen\(false\);/.test(authGate)
+    && !/abandonExplanationDialogSession\(\)/.test(authGate)
+    && resumeSaveBranch.includes('setIsSaveModalOpen(true);')
+    && resumeEditBranch.includes('setIsEditModalOpen(true);'));
+  required('the auth-dismiss clear is unconditional and precedes the Edit-only reopen branch',
+    dismiss.indexOf('abandonExplanationDialogSession();') >= 0
+    && dismiss.indexOf('abandonExplanationDialogSession();') < dismiss.indexOf('if (resumeEditAfterAuthRef.current)'));
+  required('the abandonment helper clears the pending value and both dialog sessions',
+    /regenExplanationAfterSaveRef\.current = null;[\s\S]*saveDialogSessionRef\.current = null;[\s\S]*editDialogSessionRef\.current = null;/.test(abandon));
+  const saveCancelPreservesActiveWrite = (source: string): boolean => {
+    const guard = source.indexOf('if (saveInFlightRef.current) return;');
+    const requestReset = source.indexOf('saveRequestIdRef.current = null;');
+    return guard >= 0 && requestReset > guard;
+  };
+  const editCancelPreservesActiveWrite = (source: string): boolean => {
+    const guard = source.indexOf('if (editInFlightRef.current) return;');
+    const sessionReset = source.indexOf('editSessionRef.current += 1;');
+    return guard >= 0 && sessionReset > guard;
+  };
+  required('Save and Edit cancel handlers block active writes, then synchronously abandon idle sessions',
+    saveCancelPreservesActiveWrite(cancelSave)
+    && editCancelPreservesActiveWrite(cancelEdit)
+    && /abandonExplanationDialogSession\(\);/.test(cancelSave)
+    && /editSessionRef\.current \+= 1;\s*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);/.test(cancelEdit)
+    && /onClose=\{cancelSaveDialog\}/.test(code) && /onClose=\{cancelEditDialog\}/.test(code)
+    && (code.match(/onClick=\{cancelSaveDialog\}/g) ?? []).length >= 2
+    && (code.match(/onClick=\{cancelEditDialog\}/g) ?? []).length >= 2);
+  const cancelRetiresSaveAndGenerate = (source: string): boolean =>
+    /saveRequestIdRef\.current\s*=\s*null;/.test(source)
+    && /saveInFlightRef\.current = false;/.test(source)
+    && /setSaveLoading\(false\);/.test(source)
+    && /generateGameGenerationRef\.current \+= 1;/.test(source)
+    && /generateGameInFlightRef\.current = false;/.test(source)
+    && /setGenerateLoading\(false\);/.test(source);
+  required('idle Save cancellation retires its attempt and active Generate only after preserving an active POST',
+    cancelRetiresSaveAndGenerate(cancelSave));
+  const cancelSaveWithoutWriteGuard = cancelSave.replace('if (saveInFlightRef.current) return;', '');
+  check('mutation: allowing Cancel to retire an active Save POST fails the ownership contract',
+    cancelSaveWithoutWriteGuard !== cancelSave && !saveCancelPreservesActiveWrite(cancelSaveWithoutWriteGuard));
+  const cancelWithoutSaveRetirement = cancelSave.replace(/saveRequestIdRef\.current\s*=\s*null;/, '');
+  check('mutation: removing Save-request retirement from Cancel fails the abandonment contract',
+    cancelWithoutSaveRetirement !== cancelSave && !cancelRetiresSaveAndGenerate(cancelWithoutSaveRetirement));
+  const cancelWithoutGenerateRetirement = cancelSave.replace(/generateGameGenerationRef\.current \+= 1;/, '');
+  check('mutation: removing Generate retirement from Cancel fails the abandonment contract',
+    cancelWithoutGenerateRetirement !== cancelSave && !cancelRetiresSaveAndGenerate(cancelWithoutGenerateRetirement));
+  const cancelEditWithoutPatchRetirement = cancelEdit.replace(/editSessionRef\.current \+= 1;/, '');
+  check('mutation: removing PATCH-session retirement from Edit Cancel fails the abandonment contract',
+    cancelEditWithoutPatchRetirement !== cancelEdit
+    && !/editSessionRef\.current \+= 1;\s*setEditLoading\(false\);[\s\S]*abandonExplanationDialogSession\(\);/.test(cancelEditWithoutPatchRetirement));
+  const cancelEditWithoutWriteGuard = cancelEdit.replace('if (editInFlightRef.current) return;', '');
+  check('mutation: allowing Cancel to hide an active Edit PATCH fails the ownership contract',
+    cancelEditWithoutWriteGuard !== cancelEdit && !editCancelPreservesActiveWrite(cancelEditWithoutWriteGuard));
+  required('dismissing an auth detour abandons an in-flight Generate only when it abandons Save',
+    /const abandoningSave = resumeSaveAfterAuthRef\.current;[\s\S]*resumeSaveAfterAuthRef\.current = false;[\s\S]*if \(abandoningSave\) \{\s*generateGameGenerationRef\.current \+= 1;\s*generateGameInFlightRef\.current = false;\s*generateControllerRef\.current\?\.abort\(\);\s*generateControllerRef\.current = null;\s*setGenerateLoading\(false\);\s*\}/.test(dismiss));
+  required('consume clears before comparing nonce and RegenKey',
+    /const pendingKey = regenExplanationAfterSaveRef\.current;\s*regenExplanationAfterSaveRef\.current = null;/.test(consume)
+    && /pendingKey\.dialogSessionId === submittedSessionId/.test(consume)
+    && /regenKeyEquals\(pendingKey\.regenKey, submittedKey\)/.test(consume));
+  required('Edit consume is inside parsed success:true path',
+    guardReturnsBefore(editHandler, parsedSuccessGate, 'if (res.ok) {')
+    && /consumeRegenExplanationAfterSave\([\s\S]*editDialogSessionRef\.current/.test(editSuccess));
+  required('Save consume is inside parsed success:true path',
+    guardReturnsBefore(saveHandler, parsedSuccessGate, 'if (res.ok) {')
+    && /consumeRegenExplanationAfterSave\([\s\S]*saveDialogSessionRef\.current/.test(saveSuccess));
+  const editWithoutParsedReturn = removeDirectGuardReturn(editHandler, parsedSuccessGate);
+  check('mutation: removing Edit parsed-success return fails the regeneration commit boundary',
+    editWithoutParsedReturn !== editHandler
+    && !guardReturnsBefore(editWithoutParsedReturn, parsedSuccessGate, 'if (res.ok) {'));
+  const saveWithoutParsedReturn = removeDirectGuardReturn(saveHandler, parsedSuccessGate);
+  check('mutation: removing Save parsed-success return fails the regeneration commit boundary',
+    saveWithoutParsedReturn !== saveHandler
+    && !guardReturnsBefore(saveWithoutParsedReturn, parsedSuccessGate, 'if (res.ok) {'));
+
+  required('the saved-game response predicate accepts a complete server game',
+    isSavedGameResponseRecord(validSavedGame));
+  required('the saved-game response predicate accepts nullish or absent optional fields on a legacy PATCH row',
+    isSavedGameResponseRecord(legacySavedGame));
+  required('the saved-game response predicate rejects a missing game, non-finite payoff, malformed optional text, and malformed term list',
+    !isSavedGameResponseRecord(undefined)
+    && !isSavedGameResponseRecord({ ...validSavedGame, payoffs: { ...validSavedGame.payoffs, a11: Number.NaN } })
+    && !isSavedGameResponseRecord({ ...validSavedGame, row1Label: 4 })
+    && !isSavedGameResponseRecord({ ...validSavedGame, colorTermsA: ['operator', 4] }));
+  const savedGameGuard = 'if (res.ok && !savedGame)';
+  const commitsOnlyValidGame = (source: string): boolean =>
+    /const savedGame\s*=\s*isSavedGameResponseRecord\(data\?\.game\)[\s\S]{0,120}?\?\s*data\.game\s*:\s*null;/.test(source)
+    && guardReturnsBefore(source, savedGameGuard, 'if (res.ok) {');
+  const editCommitsOnlyMatchingGame = (source: string): boolean =>
+    commitsOnlyValidGame(source)
+    && /isSavedGameResponseRecord\(data\?\.game\)\s*&&\s*data\.game\.id\s*===\s*editGameId/.test(source);
+  required('Edit validates data.game and exits before committing malformed success data',
+    editCommitsOnlyMatchingGame(editHandler) && !/data\.game/.test(editSuccess));
+  required('Save validates data.game and exits before committing malformed success data',
+    commitsOnlyValidGame(saveHandler) && !/data\.game/.test(saveSuccess));
+  const editWithoutGameValidation = editHandler.replace(
+    'isSavedGameResponseRecord(data?.game)',
+    '!!data?.game',
+  );
+  check('mutation: accepting any truthy Edit data.game fails the response-record guard',
+    editWithoutGameValidation !== editHandler && !editCommitsOnlyMatchingGame(editWithoutGameValidation));
+  const saveWithoutGameValidation = saveHandler.replace(
+    'isSavedGameResponseRecord(data?.game)',
+    '!!data?.game',
+  );
+  check('mutation: accepting any truthy Save data.game fails the response-record guard',
+    saveWithoutGameValidation !== saveHandler && !commitsOnlyValidGame(saveWithoutGameValidation));
+  const editWithoutIdBinding = editHandler.replace(' && data.game.id === editGameId', '');
+  check('mutation: accepting another game id fails the Edit response-binding guard',
+    editWithoutIdBinding !== editHandler && !editCommitsOnlyMatchingGame(editWithoutIdBinding));
+  // CodeRabbit on #189: the original regex ran against the WHOLE file with a greedy
+  // [\s\S]*, so any later beginSaveDialogSession() call site (Save Preset, the
+  // suggested-scenario prefill) satisfied it even if handleGenerateGame stopped
+  // calling it. Scope the check to the generateHandler slice (line 555's own bounds).
+  required('the session key is retired when a new matrix is generated',
+    /beginSaveDialogSession\(\);/.test(generateHandler));
+
+  const rawSmoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+  const smoke = withoutComments(rawSmoke);
+  const section91 = between(smoke, "section('91',", '\nawait executeSections();');
+  const rawSection91 = between(rawSmoke, "section('91',", '\nawait executeSections();');
+    // 91/91b/91c share one file-scope helper block; the readback guard slices it directly
+  // (the marker pair is unique across the whole smoke file, so this survives future splits).
+  const readback = between(smoke, 'const readBackSavedGame = async', 'const submitOrdinarySave = async');
+  const readbackIsBounded = (source: string) =>
+    /const\s+controller\s*=\s*new AbortController\(\)/.test(source)
+    && /setTimeout\(\(\)\s*=>\s*controller\.abort\(\),\s*10_000\)/.test(source)
+    && /fetch\('\/api\/games',\s*\{[\s\S]*?signal:\s*controller\.signal[\s\S]*?\}\)/.test(source)
+    && /catch\s*\{[\s\S]*?ok:\s*false[\s\S]*?parsed:\s*false[\s\S]*?found:\s*false/.test(source)
+    && /finally\s*\{\s*clearTimeout\(deadlineTimer\);\s*\}/.test(source);
+  required('§91 bounds saved-game readback with an abort signal and cleanup-safe timer',
+    readbackIsBounded(readback));
+  const noReadbackSignalMutant = readback.replace(/,\s*signal:\s*controller\.signal/, '');
+  check('mutation: removing the readback fetch signal fails the §91 deadline guard',
+    !readbackIsBounded(noReadbackSignalMutant));
+  const noReadbackCleanupMutant = readback.replace('clearTimeout(deadlineTimer);', '');
+  check('mutation: removing readback timer cleanup fails the §91 deadline guard',
+    !readbackIsBounded(noReadbackCleanupMutant));
+
+  const heldSaveRace = between(rawSection91, 'const heldSavePage = await', 'await heldSavePage.close();');
+  const reconcilesHeldSaveExactlyOnce = (source: string): boolean => {
+    const serverCommit = source.indexOf('const response = await nativeFetch(input, init);');
+    const hold = source.indexOf('window.__e2e91HeldSaveCommitted = true;');
+    const absenceObserver = source.indexOf('const saveStayedOpen = heldSavePage.waitForFunction(');
+    const cancelAttempt = source.indexOf('await heldSavePage.evaluate(() => {', absenceObserver);
+    return serverCommit >= 0 && hold > serverCommit && absenceObserver > hold && cancelAttempt > absenceObserver
+      && /await heldSaveCancel\.isDisabled\(\) && await heldSaveClose\.isDisabled\(\)/.test(source)
+      && /\.then\(\(\) => false\)\.catch\(\(e\) => e\?\.name === 'TimeoutError'\)/.test(source)
+      && /await heldSavePage\.keyboard\.press\('Escape'\)/.test(source)
+      && /heldSaveReadback\?\.matches === 1/.test(source)
+      && /heldSaveReadback\?\.nameMatches === 1/.test(source)
+      && /heldSaveSuccessLogs === 1/.test(source);
+  };
+  required('§91 holds a server-committed Save response, blocks dismissal, and reconciles exactly one row/log',
+    reconcilesHeldSaveExactlyOnce(heldSaveRace));
+  const heldSaveWithoutDisabledGate = heldSaveRace.replace(
+    'await heldSaveCancel.isDisabled() && await heldSaveClose.isDisabled()',
+    'true',
+  );
+  check('mutation: dropping the held-Save disabled-control gate fails the reconciliation oracle',
+    heldSaveWithoutDisabledGate !== heldSaveRace && !reconcilesHeldSaveExactlyOnce(heldSaveWithoutDisabledGate));
+  const heldSaveWithoutExactReadback = heldSaveRace.replace('heldSaveReadback?.nameMatches === 1', 'heldSaveReadback?.found');
+  check('mutation: weakening exact-one-by-name Save readback to mere presence fails the duplicate guard',
+    heldSaveWithoutExactReadback !== heldSaveRace && !reconcilesHeldSaveExactlyOnce(heldSaveWithoutExactReadback));
+
+  const editCancelRace = between(rawSection91, 'const cancelEditPage = await', 'await cancelEditPage.close();');
+  const hasPrearmedEditCancelObserver = (source: string): boolean => {
+    const observer = source.indexOf('const cancellationOutcomePromise = cancelEditPage.waitForFunction(');
+    const release = source.indexOf('const cancelledAndReleased = await cancelEditPage.evaluate(');
+    return observer >= 0 && release > observer
+      && /__e2e91PatchBodyReadAt = performance\.now\(\)/.test(source)
+      && /typeof bodyReadAt !== 'number'/.test(source)
+      && /delete window\.__e2e91EditExpectedSince;\s*return false;/.test(source)
+      && /typeof window\.__e2e91EditExpectedSince !== 'number'/.test(source)
+      && /performance\.now\(\) - window\.__e2e91EditExpectedSince < stableForMs/.test(source)
+      && /\{ timeout: 5000, polling: 'raf' \}/.test(source)
+      && /const ok = !oldRowKept && lateRowAdded && successLogCount === 1/.test(source)
+      && /editCancelDisabled && cancelledAndReleased/.test(source)
+      && /cancellationOutcome\?\.ok === true/.test(source)
+      && /reconciledReadback\?\.matches === 1/.test(source)
+      && !/requestAnimationFrame\(\(\) => requestAnimationFrame\(resolve\)\)/.test(source)
+      && !/\.isVisible\(\{ timeout:/.test(source);
+  };
+  required('§91 pre-arms a bounded observer and reconciles an Edit PATCH whose dismissal was blocked',
+    hasPrearmedEditCancelObserver(editCancelRace));
+  const editCancelWithoutBodyRead = editCancelRace.replace('__e2e91PatchBodyReadAt = performance.now();', '');
+  check('mutation: removing the PATCH body-read settlement signal fails the Edit-cancel oracle guard',
+    editCancelWithoutBodyRead !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutBodyRead));
+  const editCancelWithoutPrearm = editCancelRace.replace(
+    'const cancellationOutcomePromise = cancelEditPage.waitForFunction(',
+    'const delayedCancellationOutcomePromise = cancelEditPage.waitForFunction(',
+  );
+  check('mutation: removing the named pre-release observer fails the Edit-cancel oracle guard',
+    editCancelWithoutPrearm !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutPrearm));
+  const editCancelWithoutDisabledGate = editCancelRace.replace('editCancelDisabled && cancelledAndReleased', 'cancelledAndReleased');
+  check('mutation: dropping the Edit disabled-control gate fails the reconciliation oracle',
+    editCancelWithoutDisabledGate !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutDisabledGate));
+  const editCancelWithEarlyFailure = editCancelRace.replace(
+    'delete window.__e2e91EditExpectedSince;\n              return false;',
+    'return { ok, dialogClosed, oldRowKept, lateRowAdded, successLogCount };',
+  );
+  check('mutation: resolving on the first transient Edit mismatch fails the stable reconciliation oracle',
+    editCancelWithEarlyFailure !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithEarlyFailure));
+
+  const abandonSaveRace = between(rawSection91, 'const abandonPage = await', 'await abandonPage.close();');
+  const observesAbandonedSaveAbsence = (source: string): boolean =>
+    /const abandonedSaveStayedClosed = await abandonPage\.waitForFunction\([\s\S]*Save custom game[\s\S]*\{ timeout: 1500 \}[\s\S]*\.then\(\(\) => false\)\.catch\(\(e\) => e\?\.name === 'TimeoutError'\)/.test(source)
+    && /dismissing auth does not reopen the abandoned Save dialog',[\s\S]*abandonedSaveStayedClosed/.test(source)
+    && !/abandonedDialog\.isVisible/.test(source);
+  required('§91 observes the abandoned Save dialog for a bounded no-reappearance window',
+    observesAbandonedSaveAbsence(abandonSaveRace));
+  const abandonSaveSnapshotMutant = abandonSaveRace.replace(
+    'abandonedSaveStayedClosed);',
+    '!(await abandonedDialog.isVisible().catch(() => false)));',
+  );
+  check('mutation: replacing the bounded abandoned-Save observer with a snapshot fails its guard',
+    abandonSaveSnapshotMutant !== abandonSaveRace && !observesAbandonedSaveAbsence(abandonSaveSnapshotMutant));
+
+  const editAuthRace = between(rawSection91, 'const editPage = await', 'await editPage.close();');
+  const preservesEditDraftAcrossAuth = (source: string): boolean => {
+    const afterDismiss = between(source, 'const draftAfterDismiss =', "record('FIX: dismissing Edit auth");
+    const afterLogin = between(source, 'const draftAfterLogin =', 'watchEditReports = true;');
+    return /const editDraftName = '[^']+';[\s\S]*await editNameInput\.fill\(editDraftName\)/.test(source)
+      && /await editNameInput\.inputValue\(\) === editDraftName/.test(afterDismiss)
+      && /await editNameInput\.inputValue\(\) === editDraftName/.test(afterLogin)
+      && /draftAfterLogin && finalSaved/.test(source);
+  };
+  required('§91 proves the typed Edit draft survives both auth dismissal and successful login',
+    preservesEditDraftAcrossAuth(editAuthRace));
+  const editAuthWithoutDismissValue = editAuthRace.replace(
+    '&& await editNameInput.inputValue() === editDraftName;',
+    ';',
+  );
+  check('mutation: dropping the post-dismiss typed-value assertion fails the Edit auth-detour guard',
+    editAuthWithoutDismissValue !== editAuthRace && !preservesEditDraftAcrossAuth(editAuthWithoutDismissValue));
+  const editAuthWithoutLoginGate = editAuthRace.replace('draftAfterLogin && finalSaved', 'finalSaved');
+  check('mutation: dropping the post-login draft gate fails the Edit auth-detour guard',
+    editAuthWithoutLoginGate !== editAuthRace && !preservesEditDraftAcrossAuth(editAuthWithoutLoginGate));
+  const exercisesLegacyPatchResponse = (source: string): boolean =>
+    /const response = await route\.fetch\(\)/.test(source)
+    && /body\.game\.description = null/.test(source)
+    && /body\.game\.row1Label = null/.test(source)
+    && /body\.game\.col1Label = null/.test(source)
+    && /delete body\.game\.row2Label/.test(source)
+    && /delete body\.game\.col2Label/.test(source)
+    && /body\.game\.colorTermsA = null/.test(source)
+    && /delete body\.game\.colorTermsB/.test(source)
+    && /body\.game\.clientRequestId = null/.test(source)
+    && /getByRole\('button', \{ name: `Edit \$\{editedName\}`, exact: true \}\)\.click\(\)/.test(source)
+    && /name: await legacyDialog\.getByLabel\('Game Name'\)\.inputValue\(\)/.test(source)
+    && /description: await legacyDialog\.getByLabel\('Game Description'\)\.inputValue\(\)/.test(source)
+    && /legacyRendered\?\.name === editedName/.test(source)
+    && /legacyRendered\.description === ''/.test(source)
+    && /legacyRendered\.labels\.length === 4/.test(source)
+    && /legacyRendered\.labels\.every\(\(label\) => label === ''\)/.test(source)
+    && !/finalBody\?\.game\?\.description === null/.test(source)
+    && /finalSaved && legacyResponseAccepted &&/.test(source);
+  required('§91 accepts a real committed PATCH whose client response has supported legacy nullish fields',
+    exercisesLegacyPatchResponse(editAuthRace));
+  const editAuthWithoutLegacyGate = editAuthRace.replace('finalSaved && legacyResponseAccepted &&', 'finalSaved &&');
+  check('mutation: dropping the legacy-response acceptance gate fails the Edit auth-detour guard',
+    editAuthWithoutLegacyGate !== editAuthRace && !exercisesLegacyPatchResponse(editAuthWithoutLegacyGate));
+  const editAuthWithoutRenderedLegacyValues = editAuthRace.replace("legacyRendered.description === ''", 'true');
+  check('mutation: checking only the rewritten legacy payload instead of rendered Edit values fails the guard',
+    editAuthWithoutRenderedLegacyValues !== editAuthRace
+    && !exercisesLegacyPatchResponse(editAuthWithoutRenderedLegacyValues));
 }
 
 if (failures > 0) {

@@ -997,7 +997,9 @@ function testSaveFormReconciledWithBoard() {
     // the report call, so what the form keeps never depends on whether that
     // call succeeds.
     const genStart = app.indexOf('const gc = commitPayoffs(g);');
-    const genFetch = app.indexOf("await fetch(getApiUrl('/api/report')", genStart);
+    // H3 (CodeRabbit): the Generate fetch now goes through fetchWithTimeout
+    // with its own AbortController — same ordering claim, new call text.
+    const genFetch = app.indexOf("fetchWithTimeout(getApiUrl('/api/report')", genStart);
     ok(genStart !== -1 && genFetch > genStart, 'handleGenerateGame must commit gc then call /api/report');
     const preFetch = app.slice(genStart, genFetch);
     ok(/const boardKey = boardKeyOf\(gc\);/.test(preFetch)
