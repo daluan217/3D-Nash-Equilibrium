@@ -9284,140 +9284,145 @@ try {
     }
   });
 
-  section('91', 'an abandoned report-prefill auth detour cannot regenerate a later ordinary save', async () => {
-    const suggestedScenario = {
-      name: 'Harbour detour', row1: 'Sail now', row2: 'Wait', col1: 'Escort', col2: 'Hold',
-      description: 'Two harbour crews decide whether to sail before a forecasted storm closes the channel overnight.',
-    };
-    const mockSuggestedReport = async (p, count) => {
-      await p.route('**/api/report', async (route) => {
-        if (route.request().method() !== 'POST') return route.continue();
-        count();
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-          source: 'template', report: { claimedEquilibria: [], prose: 'Synthetic report for the keyed-save regression.',
-            proseClaims: null, geometryClaims: null, suggestedScenario }, validation: null, groundTruth: [],
-        }) });
-      });
-    };
-    const openSuggestedSave = async (p) => {
-      await p.getByRole('button', { name: /new ai scenario/i }).click();
-      await p.getByText('Scenario written for this game', { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
-      await p.getByRole('button', { name: /save this scenario with the game/i }).click();
-      const dialog = p.getByRole('dialog', { name: 'Save custom game' });
-      await dialog.waitFor({ state: 'visible', timeout: 5000 });
-      return dialog;
-    };
-    const openSuggestedEdit = async (p) => {
-      await p.getByRole('button', { name: /new ai scenario/i }).click();
-      await p.getByText('Scenario written for this game', { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
-      await p.getByRole('button', { name: /save this scenario with the game/i }).click();
-      const dialog = p.getByRole('dialog', { name: 'Edit saved game' });
-      await dialog.waitFor({ state: 'visible', timeout: 5000 });
-      return dialog;
-    };
-    const signUpFromOpenAccount = async (p, tag) => {
-      const uniq = `${tag}${Date.now()}`;
-      const account = p.locator('[role="dialog"][aria-label="Account"]');
-      await account.getByText(/sign up/i).last().click();
-      await p.getByPlaceholder('game_theorist').fill(uniq);
-      await p.getByPlaceholder('john@example.com').fill(`${uniq}@example.com`);
-      const passwords = p.getByPlaceholder('••••••••');
-      await passwords.nth(0).fill('TestPass123');
-      await passwords.nth(1).fill('TestPass123');
-      await p.getByRole('button', { name: /register account/i }).click();
-      await p.getByPlaceholder(/example\.com or username/i).waitFor({ state: 'visible', timeout: 20000 });
-      await p.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
-      await p.getByPlaceholder('••••••••').first().fill('TestPass123');
-      await p.getByRole('button', { name: /^login$/i }).click();
-      await p.waitForFunction(() => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')), null, { timeout: 20000 });
-      await account.waitFor({ state: 'hidden', timeout: 10000 });
-      return uniq;
-    };
-    const loginExistingAccount = async (p, uniq) => {
-      const account = p.locator('[role="dialog"][aria-label="Account"]');
-      await account.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
-      await account.getByPlaceholder('••••••••').first().fill('TestPass123');
-      await account.getByRole('button', { name: /^login$/i }).click();
-      await p.waitForFunction(() => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')), null, { timeout: 20000 });
-      await account.waitFor({ state: 'hidden', timeout: 10000 });
-    };
-    const reportRequest = (request) => {
-      if (request.method() !== 'POST') return false;
-      try { return new URL(request.url()).pathname === '/api/report'; } catch { return false; }
-    };
-    // Absence is an observation, not an arbitrary post-save sleep. The
-    // bounded listener starts before the ordinary write and a second window
-    // starts after it, so both an immediate and a delayed stale refresh are
-    // observable without making the suite depend on one guessed latency.
-    const REPORT_ABSENCE_WINDOW_MS = 3000;
-    const observeNoReport = async (p) => {
+const suggestedScenario = {
+  name: 'Harbour detour', row1: 'Sail now', row2: 'Wait', col1: 'Escort', col2: 'Hold',
+  description: 'Two harbour crews decide whether to sail before a forecasted storm closes the channel overnight.',
+};
+  const mockSuggestedReport = async (p, count) => {
+    await p.route('**/api/report', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      count();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        source: 'template', report: { claimedEquilibria: [], prose: 'Synthetic report for the keyed-save regression.',
+          proseClaims: null, geometryClaims: null, suggestedScenario }, validation: null, groundTruth: [],
+      }) });
+    });
+  };
+  const openSuggestedSave = async (p) => {
+    await p.getByRole('button', { name: /new ai scenario/i }).click();
+    await p.getByText('Scenario written for this game', { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
+    await p.getByRole('button', { name: /save this scenario with the game/i }).click();
+    const dialog = p.getByRole('dialog', { name: 'Save custom game' });
+    await dialog.waitFor({ state: 'visible', timeout: 5000 });
+    return dialog;
+  };
+  const openSuggestedEdit = async (p) => {
+    await p.getByRole('button', { name: /new ai scenario/i }).click();
+    await p.getByText('Scenario written for this game', { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
+    await p.getByRole('button', { name: /save this scenario with the game/i }).click();
+    const dialog = p.getByRole('dialog', { name: 'Edit saved game' });
+    await dialog.waitFor({ state: 'visible', timeout: 5000 });
+    return dialog;
+  };
+  const signUpFromOpenAccount = async (p, tag) => {
+    const uniq = `${tag}${Date.now()}`;
+    const account = p.locator('[role="dialog"][aria-label="Account"]');
+    await account.getByText(/sign up/i).last().click();
+    await p.getByPlaceholder('game_theorist').fill(uniq);
+    await p.getByPlaceholder('john@example.com').fill(`${uniq}@example.com`);
+    const passwords = p.getByPlaceholder('••••••••');
+    await passwords.nth(0).fill('TestPass123');
+    await passwords.nth(1).fill('TestPass123');
+    await p.getByRole('button', { name: /register account/i }).click();
+    await p.getByPlaceholder(/example\.com or username/i).waitFor({ state: 'visible', timeout: 20000 });
+    await p.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
+    await p.getByPlaceholder('••••••••').first().fill('TestPass123');
+    await p.getByRole('button', { name: /^login$/i }).click();
+    await p.waitForFunction(() => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')), null, { timeout: 20000 });
+    await account.waitFor({ state: 'hidden', timeout: 10000 });
+    return uniq;
+  };
+  const loginExistingAccount = async (p, uniq) => {
+    const account = p.locator('[role="dialog"][aria-label="Account"]');
+    await account.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
+    await account.getByPlaceholder('••••••••').first().fill('TestPass123');
+    await account.getByRole('button', { name: /^login$/i }).click();
+    await p.waitForFunction(() => !!(localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud')), null, { timeout: 20000 });
+    await account.waitFor({ state: 'hidden', timeout: 10000 });
+  };
+  const reportRequest = (request) => {
+    if (request.method() !== 'POST') return false;
+    try { return new URL(request.url()).pathname === '/api/report'; } catch { return false; }
+  };
+  // Absence is an observation, not an arbitrary post-save sleep. The
+  // bounded listener starts before the ordinary write and a second window
+  // starts after it, so both an immediate and a delayed stale refresh are
+  // observable without making the suite depend on one guessed latency.
+  const REPORT_ABSENCE_WINDOW_MS = 3000;
+  const observeNoReport = async (p) => {
+    try {
+      await p.waitForRequest(reportRequest, { timeout: REPORT_ABSENCE_WINDOW_MS });
+      return false;
+    } catch (e) {
+      if (e?.name === 'TimeoutError') return true;
+      throw e;
+    }
+  };
+  const readBackSavedGame = async (p, id, name) => {
+    const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
+    return p.evaluate(async ({ id: wantedId, name: wantedName, token: authToken }) => {
+      const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+      const controller = new AbortController();
+      const deadlineTimer = setTimeout(() => controller.abort(), 10_000);
       try {
-        await p.waitForRequest(reportRequest, { timeout: REPORT_ABSENCE_WINDOW_MS });
-        return false;
-      } catch (e) {
-        if (e?.name === 'TimeoutError') return true;
-        throw e;
+        const response = await fetch('/api/games', { headers, signal: controller.signal });
+        let body = null;
+        try { body = await response.json(); } catch { /* the readback reports parse=false */ }
+        const matches = Array.isArray(body)
+          ? body.filter((game) => game?.id === wantedId && game?.name === wantedName).length
+          : 0;
+        const nameMatches = Array.isArray(body)
+          ? body.filter((game) => game?.name === wantedName).length
+          : 0;
+        return { ok: response.ok, status: response.status, parsed: Array.isArray(body), found: matches > 0, matches, nameMatches };
+      } catch {
+        return { ok: false, status: 0, parsed: false, found: false, matches: 0, nameMatches: 0 };
+      } finally {
+        clearTimeout(deadlineTimer);
       }
+    }, { id, name, token });
+  };
+  const fillOrdinarySaveDialog = async (dialog, name) => {
+    await dialog.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(name);
+    await dialog.locator('textarea').fill('A hand-typed ordinary description about a distinct game with no requested AI explanation.');
+    await dialog.locator('input[placeholder="e.g. Undercut"]').fill('Ordinary row one');
+    await dialog.locator('input[placeholder="e.g. Hold price"]').fill('Ordinary row two');
+    await dialog.locator('input[placeholder="e.g. Match"]').fill('Ordinary column one');
+    await dialog.locator('input[placeholder="e.g. Ignore"]').fill('Ordinary column two');
+  };
+  const submitOrdinarySave = async (p, name) => {
+    await p.getByRole('button', { name: /save preset/i }).click();
+    const dialog = p.getByRole('dialog', { name: 'Save custom game' });
+    await dialog.waitFor({ state: 'visible', timeout: 5000 });
+    await fillOrdinarySaveDialog(dialog, name);
+    const saved = p.waitForResponse((r) => /\/api\/games$/.test(r.url()) && r.request().method() === 'POST', { timeout: 15000 });
+    await dialog.getByRole('button', { name: /save game profile/i }).click();
+    const response = await saved.catch(() => null);
+    let body = null;
+    try { body = response ? await response.json() : null; } catch { /* the oracle below reports parsed=false */ }
+    let hidden = false;
+    try {
+      await dialog.waitFor({ state: 'hidden', timeout: 8000 });
+      hidden = true;
+    } catch { /* record a failed write instead of treating an open dialog as success */ }
+    const id = body?.game?.id ?? null;
+    const savedOk = response?.ok() === true && body?.success === true && typeof id === 'string' && hidden;
+    const readback = savedOk ? await readBackSavedGame(p, id, name) : null;
+    return {
+      saved: savedOk,
+      readback: !!readback?.ok && readback.parsed && readback.found,
+      id,
+      body,
+      status: response?.status() ?? null,
     };
-    const readBackSavedGame = async (p, id, name) => {
-      const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
-      return p.evaluate(async ({ id: wantedId, name: wantedName, token: authToken }) => {
-        const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
-        const controller = new AbortController();
-        const deadlineTimer = setTimeout(() => controller.abort(), 10_000);
-        try {
-          const response = await fetch('/api/games', { headers, signal: controller.signal });
-          let body = null;
-          try { body = await response.json(); } catch { /* the readback reports parse=false */ }
-          const matches = Array.isArray(body)
-            ? body.filter((game) => game?.id === wantedId && game?.name === wantedName).length
-            : 0;
-          const nameMatches = Array.isArray(body)
-            ? body.filter((game) => game?.name === wantedName).length
-            : 0;
-          return { ok: response.ok, status: response.status, parsed: Array.isArray(body), found: matches > 0, matches, nameMatches };
-        } catch {
-          return { ok: false, status: 0, parsed: false, found: false, matches: 0, nameMatches: 0 };
-        } finally {
-          clearTimeout(deadlineTimer);
-        }
-      }, { id, name, token });
-    };
-    const fillOrdinarySaveDialog = async (dialog, name) => {
-      await dialog.locator('input[placeholder="e.g. Battle of the Sexes 2.0"]').fill(name);
-      await dialog.locator('textarea').fill('A hand-typed ordinary description about a distinct game with no requested AI explanation.');
-      await dialog.locator('input[placeholder="e.g. Undercut"]').fill('Ordinary row one');
-      await dialog.locator('input[placeholder="e.g. Hold price"]').fill('Ordinary row two');
-      await dialog.locator('input[placeholder="e.g. Match"]').fill('Ordinary column one');
-      await dialog.locator('input[placeholder="e.g. Ignore"]').fill('Ordinary column two');
-    };
-    const submitOrdinarySave = async (p, name) => {
-      await p.getByRole('button', { name: /save preset/i }).click();
-      const dialog = p.getByRole('dialog', { name: 'Save custom game' });
-      await dialog.waitFor({ state: 'visible', timeout: 5000 });
-      await fillOrdinarySaveDialog(dialog, name);
-      const saved = p.waitForResponse((r) => /\/api\/games$/.test(r.url()) && r.request().method() === 'POST', { timeout: 15000 });
-      await dialog.getByRole('button', { name: /save game profile/i }).click();
-      const response = await saved.catch(() => null);
-      let body = null;
-      try { body = response ? await response.json() : null; } catch { /* the oracle below reports parsed=false */ }
-      let hidden = false;
-      try {
-        await dialog.waitFor({ state: 'hidden', timeout: 8000 });
-        hidden = true;
-      } catch { /* record a failed write instead of treating an open dialog as success */ }
-      const id = body?.game?.id ?? null;
-      const savedOk = response?.ok() === true && body?.success === true && typeof id === 'string' && hidden;
-      const readback = savedOk ? await readBackSavedGame(p, id, name) : null;
-      return {
-        saved: savedOk,
-        readback: !!readback?.ok && readback.parsed && readback.found,
-        id,
-        body,
-        status: response?.status() ?? null,
-      };
-    };
+  };
 
+
+  // ══ 91. Part A of the former monolithic §91 (over the 225 s per-section CI budget):
+  //       the ordinary-cancel arm and the held-save reconciliation arm. The helper
+  //       block at file scope below is shared verbatim by 91/91b/91c — one definition,
+  //       three callers, no drift.
+  section('91', 'an ordinary cancel and a held save cannot regenerate a later ordinary save', async () => {
     const cancelPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let cancelReports = 0, watchCancelReports = false;
     await mockSuggestedReport(cancelPage, () => { if (watchCancelReports) cancelReports++; });
@@ -9513,6 +9518,11 @@ try {
     // PATCH has the same irreversible boundary. Trigger Cancel and release a
     // server-committed response in the same browser task: the disabled close
     // path must do nothing, and the eventual result must be reconciled once.
+  });
+
+  // ══ 91b. Part B of the former §91: the in-flight Edit dismissal arm (blocked,
+  //       reconciled exactly once) and the unsigned-visitor Save-abandon arm.
+  section('91b', 'in-flight Edit dismissal and the abandoned Save cannot regenerate a later ordinary save', async () => {
     const cancelEditPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(cancelEditPage, 'e2e91editcancel');
     const cancelEditBaseName = 'E2E 91 cancelled edit base';
@@ -9621,6 +9631,7 @@ try {
     }
     await cancelEditPage.close();
 
+
     const abandonPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let abandonReports = 0, watchAbandonReports = false;
     await mockSuggestedReport(abandonPage, () => { if (watchAbandonReports) abandonReports++; });
@@ -9661,6 +9672,12 @@ try {
     // Edit with its typed story), and a later successful PATCH must remain
     // report-free because that abandoned suggested Edit no longer owns the
     // one-shot regeneration authorization.
+  });
+
+  // ══ 91c. Part C of the former §91: the Edit 401 auth-dismiss arm (the report-refresh
+  //       authorization must die with the dismissal) plus the auth-success control,
+  //       which proves completing auth DOES regenerate exactly once.
+  section('91c', 'the Edit auth dismissal abandons report refresh; completing auth regenerates exactly once', async () => {
     const editPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     let editReports = 0, watchEditReports = false;
     await mockSuggestedReport(editPage, () => { if (watchEditReports) editReports++; });
@@ -9882,10 +9899,10 @@ await browser.close();
 const EXPECTED_STATUS_NOISE = {
   '31': [429], // §31 deliberately mocks a 429 to test the "AI limit reached" wording
   '33': [401], // §33 deliberately mocks a 401 to test the Edit dialog's Sign-In card
-  // §91 deliberately mocks one 401 on the Edit auth-dismiss arm — the exact
-  // response whose invitation, Account dismissal, and report-free resumed
-  // write are asserted above.
-  '91': [401],
+  // §91c (part C of the former §91) deliberately mocks one 401 on the Edit
+  // auth-dismiss arm — the exact response whose invitation, Account dismissal,
+  // and report-free resumed write are asserted there.
+  '91c': [401],
   // §38 (RED-APP-9/001) deliberately DELETEs and PATCHes an already-deleted
   // game from tab A — a REAL 404 from the real server (not a route mock),
   // twice: once via the Delete button, once via the Edit dialog's Save

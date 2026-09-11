@@ -899,7 +899,9 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const smoke = withoutComments(rawSmoke);
   const section91 = between(smoke, "section('91',", '\nawait executeSections();');
   const rawSection91 = between(rawSmoke, "section('91',", '\nawait executeSections();');
-  const readback = between(section91, 'const readBackSavedGame = async', 'const submitOrdinarySave = async');
+    // 91/91b/91c share one file-scope helper block; the readback guard slices it directly
+  // (the marker pair is unique across the whole smoke file, so this survives future splits).
+  const readback = between(smoke, 'const readBackSavedGame = async', 'const submitOrdinarySave = async');
   const readbackIsBounded = (source: string) =>
     /const\s+controller\s*=\s*new AbortController\(\)/.test(source)
     && /setTimeout\(\(\)\s*=>\s*controller\.abort\(\),\s*10_000\)/.test(source)
