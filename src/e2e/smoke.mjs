@@ -7799,8 +7799,16 @@ try {
       record('precondition: the held submit shows "Saving..." (disabled)',
         await editDlg.getByRole('button', { name: /^saving\.\.\.$/i }).isDisabled().catch(() => false));
       await dp.keyboard.press('Escape');
+      // CodeRabbit on 113c5fd: a one-shot isVisible() read could PASS while
+      // the defect returns (dialog closing one frame after Escape). Hold the
+      // dialog-PRESENT state for a bounded window: only a TimeoutError (the
+      // dialog survived 750 ms of raf polls) proves Escape was ignored.
+      const escapeIgnored = await dp.waitForFunction(
+        () => !document.querySelector('[role="dialog"][aria-label="Edit saved game"]'),
+        null, { timeout: 750, polling: 'raf' },
+      ).then(() => false).catch((e) => e?.name === 'TimeoutError');
       record('FIX (H3): Escape cannot dismiss an Edit dialog while its irreversible PATCH is unresolved',
-        await editDlg.isVisible().catch(() => false));
+        escapeIgnored);
       const patchResponse = dp.waitForResponse((r) => /\/api\/games\//.test(r.url()) && r.request().method() === 'PATCH', { timeout: 15000 });
       releaseHeldPatch();
       await patchResponse;
