@@ -3197,14 +3197,15 @@ export default function App() {
     const chipsRemoved = chipsBefore - (afterBoard.terms.a.length + afterBoard.terms.b.length);
     dispatchSaveForm(boardAction);
     const kindLabel = generateKind === 'mixed' ? 'mixed-strategy' : 'pure-strategy';
+    let generateClearReportTimeout: (() => void) | null = null;
     try {
-      const { promise, clear } = fetchWithTimeout(getApiUrl('/api/report'), {
+      const { promise, clear: clearNow } = fetchWithTimeout(getApiUrl('/api/report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ payoffs: g }),
       }, generateController);
+      generateClearReportTimeout = clearNow;
       const res = await promise;
-      clear();
       if (!res.ok) throw new Error(String(res.status));
       const env = (await res.json()) as ReportEnvelope;
       if (myGeneration !== generateGameGenerationRef.current) return;
@@ -3259,6 +3260,10 @@ export default function App() {
       setGenerateNote(renderGenerateNote(generateKind, { outcome: 'unavailable' }, chipsRemoved));
       setLogEntries((prev) => [...prev, `✓ Generated a random game with a ${kindLabel} equilibrium (AI description unavailable).`]);
     } finally {
+      // CodeRabbit: the timeout must stay armed through the BODY read too —
+      // headers can arrive and then stall; clear() belongs in finally, past
+      // every exit (success, throw, and the staleness returns).
+      generateClearReportTimeout?.();
       if (myGeneration === generateGameGenerationRef.current) {
         generateGameInFlightRef.current = false;
         setGenerateLoading(false);
