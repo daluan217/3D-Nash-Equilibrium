@@ -16,7 +16,7 @@ import { paintPlan } from './utils/colorTerms';
 import { pickScenarioDomainExcluding } from './utils/scenarioDomains';
 import { describeStakes, exactSizeBand, STAKES_SWING_CUTS } from './utils/scenarioStakes';
 import { readFileSync } from 'node:fs';
-import { scenarioRenderability } from './utils/scenarioRenderability';
+import { renderedColourTerms, scenarioIsAttributable, scenarioRenderability } from './utils/scenarioRenderability';
 import { screenScenario } from './utils/scenarioScreen';
 import { colorTermKey, colorTermsFor, mergeDescriptionTerms, regenPreviewColorTerms } from './utils/colorTerms';
 import type { GamePayoffs, SuggestedScenario } from './types';
@@ -600,6 +600,82 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
       + 'RED-DESKTOP-9/001 back in the artifact, not the benign shared-label case');
     check('the disagreement is not vacuous: the renderer paints strictly fewer rows than the screen admits',
       disagree > 0, `disagree=${disagree}`);
+  }
+
+  /**
+   * STRUCT-CLOUD-20/001: the attributable gate used to test each term alone.
+   * It consequently credited B's short noun inside an A-owned longer label,
+   * although the real `paintPlan` paints every occurrence only for A.
+   */
+  {
+    const rows = allBankRows();
+    const shadow = {
+      name: 'Crew Rotation', row1: 'Early Crew', row2: 'Late Crew',
+      col1: 'Book First', col2: 'Book Later',
+      description: 'The Early Crew or Late Crew sets the shift schedule.',
+      actorB: ['crew'],
+    } as SuggestedScenario;
+    const shadowTerms = renderedColourTerms(shadow);
+    const shadowPlan = paintPlan(shadow.description ?? '', shadowTerms.a, shadowTerms.b);
+    const shadowRender = scenarioRenderability(shadow);
+    const shadowVerdict = scenarioIsAttributable(shadow);
+    const legacyProxy = {
+      a: shadowTerms.a.some((term) => highlightWouldMatch(term, shadow.description ?? '')),
+      b: shadowTerms.b.some((term) => highlightWouldMatch(term, shadow.description ?? '')),
+    };
+    const legacyBroadAmbiguity = [shadow.row1, shadow.row2]
+      .some((term) => highlightWouldMatch(term, shadow.description ?? ''))
+      && [shadow.col1, shadow.col2, ...(shadow.actorB ?? [])]
+        .some((term) => highlightWouldMatch(term, shadow.description ?? ''));
+    check('attributable mutation control: the old per-term proxy falsely credits both players',
+      legacyProxy.a && legacyProxy.b, JSON.stringify(legacyProxy));
+    check('attributable mutation control: the old broad ambiguity fallback would excuse the ownership shadow',
+      legacyBroadAmbiguity, `legacyBroadAmbiguity=${legacyBroadAmbiguity}`);
+    check('attributable: B-owned short noun shadowed by A labels is rejected and names player B',
+      shadowPlan.some((span) => span.side === 'A') && !shadowPlan.some((span) => span.side === 'B')
+      && shadowRender.a && !shadowRender.b && !shadowRender.ambiguityOnly
+      && !shadowVerdict.ok && /player B/.test(shadowVerdict.reason ?? ''),
+      `plan=${JSON.stringify(shadowPlan)} render=${JSON.stringify(shadowRender)} reason=${shadowVerdict.reason}`);
+
+    const freeStanding = {
+      ...shadow,
+      description: 'The Early Crew sets the shift schedule, while the crew confirms the booking.',
+    } as SuggestedScenario;
+    const freeTerms = renderedColourTerms(freeStanding);
+    const freePlan = paintPlan(freeStanding.description ?? '', freeTerms.a, freeTerms.b);
+    const freeRender = scenarioRenderability(freeStanding);
+    check('attributable control: a free-standing B noun paints and accepts both players',
+      freePlan.some((span) => span.side === 'A') && freePlan.some((span) => span.side === 'B')
+      && freeRender.a && freeRender.b && !freeRender.ambiguityOnly
+      && scenarioIsAttributable(freeStanding).ok,
+      `plan=${JSON.stringify(freePlan)} render=${JSON.stringify(freeRender)}`);
+
+    const symmetric = {
+      ...shadow,
+      col1: 'Early Crew', col2: 'Late Crew', actorB: undefined,
+      description: 'Early Crew and Late Crew are the two shifts on offer.',
+    } as SuggestedScenario;
+    const symmetricTerms = renderedColourTerms(symmetric);
+    const symmetricPlan = paintPlan(symmetric.description ?? '', symmetricTerms.a, symmetricTerms.b);
+    const symmetricRender = scenarioRenderability(symmetric);
+    check('attributable control: genuinely symmetric shared labels remain accepted as ambiguity',
+      symmetricPlan.length === 0 && !symmetricRender.a && !symmetricRender.b && symmetricRender.ambiguityOnly
+      && scenarioIsAttributable(symmetric).ok,
+      `terms=${JSON.stringify(symmetricTerms)} plan=${JSON.stringify(symmetricPlan)} render=${JSON.stringify(symmetricRender)}`);
+
+    let disagreements = 0; let firstDisagreement = '';
+    for (const e of rows) {
+      const terms = renderedColourTerms(e.s as SuggestedScenario);
+      const plan = paintPlan(e.s.description ?? '', terms.a, terms.b);
+      const actual = { a: plan.some((span) => span.side === 'A'), b: plan.some((span) => span.side === 'B') };
+      const got = scenarioRenderability(e.s as SuggestedScenario);
+      if (actual.a !== got.a || actual.b !== got.b) {
+        disagreements++;
+        if (!firstDisagreement) firstDisagreement = `${e.s.name}: plan=${JSON.stringify(actual)} gate=${JSON.stringify(got)}`;
+      }
+    }
+    check('every shipped bank row derives both renderability sides from its actual paint plan',
+      disagreements === 0, `${disagreements} of ${rows.length} disagree — first: ${firstDisagreement}`);
   }
 
   /**
