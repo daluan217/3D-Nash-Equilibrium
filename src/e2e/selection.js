@@ -49,8 +49,11 @@ import { dirname, join } from 'node:path';
  * honest number puts FIVE multi-section shards over the 200 s headroom line
  * at 30 (worst 200,704 ms — the table was already within 1 s of the line in
  * five places, so any true number over ~80,000 tips it). 31 clears them all;
- * worst multi-section shard becomes 195,221 ms. H3's §91 measured 175,615 ms
- * on 2026-09-09; adding it makes 31 overpack again, while 32 clears the set.
+ * worst multi-section shard becomes 195,221 ms. H3's monolithic §91 measured
+ * 175,615 ms on 2026-09-09 (635,593 ms by the 09-11 run); adding it made 31
+ * overpack again, so 32 was required. The split into 91/91b/91c (5b21f1f)
+ * removed the over-budget section; 32 keeps every multi-section shard at or
+ * under the line.
  */
 export const SHARD_COUNT = 32;
 

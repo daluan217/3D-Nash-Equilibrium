@@ -892,8 +892,12 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const editWithoutIdBinding = editHandler.replace(' && data.game.id === editGameId', '');
   check('mutation: accepting another game id fails the Edit response-binding guard',
     editWithoutIdBinding !== editHandler && !editCommitsOnlyMatchingGame(editWithoutIdBinding));
+  // CodeRabbit on #189: the original regex ran against the WHOLE file with a greedy
+  // [\s\S]*, so any later beginSaveDialogSession() call site (Save Preset, the
+  // suggested-scenario prefill) satisfied it even if handleGenerateGame stopped
+  // calling it. Scope the check to the generateHandler slice (line 555's own bounds).
   required('the session key is retired when a new matrix is generated',
-    /const handleGenerateGame = async \(\) => \{[\s\S]*beginSaveDialogSession\(\);/.test(code));
+    /beginSaveDialogSession\(\);/.test(generateHandler));
 
   const rawSmoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
   const smoke = withoutComments(rawSmoke);

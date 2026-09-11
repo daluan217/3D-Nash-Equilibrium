@@ -56,7 +56,9 @@ assert.strictEqual(SHARD_COUNT, 32, 'the smoke suite is split into 32 CI shards 
   + 'anticipated the other\'s addition; 30 shards clears every multi-section shard again. '
   + 'struct19-app 2026-09-08: correcting SS90 from a stale 56,000ms to its measured 88,551ms put five '
   + 'multi-section shards back over the line (worst 200,704ms); 31 cleared them (worst 195,221ms) before '
-  + 'RED-REGEN-20/001 added measured §91 (175,615ms), which requires 32.');
+  + 'RED-REGEN-20/001 added measured §91 (175,615ms), which requires 32. '
+  + 'The 91 split into 91/91b/91c (5b21f1f) removed the over-budget section; 32 keeps every '
+  + 'multi-section shard at or under the line.');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
