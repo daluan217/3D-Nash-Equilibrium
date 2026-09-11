@@ -471,8 +471,8 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
       /staleSession = res\.stale;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
     check('handleEditGameSubmit checks staleness in its catch block too',
       /catch \{[\s\S]{0,200}staleSession = editSessionRef\.current !== editSessionAtSubmit;[\s\S]{0,10}if \(staleSession\) return;/.test(editSlice));
-    check('handleEditGameSubmit releases loading for a non-stale response or a context-stale response still owned by the same dialog',
-      /finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*editInFlightRef\.current = false;\s*setEditLoading\(false\);\s*\}/.test(editSlice));
+    check('handleEditGameSubmit always releases write ownership, and releases loading only for the same dialog',
+      /finally \{[\s\S]{0,500}editInFlightRef\.current = false;\s*if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*setEditLoading\(false\);\s*\}/.test(editSlice));
     check('handleSaveGameSubmit hands its own request-id predicate (saveRequestIdRef) to the client',
       /isStale: \(\) => saveRequestIdRef\.current !== clientRequestId,/.test(saveSlice));
     check('handleSaveGameSubmit takes the client\'s staleness verdict immediately, before any branch',
@@ -484,7 +484,7 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
 
     const editWithoutOwnerFallback = editSlice.replace(' || editSessionRef.current === editSessionAtSubmit', '');
     check('mutation: Edit cleanup without the same-dialog ownership fallback is rejected',
-      !/finally \{[\s\S]{0,300}if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*editInFlightRef\.current = false;\s*setEditLoading\(false\);\s*\}/.test(editWithoutOwnerFallback));
+      !/finally \{[\s\S]{0,500}editInFlightRef\.current = false;\s*if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*setEditLoading\(false\);\s*\}/.test(editWithoutOwnerFallback));
     const saveWithoutOwnerFallback = saveSlice.replace(' || saveRequestIdRef.current === clientRequestId', '');
     check('mutation: Save cleanup without the same-request ownership fallback is rejected',
       !/finally \{[\s\S]{0,300}if \(!staleSession \|\| saveRequestIdRef\.current === clientRequestId\) \{\s*saveInFlightRef\.current = false;\s*setSaveLoading\(false\);\s*\}/.test(saveWithoutOwnerFallback));

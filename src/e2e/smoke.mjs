@@ -9522,10 +9522,16 @@ try {
             const successLogCount = [...document.querySelectorAll('p')]
               .filter((line) => line.textContent?.trim() === successText).length;
             const ok = !oldRowKept && lateRowAdded && successLogCount === 1;
-            if (!ok || performance.now() - bodyReadAt >= stableForMs) {
-              return { ok, dialogClosed, oldRowKept, lateRowAdded, successLogCount };
+            if (!ok) {
+              delete window.__e2e91EditExpectedSince;
+              return false;
             }
-            return false;
+            if (typeof window.__e2e91EditExpectedSince !== 'number') {
+              window.__e2e91EditExpectedSince = performance.now();
+              return false;
+            }
+            if (performance.now() - window.__e2e91EditExpectedSince < stableForMs) return false;
+            return { ok, dialogClosed, oldRowKept, lateRowAdded, successLogCount };
           },
           {
             oldName: cancelEditBaseName,
@@ -9622,9 +9628,11 @@ try {
           if (response.ok() && body?.success === true && body?.game) {
             body.game.description = null;
             body.game.row1Label = null;
+            body.game.col1Label = null;
             body.game.colorTermsA = null;
             body.game.clientRequestId = null;
             delete body.game.row2Label;
+            delete body.game.col2Label;
             delete body.game.colorTermsB;
             editLegacyResponseRewritten = true;
             await route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(body) });
@@ -9699,16 +9707,32 @@ try {
           } catch { /* explicit oracle reports a stuck Edit dialog */ }
           const finalSaved = finalResponse?.ok() === true && finalBody?.success === true
             && finalBody?.game?.id === baseSave.id && finalBody?.game?.name === editedName && finalHidden;
-          const legacyResponseAccepted = editLegacyResponseRewritten
-            && finalBody?.game?.description === null && finalBody?.game?.row1Label === null
-            && finalBody?.game?.row2Label === undefined && finalBody?.game?.colorTermsA === null
-            && finalBody?.game?.colorTermsB === undefined && finalBody?.game?.clientRequestId === null;
           const finalReadback = finalSaved ? await readBackSavedGame(editPage, baseSave.id, editedName) : null;
+          let legacyRendered = null;
+          if (finalSaved && editLegacyResponseRewritten) {
+            await editPage.getByRole('button', { name: `Edit ${editedName}`, exact: true }).click();
+            const legacyDialog = editPage.getByRole('dialog', { name: 'Edit saved game' });
+            await legacyDialog.waitFor({ state: 'visible', timeout: 5000 });
+            legacyRendered = {
+              name: await legacyDialog.getByLabel('Game Name').inputValue(),
+              description: await legacyDialog.getByLabel('Game Description').inputValue(),
+              labels: await Promise.all([
+                "A's Row 1", "A's Row 2", "B's Col 1", "B's Col 2",
+              ].map((label) => legacyDialog.getByLabel(label).inputValue())),
+            };
+            await legacyDialog.getByRole('button', { name: /^cancel$/i }).click();
+            await legacyDialog.waitFor({ state: 'hidden', timeout: 5000 });
+          }
+          const legacyResponseAccepted = editLegacyResponseRewritten
+            && legacyRendered?.name === editedName
+            && legacyRendered.description === ''
+            && legacyRendered.labels.length === 4
+            && legacyRendered.labels.every((label) => label === '');
           const noEditReportAfter = await observeNoReport(editPage);
           const noEditReport = await noEditReportDuring && noEditReportAfter;
           record('FIX: a successful Edit after auth dismissal requires success:true/readback and stays report-free',
             draftAfterLogin && finalSaved && legacyResponseAccepted && !!finalReadback?.ok && finalReadback.parsed && finalReadback.found && noEditReport && editReports === 0,
-            `draftAfterLogin=${draftAfterLogin} saved=${finalSaved} legacyResponse=${legacyResponseAccepted} readback=${!!finalReadback?.ok && finalReadback.parsed && finalReadback.found} noReport=${noEditReport} reports=${editReports}`);
+            `draftAfterLogin=${draftAfterLogin} saved=${finalSaved} legacyResponse=${legacyResponseAccepted} rendered=${JSON.stringify(legacyRendered)} readback=${!!finalReadback?.ok && finalReadback.parsed && finalReadback.found} noReport=${noEditReport} reports=${editReports}`);
         }
       }
     }

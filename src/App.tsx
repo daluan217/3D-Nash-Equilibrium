@@ -2950,10 +2950,11 @@ export default function App() {
       setEditErrorNeedsAuth(false);
     } finally {
       // The shared client also reports stale when auth/mode context changes.
-      // That does not retire this dialog, so its own controls still need to
-      // be released; a genuinely newer dialog session owns its own loading.
+      // The synchronous write owner belongs to this request and is always
+      // released when it settles. Loading belongs to the dialog session: a
+      // genuinely newer session owns its own UI state and must not be touched.
+      editInFlightRef.current = false;
       if (!staleSession || editSessionRef.current === editSessionAtSubmit) {
-        editInFlightRef.current = false;
         setEditLoading(false);
       }
     }

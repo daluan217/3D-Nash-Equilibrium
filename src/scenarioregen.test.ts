@@ -697,7 +697,7 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const editOwnsWriteUntilReconciled = (source: string): boolean => {
     const guard = source.indexOf('if (editInFlightRef.current) return;');
     const claim = source.indexOf('editInFlightRef.current = true;');
-    const release = /if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*editInFlightRef\.current = false;\s*setEditLoading\(false\);\s*\}/.test(source);
+    const release = /finally \{[\s\S]{0,400}?editInFlightRef\.current = false;\s*if \(!staleSession \|\| editSessionRef\.current === editSessionAtSubmit\) \{\s*setEditLoading\(false\);\s*\}/.test(source);
     return guard >= 0 && claim > guard && release;
   };
   required('Edit synchronously owns its PATCH until the current result is reconciled',
@@ -708,6 +708,13 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const editWithoutWriteRelease = editHandler.replace('editInFlightRef.current = false;', '');
   check('mutation: removing Edit ownership release fails the reconciliation contract',
     editWithoutWriteRelease !== editHandler && !editOwnsWriteUntilReconciled(editWithoutWriteRelease));
+  const editWithSessionConditionalWriteRelease = editHandler.replace(
+    'editInFlightRef.current = false;\n      if (!staleSession || editSessionRef.current === editSessionAtSubmit) {',
+    'if (!staleSession || editSessionRef.current === editSessionAtSubmit) {\n        editInFlightRef.current = false;',
+  );
+  check('mutation: making Edit write release conditional on the old dialog session fails the ownership contract',
+    editWithSessionConditionalWriteRelease !== editHandler
+    && !editOwnsWriteUntilReconciled(editWithSessionConditionalWriteRelease));
   const generateClick = code.indexOf('onClick={handleGenerateGame}');
   const generateTagStart = code.lastIndexOf('<button', generateClick);
   const generateTagEnd = code.indexOf('>', generateClick);
@@ -907,7 +914,9 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     return observer >= 0 && release > observer
       && /__e2e91PatchBodyReadAt = performance\.now\(\)/.test(source)
       && /typeof bodyReadAt !== 'number'/.test(source)
-      && /performance\.now\(\) - bodyReadAt >= stableForMs/.test(source)
+      && /delete window\.__e2e91EditExpectedSince;\s*return false;/.test(source)
+      && /typeof window\.__e2e91EditExpectedSince !== 'number'/.test(source)
+      && /performance\.now\(\) - window\.__e2e91EditExpectedSince < stableForMs/.test(source)
       && /\{ timeout: 5000, polling: 'raf' \}/.test(source)
       && /const ok = !oldRowKept && lateRowAdded && successLogCount === 1/.test(source)
       && /editCancelDisabled && cancelledAndReleased/.test(source)
@@ -930,6 +939,12 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const editCancelWithoutDisabledGate = editCancelRace.replace('editCancelDisabled && cancelledAndReleased', 'cancelledAndReleased');
   check('mutation: dropping the Edit disabled-control gate fails the reconciliation oracle',
     editCancelWithoutDisabledGate !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithoutDisabledGate));
+  const editCancelWithEarlyFailure = editCancelRace.replace(
+    'delete window.__e2e91EditExpectedSince;\n              return false;',
+    'return { ok, dialogClosed, oldRowKept, lateRowAdded, successLogCount };',
+  );
+  check('mutation: resolving on the first transient Edit mismatch fails the stable reconciliation oracle',
+    editCancelWithEarlyFailure !== editCancelRace && !hasPrearmedEditCancelObserver(editCancelWithEarlyFailure));
 
   const abandonSaveRace = between(rawSection91, 'const abandonPage = await', 'await abandonPage.close();');
   const observesAbandonedSaveAbsence = (source: string): boolean =>
@@ -969,16 +984,30 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     /const response = await route\.fetch\(\)/.test(source)
     && /body\.game\.description = null/.test(source)
     && /body\.game\.row1Label = null/.test(source)
+    && /body\.game\.col1Label = null/.test(source)
     && /delete body\.game\.row2Label/.test(source)
+    && /delete body\.game\.col2Label/.test(source)
     && /body\.game\.colorTermsA = null/.test(source)
     && /delete body\.game\.colorTermsB/.test(source)
     && /body\.game\.clientRequestId = null/.test(source)
+    && /getByRole\('button', \{ name: `Edit \$\{editedName\}`, exact: true \}\)\.click\(\)/.test(source)
+    && /name: await legacyDialog\.getByLabel\('Game Name'\)\.inputValue\(\)/.test(source)
+    && /description: await legacyDialog\.getByLabel\('Game Description'\)\.inputValue\(\)/.test(source)
+    && /legacyRendered\?\.name === editedName/.test(source)
+    && /legacyRendered\.description === ''/.test(source)
+    && /legacyRendered\.labels\.length === 4/.test(source)
+    && /legacyRendered\.labels\.every\(\(label\) => label === ''\)/.test(source)
+    && !/finalBody\?\.game\?\.description === null/.test(source)
     && /finalSaved && legacyResponseAccepted &&/.test(source);
   required('§91 accepts a real committed PATCH whose client response has supported legacy nullish fields',
     exercisesLegacyPatchResponse(editAuthRace));
   const editAuthWithoutLegacyGate = editAuthRace.replace('finalSaved && legacyResponseAccepted &&', 'finalSaved &&');
   check('mutation: dropping the legacy-response acceptance gate fails the Edit auth-detour guard',
     editAuthWithoutLegacyGate !== editAuthRace && !exercisesLegacyPatchResponse(editAuthWithoutLegacyGate));
+  const editAuthWithoutRenderedLegacyValues = editAuthRace.replace("legacyRendered.description === ''", 'true');
+  check('mutation: checking only the rewritten legacy payload instead of rendered Edit values fails the guard',
+    editAuthWithoutRenderedLegacyValues !== editAuthRace
+    && !exercisesLegacyPatchResponse(editAuthWithoutRenderedLegacyValues));
 }
 
 if (failures > 0) {
