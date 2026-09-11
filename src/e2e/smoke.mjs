@@ -8968,15 +8968,26 @@ try {
     // identical consecutive reads and no in-flight plotly resize before declaring the
     // geometry stable (bounded; falls back to the last read like before).
     const stableGeometry = async (ms = 10000) => {
+      let plotIdlePrev = null;
       const t0 = Date.now(); const reads = [];
       while (Date.now() - t0 < ms) {
         await p.waitForTimeout(300);
         const cur = await readGeometry();
         if (!cur) { reads.length = 0; continue; }
         reads.push(cur);
-        const plotIdle = await p.evaluate(() => { const el = document.querySelector('.js-plotly-plot'); return !el || !el.classList.contains('js-plotly-resizing'); });
-        if (reads.length >= 3 && plotIdle
+        // Plotly ships no js-plotly-resizing class (verified against
+        // plotly.js-dist-min 2.27: only js-plotly-plot/js-plotly-tester exist), so idle is
+        // proven the measurable way: the plot's bounding box identical across two reads 300ms
+        // apart — the same stability the rest of this oracle requires.
+        const plotIdle = await p.evaluate(() => {
+          const el = document.querySelector('.js-plotly-plot');
+          if (!el) return true;
+          const b = el.getBoundingClientRect();
+          return `${Math.round(b.left)},${Math.round(b.top)},${Math.round(b.width)},${Math.round(b.height)}`;
+        });
+        if (reads.length >= 3 && plotIdle === plotIdlePrev
           && reads.slice(-3).every((r) => r.key === reads[reads.length - 1].key && r.step === reads[reads.length - 1].step)) return cur;
+        plotIdlePrev = plotIdle;
       }
       return reads[reads.length - 1] ?? null;
     };
