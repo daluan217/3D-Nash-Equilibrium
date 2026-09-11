@@ -594,6 +594,24 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     && /consumeRegenExplanationAfterSave\([\s\S]*saveDialogSessionRef\.current/.test(saveSuccess));
   required('the session key is retired when a new matrix is generated',
     /const handleGenerateGame = async \(\) => \{[\s\S]*beginSaveDialogSession\(\);/.test(code));
+
+  const smoke = withoutComments(readFileSync('src/e2e/smoke.mjs', 'utf8'));
+  const section91 = between(smoke, "section('91',", '\nawait executeSections();');
+  const readback = between(section91, 'const readBackSavedGame = async', 'const submitOrdinarySave = async');
+  const readbackIsBounded = (source: string) =>
+    /const\s+controller\s*=\s*new AbortController\(\)/.test(source)
+    && /setTimeout\(\(\)\s*=>\s*controller\.abort\(\),\s*10_000\)/.test(source)
+    && /fetch\('\/api\/games',\s*\{[\s\S]*?signal:\s*controller\.signal[\s\S]*?\}\)/.test(source)
+    && /catch\s*\{[\s\S]*?ok:\s*false[\s\S]*?parsed:\s*false[\s\S]*?found:\s*false/.test(source)
+    && /finally\s*\{\s*clearTimeout\(deadlineTimer\);\s*\}/.test(source);
+  required('§91 bounds saved-game readback with an abort signal and cleanup-safe timer',
+    readbackIsBounded(readback));
+  const noReadbackSignalMutant = readback.replace(/,\s*signal:\s*controller\.signal/, '');
+  check('mutation: removing the readback fetch signal fails the §91 deadline guard',
+    !readbackIsBounded(noReadbackSignalMutant));
+  const noReadbackCleanupMutant = readback.replace('clearTimeout(deadlineTimer);', '');
+  check('mutation: removing readback timer cleanup fails the §91 deadline guard',
+    !readbackIsBounded(noReadbackCleanupMutant));
 }
 
 if (failures > 0) {

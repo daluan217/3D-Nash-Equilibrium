@@ -9305,12 +9305,20 @@ try {
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
       return p.evaluate(async ({ id: wantedId, name: wantedName, token: authToken }) => {
         const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
-        const response = await fetch('/api/games', { headers });
-        let body = null;
-        try { body = await response.json(); } catch { /* the readback reports parse=false */ }
-        const found = Array.isArray(body)
-          && body.some((game) => game?.id === wantedId && game?.name === wantedName);
-        return { ok: response.ok, status: response.status, parsed: Array.isArray(body), found };
+        const controller = new AbortController();
+        const deadlineTimer = setTimeout(() => controller.abort(), 10_000);
+        try {
+          const response = await fetch('/api/games', { headers, signal: controller.signal });
+          let body = null;
+          try { body = await response.json(); } catch { /* the readback reports parse=false */ }
+          const found = Array.isArray(body)
+            && body.some((game) => game?.id === wantedId && game?.name === wantedName);
+          return { ok: response.ok, status: response.status, parsed: Array.isArray(body), found };
+        } catch {
+          return { ok: false, status: 0, parsed: false, found: false };
+        } finally {
+          clearTimeout(deadlineTimer);
+        }
       }, { id, name, token });
     };
     const submitOrdinarySave = async (p, name) => {
