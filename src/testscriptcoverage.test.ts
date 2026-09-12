@@ -17,6 +17,8 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const testScript: string = pkg.scripts.test;
+const integrationScript: string = pkg.scripts['test:integration'];
+const ciWorkflow = readFileSync('.github/workflows/test.yml', 'utf8');
 const files = readdirSync('src').filter((f) => f.endsWith('.test.ts')).sort();
 
 // CodeRabbit on #150: a bare `.includes(filename)` passes for ANY textual
@@ -61,5 +63,20 @@ check('found a plausible number of test files (this repo has 30+)', files.length
   }
 }
 
+// The development middleware boundary is not exercised by the production
+// bundle's API suite. Keep its real-server guard in both the local integration
+// command and CI's required `integration` job; a filename in prose is not
+// enough.
+const devFallback = 'src/integration/api-dev-fallback.test.mjs';
+const integrationInvocation = new RegExp(`(?:^|&&\\s*)node\\s+${escapeRegex(devFallback)}(?=\\s|$)`);
+const workflowInvocation = new RegExp(`^\\s*run:\\s*node\\s+${escapeRegex(devFallback)}\\s*$`, 'm');
+check('the dev API fallback behavioral guard runs in npm run test:integration',
+  integrationInvocation.test(integrationScript));
+check('the dev API fallback behavioral guard runs in the required GitHub integration job',
+  workflowInvocation.test(ciWorkflow));
+const workflowWithoutDevGuard = ciWorkflow.replace(workflowInvocation, '      run: echo removed-mutant');
+check('mutation: removing the dev API fallback command from CI is detected',
+  !workflowInvocation.test(workflowWithoutDevGuard));
+
 if (failures > 0) { console.error(`✗ test-script coverage: ${failures} failed`); process.exit(1); }
-console.log(`✓ test-script coverage: ${files.length} src/*.test.ts files all wired into package.json's test script`);
+console.log(`✓ test-script coverage: ${files.length} unit files wired; dev API fallback wired locally and in CI`);

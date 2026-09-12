@@ -4623,6 +4623,14 @@ async function startServer() {
 
   // ── Vite / Frontend static file host ───────────────────────────────────────
 
+  // Keep unknown API routes inside the API contract in every server mode.
+  // This must be registered before Vite's development middleware as well as
+  // before the production SPA fallback: Vite's appType:"spa" history handler
+  // otherwise answers a typo such as /api/scenarios with index.html and 200.
+  app.use('/api', (req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -4639,13 +4647,6 @@ async function startServer() {
       : path.join(process.cwd(), 'dist');
     if (fs.existsSync(path.join(distPath, 'index.html'))) {
       app.use(express.static(distPath));
-      // An unknown API path must remain an API 404. Letting the SPA fallback
-      // answer `/api/*` with index.html turns a typo such as `/api/scenarios`
-      // into a misleading HTTP 200 and makes status-only live smoke checks
-      // vacuous.
-      app.use('/api', (req, res) => {
-        res.status(404).json({ error: "Not found" });
-      });
       app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
       });

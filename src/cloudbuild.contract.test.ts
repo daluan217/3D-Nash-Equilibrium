@@ -58,15 +58,17 @@ for (const pair of pairs) {
 }
 
 // Secret payloads must never travel through Cloud Build substitutions. The
-// deploy uses public Secret Manager resource names plus an explicit version.
+// deploy uses public Secret Manager resource names plus a NUMERICALLY pinned
+// version. `latest` is intentionally forbidden for env vars: rotation must be
+// an explicit, reviewed deployment change.
 const secretValueOf = new Map<string, string>();
 for (const pair of secretPairs) {
   const eq = pair.indexOf('=');
   if (eq < 1) fail(`malformed entry in --set-secrets: "${pair}"`);
   const name = pair.slice(0, eq);
   const ref = pair.slice(eq + 1);
-  if (!/^\$\{_[A-Z0-9_]+\}:(?:latest|[0-9]+)$/.test(ref)) {
-    fail(`${name} must use a Secret Manager reference with an explicit substitution and version (got "${ref}")`);
+  if (!/^[a-z0-9][a-z0-9-]*:[1-9][0-9]*$/.test(ref)) {
+    fail(`${name} must use a repository-pinned Secret Manager resource and numeric version (got "${ref}")`);
   }
   names.push(name);
   secretValueOf.set(name, ref);
@@ -104,6 +106,13 @@ const expectedSecretNames = new Set([
   'AUTH_SECRET',
   'AZURE_FOUNDRY_API_KEY',
 ]);
+const expectedSecretRefs = new Map<string, string>([
+  ['SMTP_USER', 'nash-equilibrium-smtp-user:1'],
+  ['SMTP_PASS', 'nash-equilibrium-smtp-pass:1'],
+  ['ADMIN_SECRET', 'nash-equilibrium-admin-secret:1'],
+  ['AUTH_SECRET', 'nash-equilibrium-auth-secret:1'],
+  ['AZURE_FOUNDRY_API_KEY', 'nash-equilibrium-azure-foundry-api-key:1'],
+]);
 const actualSecretNames = new Set(secretValueOf.keys());
 const missingSecretRefs = [...expectedSecretNames].filter((n) => !actualSecretNames.has(n));
 const unexpectedSecretRefs = [...actualSecretNames].filter((n) => !expectedSecretNames.has(n));
@@ -111,6 +120,9 @@ if (missingSecretRefs.length > 0) fail(`secret-bearing variables lack Secret Man
 if (unexpectedSecretRefs.length > 0) fail(`--set-secrets contains non-secret or unreviewed variables: ${unexpectedSecretRefs.join(', ')}`);
 for (const name of expectedSecretNames) {
   if (valueOf.has(name)) fail(`${name} must not be passed through --set-env-vars; use --set-secrets`);
+  if (secretValueOf.get(name) !== expectedSecretRefs.get(name)) {
+    fail(`${name} must use the reviewed pinned ref ${expectedSecretRefs.get(name)} (got ${secretValueOf.get(name)})`);
+  }
 }
 
 // ── every ${_SUB} must actually be declared ─────────────────────────────────
@@ -201,13 +213,10 @@ for (const img of listed) {
 // disclosure, not a config mistake.
 for (const m of subsBlock.matchAll(/^ {2}(_[A-Z0-9_]+):\s*'([^']*)'\s*$/gm)) {
   const [, key, val] = m;
-  // Secret Manager resource-name substitutions are identifiers, not payloads.
-  // They intentionally end in _SECRET and contain only lowercase slug chars.
-  const isSecretResourceName = /_SECRET$/.test(key) && /^[a-z0-9][a-z0-9-]*$/.test(val);
   if (/^(sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{30}|AIza[0-9A-Za-z_-]{30})/.test(val)
       || /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(val)
       || (/(SECRET|PASS|API_KEY|TOKEN)$/.test(key) && val.length >= 16
-        && !isSecretResourceName && !/your-|placeholder|example|CHANGE|xxx/i.test(val))) {
+        && !/your-|placeholder|example|CHANGE|xxx/i.test(val))) {
     fail(`substitution ${key} looks like a REAL secret value. This file is public — keep the value in the Cloud Build trigger.`);
   }
 }

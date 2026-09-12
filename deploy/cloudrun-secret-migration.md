@@ -7,10 +7,10 @@ value.
 
 Before merging a deployment that uses the new wiring, an operator must:
 
-1. Create the five Secret Manager secrets named by `_SMTP_USER_SECRET`,
-   `_SMTP_PASS_SECRET`, `_ADMIN_SECRET_SECRET`, `_AUTH_SECRET_SECRET`, and
-   `_AZURE_FOUNDRY_API_KEY_SECRET` (or set those substitutions to the approved
-   project-specific names).
+1. Create the five Secret Manager secrets named in `cloudbuild.yaml`:
+   `nash-equilibrium-smtp-user`, `nash-equilibrium-smtp-pass`,
+   `nash-equilibrium-admin-secret`, `nash-equilibrium-auth-secret`, and
+   `nash-equilibrium-azure-foundry-api-key`.
 2. Add the current values as new secret versions without putting them in shell
    history, source control, workflow logs, or command output.
 3. Grant `roles/secretmanager.secretAccessor` on only those secrets to the
@@ -20,17 +20,29 @@ Before merging a deployment that uses the new wiring, an operator must:
    unless the deployment topology requires that.
 5. Deploy a canary revision and verify `/api/health`, authentication, mail,
    storage, and the report fallback/model path before shifting traffic.
-6. Rotate the old trigger-stored credentials after the new revision is
-   serving. Rotating `AUTH_SECRET` invalidates existing sessions, so announce
-   that impact and verify the login path after the rotation.
+6. Once the new revision is serving, remove the obsolete `_SMTP_USER`,
+   `_SMTP_PASS`, `_ADMIN_SECRET`, `_AUTH_SECRET`, and
+   `_AZURE_FOUNDRY_API_KEY` substitutions from the Cloud Build trigger. They
+   are no longer consumed and must not remain as a second credential store.
+7. Rotate the credentials after the Secret Manager cutover. Retained historical
+   Cloud Run revisions still contain the old literal values, so invalidate
+   those values before granting the audit identity any Cloud Run read access.
+   Add each rotated
+   value as a new Secret Manager version and update the numeric version in
+   `cloudbuild.yaml` through review. Rotating `AUTH_SECRET` invalidates
+   existing sessions, so announce that impact and verify login afterward.
 
-The live environment audit must be repaired separately: configure GitHub OIDC
-Workload Identity Federation for a dedicated read-only audit identity, grant
-the minimum Cloud Run metadata permission needed for service/revision
-description, and rerun `.github/workflows/cloud-env-audit.yml`. Do not broaden
-that identity's access while secrets remain literal environment values.
+The live environment audit uses the dedicated GitHub secrets
+`GCP_AUDIT_WIF_PROVIDER` and `GCP_AUDIT_SERVICE_ACCOUNT`; there is deliberately
+no long-lived-key fallback and no credential-free skip. Its GCP OIDC provider
+must accept only this repository on `refs/heads/main`. After the cutover and
+credential rotation, grant the dedicated identity `roles/run.viewer` on the
+`nash-equilibrium-backend` Cloud Run service only (not at project scope), then
+rerun `.github/workflows/cloud-env-audit.yml`. Cloud Run Viewer can read a
+service's retained revision configurations, so granting it before the old
+literal values are invalidated would enlarge their exposure.
 
-The audit compares names only. It must never print `env[].value` or secret
+The audit compares names and Secret Manager reference metadata only. Its Cloud
+Run REST response masks must never request or print `env[].value` or secret
 payloads. A successful audit is necessary but does not prove that a referenced
-secret exists, is current, or is usable by the runtime; the canary checks cover
-those behaviours.
+secret is usable by the runtime; the canary checks cover that behaviour.

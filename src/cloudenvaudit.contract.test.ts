@@ -5,6 +5,8 @@
  * secret values, and every Actions step that needs the service description
  * must fetch it in that step's own shell.
  */
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 const workflow = readFileSync('.github/workflows/cloud-env-audit.yml', 'utf8');
@@ -18,31 +20,102 @@ if (!/id-token:\s*write/.test(workflow)) {
   fail('workflow must retain id-token: write for the preferred WIF path');
 }
 if (!/google-github-actions\/auth@v2/.test(workflow)
-    || !/workload_identity_provider:/.test(workflow)
-    || !/service_account:/.test(workflow)) {
-  fail('workflow must retain the Workload Identity Federation authentication path');
+    || !/workload_identity_provider:\s*\$\{\{ secrets[.]GCP_AUDIT_WIF_PROVIDER \}\}/.test(workflow)
+    || !/service_account:\s*\$\{\{ secrets[.]GCP_AUDIT_SERVICE_ACCOUNT \}\}/.test(workflow)) {
+  fail('workflow must use the dedicated audit Workload Identity Federation credentials');
 }
-if (!/src\/deploy\/env-audit\.mjs/.test(workflow)
-    || !/deploy\/cloudrun-env-manifest\.txt/.test(workflow)) {
-  fail('workflow must invoke the reviewed names-only manifest audit');
+if (/credentials_json:|GCP_SA_KEY|steps[.]creds|mode=(?:none|key)|skipping the live env audit/i.test(workflow)) {
+  fail('live audit must fail closed and must not fall back to a long-lived service-account key');
+}
+if (!/src\/deploy\/env-audit\.mjs/.test(workflow)) {
+  fail('workflow must invoke the reviewed environment manifest audit');
 }
 
-// A service/revision describe is allowed to request JSON or env names only.
-// Asking for env[].value would put credentials into the Actions log. Ignore
-// explanatory YAML comments, which mention that forbidden field by name.
+// Environment reads must use Cloud API's server-side partial-response mask.
+// `gcloud --format` is only a client-side renderer: the full resource (and its
+// literal payloads) reaches the runner first. Ignore explanatory comments.
 const executable = workflow.replace(/^\s*#.*$/gm, '');
-if (/env\[\][.]value|containers\[\][.]env\[\][.]value/.test(executable)) {
-  fail('workflow must never request or print deployed environment values');
+if (/gcloud\s+run\s+(?:services|revisions)\s+(?:describe|list)|--format(?:=|\s)/.test(executable)) {
+  fail('workflow must not fetch full Cloud Run resources and filter them locally with gcloud');
+}
+const serviceFields = /^\s*SERVICE_FIELDS:\s*(\S+)\s*$/m.exec(workflow)?.[1]?.split(',') ?? [];
+const revisionFields = /^\s*REVISION_FIELDS:\s*(\S+)\s*$/m.exec(workflow)?.[1]?.split(',') ?? [];
+const allFields = [...serviceFields, ...revisionFields];
+if (allFields.length === 0 || allFields.some((field) => field.split('.').includes('value'))) {
+  fail('server-side response masks must never request the EnvVar.value payload field');
+}
+for (const required of [
+  'template.containers.env.name',
+  'template.containers.env.valueSource.secretKeyRef',
+  'trafficStatuses.type',
+  'trafficStatuses.revision',
+  'trafficStatuses.percent',
+  'latestReadyRevision',
+]) {
+  if (!serviceFields.includes(required)) fail(`SERVICE_FIELDS omits required safe metadata field ${required}`);
+}
+for (const required of ['containers.env.name', 'containers.env.valueSource.secretKeyRef']) {
+  if (!revisionFields.includes(required)) fail(`REVISION_FIELDS omits required safe metadata field ${required}`);
+}
+if (!/RUN_API:\s*https:\/\/run[.]googleapis[.]com\/v2/.test(workflow)
+    || !/--data-urlencode\s+"fields=\$fields"/.test(workflow)
+    || !/src\/deploy\/cloud-run-traffic[.]mjs/.test(workflow)) {
+  fail('workflow must use Cloud Run v2 REST fields masks and the reviewed traffic helper');
+}
+if (/access_token=\$\(gcloud auth print-access-token\s+2>&1\)|echo\s+"\$access_token"/.test(executable)) {
+  fail('workflow must not merge token-mint diagnostics into the bearer token or print that token');
 }
 
-const describeJsonCalls = [...workflow.matchAll(/gcloud run services describe[\s\S]{0,180}?--format=json/g)].length;
-if (describeJsonCalls < 2) {
-  fail('each shell that checks traffic must fetch its own service JSON; shell variables do not cross Actions steps');
-}
+const names = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8')
+  .split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
+const refs = new Map([
+  ['SMTP_USER', ['nash-equilibrium-smtp-user', '1']],
+  ['SMTP_PASS', ['nash-equilibrium-smtp-pass', '1']],
+  ['ADMIN_SECRET', ['nash-equilibrium-admin-secret', '1']],
+  ['AUTH_SECRET', ['nash-equilibrium-auth-secret', '1']],
+  ['AZURE_FOUNDRY_API_KEY', ['nash-equilibrium-azure-foundry-api-key', '1']],
+]);
+const fixtureEntries = names.map((name) => {
+  const ref = refs.get(name);
+  return ref ? { name, valueSource: { secretKeyRef: { secret: ref[0], version: ref[1] } } } : { name };
+});
+const fixture = { template: { containers: [{ env: fixtureEntries }] } };
+const runAudit = (input: unknown) => spawnSync(
+  process.execPath,
+  ['src/deploy/env-audit.mjs'],
+  { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' },
+);
 
-const trafficStep = workflow.slice(workflow.indexOf('- name: The newest ready revision must be the one serving traffic'));
-if (!/svc=\$\(gcloud run services describe[\s\S]*?--format=json/.test(trafficStep)) {
-  fail('newest-ready traffic check must initialize svc in its own Actions step');
-}
+const control = runAudit(fixture);
+assert.equal(control.status, 0, control.stderr || control.stdout);
 
-console.log('✓ cloud env audit contract: WIF path, names-only output, and per-step service fetch are guarded');
+const literalMutant = { template: { containers: [{ env: fixtureEntries.map((entry) =>
+  entry.name === 'AUTH_SECRET' ? { name: entry.name } : entry) }] } };
+const literalResult = runAudit(literalMutant);
+assert.notEqual(literalResult.status, 0, 'a literal AUTH_SECRET source must fail the live audit');
+assert.match(literalResult.stdout + literalResult.stderr, /AUTH_SECRET/);
+
+const latestMutant = { template: { containers: [{ env: fixtureEntries.map((entry) => entry.name === 'SMTP_PASS'
+  ? { name: entry.name, valueSource: { secretKeyRef: { secret: 'nash-equilibrium-smtp-pass', version: 'latest' } } }
+  : entry) }] } };
+const latestResult = runAudit(latestMutant);
+assert.notEqual(latestResult.status, 0, 'an unpinned `latest` secret reference must fail the live audit');
+
+const payloadMutant = { template: { containers: [{ env: fixtureEntries.map((entry) => entry.name === 'ADMIN_SECRET'
+  ? { ...entry, value: 'fixture-must-never-be-accepted' }
+  : entry) }] } };
+const payloadResult = runAudit(payloadMutant);
+assert.notEqual(payloadResult.status, 0, 'input containing literal env payload fields must fail closed');
+
+const namesOnlyResult = runAudit(names.join('\n'));
+assert.notEqual(namesOnlyResult.status, 0, 'names-only input cannot prove Secret Manager backing');
+
+const ordinarySecretMutant = { template: { containers: [{ env: fixtureEntries.map((entry) => entry.name === 'NODE_ENV'
+  ? { name: entry.name, valueSource: { secretKeyRef: { secret: 'wrong-secret', version: '1' } } }
+  : entry) }] } };
+assert.notEqual(runAudit(ordinarySecretMutant).status, 0, 'literal-designated variables must not accept secret references');
+
+const malformedMutant = { template: { containers: [{ env: [...fixtureEntries, { valueSource: {} }] }] } };
+assert.notEqual(runAudit(malformedMutant).status, 0, 'malformed structured entries must fail closed rather than being dropped');
+
+console.log('✓ cloud env audit contract: OIDC-only auth, server-side fields masks, exact sources, and malformed/literal mutants are guarded');

@@ -183,6 +183,14 @@ jobs:
           INTEGRATION_PORT: '3098'
           INTEGRATION_BASE: http://localhost:3098
 
+      # Vite's development history fallback must not turn an unknown browser-
+      # style /api request into index.html. This boots the real dev middleware
+      # stack; the production API suite above cannot exercise that boundary.
+      - name: Boot the development server and guard the API fallback boundary
+        run: node src/integration/api-dev-fallback.test.mjs
+        env:
+          DEV_FALLBACK_PORT: '3184'
+
       # The desktop's persistence guarantees, booted from a temp cwd so dotenv
       # loads nothing — the packaged condition. Guards two defects RED-DESKTOP
       # found in the real .app: a per-launch session secret that signed the user
