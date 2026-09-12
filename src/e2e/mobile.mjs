@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
-import { closeTour } from './tour.mjs';
+import { dismissTourForSetup } from './tour.mjs';
 
 const PORT = process.env.MOBILE_PORT || '3097';
 const BASE = process.env.MOBILE_BASE || `http://localhost:${PORT}`;
@@ -62,10 +62,11 @@ if (!(await waitReady())) {
 const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
 
 async function dismissTour(page) {
-  // STRUCT-APP-19/003: dismiss through the one shared helper (it already falls
-  // back to Escape); this wrapper keeps its own return semantics — "is the tour
-  // gone", which is true even when it never appeared.
-  await closeTour(page);
+  // This suite is not asserting tour behavior; it needs an unobscured page to
+  // measure the mobile surface.  The explicit setup helper records that its
+  // Escape fallback is allowed here when the first-run tour appears.
+  await dismissTourForSetup(page,
+    'setup: clear a possible first-run tour before mobile layout measurements');
   return page.waitForFunction(
     () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
     null, { timeout: 20000 },

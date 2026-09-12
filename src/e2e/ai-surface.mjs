@@ -31,7 +31,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { closeTour } from './tour.mjs';
+import { dismissTourForSetup } from './tour.mjs';
 
 const PORT = process.env.E2E_PORT || '3098';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -104,7 +104,8 @@ async function dismissTour() {
   // above it also still described the viewport-anchored Exit button, removed in
   // STRUCT-APP-19/003. Both replaced by the shared helper, which waits for the
   // real dialog to detach, plus a loud failure if it did not.
-  const { closed } = await closeTour(page);
+  const { closed } = await dismissTourForSetup(page,
+    'setup: remove a possible first-run tour before exercising AI controls');
   const gone = await page.waitForFunction(
     () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
     null, { timeout: 10000 },

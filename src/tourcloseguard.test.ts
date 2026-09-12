@@ -1,78 +1,165 @@
 /**
- * Guards the RED-APP-20 closeTour `.via` oracle gap (round 20): `closeTour`
- * returns `{ closed, via }` precisely so a call site can see whether the CLICK
- * closed the tour or the Escape fallback masked an unclickable X — the
- * z-index-collision mutant (an overlay covering the X at z 9999) passes every
- * call site that ignores `.via`, because Escape still closes the tour.
- * Only §90 asserted it, so 52 of 53 sites masked the mutant.
+ * Guards RED-APP-20's closeTour oracle class. A tour Close button covered by
+ * an overlay used to look healthy because every caller silently pressed Escape
+ * when its click failed. The invariant is now deliberately two-tiered:
  *
- * Two invariants on src/e2e/smoke.mjs (and the other suites that share the
- * helper):
- *   1. Every smoke.mjs call site that opens the tour in CI must read `.via`
- *      and require it to be 'click' when the tour was actually open — the
- *      Escape fallback may serve only as documentation, never as an unchecked
- *      fallback that can mask an unclickable X.
- *   2. `closeTour` itself keeps its Escape fallback for robustness but must
- *      not silently swallow a failed X-click when the tour was up: the
- *      'escape' path is allowed only when the click path was impossible
- *      (tour absent), which the helper already reports as 'absent'.
+ *   - at least one consumer asserts the product control with strict closeTour;
+ *   - every other consumer that merely needs an unobscured page names itself
+ *     and supplies a non-empty reason to dismissTourForSetup.
  *
- * Mutation-tested: deleting a call site's `.via` check, or restoring the
- * bare `await closeTour(page)` shape at the canonical site, fails by name.
+ * The census covers every current e2e consumer, not a suffix of smoke.mjs, so
+ * inserting a silent call before §90 or in mobile/AI cannot reopen the hole.
  *
  *   npx tsx src/tourcloseguard.test.ts
  */
-import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { closeTour, dismissTourForSetup } from './e2e/tour.mjs';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
   if (!ok) { console.error(`  ✗ ${name}${detail ? ' -- ' + detail : ''}`); failures++; }
 };
 
-const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
-const tour = readFileSync('src/e2e/tour.mjs', 'utf8');
+const e2eSources = (): Map<string, string> => {
+  const files = readdirSync('src/e2e', { recursive: true })
+    .filter((entry): entry is string => typeof entry === 'string' && entry.endsWith('.mjs'))
+    .map((entry) => path.join('src/e2e', entry));
+  return new Map(files.map((file) => [file, readFileSync(file, 'utf8')]));
+};
 
-// ── The helper keeps its contract: it REPORTS the path, it does not hide it ──
-check('tour.mjs still returns { closed, via } from closeTour',
-  /return \{ closed: true, via: 'click' \};/.test(tour) && /return \{ closed: await gone\(\), via: 'escape' \};/.test(tour));
-const viaMutant = tour.replace("if (await gone()) return { closed: true, via: 'click' };", "return { closed: true, via: 'click' };");
-check('mutation: a closeTour that reports click without checking it fails the contract',
-  !/return \{ closed: true, via: 'click' \};/.test(viaMutant.replace("return { closed: true, via: 'click' };\n  await", 'BROKEN')));
+type Census = {
+  consumers: string[];
+  imports: Array<{ file: string; names: string[] }>;
+  strict: Array<{ file: string; index: number }>;
+  setupCalls: number;
+  setupReasons: string[];
+};
 
-// ── Invariant 1: §90 (the canonical site) still asserts via === 'click' ─────
-const s90 = smoke.indexOf("section('90'");
-const s91 = smoke.indexOf("section('91'");
-const section90 = s90 >= 0 && s91 > s90 ? smoke.slice(s90, s91) : '';
-check('§90 exists and its via assertion is intact',
-  section90.includes("via === 'click'"), 'the closeTour .via oracle must keep at least this one enforcing site');
-const viaMutant90 = section90.replace("closed && via === 'click'", 'closed');
-check('mutation: dropping the via === click conjunct at §90 fails this guard',
-  !section90.includes("closed && via === 'click'") || !/via === 'click'/.test(viaMutant90));
+const inspectCensus = (sources: Map<string, string>): Census => {
+  const consumers = [...sources]
+    .filter(([, source]) => /from\s+['"]\.\/tour\.mjs['"]/.test(source))
+    .map(([file]) => file)
+    .sort();
+  const imports: Array<{ file: string; names: string[] }> = [];
+  const strict: Array<{ file: string; index: number }> = [];
+  let setupCalls = 0;
+  const setupReasons: string[] = [];
+  for (const file of consumers) {
+    const source = sources.get(file)!;
+    const match = source.match(/import\s+\{([^}]+)\}\s+from\s+['"]\.\/tour\.mjs['"]/);
+    imports.push({
+      file,
+      names: match ? match[1].split(',').map((name) => name.trim()) : [],
+    });
+    for (const match of source.matchAll(/\bcloseTour\s*\(/g)) {
+      strict.push({ file, index: match.index ?? -1 });
+    }
+    for (const match of source.matchAll(/\bdismissTourForSetup\s*\(\s*[^,]+,\s*(['"])([^'"\n]*)\1/g)) {
+      setupCalls++;
+      setupReasons.push(match[2].trim());
+    }
+  }
+  return { consumers, imports, strict, setupCalls, setupReasons };
+};
 
-// ── Invariant 2: the grandfather set is closed. The 52 historical sites that
-// ignore `.via` predate this guard (they are setup helpers, not tour claims —
-// RED-APP-20's finding is that they MASK a dead X, not that they test it).
-// This guard pins the census: exactly the sites listed below may call
-// closeTour without reading `.via`. A NEW call site must either read `.via`
-// and require 'click' when it claims tour behavior, or be added to this
-// census with a comment naming why Escape fallback is acceptable there —
-// both are auditable in review.
-const sections = [...smoke.matchAll(/section\('([^']+)',\s*'([^']+)',\s*async/g)];
-const lastEnforced = sections.findIndex((s) => s[1] === '90');
-const silentSites = sections.slice(lastEnforced + 1)
-  .filter((s) => {
-    const start = s.index!, next = sections[sections.indexOf(s) + 1]?.index ?? smoke.length;
-    const body = smoke.slice(start, next);
-    return body.includes('closeTour') && !body.includes('.via');
-  })
-  .map((s) => s[1]);
-// §91b/§91c use closeTour only as PAGE SETUP (get the scrim out of the way
-// before testing the regen-ref contract) — they claim nothing about the tour.
-const GRANDFATHERED_SETUP = ['91b', '91c', '92'];
-const newSilent = silentSites.filter((id) => !GRANDFATHERED_SETUP.includes(id));
-check('every section after §90 that calls closeTour either reads .via or is on the audited setup census',
-  newSilent.length === 0,
-  newSilent.length ? `new silent sites: ${newSilent.join(', ')} — assert .via or extend the census with a stated reason` : '(census: 91b, 91c, 92)');
+const sources = e2eSources();
+const census = inspectCensus(sources);
+const smoke = sources.get('src/e2e/smoke.mjs')!;
+const tour = sources.get('src/e2e/tour.mjs')!;
+
+check('every e2e consumer of tour.mjs is included in the whole-suite census',
+  census.consumers.join(',') === 'src/e2e/ai-surface.mjs,src/e2e/mobile.mjs,src/e2e/smoke.mjs',
+  census.consumers.join(', ') || 'no consumers found');
+check('tour helpers have no aliases or hidden import paths in e2e consumers',
+  census.imports.every(({ names }) => names.length > 0
+    && names.every((name) => name === 'closeTour' || name === 'dismissTourForSetup')),
+  census.imports.map(({ file, names }) => `${file}:${names.join('|') || '<unparsed>'}`).join(', '));
+check('there is at least one strict closeTour product assertion across every e2e suite',
+  census.strict.length >= 1,
+  census.strict.map(({ file }) => file).join(', ') || 'none');
+const strictSite = census.strict[0];
+const strictWindow = strictSite ? sources.get(strictSite.file)!.slice(Math.max(0, strictSite.index - 100), strictSite.index + 500) : '';
+check('the canonical strict closeTour caller reads via and requires the click path',
+  /const \{ closed, via \} = await closeTour\(cp\);/.test(strictWindow)
+    && /closed && via === 'click'/.test(strictWindow),
+  strictSite ? strictSite.file : 'no strict site');
+
+const rawSetupCalls = [...sources]
+  .filter(([file]) => census.consumers.includes(file))
+  .flatMap(([file, source]) => [...source.matchAll(/\bdismissTourForSetup\s*\(/g)].map((match) => ({ file, index: match.index ?? -1 })));
+check('every setup dismissal has an explicit non-empty reason',
+  rawSetupCalls.length > 0 && rawSetupCalls.length === census.setupCalls && census.setupReasons.every(Boolean),
+  `calls=${rawSetupCalls.length} reasons=${census.setupReasons.length}`);
+check('the setup-only helper validates its required reason at runtime',
+  /requires a non-empty setup reason/.test(tour) && /reason\.trim\(\)\.length === 0/.test(tour));
+check('strict closeTour does not opt into Escape fallback',
+  /export const closeTour = async \(page, options = \{\}\) =>\s*\n\s*attemptTourClose\(page, \{ \.\.\.options, allowEscapeFallback: false \}\);/.test(tour));
+
+// Mutation tests use the same whole-suite census predicate as the real source.
+const movedStrictMutant = new Map(sources);
+movedStrictMutant.set('src/e2e/smoke.mjs', smoke.replace(
+  'const { closed, via } = await closeTour(cp);',
+  "const { closed, via } = await dismissTourForSetup(cp, 'MUTANT: silently allow Escape');",
+));
+const movedStrict = inspectCensus(movedStrictMutant);
+check('mutation: replacing the product assertion with a setup fallback fails the strict census',
+  movedStrict.strict.length < 1 || movedStrict.setupCalls !== rawSetupCalls.length + 1);
+
+const missingReasonMutant = new Map(sources);
+missingReasonMutant.set('src/e2e/smoke.mjs', smoke.replace(
+  "dismissTourForSetup(page,\n    'setup: clear a possible first-run tour before the primary smoke flow'",
+  "dismissTourForSetup(page,\n    ''",
+));
+const missingReason = inspectCensus(missingReasonMutant);
+check('mutation: removing a setup reason fails the same whole-suite census',
+  missingReason.setupCalls !== rawSetupCalls.length || missingReason.setupReasons.some((reason) => reason.length === 0));
+
+type FakeTourPage = {
+  page: any;
+  escapePresses: () => number;
+};
+
+const fakeTourPage = ({ visible = true, clickSucceeds = true, waitOutcomes = [true, true] } = {}): FakeTourPage => {
+  const outcomes = [...waitOutcomes];
+  let escapes = 0;
+  const page = {
+    getByRole: () => ({
+      waitFor: () => visible ? Promise.resolve() : Promise.reject(new Error('tour absent')),
+      click: () => clickSucceeds ? Promise.resolve() : Promise.reject(new Error('overlay intercepted click')),
+    }),
+    waitForFunction: () => (outcomes.shift() ? Promise.resolve() : Promise.reject(new Error('still visible'))),
+    keyboard: { press: async () => { escapes++; } },
+  };
+  return { page, escapePresses: () => escapes };
+};
+
+// Behavioral contract: a failed product click rejects even though cleanup uses
+// Escape, whereas the explicitly reasoned setup helper can return `escape`.
+{
+  const strictPage = fakeTourPage({ clickSucceeds: false, waitOutcomes: [true, false, true] });
+  await assert.rejects(() => closeTour(strictPage.page), /did not close through its Close button/);
+  check('strict helper rejects a failed Close-button click after cleanup', strictPage.escapePresses() === 1);
+
+  const setupPage = fakeTourPage({ clickSucceeds: false, waitOutcomes: [true, false, true] });
+  const setupResult = await dismissTourForSetup(setupPage.page, 'fixture: test needs an unobscured page');
+  check('setup-only helper documents and returns its Escape fallback',
+    setupResult.closed && setupResult.via === 'escape' && setupPage.escapePresses() === 1);
+
+  const clickPage = fakeTourPage({ clickSucceeds: true, waitOutcomes: [true, true] });
+  const clickResult = await closeTour(clickPage.page);
+  check('strict helper succeeds only for a real Close-button dismissal',
+    clickResult.closed && clickResult.via === 'click' && clickPage.escapePresses() === 0);
+
+  const absentPage = fakeTourPage({ visible: false, waitOutcomes: [true] });
+  const absentResult = await dismissTourForSetup(absentPage.page, 'fixture: tour may not have appeared');
+  check('setup-only helper preserves the explicit absent state',
+    !absentResult.closed && absentResult.via === 'absent');
+
+  await assert.rejects(() => dismissTourForSetup(clickPage.page, ''), /non-empty setup reason/);
+  check('setup-only helper rejects an unreasoned fallback request', true);
+}
 
 if (failures > 0) { console.error(`✗ tour-close guard: ${failures} failed`); process.exit(1); }
-console.log('✓ tour-close guard: closeTour reports { closed, via }, §90 enforces via === click, no new silent sites after §90');
+console.log(`✓ tour-close guard: ${census.setupCalls} explicit setup dismissals, ${census.strict.length} strict click assertion(s), full e2e census`);

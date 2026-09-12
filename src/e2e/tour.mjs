@@ -19,9 +19,17 @@
  *    `[aria-label="Close tour"]` CSS selector matches BOTH and every call site
  *    dies of a strict-mode violation).
  *
- * Returns `{ closed, via }` where `via` is 'click' | 'escape' | 'absent'.
+ * `closeTour` is the assertion helper: when a tour is present, it only
+ * succeeds when the card's Close button really dismisses it.  A suite that
+ * merely needs an unobscured page must say so through
+ * `dismissTourForSetup(page, reason)`.  That separate, reason-bearing escape
+ * hatch may press Escape after a failed click; it must never stand in for a
+ * claim that the Close button works.
+ *
+ * Both helpers return `{ closed, via }`, where `via` is 'click' | 'escape' |
+ * 'absent'.  The strict helper never returns `via: 'escape'`.
  */
-export const closeTour = async (page, { timeout = 20000 } = {}) => {
+const attemptTourClose = async (page, { timeout = 20000, allowEscapeFallback = false } = {}) => {
   const x = page.getByRole('button', { name: /close tour/i });
   // OPUS-REVIEW-180 FIX-FIRST 1: `isVisible({ timeout })` is DOCUMENTED AS
   // IGNORED in Playwright 1.61 (types.d.ts: "@deprecated This option is
@@ -48,13 +56,43 @@ export const closeTour = async (page, { timeout = 20000 } = {}) => {
     () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
     null, { timeout: 8000 },
   ).then(() => true).catch(() => false);
-  await x.click({ timeout }).catch(() => {});
+  let clickFailure = null;
+  await x.click({ timeout }).catch((error) => { clickFailure = error; });
   // OPUS-REVIEW-180 FIX-FIRST 2: report WHICH path closed it. The Escape
-  // fallback keeps sections robust, but it also means every call site passes
-  // whether or not the X was actually hit — so nothing in CI could see the
-  // class of defect 003 was (the one exit covered or unclickable). §90 asserts
-  // `via === 'click'` at the viewports where 003 showed.
+  // Do not silently turn a failed Close-button click into an Escape pass.  The
+  // strict public helper reports that failure; only the explicitly named setup
+  // helper below is permitted to use Escape so a test can reach the state it
+  // is actually about.  It still clears the modal before throwing so a failed
+  // assertion cannot leave its browser page hanging under the scrim.
   if (await gone()) return { closed: true, via: 'click' };
+  if (!allowEscapeFallback) {
+    await page.keyboard.press('Escape').catch(() => {});
+    await gone();
+    const detail = clickFailure ? ` (${String(clickFailure.message || clickFailure).slice(0, 160)})` : '';
+    throw new Error(`guided tour did not close through its Close button${detail}`);
+  }
   await page.keyboard.press('Escape');
-  return { closed: await gone(), via: 'escape' };
+  const closed = await gone();
+  if (!closed) throw new Error('guided tour remained open after the setup-only Escape fallback');
+  return { closed: true, via: 'escape' };
+};
+
+/**
+ * Assert the product control itself is usable.  A visible tour whose close
+ * button is covered, disabled, or otherwise ineffective is a test failure,
+ * not an Escape-assisted pass.
+ */
+export const closeTour = async (page, options = {}) =>
+  attemptTourClose(page, { ...options, allowEscapeFallback: false });
+
+/**
+ * Clear a possible first-run tour before a test exercises another surface.
+ * The required reason makes the weaker assertion visible at the exact call
+ * site.  Do not use this helper to test tour behavior.
+ */
+export const dismissTourForSetup = async (page, reason, options = {}) => {
+  if (typeof reason !== 'string' || reason.trim().length === 0) {
+    throw new TypeError('dismissTourForSetup requires a non-empty setup reason');
+  }
+  return attemptTourClose(page, { ...options, allowEscapeFallback: true });
 };
