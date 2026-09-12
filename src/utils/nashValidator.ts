@@ -1228,7 +1228,10 @@ function assertsTheSameMove(desc: string): boolean {
  * (STRUCT-CLOUD-19 red pass 3, `_gen/cloud19_unicode.ts`). NFKC folds the
  * fullwidth, halfwidth, circled and ligature forms onto the letters the list is
  * written in, so a rule cannot be evaded by spelling a word in a second Unicode
- * alphabet.
+ * alphabet. A second comparison-only phase canonically decomposes the NFKC
+ * result and removes combining marks. That makes `b\u0301etter` and `bétter`
+ * readable to the rule as `better` without changing a byte of the authored
+ * text that can be served.
  *
  * A HOLE, NOT A DEFECT, and recorded as one: 0 of 2,442 shipped bank rows and 0
  * of 156 live draws contain a single NFKC-unstable field, so this changes no
@@ -1239,7 +1242,9 @@ function assertsTheSameMove(desc: string): boolean {
  * folding here: `validateScenario`'s script check refuses U+00AD, U+200B-200D and
  * U+2060 outright, one screen earlier (measured in the same probe).
  */
-const foldForClaims = (s: string): string => normalizeProseMinus(s.normalize('NFKC'));
+const foldForClaims = (s: string): string => normalizeProseMinus(
+  s.normalize('NFKC').normalize('NFD').replace(/\p{Mark}/gu, ''),
+);
 
 export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reason?: string } {
   // A NUMBER, OR AN EXPLICIT MULTIPLE, IN THE NAME OR AN OPTION LABEL.
