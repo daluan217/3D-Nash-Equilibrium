@@ -30,6 +30,7 @@
  * 'absent'.  The strict helper never returns `via: 'escape'`.
  */
 const attemptTourClose = async (page, { timeout = 20000, allowEscapeFallback = false } = {}) => {
+  const dialog = page.getByRole('dialog', { name: /guided tour/i });
   const x = page.getByRole('button', { name: /close tour/i });
   // OPUS-REVIEW-180 FIX-FIRST 1: `isVisible({ timeout })` is DOCUMENTED AS
   // IGNORED in Playwright 1.61 (types.d.ts: "@deprecated This option is
@@ -50,21 +51,30 @@ const attemptTourClose = async (page, { timeout = 20000, allowEscapeFallback = f
   // buffer once; a page where it does pays nothing extra.
   await page.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0, null, { timeout })
     .catch(() => {});
-  const up = await x.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+  // The DIALOG, not its Close control, decides whether the tour is absent. If
+  // the dialog is visible but the button is missing/hidden, that is precisely
+  // a broken product control: strict callers must fail, while setup callers
+  // may take their explicitly documented Escape path.
+  const up = await dialog.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
   if (!up) return { closed: false, via: 'absent' };
   const gone = () => page.waitForFunction(
     () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
     null, { timeout: 8000 },
   ).then(() => true).catch(() => false);
   let clickFailure = null;
-  await x.click({ timeout }).catch((error) => { clickFailure = error; });
+  const closeReady = await x.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+  if (closeReady) {
+    await x.click({ timeout }).catch((error) => { clickFailure = error; });
+    if (!clickFailure && await gone()) return { closed: true, via: 'click' };
+  } else {
+    clickFailure = new Error('Close tour button was not visible while the guided tour dialog was open');
+  }
   // OPUS-REVIEW-180 FIX-FIRST 2: report WHICH path closed it. The Escape
   // Do not silently turn a failed Close-button click into an Escape pass.  The
   // strict public helper reports that failure; only the explicitly named setup
   // helper below is permitted to use Escape so a test can reach the state it
   // is actually about.  It still clears the modal before throwing so a failed
   // assertion cannot leave its browser page hanging under the scrim.
-  if (await gone()) return { closed: true, via: 'click' };
   if (!allowEscapeFallback) {
     await page.keyboard.press('Escape').catch(() => {});
     await gone();

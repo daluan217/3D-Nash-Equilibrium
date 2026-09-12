@@ -38,21 +38,26 @@ type Census = {
 };
 
 const inspectCensus = (sources: Map<string, string>): Census => {
-  const consumers = [...sources]
-    .filter(([, source]) => /from\s+['"]\.\/tour\.mjs['"]/.test(source))
-    .map(([file]) => file)
-    .sort();
+  const importPattern = /import\s+(\{[^}]*\}|\*\s+as\s+[\w$]+|[\w$]+)\s+from\s+(['"])([^'"\n]+)\2/g;
   const imports: Array<{ file: string; names: string[] }> = [];
   const strict: Array<{ file: string; index: number }> = [];
   let setupCalls = 0;
   const setupReasons: string[] = [];
-  for (const file of consumers) {
-    const source = sources.get(file)!;
-    const match = source.match(/import\s+\{([^}]+)\}\s+from\s+['"]\.\/tour\.mjs['"]/);
-    imports.push({
-      file,
-      names: match ? match[1].split(',').map((name) => name.trim()) : [],
+  const consumers: string[] = [];
+  for (const [file, source] of sources) {
+    const tourImports = [...source.matchAll(importPattern)].filter((match) => {
+      if (!match[3].startsWith('.')) return false;
+      return path.normalize(path.join(path.dirname(file), match[3])) === path.normalize('src/e2e/tour.mjs');
     });
+    if (tourImports.length === 0) continue;
+    consumers.push(file);
+    for (const match of tourImports) {
+      const named = /^\{([^}]*)\}$/.exec(match[1]);
+      imports.push({
+        file,
+        names: named ? named[1].split(',').map((name) => name.trim()).filter(Boolean) : [],
+      });
+    }
     for (const match of source.matchAll(/\bcloseTour\s*\(/g)) {
       strict.push({ file, index: match.index ?? -1 });
     }
@@ -61,6 +66,7 @@ const inspectCensus = (sources: Map<string, string>): Census => {
       setupReasons.push(match[2].trim());
     }
   }
+  consumers.sort();
   return { consumers, imports, strict, setupCalls, setupReasons };
 };
 
@@ -116,19 +122,37 @@ const missingReason = inspectCensus(missingReasonMutant);
 check('mutation: removing a setup reason fails the same whole-suite census',
   missingReason.setupCalls !== rawSetupCalls.length || missingReason.setupReasons.some((reason) => reason.length === 0));
 
+const nestedImportControl = new Map(sources);
+nestedImportControl.set('src/e2e/nested/deeper/setup.mjs', `
+  import { dismissTourForSetup } from '../../tour.mjs';
+  await dismissTourForSetup(page, 'nested fixture: unobscured page required');
+`);
+const nestedCensus = inspectCensus(nestedImportControl);
+check('parent-relative tour imports at any nesting depth stay inside the census',
+  nestedCensus.consumers.includes('src/e2e/nested/deeper/setup.mjs')
+    && nestedCensus.setupCalls === census.setupCalls + 1
+    && nestedCensus.setupReasons.includes('nested fixture: unobscured page required'));
+
 type FakeTourPage = {
   page: any;
   escapePresses: () => number;
 };
 
-const fakeTourPage = ({ visible = true, clickSucceeds = true, waitOutcomes = [true, true] } = {}): FakeTourPage => {
+const fakeTourPage = ({
+  dialogVisible = true,
+  closeVisible = true,
+  clickSucceeds = true,
+  waitOutcomes = [true, true],
+} = {}): FakeTourPage => {
   const outcomes = [...waitOutcomes];
   let escapes = 0;
   const page = {
-    getByRole: () => ({
-      waitFor: () => visible ? Promise.resolve() : Promise.reject(new Error('tour absent')),
+    getByRole: (role: string) => role === 'dialog' ? {
+      waitFor: () => dialogVisible ? Promise.resolve() : Promise.reject(new Error('tour absent')),
+    } : {
+      waitFor: () => closeVisible ? Promise.resolve() : Promise.reject(new Error('close control unavailable')),
       click: () => clickSucceeds ? Promise.resolve() : Promise.reject(new Error('overlay intercepted click')),
-    }),
+    },
     waitForFunction: () => (outcomes.shift() ? Promise.resolve() : Promise.reject(new Error('still visible'))),
     keyboard: { press: async () => { escapes++; } },
   };
@@ -138,11 +162,11 @@ const fakeTourPage = ({ visible = true, clickSucceeds = true, waitOutcomes = [tr
 // Behavioral contract: a failed product click rejects even though cleanup uses
 // Escape, whereas the explicitly reasoned setup helper can return `escape`.
 {
-  const strictPage = fakeTourPage({ clickSucceeds: false, waitOutcomes: [true, false, true] });
+  const strictPage = fakeTourPage({ clickSucceeds: false, waitOutcomes: [true, true] });
   await assert.rejects(() => closeTour(strictPage.page), /did not close through its Close button/);
   check('strict helper rejects a failed Close-button click after cleanup', strictPage.escapePresses() === 1);
 
-  const setupPage = fakeTourPage({ clickSucceeds: false, waitOutcomes: [true, false, true] });
+  const setupPage = fakeTourPage({ clickSucceeds: false, waitOutcomes: [true, true] });
   const setupResult = await dismissTourForSetup(setupPage.page, 'fixture: test needs an unobscured page');
   check('setup-only helper documents and returns its Escape fallback',
     setupResult.closed && setupResult.via === 'escape' && setupPage.escapePresses() === 1);
@@ -152,10 +176,24 @@ const fakeTourPage = ({ visible = true, clickSucceeds = true, waitOutcomes = [tr
   check('strict helper succeeds only for a real Close-button dismissal',
     clickResult.closed && clickResult.via === 'click' && clickPage.escapePresses() === 0);
 
-  const absentPage = fakeTourPage({ visible: false, waitOutcomes: [true] });
+  const absentPage = fakeTourPage({ dialogVisible: false, closeVisible: false, waitOutcomes: [true] });
   const absentResult = await dismissTourForSetup(absentPage.page, 'fixture: tour may not have appeared');
   check('setup-only helper preserves the explicit absent state',
     !absentResult.closed && absentResult.via === 'absent');
+
+  const missingCloseStrict = fakeTourPage({ closeVisible: false, waitOutcomes: [true, true] });
+  await assert.rejects(() => closeTour(missingCloseStrict.page), /Close tour button was not visible/);
+  check('a visible dialog with no Close control fails strict closeTour after cleanup',
+    missingCloseStrict.escapePresses() === 1);
+
+  const missingCloseSetup = fakeTourPage({ closeVisible: false, waitOutcomes: [true, true] });
+  const missingCloseResult = await dismissTourForSetup(
+    missingCloseSetup.page,
+    'fixture: another surface needs the broken tour cleared',
+  );
+  check('a visible dialog with no Close control takes only the explicit setup Escape path',
+    missingCloseResult.closed && missingCloseResult.via === 'escape'
+      && missingCloseSetup.escapePresses() === 1);
 
   await assert.rejects(() => dismissTourForSetup(clickPage.page, ''), /non-empty setup reason/);
   check('setup-only helper rejects an unreasoned fallback request', true);
