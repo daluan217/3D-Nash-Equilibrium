@@ -15,6 +15,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { closeTour, dismissTourForSetup } from './e2e/tour.mjs';
 
 let failures = 0;
@@ -35,39 +36,82 @@ type Census = {
   strict: Array<{ file: string; index: number }>;
   setupCalls: number;
   setupReasons: string[];
+  unsupportedTourAccess: string[];
 };
 
 const inspectCensus = (sources: Map<string, string>): Census => {
-  const importPattern = /import\s+(\{[^}]*\}|\*\s+as\s+[\w$]+|[\w$]+)\s+from\s+(['"])([^'"\n]+)\2/g;
   const imports: Array<{ file: string; names: string[] }> = [];
   const strict: Array<{ file: string; index: number }> = [];
   let setupCalls = 0;
   const setupReasons: string[] = [];
   const consumers: string[] = [];
+  const unsupportedTourAccess: string[] = [];
+  const isTourModule = (file: string, specifier: string): boolean => specifier.startsWith('.')
+    && path.normalize(path.join(path.dirname(file), specifier)) === path.normalize('src/e2e/tour.mjs');
+
   for (const [file, source] of sources) {
-    const tourImports = [...source.matchAll(importPattern)].filter((match) => {
-      if (!match[3].startsWith('.')) return false;
-      return path.normalize(path.join(path.dirname(file), match[3])) === path.normalize('src/e2e/tour.mjs');
-    });
-    if (tourImports.length === 0) continue;
+    const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    let consumesTour = false;
+    const fileStrict: Array<{ file: string; index: number }> = [];
+    const fileSetupReasons: string[] = [];
+
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)
+        && isTourModule(file, node.moduleSpecifier.text)) {
+        consumesTour = true;
+        const clause = node.importClause;
+        const names: string[] = [];
+        if (clause?.name) names.push(`<default:${clause.name.text}>`);
+        if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+          names.push(`<namespace:${clause.namedBindings.name.text}>`);
+        } else if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+          for (const element of clause.namedBindings.elements) {
+            const imported = element.propertyName?.text ?? element.name.text;
+            names.push(element.propertyName ? `${imported} as ${element.name.text}` : imported);
+          }
+        }
+        imports.push({ file, names });
+      }
+
+      if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)
+        && isTourModule(file, node.moduleSpecifier.text)) {
+        consumesTour = true;
+        unsupportedTourAccess.push(`${file}:re-export`);
+      }
+
+      if (ts.isCallExpression(node)) {
+        const firstArg = node.arguments[0];
+        if (node.expression.kind === ts.SyntaxKind.ImportKeyword && firstArg && ts.isStringLiteral(firstArg)
+          && isTourModule(file, firstArg.text)) {
+          consumesTour = true;
+          unsupportedTourAccess.push(`${file}:dynamic-import`);
+        }
+        if (ts.isIdentifier(node.expression) && node.expression.text === 'require'
+          && firstArg && ts.isStringLiteral(firstArg) && isTourModule(file, firstArg.text)) {
+          consumesTour = true;
+          unsupportedTourAccess.push(`${file}:require`);
+        }
+        if (ts.isIdentifier(node.expression) && node.expression.text === 'closeTour') {
+          fileStrict.push({ file, index: node.getStart(ast) });
+        }
+        if (ts.isIdentifier(node.expression) && node.expression.text === 'dismissTourForSetup') {
+          const reason = node.arguments[1];
+          fileSetupReasons.push(reason && ts.isStringLiteralLike(reason) ? reason.text.trim() : '');
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+
+    if (!consumesTour) continue;
     consumers.push(file);
-    for (const match of tourImports) {
-      const named = /^\{([^}]*)\}$/.exec(match[1]);
-      imports.push({
-        file,
-        names: named ? named[1].split(',').map((name) => name.trim()).filter(Boolean) : [],
-      });
-    }
-    for (const match of source.matchAll(/\bcloseTour\s*\(/g)) {
-      strict.push({ file, index: match.index ?? -1 });
-    }
-    for (const match of source.matchAll(/\bdismissTourForSetup\s*\(\s*[^,]+,\s*(['"])([^'"\n]*)\1/g)) {
-      setupCalls++;
-      setupReasons.push(match[2].trim());
-    }
+    strict.push(...fileStrict);
+    setupCalls += fileSetupReasons.length;
+    setupReasons.push(...fileSetupReasons);
   }
   consumers.sort();
-  return { consumers, imports, strict, setupCalls, setupReasons };
+  unsupportedTourAccess.sort();
+  return { consumers, imports, strict, setupCalls, setupReasons, unsupportedTourAccess };
 };
 
 const sources = e2eSources();
@@ -79,9 +123,11 @@ check('every e2e consumer of tour.mjs is included in the whole-suite census',
   census.consumers.join(',') === 'src/e2e/ai-surface.mjs,src/e2e/mobile.mjs,src/e2e/smoke.mjs',
   census.consumers.join(', ') || 'no consumers found');
 check('tour helpers have no aliases or hidden import paths in e2e consumers',
-  census.imports.every(({ names }) => names.length > 0
+  census.unsupportedTourAccess.length === 0
+    && census.imports.every(({ names }) => names.length > 0
     && names.every((name) => name === 'closeTour' || name === 'dismissTourForSetup')),
-  census.imports.map(({ file, names }) => `${file}:${names.join('|') || '<unparsed>'}`).join(', '));
+  [...census.unsupportedTourAccess,
+    ...census.imports.map(({ file, names }) => `${file}:${names.join('|') || '<unparsed>'}`)].join(', '));
 check('there is at least one strict closeTour product assertion across every e2e suite',
   census.strict.length >= 1,
   census.strict.map(({ file }) => file).join(', ') || 'none');
@@ -132,6 +178,21 @@ check('parent-relative tour imports at any nesting depth stay inside the census'
   nestedCensus.consumers.includes('src/e2e/nested/deeper/setup.mjs')
     && nestedCensus.setupCalls === census.setupCalls + 1
     && nestedCensus.setupReasons.includes('nested fixture: unobscured page required'));
+
+const dynamicImportMutant = new Map(sources);
+dynamicImportMutant.set('src/e2e/nested/dynamic.mjs', `
+  const { dismissTourForSetup } = await import('../tour.mjs');
+  await dismissTourForSetup(page, 'MUTANT: dynamically hidden helper');
+`);
+check('mutation: a dynamic tour-helper import is rejected instead of escaping the census',
+  inspectCensus(dynamicImportMutant).unsupportedTourAccess.includes('src/e2e/nested/dynamic.mjs:dynamic-import'));
+
+const reExportMutant = new Map(sources);
+reExportMutant.set('src/e2e/nested/re-export.mjs', `
+  export { dismissTourForSetup } from '../tour.mjs';
+`);
+check('mutation: a tour-helper re-export is rejected instead of escaping the census',
+  inspectCensus(reExportMutant).unsupportedTourAccess.includes('src/e2e/nested/re-export.mjs:re-export'));
 
 type FakeTourPage = {
   page: any;
