@@ -9871,6 +9871,90 @@ const suggestedScenario = {
     await successPage.close();
   });
 
+  // RED-APP-20/001 (round 20): at 320x256 the drawer's stacked tab row (121px)
+  // plus its header left the flex-1 content a ~50px slit — a "Load Game Layout"
+  // button could only ever show a 20px sliver, so its center was never inside
+  // the viewport and every hit-test failed. The fix folds the chrome to the
+  // one-line sm: shape below 400px of height ([@media(max-height:400px)] in
+  // MenuDrawer.tsx). Mutation: drop those variants and the geometry checks
+  // fail with the red's exact unreachable list (director-run, pre-push).
+  section('92', 'the workspace drawer stays usable at a short viewport: chrome folds, content scrolls, controls are hit-testable', async () => {
+    const reach = (p, sel) => p.evaluate((sel) => {
+      const panel = document.querySelector(sel);
+      if (!panel) return null;
+      const vh = window.innerHeight, vw = window.innerWidth;
+      const ctrls = Array.from(panel.querySelectorAll('button, input, select, textarea, a[href]')).filter((el) => {
+        const s = getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden' && !el.closest('[inert]') && !el.disabled;
+      });
+      const unreachable = ctrls.filter((el) => {
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        const r = el.getBoundingClientRect();
+        const cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+        const inside = r.top >= -2 && r.bottom <= vh + 2 && r.left >= -2 && r.right <= vw + 2 && r.width > 0 && r.height > 0;
+        const at = (cx >= 0 && cy >= 0 && cx < vw && cy < vh) ? document.elementFromPoint(cx, cy) : null;
+        // Only the control itself or a DESCENDANT counts: an ancestor returned
+        // by elementFromPoint (e.g. a pointer-events:none wrapper) cannot take
+        // the click (CodeRabbit CLI on #194).
+        const hit = !!at && (at === el || el.contains(at));
+        return !inside || !hit;
+      }).map((el) => (el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 30));
+      return { unreachable, total: ctrls.length };
+    }, sel);
+
+    const p = await newTrackedPage({ viewport: { width: 320, height: 256 } });
+    await registerAndLogin(p, 'e92');
+    await p.getByRole('button', { name: /open menu|workspace/i }).first().click();
+    await p.waitForSelector('[data-modal-surface="drawer"]', { timeout: 8000 });
+    // Wait on state, not a fixed delay: the drawer slides in with
+    // animate-drawer-in, so poll for its panel box to stop moving
+    // (same convention as §88's settled-geometry oracle).
+    await p.waitForFunction(() => {
+      const panel = document.querySelector('[data-modal-surface="drawer"] .relative');
+      if (!panel) return false;
+      const h = panel.getBoundingClientRect().height;
+      return h > 0 && Math.abs(h - (panel.__h ?? (panel.__h = h))) < 1;
+    }, null, { timeout: 8000 });
+    // the Library tab is where the red's unreachable controls lived
+    await p.getByRole('button', { name: /presets.*library/i }).click();
+    // Library-only content: "Core Preset Profiles" renders ONLY when the
+    // Library tab is active, so this wait both replaces the fixed delay and
+    // proves the scan below reads Library content, not Help (CodeRabbit on #194).
+    await p.getByText('Core Preset Profiles', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+
+    // (a) the tab row actually folded: at 320px width the `sm:` breakpoint
+    // cannot apply, so flex-direction "row" on the tabs can only come from the
+    // max-height variant — measure the computed style, not the class list.
+    const tabRow = await p.evaluate(() => {
+      const row = Array.from(document.querySelectorAll('[data-modal-surface="drawer"] div')).find((d) => (d.className || '').toString().startsWith('flex border-b'));
+      const tabs = Array.from(row?.children ?? []);
+      return { tabs: tabs.length, directions: tabs.map((t) => getComputedStyle(t).flexDirection), rowH: row ? Math.round(row.getBoundingClientRect().height) : null };
+    });
+    record('the tab row folds to side-by-side tabs at 320x256 (row direction, not the stacked column)',
+      tabRow.tabs === 3 && tabRow.directions.every((d) => d === 'row'), JSON.stringify(tabRow));
+
+    // (b) every control on the Library tab is inside the viewport after a
+    // nearest-edge scroll and hit-testable (the red's failing oracle).
+    const libRes = await reach(p, '[data-modal-surface="drawer"]');
+    record('every Library-tab control is inside and hit-testable at 320x256',
+      !!libRes && libRes.unreachable.length === 0,
+      libRes ? JSON.stringify(libRes.unreachable) : 'drawer not found');
+
+    // (c) the content area still scrolls to reveal the bottom of the library.
+    const scrollRes = await p.evaluate(() => {
+      const scroller = document.querySelector('[data-modal-surface="drawer"] div.overflow-y-auto');
+      if (!scroller) return null;
+      const before = scroller.scrollTop;
+      scroller.scrollTop = scroller.scrollHeight;
+      return { scrolled: scroller.scrollTop > before + 10, top: scroller.scrollTop, clientH: scroller.clientHeight };
+    });
+    record('the content area scrolls instead of growing the panel at 320x256',
+      !!scrollRes && scrollRes.scrolled && scrollRes.clientH > 0,
+      scrollRes ? `clientH=${scrollRes.clientH} scrollTop=${scrollRes.top}` : 'no scroller');
+
+    await p.close();
+  });
+
 await executeSections();
 
 } catch (e) {
