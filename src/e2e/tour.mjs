@@ -57,10 +57,8 @@ const attemptTourClose = async (page, { timeout = 20000, allowEscapeFallback = f
   // may take their explicitly documented Escape path.
   const up = await dialog.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
   if (!up) return { closed: false, via: 'absent' };
-  const gone = () => page.waitForFunction(
-    () => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
-    null, { timeout: 8000 },
-  ).then(() => true).catch(() => false);
+  const gone = () => dialog.waitFor({ state: 'hidden', timeout: 8000 })
+    .then(() => true).catch(() => false);
   let clickFailure = null;
   const closeReady = await x.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
   if (closeReady) {

@@ -40,6 +40,27 @@ type Census = {
 };
 
 const inspectCensus = (sources: Map<string, string>): Census => {
+  const options: ts.CompilerOptions = {
+    allowJs: true,
+    checkJs: true,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noLib: true,
+  };
+  const defaultHost = ts.createCompilerHost(options);
+  const virtualSources = new Map([...sources].map(([file, source]) => [
+    path.resolve(file),
+    ts.createSourceFile(path.resolve(file), source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS),
+  ]));
+  const host: ts.CompilerHost = {
+    ...defaultHost,
+    fileExists: (file) => virtualSources.has(path.resolve(file)) || defaultHost.fileExists(file),
+    readFile: (file) => virtualSources.get(path.resolve(file))?.text ?? defaultHost.readFile(file),
+    getSourceFile: (file, languageVersion) => virtualSources.get(path.resolve(file))
+      ?? defaultHost.getSourceFile(file, languageVersion),
+  };
+  const program = ts.createProgram({ rootNames: [...virtualSources.keys()], options, host });
+  const checker = program.getTypeChecker();
   const imports: Array<{ file: string; names: string[] }> = [];
   const strict: Array<{ file: string; index: number }> = [];
   let setupCalls = 0;
@@ -49,11 +70,20 @@ const inspectCensus = (sources: Map<string, string>): Census => {
   const isTourModule = (file: string, specifier: string): boolean => specifier.startsWith('.')
     && path.normalize(path.join(path.dirname(file), specifier)) === path.normalize('src/e2e/tour.mjs');
 
-  for (const [file, source] of sources) {
-    const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  for (const [file] of sources) {
+    const ast = program.getSourceFile(path.resolve(file))!;
     let consumesTour = false;
     const fileStrict: Array<{ file: string; index: number }> = [];
     const fileSetupReasons: string[] = [];
+    const isImportedTourHelper = (identifier: ts.Identifier, importedName: string): boolean =>
+      checker.getSymbolAtLocation(identifier)?.declarations?.some((declaration) => {
+        if (!ts.isImportSpecifier(declaration)) return false;
+        const importDeclaration = declaration.parent.parent.parent;
+        return (declaration.propertyName?.text ?? declaration.name.text) === importedName
+          && ts.isImportDeclaration(importDeclaration)
+          && ts.isStringLiteral(importDeclaration.moduleSpecifier)
+          && isTourModule(file, importDeclaration.moduleSpecifier.text);
+      }) ?? false;
 
     const visit = (node: ts.Node): void => {
       if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)
@@ -81,20 +111,22 @@ const inspectCensus = (sources: Map<string, string>): Census => {
 
       if (ts.isCallExpression(node)) {
         const firstArg = node.arguments[0];
-        if (node.expression.kind === ts.SyntaxKind.ImportKeyword && firstArg && ts.isStringLiteral(firstArg)
+        if (node.expression.kind === ts.SyntaxKind.ImportKeyword && firstArg && ts.isStringLiteralLike(firstArg)
           && isTourModule(file, firstArg.text)) {
           consumesTour = true;
           unsupportedTourAccess.push(`${file}:dynamic-import`);
         }
         if (ts.isIdentifier(node.expression) && node.expression.text === 'require'
-          && firstArg && ts.isStringLiteral(firstArg) && isTourModule(file, firstArg.text)) {
+          && firstArg && ts.isStringLiteralLike(firstArg) && isTourModule(file, firstArg.text)) {
           consumesTour = true;
           unsupportedTourAccess.push(`${file}:require`);
         }
-        if (ts.isIdentifier(node.expression) && node.expression.text === 'closeTour') {
+        if (ts.isIdentifier(node.expression) && node.expression.text === 'closeTour'
+          && isImportedTourHelper(node.expression, 'closeTour')) {
           fileStrict.push({ file, index: node.getStart(ast) });
         }
-        if (ts.isIdentifier(node.expression) && node.expression.text === 'dismissTourForSetup') {
+        if (ts.isIdentifier(node.expression) && node.expression.text === 'dismissTourForSetup'
+          && isImportedTourHelper(node.expression, 'dismissTourForSetup')) {
           const reason = node.arguments[1];
           fileSetupReasons.push(reason && ts.isStringLiteralLike(reason) ? reason.text.trim() : '');
         }
@@ -184,8 +216,47 @@ dynamicImportMutant.set('src/e2e/nested/dynamic.mjs', `
   const { dismissTourForSetup } = await import('../tour.mjs');
   await dismissTourForSetup(page, 'MUTANT: dynamically hidden helper');
 `);
-check('mutation: a dynamic tour-helper import is rejected instead of escaping the census',
-  inspectCensus(dynamicImportMutant).unsupportedTourAccess.includes('src/e2e/nested/dynamic.mjs:dynamic-import'));
+dynamicImportMutant.set('src/e2e/nested/require.mjs', `
+  const tour = require('../tour.mjs');
+  await tour.dismissTourForSetup(page, 'MUTANT: require-hidden helper');
+`);
+const dynamicImportCensus = inspectCensus(dynamicImportMutant);
+check('mutation: string-literal dynamic and require access cannot escape the census',
+  dynamicImportCensus.consumers.includes('src/e2e/nested/dynamic.mjs')
+    && dynamicImportCensus.consumers.includes('src/e2e/nested/require.mjs')
+    && dynamicImportCensus.unsupportedTourAccess.includes('src/e2e/nested/dynamic.mjs:dynamic-import')
+    && dynamicImportCensus.unsupportedTourAccess.includes('src/e2e/nested/require.mjs:require'));
+
+const templateAccessMutant = new Map(sources);
+templateAccessMutant.set('src/e2e/nested/dynamic-template.mjs', `
+  const tour = await import(\`../tour.mjs\`);
+  await tour.dismissTourForSetup(page, 'MUTANT: dynamically hidden template helper');
+`);
+templateAccessMutant.set('src/e2e/nested/require-template.mjs', `
+  const tour = require(\`../tour.mjs\`);
+  await tour.dismissTourForSetup(page, 'MUTANT: require-hidden template helper');
+`);
+const templateAccessCensus = inspectCensus(templateAccessMutant);
+check('mutation: template-literal dynamic and require access cannot escape the census',
+  templateAccessCensus.consumers.includes('src/e2e/nested/dynamic-template.mjs')
+    && templateAccessCensus.consumers.includes('src/e2e/nested/require-template.mjs')
+    && templateAccessCensus.unsupportedTourAccess.includes('src/e2e/nested/dynamic-template.mjs:dynamic-import')
+    && templateAccessCensus.unsupportedTourAccess.includes('src/e2e/nested/require-template.mjs:require'));
+
+const shadowedBindingMutant = new Map(sources);
+shadowedBindingMutant.set('src/e2e/nested/shadowed.mjs', `
+  import { closeTour, dismissTourForSetup } from '../tour.mjs';
+  function exercise(closeTour) {
+    const dismissTourForSetup = () => ({ closed: true, via: 'click' });
+    closeTour(page);
+    dismissTourForSetup(page, 'MUTANT: shadowed local helper');
+  }
+`);
+const shadowedBindingCensus = inspectCensus(shadowedBindingMutant);
+check('mutation: shadowed helper parameters and local declarations do not satisfy the census',
+  shadowedBindingCensus.strict.length === census.strict.length
+    && shadowedBindingCensus.setupCalls === census.setupCalls
+    && shadowedBindingCensus.setupReasons.length === census.setupReasons.length);
 
 const reExportMutant = new Map(sources);
 reExportMutant.set('src/e2e/nested/re-export.mjs', `
@@ -209,7 +280,9 @@ const fakeTourPage = ({
   let escapes = 0;
   const page = {
     getByRole: (role: string) => role === 'dialog' ? {
-      waitFor: () => dialogVisible ? Promise.resolve() : Promise.reject(new Error('tour absent')),
+      waitFor: ({ state }: { state: string }) => state === 'visible'
+        ? (dialogVisible ? Promise.resolve() : Promise.reject(new Error('tour absent')))
+        : (outcomes.shift() ? Promise.resolve() : Promise.reject(new Error('still visible'))),
     } : {
       waitFor: () => closeVisible ? Promise.resolve() : Promise.reject(new Error('close control unavailable')),
       click: () => clickSucceeds ? Promise.resolve() : Promise.reject(new Error('overlay intercepted click')),
