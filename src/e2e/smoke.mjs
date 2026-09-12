@@ -9917,13 +9917,10 @@ const suggestedScenario = {
     }, null, { timeout: 8000 });
     // the Library tab is where the red's unreachable controls lived
     await p.getByRole('button', { name: /presets.*library/i }).click();
-    await p.getByRole('button', { name: /presets.*library/i }).waitFor({ state: 'visible', timeout: 8000 });
-    // Library content is mounted only after activeTab changes — poll for the
-    // tab panel's controls to appear rather than sleeping.
-    await p.waitForFunction(() => {
-      const panel = document.querySelector('[data-modal-surface="drawer"] div.overflow-y-auto');
-      return !!panel && panel.querySelectorAll('button, input').length > 0;
-    }, null, { timeout: 8000 });
+    // Library-only content: "Core Preset Profiles" renders ONLY when the
+    // Library tab is active, so this wait both replaces the fixed delay and
+    // proves the scan below reads Library content, not Help (CodeRabbit on #194).
+    await p.getByText('Core Preset Profiles', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
 
     // (a) the tab row actually folded: at 320px width the `sm:` breakpoint
     // cannot apply, so flex-direction "row" on the tabs can only come from the
