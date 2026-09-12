@@ -50,7 +50,7 @@
  * with no term at all, before any ambiguity pass.
  */
 import type { SuggestedScenario } from '../types';
-import { regenPreviewColorTerms, type ScenarioLabels } from './colorTerms';
+import { paintPlan, regenPreviewColorTerms, type ScenarioLabels } from './colorTerms';
 import { highlightWouldMatch } from './scenarioBank';
 
 const strList = (v: unknown): string[] =>
@@ -109,13 +109,20 @@ export interface Renderability {
 export function scenarioRenderability(sc: SuggestedScenario): Renderability {
   const desc = sc.description ?? '';
   const painted = renderedColourTerms(sc);
-  const a = painted.a.some((t) => highlightWouldMatch(t, desc));
-  const b = painted.b.some((t) => highlightWouldMatch(t, desc));
+  // The gate must credit a side only for a span the renderer leaves in that
+  // side's colour. A shorter B noun can occur inside a longer A option, where
+  // testing the two entries separately says B is present even though the card
+  // paints every occurrence rose.
+  const plan = paintPlan(desc, painted.a, painted.b);
+  const a = plan.some((span) => span.side === 'A');
+  const b = plan.some((span) => span.side === 'B');
   if (a && b) return { a, b, ambiguityOnly: false };
   const authored = authoredColourTerms(sc);
   const rawA = authored.a.some((t) => highlightWouldMatch(t, desc));
   const rawB = authored.b.some((t) => highlightWouldMatch(t, desc));
-  return { a, b, ambiguityOnly: rawA && rawB };
+  // Shared labels are the only benign no-paint case. Do not let their raw
+  // occurrence excuse a one-sided paint plan: that is an ownership shadow.
+  return { a, b, ambiguityOnly: !a && !b && rawA && rawB };
 }
 
 /**
