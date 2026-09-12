@@ -160,11 +160,30 @@ if (process.env.EXPECTED_INDEX) {
 
   let health = {};
   try { health = JSON.parse(r.text); } catch { /* not json */ }
+  record('live /api/health has the expected JSON shape',
+    r.headers.get('content-type')?.includes('application/json')
+      && health.status === 'ok'
+      && typeof health.backendVersion === 'string'
+      && typeof health.capabilities?.scenarioRegen === 'boolean',
+    `content-type=${r.headers.get('content-type')} backendVersion=${health.backendVersion ?? '(missing)'}`);
   if (EXPECTED_VERSION) {
     record('live backend is running this exact release (backendVersion)',
       r.status === 200 && health.backendVersion === EXPECTED_VERSION,
       `status=${r.status} backendVersion=${health.backendVersion ?? '(missing)'} expected=${EXPECTED_VERSION}`);
   }
+}
+
+// An unknown API path must not be answered by the SPA index fallback. This is
+// intentionally a semantic check: HTTP 200 plus HTML is not API liveness.
+{
+  const r = await getText('/api/scenarios');
+  let body = null;
+  try { body = JSON.parse(r.text); } catch { /* not JSON */ }
+  record('unknown API path is a JSON 404, not the SPA index',
+    r.status === 404
+      && r.headers.get('content-type')?.includes('application/json')
+      && body?.error === 'Not found',
+    `status=${r.status} content-type=${r.headers.get('content-type')}`);
 }
 
 // ══ 4. build metadata (informational only — never gates anything). H5

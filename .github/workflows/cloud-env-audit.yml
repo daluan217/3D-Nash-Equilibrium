@@ -177,6 +177,15 @@ jobs:
         if: steps.creds.outputs.mode != 'none'
         run: |
           set -uo pipefail
+          # Each Actions step has its own shell. Re-fetch the service here;
+          # `svc` from the preceding audit step is not available in this step.
+          if ! svc=$(gcloud run services describe "$SERVICE" \
+                --region "$REGION" --project "$PROJECT" --format=json 2>&1); then
+            echo "::error::Could not read the Cloud Run service while checking traffic"
+            echo "$svc"
+            exit 1
+          fi
+          printf '%s' "$svc" | python3 -c "import json,sys; d=json.load(sys.stdin); print(' '.join(f'{t.get(\"revisionName\", \"(unnamed)\")}: {t.get(\"percent\", 0)}%' for t in d.get('status', {}).get('traffic', [])))"
           gcloud run services describe "$SERVICE" \
             --region "$REGION" --project "$PROJECT" \
             --format='value(status.traffic[].revisionName,status.traffic[].percent)'

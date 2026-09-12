@@ -4639,6 +4639,13 @@ async function startServer() {
       : path.join(process.cwd(), 'dist');
     if (fs.existsSync(path.join(distPath, 'index.html'))) {
       app.use(express.static(distPath));
+      // An unknown API path must remain an API 404. Letting the SPA fallback
+      // answer `/api/*` with index.html turns a typo such as `/api/scenarios`
+      // into a misleading HTTP 200 and makes status-only live smoke checks
+      // vacuous.
+      app.use('/api', (req, res) => {
+        res.status(404).json({ error: "Not found" });
+      });
       app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
       });
