@@ -1776,12 +1776,18 @@ export function validateScenario(
      * `colorTermKey` does not, so "Ship (fast)" / "Ship (slow)" is rejected
      * today and must stay rejected. A pair is distinct only if BOTH agree.
      *
-     * Reach of the added half on real output: 0 of 2,442 shipped bank rows and
-     * 0 of 316 live draws have a pair the validator calls distinct and the
-     * renderer reads as one term (`_gen/cloud19_comparators.ts`). It rejects
-     * nothing anyone has written; it closes a channel a model can still take.
+     * RED-CLOUD-20/006: identical labels whose every character folds away —
+     * "(!)" / "(!)" — strip to the empty string under BOTH comparators, so
+     * both truthiness guards refused to fire and the pair passed as distinct.
+     * The first arm is literal equality on the trimmed label: it never fires
+     * on the pair #192 protected ("!!" vs "??" are different literals) and
+     * reach on real output is unchanged at 0 of 2,442 bank rows (`_gen/
+     * red20_empty_key_bypass.ts` — run against the bank itself, not a copy).
      */
     const sameLabel = (x?: string, y?: string) => {
+      const xTrim = (x ?? '').trim();
+      const yTrim = (y ?? '').trim();
+      if (!!xTrim && xTrim === yTrim) return true;
       const xColorKey = colorTermKey(x ?? '');
       return (!!base(x) && base(x) === base(y))
         || (!!xColorKey && xColorKey === colorTermKey(y ?? ''));
