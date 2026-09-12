@@ -643,6 +643,30 @@ for (const neg of NEGATIVES) {
     !vParen.ok && /row labels are not distinct/.test(vParen.reason ?? ''),
     vParen.ok ? 'SERVED' : `${vParen.screen}: ${vParen.reason}`);
 
+  const emptyFoldRows = {
+    name: 'Punctuation Signals', row1: '!!', row2: '??',
+    col1: 'Open Window', col2: 'Closed Window',
+    description: 'A dispatcher uses one of two punctuation signals while a receiver chooses an Open Window or Closed Window.',
+    actorA: ['A dispatcher'], actorB: ['a receiver'],
+  } as SuggestedScenario;
+  const row1Key = colorTermKey(emptyFoldRows.row1);
+  const row2Key = colorTermKey(emptyFoldRows.row2);
+  check('empty-fold fixture: distinct punctuation labels really do produce two empty renderer keys',
+    emptyFoldRows.row1 !== emptyFoldRows.row2 && row1Key === '' && row2Key === '',
+    `${JSON.stringify(emptyFoldRows.row1)} => ${JSON.stringify(row1Key)}, ${JSON.stringify(emptyFoldRows.row2)} => ${JSON.stringify(row2Key)}`);
+  const legacyEmptyFoldComparator = !!emptyFoldRows.row1 && !!emptyFoldRows.row2 && row1Key === row2Key;
+  check('empty-fold mutation control: the former raw-truthiness guard falsely merges the distinct pair',
+    legacyEmptyFoldComparator, `legacy=${legacyEmptyFoldComparator}`);
+  const vEmptyFold = screenScenario(emptyFoldRows, G, opts());
+  check('empty-fold fix: two distinct punctuation labels are not rejected merely because both renderer keys are empty',
+    vEmptyFold.ok, vEmptyFold.ok ? '' : `refused by ${vEmptyFold.screen}: ${vEmptyFold.reason}`);
+
+  const identicalPunctuation = { ...emptyFoldRows, row2: '!!' } as SuggestedScenario;
+  const vIdenticalPunctuation = screenScenario(identicalPunctuation, G, opts());
+  check('empty-fold control: genuinely identical punctuation labels remain rejected by the base comparator',
+    !vIdenticalPunctuation.ok && /row labels are not distinct/.test(vIdenticalPunctuation.reason ?? ''),
+    vIdenticalPunctuation.ok ? 'SERVED' : `${vIdenticalPunctuation.screen}: ${vIdenticalPunctuation.reason}`);
+
   /**
    * WHAT THE ADDED HALF COSTS on output this project already judged good: the
    * rows where the two comparators disagree. Zero means the union rejects
