@@ -218,7 +218,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       panelStyle={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
         {/* Panel Header */}
-        <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40">
+        <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950/40 [@media(max-height:400px)]:py-1.5">
           <div className="flex items-center gap-2">
             <Compass className="w-5 h-5 text-accent-500 animate-spin-slow" />
             <span className="font-bold text-slate-800 dark:text-slate-100 text-base">
@@ -235,11 +235,15 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         </div>
 
         {/* Tab Selection Row */}
+        {/* RED-APP-20 (320x256): the tabs stack icon-over-text below `sm:`, making
+            this row 121px and squeezing the flex-1 content to a ~50px slit that
+            cannot show a whole button. Below 400px height, fold to the one-line
+            sm: shape (icon beside label) so the content area keeps ~110px. */}
         <div className="flex border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
           <button
             type="button"
             onClick={() => setActiveTab('help')}
-            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer ${activeTab === 'help'
+            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer [@media(max-height:400px)]:py-1.5 [@media(max-height:400px)]:flex-row ${activeTab === 'help'
                 ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
@@ -251,7 +255,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('library')}
-            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer ${activeTab === 'library'
+            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer [@media(max-height:400px)]:py-1.5 [@media(max-height:400px)]:flex-row ${activeTab === 'library'
                 ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
@@ -263,7 +267,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('account')}
-            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer ${activeTab === 'account'
+            className={`flex-1 px-1 py-2.5 text-xs sm:text-sm font-semibold border-b-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-center transition-all cursor-pointer [@media(max-height:400px)]:py-1.5 [@media(max-height:400px)]:flex-row ${activeTab === 'account'
                 ? 'border-accent-600 text-accent-600 dark:text-accent-400 dark:border-accent-400 bg-accent-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 hover:bg-slate-50/50 dark:hover:bg-slate-800/10'
               }`}
