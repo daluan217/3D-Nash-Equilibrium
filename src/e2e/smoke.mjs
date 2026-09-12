@@ -9893,7 +9893,10 @@ const suggestedScenario = {
         const cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
         const inside = r.top >= -2 && r.bottom <= vh + 2 && r.left >= -2 && r.right <= vw + 2 && r.width > 0 && r.height > 0;
         const at = (cx >= 0 && cy >= 0 && cx < vw && cy < vh) ? document.elementFromPoint(cx, cy) : null;
-        const hit = !!at && (at === el || el.contains(at) || at.contains(el));
+        // Only the control itself or a DESCENDANT counts: an ancestor returned
+        // by elementFromPoint (e.g. a pointer-events:none wrapper) cannot take
+        // the click (CodeRabbit CLI on #194).
+        const hit = !!at && (at === el || el.contains(at));
         return !inside || !hit;
       }).map((el) => (el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 30));
       return { unreachable, total: ctrls.length };
@@ -9903,10 +9906,24 @@ const suggestedScenario = {
     await registerAndLogin(p, 'e92');
     await p.getByRole('button', { name: /open menu|workspace/i }).first().click();
     await p.waitForSelector('[data-modal-surface="drawer"]', { timeout: 8000 });
-    await p.waitForTimeout(400);
+    // Wait on state, not a fixed delay: the drawer slides in with
+    // animate-drawer-in, so poll for its panel box to stop moving
+    // (same convention as §88's settled-geometry oracle).
+    await p.waitForFunction(() => {
+      const panel = document.querySelector('[data-modal-surface="drawer"] .relative');
+      if (!panel) return false;
+      const h = panel.getBoundingClientRect().height;
+      return h > 0 && Math.abs(h - (panel.__h ?? (panel.__h = h))) < 1;
+    }, null, { timeout: 8000 });
     // the Library tab is where the red's unreachable controls lived
     await p.getByRole('button', { name: /presets.*library/i }).click();
-    await p.waitForTimeout(200);
+    await p.getByRole('button', { name: /presets.*library/i }).waitFor({ state: 'visible', timeout: 8000 });
+    // Library content is mounted only after activeTab changes — poll for the
+    // tab panel's controls to appear rather than sleeping.
+    await p.waitForFunction(() => {
+      const panel = document.querySelector('[data-modal-surface="drawer"] div.overflow-y-auto');
+      return !!panel && panel.querySelectorAll('button, input').length > 0;
+    }, null, { timeout: 8000 });
 
     // (a) the tab row actually folded: at 320px width the `sm:` breakpoint
     // cannot apply, so flex-direction "row" on the tabs can only come from the
