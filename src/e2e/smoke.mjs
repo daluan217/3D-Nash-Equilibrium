@@ -3665,17 +3665,26 @@ try {
     record('FIX: the continuum group is still hidden after the simulation redraw (the user\'s legend choice survives)',
       afterRedraw.length > 0 && afterRedraw.every((trace) => trace.visible === 'legendonly'), JSON.stringify(afterRedraw));
     // And switching it back on works.
+    // This opt-in control deterministically exercises the same natural-stop
+    // branch slow CI reached in shard 24, while the default run exercises an
+    // explicit Pause transition.
+    const naturalStopControl = process.env.E2E_SECTION47_NATURAL_STOP === '1';
+    if (naturalStopControl) {
+      await lp.getByRole('button', { name: /^Run$/ }).waitFor({ state: 'visible', timeout: 90000 });
+    }
     const pauseRenderRevisionBefore = await lp.evaluate(() =>
       Number(document.querySelector('.js-plotly-plot')?.dataset?.plotReactRevision ?? 0));
     const pauseButton = lp.getByRole('button', { name: /^Pause$/ });
-    const pauseIssued = await pauseButton.isVisible().catch(() => false);
-    if (pauseIssued) await pauseButton.click();
+    const pauseTransitionRequested = !naturalStopControl && await pauseButton.isVisible().catch(() => false);
+    if (pauseTransitionRequested) await pauseButton.click();
     const runControlVisible = await lp.getByRole('button', { name: /^Run$/ }).waitFor({ state: 'visible', timeout: 5000 })
       .then(() => true).catch(() => false);
     // React can paint the Run control before Plotly.react finishes replacing
-    // the corresponding graph. Require the exact non-running render revision,
-    // then two unchanged reads of its continuum trace signature, before the
-    // legend DOM becomes an actionable target.
+    // the corresponding graph. If Pause was actionable, require its newer
+    // render revision. On slower runners the finite simulation may already
+    // have stopped naturally, so its current revision is valid only alongside
+    // the exact non-running marker. In both branches require two unchanged
+    // reads of the continuum trace signature before hit-testing the legend.
     let previousPausedPlotState = null;
     let stablePausedPlotReads = 0;
     let pausedPlotSettled = null;
@@ -3692,11 +3701,14 @@ try {
           traceCount: traces.length,
         };
       });
-      const isCompletedPausedRender = Number.isFinite(current.revision)
-        && current.revision > pauseRenderRevisionBefore
+      const revisionMatchesStoppedState = Number.isFinite(current.revision)
+        && (pauseTransitionRequested
+          ? current.revision > pauseRenderRevisionBefore
+          : current.revision >= pauseRenderRevisionBefore);
+      const isCompletedStoppedRender = revisionMatchesStoppedState
         && current.running === 'false'
         && current.traceCount > 0;
-      if (isCompletedPausedRender && previousPausedPlotState
+      if (isCompletedStoppedRender && previousPausedPlotState
           && current.revision === previousPausedPlotState.revision
           && current.signature === previousPausedPlotState.signature) {
         stablePausedPlotReads++;
@@ -3704,11 +3716,11 @@ try {
       } else {
         stablePausedPlotReads = 0;
       }
-      previousPausedPlotState = isCompletedPausedRender ? current : null;
+      previousPausedPlotState = isCompletedStoppedRender ? current : null;
     }
-    const redrawsPaused = pauseIssued && runControlVisible && pausedPlotSettled !== null;
-    record('precondition: the completed paused plot render is stable before hit-testing the restored legend DOM',
-      redrawsPaused, JSON.stringify({ pauseIssued, runControlVisible, pauseRenderRevisionBefore, pausedPlotSettled }));
+    const redrawsStopped = runControlVisible && pausedPlotSettled !== null;
+    record('precondition: the completed stopped plot render is stable before hit-testing the restored legend DOM',
+      redrawsStopped, JSON.stringify({ naturalStopControl, pauseTransitionRequested, runControlVisible, pauseRenderRevisionBefore, pausedPlotSettled }));
     const showTarget = await prepareLegendClick();
     record('precondition: the show click reaches the continuum legend entry after the redraw',
       showTarget.ready, JSON.stringify(showTarget));
@@ -3717,6 +3729,33 @@ try {
     const visibleAfterShow = await continuumTraceState();
     record('a second click shows the group again (camera collapse may keep only fusing corners hidden)',
       continuumGroupIsShown(visibleAfterShow), JSON.stringify(visibleAfterShow));
+
+    // Queue control: two quick clicks must cancel each other even though the
+    // first asynchronous restyle may not have updated Plotly's live data when
+    // the second click arrives. Exercise both the special continuum path and
+    // an ordinary legend path.
+    await clickLegendEntry();
+    await clickLegendEntry();
+    await lp.waitForFunction(() => {
+      const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? [])
+        .filter((t) => t.legendgroup === 'continuumNE');
+      return ts.some((t) => t.meta?.continuumRole === 'midpoint' && (t.visible === undefined || t.visible === true));
+    }, null, { timeout: 8000 }).catch(() => {});
+    const continuumAfterRapidDoubleClick = await continuumTraceState();
+    record('two rapid continuum legend clicks cancel instead of repeating the first queued toggle',
+      continuumGroupIsShown(continuumAfterRapidDoubleClick), JSON.stringify(continuumAfterRapidDoubleClick));
+
+    const ordinaryLegendToggle = lp.locator('g.traces', {
+      has: lp.locator('text.legendtext', { hasText: /A Moves/ }),
+    }).first().locator('rect.legendtoggle');
+    await ordinaryLegendToggle.click();
+    await ordinaryLegendToggle.click();
+    const ordinaryGroupShown = await lp.waitForFunction(() => {
+      const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? [])
+        .filter((trace) => trace.legendgroup === 'amoves');
+      return ts.length >= 2 && ts.every((t) => t.visible === undefined || t.visible === true);
+    }, null, { timeout: 8000 }).then(() => true).catch(() => false);
+    record('two rapid ordinary legend clicks cancel instead of repeating the first queued toggle', ordinaryGroupShown);
     await lp.close();
   });
 

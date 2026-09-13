@@ -524,16 +524,31 @@ jobs:
           E2E_PORT: 309${{ matrix.shard }}
           E2E_BASE: http://localhost:309${{ matrix.shard }}
 
+      # Shard 24 once reached §47 after the finite simulation had already
+      # completed, while faster machines reached the explicit-Pause branch.
+      # Exercise that legitimate stopped-state path deterministically too.
+      - name: Exercise section 47 after natural simulation completion
+        if: matrix.shard == 24
+        id: natural_stop
+        run: node src/e2e/smoke.mjs
+        env:
+          E2E_SECTION: '47'
+          E2E_SECTION47_NATURAL_STOP: '1'
+          E2E_PORT: '31947'
+          E2E_BASE: http://localhost:31947
+
       - name: Upload shard evidence
         # Keep evidence from a pass-after-section-retry: that first failed
         # attempt is the transient-stall picture worth retaining.
-        if: always() && steps.smoke.outputs.smoke_outcome != 'pass'
+        if: always() && (steps.smoke.outputs.smoke_outcome != 'pass' || steps.natural_stop.outcome == 'failure')
         uses: actions/upload-artifact@v4
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
             /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-32_section-*-attempt-*.png
             /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-32_section-*-attempt-*.html
+            /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.png
+            /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log
           retention-days: 7
           if-no-files-found: ignore

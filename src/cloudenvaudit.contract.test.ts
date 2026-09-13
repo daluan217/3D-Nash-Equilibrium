@@ -111,14 +111,41 @@ function hasDedicatedWif(view: WorkflowView): boolean {
     && withValues.service_account === '${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}';
 }
 
+/** Collapse backslash continuations into the logical command lines the shell executes. */
+function logicalShellLines(shell: string): string[] {
+  return shell.replace(/\\\n[ \t]*/g, ' ').split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
+/** A required helper must begin a command line or a real pipeline stage. Text
+ * after `||`, `&&`, `;`, `echo`, or another argv token is not unconditional. */
+function hasUnconditionalPipelineCommand(view: WorkflowView, command: RegExp): boolean {
+  return logicalShellLines(view.shell).some((line) => {
+    const match = command.exec(line);
+    if (!match) return false;
+    const before = line.slice(0, match.index).trimEnd();
+    if (/(?:&&|\|\||;)/.test(before)) return false;
+    return before === '' || /(^|[^|])\|$/.test(before);
+  });
+}
+
 /** Require the reviewed manifest audit as an executable shell command. */
 function hasEnvironmentAuditCommand(view: WorkflowView): boolean {
-  return /(?:^[ \t]*|[|;&(][ \t]*)node[ \t]+src\/deploy\/env-audit[.]mjs(?=$|[\s|;&)])/m.test(view.shell);
+  return hasUnconditionalPipelineCommand(view, /\bnode[ \t]+src\/deploy\/env-audit[.]mjs(?=$|[\s|;&)])/);
 }
 
 /** Require the reviewed traffic helper as an executable shell command. */
 function hasTrafficAuditCommand(view: WorkflowView): boolean {
-  return /(?:^[ \t]*|[|;&(][ \t]*)node[ \t]+src\/deploy\/cloud-run-traffic[.]mjs(?=$|[\s|;&)])/m.test(view.shell);
+  return hasUnconditionalPipelineCommand(view, /\bnode[ \t]+src\/deploy\/cloud-run-traffic[.]mjs(?=$|[\s|;&)])/);
+}
+
+/** Require the fields mask on the same simple curl command as the Cloud Run
+ * resource URL; an unrelated echo of the option proves nothing. */
+function hasServerMaskedCloudRunRequest(view: WorkflowView): boolean {
+  return logicalShellLines(view.shell).some((line) =>
+    /^curl(?:\s|$)/.test(line)
+    && !/(?:&&|\|\||;)/.test(line)
+    && /--data-urlencode\s+"fields=\$fields"/.test(line)
+    && /"\$RUN_API\/\$resource"/.test(line));
 }
 
 const executable = workflowViewOf(workflow);
@@ -185,7 +212,7 @@ assert.equal(isExactSafeMask([...revisionFields, 'containers.env.value'], allowe
 assert.equal(isExactSafeMask([...serviceFields.slice(1), serviceFields[1]], allowedServiceFields), false,
   'a duplicate field cannot hide an omitted reviewed field');
 if (executable.auditEnv.RUN_API !== 'https://run.googleapis.com/v2'
-    || !/--data-urlencode\s+"fields=\$fields"/.test(executable.shell)
+    || !hasServerMaskedCloudRunRequest(executable)
     || !hasTrafficAuditCommand(executable)) {
   fail('workflow must use Cloud Run v2 REST fields masks and the reviewed traffic helper');
 }
@@ -236,6 +263,16 @@ assert.equal(hasEnvironmentAuditCommand({ ...executable, shell: 'echo node src/d
   'mutation: audit-command text passed to echo cannot satisfy the executable env-audit guard');
 assert.equal(hasTrafficAuditCommand({ ...executable, shell: 'echo node src/deploy/cloud-run-traffic.mjs' }), false,
   'mutation: traffic-helper text passed to echo cannot satisfy the executable traffic guard');
+assert.equal(hasEnvironmentAuditCommand({ ...executable, shell: 'true || node src/deploy/env-audit.mjs' }), false,
+  'mutation: an env-audit command skipped behind true || cannot satisfy the executable guard');
+assert.equal(hasEnvironmentAuditCommand({ ...executable, shell: 'exit 0; node src/deploy/env-audit.mjs' }), false,
+  'mutation: an env-audit command made unreachable by exit 0; cannot satisfy the executable guard');
+assert.equal(hasTrafficAuditCommand({ ...executable, shell: 'true || node src/deploy/cloud-run-traffic.mjs' }), false,
+  'mutation: a traffic helper skipped behind true || cannot satisfy the executable guard');
+assert.equal(hasServerMaskedCloudRunRequest({
+  ...executable,
+  shell: 'curl --get "$RUN_API/$resource"\necho --data-urlencode "fields=$fields"',
+}), false, 'mutation: an echo-only fields option cannot satisfy the Cloud Run request mask contract');
 assert.equal(requiredWorkflowTokens.test(inlineCommentOnlyRequiredMutant.replace(/^\s*#.*$/gm, '')), true,
   'mutation: removing only full-line comments leaves the inline-comment escape reachable');
 const scalarImpostorView = workflowViewOf([
