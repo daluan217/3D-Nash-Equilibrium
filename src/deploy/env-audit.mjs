@@ -31,26 +31,51 @@ const stdin = readFileSync(0, 'utf8').trim();
 let entries = [];
 let structured = false;
 if (stdin.startsWith('{') || stdin.startsWith('[')) {
+  let parsed;
   try {
-    const parsed = JSON.parse(stdin);
-    const flattenEnv = (containers) => Array.isArray(containers)
-      ? containers.flatMap((container) => Array.isArray(container?.env) ? container.env : [])
-      : null;
-    // Direct arrays keep the helper easy to mutation-test. The other shapes
-    // are Cloud Run v2 Service/Revision responses and their v1 equivalents.
-    const candidate = Array.isArray(parsed) ? parsed
-      : Array.isArray(parsed?.env) ? parsed.env
-        : flattenEnv(parsed?.template?.containers)
-          ?? flattenEnv(parsed?.containers)
-          ?? flattenEnv(parsed?.spec?.template?.spec?.containers)
-          ?? flattenEnv(parsed?.spec?.containers);
-    if (Array.isArray(candidate)) {
-      entries = candidate;
-      structured = true;
-    }
+    parsed = JSON.parse(stdin);
   } catch {
     console.error('✗ cloud-run env audit: malformed JSON metadata response.');
     process.exit(1);
+  }
+  structured = true;
+  if (Array.isArray(parsed)) {
+    // Direct arrays keep the helper easy to mutation-test.
+    entries = parsed;
+  } else if (parsed && typeof parsed === 'object') {
+    const envCollections = [];
+    const rejectShape = (label) => {
+      console.error(`✗ cloud-run env audit: malformed ${label} environment shape.`);
+      process.exit(1);
+    };
+    const addDirectEnv = (owner, label) => {
+      if (!owner || typeof owner !== 'object' || !Object.hasOwn(owner, 'env')) return;
+      if (!Array.isArray(owner.env)) rejectShape(label);
+      envCollections.push(owner.env);
+    };
+    const addContainers = (owner, label) => {
+      if (!owner || typeof owner !== 'object' || !Object.hasOwn(owner, 'containers')) return;
+      if (!Array.isArray(owner.containers)) rejectShape(`${label}.containers`);
+      for (const container of owner.containers) {
+        if (!container || typeof container !== 'object' || Array.isArray(container)) {
+          rejectShape(`${label}.containers[]`);
+        }
+        if (Object.hasOwn(container, 'env') && !Array.isArray(container.env)) {
+          rejectShape(`${label}.containers[].env`);
+        }
+        if (Array.isArray(container.env)) envCollections.push(container.env);
+      }
+    };
+    // Cloud Run v2 Service/Revision responses and their v1 equivalents. Check
+    // every recognized collection that is present; combining them makes a
+    // duplicate or extra entry fail later instead of letting a second shape
+    // hide behind the first valid one.
+    addDirectEnv(parsed, 'env');
+    addContainers(parsed.template, 'template');
+    addContainers(parsed, 'root');
+    addContainers(parsed.spec?.template?.spec, 'spec.template.spec');
+    addContainers(parsed.spec, 'spec');
+    entries = envCollections.flat();
   }
 }
 if (!structured) {

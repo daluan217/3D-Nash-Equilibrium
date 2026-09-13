@@ -2260,6 +2260,41 @@ function testCameraBasisRespectsNonzeroCenter() {
     + `fwd delta=${fwdDelta.toFixed(3)}, projected screen delta=${screenDelta.toFixed(1)}px at the cornerRow1Col1 tour pose`);
 }
 
+function testSection47UsesActionableRoleAwareLegendChecks() {
+  const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+  const start = smoke.indexOf("section('47'");
+  const end = smoke.indexOf("section('50'", start);
+  const section47 = start >= 0 && end > start ? smoke.slice(start, end) : '';
+  const usesActionableExactLegendTarget = (source: string): boolean =>
+    source.includes("const legendToggle = legendGroup.locator('rect.legendtoggle');")
+    && source.includes('exactTarget: atPoint === target')
+    && source.includes("sameLegendGroup: atPoint?.closest('g.traces') === target.closest('g.traces')")
+    && source.includes('const clickLegendEntry = () => legendToggle.click();')
+    && !source.includes('force: true');
+  ok(usesActionableExactLegendTarget(section47),
+    'section 47 must prove and normally click Plotly\'s exact legend hit rectangle');
+  const forcedClickMutant = section47.replace('legendToggle.click();', 'legendToggle.click({ force: true });');
+  ok(!usesActionableExactLegendTarget(forcedClickMutant),
+    'mutation: bypassing actionability with a forced legend click must fail the section 47 pointer guard');
+  const genericSvgHitMutant = section47.replace('exactTarget: atPoint === target', "exactTarget: atPoint?.tagName === 'rect'");
+  ok(!usesActionableExactLegendTarget(genericSvgHitMutant),
+    'mutation: accepting an arbitrary overlapping SVG rectangle must fail the exact legend-target guard');
+
+  const validatesContinuumRoles = (source: string): boolean =>
+    source.includes("const midpoints = traces.filter((trace) => trace.role === 'midpoint');")
+    && source.includes('midpoints.every((trace) => trace.visible === true)')
+    && source.includes("trace.role === 'corner' && trace.visible === 'legendonly'")
+    && source.includes('!continuumGroupIsShown(hiddenMidpointControl)');
+  ok(validatesContinuumRoles(section47),
+    'section 47 must require visible midpoint traces and permit camera-hidden corners only');
+  const arbitraryVisibleTraceMutant = section47.replace(
+    'midpoints.every((trace) => trace.visible === true)',
+    'traces.some((trace) => trace.visible === true)',
+  );
+  ok(!validatesContinuumRoles(arbitraryVisibleTraceMutant),
+    'mutation: allowing any visible continuum trace to mask a hidden midpoint must fail the role-aware guard');
+}
+
 function testSection62DrivesItsDefaultCameraControl() {
   const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
   const plotlyView = readFileSync('src/components/PlotlyView.tsx', 'utf8');
@@ -2284,10 +2319,13 @@ function testSection62DrivesItsDefaultCameraControl() {
     source.includes('const moveToRenderedEye = async (eye) =>')
     && source.includes('const beforeMatrixKey = await readCameraMatrixKey();')
     && source.includes('matrixKey !== null && matrixKey !== beforeMatrixKey')
+    && source.includes('currentMatrixKey === previousMatrixKey')
+    && source.includes('stableMatrixReads >= 2')
+    && source.includes("if (!renderedMatrixSettled) throw new Error('rendered camera matrix did not settle')")
     && source.includes('await moveToRenderedEye(nudgeEye);')
     && source.includes('await moveToRenderedEye(eye);')
     && source.includes('const decisionBefore =')
-    && source.includes('decidedAt > before');
+    && source.includes('decidedAt > before ? true : null;');
   ok(waitsForRenderedCamera(section62),
     'section 62 camera controls must wait for Plotly\'s rendered matrices, not only its eagerly-updated camera eye');
   const declaredEyeOnlyMutant = section62.replace(
@@ -2296,6 +2334,9 @@ function testSection62DrivesItsDefaultCameraControl() {
   );
   ok(!waitsForRenderedCamera(declaredEyeOnlyMutant),
     'mutation: accepting an updated eye before its WebGL transform commits must fail the rendered-camera guard');
+  const firstMatrixMutant = section62.replace('stableMatrixReads >= 2', 'stableMatrixReads >= 0');
+  ok(!waitsForRenderedCamera(firstMatrixMutant),
+    'mutation: accepting the first changed WebGL matrix before it settles must fail the rendered-camera guard');
   const rejectsRenderedNoOp = section62.replace(
     'await moveToRenderedEye(nudgeEye);',
     '/* trust the declared no-op */',
@@ -2329,6 +2370,19 @@ function testSection62DrivesItsDefaultCameraControl() {
   const staleCacheMutant = section62.replace('syncDecidedAt > beforeSyncDecision', 'Number.isFinite(syncDecidedAt)');
   ok(!synchronizesBurstBaseline(staleCacheMutant),
     'mutation: accepting visibility without a new default-camera decision must fail the throttle-baseline guard');
+  const waitsForControlReact = (source: string): boolean =>
+    source.includes('const controlDecisionBefore =')
+    && source.includes('decidedAt > beforeDecision')
+    && source.includes('{ beforeDecision: controlDecisionBefore }')
+    && /record\('precondition: the control fixture[^;]+\n\s*controlReady,/.test(source);
+  ok(waitsForControlReact(section62),
+    'section 62 must wait for the control fixture\'s post-react camera decision before issuing another relayout');
+  const eagerControlDataMutant = section62.replace(
+    '&& decidedAt > beforeDecision',
+    '/* trust eagerly-mutated Plotly data before the WebGL redraw completes */',
+  );
+  ok(!waitsForControlReact(eagerControlDataMutant),
+    'mutation: accepting the control midpoint before its post-react decision must fail the control-readiness guard');
   const couplesBurstToRealEvent = (source: string): boolean =>
     source.includes("gd?.on?.('plotly_relayout', onRelayout);")
     && source.includes('cameraMatrixKey() !== beforeBurstMatrixKey')
@@ -2413,6 +2467,7 @@ testShortContinuumCollapsesToOneMarker();
 testShortContinuumCutoffIsExactAndRelabelInvariant();
 testContinuumMarkersDoNotOverlapOnScreen();
 testCameraBasisRespectsNonzeroCenter();
+testSection47UsesActionableRoleAwareLegendChecks();
 testSection62DrivesItsDefaultCameraControl();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
