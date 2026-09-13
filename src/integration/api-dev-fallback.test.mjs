@@ -56,10 +56,18 @@ const spawnDevServer = (port) => spawn(
   },
 );
 
-const READINESS_ATTEMPT_TIMEOUT_MS = 1000;
-const fetchHealth = async (base) => (await fetch(`${base}/api/health`, {
-  signal: AbortSignal.timeout(READINESS_ATTEMPT_TIMEOUT_MS),
-})).ok;
+const REQUEST_TIMEOUT_MS = 1000;
+/** Give every request in this boundary test the same finite attempt budget. */
+const boundedFetch = (url, init = {}) => fetch(url, {
+  ...init,
+  signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+});
+/** Read the readiness endpoint through the shared bounded transport. */
+const fetchHealth = async (base) => (await boundedFetch(`${base}/api/health`)).ok;
+/** Read the Vite root control through the shared bounded transport. */
+const fetchRoot = (base) => boundedFetch(`${base}/`, { headers: { accept: 'text/html' } });
+/** Read the unknown API boundary through the shared bounded transport. */
+const fetchUnknownApi = (base) => boundedFetch(`${base}/api/scenarios`, { headers: { accept: 'text/html' } });
 
 // Mutation control for the per-attempt deadline used below. A peer can accept
 // the connection and never send headers; without AbortSignal.timeout, one
@@ -72,11 +80,18 @@ await new Promise((resolve, reject) => {
 const stallerAddress = staller.address();
 if (!stallerAddress || typeof stallerAddress === 'string') throw new Error('stall control did not bind a TCP port');
 try {
-  const outcome = await Promise.race([
-    fetchHealth(`http://127.0.0.1:${stallerAddress.port}`).then(() => 'resolved', () => 'aborted'),
-    new Promise((resolve) => setTimeout(() => resolve('hung'), READINESS_ATTEMPT_TIMEOUT_MS * 2)),
+  const stalledBase = `http://127.0.0.1:${stallerAddress.port}`;
+  const outcomes = await Promise.race([
+    Promise.all([
+      fetchHealth(stalledBase),
+      fetchRoot(stalledBase),
+      fetchUnknownApi(stalledBase),
+    ].map((attempt) => attempt.then(() => 'resolved', () => 'aborted'))),
+    new Promise((resolve) => setTimeout(() => resolve(['hung']), REQUEST_TIMEOUT_MS * 2)),
   ]);
-  if (outcome !== 'aborted') throw new Error(`readiness request deadline control failed: ${outcome}`);
+  if (outcomes.length !== 3 || outcomes.some((outcome) => outcome !== 'aborted')) {
+    throw new Error(`request deadline controls failed: ${JSON.stringify(outcomes)}`);
+  }
 } finally {
   staller.closeAllConnections?.();
   await new Promise((resolve) => staller.close(resolve));
@@ -160,13 +175,13 @@ try {
   }
   if (!ready) throw new Error(`development server never became ready\n${serverLog.slice(-1000)}`);
 
-  const root = await fetch(`${BASE}/`, { headers: { accept: 'text/html' } });
+  const root = await fetchRoot(BASE);
   const rootType = root.headers.get('content-type') || '';
   if (root.status !== 200 || !rootType.includes('text/html')) {
     throw new Error(`Vite control failed: / returned ${root.status} ${rootType}`);
   }
 
-  const unknown = await fetch(`${BASE}/api/scenarios`, { headers: { accept: 'text/html' } });
+  const unknown = await fetchUnknownApi(BASE);
   const unknownType = unknown.headers.get('content-type') || '';
   const body = await unknown.json().catch(() => null);
   if (unknown.status !== 404 || !unknownType.includes('application/json') || body?.error !== 'Not found') {

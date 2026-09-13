@@ -3665,11 +3665,50 @@ try {
     record('FIX: the continuum group is still hidden after the simulation redraw (the user\'s legend choice survives)',
       afterRedraw.length > 0 && afterRedraw.every((trace) => trace.visible === 'legendonly'), JSON.stringify(afterRedraw));
     // And switching it back on works.
+    const pauseRenderRevisionBefore = await lp.evaluate(() =>
+      Number(document.querySelector('.js-plotly-plot')?.dataset?.plotReactRevision ?? 0));
     const pauseButton = lp.getByRole('button', { name: /^Pause$/ });
-    if (await pauseButton.isVisible().catch(() => false)) await pauseButton.click();
-    const redrawsPaused = await lp.getByRole('button', { name: /^Run$/ }).waitFor({ state: 'visible', timeout: 5000 })
+    const pauseIssued = await pauseButton.isVisible().catch(() => false);
+    if (pauseIssued) await pauseButton.click();
+    const runControlVisible = await lp.getByRole('button', { name: /^Run$/ }).waitFor({ state: 'visible', timeout: 5000 })
       .then(() => true).catch(() => false);
-    record('precondition: the redraw stream is paused before hit-testing the restored legend DOM', redrawsPaused);
+    // React can paint the Run control before Plotly.react finishes replacing
+    // the corresponding graph. Require the exact non-running render revision,
+    // then two unchanged reads of its continuum trace signature, before the
+    // legend DOM becomes an actionable target.
+    let previousPausedPlotState = null;
+    let stablePausedPlotReads = 0;
+    let pausedPlotSettled = null;
+    for (let i = 0; i < 40; i++) {
+      await lp.waitForTimeout(100);
+      const current = await lp.evaluate(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        const traces = (gd?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE')
+          .map((t) => ({ role: t.meta?.continuumRole ?? null, visible: t.visible === undefined ? true : t.visible }));
+        return {
+          revision: Number(gd?.dataset?.plotReactRevision ?? NaN),
+          running: gd?.dataset?.plotReactRunning ?? null,
+          signature: JSON.stringify(traces),
+          traceCount: traces.length,
+        };
+      });
+      const isCompletedPausedRender = Number.isFinite(current.revision)
+        && current.revision > pauseRenderRevisionBefore
+        && current.running === 'false'
+        && current.traceCount > 0;
+      if (isCompletedPausedRender && previousPausedPlotState
+          && current.revision === previousPausedPlotState.revision
+          && current.signature === previousPausedPlotState.signature) {
+        stablePausedPlotReads++;
+        if (stablePausedPlotReads >= 2) { pausedPlotSettled = current; break; }
+      } else {
+        stablePausedPlotReads = 0;
+      }
+      previousPausedPlotState = isCompletedPausedRender ? current : null;
+    }
+    const redrawsPaused = pauseIssued && runControlVisible && pausedPlotSettled !== null;
+    record('precondition: the completed paused plot render is stable before hit-testing the restored legend DOM',
+      redrawsPaused, JSON.stringify({ pauseIssued, runControlVisible, pauseRenderRevisionBefore, pausedPlotSettled }));
     const showTarget = await prepareLegendClick();
     record('precondition: the show click reaches the continuum legend entry after the redraw',
       showTarget.ready, JSON.stringify(showTarget));
@@ -4788,19 +4827,31 @@ try {
       // hold with another real, hit-tested plot press immediately before the
       // final camera control; otherwise a resumed idle-spin frame can keep
       // changing WebGL matrices while moveToRenderedEye is correctly waiting
-      // for them to settle. The Resume control is the app's own state signal
-      // that the press actually entered the hold.
+      // for them to settle. Read the app-owned hold deadline before/after the
+      // press: a Resume label may already be visible for an OLD countdown and
+      // therefore cannot prove that this click renewed it.
       await plot.scrollIntoViewIfNeeded();
+      const controlHoldUntilBefore = await plot.getAttribute('data-spin-hold-until')
+        .then((value) => Number(value ?? 0));
       const controlPlotBox = await plot.boundingBox();
       const controlCx = controlPlotBox ? controlPlotBox.x + controlPlotBox.width / 2 : -1;
       const controlCy = controlPlotBox ? controlPlotBox.y + controlPlotBox.height / 2 : -1;
       const controlHitTag = await p.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName ?? null,
         { x: controlCx, y: controlCy });
       if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);
-      const controlHoldActive = await p.getByRole('button', { name: /resume spinning/i })
-        .waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const controlHoldState = controlHitTag === 'CANVAS'
+        ? await p.waitForFunction(({ beforeHoldUntil }) => {
+          const holdUntil = Number(document.querySelector('[data-tour="plot"]')?.dataset?.spinHoldUntil ?? NaN);
+          const remainingMs = holdUntil - performance.now();
+          return Number.isFinite(holdUntil) && holdUntil > beforeHoldUntil && remainingMs > 5000
+            ? { holdUntil, remainingMs }
+            : null;
+        }, { beforeHoldUntil: controlHoldUntilBefore }, { timeout: 3000 })
+          .then((handle) => handle.jsonValue()).catch(() => null)
+        : null;
       record('precondition: the final control camera move re-arms the idle-spin inactivity hold with a real plot press',
-        controlHitTag === 'CANVAS' && controlHoldActive, JSON.stringify({ controlPlotBox, controlHitTag, controlHoldActive }));
+        controlHoldState !== null,
+        JSON.stringify({ controlPlotBox, controlHitTag, controlHoldUntilBefore, controlHoldState }));
       await setEye(FUSING_EYE);
       await p.waitForFunction((want) => {
         const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;

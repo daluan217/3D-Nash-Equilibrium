@@ -3986,7 +3986,7 @@ function testWalkthroughInputContracts() {
   // camera relayout (CodeRabbit CLI on this fix).
   const holdStart = plot.indexOf('const holdSpinForCameraControl = () => {');
   const holdFn = plot.slice(holdStart, plot.indexOf('};', holdStart) + 2);
-  assert(/nextSpinAtRef\.current = performance\.now\(\) \+ spinAutoResumeMs;/.test(holdFn) && /spinWaitingRef\.current = true;/.test(holdFn) && /pauseSpin\(false\);/.test(holdFn),
+  assert(/setSpinHoldUntil\(performance\.now\(\) \+ spinAutoResumeMs\);/.test(holdFn) && /spinWaitingRef\.current = true;/.test(holdFn) && /pauseSpin\(false\);/.test(holdFn),
     'RED-MATH-18/001: holdSpinForCameraControl restarts the auto-resume countdown AND pauses a take-over-mode spin without re-binding (pauseSpin(false))');
   // OPUS-REVIEW-170/A: the hold mirrors the spin effect's own gates. Under
   // reduced motion (or idleSpin off) the effect never runs, so the flags the
@@ -4012,13 +4012,14 @@ function testWalkthroughInputContracts() {
     assert(effectStart !== -1, 'CodeRabbit #170: the idle-spin effect must start with the `if (!idleSpin) return;` gate');
     const m = /if \(reducedMotion\) \{([\s\S]{0,900}?)\n\s*return;\n\s*\}/.exec(src.slice(effectStart));
     assert(m !== null, 'CodeRabbit #170: the idle-spin effect must exit under reducedMotion through a block that ends in `return;`');
-    // The block must consist of EXACTLY the four unconditional flag resets —
+    // The block must consist of EXACTLY the four unconditional flag resets and
+    // the shared deadline reset —
     // nothing wrapped in a condition, nothing missing, nothing extra — so no
     // entry path (paused, waiting, both) can return with a flag still set.
     const stmts = m![1].replace(/^\s*\/\/.*$/gm, '').split('\n').map(l => l.trim()).filter(Boolean);
-    const expected = ['spinPausedRef.current = false;', 'setSpinPaused(false);', 'spinWaitingRef.current = false;', 'setSpinWaiting(false);'];
+    const expected = ['spinPausedRef.current = false;', 'setSpinPaused(false);', 'spinWaitingRef.current = false;', 'setSpinWaiting(false);', 'setSpinHoldUntil(0);'];
     assert(stmts.length === expected.length && expected.every(e => stmts.includes(e)),
-      `CodeRabbit #170: the effect's reduced-motion exit must be exactly the four unconditional flag resets (found: ${JSON.stringify(stmts)})`);
+      `CodeRabbit #170: the effect's reduced-motion exit must be exactly the four unconditional flag resets and shared deadline reset (found: ${JSON.stringify(stmts)})`);
   };
   effectRmContract(plot);
   {
@@ -4026,10 +4027,10 @@ function testWalkthroughInputContracts() {
     try { effectRmContract(plot.replace(/if \(reducedMotion\) \{[\s\S]*?\n\s*return;\n\s*\}/, 'if (reducedMotion) return;')); } catch { threw = true; }
     assert(threw, 'fixture: the bare `if (reducedMotion) return;` exit (no flag reset) must be rejected');
     threw = false;
-    try { effectRmContract(plot.replace('      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      return;', '      return;')); } catch { threw = true; }
-    assert(threw, 'fixture: an exit that clears the pause flags but not the waiting flags must be rejected');
+    try { effectRmContract(plot.replace('      setSpinWaiting(false);\n      setSpinHoldUntil(0);\n      return;', '      setSpinWaiting(false);\n      return;')); } catch { threw = true; }
+    assert(threw, 'fixture: an exit that clears every spin flag but not the shared deadline must be rejected');
     threw = false;
-    try { effectRmContract(plot.replace('      spinPausedRef.current = false;\n      setSpinPaused(false);\n      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      return;', '      if (spinPausedRef.current) {\n        spinPausedRef.current = false;\n        setSpinPaused(false);\n        spinWaitingRef.current = false;\n        setSpinWaiting(false);\n      }\n      return;')); } catch { threw = true; }
+    try { effectRmContract(plot.replace('      spinPausedRef.current = false;\n      setSpinPaused(false);\n      spinWaitingRef.current = false;\n      setSpinWaiting(false);\n      setSpinHoldUntil(0);\n      return;', '      if (spinPausedRef.current) {\n        spinPausedRef.current = false;\n        setSpinPaused(false);\n        spinWaitingRef.current = false;\n        setSpinWaiting(false);\n        setSpinHoldUntil(0);\n      }\n      return;')); } catch { threw = true; }
     assert(threw, 'fixture: flag resets wrapped in a condition (an entry path can still return with a flag set) must be rejected');
   }
   {

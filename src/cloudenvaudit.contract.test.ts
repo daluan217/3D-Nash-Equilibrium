@@ -8,44 +8,120 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 const workflow = readFileSync('.github/workflows/cloud-env-audit.yml', 'utf8');
-// Contract assertions describe executable YAML, never prose. A commented-out
-// credential block must not satisfy a required check, and an explanatory
-// warning must not trip a forbidden-credential check.
-/**
- * Remove YAML/shell comments without treating a # inside a quoted scalar as
- * a comment. YAML comments begin at an unquoted # preceded by whitespace (or
- * at the start of a line); doubled single quotes and backslash-escaped double
- * quotes remain inside their scalar.
- */
-function stripExecutableComments(source: string): string {
-  return source.split('\n').map((line) => {
-    let inSingle = false;
-    let inDouble = false;
-    let doubleEscape = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (inDouble) {
-        if (doubleEscape) { doubleEscape = false; continue; }
-        if (char === '\\') { doubleEscape = true; continue; }
-        if (char === '"') inDouble = false;
-        continue;
-      }
-      if (inSingle) {
-        if (char === "'" && line[i + 1] === "'") { i++; continue; }
-        if (char === "'") inSingle = false;
-        continue;
-      }
-      if (char === '"') { inDouble = true; continue; }
-      if (char === "'") { inSingle = true; continue; }
-      if (char === '#' && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i).trimEnd();
-    }
-    return line;
-  }).join('\n');
+const require = createRequire(import.meta.url);
+const { load: loadYaml } = require('js-yaml') as { load: (source: string) => unknown };
+
+type AnyRecord = Record<string, unknown>;
+
+/** Return an object view only for a non-array mapping. */
+function recordOf(value: unknown): AnyRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as AnyRecord : {};
 }
 
-const executable = stripExecutableComments(workflow);
+/**
+ * Remove comments from a parsed workflow's shell scripts while preserving #
+ * inside single/double quotes and unquoted words. Quote state crosses physical
+ * lines, while a backslash-newline clears only the escape state so the first
+ * character on the next line is interpreted normally.
+ */
+function stripShellComments(source: string): string {
+  let out = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (char === '\n') {
+      out += char;
+      escaped = false;
+      continue;
+    }
+    if (escaped) {
+      out += char;
+      escaped = false;
+      continue;
+    }
+    if (inSingle) {
+      out += char;
+      if (char === "'") inSingle = false;
+      continue;
+    }
+    if (char === '\\') {
+      out += char;
+      escaped = true;
+      continue;
+    }
+    if (inDouble) {
+      out += char;
+      if (char === '"') inDouble = false;
+      continue;
+    }
+    if (char === "'") { out += char; inSingle = true; continue; }
+    if (char === '"') { out += char; inDouble = true; continue; }
+    if (char === '#' && (i === 0 || /[\s;&|()]/.test(source[i - 1]))) {
+      while (i + 1 < source.length && source[i + 1] !== '\n') i++;
+      continue;
+    }
+    out += char;
+  }
+  return out;
+}
+
+/** Recursively retain YAML values while stripping comments from run blocks. */
+function executableValueOf(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(executableValueOf);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as AnyRecord).map(([key, child]) => [
+    key,
+    key === 'run' && typeof child === 'string' ? stripShellComments(child) : executableValueOf(child),
+  ]));
+}
+
+type WorkflowView = {
+  permissions: AnyRecord;
+  auditEnv: AnyRecord;
+  steps: AnyRecord[];
+  shell: string;
+  executableDocument: string;
+};
+
+/** Parse executable workflow structure and extract only actual run scripts. */
+function workflowViewOf(source: string): WorkflowView {
+  const document = recordOf(loadYaml(source));
+  const permissions = recordOf(document.permissions);
+  const auditJob = recordOf(recordOf(document.jobs).audit);
+  const auditEnv = recordOf(auditJob.env);
+  const steps = Array.isArray(auditJob.steps) ? auditJob.steps.map(recordOf) : [];
+  const shell = stripShellComments(steps
+    .map((step) => typeof step.run === 'string' ? step.run : '')
+    .filter(Boolean)
+    .join('\n'));
+  return { permissions, auditEnv, steps, shell, executableDocument: JSON.stringify(executableValueOf(document)) };
+}
+
+/** Require one exact OIDC auth step with both dedicated secret references. */
+function hasDedicatedWif(view: WorkflowView): boolean {
+  const authSteps = view.steps.filter((step) => step.uses === 'google-github-actions/auth@v2');
+  if (authSteps.length !== 1) return false;
+  const withValues = recordOf(authSteps[0].with);
+  return withValues.workload_identity_provider === '${{ secrets.GCP_AUDIT_WIF_PROVIDER }}'
+    && withValues.service_account === '${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}';
+}
+
+/** Require the reviewed manifest audit as an executable shell command. */
+function hasEnvironmentAuditCommand(view: WorkflowView): boolean {
+  return /(?:^[ \t]*|[|;&(][ \t]*)node[ \t]+src\/deploy\/env-audit[.]mjs(?=$|[\s|;&)])/m.test(view.shell);
+}
+
+/** Require the reviewed traffic helper as an executable shell command. */
+function hasTrafficAuditCommand(view: WorkflowView): boolean {
+  return /(?:^[ \t]*|[|;&(][ \t]*)node[ \t]+src\/deploy\/cloud-run-traffic[.]mjs(?=$|[\s|;&)])/m.test(view.shell);
+}
+
+const executable = workflowViewOf(workflow);
 
 /** Report a cloud environment audit contract violation and terminate the test. */
 function fail(message: string): never {
@@ -53,29 +129,27 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-if (!/id-token:\s*write/.test(executable)) {
+if (executable.permissions['id-token'] !== 'write') {
   fail('workflow must retain id-token: write for the preferred WIF path');
 }
-if (!/google-github-actions\/auth@v2/.test(executable)
-    || !/workload_identity_provider:\s*\$\{\{ secrets[.]GCP_AUDIT_WIF_PROVIDER \}\}/.test(executable)
-    || !/service_account:\s*\$\{\{ secrets[.]GCP_AUDIT_SERVICE_ACCOUNT \}\}/.test(executable)) {
+if (!hasDedicatedWif(executable)) {
   fail('workflow must use the dedicated audit Workload Identity Federation credentials');
 }
-if (/credentials_json:|GCP_SA_KEY|steps[.]creds|mode=(?:none|key)|skipping the live env audit/i.test(executable)) {
+if (/"credentials_json":|GCP_SA_KEY|steps[.]creds|mode=(?:none|key)|skipping the live env audit/i.test(executable.executableDocument)) {
   fail('live audit must fail closed and must not fall back to a long-lived service-account key');
 }
-if (!/src\/deploy\/env-audit\.mjs/.test(executable)) {
+if (!hasEnvironmentAuditCommand(executable)) {
   fail('workflow must invoke the reviewed environment manifest audit');
 }
 
 // Environment reads must use Cloud API's server-side partial-response mask.
 // `gcloud --format` is only a client-side renderer: the full resource (and its
 // literal payloads) reaches the runner first. Ignore explanatory comments.
-if (/gcloud\s+run\s+(?:services|revisions)\s+(?:describe|list)|--format(?:=|\s)/.test(executable)) {
+if (/gcloud\s+run\s+(?:services|revisions)\s+(?:describe|list)|--format(?:=|\s)/.test(executable.shell)) {
   fail('workflow must not fetch full Cloud Run resources and filter them locally with gcloud');
 }
-const serviceFields = /^\s*SERVICE_FIELDS:\s*(\S+)\s*$/m.exec(executable)?.[1]?.split(',') ?? [];
-const revisionFields = /^\s*REVISION_FIELDS:\s*(\S+)\s*$/m.exec(executable)?.[1]?.split(',') ?? [];
+const serviceFields = typeof executable.auditEnv.SERVICE_FIELDS === 'string' ? executable.auditEnv.SERVICE_FIELDS.split(',') : [];
+const revisionFields = typeof executable.auditEnv.REVISION_FIELDS === 'string' ? executable.auditEnv.REVISION_FIELDS.split(',') : [];
 const allowedServiceFields = new Set([
   'template.containers.env.name',
   'template.containers.env.valueSource.secretKeyRef',
@@ -110,12 +184,12 @@ assert.equal(isExactSafeMask([...revisionFields, 'containers.env.value'], allowe
   'an unreviewed payload leaf must be rejected');
 assert.equal(isExactSafeMask([...serviceFields.slice(1), serviceFields[1]], allowedServiceFields), false,
   'a duplicate field cannot hide an omitted reviewed field');
-if (!/RUN_API:\s*https:\/\/run[.]googleapis[.]com\/v2/.test(executable)
-    || !/--data-urlencode\s+"fields=\$fields"/.test(executable)
-    || !/src\/deploy\/cloud-run-traffic[.]mjs/.test(executable)) {
+if (executable.auditEnv.RUN_API !== 'https://run.googleapis.com/v2'
+    || !/--data-urlencode\s+"fields=\$fields"/.test(executable.shell)
+    || !hasTrafficAuditCommand(executable)) {
   fail('workflow must use Cloud Run v2 REST fields masks and the reviewed traffic helper');
 }
-if (/access_token=\$\(gcloud auth print-access-token\s+2>&1\)|echo\s+"\$access_token"/.test(executable)) {
+if (/access_token=\$\(gcloud auth print-access-token\s+2>&1\)|echo\s+"\$access_token"/.test(executable.shell)) {
   fail('workflow must not merge token-mint diagnostics into the bearer token or print that token');
 }
 
@@ -126,30 +200,78 @@ const commentOnlyRequiredMutant = [
   '# service_account: ${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}',
   '# node src/deploy/env-audit.mjs',
 ].join('\n');
-const strippedCommentOnlyRequiredMutant = stripExecutableComments(commentOnlyRequiredMutant);
-assert.equal(/id-token:\s*write|google-github-actions\/auth@v2|src\/deploy\/env-audit[.]mjs/.test(strippedCommentOnlyRequiredMutant), false,
+const commentOnlyView = workflowViewOf(commentOnlyRequiredMutant);
+assert.equal(commentOnlyView.permissions['id-token'] === 'write'
+  || hasDedicatedWif(commentOnlyView) || hasEnvironmentAuditCommand(commentOnlyView), false,
   'commented-out authentication and audit commands cannot satisfy executable workflow guards');
 const forbiddenCredentialCommentControl = `${workflow}\n# credentials_json: GCP_SA_KEY; mode=key; skipping the live env audit`;
-assert.equal(/credentials_json:|GCP_SA_KEY|mode=(?:none|key)|skipping the live env audit/i.test(stripExecutableComments(forbiddenCredentialCommentControl)), false,
+assert.equal(/"credentials_json":|GCP_SA_KEY|mode=(?:none|key)|skipping the live env audit/i
+  .test(workflowViewOf(forbiddenCredentialCommentControl).executableDocument), false,
   'an explanatory comment cannot trip the executable forbidden-credential guard');
+const forbiddenShellCommentControl = workflow.replace(
+  '          set -euo pipefail',
+  '          set -euo pipefail\n          # credentials_json: GCP_SA_KEY; mode=key; skipping the live env audit',
+);
+assert.equal(/"credentials_json":|GCP_SA_KEY|mode=(?:none|key)|skipping the live env audit/i
+  .test(workflowViewOf(forbiddenShellCommentControl).executableDocument), false,
+  'an explanatory shell comment inside a run block cannot trip the executable forbidden-credential guard');
 
 const inlineCommentOnlyRequiredMutant = [
   'permissions: # id-token: write',
-  '- uses: # google-github-actions/auth@v2',
-  '  workload_identity_provider: # ${{ secrets.GCP_AUDIT_WIF_PROVIDER }}',
-  '  service_account: # ${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}',
-  '- run: echo skipped # node src/deploy/env-audit.mjs',
+  'jobs:',
+  '  audit:',
+  '    steps:',
+  '      - uses: # google-github-actions/auth@v2',
+  '        with:',
+  '          workload_identity_provider: # ${{ secrets.GCP_AUDIT_WIF_PROVIDER }}',
+  '          service_account: # ${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}',
+  '      - run: echo skipped # node src/deploy/env-audit.mjs',
 ].join('\n');
 const requiredWorkflowTokens = /id-token:\s*write|google-github-actions\/auth@v2|src\/deploy\/env-audit[.]mjs/;
-assert.equal(requiredWorkflowTokens.test(stripExecutableComments(inlineCommentOnlyRequiredMutant)), false,
+const inlineCommentView = workflowViewOf(inlineCommentOnlyRequiredMutant);
+assert.equal(inlineCommentView.permissions['id-token'] === 'write'
+  || hasDedicatedWif(inlineCommentView) || hasEnvironmentAuditCommand(inlineCommentView), false,
   'inline-commented authentication and audit commands cannot satisfy executable workflow guards');
+assert.equal(hasEnvironmentAuditCommand({ ...executable, shell: 'echo node src/deploy/env-audit.mjs' }), false,
+  'mutation: audit-command text passed to echo cannot satisfy the executable env-audit guard');
+assert.equal(hasTrafficAuditCommand({ ...executable, shell: 'echo node src/deploy/cloud-run-traffic.mjs' }), false,
+  'mutation: traffic-helper text passed to echo cannot satisfy the executable traffic guard');
 assert.equal(requiredWorkflowTokens.test(inlineCommentOnlyRequiredMutant.replace(/^\s*#.*$/gm, '')), true,
   'mutation: removing only full-line comments leaves the inline-comment escape reachable');
-const quotedHashControl = stripExecutableComments('env:\n  QUOTED_HASH: "retained # scalar" # removed comment');
-assert.match(quotedHashControl, /retained # scalar/,
-  'a # inside a quoted scalar must remain executable data');
-assert.doesNotMatch(quotedHashControl, /removed comment/,
-  'an inline comment after a quoted scalar must still be removed');
+const scalarImpostorView = workflowViewOf([
+  'name: "id-token: write',
+  '  google-github-actions/auth@v2',
+  '  node src/deploy/env-audit.mjs"',
+  'permissions:',
+  '  contents: read',
+  'jobs:',
+  '  audit:',
+  '    steps: []',
+].join('\n'));
+assert.equal(scalarImpostorView.permissions['id-token'] === 'write'
+  || hasDedicatedWif(scalarImpostorView) || hasEnvironmentAuditCommand(scalarImpostorView), false,
+  'required-looking text inside a multiline YAML scalar cannot satisfy structural workflow guards');
+
+const multilineShell = [
+  'printf "%s" "double quote',
+  '  # retained double" # removed double comment',
+  "printf '%s' 'single quote",
+  "  # retained single' # removed single comment",
+  'printf "%s" "continued \\',
+  '" # removed after continued quote',
+].join('\n');
+assert.equal(multilineShell.split('\n')[4].match(/\\+$/)?.[0].length, 1,
+  'the continuation fixture must exercise one trailing escape crossing a physical newline');
+const strippedMultilineShell = stripShellComments(multilineShell);
+assert.match(strippedMultilineShell, /# retained double/,
+  'a # inside a multiline double-quoted shell scalar must remain data');
+assert.match(strippedMultilineShell, /# retained single/,
+  'a # inside a multiline single-quoted shell scalar must remain data');
+assert.doesNotMatch(strippedMultilineShell, /removed (?:double|single|after)/,
+  'real shell comments after multiline quoted values must be removed');
+const perLineQuoteResetMutant = multilineShell.split('\n').map(stripShellComments).join('\n');
+assert.doesNotMatch(perLineQuoteResetMutant, /# retained (?:double|single)/,
+  'mutation: resetting quote state on each line loses quoted # data');
 
 const names = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8')
   .split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));

@@ -425,7 +425,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    * legend-click handler too, not just the relayout listener that used to
    * be its only caller.
    */
-  const applyContinuumCollapseAtCamera = (camera: any) => {
+  const applyContinuumCollapseAtCamera = async (camera: any): Promise<void> => {
     const metas = continuumMetaRef.current;
     if (!metas.length) return;
     const eye = camera?.eye;
@@ -571,14 +571,27 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         midSize.push(midpointTarget);
       }
     }
-    if (cornerIdx.length) PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);
-    if (midIdx.length) PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx);
+    const restyles: Promise<unknown>[] = [];
+    if (cornerIdx.length) restyles.push(PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx));
+    if (midIdx.length) restyles.push(PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx));
+    await Promise.all(restyles);
   };
 
   /** Spin paused because the visitor took the wheel. Mirrored in a ref so the
    *  animation loop can read it without being torn down and rebuilt. */
   const [spinPaused, setSpinPaused] = useState(false);
   const spinPausedRef = useRef(false);
+  /** Auto-resume mode: the clock time before which the spin may not turn.
+   *  Graph activity pushes it forward; the Resume button zeroes it. */
+  const nextSpinAtRef = useRef(0);
+  /** Update the authoritative auto-resume deadline and its non-sensitive plot
+   *  mirror together, so probes cannot observe a state that diverges from the
+   *  animation loop's actual gate. */
+  const setSpinHoldUntil = (until: number) => {
+    nextSpinAtRef.current = until;
+    const container = containerRef.current;
+    if (container) container.dataset.spinHoldUntil = String(until);
+  };
   /** `rebind` false: the caller is about to set the camera itself and re-binds
    *  AFTER its own relayout (RED-MATH-18/001 — a dragmode relayout issued
    *  before a camera relayout made Plotly re-apply its recorded pose). */
@@ -592,13 +605,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     spinPausedRef.current = false;
     setSpinPaused(false);
     // In auto-resume mode the button is a "skip the wait" shortcut.
-    nextSpinAtRef.current = 0;
+    setSpinHoldUntil(0);
     setSpinWaiting(false);
     spinWaitingRef.current = false;
   };
-  /** Auto-resume mode: the clock time before which the spin may not turn.
-   *  Graph activity pushes it forward; the Resume button zeroes it. */
-  const nextSpinAtRef = useRef(0);
   /** True while the spin is halted awaiting the inactivity countdown — this
    *  is what shows the Resume button in auto-resume mode. Mirrored in a ref
    *  so the rAF loop and event handlers can flip it without re-render races. */
@@ -649,7 +659,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // spin that cannot run and stick for the whole session.
     if (reducedMotion || !idleSpin) return;
     if (spinAutoResumeMs > 0) {
-      nextSpinAtRef.current = performance.now() + spinAutoResumeMs;
+      setSpinHoldUntil(performance.now() + spinAutoResumeMs);
       if (!spinWaitingRef.current) {
         spinWaitingRef.current = true;
         setSpinWaiting(true);
@@ -922,6 +932,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       setSpinPaused(false);
       spinWaitingRef.current = false;
       setSpinWaiting(false);
+      setSpinHoldUntil(0);
       return;
     }
     const Plotly = (window as any).Plotly;
@@ -931,7 +942,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // Every step starts spinning again, which is why spinNonce is a dependency.
     spinPausedRef.current = false;
     setSpinPaused(false);
-    nextSpinAtRef.current = performance.now() + spinDelayMs;
+    setSpinHoldUntil(performance.now() + spinDelayMs);
     spinWaitingRef.current = spinDelayMs > 0;
     setSpinWaiting(spinDelayMs > 0);
 
@@ -1003,7 +1014,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       if (typeof x !== 'number' || !insidePlot(x, y)) return;
       const now = performance.now();
       if (e.type === 'mousemove' && now >= nextSpinAtRef.current) return;
-      nextSpinAtRef.current = now + spinAutoResumeMs;
+      setSpinHoldUntil(now + spinAutoResumeMs);
       if (!spinWaitingRef.current) {
         spinWaitingRef.current = true;
         setSpinWaiting(true);
@@ -1428,7 +1439,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     Plotly.react(plotId, traces, layout, {
       responsive: true,
       displayModeBar: false
-    }).then(() => {
+    }).then(async () => {
       // CodeRabbit (this branch): `Plotly.react` returns a promise; the
       // collapse evaluation now runs after it resolves (not immediately
       // after the call returns), and the `cancelled` guard drops it if a
@@ -1442,7 +1453,19 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // — evaluate once immediately rather than waiting for the next
       // relayout.
       lastContinuumEvalRef.current = performance.now();
-      applyContinuumCollapseAtCamera(cameraRef.current);
+      await applyContinuumCollapseAtCamera(cameraRef.current);
+      // A newer render may supersede this one while its Plotly.restyle work is
+      // pending. Never publish the older render as the completed ready state.
+      if (cancelled) return;
+      // Plot-owned completion signal: unlike React's Run/Pause button state,
+      // this advances only after the corresponding Plotly.react promise has
+      // resolved and this render has issued its camera-aware trace updates.
+      const gdNow = document.getElementById(plotId) as any;
+      if (gdNow) {
+        const previousRevision = Number(gdNow.dataset.plotReactRevision ?? 0);
+        gdNow.dataset.plotReactRevision = String(Number.isFinite(previousRevision) ? previousRevision + 1 : 1);
+        gdNow.dataset.plotReactRunning = String(simState.running);
+      }
     });
 
     // Attach camera listener after Plotly has initialized the element's event system

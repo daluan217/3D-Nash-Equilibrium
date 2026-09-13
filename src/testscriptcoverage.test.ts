@@ -9,6 +9,15 @@
  *   npx tsx src/testscriptcoverage.test.ts
  */
 import { readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { load: loadYaml } = require('js-yaml') as { load: (source: string) => unknown };
+type AnyRecord = Record<string, unknown>;
+
+/** Return an object view only for a non-array mapping. */
+const recordOf = (value: unknown): AnyRecord =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as AnyRecord : {};
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -69,15 +78,17 @@ check('found a plausible number of test files (this repo has 30+)', files.length
 // enough.
 const devFallback = 'src/integration/api-dev-fallback.test.mjs';
 const integrationInvocation = new RegExp(`(?:^|&&\\s*)node\\s+${escapeRegex(devFallback)}(?=\\s*(?:&&|$))`);
-const workflowInvocation = new RegExp(`^\\s*run:\\s*node\\s+${escapeRegex(devFallback)}\\s*$`, 'm');
-const workflowJob = (workflow: string, jobName: string): string => {
-  const lines = workflow.split('\n');
-  const start = lines.findIndex((line) => line === `  ${jobName}:`);
-  if (start < 0) return '';
-  const next = lines.findIndex((line, index) => index > start && /^  [A-Za-z0-9_-]+:\s*$/.test(line));
-  return lines.slice(start, next < 0 ? undefined : next).join('\n');
+const workflowInvocation = new RegExp(`^\\s*node\\s+${escapeRegex(devFallback)}\\s*$`);
+/** Parse one named workflow job and return only its actual step run values. */
+const workflowJobRuns = (workflow: string, jobName: string): string[] => {
+  const document = recordOf(loadYaml(workflow));
+  const job = recordOf(recordOf(document.jobs)[jobName]);
+  const steps = Array.isArray(job.steps) ? job.steps.map(recordOf) : [];
+  return steps.map((step) => step.run).filter((run): run is string => typeof run === 'string');
 };
-const integrationJob = workflowJob(ciWorkflow, 'integration');
+/** Require the exact fallback-test command in an executable integration-job run value. */
+const workflowRunsDevFallback = (workflow: string): boolean =>
+  workflowJobRuns(workflow, 'integration').some((run) => workflowInvocation.test(run));
 check('the dev API fallback behavioral guard runs in npm run test:integration',
   integrationInvocation.test(integrationScript));
 for (const bypass of [' || true', ' --changed-semantics', '; true']) {
@@ -85,13 +96,17 @@ for (const bypass of [' || true', ' --changed-semantics', '; true']) {
     !integrationInvocation.test(`node ${devFallback}${bypass}`));
 }
 check('the dev API fallback behavioral guard runs in the required GitHub integration job',
-  workflowInvocation.test(integrationJob));
-const workflowWithoutDevGuard = integrationJob.replace(workflowInvocation, '        run: echo removed-mutant');
+  workflowRunsDevFallback(ciWorkflow));
+const workflowWithoutDevGuard = ciWorkflow.replace(
+  `run: node ${devFallback}`,
+  'run: echo removed-mutant',
+);
 check('mutation: removing the dev API fallback command from CI is detected',
-  !workflowInvocation.test(workflowWithoutDevGuard));
-const unrelatedJobDecoy = `${workflowWithoutDevGuard}\n  optional-decoy:\n    steps:\n      - name: Decoy outside integration\n        run: node ${devFallback}`;
+  !workflowRunsDevFallback(workflowWithoutDevGuard));
+const unrelatedJobDecoy = `${workflowWithoutDevGuard}\n  optional-decoy: # inline comments cannot hide a job boundary\n    runs-on: ubuntu-latest\n    steps:\n      - name: Decoy outside integration\n        run: node ${devFallback}`;
 check('mutation: the command in a different workflow job cannot satisfy the required integration-job guard',
-  workflowInvocation.test(unrelatedJobDecoy) && !workflowInvocation.test(workflowJob(unrelatedJobDecoy, 'integration')));
+  workflowJobRuns(unrelatedJobDecoy, 'optional-decoy').some((run) => workflowInvocation.test(run))
+  && !workflowRunsDevFallback(unrelatedJobDecoy));
 
 if (failures > 0) { console.error(`✗ test-script coverage: ${failures} failed`); process.exit(1); }
 console.log(`✓ test-script coverage: ${files.length} unit files wired; dev API fallback wired locally and in CI`);

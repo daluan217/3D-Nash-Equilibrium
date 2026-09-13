@@ -2262,15 +2262,24 @@ function testCameraBasisRespectsNonzeroCenter() {
 
 function testSection47UsesActionableRoleAwareLegendChecks() {
   const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+  const plotlyView = readFileSync('src/components/PlotlyView.tsx', 'utf8');
   const start = smoke.indexOf("section('47'");
   const end = smoke.indexOf("section('50'", start);
   const section47 = start >= 0 && end > start ? smoke.slice(start, end) : '';
-  const usesActionableExactLegendTarget = (source: string): boolean =>
-    source.includes("const legendToggle = legendGroup.locator('rect.legendtoggle');")
-    && source.includes('exactTarget: atPoint === target')
-    && source.includes("sameLegendGroup: atPoint?.closest('g.traces') === target.closest('g.traces')")
-    && source.includes('const clickLegendEntry = () => legendToggle.click();')
-    && !source.includes('force: true');
+  const usesActionableExactLegendTarget = (source: string): boolean => {
+    const hidePrepare = source.indexOf('const hideTarget = await prepareLegendClick();');
+    const hideClick = source.indexOf('await clickLegendEntry();', hidePrepare);
+    const pausedPlotGuard = source.indexOf('const redrawsPaused = pauseIssued && runControlVisible && pausedPlotSettled !== null;');
+    const showPrepare = source.indexOf('const showTarget = await prepareLegendClick();', pausedPlotGuard);
+    const showClick = source.indexOf('await clickLegendEntry();', showPrepare);
+    return source.includes("const legendToggle = legendGroup.locator('rect.legendtoggle');")
+      && source.includes('exactTarget: atPoint === target')
+      && source.includes("sameLegendGroup: atPoint?.closest('g.traces') === target.closest('g.traces')")
+      && source.includes('const clickLegendEntry = () => legendToggle.click();')
+      && !source.includes('force: true')
+      && hidePrepare >= 0 && hideClick > hidePrepare
+      && pausedPlotGuard > hideClick && showPrepare > pausedPlotGuard && showClick > showPrepare;
+  };
   ok(usesActionableExactLegendTarget(section47),
     'section 47 must prove and normally click Plotly\'s exact legend hit rectangle');
   const forcedClickMutant = section47.replace('legendToggle.click();', 'legendToggle.click({ force: true });');
@@ -2279,12 +2288,26 @@ function testSection47UsesActionableRoleAwareLegendChecks() {
   const genericSvgHitMutant = section47.replace('exactTarget: atPoint === target', "exactTarget: atPoint?.tagName === 'rect'");
   ok(!usesActionableExactLegendTarget(genericSvgHitMutant),
     'mutation: accepting an arbitrary overlapping SVG rectangle must fail the exact legend-target guard');
+  const orphanedHidePreparationMutant = section47.replace(
+    'const hideTarget = await prepareLegendClick();',
+    'const hideTarget = { ready: true };',
+  );
+  ok(!usesActionableExactLegendTarget(orphanedHidePreparationMutant),
+    'mutation: bypassing the actionable helper at the hide call site must fail the section 47 wiring guard');
+  const orphanedShowPreparationMutant = section47.replace(
+    'const showTarget = await prepareLegendClick();',
+    'const showTarget = { ready: true };',
+  );
+  ok(!usesActionableExactLegendTarget(orphanedShowPreparationMutant),
+    'mutation: bypassing the actionable helper at the show call site must fail the section 47 wiring guard');
 
   const validatesContinuumRoles = (source: string): boolean =>
     source.includes("const midpoints = traces.filter((trace) => trace.role === 'midpoint');")
     && source.includes('midpoints.every((trace) => trace.visible === true)')
     && source.includes("trace.role === 'corner' && trace.visible === 'legendonly'")
-    && source.includes('!continuumGroupIsShown(hiddenMidpointControl)');
+    && source.includes('!continuumGroupIsShown(hiddenMidpointControl)')
+    && source.includes('continuumGroupIsShown(initiallyVisible)')
+    && source.includes('continuumGroupIsShown(visibleAfterShow)');
   ok(validatesContinuumRoles(section47),
     'section 47 must require visible midpoint traces and permit camera-hidden corners only');
   const arbitraryVisibleTraceMutant = section47.replace(
@@ -2293,6 +2316,97 @@ function testSection47UsesActionableRoleAwareLegendChecks() {
   );
   ok(!validatesContinuumRoles(arbitraryVisibleTraceMutant),
     'mutation: allowing any visible continuum trace to mask a hidden midpoint must fail the role-aware guard');
+  const unwiredInitialRoleOracleMutant = section47.replace(
+    'continuumGroupIsShown(initiallyVisible)',
+    'initiallyVisible.some((trace) => trace.visible === true)',
+  );
+  ok(!validatesContinuumRoles(unwiredInitialRoleOracleMutant),
+    'mutation: bypassing the role-aware helper for the initial state must fail the section 47 wiring guard');
+  const unwiredRestoredRoleOracleMutant = section47.replace(
+    'continuumGroupIsShown(visibleAfterShow)',
+    'visibleAfterShow.some((trace) => trace.visible === true)',
+  );
+  ok(!validatesContinuumRoles(unwiredRestoredRoleOracleMutant),
+    'mutation: bypassing the role-aware helper for the restored state must fail the section 47 wiring guard');
+
+  const waitsForStablePausedPlot = (source: string): boolean => {
+    const runVisible = source.indexOf('const runControlVisible =');
+    const revisionAdvance = source.indexOf('current.revision > pauseRenderRevisionBefore', runVisible);
+    const exactPausedRender = source.indexOf("current.running === 'false'", revisionAdvance);
+    const stableSignature = source.indexOf('current.signature === previousPausedPlotState.signature', exactPausedRender);
+    const twoStableReads = source.indexOf('stablePausedPlotReads >= 2', stableSignature);
+    const guard = source.indexOf('pauseIssued && runControlVisible && pausedPlotSettled !== null', twoStableReads);
+    const showPrepare = source.indexOf('const showTarget = await prepareLegendClick();', guard);
+    return runVisible >= 0 && revisionAdvance > runVisible && exactPausedRender > revisionAdvance
+      && stableSignature > exactPausedRender && twoStableReads > stableSignature
+      && guard > twoStableReads && showPrepare > guard;
+  };
+  ok(waitsForStablePausedPlot(section47),
+    'section 47 must await an exact completed paused Plotly revision and stable trace signature before the show hit-test');
+  const stalePausedRevisionMutant = section47.replace(
+    'current.revision > pauseRenderRevisionBefore',
+    'Number.isFinite(current.revision)',
+  );
+  ok(!waitsForStablePausedPlot(stalePausedRevisionMutant),
+    'mutation: accepting a pre-pause Plotly revision must fail the paused-render guard');
+  const firstPausedSignatureMutant = section47.replace('stablePausedPlotReads >= 2', 'stablePausedPlotReads >= 0');
+  ok(!waitsForStablePausedPlot(firstPausedSignatureMutant),
+    'mutation: accepting the first paused trace read must fail the stability guard');
+  const awaitsCameraAwareRestyles = (source: string): boolean => {
+    const fnStart = source.indexOf('const applyContinuumCollapseAtCamera = async (camera: any): Promise<void> => {');
+    const cornerRestyle = source.indexOf("restyles.push(PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx));", fnStart);
+    const midpointRestyle = source.indexOf("restyles.push(PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx));", fnStart);
+    const waitsForBoth = source.indexOf('await Promise.all(restyles);', Math.max(cornerRestyle, midpointRestyle));
+    return fnStart >= 0 && cornerRestyle > fnStart && midpointRestyle > fnStart
+      && waitsForBoth > Math.max(cornerRestyle, midpointRestyle);
+  };
+  ok(awaitsCameraAwareRestyles(plotlyView),
+    'camera-aware collapse must await both visibility and marker-size restyles before reporting completion');
+  const untrackedCornerRestyleMutant = plotlyView.replace(
+    'restyles.push(PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx));',
+    'PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);',
+  );
+  ok(!awaitsCameraAwareRestyles(untrackedCornerRestyleMutant),
+    'mutation: an untracked corner restyle must fail the completed-collapse contract');
+  const publishesCompletedPlotState = (source: string): boolean => {
+    const reactCall = source.indexOf('Plotly.react(plotId, traces, layout');
+    const reactResolved = source.indexOf('}).then(async () => {', reactCall);
+    const initialCancellationGuard = source.indexOf('if (cancelled) return;', reactResolved);
+    const collapseSettled = source.indexOf('await applyContinuumCollapseAtCamera(cameraRef.current);', initialCancellationGuard);
+    const supersededGuard = source.indexOf('if (cancelled) return;', collapseSettled);
+    const revision = source.indexOf('gdNow.dataset.plotReactRevision =', supersededGuard);
+    const running = source.indexOf('gdNow.dataset.plotReactRunning = String(simState.running);', revision);
+    return reactCall >= 0 && reactResolved > reactCall && initialCancellationGuard > reactResolved
+      && collapseSettled > initialCancellationGuard && supersededGuard > collapseSettled
+      && revision > supersededGuard && running > revision;
+  };
+  ok(publishesCompletedPlotState(plotlyView),
+    'PlotlyView must publish revision/running state only from the completed Plotly.react path');
+  const missingPausedStatePublishMutant = plotlyView.replace(
+    'gdNow.dataset.plotReactRunning = String(simState.running);',
+    '/* omit the exact render state */',
+  );
+  ok(!publishesCompletedPlotState(missingPausedStatePublishMutant),
+    'mutation: omitting the completed render state must fail the section 47 app-state contract');
+  const unawaitedCollapseMutant = plotlyView.replace(
+    'await applyContinuumCollapseAtCamera(cameraRef.current);',
+    'applyContinuumCollapseAtCamera(cameraRef.current);',
+  );
+  ok(!publishesCompletedPlotState(unawaitedCollapseMutant),
+    'mutation: publishing while camera-aware restyles are still pending must fail the completed-render guard');
+  const missingPostRestyleCancellationMutant = plotlyView.replace(
+    'await applyContinuumCollapseAtCamera(cameraRef.current);\n      // A newer render may supersede this one while its Plotly.restyle work is\n      // pending. Never publish the older render as the completed ready state.\n      if (cancelled) return;',
+    'await applyContinuumCollapseAtCamera(cameraRef.current);',
+  );
+  ok(!publishesCompletedPlotState(missingPostRestyleCancellationMutant),
+    'mutation: publishing a superseded render after awaited restyles must fail the completion guard');
+  const prematurePausedStatePublishMutant = plotlyView
+    .replace('gdNow.dataset.plotReactRevision = String(Number.isFinite(previousRevision) ? previousRevision + 1 : 1);',
+      '/* revision publication moved before Plotly.react resolves */')
+    .replace('Plotly.react(plotId, traces, layout, {',
+      'gdNow.dataset.plotReactRevision = "premature";\n    Plotly.react(plotId, traces, layout, {');
+  ok(!publishesCompletedPlotState(prematurePausedStatePublishMutant),
+    'mutation: publishing readiness before Plotly.react resolves must fail the completed-render guard');
 }
 
 function testSection62DrivesItsDefaultCameraControl() {
@@ -2385,13 +2499,19 @@ function testSection62DrivesItsDefaultCameraControl() {
     'mutation: accepting the control midpoint before its post-react decision must fail the control-readiness guard');
   const reArmsControlSpinHold = (source: string): boolean => {
     const controlReady = source.indexOf("record('precondition: the control fixture");
+    const deadlineBefore = source.indexOf("plot.getAttribute('data-spin-hold-until')", controlReady);
     const hitTestsControlPress = source.indexOf("const controlHitTag = await p.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName ?? null", controlReady);
     const realControlPress = source.indexOf("if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);", hitTestsControlPress);
-    const confirmsAppHold = source.indexOf("p.getByRole('button', { name: /resume spinning/i })", realControlPress);
-    const recordsControlHold = source.indexOf("controlHitTag === 'CANVAS' && controlHoldActive", confirmsAppHold);
+    const readsAppDeadline = source.indexOf("dataset?.spinHoldUntil", realControlPress);
+    const confirmsNewDeadline = source.indexOf('holdUntil > beforeHoldUntil', readsAppDeadline);
+    const confirmsFutureDeadline = source.indexOf('holdUntil - performance.now()', readsAppDeadline);
+    const recordsControlHold = source.indexOf('controlHoldState !== null', readsAppDeadline);
     const finalFusingMove = source.lastIndexOf('await setEye(FUSING_EYE);');
-    return controlReady >= 0 && hitTestsControlPress > controlReady && realControlPress > hitTestsControlPress
-      && confirmsAppHold > realControlPress && recordsControlHold > confirmsAppHold
+    return controlReady >= 0 && deadlineBefore > controlReady
+      && hitTestsControlPress > deadlineBefore && realControlPress > hitTestsControlPress
+      && readsAppDeadline > realControlPress && confirmsNewDeadline > readsAppDeadline
+      && confirmsFutureDeadline > readsAppDeadline
+      && recordsControlHold > Math.max(confirmsNewDeadline, confirmsFutureDeadline)
       && finalFusingMove > recordsControlHold;
   };
   ok(reArmsControlSpinHold(section62),
@@ -2402,6 +2522,26 @@ function testSection62DrivesItsDefaultCameraControl() {
   );
   ok(!reArmsControlSpinHold(expiredControlHoldMutant),
     'mutation: relying on the expired initial inactivity hold must fail the final-control synchronization guard');
+  const labelOnlyControlHoldMutant = section62.replace(
+    "plot.getAttribute('data-spin-hold-until')",
+    "p.getByRole('button', { name: /resume spinning/i }).isVisible()",
+  );
+  ok(!reArmsControlSpinHold(labelOnlyControlHoldMutant),
+    'mutation: an already-visible Resume label must not satisfy the renewed app-deadline guard');
+  const mirrorsEverySpinDeadlineWrite = (source: string): boolean =>
+    source.includes('const setSpinHoldUntil = (until: number) => {')
+    && source.includes('nextSpinAtRef.current = until;')
+    && source.includes('container.dataset.spinHoldUntil = String(until);')
+    && (source.match(/nextSpinAtRef[.]current\s*=/g) ?? []).length === 1
+    && source.includes('setSpinHoldUntil(now + spinAutoResumeMs);');
+  ok(mirrorsEverySpinDeadlineWrite(plotlyView),
+    'every idle-spin deadline write must update the authoritative ref and observable through one helper');
+  const unmirroredActivityDeadlineMutant = plotlyView.replace(
+    'setSpinHoldUntil(now + spinAutoResumeMs);',
+    'nextSpinAtRef.current = now + spinAutoResumeMs;',
+  );
+  ok(!mirrorsEverySpinDeadlineWrite(unmirroredActivityDeadlineMutant),
+    'mutation: renewing the input deadline without its plot-state mirror must fail the observable-state guard');
   const couplesBurstToRealEvent = (source: string): boolean =>
     source.includes("gd?.on?.('plotly_relayout', onRelayout);")
     && source.includes('cameraMatrixKey() !== beforeBurstMatrixKey')
