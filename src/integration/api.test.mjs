@@ -101,7 +101,9 @@ try {
     // smoke check and can hide a missing route.
     const unknown = await call('GET', '/api/scenarios');
     record('unknown API path is a JSON 404, not the SPA index',
-      unknown.status === 404 && unknown.json?.error === 'Not found',
+      unknown.status === 404
+        && unknown.headers.get('content-type')?.includes('application/json')
+        && unknown.json?.error === 'Not found',
       `status=${unknown.status} content-type=${unknown.headers.get('content-type')}`);
   }
 
