@@ -40,23 +40,40 @@ if (/gcloud\s+run\s+(?:services|revisions)\s+(?:describe|list)|--format(?:=|\s)/
 }
 const serviceFields = /^\s*SERVICE_FIELDS:\s*(\S+)\s*$/m.exec(workflow)?.[1]?.split(',') ?? [];
 const revisionFields = /^\s*REVISION_FIELDS:\s*(\S+)\s*$/m.exec(workflow)?.[1]?.split(',') ?? [];
-const allFields = [...serviceFields, ...revisionFields];
-if (allFields.length === 0 || allFields.some((field) => field.split('.').includes('value'))) {
-  fail('server-side response masks must never request the EnvVar.value payload field');
-}
-for (const required of [
+const allowedServiceFields = new Set([
   'template.containers.env.name',
   'template.containers.env.valueSource.secretKeyRef',
+  'traffic.type',
+  'traffic.revision',
+  'traffic.percent',
   'trafficStatuses.type',
   'trafficStatuses.revision',
   'trafficStatuses.percent',
   'latestReadyRevision',
-]) {
-  if (!serviceFields.includes(required)) fail(`SERVICE_FIELDS omits required safe metadata field ${required}`);
+]);
+const allowedRevisionFields = new Set([
+  'containers.env.name',
+  'containers.env.valueSource.secretKeyRef',
+]);
+const isExactSafeMask = (fields: string[], allowed: Set<string>): boolean =>
+  fields.length === allowed.size
+  && new Set(fields).size === fields.length
+  && fields.every((field) => allowed.has(field));
+if (!isExactSafeMask(serviceFields, allowedServiceFields)
+    || !isExactSafeMask(revisionFields, allowedRevisionFields)) {
+  fail('server-side response masks must contain exactly the reviewed safe leaf fields');
 }
-for (const required of ['containers.env.name', 'containers.env.valueSource.secretKeyRef']) {
-  if (!revisionFields.includes(required)) fail(`REVISION_FIELDS omits required safe metadata field ${required}`);
-}
+// Parent paths select whole nested objects under Google partial-response
+// semantics. Prove the allowlist rejects that credential-exposure shape, as
+// well as an unreviewed leaf and a duplicate that could mask an omission.
+assert.equal(isExactSafeMask(
+  serviceFields.map((field) => field === 'template.containers.env.name' ? 'template.containers.env' : field),
+  allowedServiceFields,
+), false, 'a broad EnvVar parent mask must be rejected');
+assert.equal(isExactSafeMask([...revisionFields, 'containers.env.value'], allowedRevisionFields), false,
+  'an unreviewed payload leaf must be rejected');
+assert.equal(isExactSafeMask([...serviceFields.slice(1), serviceFields[1]], allowedServiceFields), false,
+  'a duplicate field cannot hide an omitted reviewed field');
 if (!/RUN_API:\s*https:\/\/run[.]googleapis[.]com\/v2/.test(workflow)
     || !/--data-urlencode\s+"fields=\$fields"/.test(workflow)
     || !/src\/deploy\/cloud-run-traffic[.]mjs/.test(workflow)) {

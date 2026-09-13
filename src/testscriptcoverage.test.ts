@@ -68,7 +68,7 @@ check('found a plausible number of test files (this repo has 30+)', files.length
 // command and CI's required `integration` job; a filename in prose is not
 // enough.
 const devFallback = 'src/integration/api-dev-fallback.test.mjs';
-const integrationInvocation = new RegExp(`(?:^|&&\\s*)node\\s+${escapeRegex(devFallback)}(?=\\s|$)`);
+const integrationInvocation = new RegExp(`(?:^|&&\\s*)node\\s+${escapeRegex(devFallback)}(?=\\s*(?:&&|$))`);
 const workflowInvocation = new RegExp(`^\\s*run:\\s*node\\s+${escapeRegex(devFallback)}\\s*$`, 'm');
 const workflowJob = (workflow: string, jobName: string): string => {
   const lines = workflow.split('\n');
@@ -80,6 +80,10 @@ const workflowJob = (workflow: string, jobName: string): string => {
 const integrationJob = workflowJob(ciWorkflow, 'integration');
 check('the dev API fallback behavioral guard runs in npm run test:integration',
   integrationInvocation.test(integrationScript));
+for (const bypass of [' || true', ' --changed-semantics', '; true']) {
+  check(`mutation: appending ${JSON.stringify(bypass)} cannot masquerade as the required local command`,
+    !integrationInvocation.test(`node ${devFallback}${bypass}`));
+}
 check('the dev API fallback behavioral guard runs in the required GitHub integration job',
   workflowInvocation.test(integrationJob));
 const workflowWithoutDevGuard = integrationJob.replace(workflowInvocation, '        run: echo removed-mutant');
