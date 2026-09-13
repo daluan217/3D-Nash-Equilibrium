@@ -13,7 +13,39 @@ const workflow = readFileSync('.github/workflows/cloud-env-audit.yml', 'utf8');
 // Contract assertions describe executable YAML, never prose. A commented-out
 // credential block must not satisfy a required check, and an explanatory
 // warning must not trip a forbidden-credential check.
-const executable = workflow.replace(/^\s*#.*$/gm, '');
+/**
+ * Remove YAML/shell comments without treating a # inside a quoted scalar as
+ * a comment. YAML comments begin at an unquoted # preceded by whitespace (or
+ * at the start of a line); doubled single quotes and backslash-escaped double
+ * quotes remain inside their scalar.
+ */
+function stripExecutableComments(source: string): string {
+  return source.split('\n').map((line) => {
+    let inSingle = false;
+    let inDouble = false;
+    let doubleEscape = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (inDouble) {
+        if (doubleEscape) { doubleEscape = false; continue; }
+        if (char === '\\') { doubleEscape = true; continue; }
+        if (char === '"') inDouble = false;
+        continue;
+      }
+      if (inSingle) {
+        if (char === "'" && line[i + 1] === "'") { i++; continue; }
+        if (char === "'") inSingle = false;
+        continue;
+      }
+      if (char === '"') { inDouble = true; continue; }
+      if (char === "'") { inSingle = true; continue; }
+      if (char === '#' && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i).trimEnd();
+    }
+    return line;
+  }).join('\n');
+}
+
+const executable = stripExecutableComments(workflow);
 
 /** Report a cloud environment audit contract violation and terminate the test. */
 function fail(message: string): never {
@@ -93,13 +125,31 @@ const commentOnlyRequiredMutant = [
   '# workload_identity_provider: ${{ secrets.GCP_AUDIT_WIF_PROVIDER }}',
   '# service_account: ${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}',
   '# node src/deploy/env-audit.mjs',
-].join('\n').replace(/^\s*#.*$/gm, '');
-assert.equal(/id-token:\s*write|google-github-actions\/auth@v2|src\/deploy\/env-audit[.]mjs/.test(commentOnlyRequiredMutant), false,
+].join('\n');
+const strippedCommentOnlyRequiredMutant = stripExecutableComments(commentOnlyRequiredMutant);
+assert.equal(/id-token:\s*write|google-github-actions\/auth@v2|src\/deploy\/env-audit[.]mjs/.test(strippedCommentOnlyRequiredMutant), false,
   'commented-out authentication and audit commands cannot satisfy executable workflow guards');
-const forbiddenCredentialCommentControl = `${workflow}\n# credentials_json: GCP_SA_KEY; mode=key; skipping the live env audit`
-  .replace(/^\s*#.*$/gm, '');
-assert.equal(/credentials_json:|GCP_SA_KEY|mode=(?:none|key)|skipping the live env audit/i.test(forbiddenCredentialCommentControl), false,
+const forbiddenCredentialCommentControl = `${workflow}\n# credentials_json: GCP_SA_KEY; mode=key; skipping the live env audit`;
+assert.equal(/credentials_json:|GCP_SA_KEY|mode=(?:none|key)|skipping the live env audit/i.test(stripExecutableComments(forbiddenCredentialCommentControl)), false,
   'an explanatory comment cannot trip the executable forbidden-credential guard');
+
+const inlineCommentOnlyRequiredMutant = [
+  'permissions: # id-token: write',
+  '- uses: # google-github-actions/auth@v2',
+  '  workload_identity_provider: # ${{ secrets.GCP_AUDIT_WIF_PROVIDER }}',
+  '  service_account: # ${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}',
+  '- run: echo skipped # node src/deploy/env-audit.mjs',
+].join('\n');
+const requiredWorkflowTokens = /id-token:\s*write|google-github-actions\/auth@v2|src\/deploy\/env-audit[.]mjs/;
+assert.equal(requiredWorkflowTokens.test(stripExecutableComments(inlineCommentOnlyRequiredMutant)), false,
+  'inline-commented authentication and audit commands cannot satisfy executable workflow guards');
+assert.equal(requiredWorkflowTokens.test(inlineCommentOnlyRequiredMutant.replace(/^\s*#.*$/gm, '')), true,
+  'mutation: removing only full-line comments leaves the inline-comment escape reachable');
+const quotedHashControl = stripExecutableComments('env:\n  QUOTED_HASH: "retained # scalar" # removed comment');
+assert.match(quotedHashControl, /retained # scalar/,
+  'a # inside a quoted scalar must remain executable data');
+assert.doesNotMatch(quotedHashControl, /removed comment/,
+  'an inline comment after a quoted scalar must still be removed');
 
 const names = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8')
   .split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));

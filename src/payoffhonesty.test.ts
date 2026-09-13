@@ -2383,6 +2383,25 @@ function testSection62DrivesItsDefaultCameraControl() {
   );
   ok(!waitsForControlReact(eagerControlDataMutant),
     'mutation: accepting the control midpoint before its post-react decision must fail the control-readiness guard');
+  const reArmsControlSpinHold = (source: string): boolean => {
+    const controlReady = source.indexOf("record('precondition: the control fixture");
+    const hitTestsControlPress = source.indexOf("const controlHitTag = await p.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName ?? null", controlReady);
+    const realControlPress = source.indexOf("if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);", hitTestsControlPress);
+    const confirmsAppHold = source.indexOf("p.getByRole('button', { name: /resume spinning/i })", realControlPress);
+    const recordsControlHold = source.indexOf("controlHitTag === 'CANVAS' && controlHoldActive", confirmsAppHold);
+    const finalFusingMove = source.lastIndexOf('await setEye(FUSING_EYE);');
+    return controlReady >= 0 && hitTestsControlPress > controlReady && realControlPress > hitTestsControlPress
+      && confirmsAppHold > realControlPress && recordsControlHold > confirmsAppHold
+      && finalFusingMove > recordsControlHold;
+  };
+  ok(reArmsControlSpinHold(section62),
+    'section 62 must re-arm the real idle-spin inactivity hold before its final rendered-camera control');
+  const expiredControlHoldMutant = section62.replace(
+    "if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);",
+    '/* trust the inactivity hold from the start of this long section */',
+  );
+  ok(!reArmsControlSpinHold(expiredControlHoldMutant),
+    'mutation: relying on the expired initial inactivity hold must fail the final-control synchronization guard');
   const couplesBurstToRealEvent = (source: string): boolean =>
     source.includes("gd?.on?.('plotly_relayout', onRelayout);")
     && source.includes('cameraMatrixKey() !== beforeBurstMatrixKey')

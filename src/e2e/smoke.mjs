@@ -4780,6 +4780,27 @@ try {
       record('control: a full-length segment keeps corners visible at the default camera',
         fullAtDefault.filter((t) => t.role === 'corner').length === 2 && fullAtDefault.filter((t) => t.role === 'corner').every((t) => t.visible === true),
         JSON.stringify(fullAtDefault));
+
+      // This page uses the visitor-facing 10 s auto-resume mode, not a
+      // permanent pause. On a slower runner, the real plot press near the
+      // start of this section can legitimately age out while the fixture is
+      // redrawn and the throttle oracle runs. Re-arm the SAME inactivity
+      // hold with another real, hit-tested plot press immediately before the
+      // final camera control; otherwise a resumed idle-spin frame can keep
+      // changing WebGL matrices while moveToRenderedEye is correctly waiting
+      // for them to settle. The Resume control is the app's own state signal
+      // that the press actually entered the hold.
+      await plot.scrollIntoViewIfNeeded();
+      const controlPlotBox = await plot.boundingBox();
+      const controlCx = controlPlotBox ? controlPlotBox.x + controlPlotBox.width / 2 : -1;
+      const controlCy = controlPlotBox ? controlPlotBox.y + controlPlotBox.height / 2 : -1;
+      const controlHitTag = await p.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName ?? null,
+        { x: controlCx, y: controlCy });
+      if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);
+      const controlHoldActive = await p.getByRole('button', { name: /resume spinning/i })
+        .waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      record('precondition: the final control camera move re-arms the idle-spin inactivity hold with a real plot press',
+        controlHitTag === 'CANVAS' && controlHoldActive, JSON.stringify({ controlPlotBox, controlHitTag, controlHoldActive }));
       await setEye(FUSING_EYE);
       await p.waitForFunction((want) => {
         const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;
