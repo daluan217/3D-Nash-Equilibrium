@@ -116,26 +116,46 @@ function logicalShellLines(shell: string): string[] {
   return shell.replace(/\\\n[ \t]*/g, ' ').split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
-/** A required helper must begin a command line or a real pipeline stage. Text
- * after `||`, `&&`, `;`, `echo`, or another argv token is not unconditional. */
-function hasUnconditionalPipelineCommand(view: WorkflowView, command: RegExp): boolean {
+/** A required helper must begin a command line or a real pipeline stage, and
+ * its trailing shell control must be one of the explicitly reviewed forms.
+ * Text after `||`, `&&`, `;`, `echo`, or another argv token is not
+ * unconditional; a success-masking suffix such as `|| true` is not safe. */
+function hasUnconditionalPipelineCommand(
+  view: WorkflowView,
+  command: RegExp,
+  allowedSuffix: RegExp,
+): boolean {
   return logicalShellLines(view.shell).some((line) => {
     const match = command.exec(line);
     if (!match) return false;
     const before = line.slice(0, match.index).trimEnd();
     if (/(?:&&|\|\||;)/.test(before)) return false;
-    return before === '' || /(^|[^|])\|$/.test(before);
+    if (before !== '' && !/(^|[^|])\|$/.test(before)) return false;
+    return allowedSuffix.test(line.slice(match.index + match[0].length).trim());
   });
 }
 
 /** Require the reviewed manifest audit as an executable shell command. */
 function hasEnvironmentAuditCommand(view: WorkflowView): boolean {
-  return hasUnconditionalPipelineCommand(view, /\bnode[ \t]+src\/deploy\/env-audit[.]mjs(?=$|[\s|;&)])/);
+  return hasUnconditionalPipelineCommand(
+    view,
+    /\bnode[ \t]+src\/deploy\/env-audit[.]mjs(?=$|[\s|;&)])/,
+    /^(?:\|\|\s*rc=1)?$/,
+  );
 }
 
-/** Require the reviewed traffic helper as an executable shell command. */
+/** Require the traffic helper inside its fail-closed command substitution. */
 function hasTrafficAuditCommand(view: WorkflowView): boolean {
-  return hasUnconditionalPipelineCommand(view, /\bnode[ \t]+src\/deploy\/cloud-run-traffic[.]mjs(?=$|[\s|;&)])/);
+  const lines = logicalShellLines(view.shell);
+  return lines.some((line, index) =>
+    /^if\s+!\s+revisions=\$\(/.test(line)
+    && hasUnconditionalPipelineCommand(
+      { ...view, shell: line },
+      /\bnode[ \t]+src\/deploy\/cloud-run-traffic[.]mjs(?=$|[\s|;&)])/,
+      /^\);\s*then$/,
+    )
+    && lines[index + 1] === 'exit 1'
+    && lines[index + 2] === 'fi');
 }
 
 /** Require the fields mask on the same simple curl command as the Cloud Run
@@ -269,6 +289,26 @@ assert.equal(hasEnvironmentAuditCommand({ ...executable, shell: 'exit 0; node sr
   'mutation: an env-audit command made unreachable by exit 0; cannot satisfy the executable guard');
 assert.equal(hasTrafficAuditCommand({ ...executable, shell: 'true || node src/deploy/cloud-run-traffic.mjs' }), false,
   'mutation: a traffic helper skipped behind true || cannot satisfy the executable guard');
+assert.equal(hasEnvironmentAuditCommand({
+  ...executable,
+  shell: "printf '%s' \"$service_metadata\" | node src/deploy/env-audit.mjs || rc=1",
+}), true, 'control: the environment audit may preserve its reviewed aggregate-failure handler');
+assert.equal(hasEnvironmentAuditCommand({
+  ...executable,
+  shell: "printf '%s' \"$service_metadata\" | node src/deploy/env-audit.mjs || true",
+}), false, 'mutation: a trailing || true cannot mask an environment-audit failure');
+assert.equal(hasTrafficAuditCommand({
+  ...executable,
+  shell: [
+    "if ! revisions=$(printf '%s' \"$service_metadata\" | node src/deploy/cloud-run-traffic.mjs || true); then",
+    'exit 1',
+    'fi',
+  ].join('\n'),
+}), false, 'mutation: a trailing || true cannot mask a traffic-helper failure');
+assert.equal(hasTrafficAuditCommand({
+  ...executable,
+  shell: "revisions=$(printf '%s' \"$service_metadata\" | node src/deploy/cloud-run-traffic.mjs)",
+}), false, 'mutation: the traffic helper must retain its explicit if-not/exit failure path');
 assert.equal(hasServerMaskedCloudRunRequest({
   ...executable,
   shell: 'curl --get "$RUN_API/$resource"\necho --data-urlencode "fields=$fields"',

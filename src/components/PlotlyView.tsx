@@ -392,6 +392,15 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    *  queue. The generation is advanced before each render is enqueued, so an
    *  older operation can finish but cannot mutate or publish newer traces. */
   const plotMutationQueueRef = useRef<PlotMutationQueue>({ current: Promise.resolve(), pending: 0 });
+  /** Plot-owned completion token for user legend operations. Browser probes
+   *  wait for the exact number of queued clicks to settle before inspecting
+   *  Plotly's resolved trace visibility. */
+  const plotLegendMutationRevisionRef = useRef(0);
+  const markLegendMutationSettled = () => {
+    const revision = ++plotLegendMutationRevisionRef.current;
+    const gd = document.getElementById(plotId) as any;
+    if (gd) gd.dataset.plotLegendMutationRevision = String(revision);
+  };
   const plotRenderGenerationRef = useRef(0);
   const queuedRenderGenerationRef = useRef(0);
   /** Camera relayouts can arrive every frame. Keep only their latest collapse
@@ -1696,7 +1705,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
                 legendVisibilityIntentRef.current.delete('continuumNE');
               }
             }
-          });
+          }).finally(markLegendMutationSettled);
           return false; // we handled the WHOLE continuumNE toggle ourselves
         }
         const clickedName = clicked?.name ?? '';
@@ -1734,7 +1743,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
               legendVisibilityIntentRef.current.delete(intentKey);
             }
           }
-        });
+        }).finally(markLegendMutationSettled);
         return false; // suppress Plotly's out-of-queue default
       });
     }

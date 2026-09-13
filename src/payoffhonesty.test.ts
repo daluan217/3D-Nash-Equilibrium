@@ -2331,9 +2331,17 @@ function testSection47UsesActionableRoleAwareLegendChecks() {
     'mutation: bypassing the role-aware helper for the restored state must fail the section 47 wiring guard');
 
   const exercisesRapidQueuedLegendToggles = (source: string): boolean =>
-    source.includes('await clickLegendEntry();\n    await clickLegendEntry();')
+    source.includes('const legendMutationRevision = () => lp.evaluate(() =>')
+    && source.includes('const waitForLegendMutations = (before, count) => lp.waitForFunction')
+    && source.includes('revision >= start + expected')
+    && source.includes('await clickLegendEntry();\n    await clickLegendEntry();')
+    && source.includes('await waitForLegendMutations(continuumLegendRevisionBefore, 2)')
+    && source.includes('continuumLegendMutationsSettled && continuumGroupIsShown(continuumAfterRapidDoubleClick)')
     && source.includes('two rapid continuum legend clicks cancel instead of repeating the first queued toggle')
     && source.includes('await ordinaryLegendToggle.click();\n    await ordinaryLegendToggle.click();')
+    && source.includes('await waitForLegendMutations(ordinaryLegendRevisionBefore, 2)')
+    && source.includes('ordinaryLegendMutationsSettled && ordinaryGroupShown')
+    && source.includes("ts.every((t) => t.visible === undefined || t.visible === true)")
     && source.includes('two rapid ordinary legend clicks cancel instead of repeating the first queued toggle');
   ok(exercisesRapidQueuedLegendToggles(section47),
     'section 47 must behaviorally double-click both continuum and ordinary queued legend paths');
@@ -2349,6 +2357,18 @@ function testSection47UsesActionableRoleAwareLegendChecks() {
   );
   ok(!exercisesRapidQueuedLegendToggles(singleOrdinaryClickMutant),
     'mutation: dropping the second rapid ordinary click must fail the queued-toggle control guard');
+  const unawaitedLegendQueueMutant = section47.replace(
+    'await waitForLegendMutations(continuumLegendRevisionBefore, 2)',
+    'Promise.resolve(true)',
+  );
+  ok(!exercisesRapidQueuedLegendToggles(unawaitedLegendQueueMutant),
+    'mutation: reading continuum trace state without its two-operation completion boundary must fail');
+  const omittedVisibilityMutant = section47.replace(
+    'ts.every((t) => t.visible === undefined || t.visible === true)',
+    'ts.some((t) => t.visible === true)',
+  );
+  ok(!exercisesRapidQueuedLegendToggles(omittedVisibilityMutant),
+    'mutation: ordinary traces with omitted visible state must count as shown');
 
   const wiresNaturalStopControlIntoCi = (source: string): boolean =>
     source.includes('- name: Exercise section 47 after natural simulation completion')
@@ -2487,13 +2507,20 @@ function testSection47UsesActionableRoleAwareLegendChecks() {
     const legendHandler = source.indexOf("el2.on('plotly_legendclick'");
     const continuumLegendQueue = source.indexOf('void enqueuePlotMutation(plotMutationQueueRef.current, async () => {', legendHandler);
     const genericLegendQueue = source.indexOf('void enqueuePlotMutation(plotMutationQueueRef.current, async () => {', continuumLegendQueue + 1);
+    const completionPublisher = source.indexOf('const markLegendMutationSettled = () => {');
+    const completionRevision = source.indexOf('gd.dataset.plotLegendMutationRevision = String(revision);', completionPublisher);
+    const continuumLegendCompletion = source.indexOf('}).finally(markLegendMutationSettled);', continuumLegendQueue);
+    const genericLegendCompletion = source.indexOf('}).finally(markLegendMutationSettled);', genericLegendQueue);
     const handlerEnd = source.indexOf("return false; // suppress Plotly's out-of-queue default", genericLegendQueue);
     return /import\s*\{[^}]*\benqueuePlotMutation\b[^}]*\}\s*from '\.\.\/utils\/plotMutationQueue';/.test(source)
       && source.includes('const plotMutationQueueRef = useRef<PlotMutationQueue>({ current: Promise.resolve(), pending: 0 });')
       && coalescer >= 0 && onePendingTask > coalescer && queuedCamera > onePendingTask
       && metadataMissing > queuedCamera && queuedGenerationBound > metadataMissing
       && legendHandler >= 0 && continuumLegendQueue > legendHandler
-      && genericLegendQueue > continuumLegendQueue && handlerEnd > genericLegendQueue
+      && genericLegendQueue > continuumLegendQueue
+      && completionPublisher >= 0 && completionRevision > completionPublisher
+      && continuumLegendCompletion > continuumLegendQueue && continuumLegendCompletion < genericLegendQueue
+      && genericLegendCompletion > genericLegendQueue && handlerEnd > genericLegendCompletion
       && !source.includes("return true; // Plotly's own group toggle")
       && !source.includes('(window as any).Plotly?.restyle');
   };
@@ -2505,6 +2532,12 @@ function testSection47UsesActionableRoleAwareLegendChecks() {
   );
   ok(!serializesEveryAppOwnedTraceWrite(unqueuedLegendMutant),
     'mutation: moving the continuum legend restyle outside the Plotly mutation queue must fail the serialization contract');
+  const unpublishedLegendCompletionMutant = plotlyView.replace(
+    '}).finally(markLegendMutationSettled);',
+    '});',
+  );
+  ok(!serializesEveryAppOwnedTraceWrite(unpublishedLegendCompletionMutant),
+    'mutation: a queued legend operation without a plot-owned completion token must fail the queue contract');
   const uncoalescedCameraMutant = plotlyView.replace(
     '    if (continuumEvaluationTaskRef.current) return continuumEvaluationTaskRef.current;\n',
     '',

@@ -3650,11 +3650,19 @@ try {
       return last;
     };
     const clickLegendEntry = () => legendToggle.click();
+    const legendMutationRevision = () => lp.evaluate(() =>
+      Number(document.querySelector('.js-plotly-plot')?.dataset?.plotLegendMutationRevision ?? 0));
+    const waitForLegendMutations = (before, count) => lp.waitForFunction(({ start, expected }) => {
+      const revision = Number(document.querySelector('.js-plotly-plot')?.dataset?.plotLegendMutationRevision ?? 0);
+      return Number.isFinite(revision) && revision >= start + expected;
+    }, { start: before, expected: count }, { timeout: 8000 }).then(() => true).catch(() => false);
     const hideTarget = await prepareLegendClick();
     record('precondition: the hide click reaches the continuum legend entry',
       hideTarget.ready, JSON.stringify(hideTarget));
+    const hideLegendRevisionBefore = await legendMutationRevision();
     await clickLegendEntry();
-    const hidden = await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.length > 0 && ts.every((t) => t.visible === 'legendonly'); }, null, { timeout: 8000 }).then(() => true).catch(() => false);
+    const hideLegendMutationSettled = await waitForLegendMutations(hideLegendRevisionBefore, 1);
+    const hidden = hideLegendMutationSettled && await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.length > 0 && ts.every((t) => t.visible === 'legendonly'); }, null, { timeout: 8000 }).then(() => true).catch(() => false);
     record('the legend click hides the whole continuum group', hidden, JSON.stringify(await continuumTraceState()));
     // A real simulation redraw: Run, wait until the sphere has moved in Plotly's resolved data.
     const p0 = await spherePos();
@@ -3724,38 +3732,44 @@ try {
     const showTarget = await prepareLegendClick();
     record('precondition: the show click reaches the continuum legend entry after the redraw',
       showTarget.ready, JSON.stringify(showTarget));
+    const showLegendRevisionBefore = await legendMutationRevision();
     await clickLegendEntry();
-    await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.some((t) => t.visible === undefined || t.visible === true); }, null, { timeout: 8000 }).catch(() => {});
+    const showLegendMutationSettled = await waitForLegendMutations(showLegendRevisionBefore, 1);
     const visibleAfterShow = await continuumTraceState();
     record('a second click shows the group again (camera collapse may keep only fusing corners hidden)',
-      continuumGroupIsShown(visibleAfterShow), JSON.stringify(visibleAfterShow));
+      showLegendMutationSettled && continuumGroupIsShown(visibleAfterShow),
+      JSON.stringify({ showLegendMutationSettled, visibleAfterShow }));
 
     // Queue control: two quick clicks must cancel each other even though the
     // first asynchronous restyle may not have updated Plotly's live data when
     // the second click arrives. Exercise both the special continuum path and
-    // an ordinary legend path.
+    // an ordinary legend path. The plot-owned completion revision advances
+    // only when one app-owned queued legend mutation settles, so two advances
+    // are the exact post-click boundary before inspecting resolved trace data.
+    const continuumLegendRevisionBefore = await legendMutationRevision();
     await clickLegendEntry();
     await clickLegendEntry();
-    await lp.waitForFunction(() => {
-      const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? [])
-        .filter((t) => t.legendgroup === 'continuumNE');
-      return ts.some((t) => t.meta?.continuumRole === 'midpoint' && (t.visible === undefined || t.visible === true));
-    }, null, { timeout: 8000 }).catch(() => {});
+    const continuumLegendMutationsSettled = await waitForLegendMutations(continuumLegendRevisionBefore, 2);
     const continuumAfterRapidDoubleClick = await continuumTraceState();
     record('two rapid continuum legend clicks cancel instead of repeating the first queued toggle',
-      continuumGroupIsShown(continuumAfterRapidDoubleClick), JSON.stringify(continuumAfterRapidDoubleClick));
+      continuumLegendMutationsSettled && continuumGroupIsShown(continuumAfterRapidDoubleClick),
+      JSON.stringify({ continuumLegendMutationsSettled, continuumAfterRapidDoubleClick }));
 
     const ordinaryLegendToggle = lp.locator('g.traces', {
       has: lp.locator('text.legendtext', { hasText: /A Moves/ }),
     }).first().locator('rect.legendtoggle');
+    const ordinaryLegendRevisionBefore = await legendMutationRevision();
     await ordinaryLegendToggle.click();
     await ordinaryLegendToggle.click();
-    const ordinaryGroupShown = await lp.waitForFunction(() => {
+    const ordinaryLegendMutationsSettled = await waitForLegendMutations(ordinaryLegendRevisionBefore, 2);
+    const ordinaryGroupShown = await lp.evaluate(() => {
       const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? [])
         .filter((trace) => trace.legendgroup === 'amoves');
       return ts.length >= 2 && ts.every((t) => t.visible === undefined || t.visible === true);
-    }, null, { timeout: 8000 }).then(() => true).catch(() => false);
-    record('two rapid ordinary legend clicks cancel instead of repeating the first queued toggle', ordinaryGroupShown);
+    });
+    record('two rapid ordinary legend clicks cancel instead of repeating the first queued toggle',
+      ordinaryLegendMutationsSettled && ordinaryGroupShown,
+      JSON.stringify({ ordinaryLegendMutationsSettled, ordinaryGroupShown }));
     await lp.close();
   });
 
