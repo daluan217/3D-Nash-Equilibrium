@@ -18,7 +18,8 @@
  * These checks are deliberately CREDENTIAL-FREE — they read files, never GCP —
  * so they run in the ordinary `npm test` on every PR. The live counterpart (does
  * the deployed service actually match?) is .github/workflows/cloud-env-audit.yml,
- * which needs GCP credentials and skips cleanly without them.
+ * which uses a dedicated OIDC identity and fails closed when credentials or
+ * metadata access are unavailable.
  */
 import { readFileSync } from 'node:fs';
 
