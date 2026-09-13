@@ -22,9 +22,10 @@ name: Cloud Run env audit
 # substitution, and a human can always run gcloud by hand. Only the deployed
 # service knows what production actually has.
 #
-# NAMES ONLY: the audit compares variable names against
-# deploy/cloudrun-env-manifest.txt and never reads a value, so its output is
-# safe in a public log.
+# SAFE METADATA ONLY: the audit compares variable names and Secret Manager
+# reference metadata against the reviewed deployment. Its Cloud Run v2
+# server-side response masks never request EnvVar.value, so credential payloads
+# cannot reach this process or a public log.
 #
 # DEPLOY TOPOLOGY, since it cost an hour to find: a push to main fires the
 # Cloud Build trigger `2ndTrigger`, which lives in **us-west2** — not global,
@@ -48,63 +49,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      # Preferred: Workload Identity Federation (no long-lived key material).
-      GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
-      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-      # Fallback: a service-account JSON key, if WIF is not set up.
-      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-      SERVICE: nash-equilibrium-backend
-      REGION: us-east1
-      PROJECT: d-nash-equilibrium
-      # Kept as an env var rather than inline: a `python3 -c` heredoc indented
-      # to match the YAML block would raise IndentationError on its first line.
-      REVS_PY: |
-        import json, sys
-        d = json.load(sys.stdin)
-        print(' '.join(sorted({
-            t['revisionName'] for t in d.get('status', {}).get('traffic', [])
-            if t.get('percent', 0) and t.get('revisionName')
-        })))
+      RUN_API: https://run.googleapis.com/v2
+      SERVICE_RESOURCE: projects/d-nash-equilibrium/locations/us-east1/services/nash-equilibrium-backend
+      # Cloud API `fields` is a SERVER-SIDE partial-response mask. These exact
+      # masks intentionally omit EnvVar.value, so literal credentials never
+      # cross the API boundary into the runner or the curl process.
+      SERVICE_FIELDS: template.containers.env.name,template.containers.env.valueSource.secretKeyRef,traffic.type,traffic.revision,traffic.percent,trafficStatuses.type,trafficStatuses.revision,trafficStatuses.percent,latestReadyRevision
+      REVISION_FIELDS: containers.env.name,containers.env.valueSource.secretKeyRef
     steps:
       - uses: actions/checkout@v5
 
-      # Secrets are not readable in a job-level `if:`, so the credential check
-      # is a step that publishes an output the later steps gate on. Without
-      # credentials the job SKIPS rather than fails: this workflow must be
-      # mergeable before Daniel has wired up GCP auth, and a red X on a
-      # never-configured job would just train everyone to ignore it.
-      - name: Check for GCP credentials
-        id: creds
-        run: |
-          if [ -n "$GCP_WIF_PROVIDER" ] && [ -n "$GCP_SERVICE_ACCOUNT" ]; then
-            echo "mode=wif" >> "$GITHUB_OUTPUT"
-          elif [ -n "$GCP_SA_KEY" ]; then
-            echo "mode=key" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "::notice::No GCP credentials configured — skipping the live env audit. \
-            Set GCP_WIF_PROVIDER + GCP_SERVICE_ACCOUNT (preferred) or GCP_SA_KEY to enable it."
-          fi
-
-      - name: Authenticate to Google Cloud (Workload Identity Federation)
-        if: steps.creds.outputs.mode == 'wif'
+      # This audit has its own OIDC-only, read-only identity. Missing or broken
+      # credentials must fail the audit loudly; silently skipping would turn
+      # the live guard back into a vacuous green check. The provider is
+      # restricted in GCP to this repository's refs/heads/main identity.
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-
-      - name: Authenticate to Google Cloud (service-account key)
-        if: steps.creds.outputs.mode == 'key'
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.GCP_AUDIT_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_AUDIT_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
-        if: steps.creds.outputs.mode != 'none'
         uses: google-github-actions/setup-gcloud@v2
 
-      # The describe call is the only place credentials are used, and it asks
-      # for env[].name — never env[].value. Nothing secret can reach the log.
+      # Cloud Run's REST endpoint is used directly because `gcloud --format`
+      # filters a full response only AFTER it reaches the runner. The `fields`
+      # query parameter below is a server-side response mask, so only names,
+      # Secret Manager reference metadata, and traffic metadata are returned.
       # TWO things must match the manifest, and the 2026-08-31 incident is
       # precisely why they are checked separately:
       #
@@ -116,108 +87,61 @@ jobs:
       # spec had to be fixed afterwards too). A bad deploy does the reverse.
       # Auditing only one of them would call each of those situations healthy.
       - name: Audit the deployed environment against the manifest
-        if: steps.creds.outputs.mode != 'none'
         run: |
-          set -uo pipefail
+          set -euo pipefail
           rc=0
 
-          # Capture separately from the pipe so a credentials/permission error
-          # is reported as itself rather than as "the service has no env vars".
-          if ! svc=$(gcloud run services describe "$SERVICE" \
-                --region "$REGION" --project "$PROJECT" --format=json 2>&1); then
-            echo "::error::Could not read the Cloud Run service. If this says PERMISSION_DENIED, \
-            the CI service account needs roles/run.viewer on $PROJECT — GCP_SA_KEY was created for \
-            GCS uploads (release-desktop.yml) and has no project-level Cloud Run access by default."
-            echo "$svc"
+          # Never merge stderr into this variable or echo it: a successful
+          # command must leave the variable containing only the bearer token,
+          # and a failed command must not risk putting one in the public log.
+          if ! access_token=$(gcloud auth print-access-token); then
+            echo "::error::Could not mint the short-lived OIDC access token"
+            exit 1
+          fi
+          api_get() {
+            local resource="$1"
+            local fields="$2"
+            curl --silent --show-error --fail-with-body --get \
+              --header "Authorization: Bearer $access_token" \
+              --data-urlencode "fields=$fields" \
+              "$RUN_API/$resource"
+          }
+
+          # Capture separately from the pipe so an authentication/permission
+          # error is reported as itself rather than as "no env variables".
+          if ! service_metadata=$(api_get "$SERVICE_RESOURCE" "$SERVICE_FIELDS" 2>&1); then
+            echo "::error::Could not read safe Cloud Run metadata. If this says PERMISSION_DENIED, \
+            github-cloudrun-auditor needs service-scoped roles/run.viewer on $SERVICE_RESOURCE. \
+            Grant it only after the formerly literal credentials have been rotated, so retained \
+            historical revisions no longer contain usable credential values."
+            echo "$service_metadata"
             exit 1
           fi
 
           echo "── template (what the next deploy will create)"
-          printf '%s' "$svc" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(e['name'] for e in d['spec']['template']['spec']['containers'][0].get('env',[])))" \
-            | node src/deploy/env-audit.mjs || rc=1
+          printf '%s' "$service_metadata" | node src/deploy/env-audit.mjs || rc=1
 
           # Every revision with a non-zero share, not just the newest: a split
           # or a rollback can serve an environment the template knows nothing
-          # about.
-          revs=$(printf '%s' "$svc" | python3 -c "$REVS_PY")
-          if [ -z "$revs" ]; then
-            echo "::error::No revision is receiving traffic — the service is not serving."
+          # about. The helper also fails if the newest ready revision receives
+          # no traffic, and warns if desired traffic is pinned by revision.
+          if ! revisions=$(printf '%s' "$service_metadata" | node src/deploy/cloud-run-traffic.mjs); then
             exit 1
           fi
-          for rev in $revs; do
-            echo "── serving revision $rev"
-            if ! names=$(gcloud run revisions describe "$rev" \
-                  --region "$REGION" --project "$PROJECT" \
-                  --format='value(spec.containers[0].env[].name)' 2>&1); then
-              echo "::error::Could not read revision $rev"; echo "$names"; rc=1; continue
+          for revision in $revisions; do
+            short_revision="${revision##*/}"
+            echo "── serving revision $short_revision"
+            if ! revision_metadata=$(api_get "$revision" "$REVISION_FIELDS" 2>&1); then
+              echo "::error::Could not read safe metadata for revision $short_revision"
+              echo "$revision_metadata"
+              rc=1
+              continue
             fi
-            printf '%s' "$names" | node src/deploy/env-audit.mjs || rc=1
+            printf '%s' "$revision_metadata" | node src/deploy/env-audit.mjs || rc=1
           done
 
-          exit $rc
-
-      # A drifted environment is only half the story. The other half is WHICH
-      # revision users reach, and that is not the same question.
-      #
-      # `gcloud run services update-traffic --to-revisions NAME=100` — the
-      # standard way to roll back an incident — switches the service out of
-      # serve-latest and PINS traffic to that revision by name. The pin
-      # survives every later deploy. On 2026-08-31 that pin was left in place
-      # after the env-wipe rollback, so the next merge to main built a healthy
-      # new revision that received 0% of traffic: Cloud Build green, Cloud Run
-      # green, main "deployed", and users still on the previous code. Nothing
-      # anywhere reported a problem, because nothing was broken — it just was
-      # not being served.
-      #
-      # So: if the newest ready revision is not receiving traffic, fail. A
-      # deliberate pin has to be made deliberate, by pinning to the revision
-      # that is actually current.
-      - name: The newest ready revision must be the one serving traffic
-        if: steps.creds.outputs.mode != 'none'
-        run: |
-          set -uo pipefail
-          gcloud run services describe "$SERVICE" \
-            --region "$REGION" --project "$PROJECT" \
-            --format='value(status.traffic[].revisionName,status.traffic[].percent)'
-
-          latest=$(gcloud run revisions list --service "$SERVICE" \
-            --region "$REGION" --project "$PROJECT" \
-            --filter='status.conditions.type=Ready AND status.conditions.status=True' \
-            --sort-by=~metadata.creationTimestamp --limit 1 --format='value(name)')
-          # Reuse REVS_PY: status.traffic can list a revision with percent 0
-          # (Cloud Run keeps the entry after traffic moves off it), and taking
-          # every revisionName would let $latest match an entry receiving
-          # NOTHING — the guard would pass on exactly the situation it exists
-          # to catch.
-          serving=$(printf '%s' "$svc" | python3 -c "$REVS_PY" | tr ' ' '\n')
-
-          if [ -z "$latest" ]; then
-            echo "::error::could not determine the newest ready revision"; exit 1
+          unset access_token
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Cloud Run environment metadata does not match the reviewed contract."
           fi
-          if ! printf '%s\n' "$serving" | grep -qx "$latest"; then
-            echo "::error::the newest ready revision ($latest) is receiving NO traffic. \
-            Traffic is pinned to: $(printf '%s ' "$serving" | tr '\n' ' '). Deploys are building \
-            revisions nobody reaches. Fix with: gcloud run services update-traffic $SERVICE \
-            --region $REGION --to-latest"
-            exit 1
-          fi
-          echo "newest ready revision $latest is serving"
-
-      # Serve-latest is the deploy model this project relies on: a push to main
-      # is expected to reach users without anyone touching Cloud Run. A pinned
-      # spec.traffic silently ends that, so name it even when the pinned
-      # revision happens to be current.
-      - name: Warn if traffic is pinned by revision name
-        if: steps.creds.outputs.mode != 'none'
-        run: |
-          pinned=$(gcloud run services describe "$SERVICE" \
-            --region "$REGION" --project "$PROJECT" \
-            --format='value(spec.traffic[].revisionName)')
-          if [ -n "$pinned" ]; then
-            echo "::warning::spec.traffic pins revision(s) by name ($pinned) instead of \
-            following the latest revision. The next deploy will build a revision that \
-            receives no traffic. Restore with --to-latest."
-          else
-            echo "spec.traffic follows the latest revision"
-          fi
+          exit "$rc"

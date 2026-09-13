@@ -1,11 +1,11 @@
 /**
  * Cloud Build → Cloud Run deploy contract.
  *
- * Why this exists: `gcloud run deploy --set-env-vars` REPLACES the service's
- * entire environment. It does not merge. So the single `--set-env-vars` line in
- * cloudbuild.yaml decides, on every push to main, exactly which variables
- * production has — and anything absent from it is deleted from the running
- * service without a single error anywhere.
+ * Why this exists: `gcloud run deploy --set-env-vars` and `--set-secrets`
+ * declare the service's entire environment. They do not merge. So those deploy
+ * lines in cloudbuild.yaml decide, on every push to main, exactly which
+ * variables production has — and anything absent from them is deleted from the
+ * running service without a single error anywhere.
  *
  * That is not hypothetical. On 2026-08-31 a hand-run
  * `gcloud run services update --set-env-vars` wiped AUTH_SECRET, GCS_BUCKET_NAME,
@@ -18,13 +18,15 @@
  * These checks are deliberately CREDENTIAL-FREE — they read files, never GCP —
  * so they run in the ordinary `npm test` on every PR. The live counterpart (does
  * the deployed service actually match?) is .github/workflows/cloud-env-audit.yml,
- * which needs GCP credentials and skips cleanly without them.
+ * which uses a dedicated OIDC identity and fails closed when credentials or
+ * metadata access are unavailable.
  */
 import { readFileSync } from 'node:fs';
 
 const cloudbuild = readFileSync('cloudbuild.yaml', 'utf8');
 const manifest = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8');
 
+/** Report a Cloud Build contract violation and terminate the test. */
 function fail(msg: string): never {
   console.error(`✗ cloudbuild contract: ${msg}`);
   process.exit(1);
@@ -42,7 +44,10 @@ if (expected.size === 0) fail('deploy/cloudrun-env-manifest.txt lists no variabl
 // ── the actual deploy line ──────────────────────────────────────────────────
 const envArg = cloudbuild.match(/^\s*-\s*'--set-env-vars=(.*)'\s*$/m);
 if (!envArg) fail('no --set-env-vars argument found in cloudbuild.yaml');
+const secretsArg = cloudbuild.match(/^\s*-\s*'--set-secrets=(.*)'\s*$/m);
+if (!secretsArg) fail('no --set-secrets argument found in cloudbuild.yaml');
 const pairs = envArg[1].split(',');
+const secretPairs = secretsArg[1].split(',');
 
 const names: string[] = [];
 const valueOf = new Map<string, string>();
@@ -54,9 +59,26 @@ for (const pair of pairs) {
   valueOf.set(name, pair.slice(eq + 1));
 }
 
+// Secret payloads must never travel through Cloud Build substitutions. The
+// deploy uses public Secret Manager resource names plus a NUMERICALLY pinned
+// version. `latest` is intentionally forbidden for env vars: rotation must be
+// an explicit, reviewed deployment change.
+const secretValueOf = new Map<string, string>();
+for (const pair of secretPairs) {
+  const eq = pair.indexOf('=');
+  if (eq < 1) fail(`malformed entry in --set-secrets: "${pair}"`);
+  const name = pair.slice(0, eq);
+  const ref = pair.slice(eq + 1);
+  if (!/^[a-z0-9][a-z0-9-]*:[1-9][0-9]*$/.test(ref)) {
+    fail(`${name} must use a repository-pinned Secret Manager resource and numeric version (got "${ref}")`);
+  }
+  names.push(name);
+  secretValueOf.set(name, ref);
+}
+
 // A duplicate key is a silent last-one-wins overwrite in gcloud.
 const dupes = names.filter((n, i) => names.indexOf(n) !== i);
-if (dupes.length > 0) fail(`--set-env-vars sets these names twice: ${[...new Set(dupes)].join(', ')}`);
+if (dupes.length > 0) fail(`deploy sets these names twice: ${[...new Set(dupes)].join(', ')}`);
 
 // ── the contract: exact set equality, both directions ───────────────────────
 const actual = new Set(names);
@@ -77,6 +99,34 @@ if (unexpected.length > 0) {
   );
 }
 
+// These are the credentials the server consumes. Keep this list explicit so
+// a new credential cannot accidentally be added to --set-env-vars as plaintext.
+const expectedSecretNames = new Set([
+  'SMTP_USER',
+  'SMTP_PASS',
+  'ADMIN_SECRET',
+  'AUTH_SECRET',
+  'AZURE_FOUNDRY_API_KEY',
+]);
+const expectedSecretRefs = new Map<string, string>([
+  ['SMTP_USER', 'nash-equilibrium-smtp-user:1'],
+  ['SMTP_PASS', 'nash-equilibrium-smtp-pass:1'],
+  ['ADMIN_SECRET', 'nash-equilibrium-admin-secret:1'],
+  ['AUTH_SECRET', 'nash-equilibrium-auth-secret:1'],
+  ['AZURE_FOUNDRY_API_KEY', 'nash-equilibrium-azure-foundry-api-key:1'],
+]);
+const actualSecretNames = new Set(secretValueOf.keys());
+const missingSecretRefs = [...expectedSecretNames].filter((n) => !actualSecretNames.has(n));
+const unexpectedSecretRefs = [...actualSecretNames].filter((n) => !expectedSecretNames.has(n));
+if (missingSecretRefs.length > 0) fail(`secret-bearing variables lack Secret Manager refs: ${missingSecretRefs.join(', ')}`);
+if (unexpectedSecretRefs.length > 0) fail(`--set-secrets contains non-secret or unreviewed variables: ${unexpectedSecretRefs.join(', ')}`);
+for (const name of expectedSecretNames) {
+  if (valueOf.has(name)) fail(`${name} must not be passed through --set-env-vars; use --set-secrets`);
+  if (secretValueOf.get(name) !== expectedSecretRefs.get(name)) {
+    fail(`${name} must use the reviewed pinned ref ${expectedSecretRefs.get(name)} (got ${secretValueOf.get(name)})`);
+  }
+}
+
 // ── every ${_SUB} must actually be declared ─────────────────────────────────
 // An undeclared substitution resolves to an empty string, which is how a
 // variable can be "present" in production and still carry nothing.
@@ -87,7 +137,7 @@ const subsAt = cloudbuild.indexOf('\nsubstitutions:');
 if (subsAt < 0) fail('cloudbuild.yaml has no substitutions: block');
 const subsBlock = cloudbuild.slice(subsAt);
 const declared = new Set([...subsBlock.matchAll(/^ {2}(_[A-Z0-9_]+):/gm)].map((m) => m[1]));
-for (const [name, value] of valueOf) {
+for (const [name, value] of [...valueOf, ...secretValueOf]) {
   const ref = value.match(/^\$\{(_[A-Z0-9_]+)\}$/);
   if (ref && !declared.has(ref[1])) {
     fail(`${name} references ${ref[1]}, which has no entry under substitutions: (it would deploy empty)`);
@@ -167,7 +217,8 @@ for (const m of subsBlock.matchAll(/^ {2}(_[A-Z0-9_]+):\s*'([^']*)'\s*$/gm)) {
   const [, key, val] = m;
   if (/^(sk-[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{30}|AIza[0-9A-Za-z_-]{30})/.test(val)
       || /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(val)
-      || (/(SECRET|PASS|API_KEY|TOKEN)$/.test(key) && val.length >= 16 && !/your-|placeholder|example|CHANGE|xxx/i.test(val))) {
+      || (/(SECRET|PASS|API_KEY|TOKEN)$/.test(key) && val.length >= 16
+        && !/your-|placeholder|example|CHANGE|xxx/i.test(val))) {
     fail(`substitution ${key} looks like a REAL secret value. This file is public — keep the value in the Cloud Build trigger.`);
   }
 }

@@ -9,6 +9,15 @@
  *   npx tsx src/testscriptcoverage.test.ts
  */
 import { readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { load: loadYaml } = require('js-yaml') as { load: (source: string) => unknown };
+type AnyRecord = Record<string, unknown>;
+
+/** Return an object view only for a non-array mapping. */
+const recordOf = (value: unknown): AnyRecord =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as AnyRecord : {};
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
@@ -17,6 +26,8 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const testScript: string = pkg.scripts.test;
+const integrationScript: string = pkg.scripts['test:integration'];
+const ciWorkflow = readFileSync('.github/workflows/test.yml', 'utf8');
 const files = readdirSync('src').filter((f) => f.endsWith('.test.ts')).sort();
 
 // CodeRabbit on #150: a bare `.includes(filename)` passes for ANY textual
@@ -61,5 +72,41 @@ check('found a plausible number of test files (this repo has 30+)', files.length
   }
 }
 
+// The development middleware boundary is not exercised by the production
+// bundle's API suite. Keep its real-server guard in both the local integration
+// command and CI's required `integration` job; a filename in prose is not
+// enough.
+const devFallback = 'src/integration/api-dev-fallback.test.mjs';
+const integrationInvocation = new RegExp(`(?:^|&&\\s*)node\\s+${escapeRegex(devFallback)}(?=\\s*(?:&&|$))`);
+const workflowInvocation = new RegExp(`^\\s*node\\s+${escapeRegex(devFallback)}\\s*$`);
+/** Parse one named workflow job and return only its actual step run values. */
+const workflowJobRuns = (workflow: string, jobName: string): string[] => {
+  const document = recordOf(loadYaml(workflow));
+  const job = recordOf(recordOf(document.jobs)[jobName]);
+  const steps = Array.isArray(job.steps) ? job.steps.map(recordOf) : [];
+  return steps.map((step) => step.run).filter((run): run is string => typeof run === 'string');
+};
+/** Require the exact fallback-test command in an executable integration-job run value. */
+const workflowRunsDevFallback = (workflow: string): boolean =>
+  workflowJobRuns(workflow, 'integration').some((run) => workflowInvocation.test(run));
+check('the dev API fallback behavioral guard runs in npm run test:integration',
+  integrationInvocation.test(integrationScript));
+for (const bypass of [' || true', ' --changed-semantics', '; true']) {
+  check(`mutation: appending ${JSON.stringify(bypass)} cannot masquerade as the required local command`,
+    !integrationInvocation.test(`node ${devFallback}${bypass}`));
+}
+check('the dev API fallback behavioral guard runs in the required GitHub integration job',
+  workflowRunsDevFallback(ciWorkflow));
+const workflowWithoutDevGuard = ciWorkflow.replace(
+  `run: node ${devFallback}`,
+  'run: echo removed-mutant',
+);
+check('mutation: removing the dev API fallback command from CI is detected',
+  !workflowRunsDevFallback(workflowWithoutDevGuard));
+const unrelatedJobDecoy = `${workflowWithoutDevGuard}\n  optional-decoy: # inline comments cannot hide a job boundary\n    runs-on: ubuntu-latest\n    steps:\n      - name: Decoy outside integration\n        run: node ${devFallback}`;
+check('mutation: the command in a different workflow job cannot satisfy the required integration-job guard',
+  workflowJobRuns(unrelatedJobDecoy, 'optional-decoy').some((run) => workflowInvocation.test(run))
+  && !workflowRunsDevFallback(unrelatedJobDecoy));
+
 if (failures > 0) { console.error(`✗ test-script coverage: ${failures} failed`); process.exit(1); }
-console.log(`✓ test-script coverage: ${files.length} src/*.test.ts files all wired into package.json's test script`);
+console.log(`✓ test-script coverage: ${files.length} unit files wired; dev API fallback wired locally and in CI`);

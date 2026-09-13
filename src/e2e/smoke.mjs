@@ -3580,36 +3580,196 @@ try {
     const vals = [0, -6, 2, 9, 0, 6, 3, -3]; // a continuum game (segment x in [0, 0.375], y = 1)
     for (let i = 0; i < 8; i++) { const c = matrix.nth(i); await c.click(); await c.fill(String(vals[i])); await c.blur(); }
     // Plotly's resolved data: what is actually drawn.
-    const contVisible = () => lp.evaluate(() => (document.querySelector('.js-plotly-plot')?._fullData ?? [])
-      .filter((t) => t.legendgroup === 'continuumNE').map((t) => t.visible === undefined ? true : t.visible));
+    const continuumTraceState = () => lp.evaluate(() => (document.querySelector('.js-plotly-plot')?._fullData ?? [])
+      .filter((t) => t.legendgroup === 'continuumNE')
+      .map((t) => ({ role: t.meta?.continuumRole ?? null, visible: t.visible === undefined ? true : t.visible })));
+    const continuumGroupIsShown = (traces) => {
+      const midpoints = traces.filter((trace) => trace.role === 'midpoint');
+      return midpoints.length > 0
+        && midpoints.every((trace) => trace.visible === true)
+        && traces.every((trace) => trace.visible === true
+          || (trace.role === 'corner' && trace.visible === 'legendonly'));
+    };
     const spherePos = () => lp.evaluate(() => { const t = (document.querySelector('.js-plotly-plot')?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return t ? [t.x[0], t.y[0]] : null; });
     await lp.waitForFunction(() => (document.querySelector('.js-plotly-plot')?._fullData ?? []).some((t) => t.legendgroup === 'continuumNE'), null, { timeout: 15000 });
-    record('precondition: the continuum group is drawn and visible', (await contVisible()).every((v) => v === true), JSON.stringify(await contVisible()));
+    // A camera-aware collapse intentionally leaves the midpoint visible while
+    // hiding only fusing corner traces. Requiring EVERY trace to be visible
+    // confuses that healthy state with a user-hidden legend group. The
+    // synthetic mixed-visibility control makes an `every(...)` mutation fail.
+    const cameraCollapsedControl = [
+      { role: 'midpoint', visible: true },
+      { role: 'corner', visible: 'legendonly' },
+      { role: null, visible: true },
+    ];
+    record('control: a camera-collapsed continuum group is still user-visible while its midpoint is drawn',
+      continuumGroupIsShown(cameraCollapsedControl)
+        && !cameraCollapsedControl.every((trace) => trace.visible === true),
+      JSON.stringify(cameraCollapsedControl));
+    const hiddenMidpointControl = [
+      { role: 'midpoint', visible: 'legendonly' },
+      { role: 'corner', visible: true },
+      { role: null, visible: true },
+    ];
+    record('control: an arbitrary visible corner cannot mask a hidden continuum midpoint',
+      !continuumGroupIsShown(hiddenMidpointControl), JSON.stringify(hiddenMidpointControl));
+    const initiallyVisible = await continuumTraceState();
+    record('precondition: the continuum group is drawn and user-visible',
+      continuumGroupIsShown(initiallyVisible), JSON.stringify(initiallyVisible));
     // Click the legend entry the way a user does: Plotly's legend is SVG and its
     // click handler sits on the entry's `.legendtoggle` rect (a real pointer
     // click on the <text> times out in Playwright because the WebGL layer sits
     // over the SVG for hit-testing), so dispatch the click on that rect.
-    // Plotly toggles on real mouse-down/up (with a double-click timer), so send
-    // pointer events at the entry's own coordinates rather than a synthetic click.
-    // `force: true`: Playwright's actionability check judges the SVG <text> as
-    // covered by the WebGL layer and never clicks it; the forced click lands on
-    // the entry exactly as a real pointer does (RED-MATH-12's own probe used it).
-    const clickLegendEntry = () => lp.locator('text.legendtext', { hasText: 'Equilibrium continuum' }).first().click({ force: true });
+    // Plotly toggles on real mouse-down/up (with a double-click timer). Target
+    // its own transparent `.legendtoggle` hit rectangle and keep Playwright's
+    // normal actionability checks enabled, exactly as a user click.
+    const legendGroup = lp.locator('g.traces', {
+      has: lp.locator('text.legendtext', { hasText: 'Equilibrium continuum' }),
+    }).first();
+    const legendToggle = legendGroup.locator('rect.legendtoggle');
+    const prepareLegendClick = async () => {
+      // Matrix editing and simulation controls can scroll the plot's legend
+      // beneath the sticky page header. Reset the scroll and prove the click's
+      // center reaches Plotly's SVG before dispatching the pointer event.
+      let last = { box: null, tag: null, className: null, exactTarget: false, sameLegendGroup: false, ready: false };
+      for (let i = 0; i < 20; i++) {
+        await lp.evaluate(() => window.scrollTo(0, 0));
+        const box = await legendToggle.boundingBox();
+        const hit = await legendToggle.evaluate((target, { x, y }) => {
+          const atPoint = document.elementFromPoint(x, y);
+          return {
+            tag: atPoint?.tagName ?? null,
+            className: atPoint?.getAttribute('class') ?? null,
+            exactTarget: atPoint === target,
+            sameLegendGroup: atPoint?.closest('g.traces') === target.closest('g.traces'),
+          };
+        }, { x: box ? box.x + box.width / 2 : -1, y: box ? box.y + box.height / 2 : -1 });
+        last = { box, ...hit, ready: !!box && hit.exactTarget && hit.sameLegendGroup };
+        if (last.ready) return last;
+        await lp.waitForTimeout(50);
+      }
+      return last;
+    };
+    const clickLegendEntry = () => legendToggle.click();
+    const legendMutationRevision = () => lp.evaluate(() =>
+      Number(document.querySelector('.js-plotly-plot')?.dataset?.plotLegendMutationRevision ?? 0));
+    const waitForLegendMutations = (before, count) => lp.waitForFunction(({ start, expected }) => {
+      const revision = Number(document.querySelector('.js-plotly-plot')?.dataset?.plotLegendMutationRevision ?? 0);
+      return Number.isFinite(revision) && revision >= start + expected;
+    }, { start: before, expected: count }, { timeout: 8000 }).then(() => true).catch(() => false);
+    const hideTarget = await prepareLegendClick();
+    record('precondition: the hide click reaches the continuum legend entry',
+      hideTarget.ready, JSON.stringify(hideTarget));
+    const hideLegendRevisionBefore = await legendMutationRevision();
     await clickLegendEntry();
-    const hidden = await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.length > 0 && ts.every((t) => t.visible === 'legendonly'); }, null, { timeout: 8000 }).then(() => true).catch(() => false);
-    record('the legend click hides the whole continuum group', hidden, JSON.stringify(await contVisible()));
+    const hideLegendMutationSettled = await waitForLegendMutations(hideLegendRevisionBefore, 1);
+    const hidden = hideLegendMutationSettled && await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.length > 0 && ts.every((t) => t.visible === 'legendonly'); }, null, { timeout: 8000 }).then(() => true).catch(() => false);
+    record('the legend click hides the whole continuum group', hidden, JSON.stringify(await continuumTraceState()));
     // A real simulation redraw: Run, wait until the sphere has moved in Plotly's resolved data.
     const p0 = await spherePos();
     await lp.getByRole('button', { name: /^Run$/ }).click();
     const moved = await lp.waitForFunction((from) => { const t = (document.querySelector('.js-plotly-plot')?._fullData ?? []).find((d) => /current position \(A\)/i.test(d.name ?? '')); return !!t && !!from && Math.hypot(t.x[0] - from[0], t.y[0] - from[1]) > 1e-6; }, p0, { timeout: 20000 }).then(() => true).catch(() => false);
     record('precondition: the run redrew the plot (the sphere moved)', moved);
-    const afterRedraw = await contVisible();
+    const afterRedraw = await continuumTraceState();
     record('FIX: the continuum group is still hidden after the simulation redraw (the user\'s legend choice survives)',
-      afterRedraw.length > 0 && afterRedraw.every((v) => v === 'legendonly'), JSON.stringify(afterRedraw));
+      afterRedraw.length > 0 && afterRedraw.every((trace) => trace.visible === 'legendonly'), JSON.stringify(afterRedraw));
     // And switching it back on works.
+    // This opt-in control deterministically exercises the same natural-stop
+    // branch slow CI reached in shard 24, while the default run exercises an
+    // explicit Pause transition.
+    const naturalStopControl = process.env.E2E_SECTION47_NATURAL_STOP === '1';
+    if (naturalStopControl) {
+      await lp.getByRole('button', { name: /^Run$/ }).waitFor({ state: 'visible', timeout: 90000 });
+    }
+    const pauseRenderRevisionBefore = await lp.evaluate(() =>
+      Number(document.querySelector('.js-plotly-plot')?.dataset?.plotReactRevision ?? 0));
+    const pauseButton = lp.getByRole('button', { name: /^Pause$/ });
+    const pauseTransitionRequested = !naturalStopControl && await pauseButton.isVisible().catch(() => false);
+    if (pauseTransitionRequested) await pauseButton.click();
+    const runControlVisible = await lp.getByRole('button', { name: /^Run$/ }).waitFor({ state: 'visible', timeout: 5000 })
+      .then(() => true).catch(() => false);
+    // React can paint the Run control before Plotly.react finishes replacing
+    // the corresponding graph. If Pause was actionable, require its newer
+    // render revision. On slower runners the finite simulation may already
+    // have stopped naturally, so its current revision is valid only alongside
+    // the exact non-running marker. In both branches require two unchanged
+    // reads of the continuum trace signature before hit-testing the legend.
+    let previousPausedPlotState = null;
+    let stablePausedPlotReads = 0;
+    let pausedPlotSettled = null;
+    for (let i = 0; i < 40; i++) {
+      await lp.waitForTimeout(100);
+      const current = await lp.evaluate(() => {
+        const gd = document.querySelector('.js-plotly-plot');
+        const traces = (gd?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE')
+          .map((t) => ({ role: t.meta?.continuumRole ?? null, visible: t.visible === undefined ? true : t.visible }));
+        return {
+          revision: Number(gd?.dataset?.plotReactRevision ?? NaN),
+          running: gd?.dataset?.plotReactRunning ?? null,
+          signature: JSON.stringify(traces),
+          traceCount: traces.length,
+        };
+      });
+      const revisionMatchesStoppedState = Number.isFinite(current.revision)
+        && (pauseTransitionRequested
+          ? current.revision > pauseRenderRevisionBefore
+          : current.revision >= pauseRenderRevisionBefore);
+      const isCompletedStoppedRender = revisionMatchesStoppedState
+        && current.running === 'false'
+        && current.traceCount > 0;
+      if (isCompletedStoppedRender && previousPausedPlotState
+          && current.revision === previousPausedPlotState.revision
+          && current.signature === previousPausedPlotState.signature) {
+        stablePausedPlotReads++;
+        if (stablePausedPlotReads >= 2) { pausedPlotSettled = current; break; }
+      } else {
+        stablePausedPlotReads = 0;
+      }
+      previousPausedPlotState = isCompletedStoppedRender ? current : null;
+    }
+    const redrawsStopped = runControlVisible && pausedPlotSettled !== null;
+    record('precondition: the completed stopped plot render is stable before hit-testing the restored legend DOM',
+      redrawsStopped, JSON.stringify({ naturalStopControl, pauseTransitionRequested, runControlVisible, pauseRenderRevisionBefore, pausedPlotSettled }));
+    const showTarget = await prepareLegendClick();
+    record('precondition: the show click reaches the continuum legend entry after the redraw',
+      showTarget.ready, JSON.stringify(showTarget));
+    const showLegendRevisionBefore = await legendMutationRevision();
     await clickLegendEntry();
-    const shown = await lp.waitForFunction(() => { const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? []).filter((t) => t.legendgroup === 'continuumNE'); return ts.length > 0 && ts.every((t) => t.visible === undefined || t.visible === true); }, null, { timeout: 8000 }).then(() => true).catch(() => false);
-    record('a second click shows the group again', shown, JSON.stringify(await contVisible()));
+    const showLegendMutationSettled = await waitForLegendMutations(showLegendRevisionBefore, 1);
+    const visibleAfterShow = await continuumTraceState();
+    record('a second click shows the group again (camera collapse may keep only fusing corners hidden)',
+      showLegendMutationSettled && continuumGroupIsShown(visibleAfterShow),
+      JSON.stringify({ showLegendMutationSettled, visibleAfterShow }));
+
+    // Queue control: two quick clicks must cancel each other even though the
+    // first asynchronous restyle may not have updated Plotly's live data when
+    // the second click arrives. Exercise both the special continuum path and
+    // an ordinary legend path. The plot-owned completion revision advances
+    // only when one app-owned queued legend mutation settles, so two advances
+    // are the exact post-click boundary before inspecting resolved trace data.
+    const continuumLegendRevisionBefore = await legendMutationRevision();
+    await clickLegendEntry();
+    await clickLegendEntry();
+    const continuumLegendMutationsSettled = await waitForLegendMutations(continuumLegendRevisionBefore, 2);
+    const continuumAfterRapidDoubleClick = await continuumTraceState();
+    record('two rapid continuum legend clicks cancel instead of repeating the first queued toggle',
+      continuumLegendMutationsSettled && continuumGroupIsShown(continuumAfterRapidDoubleClick),
+      JSON.stringify({ continuumLegendMutationsSettled, continuumAfterRapidDoubleClick }));
+
+    const ordinaryLegendToggle = lp.locator('g.traces', {
+      has: lp.locator('text.legendtext', { hasText: /A Moves/ }),
+    }).first().locator('rect.legendtoggle');
+    const ordinaryLegendRevisionBefore = await legendMutationRevision();
+    await ordinaryLegendToggle.click();
+    await ordinaryLegendToggle.click();
+    const ordinaryLegendMutationsSettled = await waitForLegendMutations(ordinaryLegendRevisionBefore, 2);
+    const ordinaryGroupShown = await lp.evaluate(() => {
+      const ts = (document.querySelector('.js-plotly-plot')?._fullData ?? [])
+        .filter((trace) => trace.legendgroup === 'amoves');
+      return ts.length >= 2 && ts.every((t) => t.visible === undefined || t.visible === true);
+    });
+    record('two rapid ordinary legend clicks cancel instead of repeating the first queued toggle',
+      ordinaryLegendMutationsSettled && ordinaryGroupShown,
+      JSON.stringify({ ordinaryLegendMutationsSettled, ordinaryGroupShown }));
     await lp.close();
   });
 
@@ -4385,6 +4545,29 @@ try {
           return e && Math.hypot(e.x - want.x, e.y - want.y, e.z - want.z) < 0.01
             && matrixKey !== null && matrixKey !== beforeMatrixKey ? true : null;
         }, { want: eye, beforeMatrixKey }, { timeout: 5000 });
+        // `_fullLayout.camera.eye` changes before gl-plot3d necessarily
+        // commits its final matrices. Wait until the rendered matrix is
+        // stable across two reads; otherwise the app-side projection can
+        // legitimately evaluate an intermediate frame and the test will
+        // attribute that harness race to the collapse rule.
+        let previousMatrixKey = await readCameraMatrixKey();
+        let renderedMatrixSettled = false;
+        let stableMatrixReads = 0;
+        for (let i = 0; i < 40; i++) {
+          await p.waitForTimeout(100);
+          const currentMatrixKey = await readCameraMatrixKey();
+          if (currentMatrixKey !== null && currentMatrixKey === previousMatrixKey) {
+            stableMatrixReads++;
+            if (stableMatrixReads >= 2) {
+              renderedMatrixSettled = true;
+              break;
+            }
+          } else {
+            stableMatrixReads = 0;
+          }
+          previousMatrixKey = currentMatrixKey;
+        }
+        if (!renderedMatrixSettled) throw new Error('rendered camera matrix did not settle');
       };
       const setEye = async (eye) => {
         const beforeEye = await readEye();
@@ -4670,14 +4853,58 @@ try {
       // default AND the same fusing eye (found by an independent search for a
       // segment whose length rounds to 1.0 — a11:-2,a12:-2,a21:-2,a22:-2,
       // b11:-2,b12:-1,b21:-2,b22:-1 -> component y=0, x in [0,1]).
+      const controlDecisionBefore = await p.evaluate(() =>
+        Number(document.querySelector('.js-plotly-plot')?.dataset?.continuumDecidedAt ?? 0));
       await fillMatrix([-2, -2, -2, -1, -2, -2, -2, -1]); // a11,b11,a12,b12,a21,b21,a22,b22
-      // Component y=0, x in [0,1] -> midpoint (0.5, 0).
-      const controlReady = await waitForContinuumMidpointAt(0.5, 0);
-      record('precondition: the control fixture\'s continuum midpoint (0.5, 0) is drawn before reading trace state', controlReady);
+      // Component y=0, x in [0,1] -> midpoint (0.5, 0). Plotly mutates
+      // `gd.data` before the expensive WebGL redraw is complete, so require
+      // the app's post-Plotly.react collapse evaluation to be newer too.
+      const controlReady = await p.waitForFunction(({ beforeDecision }) => {
+        const gd = document.querySelector('.js-plotly-plot');
+        const midpointReady = (gd?.data ?? []).filter((t) => t.meta?.continuumRole === 'midpoint')
+          .some((t) => Math.abs((t.x?.[0] ?? NaN) - 0.5) < 1e-6 && Math.abs((t.y?.[0] ?? NaN)) < 1e-6);
+        const decidedAt = Number(gd?.dataset?.continuumDecidedAt ?? NaN);
+        return midpointReady && Number.isFinite(decidedAt) && decidedAt > beforeDecision ? true : null;
+      }, { beforeDecision: controlDecisionBefore }, { timeout: 20000 }).then(() => true).catch(() => false);
+      record('precondition: the control fixture\'s continuum midpoint is drawn and its post-react camera decision completed',
+        controlReady, JSON.stringify({ midpoint: [0.5, 0], controlDecisionBefore }));
       const fullAtDefault = await readContinuum();
       record('control: a full-length segment keeps corners visible at the default camera',
         fullAtDefault.filter((t) => t.role === 'corner').length === 2 && fullAtDefault.filter((t) => t.role === 'corner').every((t) => t.visible === true),
         JSON.stringify(fullAtDefault));
+
+      // This page uses the visitor-facing 10 s auto-resume mode, not a
+      // permanent pause. On a slower runner, the real plot press near the
+      // start of this section can legitimately age out while the fixture is
+      // redrawn and the throttle oracle runs. Re-arm the SAME inactivity
+      // hold with another real, hit-tested plot press immediately before the
+      // final camera control; otherwise a resumed idle-spin frame can keep
+      // changing WebGL matrices while moveToRenderedEye is correctly waiting
+      // for them to settle. Read the app-owned hold deadline before/after the
+      // press: a Resume label may already be visible for an OLD countdown and
+      // therefore cannot prove that this click renewed it.
+      await plot.scrollIntoViewIfNeeded();
+      const controlHoldUntilBefore = await plot.getAttribute('data-spin-hold-until')
+        .then((value) => Number(value ?? 0));
+      const controlPlotBox = await plot.boundingBox();
+      const controlCx = controlPlotBox ? controlPlotBox.x + controlPlotBox.width / 2 : -1;
+      const controlCy = controlPlotBox ? controlPlotBox.y + controlPlotBox.height / 2 : -1;
+      const controlHitTag = await p.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName ?? null,
+        { x: controlCx, y: controlCy });
+      if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);
+      const controlHoldState = controlHitTag === 'CANVAS'
+        ? await p.waitForFunction(({ beforeHoldUntil }) => {
+          const holdUntil = Number(document.querySelector('[data-tour="plot"]')?.dataset?.spinHoldUntil ?? NaN);
+          const remainingMs = holdUntil - performance.now();
+          return Number.isFinite(holdUntil) && holdUntil > beforeHoldUntil && remainingMs > 5000
+            ? { holdUntil, remainingMs }
+            : null;
+        }, { beforeHoldUntil: controlHoldUntilBefore }, { timeout: 3000 })
+          .then((handle) => handle.jsonValue()).catch(() => null)
+        : null;
+      record('precondition: the final control camera move re-arms the idle-spin inactivity hold with a real plot press',
+        controlHoldState !== null,
+        JSON.stringify({ controlPlotBox, controlHitTag, controlHoldUntilBefore, controlHoldState }));
       await setEye(FUSING_EYE);
       await p.waitForFunction((want) => {
         const e = document.getElementById('plotly-3d-market-simulation')?._fullLayout?.scene?.camera?.eye;

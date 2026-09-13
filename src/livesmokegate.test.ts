@@ -27,8 +27,10 @@ import {
   MAX_WAIT_MS,
   resolveWaitMs,
   deploymentMatches,
+  healthyApiResponse,
   waitForDeploy,
 } from './e2e/liveSmokeGate.mjs';
+import { readFileSync } from 'node:fs';
 
 let failures = 0;
 function check(name: string, pass: boolean, detail?: string) {
@@ -81,6 +83,20 @@ check('with no expectedVersion supplied, asset match alone counts as deployed',
 // A non-200 page never counts, regardless of the text it happened to carry.
 check('a non-200 response never counts as deployed',
   deploymentMatches({ status: 500, text: `<script src="/${ASSET}">`, expectedAsset: ASSET, version: '0.0.137', expectedVersion: '0.0.137' }) === false);
+
+// The body may be perfectly shaped on an error response. The health guard
+// must require HTTP success itself instead of relying on a sibling assertion.
+const healthyBody = { status: 'ok', backendVersion: '0.0.137', capabilities: { scenarioRegen: true } };
+check('a 200 JSON response with the complete health schema is healthy',
+  healthyApiResponse({ status: 200, contentType: 'application/json; charset=utf-8', health: healthyBody }) === true);
+check('a 500 response with the same healthy-looking body is NOT healthy',
+  healthyApiResponse({ status: 500, contentType: 'application/json', health: healthyBody }) === false);
+const bodyOnlyHealth = ({ contentType, health }: { contentType: string; health: typeof healthyBody }) =>
+  contentType.includes('application/json') && health.status === 'ok'
+  && typeof health.backendVersion === 'string'
+  && typeof health.capabilities.scenarioRegen === 'boolean';
+check('mutation probe: the old body-only predicate wrongly accepts the 500 fixture',
+  bodyOnlyHealth({ contentType: 'application/json', health: healthyBody }) === true);
 
 // ─────────────────────────────────────────────────────────── waitForDeploy
 // Stubbed fetch + stubbed sleep (instant) — proves the polling loop itself
@@ -212,6 +228,15 @@ async function runWaitForDeployTests() {
 }
 
 await runWaitForDeployTests();
+
+const liveSmokeSource = readFileSync('src/e2e/live-smoke.mjs', 'utf8');
+const scenariosCheck = liveSmokeSource.match(
+  /const r = await getText\('\/api\/scenarios',[\s\S]*?record\('unknown API path is a JSON 404, not the SPA index',[\s\S]*?\n}/,
+)?.[0] ?? '';
+check('the /api/scenarios live check has its own bounded AbortSignal',
+  /signal: AbortSignal\.timeout\(API_CHECK_TIMEOUT_MS\)/.test(scenariosCheck));
+check('a rejected /api/scenarios request is converted into a recorded failed response',
+  /\.catch\(\(error\) => \(\{ status: 0,[\s\S]*error: String\(error\)/.test(scenariosCheck));
 
 if (failures > 0) {
   console.error(`\n${failures} live-smoke gate check(s) failed`);

@@ -183,6 +183,14 @@ jobs:
           INTEGRATION_PORT: '3098'
           INTEGRATION_BASE: http://localhost:3098
 
+      # Vite's development history fallback must not turn an unknown browser-
+      # style /api request into index.html. This boots the real dev middleware
+      # stack; the production API suite above cannot exercise that boundary.
+      - name: Boot the development server and guard the API fallback boundary
+        run: node src/integration/api-dev-fallback.test.mjs
+        env:
+          DEV_FALLBACK_PORT: '3184'
+
       # The desktop's persistence guarantees, booted from a temp cwd so dotenv
       # loads nothing — the packaged condition. Guards two defects RED-DESKTOP
       # found in the real .app: a per-launch session secret that signed the user
@@ -516,16 +524,31 @@ jobs:
           E2E_PORT: 309${{ matrix.shard }}
           E2E_BASE: http://localhost:309${{ matrix.shard }}
 
+      # Shard 24 once reached §47 after the finite simulation had already
+      # completed, while faster machines reached the explicit-Pause branch.
+      # Exercise that legitimate stopped-state path deterministically too.
+      - name: Exercise section 47 after natural simulation completion
+        if: matrix.shard == 24
+        id: natural_stop
+        run: node src/e2e/smoke.mjs
+        env:
+          E2E_SECTION: '47'
+          E2E_SECTION47_NATURAL_STOP: '1'
+          E2E_PORT: '31947'
+          E2E_BASE: http://localhost:31947
+
       - name: Upload shard evidence
         # Keep evidence from a pass-after-section-retry: that first failed
         # attempt is the transient-stall picture worth retaining.
-        if: always() && steps.smoke.outputs.smoke_outcome != 'pass'
+        if: always() && (steps.smoke.outputs.smoke_outcome != 'pass' || steps.natural_stop.outcome == 'failure')
         uses: actions/upload-artifact@v4
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
             /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-32_section-*-attempt-*.png
             /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-32_section-*-attempt-*.html
+            /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.png
+            /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log
           retention-days: 7
           if-no-files-found: ignore

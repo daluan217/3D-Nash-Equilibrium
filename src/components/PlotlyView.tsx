@@ -8,6 +8,7 @@ import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
 import { EA, EB, r3, payoffProseRhs } from '../utils/gameEngine';
 import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera, shouldCollapseComponentAtCameraExact } from '../utils/cameraProjection';
+import { enqueuePlotMutation, PlotMutationQueue } from '../utils/plotMutationQueue';
 import { Rotate3d, Move, RefreshCw } from 'lucide-react';
 
 /**
@@ -385,7 +386,27 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    *  is rebuilt (see the data effect below) so a stale decision from a
    *  previous game/render can never suppress a needed restyle. */
   const continuumMetaRef = useRef<ContinuumComponentMeta[]>([]);
+  const continuumMetaGenerationRef = useRef(0);
   const continuumCollapsedRef = useRef<Map<number, boolean>>(new Map());
+  /** Plotly.react and every app-owned trace restyle share this recovered
+   *  queue. The generation is advanced before each render is enqueued, so an
+   *  older operation can finish but cannot mutate or publish newer traces. */
+  const plotMutationQueueRef = useRef<PlotMutationQueue>({ current: Promise.resolve(), pending: 0 });
+  /** Plot-owned completion token for user legend operations. Browser probes
+   *  wait for the exact number of queued clicks to settle before inspecting
+   *  Plotly's resolved trace visibility. */
+  const plotLegendMutationRevisionRef = useRef(0);
+  const markLegendMutationSettled = () => {
+    const revision = ++plotLegendMutationRevisionRef.current;
+    const gd = document.getElementById(plotId) as any;
+    if (gd) gd.dataset.plotLegendMutationRevision = String(revision);
+  };
+  const plotRenderGenerationRef = useRef(0);
+  const queuedRenderGenerationRef = useRef(0);
+  /** Camera relayouts can arrive every frame. Keep only their latest collapse
+   *  request while one queue entry is pending instead of growing the queue. */
+  const pendingContinuumEvaluationRef = useRef<{ camera: any; generation: number } | null>(null);
+  const continuumEvaluationTaskRef = useRef<Promise<void> | null>(null);
   /** The idle spin emits one relayout per animation frame (~33ms); the spin
    *  fusing test only needs the decision to flip within roughly one visible
    *  frame, so re-evaluating on every 10th of a second is plenty and keeps a
@@ -405,6 +426,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    * click handler records the group; the redraw re-applies it.
    */
   const userHiddenGroupsRef = useRef<Set<string>>(new Set());
+  /** Latest requested legend visibility while its serialized restyle is still
+   * pending. A rapid second click toggles this intent rather than re-reading
+   * the not-yet-updated Plotly trace array and repeating the first click. */
+  const legendVisibilityIntentRef = useRef<Map<string, boolean | 'legendonly'>>(new Map());
 
   /**
    * RED-MATH-13/002: the non-overlap guarantee (docs/CONTINUUM-RENDERING.md
@@ -425,7 +450,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
    * legend-click handler too, not just the relayout listener that used to
    * be its only caller.
    */
-  const applyContinuumCollapseAtCamera = (camera: any) => {
+  const applyContinuumCollapseAtCamera = async (camera: any, generation: number): Promise<void> => {
+    if (plotRenderGenerationRef.current !== generation
+        || continuumMetaGenerationRef.current !== generation) return;
     const metas = continuumMetaRef.current;
     if (!metas.length) return;
     const eye = camera?.eye;
@@ -533,6 +560,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     const cornerVis: (boolean | 'legendonly')[] = [];
     const midIdx: number[] = [];
     const midSize: number[] = [];
+    const collapsedUpdates: Array<[number, boolean]> = [];
     for (const m of metas) {
       const collapse = m.surfaces.some((s) => exactReady
         ? shouldCollapseComponentAtCameraExact(
@@ -556,7 +584,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       const midpointTrace = gdNow.data?.[m.midpointTraceIndex];
       const midpointMatches = !!midpointTrace && Number(midpointTrace.marker?.size) === midpointTarget;
       if (collapse === was && cornersMatch && midpointMatches) continue;
-      continuumCollapsedRef.current.set(m.componentIndex, collapse);
+      collapsedUpdates.push([m.componentIndex, collapse]);
       // 'legendonly' rather than a bare `false` when collapsing (CodeRabbit,
       // this branch): using the SAME value Plotly's own legend-visibility
       // state machine uses means a corner this rule hides reads as
@@ -571,14 +599,67 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         midSize.push(midpointTarget);
       }
     }
-    if (cornerIdx.length) PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);
-    if (midIdx.length) PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx);
+    // The generation can change while this request waits behind an earlier
+    // Plotly operation. Re-check immediately before using trace indices.
+    if (plotRenderGenerationRef.current !== generation) return;
+    const restyles: Promise<unknown>[] = [];
+    if (cornerIdx.length) restyles.push(PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx));
+    if (midIdx.length) restyles.push(PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx));
+    await Promise.all(restyles);
+    if (plotRenderGenerationRef.current !== generation) return;
+    for (const [componentIndex, collapse] of collapsedUpdates) {
+      continuumCollapsedRef.current.set(componentIndex, collapse);
+    }
+  };
+
+  /** Coalesce high-frequency camera decisions into one trace-mutation queue
+   *  entry. If another camera arrives while that entry runs, it becomes one
+   *  later entry behind any already-enqueued render, never an unbounded list. */
+  const requestContinuumCollapseAtCamera = (
+    camera: any,
+    generation = plotRenderGenerationRef.current,
+  ): Promise<void> => {
+    pendingContinuumEvaluationRef.current = { camera, generation };
+    if (continuumEvaluationTaskRef.current) return continuumEvaluationTaskRef.current;
+    let task: Promise<void>;
+    task = enqueuePlotMutation(plotMutationQueueRef.current, async () => {
+      const request = pendingContinuumEvaluationRef.current;
+      pendingContinuumEvaluationRef.current = null;
+      if (!request || request.generation !== plotRenderGenerationRef.current) return;
+      // A request for the new generation can replace an old pending camera
+      // while that old queue slot is still ahead of the new react. Put it
+      // back so it is enqueued behind the render that installs its metadata.
+      if (continuumMetaGenerationRef.current !== request.generation) {
+        if (queuedRenderGenerationRef.current !== request.generation) return;
+        pendingContinuumEvaluationRef.current = request;
+        return;
+      }
+      await applyContinuumCollapseAtCamera(request.camera, request.generation);
+    }).finally(() => {
+      if (continuumEvaluationTaskRef.current !== task) return;
+      continuumEvaluationTaskRef.current = null;
+      const pending = pendingContinuumEvaluationRef.current;
+      if (pending) void requestContinuumCollapseAtCamera(pending.camera, pending.generation);
+    });
+    continuumEvaluationTaskRef.current = task;
+    return task;
   };
 
   /** Spin paused because the visitor took the wheel. Mirrored in a ref so the
    *  animation loop can read it without being torn down and rebuilt. */
   const [spinPaused, setSpinPaused] = useState(false);
   const spinPausedRef = useRef(false);
+  /** Auto-resume mode: the clock time before which the spin may not turn.
+   *  Graph activity pushes it forward; the Resume button zeroes it. */
+  const nextSpinAtRef = useRef(0);
+  /** Update the authoritative auto-resume deadline and its non-sensitive plot
+   *  mirror together, so probes cannot observe a state that diverges from the
+   *  animation loop's actual gate. */
+  const setSpinHoldUntil = (until: number) => {
+    nextSpinAtRef.current = until;
+    const container = containerRef.current;
+    if (container) container.dataset.spinHoldUntil = String(until);
+  };
   /** `rebind` false: the caller is about to set the camera itself and re-binds
    *  AFTER its own relayout (RED-MATH-18/001 — a dragmode relayout issued
    *  before a camera relayout made Plotly re-apply its recorded pose). */
@@ -592,13 +673,10 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     spinPausedRef.current = false;
     setSpinPaused(false);
     // In auto-resume mode the button is a "skip the wait" shortcut.
-    nextSpinAtRef.current = 0;
+    setSpinHoldUntil(0);
     setSpinWaiting(false);
     spinWaitingRef.current = false;
   };
-  /** Auto-resume mode: the clock time before which the spin may not turn.
-   *  Graph activity pushes it forward; the Resume button zeroes it. */
-  const nextSpinAtRef = useRef(0);
   /** True while the spin is halted awaiting the inactivity countdown — this
    *  is what shows the Resume button in auto-resume mode. Mirrored in a ref
    *  so the rAF loop and event handlers can flip it without re-render races. */
@@ -649,7 +727,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // spin that cannot run and stick for the whole session.
     if (reducedMotion || !idleSpin) return;
     if (spinAutoResumeMs > 0) {
-      nextSpinAtRef.current = performance.now() + spinAutoResumeMs;
+      setSpinHoldUntil(performance.now() + spinAutoResumeMs);
       if (!spinWaitingRef.current) {
         spinWaitingRef.current = true;
         setSpinWaiting(true);
@@ -733,7 +811,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
             // would risk stomping a correct, more-current one (see
             // `resizeSettleGenRef`'s own comment above).
             if (resizeSettleGenRef.current !== gen) return;
-            applyContinuumCollapseAtCamera(cameraRef.current);
+            void requestContinuumCollapseAtCamera(cameraRef.current);
           });
         }
       }, 150);
@@ -922,6 +1000,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       setSpinPaused(false);
       spinWaitingRef.current = false;
       setSpinWaiting(false);
+      setSpinHoldUntil(0);
       return;
     }
     const Plotly = (window as any).Plotly;
@@ -931,7 +1010,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // Every step starts spinning again, which is why spinNonce is a dependency.
     spinPausedRef.current = false;
     setSpinPaused(false);
-    nextSpinAtRef.current = performance.now() + spinDelayMs;
+    setSpinHoldUntil(performance.now() + spinDelayMs);
     spinWaitingRef.current = spinDelayMs > 0;
     setSpinWaiting(spinDelayMs > 0);
 
@@ -1003,7 +1082,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       if (typeof x !== 'number' || !insidePlot(x, y)) return;
       const now = performance.now();
       if (e.type === 'mousemove' && now >= nextSpinAtRef.current) return;
-      nextSpinAtRef.current = now + spinAutoResumeMs;
+      setSpinHoldUntil(now + spinAutoResumeMs);
       if (!spinWaitingRef.current) {
         spinWaitingRef.current = true;
         setSpinWaiting(true);
@@ -1102,10 +1181,9 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   useEffect(() => {
     const Plotly = (window as any).Plotly;
     if (!Plotly || !containerRef.current) return;
-    // CodeRabbit (this branch): guards the post-react collapse evaluation
-    // below against running after THIS effect has been invalidated (a
-    // later render's cleanup already fired) — set true in that cleanup.
-    let cancelled = false;
+    // Invalidate older queued work before this render enters the queue. The
+    // queue supplies ordering; this generation supplies relevance.
+    const renderGeneration = ++plotRenderGenerationRef.current;
 
     // Build the surfaces and coordinates
     const surf = buildSurfaces(payoffs);
@@ -1118,6 +1196,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
     // component whose corner traces plotting.ts never drew (the STATIC,
     // data-space SHORT_CONTINUUM rule already collapsed it) is left out —
     // there is nothing left for the dynamic rule to hide.
+    let continuumMeta: ContinuumComponentMeta[] = [];
     {
       const [zLo, zHi] = zRangeOfSurface(surf);
       const byComponent = new Map<number, { midpointIdx?: number; cornerIdxs: number[] }>();
@@ -1153,13 +1232,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           surfaces,
         });
       });
-      continuumMetaRef.current = contMeta;
-      // A fresh react always redraws corners at their STATIC (baseline)
-      // visibility, so "currently collapsed by the dynamic rule" resets to
-      // false for every component — a stale decision carried over from a
-      // previous game/render must never suppress a restyle this render
-      // actually needs (see applyContinuumCollapseAtCamera below).
-      continuumCollapsedRef.current = new Map();
+      continuumMeta = contMeta;
     }
 
     // 'legendonly' rather than dropping the traces: the legend entries stay put,
@@ -1424,30 +1497,47 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       }
     };
 
-    // Plot updating (incrementally with react, preserving camera configuration)
-    Plotly.react(plotId, traces, layout, {
-      responsive: true,
-      displayModeBar: false
-    }).then(() => {
-      // CodeRabbit (this branch): `Plotly.react` returns a promise; the
-      // collapse evaluation now runs after it resolves (not immediately
-      // after the call returns), and the `cancelled` guard drops it if a
-      // LATER render's cleanup already fired before this one resolved —
-      // never restyle traces belonging to a react call this effect has
-      // since superseded.
-      if (cancelled) return;
+    // Plot updating (incrementally with react, preserving camera
+    // configuration). React replacements and index-based trace restyles must
+    // never overlap: an older restyle could otherwise land on a newer trace
+    // array. Metadata is installed inside the same generation-aware queue for
+    // the same reason—it must describe the traces the queued react installs.
+    queuedRenderGenerationRef.current = renderGeneration;
+    void enqueuePlotMutation(plotMutationQueueRef.current, async () => {
+      if (plotRenderGenerationRef.current !== renderGeneration) return;
+      continuumMetaRef.current = continuumMeta;
+      continuumMetaGenerationRef.current = renderGeneration;
+      // A fresh react redraws corners at their static baseline visibility.
+      continuumCollapsedRef.current = new Map();
+      if (plotRenderGenerationRef.current !== renderGeneration) return;
+      await Plotly.react(plotId, traces, layout, {
+        responsive: true,
+        displayModeBar: false
+      });
+      if (plotRenderGenerationRef.current !== renderGeneration) return;
+      attachPlotListeners();
       // RED-MATH-13/002: the camera this render's react just painted with
       // may already be a fusing angle (a running simulation's per-step
-      // redraw, or the idle spin resuming on the same pose it left off at)
-      // — evaluate once immediately rather than waiting for the next
-      // relayout.
+      // redraw, or the idle spin resuming on the same pose it left off at).
       lastContinuumEvalRef.current = performance.now();
-      applyContinuumCollapseAtCamera(cameraRef.current);
+      await applyContinuumCollapseAtCamera(cameraRef.current, renderGeneration);
+      if (plotRenderGenerationRef.current !== renderGeneration) return;
+      // Plot-owned completion signal: unlike React's Run/Pause button state,
+      // this advances only after this render's react and trace restyles settle.
+      const gdNow = document.getElementById(plotId) as any;
+      if (gdNow) {
+        const previousRevision = Number(gdNow.dataset.plotReactRevision ?? 0);
+        gdNow.dataset.plotReactRevision = String(Number.isFinite(previousRevision) ? previousRevision + 1 : 1);
+        gdNow.dataset.plotReactRunning = String(simState.running);
+      }
     });
 
-    // Attach camera listener after Plotly has initialized the element's event system
-    const el2 = document.getElementById(plotId) as any;
-    if (el2 && typeof el2.on === 'function') {
+    // Attach only after this generation's Plotly.react has initialized the
+    // element's event system; a queued initial react has not done so while the
+    // effect body itself is still running.
+    function attachPlotListeners() {
+      const el2 = document.getElementById(plotId) as any;
+      if (!el2 || typeof el2.on !== 'function') return;
       try { el2.removeAllListeners('plotly_relayout'); } catch {}
       el2.on('plotly_relayout', (eventData: any) => {
         /*
@@ -1491,7 +1581,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
               trailingContinuumEvalTimerRef.current = null;
             }
             lastContinuumEvalRef.current = nowTs;
-            applyContinuumCollapseAtCamera(live);
+            void requestContinuumCollapseAtCamera(live);
           } else {
             // CodeRabbit (this branch): a plain throttle silently drops an
             // event landing inside the window — fine for the idle spin
@@ -1507,7 +1597,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
             trailingContinuumEvalTimerRef.current = setTimeout(() => {
               trailingContinuumEvalTimerRef.current = null;
               lastContinuumEvalRef.current = performance.now();
-              applyContinuumCollapseAtCamera(cameraRef.current);
+              void requestContinuumCollapseAtCamera(cameraRef.current);
             }, delay);
           }
         }
@@ -1581,51 +1671,93 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
           // (what the user asked for), then immediately re-run the
           // camera-aware decision, which re-hides only the corners of a
           // component that is STILL fusing at the CURRENT camera —
-          // synchronous, no timer, no race.
+          // in the same serialized queue entry, with no timer race.
           const gdNow = document.getElementById(plotId) as any;
           const groupTraces: any[] = (gdNow?.data ?? []).filter((t: any) => t.legendgroup === 'continuumNE');
-          const groupIdx: number[] = [];
-          (gdNow?.data ?? []).forEach((t: any, i: number) => { if (t.legendgroup === 'continuumNE') groupIdx.push(i); });
-          const anyCurrentlyShown = groupTraces.some((t) => t.visible === undefined || t.visible === true);
-          if (anyCurrentlyShown) {
+          const pendingVisibility = legendVisibilityIntentRef.current.get('continuumNE');
+          const anyCurrentlyShown = pendingVisibility === undefined
+            ? groupTraces.some((t) => t.visible === undefined || t.visible === true)
+            : pendingVisibility === true;
+          const nextVisibility: boolean | 'legendonly' = anyCurrentlyShown ? 'legendonly' : true;
+          legendVisibilityIntentRef.current.set('continuumNE', nextVisibility);
+          const generation = plotRenderGenerationRef.current;
+          if (nextVisibility === 'legendonly') {
             userHiddenGroupsRef.current.add('continuumNE');
-            (window as any).Plotly?.restyle(plotId, { visible: 'legendonly' }, groupIdx);
           } else {
             userHiddenGroupsRef.current.delete('continuumNE');
-            continuumCollapsedRef.current = new Map();
-            (window as any).Plotly?.restyle(plotId, { visible: true }, groupIdx);
-            applyContinuumCollapseAtCamera(cameraRef.current);
           }
+          void enqueuePlotMutation(plotMutationQueueRef.current, async () => {
+            try {
+              if (plotRenderGenerationRef.current !== generation) return;
+              const PlotlyNow = (window as any).Plotly;
+              const liveGraph = document.getElementById(plotId) as any;
+              if (!PlotlyNow || !liveGraph) return;
+              const groupIdx: number[] = [];
+              (liveGraph.data ?? []).forEach((t: any, i: number) => {
+                if (t.legendgroup === 'continuumNE') groupIdx.push(i);
+              });
+              await PlotlyNow.restyle(liveGraph, { visible: nextVisibility }, groupIdx);
+              if (plotRenderGenerationRef.current !== generation || nextVisibility === 'legendonly') return;
+              continuumCollapsedRef.current = new Map();
+              await applyContinuumCollapseAtCamera(cameraRef.current, generation);
+            } finally {
+              if (legendVisibilityIntentRef.current.get('continuumNE') === nextVisibility) {
+                legendVisibilityIntentRef.current.delete('continuumNE');
+              }
+            }
+          }).finally(markLegendMutationSettled);
           return false; // we handled the WHOLE continuumNE toggle ourselves
         }
-        const cur = clicked?.visible;
-        const nextVisible = (cur === undefined || cur === true) ? 'legendonly' : true;
+        const clickedName = clicked?.name ?? '';
+        const intentKey = grp ?? clickedName;
+        const liveGraph = document.getElementById(plotId) as any;
+        const matchingTraces: any[] = (liveGraph?.data ?? []).filter((t: any) =>
+          grp ? t.legendgroup === grp : (t.name ?? '').toLowerCase() === clickedName.toLowerCase());
+        const pendingVisibility = legendVisibilityIntentRef.current.get(intentKey);
+        const currentlyShown = pendingVisibility === undefined
+          ? matchingTraces.some((t) => t.visible === undefined || t.visible === true)
+          : pendingVisibility === true;
+        const nextVisible: boolean | 'legendonly' = currentlyShown ? 'legendonly' : true;
+        legendVisibilityIntentRef.current.set(intentKey, nextVisible);
         // Record the user's choice by group (or name for ungrouped entries) so
         // the next redraw keeps it (RED-MATH-12/002).
-        const key = grp ?? clicked?.name;
+        const key = grp ?? clickedName;
         if (key) { if (nextVisible === 'legendonly') userHiddenGroupsRef.current.add(key); else userHiddenGroupsRef.current.delete(key); }
-        if (grp && grp !== 'amoves' && grp !== 'bmoves') return true; // Plotly's own group toggle
-        // amoves/bmoves: the legend entry is a stub trace and the real path a
-        // separate trace in the same group. Ungrouped entries: toggle every trace
-        // sharing the clicked NAME (Plotly's default would flip just the one
-        // clicked; the redraw re-applies by name — CodeRabbit).
-        const indices: number[] = [];
-        ev.data.forEach((t: any, i: number) => {
-          if (grp ? t.legendgroup === grp : (t.name ?? '').toLowerCase() === (clicked?.name ?? '').toLowerCase()) indices.push(i);
-        });
-        (window as any).Plotly?.restyle(plotId, { visible: nextVisible }, indices);
-        return false; // suppress Plotly's single-trace default
+        // Own every app-visible legend write so Plotly cannot issue a default
+        // restyle outside the same queue as react. Re-resolve indices from the
+        // live trace array only when this generation reaches the queue front.
+        const generation = plotRenderGenerationRef.current;
+        void enqueuePlotMutation(plotMutationQueueRef.current, async () => {
+          try {
+            if (plotRenderGenerationRef.current !== generation) return;
+            const PlotlyNow = (window as any).Plotly;
+            const currentGraph = document.getElementById(plotId) as any;
+            if (!PlotlyNow || !currentGraph) return;
+            const indices: number[] = [];
+            (currentGraph.data ?? []).forEach((t: any, i: number) => {
+              if (grp ? t.legendgroup === grp : (t.name ?? '').toLowerCase() === clickedName.toLowerCase()) indices.push(i);
+            });
+            await PlotlyNow.restyle(currentGraph, { visible: nextVisible }, indices);
+          } finally {
+            if (legendVisibilityIntentRef.current.get(intentKey) === nextVisible) {
+              legendVisibilityIntentRef.current.delete(intentKey);
+            }
+          }
+        }).finally(markLegendMutationSettled);
+        return false; // suppress Plotly's out-of-queue default
       });
     }
 
-    // CodeRabbit (this branch): cancel a pending trailing continuum-collapse
-    // evaluation before this effect's next run (or unmount) — the timer
-    // reads refs only, so leaving it would not misbehave, but a rebuild
-    // that already re-evaluates via the immediate post-react call above
-    // makes an old one redundant, and unmount should not leave ANY timer
-    // outstanding.
+    // Invalidate this generation before a replacement effect or unmount can
+    // let its queued work touch the graph. Timers and coalesced requests from
+    // this generation become harmless no-ops at their queue-front checks.
     return () => {
-      cancelled = true;
+      if (plotRenderGenerationRef.current === renderGeneration) {
+        plotRenderGenerationRef.current++;
+      }
+      if (pendingContinuumEvaluationRef.current?.generation === renderGeneration) {
+        pendingContinuumEvaluationRef.current = null;
+      }
       if (trailingContinuumEvalTimerRef.current) {
         clearTimeout(trailingContinuumEvalTimerRef.current);
         trailingContinuumEvalTimerRef.current = null;

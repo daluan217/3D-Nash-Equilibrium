@@ -95,6 +95,16 @@ try {
     // the contract is a 200 JSON answer, not a non-null version
     record('GET /api/version answers 200 JSON', v.status === 200 && typeof v.json === 'object',
       `status=${v.status} version=${v.json?.version}`);
+
+    // Unknown API paths must not fall through to the production SPA index.
+    // A 200 HTML response here makes a typo look healthy to a status-only
+    // smoke check and can hide a missing route.
+    const unknown = await call('GET', '/api/scenarios');
+    record('unknown API path is a JSON 404, not the SPA index',
+      unknown.status === 404
+        && unknown.headers.get('content-type')?.includes('application/json')
+        && unknown.json?.error === 'Not found',
+      `status=${unknown.status} content-type=${unknown.headers.get('content-type')}`);
   }
 
   // ══ 2. hardening headers on every API response (the injection/clickjacking

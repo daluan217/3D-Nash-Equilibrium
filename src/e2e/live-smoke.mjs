@@ -45,7 +45,7 @@
 
 import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { resolveWaitMs, waitForDeploy } from './liveSmokeGate.mjs';
+import { healthyApiResponse, resolveWaitMs, waitForDeploy } from './liveSmokeGate.mjs';
 
 const BASE = (process.env.LIVE_BASE || 'https://nash-equilibrium-simulator.com').replace(/\/$/, '');
 // How long to wait for the deploy to land after the merge. Resolved through
@@ -54,6 +54,7 @@ const BASE = (process.env.LIVE_BASE || 'https://nash-equilibrium-simulator.com')
 // now redundant with this cap, not the only thing enforcing it).
 const WAIT_MS = resolveWaitMs(process.env.LIVE_WAIT_MINUTES);
 const EXPECTED_VERSION = process.env.EXPECTED_VERSION || null;
+const API_CHECK_TIMEOUT_MS = 15_000;
 
 const results = [];
 function record(name, pass, detail) {
@@ -160,11 +161,30 @@ if (process.env.EXPECTED_INDEX) {
 
   let health = {};
   try { health = JSON.parse(r.text); } catch { /* not json */ }
+  record('live /api/health has the expected JSON shape',
+    healthyApiResponse({ status: r.status, contentType: r.headers.get('content-type'), health }),
+    `content-type=${r.headers.get('content-type')} backendVersion=${health.backendVersion ?? '(missing)'}`);
   if (EXPECTED_VERSION) {
     record('live backend is running this exact release (backendVersion)',
       r.status === 200 && health.backendVersion === EXPECTED_VERSION,
       `status=${r.status} backendVersion=${health.backendVersion ?? '(missing)'} expected=${EXPECTED_VERSION}`);
   }
+}
+
+// An unknown API path must not be answered by the SPA index fallback. This is
+// intentionally a semantic check: HTTP 200 plus HTML is not API liveness.
+{
+  const r = await getText('/api/scenarios', {
+    signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS),
+  }).catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
+  let body = null;
+  try { body = JSON.parse(r.text); } catch { /* not JSON */ }
+  record('unknown API path is a JSON 404, not the SPA index',
+    r.status === 404
+      && r.headers.get('content-type')?.includes('application/json')
+      && body?.error === 'Not found',
+    `status=${r.status} content-type=${r.headers.get('content-type')}`
+      + (r.error ? ` error=${r.error}` : ''));
 }
 
 // ══ 4. build metadata (informational only — never gates anything). H5

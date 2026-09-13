@@ -2260,6 +2260,298 @@ function testCameraBasisRespectsNonzeroCenter() {
     + `fwd delta=${fwdDelta.toFixed(3)}, projected screen delta=${screenDelta.toFixed(1)}px at the cornerRow1Col1 tour pose`);
 }
 
+function testSection47UsesActionableRoleAwareLegendChecks() {
+  const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+  const plotlyView = readFileSync('src/components/PlotlyView.tsx', 'utf8');
+  const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
+  const start = smoke.indexOf("section('47'");
+  const end = smoke.indexOf("section('50'", start);
+  const section47 = start >= 0 && end > start ? smoke.slice(start, end) : '';
+  const usesActionableExactLegendTarget = (source: string): boolean => {
+    const hidePrepare = source.indexOf('const hideTarget = await prepareLegendClick();');
+    const hideClick = source.indexOf('await clickLegendEntry();', hidePrepare);
+    const pausedPlotGuard = source.indexOf('const redrawsStopped = runControlVisible && pausedPlotSettled !== null;');
+    const showPrepare = source.indexOf('const showTarget = await prepareLegendClick();', pausedPlotGuard);
+    const showClick = source.indexOf('await clickLegendEntry();', showPrepare);
+    return source.includes("const legendToggle = legendGroup.locator('rect.legendtoggle');")
+      && source.includes('exactTarget: atPoint === target')
+      && source.includes("sameLegendGroup: atPoint?.closest('g.traces') === target.closest('g.traces')")
+      && source.includes('const clickLegendEntry = () => legendToggle.click();')
+      && !source.includes('force: true')
+      && hidePrepare >= 0 && hideClick > hidePrepare
+      && pausedPlotGuard > hideClick && showPrepare > pausedPlotGuard && showClick > showPrepare;
+  };
+  ok(usesActionableExactLegendTarget(section47),
+    'section 47 must prove and normally click Plotly\'s exact legend hit rectangle');
+  const forcedClickMutant = section47.replace('legendToggle.click();', 'legendToggle.click({ force: true });');
+  ok(!usesActionableExactLegendTarget(forcedClickMutant),
+    'mutation: bypassing actionability with a forced legend click must fail the section 47 pointer guard');
+  const genericSvgHitMutant = section47.replace('exactTarget: atPoint === target', "exactTarget: atPoint?.tagName === 'rect'");
+  ok(!usesActionableExactLegendTarget(genericSvgHitMutant),
+    'mutation: accepting an arbitrary overlapping SVG rectangle must fail the exact legend-target guard');
+  const orphanedHidePreparationMutant = section47.replace(
+    'const hideTarget = await prepareLegendClick();',
+    'const hideTarget = { ready: true };',
+  );
+  ok(!usesActionableExactLegendTarget(orphanedHidePreparationMutant),
+    'mutation: bypassing the actionable helper at the hide call site must fail the section 47 wiring guard');
+  const orphanedShowPreparationMutant = section47.replace(
+    'const showTarget = await prepareLegendClick();',
+    'const showTarget = { ready: true };',
+  );
+  ok(!usesActionableExactLegendTarget(orphanedShowPreparationMutant),
+    'mutation: bypassing the actionable helper at the show call site must fail the section 47 wiring guard');
+
+  const validatesContinuumRoles = (source: string): boolean =>
+    source.includes("const midpoints = traces.filter((trace) => trace.role === 'midpoint');")
+    && source.includes('midpoints.every((trace) => trace.visible === true)')
+    && source.includes("trace.role === 'corner' && trace.visible === 'legendonly'")
+    && source.includes('!continuumGroupIsShown(hiddenMidpointControl)')
+    && source.includes('continuumGroupIsShown(initiallyVisible)')
+    && source.includes('continuumGroupIsShown(visibleAfterShow)');
+  ok(validatesContinuumRoles(section47),
+    'section 47 must require visible midpoint traces and permit camera-hidden corners only');
+  const arbitraryVisibleTraceMutant = section47.replace(
+    'midpoints.every((trace) => trace.visible === true)',
+    'traces.some((trace) => trace.visible === true)',
+  );
+  ok(!validatesContinuumRoles(arbitraryVisibleTraceMutant),
+    'mutation: allowing any visible continuum trace to mask a hidden midpoint must fail the role-aware guard');
+  const unwiredInitialRoleOracleMutant = section47.replace(
+    'continuumGroupIsShown(initiallyVisible)',
+    'initiallyVisible.some((trace) => trace.visible === true)',
+  );
+  ok(!validatesContinuumRoles(unwiredInitialRoleOracleMutant),
+    'mutation: bypassing the role-aware helper for the initial state must fail the section 47 wiring guard');
+  const unwiredRestoredRoleOracleMutant = section47.replace(
+    'continuumGroupIsShown(visibleAfterShow)',
+    'visibleAfterShow.some((trace) => trace.visible === true)',
+  );
+  ok(!validatesContinuumRoles(unwiredRestoredRoleOracleMutant),
+    'mutation: bypassing the role-aware helper for the restored state must fail the section 47 wiring guard');
+
+  const exercisesRapidQueuedLegendToggles = (source: string): boolean =>
+    source.includes('const legendMutationRevision = () => lp.evaluate(() =>')
+    && source.includes('const waitForLegendMutations = (before, count) => lp.waitForFunction')
+    && source.includes('revision >= start + expected')
+    && source.includes('await clickLegendEntry();\n    await clickLegendEntry();')
+    && source.includes('await waitForLegendMutations(continuumLegendRevisionBefore, 2)')
+    && source.includes('continuumLegendMutationsSettled && continuumGroupIsShown(continuumAfterRapidDoubleClick)')
+    && source.includes('two rapid continuum legend clicks cancel instead of repeating the first queued toggle')
+    && source.includes('await ordinaryLegendToggle.click();\n    await ordinaryLegendToggle.click();')
+    && source.includes('await waitForLegendMutations(ordinaryLegendRevisionBefore, 2)')
+    && source.includes('ordinaryLegendMutationsSettled && ordinaryGroupShown')
+    && source.includes("ts.every((t) => t.visible === undefined || t.visible === true)")
+    && source.includes('two rapid ordinary legend clicks cancel instead of repeating the first queued toggle');
+  ok(exercisesRapidQueuedLegendToggles(section47),
+    'section 47 must behaviorally double-click both continuum and ordinary queued legend paths');
+  const singleContinuumClickMutant = section47.replace(
+    'await clickLegendEntry();\n    await clickLegendEntry();',
+    'await clickLegendEntry();',
+  );
+  ok(!exercisesRapidQueuedLegendToggles(singleContinuumClickMutant),
+    'mutation: dropping the second rapid continuum click must fail the queued-toggle control guard');
+  const singleOrdinaryClickMutant = section47.replace(
+    'await ordinaryLegendToggle.click();\n    await ordinaryLegendToggle.click();',
+    'await ordinaryLegendToggle.click();',
+  );
+  ok(!exercisesRapidQueuedLegendToggles(singleOrdinaryClickMutant),
+    'mutation: dropping the second rapid ordinary click must fail the queued-toggle control guard');
+  const unawaitedLegendQueueMutant = section47.replace(
+    'await waitForLegendMutations(continuumLegendRevisionBefore, 2)',
+    'Promise.resolve(true)',
+  );
+  ok(!exercisesRapidQueuedLegendToggles(unawaitedLegendQueueMutant),
+    'mutation: reading continuum trace state without its two-operation completion boundary must fail');
+  const omittedVisibilityMutant = section47.replace(
+    'ts.every((t) => t.visible === undefined || t.visible === true)',
+    'ts.some((t) => t.visible === true)',
+  );
+  ok(!exercisesRapidQueuedLegendToggles(omittedVisibilityMutant),
+    'mutation: ordinary traces with omitted visible state must count as shown');
+
+  const wiresNaturalStopControlIntoCi = (source: string): boolean =>
+    source.includes('- name: Exercise section 47 after natural simulation completion')
+    && source.includes('if: matrix.shard == 24')
+    && source.includes("E2E_SECTION: '47'")
+    && source.includes("E2E_SECTION47_NATURAL_STOP: '1'");
+  ok(wiresNaturalStopControlIntoCi(workflow),
+    'CI shard 24 must run section 47\'s deterministic natural-completion branch');
+  const orphanedNaturalStopControlMutant = workflow.replace("E2E_SECTION47_NATURAL_STOP: '1'", "E2E_SECTION47_NATURAL_STOP: '0'");
+  ok(!wiresNaturalStopControlIntoCi(orphanedNaturalStopControlMutant),
+    'mutation: leaving the natural-stop branch disabled in CI must fail its wiring guard');
+
+  const waitsForStablePausedPlot = (source: string): boolean => {
+    const naturalControl = source.indexOf("const naturalStopControl = process.env.E2E_SECTION47_NATURAL_STOP === '1';");
+    const naturalWait = source.indexOf("await lp.getByRole('button', { name: /^Run$/ }).waitFor({ state: 'visible', timeout: 90000 });", naturalControl);
+    const transitionProbe = source.indexOf('const pauseTransitionRequested = await pauseButton.isVisible()');
+    const controlledTransitionProbe = source.indexOf('const pauseTransitionRequested = !naturalStopControl && await pauseButton.isVisible()', naturalWait);
+    const transitionClick = source.indexOf('if (pauseTransitionRequested) await pauseButton.click();', controlledTransitionProbe);
+    const runVisible = source.indexOf('const runControlVisible =');
+    const transitionRevisionAdvance = source.indexOf('? current.revision > pauseRenderRevisionBefore', runVisible);
+    const naturalStopRevision = source.indexOf(': current.revision >= pauseRenderRevisionBefore', transitionRevisionAdvance);
+    const exactPausedRender = source.indexOf("current.running === 'false'", naturalStopRevision);
+    const stableSignature = source.indexOf('current.signature === previousPausedPlotState.signature', exactPausedRender);
+    const twoStableReads = source.indexOf('stablePausedPlotReads >= 2', stableSignature);
+    const guard = source.indexOf('const redrawsStopped = runControlVisible && pausedPlotSettled !== null;', twoStableReads);
+    const showPrepare = source.indexOf('const showTarget = await prepareLegendClick();', guard);
+    return naturalControl >= 0 && naturalWait > naturalControl && controlledTransitionProbe > naturalWait
+      && transitionProbe === -1 && transitionClick > controlledTransitionProbe && runVisible > transitionClick
+      && transitionRevisionAdvance > runVisible && naturalStopRevision > transitionRevisionAdvance
+      && exactPausedRender > naturalStopRevision
+      && stableSignature > exactPausedRender && twoStableReads > stableSignature
+      && guard > twoStableReads && showPrepare > guard;
+  };
+  ok(waitsForStablePausedPlot(section47),
+    'section 47 must await an exact completed stopped Plotly revision and stable trace signature before the show hit-test');
+  const stalePausedRevisionMutant = section47.replace(
+    '? current.revision > pauseRenderRevisionBefore',
+    '? current.revision >= pauseRenderRevisionBefore',
+  );
+  ok(!waitsForStablePausedPlot(stalePausedRevisionMutant),
+    'mutation: accepting the pre-click Plotly revision after requesting Pause must fail the stopped-render guard');
+  const naturalStopNeedsNewRevisionMutant = section47.replace(
+    ': current.revision >= pauseRenderRevisionBefore',
+    ': current.revision > pauseRenderRevisionBefore',
+  );
+  ok(!waitsForStablePausedPlot(naturalStopNeedsNewRevisionMutant),
+    'mutation: requiring a nonexistent post-click revision after natural completion must fail the stopped-render guard');
+  const trustsRunControlAloneMutant = section47.replace("current.running === 'false'", 'current.running !== null');
+  ok(!waitsForStablePausedPlot(trustsRunControlAloneMutant),
+    'mutation: the Run control must not substitute for Plotly\'s exact non-running render marker');
+  const firstPausedSignatureMutant = section47.replace('stablePausedPlotReads >= 2', 'stablePausedPlotReads >= 0');
+  ok(!waitsForStablePausedPlot(firstPausedSignatureMutant),
+    'mutation: accepting the first paused trace read must fail the stability guard');
+  const awaitsCameraAwareRestyles = (source: string): boolean => {
+    const fnStart = source.indexOf('const applyContinuumCollapseAtCamera = async (camera: any, generation: number): Promise<void> => {');
+    const initialGenerationGuard = source.indexOf('if (plotRenderGenerationRef.current !== generation\n        || continuumMetaGenerationRef.current !== generation) return;', fnStart);
+    const cornerRestyle = source.indexOf("restyles.push(PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx));", fnStart);
+    const midpointRestyle = source.indexOf("restyles.push(PlotlyNow.restyle(gdNow, { 'marker.size': midSize }, midIdx));", fnStart);
+    const preRestyleGenerationGuard = source.lastIndexOf('if (plotRenderGenerationRef.current !== generation) return;', cornerRestyle);
+    const waitsForBoth = source.indexOf('await Promise.all(restyles);', Math.max(cornerRestyle, midpointRestyle));
+    return fnStart >= 0 && initialGenerationGuard > fnStart
+      && preRestyleGenerationGuard > initialGenerationGuard
+      && cornerRestyle > preRestyleGenerationGuard && midpointRestyle > preRestyleGenerationGuard
+      && waitsForBoth > Math.max(cornerRestyle, midpointRestyle);
+  };
+  ok(awaitsCameraAwareRestyles(plotlyView),
+    'camera-aware collapse must await both visibility and marker-size restyles before reporting completion');
+  const untrackedCornerRestyleMutant = plotlyView.replace(
+    'restyles.push(PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx));',
+    'PlotlyNow.restyle(gdNow, { visible: cornerVis }, cornerIdx);',
+  );
+  ok(!awaitsCameraAwareRestyles(untrackedCornerRestyleMutant),
+    'mutation: an untracked corner restyle must fail the completed-collapse contract');
+  const staleCollapseRestyleMutant = plotlyView.replace(
+    '    // The generation can change while this request waits behind an earlier\n'
+      + '    // Plotly operation. Re-check immediately before using trace indices.\n'
+      + '    if (plotRenderGenerationRef.current !== generation) return;\n',
+    '',
+  );
+  ok(!awaitsCameraAwareRestyles(staleCollapseRestyleMutant),
+    'mutation: removing the generation check immediately before index-based restyles must fail the collapse contract');
+  const publishesCompletedPlotState = (source: string): boolean => {
+    const generation = source.indexOf('const renderGeneration = ++plotRenderGenerationRef.current;');
+    const queuedGeneration = source.indexOf('queuedRenderGenerationRef.current = renderGeneration;', generation);
+    const queuedRender = source.indexOf('void enqueuePlotMutation(plotMutationQueueRef.current, async () => {', queuedGeneration);
+    const initialGenerationGuard = source.indexOf('if (plotRenderGenerationRef.current !== renderGeneration) return;', queuedRender);
+    const metadata = source.indexOf('continuumMetaRef.current = continuumMeta;', initialGenerationGuard);
+    const metadataGeneration = source.indexOf('continuumMetaGenerationRef.current = renderGeneration;', metadata);
+    const reactCall = source.indexOf('await Plotly.react(plotId, traces, layout', metadataGeneration);
+    const postReactGuard = source.indexOf('if (plotRenderGenerationRef.current !== renderGeneration) return;', reactCall);
+    const collapseSettled = source.indexOf('await applyContinuumCollapseAtCamera(cameraRef.current, renderGeneration);', postReactGuard);
+    const supersededGuard = source.indexOf('if (plotRenderGenerationRef.current !== renderGeneration) return;', collapseSettled);
+    const revision = source.indexOf('gdNow.dataset.plotReactRevision =', supersededGuard);
+    const running = source.indexOf('gdNow.dataset.plotReactRunning = String(simState.running);', revision);
+    return generation >= 0 && queuedGeneration > generation && queuedRender > queuedGeneration
+      && initialGenerationGuard > queuedRender
+      && metadata > initialGenerationGuard && metadataGeneration > metadata
+      && reactCall > metadataGeneration && postReactGuard > reactCall
+      && collapseSettled > postReactGuard && supersededGuard > collapseSettled
+      && revision > supersededGuard && running > revision;
+  };
+  ok(publishesCompletedPlotState(plotlyView),
+    'PlotlyView must publish revision/running state only from the completed Plotly.react path');
+  const missingPausedStatePublishMutant = plotlyView.replace(
+    'gdNow.dataset.plotReactRunning = String(simState.running);',
+    '/* omit the exact render state */',
+  );
+  ok(!publishesCompletedPlotState(missingPausedStatePublishMutant),
+    'mutation: omitting the completed render state must fail the section 47 app-state contract');
+  const unawaitedCollapseMutant = plotlyView.replace(
+    'await applyContinuumCollapseAtCamera(cameraRef.current, renderGeneration);',
+    'applyContinuumCollapseAtCamera(cameraRef.current, renderGeneration);',
+  );
+  ok(!publishesCompletedPlotState(unawaitedCollapseMutant),
+    'mutation: publishing while camera-aware restyles are still pending must fail the completed-render guard');
+  const missingPostRestyleCancellationMutant = plotlyView.replace(
+    'await applyContinuumCollapseAtCamera(cameraRef.current, renderGeneration);\n      if (plotRenderGenerationRef.current !== renderGeneration) return;',
+    'await applyContinuumCollapseAtCamera(cameraRef.current, renderGeneration);',
+  );
+  ok(!publishesCompletedPlotState(missingPostRestyleCancellationMutant),
+    'mutation: publishing a superseded render after awaited restyles must fail the completion guard');
+  const prematurePausedStatePublishMutant = plotlyView
+    .replace('gdNow.dataset.plotReactRevision = String(Number.isFinite(previousRevision) ? previousRevision + 1 : 1);',
+      '/* revision publication moved before Plotly.react resolves */')
+    .replace('Plotly.react(plotId, traces, layout, {',
+      'gdNow.dataset.plotReactRevision = "premature";\n    Plotly.react(plotId, traces, layout, {');
+  ok(!publishesCompletedPlotState(prematurePausedStatePublishMutant),
+    'mutation: publishing readiness before Plotly.react resolves must fail the completed-render guard');
+
+  const serializesEveryAppOwnedTraceWrite = (source: string): boolean => {
+    const coalescer = source.indexOf('const requestContinuumCollapseAtCamera = (');
+    const onePendingTask = source.indexOf('if (continuumEvaluationTaskRef.current) return continuumEvaluationTaskRef.current;', coalescer);
+    const queuedCamera = source.indexOf('task = enqueuePlotMutation(plotMutationQueueRef.current, async () => {', onePendingTask);
+    const metadataMissing = source.indexOf('if (continuumMetaGenerationRef.current !== request.generation) {', queuedCamera);
+    const queuedGenerationBound = source.indexOf('if (queuedRenderGenerationRef.current !== request.generation) return;', metadataMissing);
+    const legendHandler = source.indexOf("el2.on('plotly_legendclick'");
+    const continuumLegendQueue = source.indexOf('void enqueuePlotMutation(plotMutationQueueRef.current, async () => {', legendHandler);
+    const genericLegendQueue = source.indexOf('void enqueuePlotMutation(plotMutationQueueRef.current, async () => {', continuumLegendQueue + 1);
+    const completionPublisher = source.indexOf('const markLegendMutationSettled = () => {');
+    const completionRevision = source.indexOf('gd.dataset.plotLegendMutationRevision = String(revision);', completionPublisher);
+    const continuumLegendCompletion = source.indexOf('}).finally(markLegendMutationSettled);', continuumLegendQueue);
+    const genericLegendCompletion = source.indexOf('}).finally(markLegendMutationSettled);', genericLegendQueue);
+    const handlerEnd = source.indexOf("return false; // suppress Plotly's out-of-queue default", genericLegendQueue);
+    return /import\s*\{[^}]*\benqueuePlotMutation\b[^}]*\}\s*from '\.\.\/utils\/plotMutationQueue';/.test(source)
+      && source.includes('const plotMutationQueueRef = useRef<PlotMutationQueue>({ current: Promise.resolve(), pending: 0 });')
+      && coalescer >= 0 && onePendingTask > coalescer && queuedCamera > onePendingTask
+      && metadataMissing > queuedCamera && queuedGenerationBound > metadataMissing
+      && legendHandler >= 0 && continuumLegendQueue > legendHandler
+      && genericLegendQueue > continuumLegendQueue
+      && completionPublisher >= 0 && completionRevision > completionPublisher
+      && continuumLegendCompletion > continuumLegendQueue && continuumLegendCompletion < genericLegendQueue
+      && genericLegendCompletion > genericLegendQueue && handlerEnd > genericLegendCompletion
+      && !source.includes("return true; // Plotly's own group toggle")
+      && !source.includes('(window as any).Plotly?.restyle');
+  };
+  ok(serializesEveryAppOwnedTraceWrite(plotlyView),
+    'PlotlyView must coalesce camera work and queue every app-owned react/trace restyle');
+  const unqueuedLegendMutant = plotlyView.replace(
+    '          void enqueuePlotMutation(plotMutationQueueRef.current, async () => {',
+    '          void Promise.resolve().then(async () => {',
+  );
+  ok(!serializesEveryAppOwnedTraceWrite(unqueuedLegendMutant),
+    'mutation: moving the continuum legend restyle outside the Plotly mutation queue must fail the serialization contract');
+  const unpublishedLegendCompletionMutant = plotlyView.replace(
+    '}).finally(markLegendMutationSettled);',
+    '});',
+  );
+  ok(!serializesEveryAppOwnedTraceWrite(unpublishedLegendCompletionMutant),
+    'mutation: a queued legend operation without a plot-owned completion token must fail the queue contract');
+  const uncoalescedCameraMutant = plotlyView.replace(
+    '    if (continuumEvaluationTaskRef.current) return continuumEvaluationTaskRef.current;\n',
+    '',
+  );
+  ok(!serializesEveryAppOwnedTraceWrite(uncoalescedCameraMutant),
+    'mutation: allowing each idle-spin camera event to grow the Plotly queue must fail the coalescing contract');
+  const unboundedMissingMetadataMutant = plotlyView.replace(
+    '        if (queuedRenderGenerationRef.current !== request.generation) return;\n',
+    '',
+  );
+  ok(!serializesEveryAppOwnedTraceWrite(unboundedMissingMetadataMutant),
+    'mutation: a metadata-missing camera request without a queued render must not re-arm forever');
+}
+
 function testSection62DrivesItsDefaultCameraControl() {
   const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
   const plotlyView = readFileSync('src/components/PlotlyView.tsx', 'utf8');
@@ -2284,10 +2576,13 @@ function testSection62DrivesItsDefaultCameraControl() {
     source.includes('const moveToRenderedEye = async (eye) =>')
     && source.includes('const beforeMatrixKey = await readCameraMatrixKey();')
     && source.includes('matrixKey !== null && matrixKey !== beforeMatrixKey')
+    && source.includes('currentMatrixKey === previousMatrixKey')
+    && source.includes('stableMatrixReads >= 2')
+    && source.includes("if (!renderedMatrixSettled) throw new Error('rendered camera matrix did not settle')")
     && source.includes('await moveToRenderedEye(nudgeEye);')
     && source.includes('await moveToRenderedEye(eye);')
     && source.includes('const decisionBefore =')
-    && source.includes('decidedAt > before');
+    && source.includes('decidedAt > before ? true : null;');
   ok(waitsForRenderedCamera(section62),
     'section 62 camera controls must wait for Plotly\'s rendered matrices, not only its eagerly-updated camera eye');
   const declaredEyeOnlyMutant = section62.replace(
@@ -2296,6 +2591,9 @@ function testSection62DrivesItsDefaultCameraControl() {
   );
   ok(!waitsForRenderedCamera(declaredEyeOnlyMutant),
     'mutation: accepting an updated eye before its WebGL transform commits must fail the rendered-camera guard');
+  const firstMatrixMutant = section62.replace('stableMatrixReads >= 2', 'stableMatrixReads >= 0');
+  ok(!waitsForRenderedCamera(firstMatrixMutant),
+    'mutation: accepting the first changed WebGL matrix before it settles must fail the rendered-camera guard');
   const rejectsRenderedNoOp = section62.replace(
     'await moveToRenderedEye(nudgeEye);',
     '/* trust the declared no-op */',
@@ -2329,6 +2627,64 @@ function testSection62DrivesItsDefaultCameraControl() {
   const staleCacheMutant = section62.replace('syncDecidedAt > beforeSyncDecision', 'Number.isFinite(syncDecidedAt)');
   ok(!synchronizesBurstBaseline(staleCacheMutant),
     'mutation: accepting visibility without a new default-camera decision must fail the throttle-baseline guard');
+  const waitsForControlReact = (source: string): boolean =>
+    source.includes('const controlDecisionBefore =')
+    && source.includes('decidedAt > beforeDecision')
+    && source.includes('{ beforeDecision: controlDecisionBefore }')
+    && /record\('precondition: the control fixture[^;]+\n\s*controlReady,/.test(source);
+  ok(waitsForControlReact(section62),
+    'section 62 must wait for the control fixture\'s post-react camera decision before issuing another relayout');
+  const eagerControlDataMutant = section62.replace(
+    '&& decidedAt > beforeDecision',
+    '/* trust eagerly-mutated Plotly data before the WebGL redraw completes */',
+  );
+  ok(!waitsForControlReact(eagerControlDataMutant),
+    'mutation: accepting the control midpoint before its post-react decision must fail the control-readiness guard');
+  const reArmsControlSpinHold = (source: string): boolean => {
+    const controlReady = source.indexOf("record('precondition: the control fixture");
+    const deadlineBefore = source.indexOf("plot.getAttribute('data-spin-hold-until')", controlReady);
+    const hitTestsControlPress = source.indexOf("const controlHitTag = await p.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName ?? null", controlReady);
+    const realControlPress = source.indexOf("if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);", hitTestsControlPress);
+    const readsAppDeadline = source.indexOf("dataset?.spinHoldUntil", realControlPress);
+    const confirmsNewDeadline = source.indexOf('holdUntil > beforeHoldUntil', readsAppDeadline);
+    const confirmsFutureDeadline = source.indexOf('holdUntil - performance.now()', readsAppDeadline);
+    const recordsControlHold = source.indexOf('controlHoldState !== null', readsAppDeadline);
+    const finalFusingMove = source.lastIndexOf('await setEye(FUSING_EYE);');
+    return controlReady >= 0 && deadlineBefore > controlReady
+      && hitTestsControlPress > deadlineBefore && realControlPress > hitTestsControlPress
+      && readsAppDeadline > realControlPress && confirmsNewDeadline > readsAppDeadline
+      && confirmsFutureDeadline > readsAppDeadline
+      && recordsControlHold > Math.max(confirmsNewDeadline, confirmsFutureDeadline)
+      && finalFusingMove > recordsControlHold;
+  };
+  ok(reArmsControlSpinHold(section62),
+    'section 62 must re-arm the real idle-spin inactivity hold before its final rendered-camera control');
+  const expiredControlHoldMutant = section62.replace(
+    "if (controlHitTag === 'CANVAS') await p.mouse.click(controlCx, controlCy);",
+    '/* trust the inactivity hold from the start of this long section */',
+  );
+  ok(!reArmsControlSpinHold(expiredControlHoldMutant),
+    'mutation: relying on the expired initial inactivity hold must fail the final-control synchronization guard');
+  const labelOnlyControlHoldMutant = section62.replace(
+    "plot.getAttribute('data-spin-hold-until')",
+    "p.getByRole('button', { name: /resume spinning/i }).isVisible()",
+  );
+  ok(!reArmsControlSpinHold(labelOnlyControlHoldMutant),
+    'mutation: an already-visible Resume label must not satisfy the renewed app-deadline guard');
+  const mirrorsEverySpinDeadlineWrite = (source: string): boolean =>
+    source.includes('const setSpinHoldUntil = (until: number) => {')
+    && source.includes('nextSpinAtRef.current = until;')
+    && source.includes('container.dataset.spinHoldUntil = String(until);')
+    && (source.match(/nextSpinAtRef[.]current\s*=/g) ?? []).length === 1
+    && source.includes('setSpinHoldUntil(now + spinAutoResumeMs);');
+  ok(mirrorsEverySpinDeadlineWrite(plotlyView),
+    'every idle-spin deadline write must update the authoritative ref and observable through one helper');
+  const unmirroredActivityDeadlineMutant = plotlyView.replace(
+    'setSpinHoldUntil(now + spinAutoResumeMs);',
+    'nextSpinAtRef.current = now + spinAutoResumeMs;',
+  );
+  ok(!mirrorsEverySpinDeadlineWrite(unmirroredActivityDeadlineMutant),
+    'mutation: renewing the input deadline without its plot-state mirror must fail the observable-state guard');
   const couplesBurstToRealEvent = (source: string): boolean =>
     source.includes("gd?.on?.('plotly_relayout', onRelayout);")
     && source.includes('cameraMatrixKey() !== beforeBurstMatrixKey')
@@ -2413,6 +2769,7 @@ testShortContinuumCollapsesToOneMarker();
 testShortContinuumCutoffIsExactAndRelabelInvariant();
 testContinuumMarkersDoNotOverlapOnScreen();
 testCameraBasisRespectsNonzeroCenter();
+testSection47UsesActionableRoleAwareLegendChecks();
 testSection62DrivesItsDefaultCameraControl();
 testSimLogAgreesWithGroundTruth();
 testMenuDrawerSourceUsesFmtPayoff();
