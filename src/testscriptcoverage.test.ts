@@ -70,13 +70,24 @@ check('found a plausible number of test files (this repo has 30+)', files.length
 const devFallback = 'src/integration/api-dev-fallback.test.mjs';
 const integrationInvocation = new RegExp(`(?:^|&&\\s*)node\\s+${escapeRegex(devFallback)}(?=\\s|$)`);
 const workflowInvocation = new RegExp(`^\\s*run:\\s*node\\s+${escapeRegex(devFallback)}\\s*$`, 'm');
+const workflowJob = (workflow: string, jobName: string): string => {
+  const lines = workflow.split('\n');
+  const start = lines.findIndex((line) => line === `  ${jobName}:`);
+  if (start < 0) return '';
+  const next = lines.findIndex((line, index) => index > start && /^  [A-Za-z0-9_-]+:\s*$/.test(line));
+  return lines.slice(start, next < 0 ? undefined : next).join('\n');
+};
+const integrationJob = workflowJob(ciWorkflow, 'integration');
 check('the dev API fallback behavioral guard runs in npm run test:integration',
   integrationInvocation.test(integrationScript));
 check('the dev API fallback behavioral guard runs in the required GitHub integration job',
-  workflowInvocation.test(ciWorkflow));
-const workflowWithoutDevGuard = ciWorkflow.replace(workflowInvocation, '      run: echo removed-mutant');
+  workflowInvocation.test(integrationJob));
+const workflowWithoutDevGuard = integrationJob.replace(workflowInvocation, '        run: echo removed-mutant');
 check('mutation: removing the dev API fallback command from CI is detected',
   !workflowInvocation.test(workflowWithoutDevGuard));
+const unrelatedJobDecoy = `${workflowWithoutDevGuard}\n  optional-decoy:\n    steps:\n      - name: Decoy outside integration\n        run: node ${devFallback}`;
+check('mutation: the command in a different workflow job cannot satisfy the required integration-job guard',
+  workflowInvocation.test(unrelatedJobDecoy) && !workflowInvocation.test(workflowJob(unrelatedJobDecoy, 'integration')));
 
 if (failures > 0) { console.error(`✗ test-script coverage: ${failures} failed`); process.exit(1); }
 console.log(`✓ test-script coverage: ${files.length} unit files wired; dev API fallback wired locally and in CI`);

@@ -50,6 +50,16 @@ export function deploymentMatches({ status, text, expectedAsset, version, expect
   return true;
 }
 
+/** Does /api/health prove both HTTP success and the response schema we use? */
+export function healthyApiResponse({ status, contentType, health }) {
+  return status === 200
+    && typeof contentType === 'string'
+    && contentType.includes('application/json')
+    && health?.status === 'ok'
+    && typeof health.backendVersion === 'string'
+    && typeof health.capabilities?.scenarioRegen === 'boolean';
+}
+
 /**
  * Poll until `deploymentMatches` is true or the deadline elapses. Injectable
  * fetch/sleep/clock so tests can run this with a stubbed fetch and no real

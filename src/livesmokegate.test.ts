@@ -27,6 +27,7 @@ import {
   MAX_WAIT_MS,
   resolveWaitMs,
   deploymentMatches,
+  healthyApiResponse,
   waitForDeploy,
 } from './e2e/liveSmokeGate.mjs';
 
@@ -81,6 +82,20 @@ check('with no expectedVersion supplied, asset match alone counts as deployed',
 // A non-200 page never counts, regardless of the text it happened to carry.
 check('a non-200 response never counts as deployed',
   deploymentMatches({ status: 500, text: `<script src="/${ASSET}">`, expectedAsset: ASSET, version: '0.0.137', expectedVersion: '0.0.137' }) === false);
+
+// The body may be perfectly shaped on an error response. The health guard
+// must require HTTP success itself instead of relying on a sibling assertion.
+const healthyBody = { status: 'ok', backendVersion: '0.0.137', capabilities: { scenarioRegen: true } };
+check('a 200 JSON response with the complete health schema is healthy',
+  healthyApiResponse({ status: 200, contentType: 'application/json; charset=utf-8', health: healthyBody }) === true);
+check('a 500 response with the same healthy-looking body is NOT healthy',
+  healthyApiResponse({ status: 500, contentType: 'application/json', health: healthyBody }) === false);
+const bodyOnlyHealth = ({ contentType, health }: { contentType: string; health: typeof healthyBody }) =>
+  contentType.includes('application/json') && health.status === 'ok'
+  && typeof health.backendVersion === 'string'
+  && typeof health.capabilities.scenarioRegen === 'boolean';
+check('mutation probe: the old body-only predicate wrongly accepts the 500 fixture',
+  bodyOnlyHealth({ contentType: 'application/json', health: healthyBody }) === true);
 
 // ─────────────────────────────────────────────────────────── waitForDeploy
 // Stubbed fetch + stubbed sleep (instant) — proves the polling loop itself

@@ -45,7 +45,7 @@
 
 import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { resolveWaitMs, waitForDeploy } from './liveSmokeGate.mjs';
+import { healthyApiResponse, resolveWaitMs, waitForDeploy } from './liveSmokeGate.mjs';
 
 const BASE = (process.env.LIVE_BASE || 'https://nash-equilibrium-simulator.com').replace(/\/$/, '');
 // How long to wait for the deploy to land after the merge. Resolved through
@@ -161,10 +161,7 @@ if (process.env.EXPECTED_INDEX) {
   let health = {};
   try { health = JSON.parse(r.text); } catch { /* not json */ }
   record('live /api/health has the expected JSON shape',
-    r.headers.get('content-type')?.includes('application/json')
-      && health.status === 'ok'
-      && typeof health.backendVersion === 'string'
-      && typeof health.capabilities?.scenarioRegen === 'boolean',
+    healthyApiResponse({ status: r.status, contentType: r.headers.get('content-type'), health }),
     `content-type=${r.headers.get('content-type')} backendVersion=${health.backendVersion ?? '(missing)'}`);
   if (EXPECTED_VERSION) {
     record('live backend is running this exact release (backendVersion)',

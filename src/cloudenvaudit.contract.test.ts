@@ -118,4 +118,12 @@ assert.notEqual(runAudit(ordinarySecretMutant).status, 0, 'literal-designated va
 const malformedMutant = { template: { containers: [{ env: [...fixtureEntries, { valueSource: {} }] }] } };
 assert.notEqual(runAudit(malformedMutant).status, 0, 'malformed structured entries must fail closed rather than being dropped');
 
+// Keep the malformed-source branch independently mutation-tested. An unnamed
+// entry fails earlier at the shape check, so it cannot prove this branch.
+const emptySourceMutant = { template: { containers: [{ env: fixtureEntries.map((entry) =>
+  entry.name === 'AUTH_SECRET' ? { name: entry.name, valueSource: {} } : entry) }] } };
+const emptySourceResult = runAudit(emptySourceMutant);
+assert.notEqual(emptySourceResult.status, 0, 'a named but unusable valueSource must fail closed');
+assert.match(emptySourceResult.stdout + emptySourceResult.stderr, /INVALID_SOURCE\s+AUTH_SECRET/);
+
 console.log('✓ cloud env audit contract: OIDC-only auth, server-side fields masks, exact sources, and malformed/literal mutants are guarded');

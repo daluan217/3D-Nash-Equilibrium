@@ -56,6 +56,32 @@ const spawnDevServer = (port) => spawn(
   },
 );
 
+const READINESS_ATTEMPT_TIMEOUT_MS = 1000;
+const fetchHealth = async (base) => (await fetch(`${base}/api/health`, {
+  signal: AbortSignal.timeout(READINESS_ATTEMPT_TIMEOUT_MS),
+})).ok;
+
+// Mutation control for the per-attempt deadline used below. A peer can accept
+// the connection and never send headers; without AbortSignal.timeout, one
+// iteration would hang and the outer 120-attempt bound would be meaningless.
+const staller = createServer(() => { /* deliberately never respond */ });
+await new Promise((resolve, reject) => {
+  staller.once('error', reject);
+  staller.listen(0, '127.0.0.1', resolve);
+});
+const stallerAddress = staller.address();
+if (!stallerAddress || typeof stallerAddress === 'string') throw new Error('stall control did not bind a TCP port');
+try {
+  const outcome = await Promise.race([
+    fetchHealth(`http://127.0.0.1:${stallerAddress.port}`).then(() => 'resolved', () => 'aborted'),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), READINESS_ATTEMPT_TIMEOUT_MS * 2)),
+  ]);
+  if (outcome !== 'aborted') throw new Error(`readiness request deadline control failed: ${outcome}`);
+} finally {
+  staller.closeAllConnections?.();
+  await new Promise((resolve) => staller.close(resolve));
+}
+
 // Regression control for the exact false-ready shape: an unrelated service
 // already owns the port and answers /api/health while our child exits on
 // EADDRINUSE. A status-only readiness probe would incorrectly accept it.
@@ -124,7 +150,7 @@ try {
     if (child.exitCode !== null || child.signalCode !== null) break;
     let healthOk = false;
     try {
-      healthOk = (await fetch(`${BASE}/api/health`)).ok;
+      healthOk = await fetchHealth(BASE);
     } catch { /* still booting */ }
     if (isOwnReady({ log: serverLog, port: PORT, childProcess: child, healthOk })) {
       ready = true;
