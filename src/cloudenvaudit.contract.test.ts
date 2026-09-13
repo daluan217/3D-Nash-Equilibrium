@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 
 const workflow = readFileSync('.github/workflows/cloud-env-audit.yml', 'utf8');
 
+/** Report a cloud environment audit contract violation and terminate the test. */
 function fail(message: string): never {
   console.error(`✗ cloud env audit contract: ${message}`);
   process.exit(1);

@@ -26,6 +26,7 @@ import { readFileSync } from 'node:fs';
 const cloudbuild = readFileSync('cloudbuild.yaml', 'utf8');
 const manifest = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8');
 
+/** Report a Cloud Build contract violation and terminate the test. */
 function fail(msg: string): never {
   console.error(`✗ cloudbuild contract: ${msg}`);
   process.exit(1);

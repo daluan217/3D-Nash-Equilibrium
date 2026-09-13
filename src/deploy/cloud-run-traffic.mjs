@@ -13,6 +13,7 @@ const REVISION = 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION';
 export const isServingShare = (status) =>
   Number.isFinite(status?.percent) && status.percent > 0;
 
+/** Validate Cloud Run traffic metadata and resolve every serving revision. */
 export function inspectCloudRunTraffic(service) {
   const errors = [];
   if (!service || typeof service !== 'object' || Array.isArray(service)) {
@@ -64,6 +65,7 @@ export function inspectCloudRunTraffic(service) {
   return { errors, serving: uniqueServing, pinned, latest };
 }
 
+/** Run the traffic audit CLI using a Cloud Run service document from stdin. */
 function main() {
   let service;
   try {
