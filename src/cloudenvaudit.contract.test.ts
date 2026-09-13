@@ -127,6 +127,12 @@ assert.notEqual(payloadResult.status, 0, 'input containing literal env payload f
 const namesOnlyResult = runAudit(names.join('\n'));
 assert.notEqual(namesOnlyResult.status, 0, 'names-only input cannot prove Secret Manager backing');
 
+const malformedJsonResult = runAudit('{"template":');
+assert.notEqual(malformedJsonResult.status, 0, 'malformed JSON input must fail immediately');
+assert.match(malformedJsonResult.stdout + malformedJsonResult.stderr, /malformed JSON metadata response/);
+assert.doesNotMatch(malformedJsonResult.stdout + malformedJsonResult.stderr, /UNTRACKED|names-only input/,
+  'malformed JSON must not fall through to names-only tokenization');
+
 const ordinarySecretMutant = { template: { containers: [{ env: fixtureEntries.map((entry) => entry.name === 'NODE_ENV'
   ? { name: entry.name, valueSource: { secretKeyRef: { secret: 'wrong-secret', version: '1' } } }
   : entry) }] } };

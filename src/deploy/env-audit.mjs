@@ -49,8 +49,8 @@ if (stdin.startsWith('{') || stdin.startsWith('[')) {
       structured = true;
     }
   } catch {
-    // Fall through to the names-only parser, which will fail closed on JSON
-    // punctuation rather than treating a malformed response as healthy.
+    console.error('✗ cloud-run env audit: malformed JSON metadata response.');
+    process.exit(1);
   }
 }
 if (!structured) {

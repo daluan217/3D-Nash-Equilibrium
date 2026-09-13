@@ -30,6 +30,7 @@ import {
   healthyApiResponse,
   waitForDeploy,
 } from './e2e/liveSmokeGate.mjs';
+import { readFileSync } from 'node:fs';
 
 let failures = 0;
 function check(name: string, pass: boolean, detail?: string) {
@@ -227,6 +228,15 @@ async function runWaitForDeployTests() {
 }
 
 await runWaitForDeployTests();
+
+const liveSmokeSource = readFileSync('src/e2e/live-smoke.mjs', 'utf8');
+const scenariosCheck = liveSmokeSource.match(
+  /const r = await getText\('\/api\/scenarios',[\s\S]*?record\('unknown API path is a JSON 404, not the SPA index',[\s\S]*?\n}/,
+)?.[0] ?? '';
+check('the /api/scenarios live check has its own bounded AbortSignal',
+  /signal: AbortSignal\.timeout\(API_CHECK_TIMEOUT_MS\)/.test(scenariosCheck));
+check('a rejected /api/scenarios request is converted into a recorded failed response',
+  /\.catch\(\(error\) => \(\{ status: 0,[\s\S]*error: String\(error\)/.test(scenariosCheck));
 
 if (failures > 0) {
   console.error(`\n${failures} live-smoke gate check(s) failed`);
