@@ -3507,7 +3507,10 @@ export default function App() {
     }, controller);
 
     let status: number | null = null;
-    let body: { scenario?: RegenPreview | null; error?: string } | null = null;
+    // `failure` is read by `regenErrorFromResponse`: a 200 with `scenario:null`
+    // is a retriable draw failure or a persistent no-credentials server, and
+    // only this field tells them apart (RED-REGEN-21/002).
+    let body: { scenario?: RegenPreview | null; error?: string; failure?: unknown } | null = null;
     let caught: unknown = null;
     try {
       const res = await promise;
