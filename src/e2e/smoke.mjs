@@ -10368,13 +10368,29 @@ const suggestedScenario = {
           rendered: !!document.querySelector('.js-plotly-plot') && !!document.querySelector('[aria-label="Expand simulation log"]') };
       });
     };
-    for (const zoom of ['1.5', '2']) {
-      const m = await measure(zoom);
-      record(`§94 fixture guard: the page is fully rendered at zoom ${zoom} (plot + log header present)`, m.rendered);
-      record(`§94 zoom ${zoom}: the document is no wider than the 390px viewport (no sideways scroll)`,
-        m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
-      record(`§94 zoom ${zoom}: no visible element extends past the viewport`, m.wide.length === 0, JSON.stringify(m.wide));
-    }
+    const sweep = async (phase) => {
+      for (const zoom of ['1.5', '2']) {
+        const m = await measure(zoom);
+        record(`§94 ${phase} fixture guard: the page is fully rendered at zoom ${zoom} (plot + log header present)`, m.rendered);
+        record(`§94 ${phase} zoom ${zoom}: the document is no wider than the 390px viewport (no sideways scroll)`,
+          m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
+        record(`§94 ${phase} zoom ${zoom}: no visible element extends past the viewport`, m.wide.length === 0, JSON.stringify(m.wide));
+      }
+    };
+    await sweep('pre-run');
+    // The converged page renders rows the fresh page does not: the progress
+    // bar + step counter, the "Mixed Strategy Nash Equilibrium Reached" banner
+    // heading and the two indifference KaTeX lines. The review on #202 found
+    // the banner heading and the counter still forced sideways scroll at zoom
+    // 2 (457px) after the pre-run sweep was clean — so the same oracle runs again
+    // after a mixed-equilibrium run.
+    await p.evaluate(() => { document.documentElement.style.zoom = '1'; });
+    await p.getByRole('button', { name: 'Search Game' }).first().click();
+    await p.getByRole('button', { name: /^Run$/ }).click();
+    await p.waitForSelector('text=Converged', { timeout: 240000 });
+    record('§94 fixture guard: the Search Game run reached a mixed equilibrium (indifference lines rendered)',
+      await p.getByText(/A indifferent:|A strictly prefers:/).first().isVisible().catch(() => false));
+    await sweep('post-run');
     await p.close();
   });
 

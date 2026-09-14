@@ -6030,9 +6030,9 @@ export default function App() {
           <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800">
             {/* Bar row — only shown after first step */}
             {thinHistory.length > 1 && (
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">{/* RED-APP-21/004: wraps at 390px zoom 2 */}
                 <span className="text-xs font-medium shrink-0 text-slate-500 dark:text-slate-400">Progress</span>
-                <div className="flex-1 h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-700">
+                <div className="flex-1 min-w-16 h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-700">
                   <div
                     className="h-full rounded-full bg-accent-500 transition-all duration-150"
                     style={{ width: `${Math.min(100, (simState.stepCount / (thinHistory.length - 1)) * 100)}%` }}
@@ -6222,7 +6222,7 @@ export default function App() {
                 ? 'bg-ne-mixed-50 dark:bg-ne-mixed-950/20 border-ne-mixed-200 dark:border-ne-mixed-800/60'
                 : 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60'
               }`}>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">{/* RED-APP-21/004: wraps at 390px zoom 2 */}
                 <span className={`p-1.5 rounded-lg ${bannerIsMixedStyle ? 'bg-ne-mixed-100 dark:bg-ne-mixed-900/60 text-ne-mixed-700 dark:text-ne-mixed-300' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
                   }`}>
                   <Award className="w-5 h-5" />
@@ -6291,17 +6291,19 @@ export default function App() {
               <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-300 space-y-1">
                 {realisedConcept === 'mixed' ? (
                   <>
-                    <div>
-                      <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">
+                    {/* RED-APP-21/004: a KaTeX line is one nowrap unit — same
+                        min-w-0/overflow-x-auto treatment as the E[A]/E[B] rows. */}
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400">
                         {lines.a.indifferent ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      <MathTex tex={lines.a.tex} />
+                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.a.tex} /></span>
                     </div>
-                    <div>
-                      <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400">
                         {lines.b.indifferent ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      <MathTex tex={lines.b.tex} />
+                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.b.tex} /></span>
                     </div>
                     <div className="text-xs text-muted dark:text-muted-dark mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
