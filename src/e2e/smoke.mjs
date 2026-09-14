@@ -10319,6 +10319,65 @@ const suggestedScenario = {
     await p.close();
   });
 
+  // ══ 94. RED-APP-21/004 — at a phone viewport under browser zoom the page
+  //      scrolled SIDEWAYS: the two-part probability legend, "New AI scenario /
+  //      Explain this game", the E[A]/E[B] polynomial rows, the Simulation Log
+  //      header, the step-size row, the title and the stat-card labels were all
+  //      non-wrapping flex rows or unbreakable words wider than the viewport.
+  //      Zoom is emulated the way the red did it (documentElement.style.zoom),
+  //      and the oracle is the document's own scroll extent, not a class list:
+  //      any future non-wrapping row that pokes past the viewport fails here.
+  //
+  //      WHY THIS CANNOT PASS BY COINCIDENCE. The unfixed tree measured
+  //      docScrollWidth 471 at zoom 1.5 and 631 at zoom 2.0 against a 390px
+  //      viewport (director, 2026-09-14); the fixed tree measures 390 at both.
+  //      The section first asserts the page is genuinely laid out (Plotly card
+  //      and the log header present) so an empty or crashed render — which has
+  //      no overflow either — cannot pass.
+  section('94', 'a 390px viewport under browser zoom never scrolls sideways (every header row wraps)', async () => {
+    const p = await newTrackedPage({ viewport: { width: 390, height: 844 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(p, 'setup: clear the first-run tour before measuring the zoomed layout', { timeout: 20000 });
+    await p.locator('.js-plotly-plot').first().waitFor({ state: 'attached', timeout: 20000 });
+    const measure = async (zoom) => {
+      await p.evaluate((z) => { document.documentElement.style.zoom = z; }, zoom);
+      // settle: Plotly re-fits its WebGL canvas asynchronously after the zoom
+      // re-layout, so the document is briefly wider than its steady state on
+      // BOTH trees. Wait on the value itself: the scroll extent must hold for
+      // 30 consecutive animation frames (~0.5 s) before it is read. The unfixed
+      // tree settles at 471/631 and still fails; a wait cannot mask it.
+      await p.waitForFunction(() => new Promise((resolve) => {
+        let last = document.documentElement.scrollWidth, stable = 0;
+        const tick = () => {
+          const w = document.documentElement.scrollWidth;
+          stable = w === last ? stable + 1 : 0; last = w;
+          if (stable >= 30) resolve(true); else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }), null, { timeout: 15000 });
+      return p.evaluate(() => {
+        const de = document.documentElement;
+        window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
+        const vw = de.clientWidth;
+        // the hidden KaTeX MathML annotation (position:absolute, 1px) is not layout
+        const wide = Array.from(document.querySelectorAll('body *')).filter((el) => {
+          if (el.closest('.katex-mathml') || el.closest('.js-plotly-plot')) return false;
+          const r = el.getBoundingClientRect(); return r.width > 0 && r.right > vw + 2;
+        }).map((el) => `${el.tagName}.${(el.className || '').toString().slice(0, 40)}`).slice(0, 6);
+        return { vw, docScrollWidth: de.scrollWidth, maxScrollX, wide,
+          rendered: !!document.querySelector('.js-plotly-plot') && !!document.querySelector('[aria-label="Expand simulation log"]') };
+      });
+    };
+    for (const zoom of ['1.5', '2']) {
+      const m = await measure(zoom);
+      record(`§94 fixture guard: the page is fully rendered at zoom ${zoom} (plot + log header present)`, m.rendered);
+      record(`§94 zoom ${zoom}: the document is no wider than the 390px viewport (no sideways scroll)`,
+        m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
+      record(`§94 zoom ${zoom}: no visible element extends past the viewport`, m.wide.length === 0, JSON.stringify(m.wide));
+    }
+    await p.close();
+  });
+
 
 await executeSections();
 

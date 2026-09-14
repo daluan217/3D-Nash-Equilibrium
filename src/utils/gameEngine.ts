@@ -72,7 +72,10 @@ export const PRESETS: Record<string, PresetGame> = {
     row1Label: 'Cooperate', row2Label: 'Defect',
     col1Label: 'Cooperate', col2Label: 'Defect',
     desc: '<strong>Prisoner\'s Dilemma:</strong> Two suspects are arrested and held in separate cells. '
-        + `Each can ${spanA('Cooperate')}/${spanB('Cooperate')} with their partner by remaining silent, or ${spanA('Defect')}/${spanB('Defect')} by confessing. `
+        // RED-APP-21/004: "/" between two inline spans is not a line-break opportunity, so
+        // "Cooperate/Cooperate" was one unbreakable token wider than a phone viewport under
+        // zoom. U+200B after the slash lets it wrap; nothing visible changes.
+        + `Each can ${spanA('Cooperate')}/\u200B${spanB('Cooperate')} with their partner by remaining silent, or ${spanA('Defect')}/\u200B${spanB('Defect')} by confessing. `
         + 'Defecting is a strictly dominant strategy for both players, leading them inexorably to the unique dominant strategy Nash Equilibrium of '
         + `mutual defection (${spanA('1')},${spanB('1')}), `
         + `even though mutual cooperation would have yielded a much higher payoff (${spanA('3')},${spanB('3')}) for both.`

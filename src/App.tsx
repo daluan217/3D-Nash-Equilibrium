@@ -5156,7 +5156,7 @@ export default function App() {
       className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-700 dark:text-slate-200 shadow-sm"
       style={useFlexLog ? { height: inlineLogHeight! } : undefined}
     >
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
           <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
           Simulation Log
@@ -5279,7 +5279,10 @@ export default function App() {
           style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
         >
           <div>
-            <div className="flex items-center gap-2.5">
+            {/* RED-APP-21/004: flex-wrap lets the title drop under the icon when the
+                row is narrower than a word (390px under zoom 2); break-words is the
+                last resort for a single word wider than the whole row. */}
+            <div className="flex flex-wrap items-center gap-2.5">
               <span
                 className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl cursor-pointer select-none"
                 onClick={e => { if (e.detail === 3) setIsAdminOpen(true); }}
@@ -5287,7 +5290,7 @@ export default function App() {
               >
                 <Compass className="w-5.5 h-5.5" />
               </span>
-              <h1 data-focus-home tabIndex={-1} className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+              <h1 data-focus-home tabIndex={-1} className="min-w-0 break-words text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
                 Nash Equilibrium Simulator
               </h1>
             </div>
@@ -5661,18 +5664,30 @@ export default function App() {
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
               Expected-Payoff Functions
             </span>
+            {/* RED-APP-21/004 family: a KaTeX expression is one nowrap unit. Let the label
+                wrap onto its own line, and let the polynomial scroll INSIDE its row (min-w-0 +
+                overflow-x-auto) so a long expression at a phone width under zoom never widens
+                the document — the WCAG 1.4.10 failure is page-level horizontal scroll. */}
             <div className="flex flex-col gap-2 text-sm">
-              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[A]" className="text-player-a-600 dark:text-player-a-400" />
-                <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
+                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
+                  <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
+                </span>
               </div>
-              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[B]" className="text-player-b-600 dark:text-player-b-400" />
-                <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
+                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
+                  <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
+                </span>
               </div>
             </div>
-            <span className="text-xs text-slate-500 dark:text-slate-400">
-              <MathTex tex="x = P(\text{A plays Row 1}), \quad y = P(\text{B plays Col 1})" />
+            {/* RED-APP-21/004: two clauses as two inline nodes in a wrapping row, not one
+                KaTeX string — .katex is white-space:nowrap, so a single call cannot reflow
+                at a phone width under zoom (WCAG 1.4.10). Same shape as the E[A]/E[B] rows. */}
+            <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
+              <MathTex tex="x = P(\text{A plays Row 1}),\," />
+              <MathTex tex="y = P(\text{B plays Col 1})" />
             </span>
           </div>
 
@@ -5874,7 +5889,7 @@ export default function App() {
 
             {/* Step size / regret weight */}
             <div>
-              <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 font-medium mb-1">
+              <div className="flex flex-wrap items-center justify-between gap-x-2 text-xs text-slate-600 dark:text-slate-300 font-medium mb-1">
                 <span>{stepMode === 'regret' ? 'Regret Step Weight (λ)' : 'Initial Domain Shrink Step Size'}</span>
                 <input
                   type="text"
@@ -6130,8 +6145,8 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Speed slider */}
-              <div className="flex items-center gap-2">
+              {/* Speed slider — wraps for RED-APP-21/004 (phone width under zoom) */}
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Loop Speed</span>
                 <input
                   type="range"
@@ -6147,7 +6162,9 @@ export default function App() {
             </div>
 
             {/* Realtime coordinates outputs */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {/* RED-APP-21/004: break-words (inherited) — at 390px × zoom 2 a
+                two-column card is narrower than the word "Expected". */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 break-words">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
@@ -6440,12 +6457,15 @@ export default function App() {
                   narrates, and its claims are checked against the solver before
                   a single word of it is shown. */}
               <div className="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-2">
-                <div className="flex items-center justify-between gap-2">
+                {/* RED-APP-21/004: the heading row and the button row inside it both wrap, so at a
+                    phone width under zoom the buttons drop below the heading instead of pushing the
+                    document wider (WCAG 1.4.10). */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <strong className="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 shrink-0" />
                     Plain-English Explanation
                   </strong>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {/*
                       Opt-in path to a NEW invented story for a game that already
                       has one: the request omits the scenario, so the model
