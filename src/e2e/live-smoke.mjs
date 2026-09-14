@@ -187,6 +187,19 @@ if (process.env.EXPECTED_INDEX) {
       + (r.error ? ` error=${r.error}` : ''));
 }
 
+// RED-CLOUD-21/001: the backend sourcemap (sourcesContent = every backend
+// source file) was served at /server.cjs.map. A real map is a large JSON
+// document; the SPA fallback answers HTML. Both readings are asserted.
+{
+  const r = await getText('/server.cjs.map', {
+    signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS),
+  }).catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
+  const ct = r.headers.get('content-type') || '';
+  record('backend sourcemap is not served (/server.cjs.map falls through to the SPA page)',
+    r.status === 200 && ct.includes('text/html') && !/"sourcesContent"/.test(r.text),
+    `status=${r.status} content-type=${ct} bytes=${r.text.length}` + (r.error ? ` error=${r.error}` : ''));
+}
+
 // ══ 4. build metadata (informational only — never gates anything). H5
 //      follow-up (handbacks/2026-09-04-1620-HANDBACK.md): this field is
 //      desktop-release metadata, not backend-deploy metadata — see the
