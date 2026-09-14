@@ -9,7 +9,7 @@ import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
 import { EA, EB, r3, payoffProseRhs } from '../utils/gameEngine';
 import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera, shouldCollapseComponentAtCameraExact } from '../utils/cameraProjection';
 import { enqueuePlotMutation, PlotMutationQueue } from '../utils/plotMutationQueue';
-import { Rotate3d, Move, RefreshCw } from 'lucide-react';
+import { Rotate3d, Move, RefreshCw, Maximize, Minimize } from 'lucide-react';
 
 /**
  * RED-MATH-13/002: per-continuum-component trace bookkeeping, rebuilt every
@@ -376,6 +376,24 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const plotId = PLOT_ID;
   const [dragMode, setDragMode] = useState<'turntable' | 'pan'>('turntable');
   const [uiRevision, setUiRevision] = useState<number>(0);
+  const [plotFullscreen, setPlotFullscreen] = useState(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onChange = () => setPlotFullscreen(document.fullscreenElement === el);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+  const togglePlotFullscreen = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (document.fullscreenElement && document.fullscreenElement !== el) return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void el.requestFullscreen().catch(() => {});
+    }
+  };
   const pinchStartDist = useRef<number | null>(null);
   const pinchStartEye = useRef<{x: number; y: number; z: number} | null>(null);
   // Tracks the camera the user has rotated to so Plotly.react never overrides it
@@ -1850,7 +1868,28 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         </button>
       )}
 
-      <div id={plotId} className="w-full h-full" />
+      {/* Fullscreen: native Fullscreen API on the plot wrapper itself (top-level
+          document, no iframe involved). A sibling to the Resume-spin chip but on
+          the right edge, same visual family. In fullscreen the wrapper's fixed
+          responsive heights are replaced by the full-viewport rules in
+          index.css so the plot fills the screen. */}
+      <button
+        type="button"
+        onClick={togglePlotFullscreen}
+        data-tour="plot-fullscreen"
+        aria-pressed={plotFullscreen}
+        className={`absolute bottom-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold shadow-xs transition-colors cursor-pointer ${
+          isDark
+            ? 'bg-slate-900/90 border-slate-700 text-slate-200 hover:bg-slate-800'
+            : 'bg-white/95 border-slate-200 text-slate-600 hover:bg-slate-50'
+        }`}
+        title={plotFullscreen ? 'Exit fullscreen' : 'View plot fullscreen'}
+      >
+        {plotFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+        <span className="hidden sm:inline">{plotFullscreen ? 'Exit fullscreen' : 'Fullscreen'}</span>
+      </button>
+
+      <div id={plotId} data-plot-root className="w-full h-full" />
     </div>
   );
 };

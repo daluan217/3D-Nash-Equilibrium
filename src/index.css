@@ -439,3 +439,25 @@ input.no-native-spinner {
     display: block !important;
   }
 }
+
+/* Plot fullscreen (PlotlyView): the native Fullscreen API on the plot
+ * wrapper. ::backdrop can't be reached from Tailwind utilities, so the
+ * fullscreen-painted background is set here — matching the plot's own
+ * surface in each theme so no theme flash shows around the edges. */
+[data-tour="plot"]:fullscreen {
+  border: none;
+  border-radius: 0;
+  width: 100vw;
+  height: 100vh;
+  padding: 0.5rem;
+}
+[data-tour="plot"]:fullscreen [data-plot-root] { height: 100%; }
+[data-tour="plot"]:fullscreen::backdrop { background: transparent; }
+
+/* Fullscreen only: the legend panel (glyphs + text) reads small on a
+ * full-viewport plot. Scale just Plotly's legend <g> — nothing on the
+ * scene itself changes. */
+[data-tour="plot"]:fullscreen .js-plotly-plot svg g.legend {
+  transform: scale(1.25);
+  transform-origin: 0 0;
+}
