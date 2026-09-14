@@ -195,8 +195,8 @@ if (process.env.EXPECTED_INDEX) {
     signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS),
   }).catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
   const ct = r.headers.get('content-type') || '';
-  record('backend sourcemap is not served (no JSON at /server.cjs.map)',
-    r.status !== 0 && !ct.includes('json') && !/"sourcesContent"/.test(r.text),
+  record('backend sourcemap is not served (/server.cjs.map falls through to the SPA page)',
+    r.status === 200 && ct.includes('text/html') && !/"sourcesContent"/.test(r.text),
     `status=${r.status} content-type=${ct} bytes=${r.text.length}` + (r.error ? ` error=${r.error}` : ''));
 }
 
