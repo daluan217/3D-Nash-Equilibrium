@@ -100,6 +100,31 @@ async function checkForUpdates(parentWindow) {
   }
 }
 
+// RED-DESKTOP-21/002: the desktop app is an offline math tool, but Chromium's
+// own background services (variations/field-trial seed, component updater,
+// Safe Browsing, domain reliability) are ON by default and reached Google from
+// the moment the process spawned — before any window painted, with zero user
+// action. These must be appended BEFORE app.whenReady()/'ready': Chromium reads
+// its command line during startup, so a switch added later is simply ignored.
+// The app's only remaining egress is its own disclosed update check against
+// UPDATE_BASE_URL (checkForUpdates, below).
+for (const sw of [
+  'disable-background-networking',
+  'disable-component-update',
+  'disable-domain-reliability',
+  'disable-client-side-phishing-detection',
+  'disable-sync',
+  'no-pings',
+  'metrics-recording-only',
+]) {
+  app.commandLine.appendSwitch(sw);
+}
+// Field trials / variations: the seed fetch is what the helper command lines
+// showed (--variations-seed-version/--field-trial-handle).
+app.commandLine.appendSwitch('disable-features', 'ChromeVariations,OptimizationHints,MediaRouter');
+app.commandLine.appendSwitch('variations-server-url', '');
+app.commandLine.appendSwitch('safebrowsing-disable-auto-update');
+
 // Prevent multiple instances from running concurrently (prevents port collisions)
 const gotTheLock = app.requestSingleInstanceLock();
 

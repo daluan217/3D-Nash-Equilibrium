@@ -19,13 +19,25 @@
         }
       } catch (e) {}
     </script>
-    <!-- Google Analytics -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-9LRR4211HX"></script>
+    <!-- Google Analytics — WEB ONLY. The packaged desktop app is an offline
+         math tool, so it must talk to loopback and its own domain and nothing
+         else; the static tag loaded gtag unconditionally, which made
+         www.google-analytics.com the packaged renderer's one non-loopback host
+         (RED-DESKTOP-21/002). Same UA test App.tsx already uses for isElectron;
+         window.nashDesktop (the preload bridge) is the belt-and-braces half. -->
     <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-9LRR4211HX');
+      (function () {
+        var ua = (navigator.userAgent || '').toLowerCase();
+        if (ua.indexOf('electron') !== -1 || window.nashDesktop) return;
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function gtag(){ dataLayer.push(arguments); };
+        gtag('js', new Date());
+        gtag('config', 'G-9LRR4211HX');
+        var s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://www.googletagmanager.com/gtag/js?id=G-9LRR4211HX';
+        document.head.appendChild(s);
+      })();
     </script>
   </head>
   <body>
