@@ -10,6 +10,7 @@ import { labelFor } from '../utils/a11y';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { ModalSurface } from './ModalSurface';
+import { FeedbackBox } from './FeedbackBox';
 import { SavedGamesList, formatSavedGames } from './SavedGamesList';
 import { describeRequestFailure, type AccountApi } from '../utils/apiClient';
 import {
@@ -865,10 +866,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </p>
 
                     {deleteError && (
-                      <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                        <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                        <span>{deleteError}</span>
-                      </div>
+                      <FeedbackBox tone="error" testId="delete-error">{deleteError}</FeedbackBox>
                     )}
 
                     {deleteStep === 'initial' && (
@@ -921,7 +919,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                     {deleteStep === 'inputCode' && (
                       <form onSubmit={handleDeleteConfirm} className="space-y-4">
-                        <div className="bg-emerald-50 dark:bg-emerald-950/15 border border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                        <div role="status" className="bg-emerald-50 dark:bg-emerald-950/15 border border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
                           <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
                           <span>{deleteSuccess || 'Check your email inbox for a confirmation security code.'}</span>
                         </div>

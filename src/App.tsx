@@ -46,6 +46,7 @@ import {
   fmtPayoff,
   payoffTexRhs,
 } from './utils/gameEngine';
+import { FeedbackBox } from './components/FeedbackBox';
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
@@ -6683,17 +6684,11 @@ export default function App() {
             </div>
 
             {authError && (
-              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                <span>{authError}</span>
-              </div>
+              <FeedbackBox tone="error" testId="auth-error">{authError}</FeedbackBox>
             )}
 
             {authSuccess && (
-              <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-3 font-medium">
-                <Check className="w-4 h-4 shrink-0 text-emerald-500" />
-                <span>{authSuccess}</span>
-              </div>
+              <FeedbackBox tone="success" testId="auth-success">{authSuccess}</FeedbackBox>
             )}
 
             <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3.5">
@@ -7220,7 +7215,7 @@ export default function App() {
                 // across a close+reopen, even before `editError` is set
                 // again by a fresh attempt in the new session.
                 (deadSession === 'edit' || editErrorNeedsAuth) ? (
-                  <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                  <div role="alert" className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                     <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                     <div className="flex flex-col items-start gap-2">
                       <span>{editError || 'Invalid or expired session.'} Your changes will stay right here.</span>
@@ -7234,7 +7229,7 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-danger-500 font-semibold">{editError}</p>
+                  <p role="alert" className="text-xs text-danger-500 font-semibold">{editError}</p>
                 )
               )}
 
@@ -7298,7 +7293,7 @@ export default function App() {
               // across a close+reopen, even before `saveError` is set again
               // by a fresh attempt in the new session.
               (deadSession === 'save' || saveErrorNeedsAuth) ? (
-                <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                <div role="alert" className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                   <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                   <div className="flex flex-col items-start gap-2">
                     <span>{saveError || 'Invalid or expired session.'} Your matrix, name and description will stay right here.</span>
@@ -7335,10 +7330,7 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                  <span>{saveError}</span>
-                </div>
+                <FeedbackBox tone="error" testId="save-error">{saveError}</FeedbackBox>
               )
             )}
 
@@ -7675,7 +7667,7 @@ export default function App() {
             </div>
 
             {feedbackSuccess ? (
-              <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <div role="status" className="flex flex-col items-center gap-3 py-6 text-center">
                 <span className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 rounded-full">
                   <CheckCircle2 className="w-7 h-7" />
                 </span>
@@ -7690,10 +7682,7 @@ export default function App() {
             ) : (
               <>
                 {feedbackError && (
-                  <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                    <span>{feedbackError}</span>
-                  </div>
+                  <FeedbackBox tone="error" testId="feedback-error">{feedbackError}</FeedbackBox>
                 )}
 
                 <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
