@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, dialog, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -99,6 +99,27 @@ async function checkForUpdates(parentWindow) {
     console.error('Update check failed:', err);
   }
 }
+
+// RED-DESKTOP-21/002: the desktop app is an offline math tool, so it must talk
+// to loopback and its own domain only. MEASURED, with the idle-egress harness
+// (_gen/blue21-bg-network.mjs, 40 snapshots over 20s of pure idle, no request
+// ever sent to the app's own server):
+//   before             39/40 snapshots non-loopback; 142.250.190.238, 142.250.68.200
+//   gtag gated only     7/40; ONLY 216.239.36.21 = nash-equilibrium-simulator.com
+//   ungated + switches 38/40; 142.250.x back
+// So index.html's analytics gate is what closes the egress; the 142.250.x hosts
+// were googletagmanager/google-analytics, not Chromium's variations seed. No
+// switch below showed a measured effect, so only the one documented primary
+// guard is kept, as defense-in-depth if a Chromium default changes — the rest
+// (component-update, domain-reliability, client-side-phishing-detection, sync,
+// no-pings, metrics-recording-only, safebrowsing-disable-auto-update,
+// variations-server-url, the ChromeVariations feature token) were dropped
+// rather than shipped unmeasured; an empty `variations-server-url` in
+// particular falls back to the default Google URL, so it was worse than absent.
+// Must precede app ready: Chromium reads its command line during startup, so a
+// switch appended later is simply ignored. The app's only remaining egress is
+// its own disclosed update check against UPDATE_BASE_URL (checkForUpdates).
+app.commandLine.appendSwitch('disable-background-networking');
 
 // Prevent multiple instances from running concurrently (prevents port collisions)
 const gotTheLock = app.requestSingleInstanceLock();
@@ -327,6 +348,38 @@ if (!gotTheLock) {
     if (win) win.setBackgroundColor(color);
   });
 
+  // Electron installs a DEFAULT application menu when none is set, and its View
+  // submenu carries live `toggleDevTools`, `reload` and `forceReload` roles — a
+  // shipped inspector on the production renderer (RED-DESKTOP-21/001). Replace it
+  // with an explicit template: keep what a user needs (app/edit/window roles,
+  // zoom, fullscreen) and omit the whole `viewMenu` role, which would re-expand
+  // into exactly those three. Reload is dropped on purpose too: this is an SPA
+  // whose state lives in memory, so a reload silently discards the user's game.
+  function installApplicationMenu() {
+    if (process.platform !== 'darwin') {
+      // Off macOS the menu bar is per-window chrome the app does not use, and
+      // clipboard/zoom shortcuts work without it. No menu at all = no default.
+      Menu.setApplicationMenu(null);
+      return;
+    }
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { role: 'fileMenu' },
+      { role: 'editMenu' },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' },
+        ],
+      },
+      { role: 'windowMenu' },
+    ]));
+  }
+
   function createWindow(portToUse) {
     const finalPort = portToUse || expressPort;
     const windowOptions = {
@@ -342,6 +395,12 @@ if (!gotTheLock) {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        // Unconditional, not `!app.isPackaged`: this kills the capability at the
+        // webContents level, so no menu item, accelerator, or stray
+        // openDevTools() call anywhere can open an inspector on the renderer.
+        // Cost: `npm run electron:start` has no inspector either; debug the same
+        // UI in the browser via `npm run dev`, which is where it is debugged anyway.
+        devTools: false,
         preload: path.join(__dirname, 'electron-preload.cjs'),
       }
     };
@@ -396,6 +455,7 @@ if (!gotTheLock) {
 
   // Ensure Electron lifecycle events are managed
   app.on('ready', () => {
+    installApplicationMenu();
     if (serverStarted) {
       createWindow(expressPort);
     } else {

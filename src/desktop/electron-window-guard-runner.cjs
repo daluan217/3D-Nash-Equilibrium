@@ -113,6 +113,7 @@ class FakeBrowserWindow {
   static fromWebContents() { return null; }
 }
 
+const appendedSwitches = [];
 const fakeApp = {
   isReady: () => true,
   on(event, cb) { onHandlers[event] = cb; },
@@ -122,6 +123,13 @@ const fakeApp = {
   whenReady: () => Promise.resolve(),
   getPath: () => '/tmp',
   setName() {},
+  // electron-main.cjs appends a Chromium switch at module load (PR #199).
+  commandLine: {
+    appendSwitch(name) { appendedSwitches.push(name); },
+    appendArgument() {},
+    hasSwitch: (name) => appendedSwitches.includes(name),
+    getSwitchValue: () => '',
+  },
 };
 
 const fakeDialog = {
