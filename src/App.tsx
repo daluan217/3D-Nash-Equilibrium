@@ -34,6 +34,11 @@ import {
   containsAmbiguousComma,
   numericInputProblem,
   commitStepSize,
+  commitStepSizeField,
+  commitNumericField,
+  PAYOFF_RANGE,
+  START_RANGE,
+  STEP_SIZE_RANGE,
   commitStepIndex,
   precomputeThinHistory,
   replayToStep,
@@ -153,6 +158,18 @@ const NUMERIC_INPUT_HINTS: Record<'comma' | 'not-one-number', string> = {
   comma: 'Use a dot for decimals, not a comma.',
   'not-one-number': 'One number per field.',
 };
+/**
+ * RED-APP-21/001: the third cause. A parseable but out-of-range number used to
+ * be the one problem class with no hint — the clamped value went straight into
+ * the live game while the box kept the typed text, so the surface and the cell
+ * showed different numbers until blur. The range is read from the shared
+ * constant so the message cannot drift from what the field actually clamps to.
+ */
+const rangeHint = (range: { label: string }) => `Range: ${range.label}.`;
+const numericFieldHint = (
+  problem: 'comma' | 'not-one-number' | 'out-of-range',
+  range: { label: string },
+) => (problem === 'out-of-range' ? rangeHint(range) : NUMERIC_INPUT_HINTS[problem]);
 
 /**
  * RED-APP-8/002 + RED-APP-8/003: the `onChange`-based clamp above (#101's
@@ -1398,6 +1415,8 @@ export default function App() {
   // value in force is put back to what it was when the box was focused — the comma-free
   // prefix ("5" of "5,5") has already committed (clamped to 0.999) before the comma exists.
   const [stepInputHint, setStepInputHint] = useState<string | null>(null);
+  /** RED-APP-21/001: same hint contract as the matrix cells, per axis. */
+  const [startInputHint, setStartInputHint] = useState<{ axis: 'x' | 'y'; message: string } | null>(null);
   const stepFieldSnapshotRef = useRef<number | null>(null);
 
   /**
@@ -1515,7 +1534,20 @@ export default function App() {
       // committed value; the readout beside it formats through fmtProbFixed.
       (axis === 'x' ? setX0 : setY0)(committed.toFixed(3));
     }
+    // RED-APP-21/001: blur has made the box agree with what the run will use,
+    // so this axis's range hint has nothing left to warn about.
+    setStartInputHint((prev) => (prev?.axis === axis ? null : prev));
   };
+
+  /**
+   * RED-APP-21/001: what a typed start coordinate means for the SIM.
+   * Out of range, the run must not quietly adopt the clamped number while the
+   * box shows the typed one (typing "2" moved the markers to 1.000 and opened
+   * the log "Start (1.000, …)" beside a box reading 2). The freeze below holds
+   * until blur canonicalises the text, and the hint says why.
+   */
+  const startFieldProblem = (raw: string) =>
+    commitNumericField(raw, START_RANGE, { fallback: 0.217 }).problem;
 
   // Initialize simulation running flag
   const [initialized, setInitialized] = useState<boolean>(false);
@@ -4280,6 +4312,12 @@ export default function App() {
    * otherwise reset to the value being replaced.
    */
   useEffect(() => {
+    // RED-APP-21/001: a field whose text the run cannot use as typed must not
+    // move the markers. Typing "2" re-froze the sim at the clamped 1.000 and
+    // opened the log "Start (1.000, …)" beside a box still reading 2. The last
+    // usable start point stays in force until blur canonicalises the text —
+    // which changes x0/y0 and runs this effect again, with the box agreeing.
+    if (startFieldProblem(x0) || startFieldProblem(y0)) return;
     handleReset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [x0, y0]);
@@ -4945,10 +4983,15 @@ export default function App() {
     // commits: no payoff change, no preset flip to "custom", no run reset.
     // The field is left exactly where it was, same as any other unparseable
     // text, and a hint says why.
-    const problem = numericInputProblem(valStr);
+    // RED-APP-21/001: out-of-range joins them. Typing "150" used to commit the
+    // CLAMPED 100 into the live game on that keystroke while the box still read
+    // "150" — surface, solver and cell disagreeing on screen for as long as the
+    // field stayed focused. Same treatment now, and a hint says why. Blur is
+    // unchanged: it still commits the clamped value and rewrites the box to it.
+    const { problem } = commitNumericField(valStr, PAYOFF_RANGE, { fallback: 0, quantise: true });
     if (problem) {
       setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
-      setPayoffInputHint({ field, message: NUMERIC_INPUT_HINTS[problem] });
+      setPayoffInputHint({ field, message: numericFieldHint(problem, PAYOFF_RANGE) });
       // The comma-free prefix typed before this comma has already committed;
       // undo that now, not at blur — the plot and the solver must not spend the
       // rest of the edit on a value the user never finished typing.
@@ -5052,6 +5095,11 @@ export default function App() {
       updatePayoffField(field, canonical);
     } else if (rawPayoffs[field] !== canonical) {
       setRawPayoffs((prev) => ({ ...prev, [field]: canonical }));
+      // RED-APP-21/001: this branch corrects the BOX without going through
+      // updatePayoffField, so it must clear this field's own hint itself —
+      // otherwise typing "150" into a cell already holding 100 left the range
+      // hint up beside a box and a game that now agree.
+      setPayoffInputHint((prev) => (prev?.field === field ? null : prev));
     }
   };
 
@@ -5664,6 +5712,10 @@ export default function App() {
                     onChange={(e) => {
                       setX0(e.target.value);
                       setInitialized(false);
+                      const problem = startFieldProblem(e.target.value);
+                      setStartInputHint(problem
+                        ? { axis: 'x', message: numericFieldHint(problem, START_RANGE) }
+                        : (prev) => (prev?.axis === 'x' ? null : prev));
                     }}
                     onBlur={() => commitStartField('x')}
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-rose-200 focus:outline-none"
@@ -5703,6 +5755,10 @@ export default function App() {
                     onChange={(e) => {
                       setY0(e.target.value);
                       setInitialized(false);
+                      const problem = startFieldProblem(e.target.value);
+                      setStartInputHint(problem
+                        ? { axis: 'y', message: numericFieldHint(problem, START_RANGE) }
+                        : (prev) => (prev?.axis === 'y' ? null : prev));
                     }}
                     onBlur={() => commitStartField('y')}
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-accent-100 focus:outline-none"
@@ -5730,6 +5786,15 @@ export default function App() {
                 </div>
               </div>
             </div>
+            {startInputHint && (
+              <div
+                data-testid="start-input-hint"
+                role="status"
+                className="text-xs text-amber-700 dark:text-amber-400 -mt-2"
+              >
+                {startInputHint.message}
+              </div>
+            )}
 
             {/* Who moves first choice */}
             <div>
@@ -5829,9 +5894,13 @@ export default function App() {
                   onChange={(e) => {
                     const v = e.target.value;
                     setShrinkStepRaw(v);
-                    const stepProblem = numericInputProblem(v);
+                    // RED-APP-21/001: out-of-range is a problem here too — typing
+                    // "5" used to set the step to the clamped 0.999 live while the
+                    // box read 5, and "0" kept the old step with nothing on screen
+                    // saying the field had been ignored.
+                    const { problem: stepProblem } = commitStepSizeField(v, shrinkStep);
                     if (stepProblem) {
-                      setStepInputHint(NUMERIC_INPUT_HINTS[stepProblem]);
+                      setStepInputHint(numericFieldHint(stepProblem, STEP_SIZE_RANGE));
                       const snap = stepFieldSnapshotRef.current;
                       if (snap !== null && snap !== shrinkStep) setShrinkStep(snap);
                       return;
@@ -5848,10 +5917,14 @@ export default function App() {
                       setShrinkStepRaw(snap.toFixed(3));
                       return; // the hint stays until the next edit
                     }
+                    // Unchanged: blur COMMITS the clamped value and rewrites the
+                    // box to it, so the two agree and the hint has nothing left
+                    // to warn about (RED-APP-21/001).
                     const clamped = commitStepSize(shrinkStepRaw, shrinkStep);
                     setShrinkStep(clamped);
                     // not-a-rendering: the step-size FIELD's own text (setting).
                     setShrinkStepRaw(clamped.toFixed(3));
+                    setStepInputHint(null);
                   }}
                   aria-label={stepMode === 'regret' ? 'Regret Step Weight (lambda)' : 'Initial Domain Shrink Step Size'}
                   className="w-20 font-mono font-semibold text-accent-600 dark:text-accent-400 text-right bg-transparent border-b border-accent-300 dark:border-accent-700 focus:outline-none focus:border-accent-500"
