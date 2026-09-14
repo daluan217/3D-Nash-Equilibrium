@@ -62,6 +62,7 @@ import { ColorCoded } from './components/ColorCoded';
 import {
   EA, EB, regretA, regretB, r3,
   parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepSize, commitStepIndex,
+  commitNumericField, commitStepSizeField, PAYOFF_RANGE, START_RANGE, STEP_SIZE_RANGE,
   containsAmbiguousComma,
   normalizeProseMinus,
   computeMixedNE, computeAllNE, fmtProb, texProb,
@@ -355,6 +356,92 @@ function testCommitStepTables() {
   assert(commitStepIndex('0') === 0, 'step index: zero is a valid step');
   assert(commitStepIndex('3.9') === 3, 'step index: truncates');
   assert(commitStepIndex('x') === null, 'step index: garbage rejected');
+}
+
+/**
+ * RED-APP-21/001 — the SHAPE that let a typed "150" commit 100 into the live
+ * game behind a box still reading "150": the commit helpers returned a bare
+ * number, so no call site could tell a clamped value from an accepted one.
+ * `commitNumericField` returns the reason with the value. These assertions are
+ * about `problem`; the `value` half is already pinned by the three tables above,
+ * which is what proves the refactor changed no committed number.
+ *
+ * MUTATION-TESTED, by name, on src/utils/gameEngine.ts (each reverted after):
+ *   - `const clamped = false`                        => R1 fails first (then R2/R6/R7)
+ *   - `clamped = rounded !== parsed` (no bounds test) => R1 fails first (then R2/R6/R7)
+ *   - `clamped = value !== parsed` (fires on r3)      => R4 fails first (then R5)
+ *   - commitStepSizeField's `v <= 0` returns
+ *     `problem: null`                                 => R8 fails
+ */
+function testCommitNumericFieldProblem() {
+  const payoff = (raw: string) => commitNumericField(raw, PAYOFF_RANGE, { fallback: 0, quantise: true });
+  const start = (raw: string) => commitNumericField(raw, START_RANGE, { fallback: 0.217 });
+
+  // R1/R2: the defect itself, both bounds. The value is the clamp the field has
+  // always committed; what is new is that the caller is TOLD it was clamped.
+  assert(payoff('150').problem === 'out-of-range' && payoff('150').value === 100,
+    'R1: "150" in a payoff cell reports out-of-range and still commits 100');
+  assert(payoff('-250').problem === 'out-of-range' && payoff('-250').value === -100,
+    'R2: "-250" reports out-of-range and still commits -100');
+
+  // R3: in-range text is NOT a problem — the hint must not fire on ordinary
+  // typing, which is the failure mode a range check invents.
+  for (const ok of ['0', '3', '-4', '100', '-100', '12.5', '99.999', '1e2', '−4']) {
+    assert(payoff(ok).problem === null, `R3: "${ok}" is in range and must report no problem`);
+  }
+  // The exact bounds are IN range, not out of it.
+  assert(payoff('100').value === 100 && payoff('-100').value === -100,
+    'R3b: the bounds themselves commit unchanged');
+
+  // R4: in-progress typing parses to null and must NOT raise the range hint —
+  // a prefix is not an out-of-range number ("-" before "-5", "1e" before "1e1").
+  for (const partial of ['', '-', '+', '.', '-.', '1e', '1e-']) {
+    const r = payoff(partial);
+    assert(r.problem !== 'out-of-range',
+      `R4: in-progress "${partial}" must not report out-of-range (got ${r.problem})`);
+  }
+  // Syntax problems keep their own names, unchanged (RED-DESKTOP-9/002, RED-APP-10/002).
+  assert(payoff('3,5').problem === 'comma', 'R4b: a comma still reports comma');
+  assert(payoff('3 5').problem === 'not-one-number', 'R4c: two numbers still report not-one-number');
+
+  // R5: 3-dp quantising is canonicalising, not clamping. "99.9994" commits
+  // 99.999 and is NOT out of range; comparing the rounded value would say it was.
+  assert(payoff('99.9994').problem === null && payoff('99.9994').value === 99.999,
+    'R5: a value rounded by r3 but inside the bounds is not out-of-range');
+  assert(start('0.0004').problem === null,
+    'R5b: an interior start coordinate below the display resolution is not out-of-range');
+
+  // R6/R7: the same helper, the same reason, for the start-coordinate range.
+  assert(start('2').problem === 'out-of-range' && start('2').value === 1,
+    'R6: x0 = "2" reports out-of-range and commits 1');
+  assert(start('-1').problem === 'out-of-range' && start('-1').value === 0,
+    'R7: x0 = "-1" reports out-of-range and commits 0');
+  assert(start('0').problem === null && start('0').value === 0,
+    'R7b: x0 = 0 is a legal start point, not a clamp (round-14 defect)');
+  assert(start('').problem === null && start('').value === 0.217,
+    'R7c: an empty start field falls back silently, exactly as before');
+
+  // R8: the step-size field keeps its own rule — non-positive is unusable, so
+  // the value in force stays — but now says so instead of ignoring the field.
+  assert(commitStepSizeField('0', 0.1).problem === 'out-of-range' && commitStepSizeField('0', 0.1).value === 0.1,
+    'R8: step size "0" reports out-of-range and keeps the current step');
+  assert(commitStepSizeField('5', 0.1).problem === 'out-of-range' && commitStepSizeField('5', 0.1).value === 0.999,
+    'R8b: step size "5" reports out-of-range and commits the 0.999 maximum');
+  assert(commitStepSizeField('0.1', 0.5).problem === null && commitStepSizeField('0.1', 0.5).value === 0.1,
+    'R8c: an in-range step size reports no problem');
+  assert(commitStepSizeField('abc', 0.1).problem === 'not-one-number',
+    'R8d: garbage in the step field keeps its syntax reason');
+
+  // R9: the hint TEXT is built from the same constants the fields clamp to, so
+  // a range change cannot leave the message describing the old bounds.
+  assert(PAYOFF_RANGE.label === `${PAYOFF_RANGE.lo} to ${PAYOFF_RANGE.hi}`,
+    'R9: the payoff range label must name the bounds it clamps to');
+  assert(START_RANGE.label === `${START_RANGE.lo} to ${START_RANGE.hi}`,
+    'R9b: the start range label must name the bounds it clamps to');
+  assert(STEP_SIZE_RANGE.label === `${STEP_SIZE_RANGE.lo} to ${STEP_SIZE_RANGE.hi}`,
+    'R9c: the step-size range label must name the bounds it clamps to');
+
+  console.log('✓ commitNumericField reports WHY, not just WHAT (RED-APP-21/001)');
 }
 
 function testNormalizeProseMinus() {
@@ -2352,6 +2439,7 @@ function runUnitTests() {
   testCommitPayoffInputTable();
   testCommitStartCoordinateTable();
   testCommitStepTables();
+  testCommitNumericFieldProblem();
   testNormalizeProseMinus();
   testPayoffArithmetic();
   testProfilesAndContinua();
