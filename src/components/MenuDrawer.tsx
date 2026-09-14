@@ -12,7 +12,7 @@ import { ColorCoded } from './ColorCoded';
 import { ModalSurface } from './ModalSurface';
 import { FeedbackBox } from './FeedbackBox';
 import { SavedGamesList, formatSavedGames } from './SavedGamesList';
-import { describeRequestFailure, type AccountApi } from '../utils/apiClient';
+import { accountVerdict, type AccountApi } from '../utils/apiClient';
 import {
   X,
   HelpCircle,
@@ -147,19 +147,18 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       // RED-DESKTOP-20/002 family sweep: only a parsed success can prove the
       // backend created the destructive-action challenge. A captive portal's
       // 200 HTML must not advance this state machine.
-      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
-        // STRUCT-DESKTOP-19/002: this used to be `setDeleteError(err.message)`,
-        // which put the browser's own text ("Failed to fetch" in Chrome,
-        // "Load failed" in WebKit) in the Danger Zone's error line. That is
-        // not an explanation, and it differs per engine.
-        setDeleteError(describeRequestFailure(res, 'start the deletion'));
-        return;
-      }
-      if (!res.ok) {
-        // The session verdict came from the ONE client, which cleared the
-        // token only if the 401 was for the token that is still committed.
-        setDeleteError(res.data.error
-          || (res.dataParsed ? 'Failed to initialize deletion request.' : `Server returned invalid response (Status ${res.status}).`));
+      // RED-APP-21/003: the same ONE verdict App.tsx's auth branches read —
+      // this path already had the ok-before-body order right, and sharing it is
+      // what stops the two from drifting apart again. STRUCT-DESKTOP-19/002:
+      // the browser's own text ("Failed to fetch"/"Load failed") never reaches
+      // this line; `subject` completes the sentence instead.
+      const verdict = accountVerdict(res, {
+        subject: 'start the deletion',
+        failure: 'Failed to initialize deletion request.',
+        badSuccessShape: res.data?.success !== true,
+      });
+      if (verdict.outcome === 'error') {
+        setDeleteError(verdict.message);
         return;
       }
       setDeleteStep('inputCode');
@@ -180,13 +179,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       if (res.stale) return;
       // Same acknowledgement rule as delete-request and saved-game Delete:
       // never claim an account was destroyed from an unreadable 2xx body.
-      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
-        setDeleteError(describeRequestFailure(res, 'confirm the deletion'));
-        return;
-      }
-      if (!res.ok) {
-        setDeleteError(res.data.error
-          || (res.dataParsed ? 'Incorrect security verification code.' : `Server returned invalid response (Status ${res.status}).`));
+      const verdict = accountVerdict(res, {
+        subject: 'confirm the deletion',
+        failure: 'Incorrect security verification code.',
+        badSuccessShape: res.data?.success !== true,
+      });
+      if (verdict.outcome === 'error') {
+        setDeleteError(verdict.message);
         return;
       }
       setDeleteStep('success');

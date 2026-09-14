@@ -52,7 +52,7 @@ import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
-import { createAccountApi, describeRequestFailure, type AccountApi } from './utils/apiClient';
+import { accountVerdict, createAccountApi, describeRequestFailure, type AccountApi } from './utils/apiClient';
 import { isForgotPasswordSuccess, isLoginSuccess, isRegisterSuccess, isResetPasswordSuccess, isVerifySuccess } from './utils/authResponses';
 import { isSavedGameResponseRecord } from './utils/savedGameResponse';
 import { labelFor } from './utils/a11y';
@@ -3801,12 +3801,18 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isLoginSuccess(data)) {
-          // A parsed body still has to describe the server's login shape. Do
-          // not close the dialog or claim an identity for partial JSON.
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        // RED-APP-21/003: ONE verdict, ok-before-body. A 500 with an empty body
+        // used to read 'Connection error.' — the offline copy, status dropped.
+        // The needVerification redirect is checked first: it is a SUCCESS path
+        // for the user (go verify), not a failure to word.
+        const verdict = accountVerdict(res, { failure: 'Invalid credentials.', badSuccessShape: !isLoginSuccess(data) });
+        if (verdict.outcome === 'error' && res.kind === 'response' && !res.ok && data?.needVerification) {
+          changeAuthMode('verify');
+          setAuthSuccess('Please complete email verification first.');
+        } else if (verdict.outcome === 'error') {
+          // A parsed 2xx body still has to describe the server's login shape:
+          // do not close the dialog or claim an identity for partial JSON.
+          setAuthError(verdict.message);
         } else if (res.ok) {
           updateAuthToken(data.token);
           closeAuthModalAfterSuccess();
@@ -3821,11 +3827,6 @@ export default function App() {
             setLocalGamesError('');
             setLocalGamesOffer({ count: localGames, token: data.token });
           }
-        } else if (data?.needVerification) {
-          changeAuthMode('verify');
-          setAuthSuccess('Please complete email verification first.');
-        } else {
-          setAuthError(data?.error || 'Invalid credentials.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3862,10 +3863,9 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isRegisterSuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Registration failed.', badSuccessShape: !isRegisterSuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           if (data.autoVerified) {
             changeAuthMode('login');
@@ -3877,8 +3877,6 @@ export default function App() {
               setAuthCode(data.verificationCode);
             }
           }
-        } else {
-          setAuthError(data?.error || 'Registration failed.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3900,16 +3898,13 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isVerifySuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Incorrect confirmation code.', badSuccessShape: !isVerifySuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           changeAuthMode('login');
           setAuthSuccess('Account verified successfully! You can now log in.');
           setAuthCode('');
-        } else {
-          setAuthError(data?.error || 'Incorrect confirmation code.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3931,16 +3926,13 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isForgotPasswordSuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Failed to send recovery code.', badSuccessShape: !isForgotPasswordSuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           changeAuthMode('reset-password');
           setAuthSuccess(data.message || 'Recovery code sent! Check your email.');
           if (data.recoveryCode) setAuthCode(data.recoveryCode);
-        } else {
-          setAuthError(data?.error || 'Failed to send recovery code.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3973,18 +3965,15 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isResetPasswordSuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Failed to reset password.', badSuccessShape: !isResetPasswordSuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           changeAuthMode('login');
           setAuthSuccess(data.message || 'Password reset successfully! You can now log in.');
           setAuthCode('');
           setAuthPassword('');
           setAuthConfirmPassword('');
-        } else {
-          setAuthError(data?.error || 'Failed to reset password.');
         }
       } catch {
         setAuthError('Connection error.');

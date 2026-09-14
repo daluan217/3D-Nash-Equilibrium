@@ -63,6 +63,9 @@ import {
   EA, EB, regretA, regretB, r3,
   parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepSize, commitStepIndex,
   commitNumericField, commitStepSizeField, PAYOFF_RANGE, START_RANGE, STEP_SIZE_RANGE,
+} from './utils/gameEngine';
+import { accountVerdict } from './utils/apiClient';
+import {
   containsAmbiguousComma,
   normalizeProseMinus,
   computeMixedNE, computeAllNE, fmtProb, texProb,
@@ -442,6 +445,117 @@ function testCommitNumericFieldProblem() {
     'R9c: the step-size range label must name the bounds it clamps to');
 
   console.log('✓ commitNumericField reports WHY, not just WHAT (RED-APP-21/001)');
+}
+
+/**
+ * RED-APP-21/003 — the auth modal reported a real HTTP 500 with an empty body
+ * as `'Connection error.'`, the same words a genuine offline failure gets,
+ * status dropped. Cause: all five `handleAuthSubmit` branches tested
+ * `!res.dataParsed` BEFORE `res.ok`, so the status-coded message — written
+ * five times — was structurally unreachable for any non-2xx. MenuDrawer's
+ * Danger Zone, reading the identical AccountResponse from the same client, had
+ * the order right. One helper now answers for both.
+ *
+ * THE INVARIANT: a response the SERVER sent is never described as a connection
+ * failure, whatever its body.
+ *
+ * MUTATION-TESTED, by name, on src/utils/apiClient.ts (each reverted after):
+ *   - move the `res.ok` test after the `dataParsed` test (the original defect)
+ *       => V4 fails ("Connection error." for a 500 with no body)
+ *   - `if (res.ok && (!res.dataParsed || copy.badSuccessShape))` -> `if (res.ok && !res.dataParsed)`
+ *       => V3 fails (a 2xx of the wrong shape is accepted as success)
+ *   - drop the `res.dataParsed` conjunct from `serverSaid`
+ *       => V4c fails (`data.error` read off a body that was never parsed).
+ *         V4c exists BECAUSE this mutant first survived: every other row pairs
+ *         dataParsed:false with data:{}, exactly as the client does, so none of
+ *         them could tell the two conjuncts apart.
+ *   - `serverSaid` without the `typeof … === 'string'` test
+ *       => V5d fails (a non-string `error` object shown raw)
+ *   - return `copy.failure` instead of the status-coded string when !dataParsed
+ *       => V4 fails (the status code disappears again)
+ */
+function testAccountVerdictMatrix() {
+  const base = {
+    stale: false, unauthorized: false, sessionDied: false, sessionCleared: false,
+    requestToken: null, error: null,
+  };
+  const v = (over: any, copy: any = { failure: 'Invalid credentials.' }) =>
+    accountVerdict({ ...base, ...over } as any, copy);
+
+  // V1: no response at all — the ONE case that is genuinely a connection story.
+  assert(v({ kind: 'network', status: 0, ok: false, data: {}, dataParsed: false }).outcome === 'error'
+    && (v({ kind: 'network', status: 0, ok: false, data: {}, dataParsed: false }) as any).message === 'Connection error.',
+    'V1: a network failure is the only thing that reads "Connection error."');
+  assert((v({ kind: 'timeout', status: 0, ok: false, data: {}, dataParsed: false }) as any).message
+    === 'The server did not answer in time.',
+    'V1b: a timeout says so, and is not confused with an offline failure');
+  assert((v({ kind: 'network', status: 0, ok: false, data: {}, dataParsed: false },
+    { failure: 'x', subject: 'start the deletion' }) as any).message
+    === 'Connection error. Could not start the deletion.',
+    'V1c: with a subject, the sentence says what could not be done (STRUCT-DESKTOP-19/002)');
+
+  // V2: a 2xx we could not read. A captive portal's 200 HTML is not a login.
+  assert((v({ kind: 'response', status: 200, ok: true, data: {}, dataParsed: false }) as any).message
+    === 'Server returned invalid response (Status 200).',
+    'V2: an unreadable 2xx is reported with its status, not as a connection error');
+
+  // V3: a 2xx that parsed but is not this route's success shape.
+  assert((v({ kind: 'response', status: 200, ok: true, data: { hello: 1 }, dataParsed: true },
+    { failure: 'x', badSuccessShape: true }) as any).message
+    === 'Server returned invalid response (Status 200).',
+    'V3: a parsed 2xx of the wrong shape never counts as success');
+  assert(v({ kind: 'response', status: 200, ok: true, data: { token: 't' }, dataParsed: true },
+    { failure: 'x', badSuccessShape: false }).outcome === 'success',
+    'V3b: a parsed 2xx of the RIGHT shape is a success');
+
+  // V4: THE DEFECT. A real non-2xx whose body did not parse.
+  const five = v({ kind: 'response', status: 500, ok: false, data: {}, dataParsed: false }) as any;
+  assert(five.outcome === 'error' && five.message === 'Server returned invalid response (Status 500).',
+    `V4: a 500 with an empty body is reported WITH its status, never as "Connection error." (got ${JSON.stringify(five.message)})`);
+  for (const status of [401, 403, 409, 429, 502]) {
+    const r = v({ kind: 'response', status, ok: false, data: {}, dataParsed: false }) as any;
+    assert(r.message === `Server returned invalid response (Status ${status}).`,
+      `V4b: ${status} with an unparseable body keeps its status code, got ${JSON.stringify(r.message)}`);
+  }
+
+  // V4c: `dataParsed` is what makes `data` believable, and it is checked
+  // INDEPENDENTLY of whether `data` happens to be populated. The shipping
+  // client always pairs dataParsed:false with data:{} (apiClient.ts: the
+  // `.catch` returns {}), so nothing above can tell the two conjuncts apart —
+  // this row constructs the combination the TYPE allows and the client does
+  // not, which is the only way the `res.dataParsed &&` guard is mutation-
+  // killable rather than decorative.
+  const liar = v({ kind: 'response', status: 500, ok: false, data: { error: 'Leaked from an unparsed body.' }, dataParsed: false }) as any;
+  assert(liar.message === 'Server returned invalid response (Status 500).',
+    `V4c: a body that did NOT parse cannot supply the message, even if the field is present (got ${JSON.stringify(liar.message)})`);
+
+  // V5: a non-2xx the server explained — its own words win, unchanged. These
+  // are the control statuses the red injected with a JSON body.
+  for (const [status, msg] of [[401, 'Unauthorized (injected).'], [403, 'Forbidden (injected).'],
+    [409, 'Already registered.'], [429, 'Too many attempts.'], [500, 'Server exploded.']] as const) {
+    const r = v({ kind: 'response', status, ok: false, data: { error: msg }, dataParsed: true }) as any;
+    assert(r.message === msg, `V5: the server's own message for ${status} is shown verbatim, got ${JSON.stringify(r.message)}`);
+  }
+  // V5b: parsed, refused, but the server said nothing useful -> the caller's copy.
+  assert((v({ kind: 'response', status: 400, ok: false, data: { note: 'x' }, dataParsed: true }) as any).message
+    === 'Invalid credentials.',
+    "V5b: a parsed refusal with no `error` string falls back to the caller's own wording");
+  assert((v({ kind: 'response', status: 400, ok: false, data: { error: '' }, dataParsed: true }) as any).message
+    === 'Invalid credentials.',
+    'V5c: an EMPTY error string is not a message — the caller\'s wording stands');
+  assert((v({ kind: 'response', status: 400, ok: false, data: { error: { code: 7 } }, dataParsed: true }) as any).message
+    === 'Invalid credentials.',
+    'V5d: a non-string `error` (server JSON is untyped) is not shown raw');
+
+  // V6: the ordering itself, stated as the property the defect violated.
+  for (const status of [400, 401, 500, 503]) {
+    for (const dataParsed of [true, false]) {
+      const r = v({ kind: 'response', status, ok: false, data: dataParsed ? {} : {}, dataParsed }) as any;
+      assert(!/Connection error/.test(r.message),
+        `V6: a response the SERVER sent (status ${status}, dataParsed=${dataParsed}) must never be worded as a connection failure`);
+    }
+  }
+  console.log('✓ accountVerdict: ok before body, status never swallowed (RED-APP-21/003)');
 }
 
 function testNormalizeProseMinus() {
@@ -2440,6 +2554,7 @@ function runUnitTests() {
   testCommitStartCoordinateTable();
   testCommitStepTables();
   testCommitNumericFieldProblem();
+  testAccountVerdictMatrix();
   testNormalizeProseMinus();
   testPayoffArithmetic();
   testProfilesAndContinua();
