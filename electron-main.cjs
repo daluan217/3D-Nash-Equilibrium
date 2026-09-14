@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, dialog, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, shell, dialog, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -327,6 +327,38 @@ if (!gotTheLock) {
     if (win) win.setBackgroundColor(color);
   });
 
+  // Electron installs a DEFAULT application menu when none is set, and its View
+  // submenu carries live `toggleDevTools`, `reload` and `forceReload` roles — a
+  // shipped inspector on the production renderer (RED-DESKTOP-21/001). Replace it
+  // with an explicit template: keep what a user needs (app/edit/window roles,
+  // zoom, fullscreen) and omit the whole `viewMenu` role, which would re-expand
+  // into exactly those three. Reload is dropped on purpose too: this is an SPA
+  // whose state lives in memory, so a reload silently discards the user's game.
+  function installApplicationMenu() {
+    if (process.platform !== 'darwin') {
+      // Off macOS the menu bar is per-window chrome the app does not use, and
+      // clipboard/zoom shortcuts work without it. No menu at all = no default.
+      Menu.setApplicationMenu(null);
+      return;
+    }
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { role: 'fileMenu' },
+      { role: 'editMenu' },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' },
+        ],
+      },
+      { role: 'windowMenu' },
+    ]));
+  }
+
   function createWindow(portToUse) {
     const finalPort = portToUse || expressPort;
     const windowOptions = {
@@ -342,6 +374,12 @@ if (!gotTheLock) {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        // Unconditional, not `!app.isPackaged`: this kills the capability at the
+        // webContents level, so no menu item, accelerator, or stray
+        // openDevTools() call anywhere can open an inspector on the renderer.
+        // Cost: `npm run electron:start` has no inspector either; debug the same
+        // UI in the browser via `npm run dev`, which is where it is debugged anyway.
+        devTools: false,
         preload: path.join(__dirname, 'electron-preload.cjs'),
       }
     };
@@ -396,6 +434,7 @@ if (!gotTheLock) {
 
   // Ensure Electron lifecycle events are managed
   app.on('ready', () => {
+    installApplicationMenu();
     if (serverStarted) {
       createWindow(expressPort);
     } else {
