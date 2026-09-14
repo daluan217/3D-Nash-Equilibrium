@@ -673,6 +673,19 @@ jobs:
             || { echo "::error::the hashed bundle $asset 404s inside the image"; exit 1; }
           echo "serves $asset"
 
+      # RED-CLOUD-21/001: dist/server.cjs.map (full backend source) was copied
+      # into the image and served by express.static. The map must not exist
+      # in the image and the path must fall through to the SPA page.
+      - name: The container ships no backend sourcemap
+        run: |
+          set -euo pipefail
+          if docker exec nash-ci sh -c 'ls dist/*.map' 2>/dev/null; then
+            echo "::error::a sourcemap is inside the image"; exit 1; fi
+          ct=$(curl -sS -o /tmp/map.body -w '%{content_type}' http://localhost:8080/server.cjs.map)
+          case "$ct" in *json*) echo "::error::/server.cjs.map answered JSON ($ct)"; exit 1;; esac
+          grep -q '"sourcesContent"' /tmp/map.body && { echo "::error::sourcemap body served"; exit 1; }
+          echo "no sourcemap in image; /server.cjs.map -> $ct"
+
       # No provider key is present in the image, so the report route must take
       # its documented deterministic path rather than erroring. This is the
       # same contract the e2e job asserts, checked against the real container.
