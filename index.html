@@ -28,7 +28,8 @@
     <script>
       (function () {
         var ua = (navigator.userAgent || '').toLowerCase();
-        if (ua.indexOf('electron') !== -1 || window.nashDesktop) return;
+        var bridged = !!(window.nashDesktop && typeof window.nashDesktop.setBackgroundColor === 'function');
+        if (ua.indexOf('electron') !== -1 || bridged) return;
         window.dataLayer = window.dataLayer || [];
         window.gtag = function gtag(){ dataLayer.push(arguments); };
         gtag('js', new Date());

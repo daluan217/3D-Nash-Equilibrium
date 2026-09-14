@@ -100,30 +100,26 @@ async function checkForUpdates(parentWindow) {
   }
 }
 
-// RED-DESKTOP-21/002: the desktop app is an offline math tool, but Chromium's
-// own background services (variations/field-trial seed, component updater,
-// Safe Browsing, domain reliability) are ON by default and reached Google from
-// the moment the process spawned — before any window painted, with zero user
-// action. These must be appended BEFORE app.whenReady()/'ready': Chromium reads
-// its command line during startup, so a switch added later is simply ignored.
-// The app's only remaining egress is its own disclosed update check against
-// UPDATE_BASE_URL (checkForUpdates, below).
-for (const sw of [
-  'disable-background-networking',
-  'disable-component-update',
-  'disable-domain-reliability',
-  'disable-client-side-phishing-detection',
-  'disable-sync',
-  'no-pings',
-  'metrics-recording-only',
-]) {
-  app.commandLine.appendSwitch(sw);
-}
-// Field trials / variations: the seed fetch is what the helper command lines
-// showed (--variations-seed-version/--field-trial-handle).
-app.commandLine.appendSwitch('disable-features', 'ChromeVariations,OptimizationHints,MediaRouter');
-app.commandLine.appendSwitch('variations-server-url', '');
-app.commandLine.appendSwitch('safebrowsing-disable-auto-update');
+// RED-DESKTOP-21/002: the desktop app is an offline math tool, so it must talk
+// to loopback and its own domain only. MEASURED, with the idle-egress harness
+// (_gen/blue21-bg-network.mjs, 40 snapshots over 20s of pure idle, no request
+// ever sent to the app's own server):
+//   before             39/40 snapshots non-loopback; 142.250.190.238, 142.250.68.200
+//   gtag gated only     7/40; ONLY 216.239.36.21 = nash-equilibrium-simulator.com
+//   ungated + switches 38/40; 142.250.x back
+// So index.html's analytics gate is what closes the egress; the 142.250.x hosts
+// were googletagmanager/google-analytics, not Chromium's variations seed. No
+// switch below showed a measured effect, so only the one documented primary
+// guard is kept, as defense-in-depth if a Chromium default changes — the rest
+// (component-update, domain-reliability, client-side-phishing-detection, sync,
+// no-pings, metrics-recording-only, safebrowsing-disable-auto-update,
+// variations-server-url, the ChromeVariations feature token) were dropped
+// rather than shipped unmeasured; an empty `variations-server-url` in
+// particular falls back to the default Google URL, so it was worse than absent.
+// Must precede app ready: Chromium reads its command line during startup, so a
+// switch appended later is simply ignored. The app's only remaining egress is
+// its own disclosed update check against UPDATE_BASE_URL (checkForUpdates).
+app.commandLine.appendSwitch('disable-background-networking');
 
 // Prevent multiple instances from running concurrently (prevents port collisions)
 const gotTheLock = app.requestSingleInstanceLock();

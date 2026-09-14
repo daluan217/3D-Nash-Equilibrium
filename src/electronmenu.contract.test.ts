@@ -82,6 +82,34 @@ ok(imported.includes('Menu'),
 // ─────────────────────────────────────────────────────────────────────────────
 const webPrefBlocks = [...code.matchAll(/webPreferences\s*:\s*\{/g)];
 ok(webPrefBlocks.length > 0, 'electron-main.cjs must declare webPreferences for its BrowserWindow');
+/** Read a property declared at the TOP level of an object literal body. */
+function topLevelProp(body: string, key: string): string | null {
+  let depth = 0;
+  const re = new RegExp(`\\b${key}\\s*:`, 'g');
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '{' || c === '[' || c === '(') depth++;
+    else if (c === '}' || c === ']' || c === ')') depth--;
+    else if (depth === 0) {
+      re.lastIndex = i;
+      const m = re.exec(body);
+      if (m && m.index === i) {
+        const rest = body.slice(i + m[0].length);
+        const value = /^\s*([^,\n}]+)/.exec(rest);
+        return value ? value[1].trim() : '';
+      }
+    }
+  }
+  return null;
+}
+// Prove the reader ignores NESTED keys — otherwise `{ a: { devTools: false },
+// devTools: true }` would pass a naive whole-block search (reviewer finding).
+ok(topLevelProp('a: { devTools: false }, devTools: true', 'devTools') === 'true',
+  'topLevelProp must read the TOP-LEVEL devTools, not one nested inside another object');
+ok(topLevelProp('sandbox: true, devTools: false', 'devTools') === 'false',
+  'topLevelProp must read a real top-level devTools');
+ok(topLevelProp('sandbox: true', 'devTools') === null,
+  'topLevelProp must report a missing key as null');
 for (const m of webPrefBlocks) {
   // Walk braces from the opening `{` so a nested object cannot truncate the block.
   let depth = 0;
@@ -90,11 +118,11 @@ for (const m of webPrefBlocks) {
     if (code[i] === '{') depth++;
     else if (code[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
   }
-  const block = code.slice(m.index!, end);
-  const devToolsValue = /devTools\s*:\s*([^,\n}]+)/.exec(block);
-  ok(devToolsValue !== null && devToolsValue[1].trim() === 'false',
-    'every webPreferences block in electron-main.cjs must set devTools: false, unconditionally '
-    + `(found: ${devToolsValue ? devToolsValue[1].trim() : 'no devTools key at all'}). `
+  const body = code.slice(m.index! + m[0].length, end);
+  const devToolsValue = topLevelProp(body, 'devTools');
+  ok(devToolsValue === 'false',
+    'every webPreferences block in electron-main.cjs must set devTools: false at its TOP level, '
+    + `unconditionally (found: ${devToolsValue === null ? 'no devTools key at all' : devToolsValue}). `
     + 'Without it the shipped renderer can be inspected: RED-DESKTOP-21/001 flipped '
     + 'isDevToolsOpened false -> true on the real 0.0.214 binary.');
 }
@@ -183,31 +211,36 @@ ok(/role\s*:\s*['"]togglefullscreen['"]/i.test(code),
 // 216.239.36.21 = nash-equilibrium-simulator.com, held by the MAIN process at
 // t=3500ms — the disclosed checkForUpdates call, which stays.
 // ─────────────────────────────────────────────────────────────────────────────
-for (const sw of [
-  'disable-background-networking',
-  'disable-component-update',
-  'disable-domain-reliability',
-  'disable-client-side-phishing-detection',
-]) {
-  ok(new RegExp(`['"]${sw}['"]`).test(code),
-    `electron-main.cjs must appendSwitch('${sw}') — without it Chromium's own background `
-    + 'services reach Google from launch, with no user action (RED-DESKTOP-21/002).');
+ok(/appendSwitch\s*\(\s*['"]disable-background-networking['"]\s*\)/.test(code),
+  "electron-main.cjs must appendSwitch('disable-background-networking') — the documented "
+  + "primary guard for Chromium's own background services (RED-DESKTOP-21/002).");
+// Only switches with a MEASURED effect ship. `variations-server-url` with an empty
+// value falls back to the default Google URL (reviewer, verified by ablation: removing
+// it changed nothing), and the rest showed no measured effect on the egress harness, so
+// the contract actively forbids re-adding them unmeasured.
+for (const dead of ['variations-server-url', 'safebrowsing-disable-auto-update', 'ChromeVariations']) {
+  ok(!new RegExp(`['"]${dead}['"]`).test(code),
+    `electron-main.cjs must not pass '${dead}': it has no measured effect here, and an empty `
+    + 'variations-server-url falls back to the DEFAULT Google variations URL — worse than absent. '
+    + 'Anything re-added must first show a difference on _gen/blue21-bg-network.mjs.');
 }
-ok(/appendSwitch\s*\(\s*['"]disable-features['"]\s*,\s*['"][^'"]*ChromeVariations/.test(code),
-  "electron-main.cjs must disable the ChromeVariations feature — the helper command lines "
-  + 'carried --variations-seed-version/--field-trial-handle, which is the seed fetch.');
 
 // The switches must be appended BEFORE the app becomes ready: Chromium reads its
 // command line during startup, so a switch added afterwards is silently ignored
-// and this whole block would be decorative.
-const firstSwitch = code.search(/appendSwitch\s*\(/);
+// and this whole block would be decorative. EVERY call is checked, not just the
+// first — one late appendSwitch among several early ones is exactly the drift
+// this guards, and a first-index-only check cannot see it.
+const switchCalls = [...code.matchAll(/app\.commandLine\.appendSwitch\s*\(/g)].map((m) => m.index!);
+ok(switchCalls.length > 0, 'electron-main.cjs must call app.commandLine.appendSwitch(...)');
 const readyMarkers = [/app\.whenReady\s*\(/, /app\.on\s*\(\s*['"]ready['"]/];
-ok(firstSwitch !== -1, 'electron-main.cjs must call app.commandLine.appendSwitch(...)');
 for (const marker of readyMarkers) {
   const at = code.search(marker);
-  ok(at === -1 || firstSwitch < at,
-    'every app.commandLine.appendSwitch(...) must come BEFORE app ready — Chromium reads its '
-    + 'command line at startup, so a switch appended later has no effect at all.');
+  if (at === -1) continue;
+  const late = switchCalls.filter((i) => i > at);
+  ok(late.length === 0,
+    `every app.commandLine.appendSwitch(...) must come BEFORE app ready — Chromium reads its `
+    + `command line at startup, so a switch appended later has no effect at all `
+    + `(${late.length} call(s) found after it).`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,5 +293,66 @@ function gatedReturnBeforeAnalytics(html: string): boolean {
 ok(gatedReturnBeforeAnalytics(indexHtml),
   'the Electron branch in index.html must RETURN before the analytics script is inserted; '
   + 'a branch that merely detects Electron and carries on still loads the tag.');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHECK 10 — POLARITY. The text checks above cannot see which way the gate points:
+// `if (!ua.includes('electron')) return;` passes every one of them while doing the
+// exact opposite (analytics on desktop, none on the web). So RUN the gate, in a
+// real JS context, under three identities, and assert the outcome (reviewer item 5).
+//
+// The script body is executed with a stub `document`/`window`, which is also what
+// makes this cheap enough for the unit job — no browser. The end-to-end version of
+// the same assertion (real Chromium, real built dist/) is
+// _gen/blue21-gtag-web-check.mjs: web UA -> googletagmanager + google-analytics
+// requested, typeof gtag === 'function'; Electron UA -> neither, gtag undefined.
+// ─────────────────────────────────────────────────────────────────────────────
+const gateBody = (() => {
+  const m = /<script>\s*\(function \(\) \{([\s\S]*?)\}\)\(\);\s*<\/script>/.exec(indexHtml);
+  return m ? m[1] : null;
+})();
+ok(gateBody !== null, 'index.html must wrap the analytics gate in an IIFE this test can execute');
+
+const ELECTRON_UA = 'Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/126.0.0.0 '
+  + 'Electron/31.7.7 Safari/537.36';
+const WEB_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+/** Run the gate against a stub DOM; return the script src it tried to insert. */
+function runGate(userAgent: string, bridge: unknown): string | null {
+  let inserted: string | null = null;
+  const win: Record<string, unknown> = {
+    navigator: { userAgent },
+    dataLayer: undefined,
+    nashDesktop: bridge,
+  };
+  const doc = {
+    createElement: () => ({ set src(v: string) { inserted = v; }, get src() { return inserted ?? ''; }, async: false }),
+    head: { appendChild: () => {} },
+  };
+  // `window` and the bare globals the snippet uses both resolve to the same stub.
+  const fn = new Function('window', 'document', 'navigator',
+    `with (window) { ${gateBody as string} }`);
+  fn(win, doc, win.navigator);
+  return inserted;
+}
+
+// The web keeps analytics...
+ok(runGate(WEB_UA, undefined) !== null,
+  'a normal web visitor must still get the analytics script inserted — the gate is desktop-only.');
+ok(String(runGate(WEB_UA, undefined)).includes('googletagmanager'),
+  'the inserted script must be the googletagmanager tag');
+// ...and every desktop identity does not. Two independent signals, so a UA
+// override alone cannot re-enable analytics in the packaged app.
+ok(runGate(ELECTRON_UA, undefined) === null,
+  'an Electron user-agent must NOT get the analytics script (RED-DESKTOP-21/002).');
+ok(runGate(WEB_UA, { setBackgroundColor: () => {} }) === null,
+  'the preload bridge alone must suppress analytics, even with a spoofed/overridden web UA.');
+ok(runGate(ELECTRON_UA, { setBackgroundColor: () => {} }) === null,
+  'Electron UA plus bridge must not get analytics');
+// A non-callable lookalike must NOT count as the bridge (reviewer item 6): the
+// check is a capability, so a site setting window.nashDesktop = {} keeps analytics.
+ok(runGate(WEB_UA, {}) !== null,
+  'a window.nashDesktop without a callable setBackgroundColor is not the desktop bridge; '
+  + 'analytics must still load for that web visitor.');
 
 console.log(`electronmenu.contract.test.ts: ${checks} checks passed`);
