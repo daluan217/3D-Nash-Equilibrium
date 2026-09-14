@@ -10189,6 +10189,137 @@ const suggestedScenario = {
     await p.close();
   });
 
+  // ══ 93. RED-APP-21/001 — a parseable but OUT-OF-RANGE number typed into a
+  //      clamping field must not move the game behind the user's back. Typing
+  //      "150" into a payoff cell committed the clamped 100 into the live game
+  //      on that keystroke while the box still read "150": the rendered 3D
+  //      surface and the cell showed different numbers, on screen, with no
+  //      hint, for as long as the field stayed focused. Out-of-range was the
+  //      one numeric-input problem class with no message.
+  //
+  //      WHY THIS CANNOT PASS BY COINCIDENCE. The game is read from the LIVE
+  //      Plotly trace, never from the input box: EA(x,y,g) = x*y*a11 +
+  //      x*(1-y)*a12 + (1-x)*y*a21 + (1-x)*(1-y)*a22 (gameEngine.ts), so the
+  //      E[A] surface's (x=1,y=1) corner IS a11, exactly — the red's own probe
+  //      read. buildSurfaces uses N=28, so z[28][28] is that corner. The
+  //      fixture starts from Prisoners Dilemma (A(1,1) = 3) and asserts, before
+  //      typing, that the corner reads 3 and NOT the clamp target 100 — so a
+  //      corner of 100 during the edit can only have come from the defect, and
+  //      the pre-edit corner cannot coincide with the post-blur one either.
+  section('93', 'an out-of-range payoff commits nothing mid-edit, shows the range hint, and only blur applies the clamp', async () => {
+    const N = 28;
+    const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(p, 'setup: clear the first-run tour before typing into the matrix', { timeout: 20000 });
+    const tourGone = await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+      null, { timeout: 10000 }).then(() => true).catch(() => false);
+    record('§93 precondition: the guided tour is dismissed before the matrix checks', tourGone);
+
+    const matrixSelector = 'input[inputmode="decimal"][class*="text-center"]';
+    const matrix = p.locator(matrixSelector);
+    const hint = p.locator('[data-testid="payoff-input-hint"]');
+    const RANGE_HINT = 'Range: -100 to 100.';
+    const COMMA_HINT = 'Use a dot for decimals, not a comma.';
+    await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+    await p.getByRole('button', { name: 'Prisoners Dilemma', exact: true }).click();
+    // A(1,1) = 3 in Prisoners Dilemma. Cell 0 is the Player-A payoff of (C,C).
+    await waitForInputValue(p, matrixSelector, 0, '3', 5000);
+    const cell = matrix.nth(0);
+
+    // The live game, straight off the rendered Plotly surface.
+    const corner = () => p.evaluate((N) => {
+      const gd = document.querySelector('.js-plotly-plot');
+      const t = gd?.data?.find((tr) => tr.name === 'E[A]' && Array.isArray(tr.z) && Array.isArray(tr.z[0]));
+      return t ? t.z[N][N] : null;
+    }, N);
+    const settleCorner = async (want) => {
+      for (let i = 0; i < 30; i++) { if ((await corner()) === want) return true; await p.waitForTimeout(100); }
+      return (await corner()) === want;
+    };
+
+    const cornerBefore = await corner();
+    record('§93 fixture guard: the live E[A] corner reads the preset a11 = 3 before any edit — NOT the clamp target, so a clamped commit cannot be mistaken for the starting state',
+      cornerBefore === 3, `corner=${cornerBefore}`);
+
+    // (a) + (b): type an over-range number, do NOT blur.
+    async function checkOutOfRange(label, typed, clampTarget) {
+      const before = await cell.inputValue();
+      const gameBefore = await corner();
+      record(`${label}: fixture guard — the pre-edit game (${gameBefore}) differs from this input's clamp target (${clampTarget}), so a silent clamp is distinguishable from no change`,
+        gameBefore !== clampTarget && Number(before) !== clampTarget);
+      await cell.click();
+      await cell.fill('');
+      await p.keyboard.type(typed, { delay: 20 });
+      // (a) the hint is up, with role=status, while the field is still focused.
+      const hintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintText = hintVisible ? await hint.textContent().catch(() => null) : null;
+      const hintRole = hintVisible ? await hint.getAttribute('role').catch(() => null) : null;
+      record(`${label}: (a) the range hint is visible with the exact text while the field is still focused`,
+        hintVisible && hintText === RANGE_HINT, `visible=${hintVisible} text=${JSON.stringify(hintText)}`);
+      record(`${label}: (a) the hint is announced — role="status"`, hintRole === 'status', `role=${hintRole}`);
+      record(`${label}: still focused (the divergence the red measured happens BEFORE blur)`,
+        await cell.evaluate((el) => el === document.activeElement));
+      // (b) the box shows what was typed and the GAME has not moved.
+      const boxDuring = await cell.inputValue();
+      record(`${label}: (b) the cell shows exactly what was typed`, boxDuring === typed, `got "${boxDuring}"`);
+      const gameHeld = await settleCorner(gameBefore);
+      record(`${label}: (b) THE DEFECT — the live E[A] surface corner still reads the pre-edit payoff ${gameBefore}, not the clamped ${clampTarget}`,
+        gameHeld, `corner=${await corner()}`);
+      // (c) blur commits the clamp and the box agrees with it.
+      await cell.blur();
+      await waitForInputValue(p, matrixSelector, 0, String(clampTarget), 3000);
+      const boxAfter = await cell.inputValue();
+      record(`${label}: (c) blur rewrites the box to the clamped value "${clampTarget}"`,
+        boxAfter === String(clampTarget), `got "${boxAfter}"`);
+      const cornerAfter = await settleCorner(clampTarget);
+      record(`${label}: (c) blur commits that same value to the game — box and surface agree at ${clampTarget}`,
+        cornerAfter, `corner=${await corner()}`);
+      const hintAfterBlur = await hint.isVisible().catch(() => false);
+      record(`${label}: (c) the hint clears once blur has made the box and the game agree`, !hintAfterBlur);
+    }
+
+    await checkOutOfRange('§93 over the upper bound', '150', 100);
+    // (d) symmetric, at the other bound, starting from the committed 100 (so
+    // the pre-edit game differs from -100 by construction).
+    await checkOutOfRange('§93 under the lower bound', '-250', -100);
+
+    // Positive control: an in-range value still commits LIVE, mid-edit, with no
+    // hint — the fix must not have made every edit inert, only clamped ones.
+    const gameBeforeOk = await corner();
+    await cell.click();
+    await cell.fill('');
+    await p.keyboard.type('42', { delay: 20 });
+    const okCommitted = await settleCorner(42);
+    record('§93 control: an IN-RANGE value still reaches the game live, before blur (the fix did not freeze ordinary editing)',
+      okCommitted && gameBeforeOk !== 42, `corner=${await corner()}`);
+    record('§93 control: no hint for an in-range value', !(await hint.isVisible().catch(() => false)));
+    // A prefix that is not yet a number must not raise the range hint either.
+    await cell.fill('');
+    await p.keyboard.type('-', { delay: 20 });
+    record('§93 control: a bare "-" mid-typing raises no range hint (a prefix is not an out-of-range number)',
+      !(await hint.isVisible().catch(() => false)));
+    await p.keyboard.type('7', { delay: 20 });
+    const minusSeven = await settleCorner(-7);
+    record('§93 control: finishing that prefix as "-7" commits normally', minusSeven, `corner=${await corner()}`);
+    await cell.blur();
+
+    // (e) the comma path (RED-DESKTOP-9/002) still behaves exactly as before —
+    // its own message, not the new one, and the game held at the pre-edit value.
+    const gameBeforeComma = await corner();
+    await cell.click();
+    await cell.fill('');
+    await p.keyboard.type('4,5', { delay: 20 });
+    const commaHintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+    const commaHintText = commaHintVisible ? await hint.textContent().catch(() => null) : null;
+    record('§93 (e) regression: the comma path still shows ITS OWN message, not the range one',
+      commaHintVisible && commaHintText === COMMA_HINT, `text=${JSON.stringify(commaHintText)}`);
+    record('§93 (e) regression: the comma path still holds the game at its pre-edit payoff',
+      await settleCorner(gameBeforeComma), `corner=${await corner()}`);
+    await cell.blur();
+    await p.close();
+  });
+
+
 await executeSections();
 
 } catch (e) {
