@@ -22,7 +22,7 @@ import {
   regenErrorFromResponse,
   regenDroppedNote,
   orphanedNote,
-  codepointSafeSlice,
+  REGEN_ERROR_MESSAGES,
   REGEN_NAME_MAX,
   REGEN_LABEL_MAX,
   REGEN_DESCRIPTION_MAX,
@@ -170,8 +170,96 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   check('an emoji straddling the clamp boundary is dropped whole, never split',
     !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(slicedLabel) && !/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(slicedLabel),
     JSON.stringify(slicedLabel));
-  check('codepointSafeSlice never exceeds the UTF-16-unit budget', codepointSafeSlice('a'.repeat(50), 40).length <= 40);
-  check('codepointSafeSlice is a no-op under the budget', codepointSafeSlice('short', 40) === 'short');
+  // The two budget properties the deleted `codepointSafeSlice` used to carry,
+  // re-pointed at the clamp that actually ships (RED-REGEN-21/001).
+  check('the label clamp never exceeds the UTF-16-unit budget',
+    keepFill({ row1: 'a'.repeat(50), description: '', row2: '', col1: '', col2: '' }, false).labels.row1.length <= REGEN_LABEL_MAX);
+  check('the label clamp is a no-op under the budget',
+    keepFill({ row1: 'short', description: '', row2: '', col1: '', col2: '' }, false).labels.row1 === 'short');
+}
+
+/* ───────────────────────── H-RED-REGEN-21/001: the Keep clamp is GRAPHEME-safe
+ *
+ * WHY THESE CANNOT PASS BY COINCIDENCE. Each fixture sizes its filler to
+ * `max - (first code point of the cluster)` so the clamp boundary falls
+ * STRICTLY INSIDE that cluster: the leftover budget is exactly enough for the
+ * cluster's FIRST code point and never enough for the rest. The old
+ * code-point walk therefore had to emit the dangling half — it could not
+ * produce a passing result for any of these inputs. (Sizing the filler by a
+ * fixed `max - 2` instead, as an earlier draft of this block did, leaves a
+ * 2-unit cluster like `e`+combining-acute or heart+VS16 fitting WHOLE, so
+ * those rows could not fail for the reason they claimed; caught by the
+ * mutation run.) Two independent assertions per case, so neither alone can
+ * carry a row:
+ *   (a) the output contains the cluster whole, or not at all — never a prefix;
+ *   (b) the output is not longer than the budget (a "fix" that just stopped
+ *       clamping would satisfy (a) and fail here).
+ * Boundaries are read with `Intl.Segmenter`, the same definition the fix uses,
+ * so a Unicode-version drift moves fixture and code together rather than
+ * rotting the test.
+ */
+{
+  const clusters: Array<[string, string]> = [
+    ['ZWJ family emoji', '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}'],
+    ['regional-indicator flag', '\u{1F1FA}\u{1F1F8}'],
+    ['skin-tone modifier', '\u{1F44D}\u{1F3FD}'],
+    ['combining acute accent', 'é'],
+    ['heart + variation selector-16', '❤️'],
+  ];
+  const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const wholeClustersOf = (s: string) => [...seg.segment(s)].map((g) => g.segment);
+
+  for (const [label, cluster] of clusters) {
+    // Description (800) and label (40) budgets both, since keepFill clamps at
+    // two different maxima and the defect was per-call-site.
+    // Units of the cluster's FIRST code point: leave exactly that much budget.
+    const firstCpUnits = [...cluster][0].length;
+    for (const [field, max] of [['description', REGEN_DESCRIPTION_MAX], ['row1', REGEN_LABEL_MAX]] as const) {
+      const straddling = 'a'.repeat(max - firstCpUnits) + cluster + 'b'.repeat(10);
+      const kept = keepFill(
+        { description: '', row1: '', row2: '', col1: '', col2: '', [field]: straddling } as never,
+        false,
+      );
+      const out = field === 'description' ? kept.desc : kept.labels.row1;
+      const parts = wholeClustersOf(out);
+      const truncatedCluster = parts.some((g) => g !== cluster && cluster.startsWith(g) && g.length < cluster.length);
+      check(`Keep clamp keeps the ${label} whole or drops it — never a prefix (${field}, max ${max})`,
+        !truncatedCluster && (out.includes(cluster) || !out.includes(cluster[0])),
+        JSON.stringify(out.slice(-6)));
+      check(`Keep clamp still respects the ${max}-unit budget with a ${label} at the boundary`,
+        out.length <= max, `got ${out.length}`);
+    }
+  }
+
+  // The precise shapes the red's probe reported: a dangling ZWJ and a lone
+  // regional indicator are each individually legal code points, so only a
+  // cluster-aware clamp excludes them.
+  const flagStraddle = 'a'.repeat(REGEN_DESCRIPTION_MAX - 2) + '\u{1F1FA}\u{1F1F8}' + 'b'.repeat(10);
+  const flagOut = keepFill({ description: flagStraddle, row1: '', row2: '', col1: '', col2: '' }, false).desc;
+  check('no LONE regional indicator survives the description clamp',
+    !/[\u{1F1E6}-\u{1F1FF}]/u.test(flagOut.slice(-2)) || /[\u{1F1E6}-\u{1F1FF}]{2}/u.test(flagOut.slice(-4)),
+    JSON.stringify(flagOut.slice(-4)));
+  const zwjStraddle = 'a'.repeat(REGEN_DESCRIPTION_MAX - 4) + '\u{1F468}‍\u{1F469}' + 'b'.repeat(10);
+  const zwjOut = keepFill({ description: zwjStraddle, row1: '', row2: '', col1: '', col2: '' }, false).desc;
+  check('the description clamp never ends on a dangling ZWJ', !zwjOut.endsWith('‍'), JSON.stringify(zwjOut.slice(-4)));
+
+  // The name clamp (replaceName path) shares the defect and the fix.
+  const nameStraddle = 'a'.repeat(REGEN_NAME_MAX - 2) + '\u{1F1FA}\u{1F1F8}' + 'bbbb';
+  const nameOut = keepFill({ name: nameStraddle, description: 'd', row1: '', row2: '', col1: '', col2: '' }, true).name ?? '';
+  check('the name clamp is grapheme-safe too',
+    !/[\u{1F1E6}-\u{1F1FF}]/u.test(nameOut.slice(-2)) || /[\u{1F1E6}-\u{1F1FF}]{2}/u.test(nameOut.slice(-4)),
+    JSON.stringify(nameOut.slice(-4)));
+  check('the name clamp still respects its 40-unit budget', nameOut.length <= REGEN_NAME_MAX, `got ${nameOut.length}`);
+
+  // The invariant, structurally: no clamp site in this module may go back to a
+  // code-point-only walk. Mutation-tested by reverting the fix.
+  const mod = readFileSync('src/utils/scenarioRegen.ts', 'utf8');
+  check('scenarioRegen.ts declares no local code-point slice helper any more',
+    !/function codepointSafeSlice/.test(mod));
+  const keepFillSrc = mod.match(/export function keepFill\([\s\S]*?\n\}\n/)?.[0] ?? '';
+  check('every clamp inside keepFill goes through clampGraphemeSafe',
+    keepFillSrc.includes('clampGraphemeSafe') && !/codepointSafeSlice|\.slice\(0,\s*REGEN_/.test(keepFillSrc),
+    'keepFill must not clamp with anything but the shared grapheme-safe clamp');
 }
 
 /* ───────────────────────────────────────────────── H-bidi: cleanPreview */
@@ -289,9 +377,64 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const abortErr = new DOMException('aborted', 'AbortError');
   check("AbortError -> 'timeout' regardless of status", regenErrorFromResponse(null, null, abortErr) === 'timeout');
   check("404 -> 'unavailable'", regenErrorFromResponse(404, null, null) === 'unavailable');
-  check("200 with scenario:null -> 'no-story'", regenErrorFromResponse(200, { scenario: null }, null) === 'no-story');
+  check("200 with scenario:null and a TRANSIENT failure -> 'no-story'", regenErrorFromResponse(200, { scenario: null, failure: 'error' }, null) === 'no-story');
+  check("200 with scenario:null and NO failure field -> 'no-story' (unchanged default)", regenErrorFromResponse(200, { scenario: null }, null) === 'no-story');
   check("anything else (offline, 500, malformed body) -> 'network'", regenErrorFromResponse(500, null, null) === 'network');
   check("network failure with no status at all -> 'network'", regenErrorFromResponse(null, null, new TypeError('fetch failed')) === 'network');
+}
+
+/* ─────────────────── H-RED-REGEN-21/002: no-key is not a "try again" condition
+ *
+ * WHY THIS CANNOT PASS BY COINCIDENCE. Every row below is a PAIR run through
+ * the same function with bodies differing in exactly one field — `failure`.
+ * A no-op "fix" (or a revert) makes both halves of the pair identical, so the
+ * inequality assertions fail; a fix that simply renamed the bucket for ALL
+ * 200/scenario:null responses would flip the transient rows too, and those are
+ * asserted to be UNCHANGED. The wording assertions read the real exported
+ * `REGEN_ERROR_MESSAGES`, not a copy, so a message edited in one place only
+ * cannot pass.
+ *
+ * The `failure` values are the ones server.ts can actually put on this route:
+ * 'no-key' (canInvent() false, persistent) vs the ladder's transient set
+ * ('error', 'timeout', 'unparseable', 'validation-failed', 'aborted').
+ */
+{
+  const nokey = regenErrorFromResponse(200, { scenario: null, failure: 'no-key' }, null);
+  check("200 {scenario:null, failure:'no-key'} -> its own kind, not 'no-story'", nokey === 'no-key', nokey);
+
+  // Every transient failure the server's ladder can emit stays in the old
+  // bucket with the old wording — this fix distinguishes, it does not soften.
+  for (const f of ['error', 'timeout', 'unparseable', 'validation-failed', 'aborted']) {
+    check(`transient failure '${f}' still maps to 'no-story' (wording unchanged)`,
+      regenErrorFromResponse(200, { scenario: null, failure: f }, null) === 'no-story');
+  }
+
+  const nokeyMsg = REGEN_ERROR_MESSAGES['no-key']();
+  const transientMsg = REGEN_ERROR_MESSAGES['no-story']();
+  check('the no-key message is DIFFERENT from the transient one (a user can tell them apart)',
+    nokeyMsg !== transientMsg);
+  check('the no-key message does not tell the user to try again',
+    !/try again/i.test(nokeyMsg), nokeyMsg);
+  check('the transient message still DOES tell the user to try again (honesty not lowered)',
+    /try again/i.test(transientMsg), transientMsg);
+  check('the no-key message says the problem is the server, not the user',
+    /server/i.test(nokeyMsg), nokeyMsg);
+  check("the flag-off 404 message is untouched by this change",
+    REGEN_ERROR_MESSAGES['unavailable']() === "Regenerating isn't available on this server.");
+
+  // Every kind must have a message: `Record<RegenErrorKind, …>` makes this a
+  // compile error, but the runtime check also catches a message left empty.
+  for (const k of ['rate-limit', 'timeout', 'unavailable', 'no-key', 'no-story', 'network'] as const) {
+    check(`REGEN_ERROR_MESSAGES has non-empty wording for '${k}'`, REGEN_ERROR_MESSAGES[k]().trim().length > 0);
+  }
+
+  // Structural: the client must actually READ `failure` off the response body,
+  // or the branch above is unreachable in the real app (the type widening in
+  // App.tsx is what makes it reachable). Mutation-tested by reverting it.
+  const appSrc = readFileSync('src/App.tsx', 'utf8');
+  const regenBody = appSrc.match(/let body: \{ scenario\?: RegenPreview[^\n]*\n/)?.[0] ?? '';
+  check('App.tsx types the regen response body with `failure`, so the no-key branch is reachable',
+    regenBody.includes('failure'), regenBody.trim());
 }
 
 /* ───────────────────────────────────────────────── server pure: domain/bank avoidance */

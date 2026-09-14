@@ -22,7 +22,7 @@
  * plain data — no DOM, no fetch, no React — so every branch is a one-line
  * assertion in `src/scenarioregen.test.ts` with no mount required.
  */
-import { cleanText } from './textSafety';
+import { cleanText, clampGraphemeSafe } from './textSafety';
 import {
   regenKeptColorTerms, capHitMessage, chipPaintStates, colorTermKey,
   mergeDescriptionTerms, dialogBaseColorTerms, optionLabelTerms,
@@ -34,34 +34,6 @@ export const REGEN_NAME_MAX = 40;
 export const REGEN_LABEL_MAX = 40;
 export const REGEN_DESCRIPTION_MAX = 800;
 
-/**
- * Slice a string to at most `max` UTF-16 code units WITHOUT splitting a
- * surrogate pair in half.
- *
- * A plain `s.slice(0, max)` cuts by UTF-16 code UNIT, so a max landing inside
- * an astral character (most emoji, several scripts) keeps the lone leading
- * surrogate — an unpaired surrogate that renders as U+FFFD / a broken glyph
- * everywhere the text is shown afterwards (the drawer card, the matrix
- * header, the saved description). Iterating `for...of` walks by CODE POINT,
- * so a character that would push the running UTF-16-unit count past `max` is
- * dropped whole rather than split — exactly the same code-point-safe
- * iteration `stripUnsafeText` already relies on in this codebase, applied
- * here to a length budget instead of a filter. The budget stays in UTF-16
- * units (not code points) so the result never exceeds a native
- * `maxLength={max}` on the controlled inputs these values are written into.
- */
-export function codepointSafeSlice(s: string, max: number): string {
-  if (s.length <= max) return s;
-  let out = '';
-  let units = 0;
-  for (const ch of s) {
-    const chUnits = ch.length; // 1, or 2 for a surrogate pair
-    if (units + chUnits > max) break;
-    out += ch;
-    units += chUnits;
-  }
-  return out;
-}
 
 // ── which game a regen request/preview is FOR ────────────────────────────────
 export type RegenKey =
@@ -216,6 +188,14 @@ export function shouldReplaceName(nameTypedThisSession: boolean): boolean {
  * a value that has already been through `keepFill` cannot be rejected or
  * silently truncated a second, DIFFERENT way by the eventual submit.
  *
+ * RED-REGEN-21/001: "grapheme-safe" above was a claim this code did not keep.
+ * These five clamps used a local code-POINT walk, which splits any cluster
+ * built from several code points (ZWJ, flags, skin tone, combining marks,
+ * VS16) and persisted the broken half. They now call the same
+ * `clampGraphemeSafe` the typing path uses (`DescriptionEditor`,
+ * `colorTerms`, `scenarioActorNouns`, server `cleanText`) — one clamp, every
+ * site, so Keep and typing cannot cut the same string differently.
+ *
  * DIRECTOR'S DECISION (2026-09-03, REVISING round-6 decision 3 — RED-REGEN/001):
  * an AI action never destroys user-authored data. `SCENARIO_SCHEMA` is strict
  * (`additionalProperties:false`), so no cloud draw can ever carry
@@ -233,12 +213,12 @@ export function keepFill(
   existingTerms: { a: readonly string[]; b: readonly string[] } = { a: [], b: [] },
 ): KeptFill {
   const out: KeptFill = {
-    desc: codepointSafeSlice(cleanText(preview.description ?? ''), REGEN_DESCRIPTION_MAX),
+    desc: clampGraphemeSafe(cleanText(preview.description ?? ''), REGEN_DESCRIPTION_MAX),
     labels: {
-      row1: codepointSafeSlice(cleanText(preview.row1 ?? ''), REGEN_LABEL_MAX),
-      row2: codepointSafeSlice(cleanText(preview.row2 ?? ''), REGEN_LABEL_MAX),
-      col1: codepointSafeSlice(cleanText(preview.col1 ?? ''), REGEN_LABEL_MAX),
-      col2: codepointSafeSlice(cleanText(preview.col2 ?? ''), REGEN_LABEL_MAX),
+      row1: clampGraphemeSafe(cleanText(preview.row1 ?? ''), REGEN_LABEL_MAX),
+      row2: clampGraphemeSafe(cleanText(preview.row2 ?? ''), REGEN_LABEL_MAX),
+      col1: clampGraphemeSafe(cleanText(preview.col1 ?? ''), REGEN_LABEL_MAX),
+      col2: clampGraphemeSafe(cleanText(preview.col2 ?? ''), REGEN_LABEL_MAX),
     },
     terms: { a: [], b: [] },
     dropped: { a: [], b: [] },
@@ -270,7 +250,7 @@ export function keepFill(
     return found;
   };
   out.shadowed = { a: shadowedOn('a', kept.a), b: shadowedOn('b', kept.b) };
-  if (replaceName) out.name = codepointSafeSlice(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
+  if (replaceName) out.name = clampGraphemeSafe(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
   return out;
 }
 
@@ -337,22 +317,43 @@ export function orphanedNote(
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────
-export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-story' | 'network';
+export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key' | 'no-story' | 'network';
 
 /**
- * Map a response (or a thrown/aborted fetch) to one of five honest outcomes.
+ * Map a response (or a thrown/aborted fetch) to one of six honest outcomes.
  * `status` is `null` when the request never produced a response at all
  * (network failure, or an abort — distinguished by `err`).
+ *
+ * RED-REGEN-21/002: a 200 with `scenario:null` is NOT one condition. The
+ * route answers that shape for two categories that differ in the only way
+ * the message has to get right — whether retrying can work:
+ *
+ *   `failure:'no-key'`  server has no credentials (`canInvent()` false,
+ *                       server.ts). Persistent and admin-only-fixable; every
+ *                       retry returns this same response. Reachable with the
+ *                       button still visible because the capability probe
+ *                       runs once per API base (App.tsx) and is not re-polled,
+ *                       so credentials lost mid-session leave a stale probe.
+ *   everything else     the draw itself failed this time — `timeout`,
+ *                       `error`, `unparseable`, `validation-failed`,
+ *                       `aborted` (server.ts's ladder). Genuinely transient:
+ *                       a later draw can succeed, so "try again" is honest.
+ *
+ * Only `no-key` is re-routed. The transient bucket keeps `no-story` and its
+ * existing wording unchanged — this distinguishes a message that was wrong,
+ * it does not soften one that was right.
  */
 export function regenErrorFromResponse(
   status: number | null,
-  body: { scenario?: unknown; error?: string } | null,
+  body: { scenario?: unknown; error?: string; failure?: unknown } | null,
   err: unknown,
 ): RegenErrorKind {
   if (err instanceof DOMException && err.name === 'AbortError') return 'timeout';
   if (status === 429) return 'rate-limit';
   if (status === 404) return 'unavailable';
-  if (status === 200 && body && body.scenario === null) return 'no-story';
+  if (status === 200 && body && body.scenario === null) {
+    return body.failure === 'no-key' ? 'no-key' : 'no-story';
+  }
   return 'network';
 }
 
@@ -363,6 +364,10 @@ export const REGEN_ERROR_MESSAGES: Record<RegenErrorKind, (serverText?: string) 
   'rate-limit': (t) => `AI limit reached — ${t || 'Too many attempts. Please wait a minute and try again.'}`,
   'timeout': () => 'This is taking longer than expected — try again?',
   'unavailable': () => "Regenerating isn't available on this server.",
+  // RED-REGEN-21/002: distinct from 'unavailable' (the route is enabled, so
+  // the button is legitimately there) and from 'no-story' (retrying cannot
+  // help). Names the side the problem is on and omits the retry prompt.
+  'no-key': () => "Regenerating isn't set up on this server — this isn't something you can retry.",
   'no-story': () => "Couldn't write a verified scenario just now — try again.",
   'network': () => "Couldn't reach the scenario service. Your text below is unchanged.",
 };
